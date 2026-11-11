@@ -22,6 +22,8 @@ struct Plan {
     shape: Shape,
     fields: BTreeSet<String>,
     paired: bool,
+    /// Columns asked for beside the query (`--fields`), instead of a stage.
+    display: Vec<String>,
 }
 fn error(message: impl ToString) -> Error {
     Error::new(ErrorKind::InvalidQuery, message.to_string(), 0)
@@ -43,48 +45,65 @@ fn options(fields: Vec<String>) -> Options {
 impl compiler_cases::Compiler for Product {
     type Plan = Plan;
     fn compile(&self, value: &Query) -> Result<Plan, Error> {
-        let Source::Unit { unit, .. } = &value.source else {
-            return Err(error("case fixture has no native source unit"));
-        };
-        let options = options(vec![]);
-        let catalog = polylogue_query::catalog::catalog(&options.origins);
+        let catalog = polylogue_query::catalog::catalog(&options(vec![]).origins);
         let mut value = value.clone();
         project_fixture_sources(&mut value, &catalog)?;
-        let text = query_language::format::format_query(&value, &catalog)?;
-        let prepared = polylogue_query::compile(&text, &options).map_err(error)?;
-        let bound = prepared.expanded_query();
-        let typing = bound
-            .typing()
-            .query(&query_language::scope::NodePath::default())
-            .unwrap();
-        let output = typing
-            .transforms
-            .last()
-            .map_or(&typing.source, |stage| &stage.after);
-        let mut fields: BTreeSet<_> = output
-            .fields
-            .iter()
-            .map(|info| info.field.name.clone())
-            .collect();
-        let program = polylogue_store::query::lower(&prepared, &options).map_err(error)?;
-        fields.extend(
-            program
-                .columns
-                .iter()
-                .filter(|column| column.name.starts_with("unknown_"))
-                .map(|column| column.name.clone()),
-        );
-        Ok(Plan {
-            text,
-            unit: unit.clone(),
-            shape: program.shape,
-            fields,
-            paired: value
-                .transforms
-                .iter()
-                .any(|stage| matches!(stage.kind, TransformKind::Join { .. })),
-        })
+        compile_case(&value, vec![])
     }
+}
+/// The fixture's columns asked for as `--fields`, so the native rows stay
+/// the unit's own and page key first.
+struct NativeProduct;
+impl compiler_cases::Compiler for NativeProduct {
+    type Plan = Plan;
+    fn compile(&self, value: &Query) -> Result<Plan, Error> {
+        compile_case(
+            value,
+            OUTER_FIELDS.iter().map(|f| (*f).to_owned()).collect(),
+        )
+    }
+}
+fn compile_case(value: &Query, display: Vec<String>) -> Result<Plan, Error> {
+    let Source::Unit { unit, .. } = &value.source else {
+        return Err(error("case fixture has no native source unit"));
+    };
+    let options = options(display.clone());
+    let catalog = polylogue_query::catalog::catalog(&options.origins);
+    let text = query_language::format::format_query(value, &catalog)?;
+    let prepared = polylogue_query::compile(&text, &options).map_err(error)?;
+    let bound = prepared.expanded_query();
+    let typing = bound
+        .typing()
+        .query(&query_language::scope::NodePath::default())
+        .unwrap();
+    let output = typing
+        .transforms
+        .last()
+        .map_or(&typing.source, |stage| &stage.after);
+    let mut fields: BTreeSet<_> = output
+        .fields
+        .iter()
+        .map(|info| info.field.name.clone())
+        .collect();
+    let program = polylogue_store::query::lower(&prepared, &options).map_err(error)?;
+    fields.extend(
+        program
+            .columns
+            .iter()
+            .filter(|column| column.name.starts_with("unknown_"))
+            .map(|column| column.name.clone()),
+    );
+    Ok(Plan {
+        text,
+        unit: unit.clone(),
+        shape: program.shape,
+        fields,
+        paired: value
+            .transforms
+            .iter()
+            .any(|stage| matches!(stage.kind, TransformKind::Join { .. })),
+        display,
+    })
 }
 /// Give each native source the fixture's declared columns through the real
 /// projection stage. Display options belong to the final answer and cannot
@@ -567,7 +586,7 @@ impl compiler_cases::Executor<Plan> for Execution {
                 embeddings: false,
                 ranking_identity: None,
                 near: None,
-                fields: &[],
+                fields: &plan.display,
             },
         )
         .map_err(|failure| error(failure.message.clone()))?;
@@ -658,4 +677,180 @@ fn shared_language_laws_run_through_product_compilation_and_keyset_pages() {
     });
     let failures = compiler_cases::check(&Product, &mut Execution::default(), &cases);
     assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// Generated queries answer through the product's lowering, store and
+/// keyset pages as common's reference evaluator answers them over the same
+/// rows, at every page size the shared runner pages with.
+#[test]
+fn lowering_equals_reference() {
+    use query_language::conformance::ReferenceEvaluator;
+    let dataset = reference_dataset();
+    let catalog = polylogue_query::catalog::catalog(&options(vec![]).origins);
+    let reference = ReferenceEvaluator::new(&dataset).with_catalog(&catalog);
+    let mut cases = vec![];
+    let mut seed = 0x5eed_u64;
+    for n in 0..24 {
+        let query = generated_query(&mut seed);
+        let expected = reference
+            .execute(&query)
+            .unwrap_or_else(|e| panic!("reference refused generated query {n}: {e}"));
+        cases.push(compiler_cases::Case {
+            name: format!(
+                "generated {n}: {}",
+                query_language::format::format_query(&query, &catalog).unwrap()
+            ),
+            query,
+            fixture: dataset.clone(),
+            expected,
+        });
+    }
+    let mut failures = compiler_cases::check(&Product, &mut Execution::default(), &cases);
+    failures.extend(compiler_cases::check(
+        &NativeProduct,
+        &mut Execution::default(),
+        &cases,
+    ));
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// Sessions newest first in identity order, so the unit's default order
+/// and the reference's identity order agree; one unknown number.
+fn reference_dataset() -> Dataset {
+    let session = |id: &str, tick: i64, tokens: Scalar, repo: &str, title: &str| {
+        let mut row = Row::new(id)
+            .with("input_tokens", tokens)
+            .with("output_tokens", 2.)
+            .with("repo", repo)
+            .with("title", title);
+        row.time = Some(Extent {
+            start: tick,
+            end: tick,
+            coarse: false,
+        });
+        row
+    };
+    let sessions = vec![
+        session("a", 40, Scalar::from(1.), "east", "Alpha retry"),
+        session("b", 30, Scalar::from(3.), "east", "Beta deploy"),
+        session("c", 20, Scalar::from(5.), "west", "Gamma retry"),
+        session("d", 10, Scalar::Unknown, "west", "Delta notes"),
+    ];
+    let mut calls = vec![];
+    for (id, parent, code, order) in [("x", "a", 1., 0), ("y", "a", 3., 1), ("z", "c", 2., 0)] {
+        let mut row = Row::new(id).with("exit_code", code);
+        row.parent = Some(parent.into());
+        row.order = order;
+        calls.push(row);
+    }
+    BTreeMap::from([("sessions".into(), sessions), ("tool_calls".into(), calls)])
+}
+
+/// One step of a fixed linear congruential sequence: generated queries are
+/// the same on every run.
+fn next(seed: &mut u64, below: u64) -> u64 {
+    *seed = seed
+        .wrapping_mul(6_364_136_223_846_793_005)
+        .wrapping_add(1_442_695_040_888_963_407);
+    (*seed >> 33) % below
+}
+
+/// A condition over the sessions; `exists` only where the rows are still
+/// the unit's own, since a related-row condition on a derived relation is
+/// not built.
+fn generated_condition(seed: &mut u64, depth: u32, exists: bool) -> Condition {
+    let c = |kind| Condition {
+        span: Span::default(),
+        kind,
+    };
+    let compare = |field: &str, op, value: &str| {
+        c(ConditionKind::Compare {
+            left: Expression::field(field),
+            op,
+            right: Expression::value(query_language::ast::Value::scalar(value)),
+        })
+    };
+    let ops = [Op::Eq, Op::Ne, Op::Gt, Op::Ge, Op::Lt, Op::Le];
+    let pick = match next(seed, if depth == 0 { 4 } else { 7 }) {
+        3 if !exists => 0,
+        pick => pick,
+    };
+    match pick {
+        0 => compare(
+            "input_tokens",
+            ops[next(seed, 6) as usize],
+            ["1", "3", "5"][next(seed, 3) as usize],
+        ),
+        1 => c(ConditionKind::Match {
+            field: "repo".into(),
+            value: query_language::ast::Value::scalar(["east", "west"][next(seed, 2) as usize]),
+        }),
+        2 => c(ConditionKind::Match {
+            field: "title".into(),
+            value: query_language::ast::Value::scalar(
+                ["retry", "ta", "zz"][next(seed, 3) as usize],
+            ),
+        }),
+        3 => c(ConditionKind::Exists {
+            unit: "tool_calls".into(),
+            condition: Some(Box::new(compare(
+                "exit_code",
+                ops[next(seed, 6) as usize],
+                ["1", "2"][next(seed, 2) as usize],
+            ))),
+        }),
+        4 => c(ConditionKind::Not {
+            condition: Box::new(generated_condition(seed, depth - 1, exists)),
+        }),
+        5 => c(ConditionKind::And {
+            conditions: vec![
+                generated_condition(seed, depth - 1, exists),
+                generated_condition(seed, depth - 1, exists),
+            ],
+        }),
+        _ => c(ConditionKind::Or {
+            conditions: vec![
+                generated_condition(seed, depth - 1, exists),
+                generated_condition(seed, depth - 1, exists),
+            ],
+        }),
+    }
+}
+
+/// A condition, optionally followed by a where stage, a sort and a limit;
+/// without a sort the unit's default order holds.
+fn generated_query(seed: &mut u64) -> Query {
+    let stage = |kind| Transform {
+        span: Span::default(),
+        kind,
+    };
+    let condition = (next(seed, 5) != 0).then(|| generated_condition(seed, 2, true));
+    let mut transforms = vec![];
+    if next(seed, 3) == 0 {
+        transforms.push(stage(TransformKind::Where {
+            condition: generated_condition(seed, 1, false),
+        }));
+    }
+    if next(seed, 3) == 0 {
+        transforms.push(stage(TransformKind::Sort {
+            keys: vec![SortKey {
+                expression: Expression::field("input_tokens"),
+                descending: next(seed, 2) == 0,
+            }],
+        }));
+    }
+    if next(seed, 4) == 0 {
+        transforms.push(stage(TransformKind::Limit {
+            count: 1 + next(seed, 3),
+        }));
+    }
+    Query {
+        source: Source::Unit {
+            unit: "sessions".into(),
+            implicit: false,
+            condition,
+        },
+        attach: vec![],
+        transforms,
+    }
 }
