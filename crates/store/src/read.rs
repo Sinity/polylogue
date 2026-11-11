@@ -278,6 +278,12 @@ impl ReadPool {
         })
     }
 
+    /// The connections ordinary reads may hold at once.
+    #[cfg(any(test, feature = "fixture"))]
+    pub fn max_readers(&self) -> usize {
+        self.max_readers
+    }
+
     #[cfg(any(test, feature = "fixture"))]
     pub fn checked_out(&self) -> usize {
         self.state.lock().unwrap().owners.values().sum()

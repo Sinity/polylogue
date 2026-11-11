@@ -61,6 +61,65 @@ pub(crate) fn with_ranking<T>(
     run(identity.is_some(), identity, &near)
 }
 
+/// Asks the provider for the vector of each `similar:"text"` in `query`
+/// before the request takes its reader, so the provider wait holds neither
+/// a reader slot nor an executor place; the ranking then finds the vectors
+/// kept. Only quoted texts are asked for: an unquoted value may be a
+/// reference, whose stored vector needs no call. Failures are left to the
+/// ranking, which reports them.
+pub(crate) fn prefetch_query_vectors(d: &super::service::Daemon, query: &str) {
+    let texts = similar_texts(query);
+    if texts.is_empty() {
+        return;
+    }
+    let settings = {
+        let Ok(reader) = d.reads.reader() else {
+            return;
+        };
+        reader.settings_snapshot(d.config.requests.machine()).ok()
+    };
+    let Some(provider) = settings.as_ref().and_then(|settings| {
+        crate::embeddings::Provider::from_settings(settings, &d.config.embedding_credentials)
+            .ok()
+            .flatten()
+    }) else {
+        return;
+    };
+    for text in texts {
+        let _ = d.warm.query_vector(&provider, &text);
+    }
+}
+
+/// The quoted texts `query` ranks by with `similar:`.
+fn similar_texts(query: &str) -> Vec<String> {
+    fn visit(value: &Value, texts: &mut Vec<String>) {
+        match value {
+            Value::Object(object) => {
+                if object.get("kind").and_then(Value::as_str) == Some("rank")
+                    && object.get("list").and_then(Value::as_str) == Some("similar")
+                    && let Some(Value::Object(scalar)) = object.get("value")
+                    && scalar.get("quoted") == Some(&Value::Bool(true))
+                    && let Some(text) = scalar.get("text").and_then(Value::as_str)
+                    && !texts.iter().any(|known| known == text)
+                {
+                    texts.push(text.to_owned());
+                }
+                object.values().for_each(|value| visit(value, texts));
+            }
+            Value::Array(values) => values.iter().for_each(|value| visit(value, texts)),
+            _ => {}
+        }
+    }
+    let mut texts = Vec::new();
+    if let Some(parsed) = polylogue_query::parse(query)
+        .ok()
+        .and_then(|parsed| serde_json::to_value(parsed).ok())
+    {
+        visit(&parsed, &mut texts);
+    }
+    texts
+}
+
 fn with_similarity<T>(
     reader: &Reader<'_>,
     program: &Program,

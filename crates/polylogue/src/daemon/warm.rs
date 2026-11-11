@@ -177,8 +177,7 @@ impl Warm {
         let Some(loaded) = self.vectors(reader, provider)? else {
             return Err("no vectors for this provider's model: `polylogue embed build`".into());
         };
-        let key = format!("{}\0{text}", loaded.key);
-        let query = self.query_vector(&key, provider, text)?;
+        let query = self.query_vector(provider, text)?;
         loaded
             .similarity(&query)
             .map(Arc::new)
@@ -188,12 +187,13 @@ impl Warm {
     /// The provider's vector for `text`: kept from an earlier read, taken
     /// from a call another read has in flight, or asked for. Neither the
     /// call nor the wait for it holds an executor place.
-    fn query_vector(
+    pub(crate) fn query_vector(
         &self,
-        key: &str,
         provider: &Provider,
         text: &str,
     ) -> Result<Arc<Vec<f32>>, String> {
+        // A query vector depends on the provider's model and the text only.
+        let key = &format!("{}\0{text}", provider.key_prefix());
         let cached = cache_lock(&self.query_vectors)?.get(key);
         if let Some(vector) = cached {
             self.counts

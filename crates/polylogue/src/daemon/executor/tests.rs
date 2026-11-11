@@ -86,7 +86,7 @@ fn stopping_drops_queued_work_and_refuses_new_work() {
     }));
     let stopper = std::thread::spawn({
         let shared = Arc::clone(&executor.shared);
-        move || Executor { shared }.stop()
+        move || Executor { shared }.stop(WAIT)
     });
     // The queued job is dropped unrun: its answer channel closes.
     assert!(receiver.blocking_recv().is_err());
@@ -94,4 +94,13 @@ fn stopping_drops_queued_work_and_refuses_new_work() {
     release.send(()).unwrap();
     stopper.join().unwrap();
     assert_eq!(executor.threads(), 0);
+}
+
+#[test]
+fn work_that_ignores_its_cancellation_does_not_hold_up_a_stop() {
+    let executor = Executor::new(1);
+    let (_started, _never_released) = hold(&executor, Class::Ordinary);
+    let started = Instant::now();
+    assert_eq!(executor.stop(Duration::from_millis(200)), 1);
+    assert!(started.elapsed() < WAIT, "the stop waited past its bound");
 }

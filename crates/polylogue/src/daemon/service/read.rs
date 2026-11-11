@@ -102,6 +102,9 @@ impl crate::daemon::handler::Handler for Read {
     type Arguments = crate::protocol::read::Arguments;
     type Answer = crate::protocol::read::Answer;
     const PAGES: bool = true;
+    fn ranking_text(arguments: &Self::Arguments) -> Option<&str> {
+        Some(&arguments.target)
+    }
     fn default_deadline(arguments: &Self::Arguments) -> bool {
         arguments.delivery != ReadDelivery::Stream
     }
