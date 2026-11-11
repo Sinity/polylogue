@@ -29,13 +29,34 @@ pub(crate) struct Absorption {
     pub events: Vec<(String, String)>,
 }
 
-/// The session identities a resolution uses: copies named by an alias, and
-/// copies the batches being resolved join to their session.
+/// A copy joined to a session whose alias a second session now records:
+/// the alias names neither, so the copy's rows go back to its own session,
+/// as if the alias had been ambiguous from the start.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Release {
+    pub copy: String,
+    /// The session the copy was joined to.
+    pub session: String,
+    /// The session whose statement makes the alias ambiguous.
+    pub by: String,
+    /// The copy's input chains: (input row, chain).
+    pub chains: Vec<(i64, i64)>,
+    /// Each message the copy's chains read, with the ID it has in the copy.
+    pub messages: Vec<(String, String)>,
+    /// Each content-named event the copy's chains read, with its ID in the
+    /// copy.
+    pub events: Vec<(String, String)>,
+}
+
+/// The session identities a resolution uses: copies named by an alias,
+/// copies the batches being resolved join to their session, and joined
+/// copies they release.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct Identities {
     /// Copy session ID to session ID, for aliases already stored.
     stored: BTreeMap<String, String>,
     absorbed: Vec<Absorption>,
+    released: Vec<Release>,
 }
 
 impl Identities {
@@ -54,14 +75,28 @@ impl Identities {
         let mut identities = Self {
             stored,
             absorbed: Vec::new(),
+            released: Vec::new(),
         };
         for session in recorded {
             let id = session.id.to_string();
             for alias in &session.aliases {
                 let copy = alias.to_string();
-                if identities.stored.contains_key(&copy)
-                    || identities.absorbed.iter().any(|a| a.copy == copy)
-                {
+                if let Some(joined) = identities.stored.get(&copy).cloned() {
+                    if joined != id {
+                        identities.stored.remove(&copy);
+                        let release = release(index, &copy, &joined, &id)?;
+                        identities.released.push(release);
+                    }
+                    continue;
+                }
+                if identities.released.iter().any(|r| r.copy == copy) {
+                    continue;
+                }
+                if let Some(n) = identities.absorbed.iter().position(|a| a.copy == copy) {
+                    // Two sessions of these batches record it: it names neither.
+                    if identities.absorbed[n].session != id {
+                        identities.absorbed.remove(n);
+                    }
                     continue;
                 }
                 let other: bool = index.query_row(
@@ -101,6 +136,27 @@ impl Identities {
 
     pub(crate) fn absorbed(&self) -> &[Absorption] {
         &self.absorbed
+    }
+
+    pub(crate) fn released(&self) -> &[Release] {
+        &self.released
+    }
+
+    /// The tool-call ID a block is written with: a call ID a copy's message
+    /// names after itself (`<message>:code1`) takes its message's ID in the
+    /// session, as the message does.
+    pub(crate) fn shown_call<'a>(&self, origin: &str, call: &'a str) -> Cow<'a, str> {
+        if self.stored.is_empty() && self.absorbed.is_empty() {
+            return Cow::Borrowed(call);
+        }
+        let id = format!("{origin}:{call}");
+        match self.shown_message(&id) {
+            Cow::Owned(renamed) => renamed
+                .strip_prefix(origin)
+                .and_then(|rest| rest.strip_prefix(':'))
+                .map_or(Cow::Borrowed(call), |rest| Cow::Owned(rest.to_owned())),
+            Cow::Borrowed(_) => Cow::Borrowed(call),
+        }
     }
 
     /// The session ID a key of `id` resolves to.
@@ -209,6 +265,91 @@ pub(crate) fn in_session(
     Ok(Some(renamed))
 }
 
+/// What releasing `copy` from `joined` moves: the copy's chains (the session
+/// statements in `joined` that name the copy), and the messages and
+/// content-named events those chains read, with their IDs in the copy.
+fn release(index: &Connection, copy: &str, joined: &str, by: &str) -> crate::Result<Release> {
+    let chains = index
+        .prepare_cached(
+            "SELECT r.input_pk, r.chain FROM session_record r JOIN session s ON s.pk = r.session_pk
+             WHERE s.id = ?1 AND json_extract(r.facts, '$.id') = ?2 ORDER BY r.input_pk, r.chain",
+        )?
+        .query_map(params![joined, copy], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<Vec<(i64, i64)>>>()?;
+    let mut messages = Vec::new();
+    let mut events = Vec::new();
+    for &(input, chain) in &chains {
+        let ids = index
+            .prepare_cached(
+                "SELECT DISTINCT m.id FROM message_source v JOIN message m ON m.pk = v.message_pk
+                 JOIN session s ON s.pk = v.session_pk
+                 WHERE s.id = ?1 AND v.input_pk = ?2 AND v.chain = ?3 ORDER BY m.id",
+            )?
+            .query_map(params![joined, input, chain], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for id in ids {
+            if let Some(own) = renamed(&id, joined, copy)
+                && !messages.iter().any(|(old, _)| *old == id)
+            {
+                messages.push((id, own));
+            }
+        }
+        let rows = index
+            .prepare_cached(
+                "SELECT e.id, s.fields, v.body FROM event_source s JOIN event e ON e.pk = s.event_pk
+                 JOIN event_value v ON v.pk = s.value_pk JOIN session x ON x.pk = e.session_pk
+                 WHERE x.id = ?1 AND s.input_pk = ?2 AND s.chain = ?3 ORDER BY e.id",
+            )?
+            .query_map(params![joined, input, chain], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?, row.get::<_, Vec<u8>>(2)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (id, fields, data) in rows {
+            let mut event: Event = crate::encoding::unpack_json(&fields)?;
+            event.data = crate::encoding::unpack_json(&data)?;
+            // A reading stored before the copy joined states the copy's
+            // session; one stored after, the joined session.
+            let event = in_session(
+                &event,
+                |name| {
+                    if name == copy {
+                        joined.to_owned()
+                    } else {
+                        name.to_owned()
+                    }
+                },
+                |message| renamed(message, copy, joined).unwrap_or_else(|| message.to_owned()),
+            )?
+            .unwrap_or(event);
+            if crate::encoding::event_content_id(&event)? != id {
+                continue;
+            }
+            let own = in_session(
+                &event,
+                |name| {
+                    if name == joined {
+                        copy.to_owned()
+                    } else {
+                        name.to_owned()
+                    }
+                },
+                |message| renamed(message, joined, copy).unwrap_or_else(|| message.to_owned()),
+            )?;
+            if let Some(own) = own {
+                events.push((id, crate::encoding::event_content_id(&own)?));
+            }
+        }
+    }
+    Ok(Release {
+        copy: copy.to_owned(),
+        session: joined.to_owned(),
+        by: by.to_owned(),
+        chains,
+        messages,
+        events,
+    })
+}
+
 /// The stored events of a copy's session that are named by their content,
 /// with the ID each has in `session`.
 fn copy_events(
@@ -268,7 +409,7 @@ fn message_session(id: &str) -> Option<String> {
 }
 
 /// `id` with its session part `from` replaced by `to`, when it has one.
-fn renamed(id: &str, from: &str, to: &str) -> Option<String> {
+pub(crate) fn renamed(id: &str, from: &str, to: &str) -> Option<String> {
     let (origin, native) = id.split_once(':')?;
     let from = from.strip_prefix(origin)?.strip_prefix(':')?;
     let to = to.strip_prefix(origin)?.strip_prefix(':')?;

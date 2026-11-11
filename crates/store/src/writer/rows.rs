@@ -363,6 +363,53 @@ fn apply_rows(
             tx.prepare_cached("UPDATE event_source SET event_pk=?2 WHERE event_pk=?1")?
                 .execute(params![source, target])?;
         }
+        for resolve::membership::ReleasedSession {
+            from,
+            to,
+            copy,
+            chains,
+        } in &choices.released_sessions
+        {
+            rows.release_session(*from, *to, copy, chains)?;
+            for (source, target) in &choices.released_messages {
+                if !tx
+                    .prepare_cached("SELECT EXISTS(SELECT 1 FROM message WHERE pk=?1)")?
+                    .query_row([target], |r| r.get::<_, bool>(0))?
+                {
+                    written += u64::from(rows.refresh_message(*target)?);
+                }
+                for (input, chain) in chains {
+                    tx.prepare_cached(
+                        "UPDATE message_source SET message_pk=?2, session_pk=?5
+                         WHERE message_pk=?1 AND input_pk=?3 AND chain=?4",
+                    )?
+                    .execute(params![source, target, input, chain, to])?;
+                }
+            }
+            for (source, target, id) in &choices.released_events {
+                if !tx
+                    .prepare_cached("SELECT EXISTS(SELECT 1 FROM event WHERE pk=?1)")?
+                    .query_row([target], |r| r.get::<_, bool>(0))?
+                {
+                    tx.prepare_cached(
+                        "INSERT INTO event(pk,id,session_pk,seq,after_message_id,seq_from_message,after_message_pk,kind,at,input_pk,source_chain,source_start,source_end,fields,data)
+                         SELECT ?2,?3,?4,seq,after_message_id,seq_from_message,after_message_pk,kind,at,input_pk,source_chain,source_start,source_end,fields,data
+                         FROM event WHERE pk=?1",
+                    )?
+                    .execute(params![source, target, id, to])?;
+                    if let Some(first) = first_build {
+                        first.add_event(id, *target);
+                    }
+                }
+                for (input, chain) in chains {
+                    tx.prepare_cached(
+                        "UPDATE event_source SET event_pk=?2, session_pk=?5
+                         WHERE event_pk=?1 AND input_pk=?3 AND chain=?4",
+                    )?
+                    .execute(params![source, target, input, chain, to])?;
+                }
+            }
+        }
         for (message_pk, source_input, source_chain) in &choices.dropped_message_sources {
             tx.prepare_cached(
                 "DELETE FROM message_source WHERE message_pk=?1 AND input_pk=?2 AND chain=?3",
@@ -653,6 +700,34 @@ impl RowWriter<'_, '_> {
         self.tx
             .prepare_cached("UPDATE session SET changed=?2 WHERE pk=?1")?
             .execute(params![to, self.counter])?;
+        Ok(())
+    }
+
+    /// Returns a released copy's session statements to its own session,
+    /// whose row comes back (docs/capture.md, AI Studio through Drive). Its
+    /// messages and events move with their readings
+    /// (`Choices::released_messages`, `Choices::released_events`).
+    fn release_session(&self, from: i64, to: i64, copy: &str, chains: &[(i64, i64)]) -> Result<()> {
+        let id = SessionId::parse(copy).map_err(|e| StoreError::Invalid(e.to_string()))?;
+        self.session_row(&id, false)?;
+        self.tx
+            .prepare_cached("DELETE FROM removed_session WHERE session_id=?1")?
+            .execute([copy])?;
+        for (input, chain) in chains {
+            for table in ["session_record", "parsed"] {
+                self.tx
+                    .prepare_cached(&format!(
+                        "UPDATE {table} SET session_pk=?2 WHERE session_pk=?1 AND input_pk=?3 AND chain=?4"
+                    ))?
+                    .execute(params![from, to, input, chain])?;
+            }
+        }
+        for pk in [from, to] {
+            self.changes.whole_session(pk);
+            self.tx
+                .prepare_cached("UPDATE session SET changed=?2 WHERE pk=?1")?
+                .execute(params![pk, self.counter])?;
+        }
         Ok(())
     }
 
@@ -1171,6 +1246,7 @@ impl RowWriter<'_, '_> {
             self.insert_block(
                 message_pk,
                 session_pk,
+                m.session.origin().as_str(),
                 (idx as i64, prepared.projection.block_ordinals[idx]),
                 block,
                 stored,
@@ -1180,10 +1256,12 @@ impl RowWriter<'_, '_> {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn insert_block(
         &self,
         message_pk: i64,
         session_pk: i64,
+        origin: &str,
         position: (i64, u64),
         block: &Block,
         StoredBlock {
@@ -1211,6 +1289,10 @@ impl RowWriter<'_, '_> {
             Block::File(a) => ("file", None, Some(a)),
             Block::Other { .. } => ("other", None, None),
         };
+        // A copy's call IDs name its message; they take the message's ID in
+        // the session its copy name is an alias of, as the message does.
+        let call_id = call_id.map(|id| self.keys.identities.shown_call(origin, id));
+        let call_id = call_id.as_deref();
         let (signature, encrypted) = match block {
             Block::Thinking {
                 signature,
@@ -1254,7 +1336,6 @@ impl RowWriter<'_, '_> {
 
         match block {
             Block::ToolCall {
-                call_id,
                 tool,
                 action,
                 command,
@@ -1273,7 +1354,7 @@ impl RowWriter<'_, '_> {
                 *run_by_script,
             ),
             Block::ToolResult {
-                call_id: Some(call_id),
+                call_id: Some(_),
                 outcome,
                 reported_duration_ms,
                 ..
@@ -1297,7 +1378,7 @@ impl RowWriter<'_, '_> {
         &self,
         block_pk: i64,
         session_pk: i64,
-        call_id: &Option<String>,
+        call_id: Option<&str>,
         tool: &Option<String>,
         action: ToolAction,
         command: &Option<String>,

@@ -485,3 +485,177 @@ fn drive_and_takeout_copy_give_one_session() {
     }
     assert!(shown.windows(2).all(|pair| pair[0] == pair[1]));
 }
+
+/// The ai-studio sessions with their messages (ID and text) and events
+/// (kind and the inputs that read them), and the tool calls with whether
+/// each found its result.
+fn ai_studio_rows(w: &ClaudeHome) -> serde_json::Value {
+    let pool = w.reads();
+    let reader = pool.reader().unwrap();
+    let rows = |sql: &str| serde_json::Value::Array(reader.query(sql, &[]).unwrap());
+    json!({
+        "sessions": rows("SELECT id FROM session WHERE origin='ai-studio' ORDER BY id"),
+        "messages": rows(
+            "SELECT s.id AS session, m.id AS message,
+                    (SELECT COUNT(*) FROM message_source v WHERE v.message_pk=m.pk) AS readings
+             FROM message m JOIN session s ON s.pk=m.session_pk ORDER BY s.id, m.id"
+        ),
+        "events": rows(
+            "SELECT s.id AS session, e.kind, e.id,
+                    (SELECT COUNT(*) FROM event_source x WHERE x.event_pk=e.pk) AS readings
+             FROM event e JOIN session s ON s.pk=e.session_pk ORDER BY s.id, e.kind, e.id"
+        ),
+        "calls": rows(
+            "SELECT s.id AS session, c.call_id, c.result_block_pk IS NOT NULL AS answered
+             FROM tool_call c JOIN session s ON s.pk=c.session_pk ORDER BY s.id, c.call_id"
+        ),
+    })
+}
+
+#[test]
+fn a_copy_whose_alias_a_second_prompt_records_is_its_own_session_in_any_order() {
+    // A prompt copied in AI Studio: two Drive prompts with the same first
+    // chunk record the same content name, which then names neither.
+    let bytes = serde_json::to_vec(&json!({
+        "chunkedPrompt":{"chunks":[
+            {"role":"user","text":"About lakes","createTime":"2026-03-02T10:00:00Z"},
+            {"role":"model","text":"Lakes hold still water.","finishReason":"STOP"}
+        ]},
+        "runSettings":{"model":"models/gemini-example"}
+    }))
+    .unwrap();
+    let mut states = Vec::new();
+    // Each arrival: the first Drive prompt, the second, or the Takeout copy;
+    // two names in one step arrive in one pass.
+    for order in [
+        vec![vec!["a"], vec!["copy"], vec!["b"]],
+        vec![vec!["copy"], vec!["a"], vec!["b"]],
+        vec![vec!["a"], vec!["b"], vec!["copy"]],
+        vec![vec!["copy"], vec!["a", "b"]],
+    ] {
+        let w = ClaudeHome::new();
+        let spool = w.config(8).spool_dir("ai-studio");
+        fs::create_dir_all(&spool).unwrap();
+        let takeout = w.dir.path().join("Takeout");
+        let copy = takeout.join("Drive/Google AI Studio/Lakes");
+        fs::create_dir_all(copy.parent().unwrap()).unwrap();
+        fs::write(&copy, &bytes).unwrap();
+        let (mut e, lock) = engine(&w, 8);
+        for arrival in &order {
+            if arrival == &["copy"] {
+                let report = e.import(std::slice::from_ref(&takeout)).unwrap();
+                assert!(report.refused.is_empty(), "{report:?}");
+                assert!(report.pass.errors.is_empty(), "{report:?}");
+                continue;
+            }
+            for name in arrival {
+                fs::write(spool.join(format!("drive-{name}.json")), &bytes).unwrap();
+            }
+            let pass = e.run_pass().unwrap();
+            assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+        }
+        drop(e);
+        drop(lock);
+        for rebuild in [false, true] {
+            if rebuild {
+                polylogue_testkit::delete_index(&w.root);
+                let (mut e, lock) = engine(&w, 8);
+                let pass = e.run_pass().unwrap();
+                assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+                drop(e);
+                drop(lock);
+            }
+            let rows = ai_studio_rows(&w);
+            assert_eq!(
+                rows["sessions"].as_array().unwrap().len(),
+                3,
+                "{order:?}, rebuild {rebuild}: {rows}"
+            );
+            states.push((format!("{order:?}, rebuild {rebuild}"), rows));
+        }
+    }
+    let (first, expected) = &states[0];
+    let copy_session = expected["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"].as_str().unwrap().contains("content-"))
+        .expect("the copy keeps its own session")
+        .clone();
+    assert_eq!(
+        expected["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["kind"] == "run_settings" && e["session"] == copy_session["id"])
+            .count(),
+        1,
+        "{expected}"
+    );
+    for (state, rows) in &states {
+        assert_eq!(rows, expected, "{state} differs from {first}");
+    }
+}
+
+#[test]
+fn a_copy_s_tool_calls_take_their_ids_in_the_drive_session() {
+    let chunks = vec![
+        json!({"role":"user","text":"Count to one","createTime":"2026-03-03T10:00:00Z"}),
+        json!({"role":"model","text":"Counting.","finishReason":"STOP"}),
+    ];
+    let prompt = |chunks: &[serde_json::Value]| {
+        serde_json::to_vec(&json!({
+            "chunkedPrompt":{"chunks":chunks},
+            "runSettings":{"model":"models/gemini-example"}
+        }))
+        .unwrap()
+    };
+    // The copy was taken after a later turn the collector never saw: a
+    // code run named by its chunk, answered in the same chunk.
+    let mut later = chunks.clone();
+    later.push(json!({"id":"run","role":"model",
+        "executableCode":{"language":"PYTHON","code":"print(1)"},
+        "codeExecutionResult":{"outcome":"OUTCOME_OK","output":"1"}}));
+    for drive_first in [true, false] {
+        let w = ClaudeHome::new();
+        let spool = w.config(8).spool_dir("ai-studio");
+        fs::create_dir_all(&spool).unwrap();
+        let takeout = w.dir.path().join("Takeout");
+        let copy = takeout.join("Drive/Google AI Studio/Count");
+        fs::create_dir_all(copy.parent().unwrap()).unwrap();
+        fs::write(&copy, prompt(&later)).unwrap();
+        let (mut e, lock) = engine(&w, 8);
+        let drive = |e: &mut Engine| {
+            fs::write(spool.join("drive-id.json"), prompt(&chunks)).unwrap();
+            let pass = e.run_pass().unwrap();
+            assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+        };
+        if drive_first {
+            drive(&mut e);
+        }
+        let report = e.import(std::slice::from_ref(&takeout)).unwrap();
+        assert!(report.pass.errors.is_empty(), "{report:?}");
+        if !drive_first {
+            drive(&mut e);
+        }
+        drop(e);
+        drop(lock);
+        for rebuild in [false, true] {
+            if rebuild {
+                polylogue_testkit::delete_index(&w.root);
+                let (mut e, lock) = engine(&w, 8);
+                let pass = e.run_pass().unwrap();
+                assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+                drop(e);
+                drop(lock);
+            }
+            // The call is named after the message it is in, as the message
+            // is in the Drive session (`<length>:<session>#id:<length>:<id>`).
+            assert_eq!(
+                ai_studio_rows(&w)["calls"],
+                json!([{"session":"ai-studio:drive-id","call_id":"8:drive-id#id:3:run:code1","answered":1}]),
+                "drive first {drive_first}, rebuild {rebuild}"
+            );
+        }
+    }
+}
