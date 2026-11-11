@@ -86,14 +86,10 @@ pub(crate) fn start_with_workers(text: &str, workers: usize) -> TestDaemon {
     )
 }
 
-/// Starts over a home where `seed` has also written sources holding
-/// `messages` more messages, so the daemon's first pass reads them all as
-/// one first build, as it reads an existing home.
-pub(crate) fn start_with_sources(text: &str, seed: &dyn Fn(&Path), messages: u64) -> TestDaemon {
-    start_with_sources_and_workers(text, seed, messages, 2)
-}
-
-/// [`start_with_sources`] with `workers` loop and request workers.
+/// Starts with `workers` loop and request workers over a home where `seed`
+/// has also written sources holding `messages` more messages, so the
+/// daemon's first pass reads them all as one first build, as it reads an
+/// existing home.
 pub(crate) fn start_with_sources_and_workers(
     text: &str,
     seed: &dyn Fn(&Path),
