@@ -71,6 +71,45 @@ impl Engine {
             return Ok(report);
         }
         for path in paths {
+            if options.format.as_deref() == Some(predecessor::ARCHIVE) {
+                let archive = self.archive.clone();
+                let mut ids = Vec::new();
+                let mut package = ImportPackage {
+                    path: path.clone(),
+                    ..Default::default()
+                };
+                let found = legacy::visit(path, &archive, |member| {
+                    if member.origin.is_some() {
+                        ids.push(member.bytes.hash().to_string());
+                    }
+                    let errors_before = report.pass.errors.len();
+                    self.import_members(path, vec![member], options, &mut report)
+                        .map_err(std::io::Error::other)?;
+                    if report.pass.errors.len() > errors_before {
+                        return Err(std::io::Error::other(
+                            report.pass.errors[errors_before..].join("; "),
+                        ));
+                    }
+                    let member_package = report.packages.pop().expect("imported member package");
+                    package.assets += member_package.assets;
+                    Ok(())
+                })?;
+                if !found {
+                    recognition::refuse(
+                        &mut report,
+                        path,
+                        "not the predecessor's archive: it needs source.db and blob/",
+                    );
+                } else {
+                    if !options.explain {
+                        let counts = self.reads.reader()?.import_counts(&ids)?;
+                        package.sessions = counts.sessions;
+                        package.documents = counts.documents;
+                    }
+                    report.packages.push(package);
+                }
+                continue;
+            }
             let members = match package::stage(path, &self.archive, options.format.as_deref()) {
                 Ok(members) => members,
                 Err(error) => {
@@ -78,135 +117,7 @@ impl Engine {
                     continue;
                 }
             };
-            let mut package = ImportPackage {
-                path: path.clone(),
-                ..Default::default()
-            };
-            let mut ids = Vec::new();
-            let mut authored_records = Vec::new();
-            let mut items = Vec::new();
-            let mut hashes = std::collections::BTreeMap::new();
-            let import_id = import_identity(
-                &self.config.machine,
-                path,
-                options.authorship.as_ref(),
-                members
-                    .iter()
-                    .map(|member| (member.path.as_path(), member.bytes.hash())),
-            );
-            for (index, member) in members.into_iter().enumerate() {
-                let Some(origin) = member.origin else {
-                    let reason = member
-                        .refusal
-                        .unwrap_or_else(|| "no declared structure matched".into());
-                    recognition::refuse(&mut report, &member.path, reason.clone());
-                    report.members.push(ImportClassification {
-                        path: member.path,
-                        origin: None,
-                        class: "refused".into(),
-                        reason: Some(reason),
-                    });
-                    continue;
-                };
-                report.members.push(ImportClassification {
-                    path: member.path.clone(),
-                    origin: Some(origin.name.into()),
-                    class: if origin.support == Support::Parsed {
-                        "parsed"
-                    } else {
-                        "asset"
-                    }
-                    .into(),
-                    reason: None,
-                });
-                if origin.support != Support::Parsed && !member.container {
-                    package.assets += 1;
-                }
-                if options.explain {
-                    continue;
-                }
-                let authored_bytes =
-                    (origin.name == "polylogue-bundle").then(|| member.bytes.clone());
-                let mut captured = Captured {
-                    prepared: member.bytes,
-                    member: None,
-                    container: None,
-                    #[cfg(test)]
-                    head: Vec::new(),
-                };
-                ids.push(captured.prepared.hash().to_string());
-                hashes.insert(index, captured.prepared.hash().to_string());
-                captured.member = Some(polylogue_store::ImportMember {
-                    version: 1,
-                    import_id: import_id.clone(),
-                    authorship: Some(options.authorship.clone().unwrap_or_else(|| {
-                        polylogue_model::authorship::Authorship {
-                            author: polylogue_model::Author::Script("polylogue-import".into()),
-                            via: polylogue_model::authorship::Channel::Import,
-                        }
-                    })),
-                    member: if member.parent.is_some() {
-                        member
-                            .path
-                            .to_string_lossy()
-                            .rsplit("!/")
-                            .next()
-                            .expect("member name")
-                            .to_owned()
-                    } else if member.path == *path {
-                        member
-                            .path
-                            .file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .into_owned()
-                    } else {
-                        member
-                            .path
-                            .strip_prefix(path)
-                            .unwrap_or(&member.path)
-                            .to_string_lossy()
-                            .into_owned()
-                    },
-                    format: None,
-                });
-                captured.container = member.parent.and_then(|(parent, member_index)| {
-                    hashes
-                        .get(&parent)
-                        .map(|input| polylogue_store::InContainer {
-                            input: input.clone(),
-                            member_index,
-                            kind: member
-                                .container_kind
-                                .clone()
-                                .unwrap_or_else(|| "container".into()),
-                            path_bytes: member.member_path_bytes.clone().unwrap_or_default(),
-                        })
-                });
-                if origin.name == "polylogue-bundle" {
-                    authored_records.push((
-                        member.path.clone(),
-                        captured.prepared.hash().to_string(),
-                        authored_bytes.expect("bundle reader"),
-                    ));
-                }
-                items.push((member.path, origin, None, captured));
-            }
-            if !options.explain {
-                let executed = self.store_import_group(items, &mut report)?;
-                for (at, id, bytes) in authored_records {
-                    if executed.contains(&id) {
-                        continue;
-                    }
-                    if self.reads.reader()?.input_progress(&id)?.is_some() {
-                        self.restore_bundle_authored(&at, &mut bytes.reader()?, &mut report)?;
-                    }
-                }
-                let counts = self.reads.reader()?.import_counts(&ids)?;
-                package.sessions = counts.sessions;
-                package.documents = counts.documents;
-            }
-            report.packages.push(package);
+            self.import_members(path, members, options, &mut report)?;
         }
         if options.explain {
             report.pass.seconds = started.elapsed().as_secs_f64();
@@ -219,6 +130,144 @@ impl Engine {
         report.pass.sessions_derived = self.derive()?;
         report.pass.seconds = started.elapsed().as_secs_f64();
         Ok(report)
+    }
+
+    fn import_members(
+        &mut self,
+        path: &Path,
+        members: Vec<package::Member>,
+        options: &ImportOptions,
+        report: &mut ImportReport,
+    ) -> Result<(), EngineError> {
+        let mut package = ImportPackage {
+            path: path.to_path_buf(),
+            ..Default::default()
+        };
+        let mut ids = Vec::new();
+        let mut authored_records = Vec::new();
+        let mut items = Vec::new();
+        let mut hashes = std::collections::BTreeMap::new();
+        let import_id = import_identity(
+            &self.config.machine,
+            path,
+            options.authorship.as_ref(),
+            members
+                .iter()
+                .map(|member| (member.path.as_path(), member.bytes.hash())),
+        );
+        for (index, member) in members.into_iter().enumerate() {
+            let Some(origin) = member.origin else {
+                let reason = member
+                    .refusal
+                    .unwrap_or_else(|| "no declared structure matched".into());
+                recognition::refuse(report, &member.path, reason.clone());
+                report.members.push(ImportClassification {
+                    path: member.path,
+                    origin: None,
+                    class: "refused".into(),
+                    reason: Some(reason),
+                });
+                continue;
+            };
+            report.members.push(ImportClassification {
+                path: member.path.clone(),
+                origin: Some(origin.name.into()),
+                class: if origin.support == Support::Parsed {
+                    "parsed"
+                } else {
+                    "asset"
+                }
+                .into(),
+                reason: None,
+            });
+            if origin.support != Support::Parsed && !member.container {
+                package.assets += 1;
+            }
+            if options.explain {
+                continue;
+            }
+            let authored_bytes = (origin.name == "polylogue-bundle").then(|| member.bytes.clone());
+            let mut captured = Captured {
+                prepared: member.bytes,
+                member: None,
+                container: None,
+                #[cfg(test)]
+                head: Vec::new(),
+            };
+            ids.push(captured.prepared.hash().to_string());
+            hashes.insert(index, captured.prepared.hash().to_string());
+            captured.member = Some(polylogue_store::ImportMember {
+                version: 1,
+                import_id: import_id.clone(),
+                authorship: Some(options.authorship.clone().unwrap_or_else(|| {
+                    polylogue_model::authorship::Authorship {
+                        author: polylogue_model::Author::Script("polylogue-import".into()),
+                        via: polylogue_model::authorship::Channel::Import,
+                    }
+                })),
+                member: if member.parent.is_some() {
+                    member
+                        .path
+                        .to_string_lossy()
+                        .rsplit("!/")
+                        .next()
+                        .expect("member name")
+                        .to_owned()
+                } else if member.path == *path {
+                    member
+                        .path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned()
+                } else {
+                    member
+                        .path
+                        .strip_prefix(path)
+                        .unwrap_or(&member.path)
+                        .to_string_lossy()
+                        .into_owned()
+                },
+                format: None,
+            });
+            captured.container = member.parent.and_then(|(parent, member_index)| {
+                hashes
+                    .get(&parent)
+                    .map(|input| polylogue_store::InContainer {
+                        input: input.clone(),
+                        member_index,
+                        kind: member
+                            .container_kind
+                            .clone()
+                            .unwrap_or_else(|| "container".into()),
+                        path_bytes: member.member_path_bytes.clone().unwrap_or_default(),
+                    })
+            });
+            if origin.name == "polylogue-bundle" {
+                authored_records.push((
+                    member.path.clone(),
+                    captured.prepared.hash().to_string(),
+                    authored_bytes.expect("bundle reader"),
+                ));
+            }
+            items.push((member.path, origin, None, captured));
+        }
+        if !options.explain {
+            let executed = self.store_import_group(items, report)?;
+            for (at, id, bytes) in authored_records {
+                if executed.contains(&id) {
+                    continue;
+                }
+                if self.reads.reader()?.input_progress(&id)?.is_some() {
+                    self.restore_bundle_authored(&at, &mut bytes.reader()?, report)?;
+                }
+            }
+            let counts = self.reads.reader()?.import_counts(&ids)?;
+            package.sessions = counts.sessions;
+            package.documents = counts.documents;
+        }
+        report.packages.push(package);
+        Ok(())
     }
 
     fn store_import_group(
