@@ -36,6 +36,7 @@ fn writer_never_decodes_staged_input() {
             seen_at_ms: 1,
             import: None,
             container: None,
+            database: None,
         }),
         continues: false,
         new_blob: Some(new_blob),

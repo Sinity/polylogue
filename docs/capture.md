@@ -118,6 +118,7 @@ Hooks are a capture channel: every event each harness emits is recorded whole. H
 - Captured: Codex `state`, `goals`, `memories`, `queue`; Hermes `state.db`, `verification_evidence.db` and each profile's `state.db`; Antigravity `conversations/*.db`, `conversation_summaries.db` and each `state.vscdb`; Grok `memory-v2/**/*.sqlite` and `worktrees.db`; `llm` `logs.db`.
 - Each row-dump header keeps the table's SQL and, from the same read transaction, its column names and order, declared types, nullability, primary-key order, hidden or generated columns and `WITHOUT ROWID`. The schema tools report this separately from the JSON types seen in rows, and leave SQL and default expressions out ([archive.md](archive.md#schema-tools)).
 - A table whose schema no parser knows keeps its raw rows readable and is reported as [format drift](archive.md#format-drift).
+- **A database read again only when it changed.** A read compares every row with the rows already captured and stores only those that changed. Each completed read, including one that found no changed row, records an observation with the database file's facts and its write-ahead log's (or that it had none); while the files keep those facts, the database is not read again, after a restart too. Another machine, another path or changed facts mean a full comparison.
 
 ## Import
 

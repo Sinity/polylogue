@@ -32,6 +32,16 @@ pub struct Observation {
     pub import: Option<ImportMember>,
     /// Exact membership in original container bytes, independent of imports.
     pub container: Option<InContainer>,
+    /// A tool database's write-ahead log as the read that made this
+    /// observation found it; `facts` are the database file's.
+    pub database: Option<DatabaseLog>,
+}
+
+/// A tool database's write-ahead log beside its file: its facts, or `None`
+/// when there was no log file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DatabaseLog {
+    pub wal: Option<FileFacts>,
 }
 
 /// Engine-authored membership of one import. It does not assert that

@@ -28,6 +28,7 @@ impl Test {
                 seen_at_ms: 1,
                 import: None,
                 container: None,
+                database: None,
             },
             dir,
             archive,
@@ -52,53 +53,59 @@ impl Test {
         let observation = &self.observation;
         let writer = &self.writer;
         let mut length = self.length;
-        let result = reader.capture(&self.db, archive, input, observation, |bytes| {
-            let first = length == 0;
-            let from = length;
-            length += bytes.len() as u64;
-            let mut parse = ParseStep::new(
-                polylogue_model::Output::default(),
-                polylogue_model::RecordCounts::default(),
-                from..length,
-                true,
-            );
-            parse.compare_records(&bytes)?;
-            let (new_blob, files) = if bytes.is_empty() {
-                (None, vec![])
-            } else {
-                let (blob, file) = archive.prepare_blob(&bytes)?;
-                (Some(blob), file.into_iter().collect())
-            };
-            let batch = Batch {
-                required_disposition: None,
-                input: input.clone(),
-                change: if first {
-                    Change::First
-                } else if new_blob.is_some() {
-                    Change::Appended {
-                        from: length - bytes.len() as u64,
-                    }
+        let result = reader.capture(
+            &self.db,
+            archive,
+            input,
+            observation,
+            |bytes, observation| {
+                let first = length == 0;
+                let from = length;
+                length += bytes.len() as u64;
+                let mut parse = ParseStep::new(
+                    polylogue_model::Output::default(),
+                    polylogue_model::RecordCounts::default(),
+                    from..length,
+                    true,
+                );
+                parse.compare_records(&bytes)?;
+                let (new_blob, files) = if bytes.is_empty() {
+                    (None, vec![])
                 } else {
-                    Change::Unchanged
-                },
-                observation: Some(observation.clone()),
-                continues: false,
-                new_blob,
-                blobs: vec![],
-                length,
-                parse: vec![parse],
-                acquisition: None,
-                basis: None,
-                release: Default::default(),
-            };
-            for done in writer.sender()?.store_group(
-                vec![PreparedBatch { batch, files }],
-                std::sync::Arc::clone(&blobs),
-            )? {
-                done?;
-            }
-            Ok(())
-        });
+                    let (blob, file) = archive.prepare_blob(&bytes)?;
+                    (Some(blob), file.into_iter().collect())
+                };
+                let batch = Batch {
+                    required_disposition: None,
+                    input: input.clone(),
+                    change: if first {
+                        Change::First
+                    } else if new_blob.is_some() {
+                        Change::Appended {
+                            from: length - bytes.len() as u64,
+                        }
+                    } else {
+                        Change::Unchanged
+                    },
+                    observation: Some(observation.clone()),
+                    continues: false,
+                    new_blob,
+                    blobs: vec![],
+                    length,
+                    parse: vec![parse],
+                    acquisition: None,
+                    basis: None,
+                    release: Default::default(),
+                };
+                for done in writer.sender()?.store_group(
+                    vec![PreparedBatch { batch, files }],
+                    std::sync::Arc::clone(&blobs),
+                )? {
+                    done?;
+                }
+                Ok(())
+            },
+        );
         self.length = length;
         result
     }
@@ -213,16 +220,48 @@ fn rows_shadowing_every_rowid_alias_keep_their_observed_positions() {
 }
 
 #[test]
-fn restart_compares_source_rows_without_reading_stored_history() {
+fn restart_after_change_reads_only_changed_rows() {
     let mut t = Test::new(
         "CREATE TABLE items(id INTEGER PRIMARY KEY AUTOINCREMENT,body TEXT); INSERT INTO items(body) VALUES(printf('%02000000d',1));",
     );
     t.capture(&mut DatabaseReader::default()).unwrap();
     let length = t.length;
     t.sql("INSERT INTO items(body) VALUES('new');");
+    // A changed database is compared row by row; only the new row is read
+    // into the archive.
     let done = t.capture(&mut DatabaseReader::default()).unwrap().unwrap();
     assert_eq!((done.rows, done.visited), (1, 2));
     assert!(t.length - length < 200);
+}
+
+#[test]
+fn restart_reads_no_unchanged_rows() {
+    let mut t = Test::new("CREATE TABLE items(id INTEGER PRIMARY KEY,body TEXT);");
+    // A tool keeps its database open in WAL mode, so its log holds the rows.
+    let tool = Connection::open(&t.db).unwrap();
+    tool.execute_batch(
+        "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; INSERT INTO items VALUES(1,'first');",
+    )
+    .unwrap();
+    t.capture(&mut DatabaseReader::default()).unwrap().unwrap();
+    // Restarted over the same database and log: nothing is read.
+    assert_eq!(t.capture(&mut DatabaseReader::default()).unwrap(), None);
+    // A write that leaves every row as it was still changes the log: the
+    // restarted read compares the rows, finds none changed, and records that
+    // it read the database as it now is.
+    tool.execute_batch("INSERT INTO items VALUES(9,'brief'); DELETE FROM items WHERE id=9;")
+        .unwrap();
+    let done = t.capture(&mut DatabaseReader::default()).unwrap().unwrap();
+    assert_eq!((done.rows, done.visited), (0, 1));
+    assert_eq!(t.capture(&mut DatabaseReader::default()).unwrap(), None);
+    // A new row only in the log is read after a restart.
+    tool.execute_batch("INSERT INTO items VALUES(2,'second');")
+        .unwrap();
+    let done = t.capture(&mut DatabaseReader::default()).unwrap().unwrap();
+    assert_eq!((done.rows, done.visited), (1, 2));
+    // Another machine's observation of the same path is not this machine's
+    // read.
+    t.observation.machine = "other-machine".into();
     let done = t.capture(&mut DatabaseReader::default()).unwrap().unwrap();
     assert_eq!((done.rows, done.visited), (0, 2));
 }
@@ -380,7 +419,7 @@ fn a_stopped_read_needs_no_archive_and_can_be_retried() {
         &Archive::at(&t.dir.path().join("absent")),
         &t.input,
         &t.observation,
-        |_| panic!("stopped read sent bytes"),
+        |_, _| panic!("stopped read sent bytes"),
     );
     assert!(matches!(result, Err(DatabaseError::Stopped)));
     stop.store(false, std::sync::atomic::Ordering::Relaxed);

@@ -93,8 +93,8 @@ pub use scope_index::{
     NearbySession, OpenBead, ScopeChanges, ScopeIndex, ScopeSession, ScopedLiveSession,
 };
 pub use writer::{
-    Batch, ImportMember, InContainer, InFlight, InputKey, Observation, ParseStep, WriteReport,
-    Writer, WriterSender,
+    Batch, DatabaseLog, ImportMember, InContainer, InFlight, InputKey, Observation, ParseStep,
+    WriteReport, Writer, WriterSender,
 };
 
 #[derive(Debug, thiserror::Error)]

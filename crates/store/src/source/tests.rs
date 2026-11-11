@@ -208,6 +208,7 @@ fn a_proven_shorter_prefix_has_a_receipt_without_replacing_native_progress() {
                         seen_at_ms: 10,
                         import: None,
                         container: None,
+                        database: None,
                     }),
                     continues: false,
                     new_blob: Some(blob),

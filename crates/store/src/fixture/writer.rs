@@ -369,6 +369,7 @@ pub fn step(
             seen_at_ms: 1,
             import: None,
             container: None,
+            database: None,
         }),
         continues: false,
         new_blob: None,

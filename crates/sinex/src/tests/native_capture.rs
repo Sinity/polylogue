@@ -577,6 +577,7 @@ fn acquired_file(
                     format: Some("claude-code".into()),
                 }),
                 container: None,
+                database: None,
             }),
             continues: false,
             new_blob: Some(polylogue_store::NewBlob::whole(hash, size)),

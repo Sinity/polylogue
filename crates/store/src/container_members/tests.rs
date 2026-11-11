@@ -33,6 +33,7 @@ fn stage(
             facts: None,
             seen_at_ms: 1,
             container: zip,
+            database: None,
             import: Some(ImportMember {
                 version: 1,
                 import_id: import_id.into(),

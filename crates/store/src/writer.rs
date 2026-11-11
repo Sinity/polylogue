@@ -60,7 +60,8 @@ use crate::encoding::pack_block;
 use crate::encoding::{PreparedDocument, PreparedMessage};
 use crate::encoding::{block_text, unpack_block};
 pub use batch::{
-    Batch, ImportMember, InContainer, InFlight, InputKey, Observation, ParseStep, WriteReport,
+    Batch, DatabaseLog, ImportMember, InContainer, InFlight, InputKey, Observation, ParseStep,
+    WriteReport,
 };
 use bytes::*;
 use rows::*;

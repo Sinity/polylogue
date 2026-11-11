@@ -25,6 +25,7 @@ fn segmented_asset_ranges_and_hashes_are_exact_and_old_selections_refuse_rewrite
         seen_at_ms: 1,
         import: None,
         container: None,
+        database: None,
     };
     let original = "prefix λ🙂 suffix".as_bytes();
     let split = 8; // Inside the UTF-8 sequence; this API delivers bytes.

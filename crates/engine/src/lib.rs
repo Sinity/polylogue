@@ -653,6 +653,7 @@ impl Engine {
             seen_at_ms: self.config.clock.now().as_millisecond(),
             import: None,
             container: None,
+            database: None,
         }
     }
 }
