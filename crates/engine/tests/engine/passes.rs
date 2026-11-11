@@ -231,6 +231,77 @@ fn large_files_go_in_chunks_and_a_record_longer_than_a_chunk_still_parses() {
     );
 }
 
+/// A session that grows across range boundaries, with the file ending inside
+/// a record that crosses one and the daemon restarted while it waits, stays
+/// one chain: every range is stored as an append to it, each record is
+/// parsed once, and nothing is left waiting once the record is complete.
+#[test]
+fn a_session_growing_across_range_boundaries_stays_one_chain() {
+    const CHUNK: u64 = 1 << 10;
+    let w = ClaudeHome::new();
+    let records: Vec<String> = (0..24)
+        .map(|n| {
+            let text = format!("turn {n} {}", "growing session text ".repeat(n % 5 + 4));
+            if n.is_multiple_of(2) {
+                user(&format!("u{n}"), "grows", &text)
+            } else {
+                assistant(&format!("a{n}"), "grows", &text)
+            }
+        })
+        .collect();
+    let whole: String = records.concat();
+    // Each step ends inside a record that crosses a range boundary.
+    let mut cuts: Vec<usize> = (1..4)
+        .map(|k| {
+            let boundary = k * 3 * CHUNK as usize;
+            let mut end = 0;
+            for record in &records {
+                end += record.len();
+                if end > boundary {
+                    break;
+                }
+            }
+            end - 7
+        })
+        .collect();
+    cuts.push(whole.len());
+    let mut written = 0;
+    for (step, cut) in cuts.iter().enumerate() {
+        w.append("grows.jsonl", &whole[written..*cut]);
+        written = *cut;
+        // A new engine at every step but the first: a restart while the
+        // last record waits.
+        let (mut e, _lock) = w.engine(CHUNK);
+        let pass = e.run_pass().unwrap();
+        assert!(pass.errors.is_empty(), "step {step}: {:?}", pass.errors);
+    }
+    let expected: Vec<String> = (0..24)
+        .map(|n| format!("turn {n} {}", "growing session text ".repeat(n % 5 + 4)))
+        .collect();
+    assert_eq!(w.texts("grows"), expected);
+    assert_eq!(
+        w.count("SELECT count(DISTINCT chain) AS n FROM a.revision"),
+        1
+    );
+    assert_eq!(
+        w.count("SELECT SUM(length) AS n FROM a.extent"),
+        whole.len() as i64
+    );
+    assert_eq!(
+        w.count("SELECT count(*) AS n FROM parse_state WHERE status <> 'done'"),
+        0
+    );
+    assert_eq!(
+        w.count("SELECT records AS n FROM parse_state"),
+        records.len() as i64
+    );
+    assert_eq!(
+        w.count("SELECT count(*) AS n FROM message_source"),
+        records.len() as i64,
+        "each record is read once"
+    );
+}
+
 #[test]
 fn a_vanished_file_is_observed_gone_and_its_messages_stay() {
     let w = ClaudeHome::new();
