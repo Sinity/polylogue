@@ -281,6 +281,7 @@ impl ReadLimit {
             }),
         )?;
         conn.busy_handler(Some(|attempt| {
+            crate::probe_tmp::log(&format!("busy_handler(attempt={attempt})"), Duration::ZERO);
             std::thread::sleep(Duration::from_millis(5));
             Self::current().map_or(attempt < 6000, |limit| limit.check().is_ok())
         }))?;

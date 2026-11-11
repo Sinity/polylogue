@@ -24,11 +24,16 @@ pub(super) fn record<T>(
     completed_at: impl FnOnce() -> Timestamp,
     execute: impl FnOnce() -> Result<Completed<T>, Failure>,
 ) -> Result<T, Failure> {
+    let probe = std::time::Instant::now();
     match parent {
         Some(parent) => writer.begin_query_run_with_parent(run.clone(), parent),
         None => writer.begin_query_run(run.clone()),
     }?;
+    polylogue_store::probe_tmp::log("run.begin", probe.elapsed());
+    let probe = std::time::Instant::now();
     let result = execute();
+    polylogue_store::probe_tmp::log("run.execute", probe.elapsed());
+    let probe = std::time::Instant::now();
     let outcome = QueryRunOutcome {
         run: run.id.clone(),
         binding_hash,
@@ -54,6 +59,7 @@ pub(super) fn record<T>(
             .recv()
             .map_err(|_| polylogue_store::StoreError::WriterGone)?
     });
+    polylogue_store::probe_tmp::log("run.finish_wait", probe.elapsed());
     match result {
         Ok(completed) => {
             committed?;

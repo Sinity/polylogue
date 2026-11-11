@@ -159,7 +159,10 @@ async fn drive(
             due = now.saturating_add(30_000);
             #[cfg(test)]
             super::observations::emit(d, super::observations::Phase::TickStarted { at: now });
-            match tick(d) {
+            let probe = polylogue_store::probe_tmp::span("signals.tick");
+            let ticked = tick(d);
+            drop(probe);
+            match ticked {
                 Ok(tick) => {
                     if let Some(next) = tick.next {
                         due = due.min(next);

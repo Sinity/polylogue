@@ -306,8 +306,13 @@ fn prepared<T>(
                 near: Some(near),
                 fields: &[],
             };
+            let probe = std::time::Instant::now();
             let compile = crate::daemon::query::options(reader, &ask, seed(&reading.target))?;
+            polylogue_store::probe_tmp::log("read.compile_options", probe.elapsed());
+            let probe = std::time::Instant::now();
             let selection = reader.prepare_selection(&reading.target, &compile)?;
+            polylogue_store::probe_tmp::log("read.prepare_selection", probe.elapsed());
+            let probe = std::time::Instant::now();
             let positions = reader.change_position()?;
             let caught_up = caught_up(reader)?;
             let snapshot = ReadSnapshot {
@@ -366,8 +371,12 @@ fn prepared<T>(
                 figures: Vec::new(),
                 zone: Some(operation.clock.day.zone_name().to_owned()),
             };
+            polylogue_store::probe_tmp::log("read.snapshot_header", probe.elapsed());
             polylogue_store::read::limit::ReadLimit::set_stage("read records");
-            run(&selection, snapshot, header, Some(near))
+            let probe = std::time::Instant::now();
+            let ran = run(&selection, snapshot, header, Some(near));
+            polylogue_store::probe_tmp::log("read.records", probe.elapsed());
+            ran
         },
     )
 }
@@ -646,13 +655,20 @@ fn record_run(
                 near: Some(near),
                 fields: &[],
             };
+            let probe = std::time::Instant::now();
             let compile = crate::daemon::query::options(reader, &ask, seed(&reading.target))?;
+            polylogue_store::probe_tmp::log("record.compile_options", probe.elapsed());
+            let probe = std::time::Instant::now();
             let target = reading
                 .target
                 .strip_prefix("root:")
                 .unwrap_or(&reading.target);
             let selection = reader.prepare_selection(target, &compile)?;
+            polylogue_store::probe_tmp::log("record.prepare_selection", probe.elapsed());
+            let probe = std::time::Instant::now();
             let object = selection.query_object()?;
+            polylogue_store::probe_tmp::log("record.query_object", probe.elapsed());
+            let probe = std::time::Instant::now();
             let query_options = polylogue_store::query::execute::options_snapshot(
                 &compile,
                 false,
@@ -702,6 +718,7 @@ fn record_run(
                 exact: false,
                 next: None,
             };
+            polylogue_store::probe_tmp::log("record.binding_run", probe.elapsed());
             writer
                 .record_after_answer(object, run, outcome)
                 .map_err(Failure::from)

@@ -49,6 +49,7 @@ impl Publisher {
                         completed.store(true, Ordering::Release);
                         return;
                     }
+                    let probe = polylogue_store::probe_tmp::span("completion.refresh");
                     let result = (|| {
                         let reader = daemon.reads.reader()?;
                         publisher.refresh(
@@ -57,6 +58,7 @@ impl Publisher {
                             &crate::runtime_dir::archive_key(&daemon.archive.root),
                         )
                     })();
+                    drop(probe);
                     match result {
                         Ok(()) => last_error = None,
                         Err(error) => {

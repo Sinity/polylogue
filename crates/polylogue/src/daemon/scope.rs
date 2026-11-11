@@ -118,10 +118,12 @@ impl ScopeWorker {
                         completed.store(true, Ordering::Release);
                         return;
                     }
+                    let probe = polylogue_store::probe_tmp::span("scope.refresh");
                     let result = daemon
                         .reads
                         .reader()
                         .and_then(|reader| daemon.scope.refresh(&reader));
+                    drop(probe);
                     if let Err(error) = result {
                         if stopped.load(Ordering::Acquire) {
                             completed.store(true, Ordering::Release);
