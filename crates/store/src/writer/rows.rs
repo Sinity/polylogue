@@ -345,6 +345,26 @@ fn apply_rows(
             tx.prepare_cached("UPDATE message_source SET message_pk=?2 WHERE message_pk=?1")?
                 .execute(params![source, target])?;
         }
+        for (source, target, id) in &choices.moved_events {
+            // The session's own reading of the event may come in a later
+            // step; the copy's readings make its row now.
+            if !tx
+                .prepare_cached("SELECT EXISTS(SELECT 1 FROM event WHERE pk=?1)")?
+                .query_row([target], |r| r.get::<_, bool>(0))?
+            {
+                tx.prepare_cached(
+                    "INSERT INTO event(pk,id,session_pk,seq,after_message_id,seq_from_message,after_message_pk,kind,at,input_pk,source_chain,source_start,source_end,fields,data)
+                     SELECT ?2,?3,session_pk,seq,after_message_id,seq_from_message,after_message_pk,kind,at,input_pk,source_chain,source_start,source_end,fields,data
+                     FROM event WHERE pk=?1",
+                )?
+                .execute(params![source, target, id])?;
+                if let Some(first) = first_build {
+                    first.add_event(id, *target);
+                }
+            }
+            tx.prepare_cached("UPDATE event_source SET event_pk=?2 WHERE event_pk=?1")?
+                .execute(params![source, target])?;
+        }
         for (message_pk, source_input, source_chain) in &choices.dropped_message_sources {
             tx.prepare_cached(
                 "DELETE FROM message_source WHERE message_pk=?1 AND input_pk=?2 AND chain=?3",

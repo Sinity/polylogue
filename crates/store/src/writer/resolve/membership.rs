@@ -68,6 +68,9 @@ pub(crate) struct Choices {
     /// A copy's message whose readings move to its message in the session:
     /// (copy message, message).
     pub moved_messages: Vec<(i64, i64)>,
+    /// A copy's event whose readings move to its event in the session:
+    /// (copy event, event, the event's ID).
+    pub moved_events: Vec<(i64, i64, String)>,
     pub event_values: Vec<PackedValue>,
     pub event_ids: Vec<String>,
     pub event_sources: Vec<(i64, EventChoice)>,
@@ -656,6 +659,35 @@ impl<'a> Projection<'a> {
                     choices.moved_messages.push((source, target));
                 }
             }
+            for (old, new) in &absorbed.events {
+                let source = self.keys.stored(&Key::new(Kind::Event, old.as_bytes()))?.pk;
+                let target = self.keys.stored(&Key::new(Kind::Event, new.as_bytes()))?.pk;
+                let moved = std::mem::take(self.events.members.entry(source).or_default());
+                self.events.touched.insert(source);
+                self.events.members.entry(target).or_default();
+                let mut packer = crate::encoding::RowPacker::new()?;
+                for mut member in moved {
+                    // Its stored fields are found under the event they were
+                    // read into, and restated in the session.
+                    let mut choice = member.event_source(self.index, source, self.values)?;
+                    let identities = &self.keys.identities;
+                    let fields: Event = crate::encoding::unpack_json(&choice.fields)?;
+                    if let Some(fields) = crate::session_alias::in_session(
+                        &fields,
+                        |session| identities.shown_session(session).to_owned(),
+                        |message| identities.shown_message(message).into_owned(),
+                    )? {
+                        choice.fields = packer.pack_json(&fields)?;
+                        choice.after = fields.after.as_ref().map(ToString::to_string);
+                    }
+                    if choice.session == Some(from) {
+                        choice.session = Some(to);
+                    }
+                    member.event = Some(choice);
+                    self.events.put(target, member);
+                }
+                choices.moved_events.push((source, target, new.clone()));
+            }
         }
         Ok(())
     }
@@ -1200,8 +1232,18 @@ impl<'a> Projection<'a> {
             .enumerate()
         {
             let imported = step.output.imported_events.get(&i);
-            let id = event_ids[i].clone();
+            let identities = &self.keys.identities;
+            let id = identities
+                .shown_event(event, &packed.1, &event_ids[i])?
+                .into_owned();
             let pk = self.keys.get(Kind::Event, id.as_bytes())?.pk;
+            // A copy's event is stated in the session it is a copy of.
+            let renamed = crate::session_alias::in_session(
+                event,
+                |session| identities.shown_session(session).to_owned(),
+                |message| identities.shown_message(message).into_owned(),
+            )?;
+            let event = renamed.as_ref().unwrap_or(event);
             let data: Json = crate::encoding::unpack_json(&packed.1)?;
             let value = self.resolver.value(self.index, Kind::EventValue, &data)?;
             let session = event
