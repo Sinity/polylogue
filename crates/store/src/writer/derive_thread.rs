@@ -117,6 +117,7 @@ impl Worker {
                     Waiting::Derive(reply) => {
                         let _ = reply.send(match &result {
                             Ok(n) => Ok(*n),
+                            Err(StoreError::WriterGone) => Err(StoreError::WriterGone),
                             Err(e) => Err(StoreError::Invalid(format!("derive: {e}"))),
                         });
                     }
@@ -151,7 +152,7 @@ impl Worker {
         let pass = crate::derive::Pass::builtin()?;
         let queue = &self.queue;
         let stopping = &self.stopping;
-        pass.run(
+        let result = pass.run(
             conn,
             &mut |write| {
                 #[cfg(any(test, feature = "fixture"))]
@@ -165,7 +166,17 @@ impl Worker {
                 wait.recv().map_err(|_| StoreError::WriterGone)?
             },
             &|| stopping.load(Ordering::Acquire),
-        )
+        );
+        match result {
+            Err(StoreError::Sqlite(error))
+                if stopping.load(Ordering::Acquire)
+                    && error.sqlite_error_code()
+                        == Some(rusqlite::ErrorCode::OperationInterrupted) =>
+            {
+                Err(StoreError::WriterGone)
+            }
+            result => result,
+        }
     }
 }
 

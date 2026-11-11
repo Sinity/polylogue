@@ -1091,7 +1091,10 @@ fn a_stop_reaches_the_derive_worker_before_writer_teardown() {
         barrier.wait().unwrap();
         stop.request();
         barrier.release();
-        assert!(deriving.join().unwrap().is_err());
+        assert!(matches!(
+            deriving.join().unwrap(),
+            Err(crate::StoreError::WriterGone)
+        ));
     });
     // The pass remains due instead of being reported fully derived. Its
     // already committed waves are valid and the next writer finishes it.

@@ -1612,7 +1612,7 @@ fn a_stop_during_deferred_indexes_keeps_committed_rows_for_restart() {
     }
     stop.request();
     crate::fault::release();
-    assert!(run.join().unwrap().is_ok());
+    assert!(matches!(run.join().unwrap(), Err(StoreError::WriterGone)));
     crate::fault::clear();
     let index = crate::archive::open_read(&w.archive.index_db()).unwrap();
     assert!(crate::schema::building(&index).unwrap());

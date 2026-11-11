@@ -1753,6 +1753,9 @@ impl Inner {
             .and_then(|prepared| prepared.ok_or(StoreError::WriterGone));
         match (prepared, waiting) {
             (Ok(()), waiting) => self.derive.request(waiting),
+            (Err(StoreError::WriterGone), derive_thread::Waiting::Derive(reply)) => {
+                let _ = reply.send(Err(StoreError::WriterGone));
+            }
             (Err(e), derive_thread::Waiting::Derive(reply)) => {
                 let _ = reply.send(Err(StoreError::Invalid(format!("derive: {e}"))));
             }

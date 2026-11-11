@@ -839,3 +839,11 @@ fn a_watched_input_no_parser_reads_is_refused_and_settles() {
     );
     assert_eq!(again.bytes_read, 0);
 }
+
+#[test]
+fn a_stopped_engine_reports_cancelled_derivation() {
+    let home = ClaudeHome::new();
+    let (engine, _lock) = crate::import::tests::engine(&home, 64 << 10);
+    engine.stop_request().request();
+    assert!(matches!(engine.derive(), Err(EngineError::Stopped)));
+}
