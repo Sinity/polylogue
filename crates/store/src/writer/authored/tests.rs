@@ -633,8 +633,9 @@ fn imported(archive: &Archive, bytes: &[u8]) -> crate::staging::PreparedBatch {
     crate::staging::PreparedBatch {
         batch: crate::Batch {
             required_disposition: None,
+            // An import is named by its complete bytes.
             input: InputKey {
-                id: "imported".into(),
+                id: new_blob.hash.to_string(),
                 format: "test-bytes".into(),
                 route: polylogue_model::Route::Export,
             },
@@ -651,7 +652,7 @@ fn imported(archive: &Archive, bytes: &[u8]) -> crate::staging::PreparedBatch {
                 database: None,
             }),
             continues: false,
-            new_blob: Some(new_blob),
+            new_blob: Some(new_blob.clone()),
             blobs: Vec::new(),
             length: bytes.len() as u64,
             parse: Vec::new(),
