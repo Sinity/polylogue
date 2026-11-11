@@ -6,7 +6,8 @@
 //! Search is a scan of every vector of one key held in memory ([`Loaded`]):
 //! a dot product against a unit query vector, the best chunk per text. The
 //! daemon keeps loaded vectors by model revision read from the same SQLite
-//! snapshot as their rows. [`writes`] is a coarse process-local invalidation
+//! snapshot as their rows, and brings them to a newer revision by reading
+//! only the rows stored since ([`Vectors::append`]). [`writes`] is a coarse process-local invalidation
 //! counter for query continuations, not the identity of a loaded snapshot.
 
 use crate::archive::{Archive, open_read, open_write};
@@ -381,24 +382,35 @@ impl Vectors {
     /// the size, and similarities within about 1% of the stored ones,
     /// which keeps their order for ranking.
     pub fn load(&self, key: &str) -> Result<Loaded> {
+        self.append(&Loaded::empty(key))
+    }
+
+    /// `base` with the vectors of its key stored since it was read. Stored
+    /// vectors are never changed or removed, so the rows after the last one
+    /// `base` holds are everything it lacks; `base`'s runs are shared, not
+    /// copied.
+    pub fn append(&self, base: &Loaded) -> Result<Loaded> {
         let _read = self.read_transaction()?;
+        let key = base.key.as_str();
         let mut loaded = Loaded {
             key: key.to_owned(),
             revision: self.revision(key)?,
-            dims: 0,
-            texts: HashMap::new(),
-            owner: Vec::new(),
-            scale: Vec::new(),
-            values: Vec::new(),
+            dims: base.dims,
+            through: base.through,
+            rows_read: 0,
+            runs: base.runs.clone(),
         };
-        let mut stmt = self
-            .conn
-            .prepare("SELECT text_hash, dims, vector FROM embedded WHERE model = ?1")?;
-        let mut rows = stmt.query([key])?;
+        let mut run = Run::default();
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT id, text_hash, dims, vector FROM embedded WHERE model = ?1 AND id > ?2 ORDER BY id",
+        )?;
+        let mut rows = stmt.query(params![key, base.through])?;
         while let Some(row) = rows.next()? {
-            let hash: Vec<u8> = row.get(0)?;
-            let dims = usize::try_from(row.get::<_, i64>(1)?).unwrap_or(0);
-            let bytes: Vec<u8> = row.get(2)?;
+            loaded.through = row.get(0)?;
+            loaded.rows_read += 1;
+            let hash: Vec<u8> = row.get(1)?;
+            let dims = usize::try_from(row.get::<_, i64>(2)?).unwrap_or(0);
+            let bytes: Vec<u8> = row.get(3)?;
             if loaded.dims == 0 {
                 loaded.dims = dims;
             }
@@ -409,8 +421,6 @@ impl Vectors {
                     loaded.dims * 4
                 )));
             }
-            let next = u32::try_from(loaded.texts.len()).unwrap_or(u32::MAX);
-            let text = *loaded.texts.entry(hash.into_boxed_slice()).or_insert(next);
             let floats: Vec<f32> = bytes
                 .as_chunks::<4>()
                 .0
@@ -419,15 +429,18 @@ impl Vectors {
                 .collect();
             let largest = floats.iter().fold(0f32, |m, x| m.max(x.abs()));
             let scale = if largest > 0.0 { largest / 127.0 } else { 1.0 };
-            loaded.owner.push(text);
-            loaded.scale.push(scale);
-            loaded.values.extend(
+            let text = run.text(hash.into_boxed_slice());
+            run.owner.push(text);
+            run.scale.push(scale);
+            run.values.extend(
                 floats
                     .iter()
                     .map(|x| (x / scale).round().clamp(-127.0, 127.0) as i8),
             );
         }
-        loaded.texts.shrink_to_fit();
+        if !run.owner.is_empty() {
+            loaded.push(run);
+        }
         Ok(loaded)
     }
 
@@ -516,29 +529,100 @@ fn now_ms() -> i64 {
         .map_or(0, |d| d.as_millis() as i64)
 }
 
-/// Every vector of one embedding key, in memory.
+/// Every vector of one embedding key, in memory, as runs in stored order.
+/// An append adds a run and merges it with the runs before it while they
+/// are no more than twice its size, so the set stays a few runs and each
+/// vector is copied a logarithmic number of times over the set's life.
+#[derive(Clone)]
 pub struct Loaded {
     pub key: String,
     /// Model revision in the embeddings snapshot that supplied these rows.
     pub revision: i64,
     pub dims: usize,
-    /// Text hash to text number.
+    /// The last stored row held.
+    through: i64,
+    /// Rows the load or extension that made this set read from the store.
+    pub rows_read: usize,
+    runs: Vec<Arc<Run>>,
+}
+
+/// Consecutive stored vectors with their texts.
+#[derive(Default)]
+struct Run {
+    /// Text hash to text number in this run, and back.
     texts: HashMap<Box<[u8]>, u32>,
+    hashes: Vec<Box<[u8]>>,
     /// Per vector: its text, and the factor its bytes are scaled by.
     owner: Vec<u32>,
     scale: Vec<f32>,
     values: Vec<i8>,
 }
 
+impl Run {
+    fn text(&mut self, hash: Box<[u8]>) -> u32 {
+        if let Some(text) = self.texts.get(&hash) {
+            return *text;
+        }
+        let next = u32::try_from(self.hashes.len()).unwrap_or(u32::MAX);
+        self.hashes.push(hash.clone());
+        self.texts.insert(hash, next);
+        next
+    }
+
+    /// `self` followed by `later`.
+    fn joined(&self, later: &Run) -> Run {
+        let mut out = Run {
+            texts: self.texts.clone(),
+            hashes: self.hashes.clone(),
+            owner: self.owner.clone(),
+            scale: self.scale.clone(),
+            values: self.values.clone(),
+        };
+        let renumbered: Vec<u32> = later
+            .hashes
+            .iter()
+            .map(|hash| out.text(hash.clone()))
+            .collect();
+        out.owner
+            .extend(later.owner.iter().map(|text| renumbered[*text as usize]));
+        out.scale.extend_from_slice(&later.scale);
+        out.values.extend_from_slice(&later.values);
+        out.texts.shrink_to_fit();
+        out
+    }
+}
+
 impl Loaded {
+    fn empty(key: &str) -> Self {
+        Self {
+            key: key.to_owned(),
+            revision: 0,
+            dims: 0,
+            through: 0,
+            rows_read: 0,
+            runs: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, run: Run) {
+        let mut run = Arc::new(run);
+        while let Some(last) = self.runs.last()
+            && last.owner.len() <= run.owner.len() * 2
+        {
+            let earlier = self.runs.pop().expect("a last run");
+            run = Arc::new(earlier.joined(&run));
+        }
+        self.runs.push(run);
+    }
+
     pub fn vectors(&self) -> usize {
-        self.owner.len()
+        self.runs.iter().map(|run| run.owner.len()).sum()
     }
 
     /// The similarity of every text to `query`, a unit vector of the same
     /// dimension: its best chunk's.
     pub fn similarity(self: &Arc<Self>, query: &[f32]) -> Result<Similarity> {
-        if query.len() != self.dims && !self.owner.is_empty() {
+        if query.len() != self.dims && self.vectors() > 0 {
             return Err(StoreError::Invalid(format!(
                 "the query vector has {} values; vectors under {} have {}",
                 query.len(),
@@ -546,23 +630,39 @@ impl Loaded {
                 self.dims
             )));
         }
-        let dims = self.dims.max(1);
+        let limit = crate::read::limit::ReadLimit::current();
+        let best = self
+            .runs
+            .iter()
+            .map(|run| run.best(self.dims.max(1), query, limit.as_ref()))
+            .collect::<Result<_>>()?;
+        Ok(Similarity {
+            loaded: Arc::clone(self),
+            best,
+        })
+    }
+}
+
+impl Run {
+    /// Each of this run's texts' best similarity to `query`.
+    fn best(
+        &self,
+        dims: usize,
+        query: &[f32],
+        limit: Option<&crate::read::limit::ReadLimit>,
+    ) -> Result<Vec<f32>> {
         let n = self.owner.len();
         let mut scores = vec![0f32; n];
         let workers = std::thread::available_parallelism()
             .map_or(1, |n| n.get())
             .min(8);
         let per = n.div_ceil(workers).max(1);
-        let limit = crate::read::limit::ReadLimit::current();
         std::thread::scope(|scope| {
             for (part, out) in scores.chunks_mut(per).enumerate() {
-                let limit = limit.clone();
                 let first = part * per;
                 scope.spawn(move || {
                     for (i, score) in out.iter_mut().enumerate() {
-                        if i % 256 == 0
-                            && limit.as_ref().is_some_and(|limit| limit.check().is_err())
-                        {
+                        if i % 256 == 0 && limit.is_some_and(|limit| limit.check().is_err()) {
                             break;
                         }
                         let v = first + i;
@@ -573,13 +673,13 @@ impl Loaded {
                 });
             }
         });
-        if let Some(limit) = &limit {
+        if let Some(limit) = limit {
             limit.check()?;
         }
-        let mut best = vec![f32::MIN; self.texts.len()];
+        let mut best = vec![f32::MIN; self.hashes.len()];
         for (v, score) in scores.into_iter().enumerate() {
             if v % 256 == 0
-                && let Some(limit) = &limit
+                && let Some(limit) = limit
             {
                 limit.check()?;
             }
@@ -588,10 +688,7 @@ impl Loaded {
                 best[text] = score;
             }
         }
-        Ok(Similarity {
-            loaded: Arc::clone(self),
-            best,
-        })
+        Ok(best)
     }
 }
 
@@ -599,7 +696,8 @@ impl Loaded {
 /// query runs (`pl_similarity`, [`Reader::with_similarity`]).
 pub struct Similarity {
     loaded: Arc<Loaded>,
-    best: Vec<f32>,
+    /// Per run, its texts' best similarity.
+    best: Vec<Vec<f32>>,
 }
 
 impl Similarity {
@@ -607,22 +705,19 @@ impl Similarity {
     /// vector could not be had keeps every row, unranked.
     pub fn unknown() -> Self {
         Self {
-            loaded: Arc::new(Loaded {
-                key: String::new(),
-                revision: 0,
-                dims: 0,
-                texts: HashMap::new(),
-                owner: Vec::new(),
-                scale: Vec::new(),
-                values: Vec::new(),
-            }),
+            loaded: Arc::new(Loaded::empty("")),
             best: Vec::new(),
         }
     }
 
+    /// The best similarity of a text's chunks, which may sit in several runs.
     pub fn of(&self, hash: &[u8]) -> Option<f32> {
-        let text = *self.loaded.texts.get(hash)?;
-        self.best.get(text as usize).copied()
+        self.loaded
+            .runs
+            .iter()
+            .zip(&self.best)
+            .filter_map(|(run, best)| best.get(*run.texts.get(hash)? as usize).copied())
+            .reduce(f32::max)
     }
 }
 
