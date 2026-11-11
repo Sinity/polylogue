@@ -14,6 +14,7 @@
 use crate::query::compile::ColKind;
 use crate::query::fields::{self, Aliases, Expr};
 use polylogue_model::SessionKind;
+pub use polylogue_query::defaults::DefaultId;
 pub use polylogue_query::units::Unit;
 
 pub struct UnitSpec {
@@ -44,8 +45,6 @@ pub struct UnitSpec {
     pub session_scope: Option<&'static str>,
     /// How words search this unit's rows.
     pub search: Search,
-    /// Filters every query of the unit applies.
-    pub defaults: &'static [Default],
     pub relations: &'static [Relation],
     /// The column tying a row to a parent row of another unit, for
     /// `exists` and attached rows: a block's or tool call's message. Rows
@@ -193,31 +192,6 @@ fn tool_call_hits(a: &Aliases, h: &Hits<'_>) -> Option<(String, String)> {
     ))
 }
 
-/// A default filter, dropped when a top-level condition names one of
-/// `unless`, or (with `unless_reference`) when the query names rows by
-/// reference.
-pub struct Default {
-    pub sql: Expr,
-    pub unless: &'static [&'static str],
-    pub unless_reference: bool,
-}
-
-impl Default {
-    /// What the default keeps out and what brings those rows back, for
-    /// `--why`.
-    pub fn describe(&self) -> String {
-        let mut back: Vec<String> = self.unless.iter().map(|f| format!("{f}:")).collect();
-        if self.unless_reference {
-            back.push("a reference".to_owned());
-        }
-        if back.is_empty() {
-            "default".to_owned()
-        } else {
-            format!("default (a top-level {} lifts it)", back.join(", "))
-        }
-    }
-}
-
 /// A `prefix.FIELD` path from one unit to another.
 pub struct Relation {
     pub prefix: &'static str,
@@ -289,14 +263,6 @@ fn display_title(a: &Aliases) -> String {
     crate::session_sql::display_title(&a.s)
 }
 
-const fn d(sql: Expr, unless: &'static [&'static str], unless_reference: bool) -> Default {
-    Default {
-        sql,
-        unless,
-        unless_reference,
-    }
-}
-
 const fn rel(prefix: &'static str, target: Unit, via: Via) -> Relation {
     Relation {
         prefix,
@@ -339,24 +305,6 @@ fn turns_from(a: &Aliases) -> String {
 fn main_sessions(a: &Aliases) -> String {
     format!("{}.kind = '{}'", a.s, SessionKind::Main.as_str())
 }
-
-/// Hidden sessions stay out.
-const SESSION_VISIBLE: &[Default] = &[d(Expr::Fn(not_hidden), &["hidden"], true)];
-
-/// Own, active-path messages, and the session defaults.
-const MESSAGE_DEFAULTS: &[Default] = &[
-    d(
-        Expr::Template("{m}.duplicate_of IS NULL"),
-        &["duplicate"],
-        true,
-    ),
-    d(
-        Expr::Template("COALESCE({m}.on_active_path, 1) = 1"),
-        &["active"],
-        true,
-    ),
-    d(Expr::Fn(not_hidden), &["hidden"], true),
-];
 
 /// Adjacent counted calls use the same complete session order as `seq`.
 pub fn adjacent_call(a: &Aliases, previous: bool) -> String {
@@ -423,15 +371,6 @@ static SESSIONS: UnitSpec = UnitSpec {
         words: true,
         rows: sessions_hits,
     },
-    defaults: &[
-        d(
-            Expr::Fn(main_sessions),
-            &["kind", "parent", "root", "depth", "connected", "link", "id"],
-            true,
-        ),
-        d(Expr::Template("{s}.stub = 0"), &["source"], false),
-        d(Expr::Fn(not_hidden), &["hidden", "id"], true),
-    ],
     relations: &[],
     parents: &[],
 };
@@ -459,7 +398,6 @@ static DOCUMENTS: UnitSpec = UnitSpec {
         words: true,
         rows: documents_hits,
     },
-    defaults: &[],
     relations: &[],
     parents: &[],
 };
@@ -487,7 +425,6 @@ static MESSAGES: UnitSpec = UnitSpec {
         words: true,
         rows: messages_hits,
     },
-    defaults: MESSAGE_DEFAULTS,
     relations: MESSAGE_RELATIONS,
     parents: &[],
 };
@@ -516,7 +453,6 @@ static BLOCKS: UnitSpec = UnitSpec {
         words: true,
         rows: blocks_hits,
     },
-    defaults: MESSAGE_DEFAULTS,
     relations: &[
         rel("session", Unit::Sessions, Via::Same),
         rel("message", Unit::Messages, Via::Same),
@@ -561,20 +497,6 @@ static TOOL_CALLS: UnitSpec = UnitSpec {
         words: false,
         rows: tool_call_hits,
     },
-    defaults: &[
-        d(
-            Expr::Template("{m}.duplicate_of IS NULL"),
-            &["duplicate"],
-            true,
-        ),
-        d(
-            Expr::Template("COALESCE({m}.on_active_path, 1) = 1"),
-            &["active"],
-            true,
-        ),
-        d(Expr::Fn(counts_as_action), &["action"], false),
-        d(Expr::Fn(not_hidden), &["hidden"], true),
-    ],
     relations: &[
         rel("session", Unit::Sessions, Via::Same),
         rel("message", Unit::Messages, Via::Same),
@@ -636,7 +558,6 @@ static FILES: UnitSpec = UnitSpec {
     session_pk: "{r}.session_pk",
     session_scope: None,
     search: Search::None,
-    defaults: SESSION_VISIBLE,
     relations: MESSAGE_RELATIONS,
     parents: &[],
 };
@@ -668,7 +589,6 @@ static EVENTS: UnitSpec = UnitSpec {
     session_pk: "{r}.session_pk",
     session_scope: None,
     search: Search::None,
-    defaults: SESSION_VISIBLE,
     relations: MESSAGE_RELATIONS,
     parents: &[],
 };
@@ -713,30 +633,6 @@ static ASSERTIONS: UnitSpec = UnitSpec {
          WHERE snt.record = {r}.id AND snt.role = 'about' AND ss.pk IN ({sessions}))",
     ),
     search: Search::Substring("{r}.value"),
-    defaults: &[
-        d(
-            Expr::Template("{r}.kind <> 'withdrawal'"),
-            &["kind", "note", "assertion"],
-            false,
-        ),
-        d(
-            Expr::Fn(current_assertion),
-            &[
-                "current",
-                "root",
-                "withdrawn",
-                "note",
-                "assertion",
-                "evidence_until",
-            ],
-            false,
-        ),
-        d(
-            Expr::Fn(not_withdrawn),
-            &["withdrawn", "note", "assertion", "evidence_until"],
-            false,
-        ),
-    ],
     relations: &[],
     parents: &[],
 };
@@ -763,7 +659,6 @@ static LINKS: UnitSpec = UnitSpec {
     session_pk: "{r}.session_pk",
     session_scope: Some("({r}.child_pk IN ({sessions}) OR {r}p.pk IN ({sessions}))"),
     search: Search::None,
-    defaults: &[],
     relations: &[
         rel("parent", Unit::Sessions, Via::Session("{r}p")),
         rel("child", Unit::Sessions, Via::Session("{r}c")),
@@ -802,7 +697,6 @@ static TURNS: UnitSpec = UnitSpec {
     session_pk: "{r}.session_pk",
     session_scope: None,
     search: Search::None,
-    defaults: SESSION_VISIBLE,
     relations: MESSAGE_RELATIONS,
     parents: &[],
 };
@@ -831,7 +725,6 @@ static DELIVERIES: UnitSpec = UnitSpec {
     session_pk: "{s}.pk",
     session_scope: None,
     search: Search::None,
-    defaults: &[d(Expr::Fn(maybe_session_visible), &[], false)],
     relations: &[
         rel("session", Unit::Sessions, Via::Same),
         rel("recipient", Unit::Sessions, Via::Same),
@@ -860,7 +753,6 @@ static LIVE_INTERVALS: UnitSpec = UnitSpec {
     session_pk: "{r}.session_pk",
     session_scope: None,
     search: Search::None,
-    defaults: SESSION_VISIBLE,
     relations: MESSAGE_RELATIONS,
     parents: &[],
 };
@@ -895,7 +787,6 @@ static PROCESSES: UnitSpec = UnitSpec {
     session_pk: "{r}.session_pk",
     session_scope: None,
     search: Search::None,
-    defaults: SESSION_VISIBLE,
     relations: MESSAGE_RELATIONS,
     parents: &[],
 };
@@ -928,7 +819,6 @@ static CHANGES: UnitSpec = UnitSpec {
     session_pk: "{r}.session_pk",
     session_scope: Some("({r}.kind = 'session' AND {r}.session_pk IN ({sessions}))"),
     search: Search::None,
-    defaults: &[],
     relations: &[],
     parents: &[],
 };
@@ -985,3 +875,19 @@ pub fn turns() -> String {
 
 #[cfg(test)]
 mod tests;
+
+/// The SQL of a default filter over a unit's aliases.
+pub fn default_sql(id: DefaultId, a: &Aliases) -> String {
+    match id {
+        DefaultId::MainSessions => main_sessions(a),
+        DefaultId::NotStub => a.expand("{s}.stub = 0"),
+        DefaultId::SessionsVisible | DefaultId::Visible => not_hidden(a),
+        DefaultId::NotDuplicate => a.expand("{m}.duplicate_of IS NULL"),
+        DefaultId::OnActivePath => a.expand("COALESCE({m}.on_active_path, 1) = 1"),
+        DefaultId::CountedCalls => counts_as_action(a),
+        DefaultId::NotWithdrawal => a.expand("{r}.kind <> 'withdrawal'"),
+        DefaultId::CurrentAssertion => current_assertion(a),
+        DefaultId::NotWithdrawn => not_withdrawn(a),
+        DefaultId::VisibleIfSession => maybe_session_visible(a),
+    }
+}

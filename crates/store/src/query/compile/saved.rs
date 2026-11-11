@@ -129,14 +129,6 @@ impl<'a> Compiler<'a> {
         })
     }
 
-    /// Whether a top-level AND names a saved relation. That relation is the
-    /// source and has bound the unit's defaults itself, so they are not bound
-    /// again around it.
-    pub(super) fn saved_source(top: &[Condition]) -> bool {
-        top.iter()
-            .any(|condition| matches!(condition.kind, ConditionKind::Saved { .. }))
-    }
-
     /// Records the revision a saved query's name resolved to.
     fn used(&mut self, name: &str, definition: &SavedQuery) {
         let used = Definition {
