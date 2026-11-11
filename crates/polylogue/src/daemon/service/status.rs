@@ -72,10 +72,8 @@ pub(super) fn answer(
             let super::ModeState::Blocked { path, error, .. } = &d.mode else {
                 return crate::protocol::read(value, &freshness);
             };
-            let mut missing: Vec<String> = freshness.notes()
-                .into_iter()
-                .map(str::to_owned)
-                .collect();
+            let mut missing: Vec<String> =
+                freshness.notes().into_iter().map(str::to_owned).collect();
             missing.push(format!("{}: {error}", path.display()));
             command_surface::Answer {
                 outcome: command_surface::Outcome::Degraded { value, missing },
