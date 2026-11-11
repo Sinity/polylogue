@@ -370,6 +370,9 @@ pub(crate) struct Compiler<'a> {
     /// Lowering the answer itself, whose own rows are read key first;
     /// otherwise the input of a stage or combination, read whole.
     answer: bool,
+    /// The last relation slot or step number given out, shared by every
+    /// compiler of one query, so no two slots or steps share a name.
+    slots: std::rc::Rc<std::cell::Cell<usize>>,
 }
 
 /// A fused ranking: the join that brings it to the rows, and the rank
@@ -415,7 +418,30 @@ impl<'a> Compiler<'a> {
             measuring: false,
             session_window: (None, None),
             answer: false,
+            slots: Default::default(),
         }
+    }
+
+    /// A compiler for a query inside this one, naming its slots and steps
+    /// apart from this one's.
+    fn nested<'b>(&self, text: &'b str) -> Compiler<'b>
+    where
+        'a: 'b,
+    {
+        let mut nested = Compiler::new(text, self.opts);
+        nested.catalog = self.catalog.clone();
+        nested.slots = self.slots.clone();
+        nested
+    }
+
+    /// A fresh relation column name.
+    fn slot(&self) -> String {
+        format!("_rel_value{}", self.next_number())
+    }
+
+    fn next_number(&self) -> usize {
+        self.slots.set(self.slots.get() + 1);
+        self.slots.get()
     }
 
     fn bind(&mut self, p: Param) -> String {
@@ -443,7 +469,8 @@ impl<'a> Compiler<'a> {
     /// The stages of `q` over stored rows, its source ignored.
     fn program_over(mut self, q: &Query, mut program: Program) -> Result<Program, QueryError> {
         self.params = std::mem::take(&mut program.params);
-        self.finish_relations(q, 0, relations::Relation::new(program), None)
+        let stages = polylogue_query::stages::stages(&q.transforms, 0)?;
+        self.finish_relations(q, &stages, relations::Relation::new(program), None)
     }
 }
 

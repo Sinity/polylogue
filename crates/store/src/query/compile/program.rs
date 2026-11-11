@@ -85,12 +85,6 @@ impl<'a> Compiler<'a> {
         let mut matched = preset;
         let mut measure: Option<Measure> = None;
         for stage in stages {
-            if measure.is_some() {
-                return Err(QueryError::Invalid {
-                    message: "`| measure WHAT` is the last stage".into(),
-                    position: stage.span.start,
-                });
-            }
             match &stage.kind {
                 TransformKind::Scope {
                     unit,
@@ -152,7 +146,7 @@ impl<'a> Compiler<'a> {
                     if rest.iter().any(|argument| !matches!(argument, ExtensionArgument::Optional(values) if values.is_empty())) {
                         return Err(not_built("measure by"));
                     }
-                    if scope.unit != Unit::Sessions || measure.is_some() {
+                    if scope.unit != Unit::Sessions {
                         return Err(QueryError::Invalid {
                             message: "`| measure WHAT` follows a session query and ends it".into(),
                             position: stage.span.start,

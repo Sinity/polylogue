@@ -1,5 +1,6 @@
 //! Relational stage boundaries. Logical output names are independent of SQL slots.
 use super::*;
+use polylogue_query::stages::{Stage, StageKind};
 
 mod order;
 
@@ -15,8 +16,8 @@ pub(super) struct Relation {
     pub program: Program,
     pub sources: Vec<NativeSource>,
     pub open_fields: bool,
-    next_slot: usize,
-    group: Option<GroupInput>,
+    /// The step holding the rows, once a stage has read them.
+    step: Option<String>,
     patterns: Vec<Condition>,
 }
 
@@ -27,7 +28,6 @@ struct ConditionScope<'a> {
 
 impl Relation {
     pub fn new(program: Program) -> Self {
-        // A relation over the rows rewrites their statement and pages it whole.
         let sources = program.native_sources.clone().unwrap_or_else(|| {
             if matches!(program.row_basis, RowBasis::Native { .. }) {
                 vec![NativeSource {
@@ -40,34 +40,13 @@ impl Relation {
             }
         });
         let open_fields = !sources.is_empty();
-        let next_slot = program
-            .rows()
-            .split("_rel_value")
-            .skip(1)
-            .filter_map(|part| {
-                let digits = part
-                    .chars()
-                    .take_while(char::is_ascii_digit)
-                    .collect::<String>();
-                digits.parse::<usize>().ok()
-            })
-            .max()
-            .unwrap_or(0);
         Self {
             program,
             sources,
             open_fields,
-            next_slot,
-            group: None,
+            step: None,
             patterns: vec![],
         }
-    }
-    pub fn reserve(&mut self, other: &Relation) {
-        self.next_slot = self.next_slot.max(other.next_slot);
-    }
-    pub fn slot(&mut self) -> String {
-        self.next_slot += 1;
-        format!("_rel_value{}", self.next_slot)
     }
     pub fn field(
         &self,
@@ -200,11 +179,9 @@ impl RelationOutput {
     }
 }
 
-#[derive(Clone)]
-struct GroupInput {
-    input: Box<Relation>,
-    keys: Vec<(Column, String, String)>,
-}
+/// A group key: its column, its slot and its expression over the rows
+/// entering the grouping.
+type GroupKey = (Column, String, String);
 
 pub(super) fn as_of_unavailable() -> QueryError {
     QueryError::Unavailable {
@@ -231,26 +208,32 @@ impl<'a> Compiler<'a> {
             } if contains_order(c) => Some(c),
             _ => None,
         };
-        let mut compiler = Compiler::new(self.text, self.opts);
+        let mut compiler = self.nested(self.text);
         compiler.saved_stack = self.saved_stack.clone();
         compiler.query_scope = self.query_scope.clone();
         compiler.typing = self.typing.clone();
         compiler.source_near_allowed = self.source_near_allowed;
-        compiler.catalog = self.catalog.clone();
         // The stages read the selection's rows whole.
         self.answer = false;
-        let stages = &query.transforms[selection.stages_from.min(first)..first];
-        let mut program = self.native_program_with(&selection, stages, preset)?;
+        let native = &query.transforms[selection.stages_from.min(first)..first];
+        let mut program = self.native_program_with(&selection, native, preset)?;
         compiler.params = std::mem::take(&mut program.params);
         compiler.near = program.near.clone();
         let relation = Relation::new(program);
-        compiler.finish_relations(query, first, relation, source_order)
+        let after = selection
+            .stages
+            .iter()
+            .position(|stage| stage.transforms.start >= first)
+            .unwrap_or(selection.stages.len());
+        compiler.finish_relations(query, &selection.stages[after..], relation, source_order)
     }
 
+    /// Lowers `stages` over `relation`, each to one step reading the step
+    /// before it by name.
     pub(super) fn finish_relations(
         mut self,
         query: &Query,
-        first: usize,
+        stages: &[Stage],
         mut relation: Relation,
         source_order: Option<&Condition>,
     ) -> Result<Program, QueryError> {
@@ -272,47 +255,58 @@ impl<'a> Compiler<'a> {
                     .field("condition"),
             )?;
         }
-        let mut index = first;
-        while let Some(stage) = query.transforms.get(index) {
-            if relation.program.measure.is_some() {
-                return Err(QueryError::Invalid {
-                    message: "`| measure WHAT` is the last stage".into(),
-                    position: stage.span.start,
-                });
-            }
-            if matches!(
-                stage.kind,
-                TransformKind::Combine {
-                    how: Combination::Union | Combination::Fuse,
-                    ..
-                }
-            ) {
-                let mut pending = combine::PendingFusion::default();
-                while let Some(Transform {
-                    kind:
-                        TransformKind::Combine {
-                            how: Combination::Union | Combination::Fuse,
-                            query: other,
-                        },
-                    span,
-                }) = query.transforms.get(index)
-                {
-                    let operand = self.combined_rows(other, relation.program.unit, span.start)?;
-                    relation.reserve(&Relation::new(operand.clone()));
-                    match &query.transforms[index].kind {
-                        TransformKind::Combine {
-                            how: Combination::Union,
-                            ..
-                        } => pending.unions.push(operand),
-                        _ => pending.fuses.push(operand),
+        for stage in stages {
+            let transforms = &query.transforms[stage.transforms.clone()];
+            match (stage.kind, transforms) {
+                (StageKind::Fusion, _) => {
+                    let mut pending = combine::PendingFusion::default();
+                    for transform in transforms {
+                        let TransformKind::Combine { how, query: other } = &transform.kind else {
+                            unreachable!("a fusion holds unions and fuses");
+                        };
+                        let operand =
+                            self.combined_rows(other, relation.program.unit, transform.span.start)?;
+                        match how {
+                            Combination::Union => pending.unions.push(operand),
+                            _ => pending.fuses.push(operand),
+                        }
                     }
-                    index += 1;
+                    self.fuse_pending(pending, &mut relation)?;
                 }
-                self.fuse_pending(pending, &mut relation)?;
-            } else {
-                self.relation_stage(&mut relation, stage, query, index)?;
-                index += 1;
+                (StageKind::PerGroup, [group, then]) => {
+                    let TransformKind::Group { keys } = &group.kind else {
+                        unreachable!("a per-group stage starts with its grouping");
+                    };
+                    match &then.kind {
+                        TransformKind::First { count } => self.relation_group_first(
+                            &mut relation,
+                            keys,
+                            *count,
+                            group.span.start,
+                        )?,
+                        TransformKind::Aggregate { aggregates } => self.relation_aggregate(
+                            &mut relation,
+                            Some(keys),
+                            aggregates,
+                            then.span.start,
+                        )?,
+                        _ => unreachable!("a per-group stage ends with first or agg"),
+                    }
+                    relation.program.derived_mut().count = None;
+                    relation.program.derived_mut().members = None;
+                }
+                (_, [transform]) => {
+                    self.relation_stage(&mut relation, transform, query, stage.transforms.start)?
+                }
+                _ => unreachable!("a stage of one transform"),
             }
+        }
+        if let Some(step) = &relation.step {
+            let rows = match relation.program.order.as_slice() {
+                [] => format!("SELECT * FROM {step}"),
+                order => format!("SELECT * FROM {step} ORDER BY {}", order_by(order)),
+            };
+            relation.program.derived_mut().rows = rows;
         }
         if !self.ctes.is_empty() {
             let prefix = format!("WITH RECURSIVE {}", self.ctes.join(", "));
@@ -358,12 +352,35 @@ impl<'a> Compiler<'a> {
         Ok(relation.program)
     }
 
+    /// The step holding `relation`'s rows, naming its statement as one
+    /// when no stage has read it yet.
+    pub(super) fn input(&mut self, relation: &mut Relation) -> String {
+        if let Some(step) = &relation.step {
+            return step.clone();
+        }
+        let rows = relation.program.rows().to_owned();
+        self.set_rows(relation, rows)
+    }
+
+    /// `relation`'s rows become `sql`, a statement over earlier steps,
+    /// named as the next step; returns its name. A step is inlined where
+    /// it is read, as the subquery it replaces would be.
+    pub(super) fn set_rows(&mut self, relation: &mut Relation, sql: String) -> String {
+        let step = format!("_step{}", self.next_number());
+        self.ctes
+            .push(format!("{step} AS NOT MATERIALIZED ({sql})"));
+        relation.program.derived_mut().rows = format!("SELECT * FROM {step}");
+        relation.step = Some(step.clone());
+        step
+    }
+
     fn relation_filter(&mut self, relation: &mut Relation, predicate: &str) {
-        relation.program.derived_mut().rows = format!(
-            "SELECT * FROM ({}) r WHERE ({predicate}) ORDER BY {}",
-            relation.program.rows(),
+        let input = self.input(relation);
+        let sql = format!(
+            "SELECT * FROM {input} r WHERE ({predicate}) ORDER BY {}",
             relation_order(&relation.program.order)
         );
+        self.set_rows(relation, sql);
         relation.program.derived_mut().count = None;
         relation.program.derived_mut().members = None;
     }
@@ -379,6 +396,7 @@ impl<'a> Compiler<'a> {
         match &stage.kind {
             TransformKind::AsOf { .. } => return Err(as_of_unavailable()),
             TransformKind::Fields { columns } => {
+                let input = self.input(relation);
                 let mut select = relation.private_columns();
                 let mut output = vec![];
                 let mut slots = std::collections::BTreeMap::new();
@@ -388,7 +406,7 @@ impl<'a> Compiler<'a> {
                         at,
                         &mut |compiler, name, at| relation.field(compiler, name, at),
                     )?;
-                    let slot = relation.slot();
+                    let slot = self.slot();
                     select.push(format!(
                         "{} AS {}",
                         Self::display_value(&sql, kind),
@@ -401,12 +419,12 @@ impl<'a> Compiler<'a> {
                     });
                     slots.insert(column.column(), slot);
                 }
-                relation.program.derived_mut().rows = format!(
-                    "SELECT {} FROM ({}) r ORDER BY {}",
+                let sql = format!(
+                    "SELECT {} FROM {input} r ORDER BY {}",
                     select.join(", "),
-                    relation.program.rows(),
                     relation_order(&relation.program.order)
                 );
+                self.set_rows(relation, sql);
                 relation.program.columns = output;
                 relation.program.column_slots = slots;
                 relation.program.time_text_columns.clear();
@@ -431,6 +449,7 @@ impl<'a> Compiler<'a> {
                 relation.patterns.extend(match_patterns(condition));
             }
             TransformKind::Sort { keys } => {
+                let input = self.input(relation);
                 let mut select = vec!["r.*".into()];
                 let mut order = vec![];
                 for key in keys {
@@ -456,8 +475,8 @@ impl<'a> Compiler<'a> {
                         })?
                     };
                     scalar(kind, &key.expression.column(), at)?;
-                    let null = relation.slot();
-                    let value = relation.slot();
+                    let null = self.slot();
+                    let value = self.slot();
                     select.push(format!("({sql}) IS NULL AS {}", column_sql(&null)));
                     select.push(format!("{sql} AS {}", column_sql(&value)));
                     order.push(OrderKey::ascending(&null));
@@ -468,30 +487,30 @@ impl<'a> Compiler<'a> {
                 }
                 // An explicit sort is tied by semantic identity, never by an earlier time order.
                 order.extend(relation.identity_order());
-                relation.program.derived_mut().rows = format!(
-                    "SELECT {} FROM ({}) r ORDER BY {}",
+                let sql = format!(
+                    "SELECT {} FROM {input} r ORDER BY {}",
                     select.join(", "),
-                    relation.program.rows(),
                     relation_order(&order)
                 );
+                self.set_rows(relation, sql);
                 relation.program.order = order;
             }
-            TransformKind::First { count } if relation.group.is_some() => {
-                self.relation_first(relation, *count)?
-            }
             TransformKind::Limit { count } | TransformKind::First { count } => {
-                relation.select_window(&format!("LIMIT {}", (*count).min(i64::MAX as u64)));
+                self.relation_window(
+                    relation,
+                    &format!("LIMIT {}", (*count).min(i64::MAX as u64)),
+                );
             }
             TransformKind::Offset { count } => {
-                relation.select_window(&format!(
-                    "LIMIT -1 OFFSET {}",
-                    (*count).min(i64::MAX as u64)
-                ));
+                self.relation_window(
+                    relation,
+                    &format!("LIMIT -1 OFFSET {}", (*count).min(i64::MAX as u64)),
+                );
             }
             TransformKind::Distinct => self.relation_distinct(relation),
             TransformKind::Group { keys } => self.relation_group(relation, keys, at)?,
             TransformKind::Aggregate { aggregates } => {
-                self.relation_aggregate(relation, aggregates, at)?
+                self.relation_aggregate(relation, None, aggregates, at)?
             }
             TransformKind::Join { query, on } => {
                 let inner = Relation::new(self.other_query(query, relation.program.unit, at)?);
@@ -502,12 +521,6 @@ impl<'a> Compiler<'a> {
                 self.relation_scope(relation, unit, condition.as_ref(), at)?
             }
             _ => self.relation_native_stage(relation, stage, query)?,
-        }
-        if !matches!(
-            stage.kind,
-            TransformKind::Group { .. } | TransformKind::Aggregate { .. }
-        ) {
-            relation.group = None;
         }
         if !matches!(
             stage.kind,
@@ -746,27 +759,26 @@ impl<'a> Compiler<'a> {
     }
 }
 
-impl Relation {
+impl Compiler<'_> {
     /// Bound the selected keys before projecting rows. A LIMIT over answer
     /// expressions would decode every candidate body while finding a page.
-    fn select_window(&mut self, window: &str) {
-        if self.program.order.is_empty() {
-            self.program.derived_mut().rows =
-                format!("SELECT * FROM ({}) {window}", self.program.rows());
+    fn relation_window(&mut self, relation: &mut Relation, window: &str) {
+        let input = self.input(relation);
+        if relation.program.order.is_empty() {
+            self.set_rows(relation, format!("SELECT * FROM {input} {window}"));
             return;
         }
-        let identity = self.identity_order();
+        let identity = relation.identity_order();
         let mut keys = std::collections::BTreeSet::new();
         keys.extend(identity.iter().map(|key| key.column.clone()));
-        keys.extend(self.program.order.iter().map(|key| key.column.clone()));
-        let input = self.slot();
+        keys.extend(relation.program.order.iter().map(|key| key.column.clone()));
         let selected = format!(
             "SELECT {} FROM {input} r ORDER BY {} {window}",
             keys.iter()
                 .map(|key| column_sql(key))
                 .collect::<Vec<_>>()
                 .join(", "),
-            relation_order(&self.program.order)
+            relation_order(&relation.program.order)
         );
         let same = identity
             .iter()
@@ -776,7 +788,7 @@ impl Relation {
             })
             .collect::<Vec<_>>()
             .join(" AND ");
-        let mut columns = self
+        let mut columns = relation
             .private_columns()
             .into_iter()
             .map(|column| {
@@ -787,12 +799,13 @@ impl Relation {
             })
             .collect::<std::collections::BTreeSet<_>>();
         columns.extend(
-            self.program
+            relation
+                .program
                 .columns
                 .iter()
-                .map(|column| column_sql(self.program.column_slot(&column.name))),
+                .map(|column| column_sql(relation.program.column_slot(&column.name))),
         );
-        let order_columns = self
+        let order_columns = relation
             .program
             .order
             .iter()
@@ -810,10 +823,10 @@ impl Relation {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        self.program.derived_mut().rows = format!(
-            "WITH {input} AS NOT MATERIALIZED ({}) SELECT {projection} FROM ({selected}) selected JOIN {input} r ON {same} ORDER BY {}",
-            self.program.rows(),
-            self.program
+        let sql = format!(
+            "SELECT {projection} FROM ({selected}) selected JOIN {input} r ON {same} ORDER BY {}",
+            relation
+                .program
                 .order
                 .iter()
                 .map(|key| {
@@ -826,8 +839,11 @@ impl Relation {
                 .collect::<Vec<_>>()
                 .join(", ")
         );
+        self.set_rows(relation, sql);
     }
+}
 
+impl Relation {
     fn private_columns(&self) -> Vec<String> {
         let mut names = std::collections::BTreeSet::new();
         names.insert("_pk".to_owned());
@@ -878,36 +894,48 @@ fn relation_order(order: &[OrderKey]) -> String {
 }
 
 impl Compiler<'_> {
+    /// The keys of a grouping of `input`'s rows.
+    fn group_keys(
+        &mut self,
+        input: &Relation,
+        keys: &[query_language::ast::Column],
+        at: usize,
+    ) -> Result<Vec<GroupKey>, QueryError> {
+        keys.iter()
+            .map(|key| {
+                let (expression, kind) =
+                    self.sql_expression_with(&key.expression, at, &mut |compiler, name, at| {
+                        input.field(compiler, name, at)
+                    })?;
+                scalar(kind, &key.column(), at)?;
+                let column = Column {
+                    name: key.column(),
+                    kind,
+                    reference: input.reference(&key.expression),
+                };
+                Ok((column, self.slot(), Self::display_value(&expression, kind)))
+            })
+            .collect()
+    }
+
+    /// `| group by K`: one row per group with its count.
     fn relation_group(
         &mut self,
         relation: &mut Relation,
         keys: &[query_language::ast::Column],
         at: usize,
     ) -> Result<(), QueryError> {
-        let input = Box::new(relation.clone());
+        let input = self.input(relation);
+        let group_keys = self.group_keys(relation, keys, at)?;
         let mut columns = vec![];
         let mut select = vec![];
-        let mut group_keys = vec![];
         let mut slots = std::collections::BTreeMap::new();
-        for key in keys {
-            let (expression, kind) =
-                self.sql_expression_with(&key.expression, at, &mut |compiler, name, at| {
-                    input.field(compiler, name, at)
-                })?;
-            scalar(kind, &key.column(), at)?;
-            let expression = Self::display_value(&expression, kind);
-            let slot = relation.slot();
-            let column = Column {
-                name: key.column(),
-                kind,
-                reference: input.reference(&key.expression),
-            };
-            select.push(format!("{expression} AS {}", column_sql(&slot)));
+        for (column, slot, expression) in &group_keys {
+            select.push(format!("{expression} AS {}", column_sql(slot)));
             slots.insert(column.name.clone(), slot.clone());
             columns.push(column.clone());
-            group_keys.push((column, slot, expression));
         }
-        let count_slot = relation.slot();
+        let count_slot = self.slot();
         select.push(format!("count(*) AS {}", column_sql(&count_slot)));
         columns.push(Column {
             name: "count".into(),
@@ -930,12 +958,12 @@ impl Compiler<'_> {
             descending: true,
         }];
         order.extend(key_slots.iter().map(|slot| OrderKey::ascending(slot)));
-        relation.program.derived_mut().rows = format!(
-            "SELECT {} FROM ({}) r GROUP BY {expressions} ORDER BY {}",
+        let sql = format!(
+            "SELECT {} FROM {input} r GROUP BY {expressions} ORDER BY {}",
             select.join(", "),
-            relation.program.rows(),
             relation_order(&order)
         );
+        self.set_rows(relation, sql);
         relation.program.columns = columns;
         relation.program.column_slots = slots;
         relation.program.time_text_columns.clear();
@@ -946,23 +974,45 @@ impl Compiler<'_> {
         relation.program.ranked = false;
         relation.sources.clear();
         relation.open_fields = false;
-        relation.group = Some(GroupInput {
-            input,
-            keys: group_keys,
-        });
         Ok(())
     }
 
+    /// `| group by K | first N`: the first `count` rows of each group, in
+    /// the order the rows entered the grouping.
+    fn relation_group_first(
+        &mut self,
+        relation: &mut Relation,
+        keys: &[query_language::ast::Column],
+        count: u64,
+        at: usize,
+    ) -> Result<(), QueryError> {
+        let input = self.input(relation);
+        let partitions = self
+            .group_keys(relation, keys, at)?
+            .into_iter()
+            .map(|(_, _, expression)| expression)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let ordinal = self.slot();
+        let order = relation_order(&relation.program.order);
+        let sql = format!(
+            "SELECT * FROM (SELECT r.*, row_number() OVER (PARTITION BY {partitions} ORDER BY {order}) AS {ordinal} FROM {input} r) WHERE {ordinal} <= {count} ORDER BY {order}"
+        );
+        self.set_rows(relation, sql);
+        Ok(())
+    }
+
+    /// `| agg …` over the rows entering it, or with `group` (`| group by K
+    /// | agg …`) one row per group of them.
     fn relation_aggregate(
         &mut self,
         relation: &mut Relation,
+        group: Option<&[query_language::ast::Column]>,
         aggregates: &[Aggregate],
         at: usize,
     ) -> Result<(), QueryError> {
-        let grouped = relation.group.clone();
-        let input = grouped
-            .as_ref()
-            .map_or_else(|| relation.clone(), |g| (*g.input).clone());
+        let step = self.input(relation);
+        let input = relation.clone();
         let native = if input.open_fields
             && input.sources.len() == 1
             && input.sources[0].prefix.is_empty()
@@ -977,38 +1027,29 @@ impl Compiler<'_> {
         let input_from = if let Some(context) = &native {
             let key = context.a.expand(units::spec(context.unit).key);
             format!(
-                "{} JOIN ({}) r ON {key}=r.{}",
+                "{} JOIN {step} r ON {key}=r.{}",
                 base_from(context.unit, &context.a),
-                input.program.rows(),
                 column_sql(&input.sources[0].key)
             )
         } else {
-            format!("({}) r", input.program.rows())
+            format!("{step} r")
         };
         let mut columns = vec![];
         let mut slots = std::collections::BTreeMap::new();
         let mut select = vec![];
         let mut keys = vec![];
         let mut expressions = vec![];
-        let mut membership = String::new();
-        if let Some(group) = &grouped {
-            let mut tests = vec![];
-            for (column, slot, expression) in &group.keys {
-                select.push(format!("{expression} AS {}", column_sql(slot)));
-                columns.push(column.clone());
+        if let Some(group) = group {
+            for (column, slot, expression) in self.group_keys(&input, group, at)? {
+                select.push(format!("{expression} AS {}", column_sql(&slot)));
                 slots.insert(column.name.clone(), slot.clone());
-                keys.push(slot.clone());
-                expressions.push(expression.clone());
-                tests.push(format!("({expression}) IS g.{}", column_sql(slot)));
+                columns.push(column);
+                keys.push(slot);
+                expressions.push(expression);
             }
-            membership = format!(
-                " WHERE EXISTS (SELECT 1 FROM ({}) g WHERE {})",
-                relation.program.rows(),
-                tests.join(" AND ")
-            );
         }
         let mut values = vec![];
-        if grouped.is_some()
+        if group.is_some()
             && !aggregates
                 .iter()
                 .any(|a| matches!(a.function, AggregateFunction::Count))
@@ -1044,7 +1085,7 @@ impl Compiler<'_> {
             }
         }
         for (name, expression, kind, reference) in values {
-            let slot = relation.slot();
+            let slot = self.slot();
             select.push(format!("{expression} AS {}", column_sql(&slot)));
             slots.insert(name.clone(), slot);
             columns.push(Column {
@@ -1073,21 +1114,22 @@ impl Compiler<'_> {
             }
             order.extend(keys.iter().map(|key| OrderKey::ascending(key)));
         }
-        relation.program.derived_mut().rows = format!(
-            "SELECT {} FROM {input_from}{membership}{group_by} ORDER BY {}",
+        let sql = format!(
+            "SELECT {} FROM {input_from}{group_by} ORDER BY {}",
             select.join(", "),
             relation_order(&order)
         );
+        self.set_rows(relation, sql);
         relation.program.columns = columns;
         relation.program.column_slots = slots;
         relation.program.time_text_columns.clear();
         relation.program.order = order;
-        relation.program.shape = if grouped.is_some() {
+        relation.program.shape = if group.is_some() {
             Shape::Groups
         } else {
             Shape::Summary
         };
-        relation.program.row_basis = if grouped.is_some() {
+        relation.program.row_basis = if group.is_some() {
             RowBasis::Group { columns: keys }
         } else {
             RowBasis::Summary
@@ -1096,31 +1138,29 @@ impl Compiler<'_> {
         relation.program.ranked = false;
         relation.sources.clear();
         relation.open_fields = false;
-        relation.group = None;
         Ok(())
     }
 
     fn relation_distinct(&mut self, relation: &mut Relation) {
+        let input = self.input(relation);
         let values = relation
             .identity_order()
             .iter()
             .map(|key| column_sql(&key.column))
             .collect::<Vec<_>>();
-        let ordinal = relation.slot();
-        relation.program.derived_mut().rows = format!(
-            "SELECT * FROM (SELECT r.*, row_number() OVER (PARTITION BY {} ORDER BY {}) AS {} FROM ({}) r) WHERE {} = 1 ORDER BY {}",
+        let ordinal = self.slot();
+        let order = relation_order(&relation.program.order);
+        let sql = format!(
+            "SELECT * FROM (SELECT r.*, row_number() OVER (PARTITION BY {} ORDER BY {order}) AS {} FROM {input} r) WHERE {} = 1 ORDER BY {order}",
             if values.is_empty() {
                 "_pk".into()
             } else {
                 values.join(", ")
             },
-            relation_order(&relation.program.order),
             column_sql(&ordinal),
-            relation.program.rows(),
             column_sql(&ordinal),
-            relation_order(&relation.program.order)
         );
-        relation.group = None;
+        self.set_rows(relation, sql);
     }
 }
 
@@ -1191,15 +1231,15 @@ impl Compiler<'_> {
             transforms: vec![stage.clone()],
             attach: vec![],
         };
+        let input = self.input(relation);
         let mut parent_input = relation.program.clone();
         if matches!(stage.kind, TransformKind::Matches) {
-            let name = relation.slot();
+            let name = self.slot();
             self.ctes
-                .push(format!("{name} AS MATERIALIZED ({})", parent_input.rows()));
+                .push(format!("{name} AS MATERIALIZED (SELECT * FROM {input})"));
             parent_input.derived_mut().rows = format!("SELECT * FROM {name}");
         }
-        let mut compiler = Compiler::new(self.text, self.opts);
-        compiler.catalog = self.catalog.clone();
+        let mut compiler = self.nested(self.text);
         compiler.params = std::mem::take(&mut self.params);
         compiler.input_rows = Some(parent_input.rows().to_owned());
         compiler.near = self.near.clone().or(relation.program.near.clone());
@@ -1239,9 +1279,7 @@ impl Compiler<'_> {
         result
             .resolved_times
             .extend(relation.program.resolved_times.iter().cloned());
-        let next_slot = relation.next_slot;
         *relation = Relation::new(result);
-        relation.next_slot = next_slot;
         if matches!(stage.kind, TransformKind::Matches) {
             if let Some(unit) = pattern_unit {
                 relation.sources.push(NativeSource {
@@ -1269,7 +1307,9 @@ impl Compiler<'_> {
         query: &Query,
         at: usize,
     ) -> Result<(), QueryError> {
-        let before = Relation::new(self.other_query(query, relation.program.unit, at)?);
+        let mut before = Relation::new(self.other_query(query, relation.program.unit, at)?);
+        let after_input = self.input(relation);
+        let before_input = self.input(&mut before);
         let left_keys = relation.identity_order();
         let right_keys = before.identity_order();
         if left_keys.len() != right_keys.len() || left_keys.is_empty() {
@@ -1290,18 +1330,16 @@ impl Compiler<'_> {
             })
             .collect::<Vec<_>>()
             .join(" AND ");
-        let ordinal = relation.slot();
-        let previous = relation.slot();
-        let change = relation.slot();
+        let ordinal = self.slot();
+        let previous = self.slot();
+        let change = self.slot();
         let after_rows = format!(
-            "SELECT r.*, row_number() OVER (ORDER BY {}) AS {ordinal} FROM ({}) r",
+            "SELECT r.*, row_number() OVER (ORDER BY {}) AS {ordinal} FROM {after_input} r",
             relation_order(&relation.program.order),
-            relation.program.rows()
         );
         let before_rows = format!(
-            "SELECT r.*, row_number() OVER (ORDER BY {}) AS {previous} FROM ({}) r",
+            "SELECT r.*, row_number() OVER (ORDER BY {}) AS {previous} FROM {before_input} r",
             relation_order(&before.program.order),
-            before.program.rows()
         );
         // The public relation carries rows that entered, left, or changed rank.
         let mut values = vec![];
@@ -1338,10 +1376,11 @@ impl Compiler<'_> {
         values.push(format!("CASE WHEN a.{ordinal} IS NULL THEN 'left' WHEN b.{previous} IS NULL THEN 'joined' ELSE 'moved' END AS {change}"));
         values.push(format!("a.{ordinal} AS {ordinal}"));
         values.push(format!("b.{previous} AS {previous}"));
-        relation.program.derived_mut().rows = format!(
+        let changes = format!(
             "WITH after_rows AS ({after_rows}), before_rows AS ({before_rows}) SELECT {} FROM after_rows a FULL OUTER JOIN before_rows b ON {join} WHERE a.{ordinal} IS NULL OR b.{previous} IS NULL OR a.{ordinal} != b.{previous} ORDER BY coalesce(a.{ordinal}, b.{previous})",
             values.join(", ")
         );
+        let changes = self.set_rows(relation, changes);
         for (name, slot, kind) in [
             ("change", change, ColKind::Text),
             ("new_rank", ordinal.clone(), ColKind::Number),
@@ -1354,50 +1393,18 @@ impl Compiler<'_> {
             });
             relation.program.column_slots.insert(name.into(), slot);
         }
-        let final_order = relation.slot();
-        relation.program.derived_mut().rows = format!(
-            "SELECT d.*, row_number() OVER (ORDER BY {ordinal} IS NULL, coalesce({ordinal}, {})) AS {final_order} FROM ({}) d",
+        let final_order = self.slot();
+        let sql = format!(
+            "SELECT d.*, row_number() OVER (ORDER BY {ordinal} IS NULL, coalesce({ordinal}, {})) AS {final_order} FROM {changes} d",
             relation.program.column_slot("old_rank"),
-            relation.program.rows()
         );
+        self.set_rows(relation, sql);
         relation.program.order = vec![OrderKey::ascending(&final_order)];
         relation.program.ranked = false;
         relation.program.counts_near = false;
         relation.program.time_text_columns.clear();
         relation.sources.clear();
         relation.open_fields = false;
-        relation.group = None;
-        Ok(())
-    }
-}
-
-impl Compiler<'_> {
-    fn relation_first(&mut self, relation: &mut Relation, count: u64) -> Result<(), QueryError> {
-        let group = relation.group.clone().expect("grouped first");
-        let ordinal = relation.slot();
-        let tests = group
-            .keys
-            .iter()
-            .map(|(_, slot, expression)| format!("({expression}) IS g.{}", column_sql(slot)))
-            .collect::<Vec<_>>()
-            .join(" AND ");
-        let partitions = group
-            .keys
-            .iter()
-            .map(|(_, _, expression)| expression.clone())
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sql = format!(
-            "SELECT * FROM (SELECT r.*, row_number() OVER (PARTITION BY {partitions} ORDER BY {}) AS {ordinal} FROM ({}) r WHERE EXISTS (SELECT 1 FROM ({}) g WHERE {tests})) WHERE {ordinal} <= {count} ORDER BY {}",
-            relation_order(&group.input.program.order),
-            group.input.program.rows(),
-            relation.program.rows(),
-            relation_order(&group.input.program.order)
-        );
-        let next = relation.next_slot;
-        *relation = *group.input;
-        relation.program.derived_mut().rows = sql;
-        relation.next_slot = next;
         Ok(())
     }
 }
@@ -1411,7 +1418,12 @@ impl Compiler<'_> {
         at: usize,
     ) -> Result<(), QueryError> {
         let target = bind_unit(unit)?;
-        let Some(source) = relation.sources.iter().find(|s| s.prefix.is_empty()) else {
+        let Some(source) = relation
+            .sources
+            .iter()
+            .find(|s| s.prefix.is_empty())
+            .cloned()
+        else {
             return Err(QueryError::Invalid {
                 message: "a related unit requires native source row identity".into(),
                 position: at,
@@ -1467,12 +1479,12 @@ impl Compiler<'_> {
                 position: at,
             });
         };
+        let input = self.input(relation);
         let keys = format!(
-            "SELECT DISTINCT {target_key} AS _pk FROM {}, {} WHERE {link} AND {source_key} IN (SELECT {} FROM ({}))",
+            "SELECT DISTINCT {target_key} AS _pk FROM {}, {} WHERE {link} AND {source_key} IN (SELECT {} FROM {input})",
             base_from(source.unit, &source_context.a),
             base_from(target, &target_context.a),
             column_sql(&source.key),
-            relation.program.rows()
         );
         let query = Query {
             source: Source::Unit {
@@ -1483,8 +1495,7 @@ impl Compiler<'_> {
             transforms: vec![],
             attach: vec![],
         };
-        let mut compiler = Compiler::new(self.text, self.opts);
-        compiler.catalog = self.catalog.clone();
+        let mut compiler = self.nested(self.text);
         compiler.params = std::mem::take(&mut self.params);
         compiler.input_rows = Some(keys);
         compiler.source_near_allowed = false;

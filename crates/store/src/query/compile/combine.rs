@@ -49,7 +49,7 @@ impl<'a> Compiler<'a> {
                 position: child.span.start,
             });
         }
-        let mut inner = Compiler::new(&text, self.opts);
+        let mut inner = self.nested(&text);
         inner.query_scope = query_scope;
         inner.typing = Some(typing);
         inner.catalog = Some(catalog);
@@ -212,12 +212,12 @@ impl<'a> Compiler<'a> {
         members.extend(pending.unions);
         let mut fuses = pending.fuses;
         for program in members.iter_mut().chain(&mut fuses) {
-            let name = relation.slot();
+            let name = self.slot();
             self.ctes
                 .push(format!("{name} AS MATERIALIZED ({})", program.rows()));
             program.derived_mut().rows = format!("SELECT * FROM {name}");
         }
-        let source_list = relation.slot();
+        let source_list = self.slot();
         let mut projections = Vec::new();
         let mut slots = Vec::new();
         for (index, program) in members.iter().enumerate() {
@@ -233,8 +233,8 @@ impl<'a> Compiler<'a> {
                 program.rows()
             ));
         }
-        let values = relation.slot();
-        let precedence = relation.slot();
+        let values = self.slot();
+        let precedence = self.slot();
         self.ctes.push(format!(
             "{values} AS MATERIALIZED (SELECT *, row_number() OVER (PARTITION BY _pk ORDER BY {source_list}) AS {precedence} FROM ({}))",
             projections.join(" UNION ALL ")
@@ -244,7 +244,7 @@ impl<'a> Compiler<'a> {
         // membership depend on ranking or another relational selection.
         let mut membership_inputs = Vec::new();
         for program in &members {
-            let name = relation.slot();
+            let name = self.slot();
             let input = program.statements.members(program.counts_near);
             let near = if relation.program.counts_near && program.counts_near {
                 "_near"
@@ -292,7 +292,7 @@ impl<'a> Compiler<'a> {
         let mut join_rank = String::new();
         let mut order = relation.identity_order();
         if ranked {
-            let rows = relation.slot();
+            let rows = self.slot();
             self.ctes.push(format!(
                 "{rows} AS MATERIALIZED ({})",
                 members
@@ -312,16 +312,16 @@ impl<'a> Compiler<'a> {
             let found_in = (1..=members.len())
                 .map(|index| format!("max(list={index} AND counts) AS in{index}"))
                 .collect::<Vec<_>>();
-            let scores = relation.slot();
+            let scores = self.slot();
             self.ctes.push(format!(
                 "{scores} AS MATERIALIZED (SELECT k,CASE WHEN max(counts) THEN -sum(CASE WHEN counts THEN 1.0/({RANK_FUSION_OFFSET}+place) ELSE 0.0 END ORDER BY place) END AS r,max(recency) AS recency,{} FROM ({}) GROUP BY k)",
                 found_in.join(", "), lists.join(" UNION ALL ")
             ));
-            let rank = relation.slot();
-            let missing = relation.slot();
-            let contributors = relation.slot();
-            let recency = relation.slot();
-            let undated = relation.slot();
+            let rank = self.slot();
+            let missing = self.slot();
+            let contributors = self.slot();
+            let recency = self.slot();
+            let undated = self.slot();
             projection.push("f.r AS _rank".into());
             projection.push(format!("f.r AS {}", column_sql(&rank)));
             projection.push(format!("f.r IS NULL AS {}", column_sql(&missing)));
@@ -368,10 +368,13 @@ impl<'a> Compiler<'a> {
                 ],
             );
         }
-        relation.program.derived_mut().rows = format!(
-            "SELECT {} FROM {values} d{join_rank} WHERE d.{precedence}=1 ORDER BY {}",
-            projection.join(", "),
-            order_by(&order)
+        self.set_rows(
+            relation,
+            format!(
+                "SELECT {} FROM {values} d{join_rank} WHERE d.{precedence}=1 ORDER BY {}",
+                projection.join(", "),
+                order_by(&order)
+            ),
         );
         relation.program.order = order;
         relation.program.ranked = ranked;
