@@ -583,15 +583,7 @@ impl Reader<'_> {
                 "the query does not retain its criterion population",
             )));
         };
-        let projection = columns
-            .iter()
-            .map(|c| format!("q.\"{c}\""))
-            .collect::<Vec<_>>()
-            .join(",");
-        let sql = format!(
-            "SELECT {projection} FROM ({}) q ORDER BY q._pk",
-            selection.program.sql
-        );
+        let sql = selection.program.statements.member_columns(columns);
         let result = self.query_each(&sql, &values(&selection.program.params), |row| {
             selection
                 .scope
@@ -697,7 +689,10 @@ impl Reader<'_> {
         };
         let sql = format!(
             "SELECT EXISTS(SELECT 1 FROM ({}) selected WHERE selected._pk IN ({predicate})) AS present",
-            selection.program.sql
+            selection
+                .program
+                .statements
+                .members(selection.program.counts_near)
         );
         Ok(self
             .query(&sql, &params)?

@@ -348,20 +348,7 @@ fn restart_reopens_an_evicted_response_and_resolves_its_native_record_alias() {
     let program =
         polylogue_store::query::compile(&format!("messages where {native_reference}"), &options)
             .unwrap();
-    let parameters = program
-        .params
-        .iter()
-        .map(|value| match value {
-            polylogue_store::query::Param::Int(value) => polylogue_store::SqlValue::Int(*value),
-            polylogue_store::query::Param::Real(value) => polylogue_store::SqlValue::Real(*value),
-            polylogue_store::query::Param::Text(value) => {
-                polylogue_store::SqlValue::Text(value.clone())
-            }
-        })
-        .collect::<Vec<_>>();
-    let rows = reader
-        .with_clock(&program.clock, || reader.query(&program.sql, &parameters))
-        .unwrap();
+    let rows = reader.query_rows(&program).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["id"], "claude-code:first");
     drop(reader);
@@ -421,9 +408,7 @@ fn restart_reopens_an_evicted_response_and_resolves_its_native_record_alias() {
         before, after,
         "reparse changed an authored request or its native reference"
     );
-    let rows = reader
-        .with_clock(&program.clock, || reader.query(&program.sql, &parameters))
-        .unwrap();
+    let rows = reader.query_rows(&program).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["id"], "claude-code:first");
     assert_eq!(

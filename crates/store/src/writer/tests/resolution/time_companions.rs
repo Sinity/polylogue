@@ -34,16 +34,10 @@ fn query_result(
     };
     let program =
         crate::query::compile(text, &options).unwrap_or_else(|error| panic!("{text}: {error}"));
-    let parameters = program
-        .params
-        .iter()
-        .map(|parameter| match parameter {
-            crate::query::Param::Int(value) => crate::SqlValue::Int(*value),
-            crate::query::Param::Real(value) => crate::SqlValue::Real(*value),
-            crate::query::Param::Text(value) => crate::SqlValue::Text(value.clone()),
-        })
-        .collect::<Vec<_>>();
-    let mut rows = reader.with_clock(&program.clock, || reader.query(&program.sql, &parameters))?;
+    let mut rows = reader.query_rows(&program).map_err(|error| match error {
+        crate::selection::SelectionError::Store(error) => error,
+        error => panic!("{text}: {error}"),
+    })?;
     for row in &mut rows {
         crate::query::execute::present(&program, row)
             .unwrap_or_else(|error| panic!("{text}: {error}"));

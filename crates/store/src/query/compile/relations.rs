@@ -26,9 +26,8 @@ struct ConditionScope<'a> {
 }
 
 impl Relation {
-    pub fn new(mut program: Program) -> Self {
+    pub fn new(program: Program) -> Self {
         // A relation over the rows rewrites their statement and pages it whole.
-        program.keyed = None;
         let sources = program.native_sources.clone().unwrap_or_else(|| {
             if matches!(program.row_basis, RowBasis::Native { .. }) {
                 vec![NativeSource {
@@ -42,7 +41,7 @@ impl Relation {
         });
         let open_fields = !sources.is_empty();
         let next_slot = program
-            .sql
+            .rows()
             .split("_rel_value")
             .skip(1)
             .filter_map(|part| {
@@ -310,6 +309,8 @@ impl<'a> Compiler<'a> {
         compiler.source_near_allowed = self.source_near_allowed;
         compiler.catalog = self.catalog.clone();
         self.near_needed = source_order_needed(query);
+        // The stages read the prefix's rows whole.
+        self.answer = false;
         let mut program = self.native_program_with(&prefix, preset)?;
         compiler.params = std::mem::take(&mut program.params);
         compiler.near = program.near.clone();
@@ -387,10 +388,10 @@ impl<'a> Compiler<'a> {
         if !self.ctes.is_empty() {
             let prefix = format!("WITH RECURSIVE {}", self.ctes.join(", "));
             let scoped = |sql: &str| format!("{prefix} SELECT * FROM ({sql})");
-            relation.program.sql = scoped(&relation.program.sql);
-            relation.program.row_count_sql = relation.program.row_count_sql.as_deref().map(scoped);
-            relation.program.row_membership_sql =
-                relation.program.row_membership_sql.as_deref().map(scoped);
+            let derived = relation.program.derived_mut();
+            derived.rows = scoped(&derived.rows);
+            derived.count = derived.count.as_deref().map(scoped);
+            derived.members = derived.members.as_deref().map(scoped);
             if let Some(measure) = &mut relation.program.measure {
                 measure.selection_sql = scoped(&measure.selection_sql);
                 measure.population_sql = scoped(&measure.population_sql);
@@ -429,13 +430,13 @@ impl<'a> Compiler<'a> {
     }
 
     fn relation_filter(&mut self, relation: &mut Relation, predicate: &str) {
-        relation.program.sql = format!(
+        relation.program.derived_mut().rows = format!(
             "SELECT * FROM ({}) r WHERE ({predicate}) ORDER BY {}",
-            relation.program.sql,
+            relation.program.rows(),
             relation_order(&relation.program.order)
         );
-        relation.program.row_count_sql = None;
-        relation.program.row_membership_sql = None;
+        relation.program.derived_mut().count = None;
+        relation.program.derived_mut().members = None;
     }
 
     fn relation_stage(
@@ -471,10 +472,10 @@ impl<'a> Compiler<'a> {
                     });
                     slots.insert(column.column(), slot);
                 }
-                relation.program.sql = format!(
+                relation.program.derived_mut().rows = format!(
                     "SELECT {} FROM ({}) r ORDER BY {}",
                     select.join(", "),
-                    relation.program.sql,
+                    relation.program.rows(),
                     relation_order(&relation.program.order)
                 );
                 relation.program.columns = output;
@@ -538,10 +539,10 @@ impl<'a> Compiler<'a> {
                 }
                 // An explicit sort is tied by semantic identity, never by an earlier time order.
                 order.extend(relation.identity_order());
-                relation.program.sql = format!(
+                relation.program.derived_mut().rows = format!(
                     "SELECT {} FROM ({}) r ORDER BY {}",
                     select.join(", "),
-                    relation.program.sql,
+                    relation.program.rows(),
                     relation_order(&order)
                 );
                 relation.program.order = order;
@@ -583,8 +584,8 @@ impl<'a> Compiler<'a> {
             stage.kind,
             TransformKind::Fields { .. } | TransformKind::Sort { .. }
         ) {
-            relation.program.row_count_sql = None;
-            relation.program.row_membership_sql = None;
+            relation.program.derived_mut().count = None;
+            relation.program.derived_mut().members = None;
         }
         Ok(())
     }
@@ -821,7 +822,8 @@ impl Relation {
     /// expressions would decode every candidate body while finding a page.
     fn select_window(&mut self, window: &str) {
         if self.program.order.is_empty() {
-            self.program.sql = format!("SELECT * FROM ({}) {window}", self.program.sql);
+            self.program.derived_mut().rows =
+                format!("SELECT * FROM ({}) {window}", self.program.rows());
             return;
         }
         let identity = self.identity_order();
@@ -879,9 +881,9 @@ impl Relation {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        self.program.sql = format!(
+        self.program.derived_mut().rows = format!(
             "WITH {input} AS NOT MATERIALIZED ({}) SELECT {projection} FROM ({selected}) selected JOIN {input} r ON {same} ORDER BY {}",
-            self.program.sql,
+            self.program.rows(),
             self.program
                 .order
                 .iter()
@@ -999,10 +1001,10 @@ impl Compiler<'_> {
             descending: true,
         }];
         order.extend(key_slots.iter().map(|slot| OrderKey::ascending(slot)));
-        relation.program.sql = format!(
+        relation.program.derived_mut().rows = format!(
             "SELECT {} FROM ({}) r GROUP BY {expressions} ORDER BY {}",
             select.join(", "),
-            relation.program.sql,
+            relation.program.rows(),
             relation_order(&order)
         );
         relation.program.columns = columns;
@@ -1048,11 +1050,11 @@ impl Compiler<'_> {
             format!(
                 "{} JOIN ({}) r ON {key}=r.{}",
                 base_from(context.unit, &context.a),
-                input.program.sql,
+                input.program.rows(),
                 column_sql(&input.sources[0].key)
             )
         } else {
-            format!("({}) r", input.program.sql)
+            format!("({}) r", input.program.rows())
         };
         let mut columns = vec![];
         let mut slots = std::collections::BTreeMap::new();
@@ -1072,7 +1074,7 @@ impl Compiler<'_> {
             }
             membership = format!(
                 " WHERE EXISTS (SELECT 1 FROM ({}) g WHERE {})",
-                relation.program.sql,
+                relation.program.rows(),
                 tests.join(" AND ")
             );
         }
@@ -1142,7 +1144,7 @@ impl Compiler<'_> {
             }
             order.extend(keys.iter().map(|key| OrderKey::ascending(key)));
         }
-        relation.program.sql = format!(
+        relation.program.derived_mut().rows = format!(
             "SELECT {} FROM {input_from}{membership}{group_by} ORDER BY {}",
             select.join(", "),
             relation_order(&order)
@@ -1176,7 +1178,7 @@ impl Compiler<'_> {
             .map(|key| column_sql(&key.column))
             .collect::<Vec<_>>();
         let ordinal = relation.slot();
-        relation.program.sql = format!(
+        relation.program.derived_mut().rows = format!(
             "SELECT * FROM (SELECT r.*, row_number() OVER (PARTITION BY {} ORDER BY {}) AS {} FROM ({}) r) WHERE {} = 1 ORDER BY {}",
             if values.is_empty() {
                 "_pk".into()
@@ -1185,7 +1187,7 @@ impl Compiler<'_> {
             },
             relation_order(&relation.program.order),
             column_sql(&ordinal),
-            relation.program.sql,
+            relation.program.rows(),
             column_sql(&ordinal),
             relation_order(&relation.program.order)
         );
@@ -1224,7 +1226,7 @@ impl Compiler<'_> {
             let predicate = format!(
                 "r._pk {} IN (SELECT _pk FROM ({}))",
                 if yes { "" } else { "NOT" },
-                other.sql
+                other.rows()
             );
             self.relation_filter(relation, &predicate);
             return Ok(());
@@ -1264,13 +1266,13 @@ impl Compiler<'_> {
         if matches!(stage.kind, TransformKind::Matches) {
             let name = relation.slot();
             self.ctes
-                .push(format!("{name} AS MATERIALIZED ({})", parent_input.sql));
-            parent_input.sql = format!("SELECT * FROM {name}");
+                .push(format!("{name} AS MATERIALIZED ({})", parent_input.rows()));
+            parent_input.derived_mut().rows = format!("SELECT * FROM {name}");
         }
         let mut compiler = Compiler::new(self.text, self.opts);
         compiler.catalog = self.catalog.clone();
         compiler.params = std::mem::take(&mut self.params);
-        compiler.input_rows = Some(parent_input.sql.clone());
+        compiler.input_rows = Some(parent_input.rows().to_owned());
         compiler.near = self.near.clone().or(relation.program.near.clone());
         let mut result = compiler.native_program_with(&native, None)?;
         if matches!(stage.kind, TransformKind::Matches) {
@@ -1281,7 +1283,7 @@ impl Compiler<'_> {
         if let Some(mut measure) = result.measure.take() {
             // The preceding relation owns membership and order. The native
             // descriptor contributes only the default comparison population.
-            measure.selection_sql = relation.program.sql.clone();
+            measure.selection_sql = relation.program.rows().to_owned();
             measure.everything = false;
             relation.program.measure = Some(measure);
             return Ok(());
@@ -1358,12 +1360,12 @@ impl Compiler<'_> {
         let after_rows = format!(
             "SELECT r.*, row_number() OVER (ORDER BY {}) AS {ordinal} FROM ({}) r",
             relation_order(&relation.program.order),
-            relation.program.sql
+            relation.program.rows()
         );
         let before_rows = format!(
             "SELECT r.*, row_number() OVER (ORDER BY {}) AS {previous} FROM ({}) r",
             relation_order(&before.program.order),
-            before.program.sql
+            before.program.rows()
         );
         // The public relation carries rows that entered, left, or changed rank.
         let mut values = vec![];
@@ -1400,7 +1402,7 @@ impl Compiler<'_> {
         values.push(format!("CASE WHEN a.{ordinal} IS NULL THEN 'left' WHEN b.{previous} IS NULL THEN 'joined' ELSE 'moved' END AS {change}"));
         values.push(format!("a.{ordinal} AS {ordinal}"));
         values.push(format!("b.{previous} AS {previous}"));
-        relation.program.sql = format!(
+        relation.program.derived_mut().rows = format!(
             "WITH after_rows AS ({after_rows}), before_rows AS ({before_rows}) SELECT {} FROM after_rows a FULL OUTER JOIN before_rows b ON {join} WHERE a.{ordinal} IS NULL OR b.{previous} IS NULL OR a.{ordinal} != b.{previous} ORDER BY coalesce(a.{ordinal}, b.{previous})",
             values.join(", ")
         );
@@ -1417,10 +1419,10 @@ impl Compiler<'_> {
             relation.program.column_slots.insert(name.into(), slot);
         }
         let final_order = relation.slot();
-        relation.program.sql = format!(
+        relation.program.derived_mut().rows = format!(
             "SELECT d.*, row_number() OVER (ORDER BY {ordinal} IS NULL, coalesce({ordinal}, {})) AS {final_order} FROM ({}) d",
             relation.program.column_slot("old_rank"),
-            relation.program.sql
+            relation.program.rows()
         );
         relation.program.order = vec![OrderKey::ascending(&final_order)];
         relation.program.ranked = false;
@@ -1452,13 +1454,13 @@ impl Compiler<'_> {
         let sql = format!(
             "SELECT * FROM (SELECT r.*, row_number() OVER (PARTITION BY {partitions} ORDER BY {}) AS {ordinal} FROM ({}) r WHERE EXISTS (SELECT 1 FROM ({}) g WHERE {tests})) WHERE {ordinal} <= {count} ORDER BY {}",
             relation_order(&group.input.program.order),
-            group.input.program.sql,
-            relation.program.sql,
+            group.input.program.rows(),
+            relation.program.rows(),
             relation_order(&group.input.program.order)
         );
         let next = relation.next_slot;
         *relation = *group.input;
-        relation.program.sql = sql;
+        relation.program.derived_mut().rows = sql;
         relation.next_slot = next;
         Ok(())
     }
@@ -1534,7 +1536,7 @@ impl Compiler<'_> {
             base_from(source.unit, &source_context.a),
             base_from(target, &target_context.a),
             column_sql(&source.key),
-            relation.program.sql
+            relation.program.rows()
         );
         let query = Query {
             source: Source::Unit {

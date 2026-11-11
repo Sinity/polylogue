@@ -377,18 +377,18 @@ impl<'a> Compiler<'a> {
                         self.near_rank.as_deref().unwrap_or("1")
                     ));
                     key_select.extend(hidden.iter().cloned());
-                    keyed = Some(KeyedRows {
-                        keys: format!(
+                    keyed = Some((
+                        format!(
                             "{ctes}SELECT {} FROM {from} WHERE {wh}",
                             key_select.join(", ")
                         ),
-                        rows: format!(
+                        format!(
                             "{ctes}SELECT {} FROM {}",
                             row_select.join(", "),
                             base_from(unit, &scope.a)
                         ),
-                        key: pk.clone(),
-                    });
+                        pk.clone(),
+                    ));
                 }
                 select.extend(hidden);
                 let sql = format!(
@@ -495,14 +495,27 @@ impl<'a> Compiler<'a> {
                     .collect(),
             }
         };
+        // Only the answer's own rows are read key first; a stage or a
+        // combination over them reads them whole.
+        let statements = match (keyed, row_count) {
+            (Some((keys, rows, key)), Some(count)) if self.answer => Statements::Keyed(KeyedRows {
+                keys,
+                rows,
+                key,
+                count,
+            }),
+            (_, count) => Statements::Derived(DerivedRows {
+                rows: sql,
+                count,
+                members: row_membership,
+            }),
+        };
         Ok(Program {
             row_basis,
             query: self.text.to_owned(),
             unit,
             shape,
-            sql,
-            row_count_sql: row_count,
-            row_membership_sql: row_membership,
+            statements,
             params: self.params,
             columns,
             column_slots: Default::default(),
@@ -527,7 +540,6 @@ impl<'a> Compiler<'a> {
             resolved_times: self.resolved_times.into_inner(),
             measure,
             order,
-            keyed,
         })
     }
 

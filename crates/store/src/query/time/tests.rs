@@ -157,18 +157,7 @@ fn fractional_compiled_since_until_and_comparisons_keep_index_boundaries_exclusi
         ("messages where at = 1970-01-01T00:00:00.0005Z", vec![]),
     ] {
         let program = crate::query::compile(text, &options).unwrap();
-        let params = program
-            .params
-            .iter()
-            .map(|param| match param {
-                crate::query::Param::Int(value) => crate::SqlValue::Int(*value),
-                crate::query::Param::Real(value) => crate::SqlValue::Real(*value),
-                crate::query::Param::Text(value) => crate::SqlValue::Text(value.clone()),
-            })
-            .collect::<Vec<_>>();
-        let rows = reader
-            .with_clock(&program.clock, || reader.query(&program.sql, &params))
-            .unwrap();
+        let rows = reader.query_rows(&program).unwrap();
         assert_eq!(
             rows.iter()
                 .map(|row| row["id"].as_str().unwrap())

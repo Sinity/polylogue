@@ -117,7 +117,14 @@ fn query_explanation_uses_archive_definitions_session_and_day_without_writes() {
         let result = crate::test_answers::ok((explain(Some(&expression))).answer(&w.daemon));
         let explanation = &result["explanation"];
         let program = &explanation["program"];
-        assert!(!program["sql"].as_str().unwrap().is_empty());
+        // A unit's rows are read key first; a derived relation whole.
+        let statements = &program["statements"];
+        let selecting = match statements["kind"].as_str().unwrap() {
+            "keyed" => &statements["keys"],
+            "derived" => &statements["rows"],
+            kind => panic!("{expression}: {kind}"),
+        };
+        assert!(!selecting.as_str().unwrap().is_empty(), "{expression}");
         assert!(explanation["parsed"].is_object());
         let clock: query_language::time::ClockWire =
             serde_json::from_value(program["clock"].clone()).unwrap();

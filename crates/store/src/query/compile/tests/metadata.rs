@@ -226,7 +226,7 @@ fn frozen_saved_semantic_scope_preserves_native_fields_and_refuses_forged_declar
         .unwrap();
     options.saved = current.saved;
     let actual = lower(&replay, &options).unwrap();
-    assert_eq!(actual.sql, expected.sql);
+    assert_eq!(actual.statements, expected.statements);
     assert_eq!(actual.params, expected.params);
     for text in [
         "query:grouped | where session.repo:morrow",

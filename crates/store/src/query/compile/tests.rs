@@ -85,6 +85,12 @@ fn a_conversation_url_names_its_session_by_the_chat_pages() {
     assert!(compile_err("https://claude.ai/chat/abc").contains("not a conversation URL"));
 }
 
+/// Every statement the answer reads, for a test of what the lowering
+/// reads at all.
+pub(super) fn statements(program: &Program) -> String {
+    serde_json::to_string(&program.statements).unwrap()
+}
+
 fn c(text: &str) -> Program {
     compile(text, &opts(&[])).unwrap_or_else(|e| panic!("{text}: {e}"))
 }
@@ -98,7 +104,7 @@ fn same(a: &str, b: &str, o: &Options) {
     assert_eq!(pa.unit, pb.unit, "{a} / {b}");
     // The saved condition keeps its own parentheses; the meaning is equal.
     let flat = |s: &str| s.replace(['(', ')'], "");
-    assert_eq!(flat(&pa.sql), flat(&pb.sql), "{a} / {b}");
+    assert_eq!(flat(&statements(&pa)), flat(&statements(&pb)), "{a} / {b}");
     assert_eq!(pa.params, pb.params, "{a} / {b}");
 }
 
@@ -228,15 +234,17 @@ fn fields_choose_the_columns() {
 #[test]
 fn changes_continue_from_a_cursor() {
     let p = c("changes where after:generation:12:3");
-    assert!(p.sql.contains("> 12") && p.sql.contains("> 3"), "{}", p.sql);
+    let sql = statements(&p);
+    assert!(sql.contains("> 12") && sql.contains("> 3"), "{sql}");
     assert!(compile_err("changes where after:12").contains("GEN:COUNTER:ARCHIVE"));
 }
 
 #[test]
 fn deliveries_take_their_outcome_from_the_latest_event() {
     let p = c("deliveries where sender:signal | sort by at desc");
-    assert!(p.sql.contains("delivery_event"), "{}", p.sql);
-    assert!(!p.sql.contains(".outcome"), "{}", p.sql);
+    let sql = statements(&p);
+    assert!(sql.contains("delivery_event"), "{sql}");
+    assert!(!sql.contains(".outcome"), "{sql}");
 }
 
 #[test]
@@ -489,7 +497,7 @@ fn near_builds_only_when_an_answer_needs_ranking() {
             let program = compile(text, &options).unwrap();
             assert!(program.near.is_none(), "{text}");
             assert!(program.incomplete.is_empty(), "{text}");
-            assert!(!program.sql.contains("pl_similarity"), "{text}");
+            assert!(!statements(&program).contains("pl_similarity"), "{text}");
         }
         for text in [
             "similar:dates",
@@ -530,9 +538,9 @@ fn near_builds_only_when_an_answer_needs_ranking() {
 fn explicit_identity_equality_keeps_case_and_does_not_expand_a_prefix() {
     let exact = c("assertions where root = \"Root:Case\" current:true");
     assert!(exact.params.contains(&Param::Text("Root:Case".into())));
-    assert!(!exact.sql.contains("root LIKE"));
+    assert!(!statements(&exact).contains("root LIKE"));
     let prefix = c("assertions where root:Root");
-    assert!(prefix.sql.contains("root LIKE"));
+    assert!(statements(&prefix).contains("root LIKE"));
 }
 
 #[test]
@@ -559,8 +567,8 @@ fn kept_references_use_query_literals_without_splitting_their_ids() {
             .iter()
             .any(|p| matches!(p,Param::Text(value) if value==id))
     );
-    assert!(program.sql.contains("$.rows"));
-    assert!(!program.sql.contains("$.matches"));
+    assert!(statements(&program).contains("$.rows"));
+    assert!(!statements(&program).contains("$.matches"));
     assert!(matches!(
         compile(&format!("{reference} title:other"), &options),
         Err(QueryError::Invalid { .. })
@@ -577,9 +585,7 @@ fn kept_references_use_query_literals_without_splitting_their_ids() {
         },
     );
     assert!(
-        compile("result:simple.matches | count", &options)
-            .unwrap()
-            .sql
+        statements(&compile("result:simple.matches | count", &options).unwrap())
             .contains("$.matches")
     );
 }

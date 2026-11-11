@@ -1,8 +1,7 @@
-//! Compiling a parsed query to one SQL statement with bound parameters.
-//! The statement is the whole answer in a total order; the caller pages it
-//! by key with [`Program::page_sql`] and counts it with
-//! [`Program::count_sql`]. There is no row cap: a page is how much travels
-//! now, never how much is answered.
+//! Compiling a parsed query to the statements that read its answer, with
+//! bound parameters ([`Statements`]). The answer has a total order; the
+//! caller pages it by key and counts it without that order. There is no
+//! row cap: a page is how much travels now, never how much is answered.
 
 use crate::query::ast::*;
 use crate::query::fields::{self, Aliases, Kind};
@@ -26,7 +25,9 @@ mod relations;
 mod saved;
 mod sequences;
 mod stages;
+mod statements;
 use conditions::unknown_field;
+pub use statements::{DerivedRows, KeyedRows, PageColumns, Statements};
 
 /// Reciprocal rank fusion gives a row `1 / (RANK_FUSION_OFFSET + place)` in
 /// each ranked list it is in; the offset keeps one list's first places
@@ -55,13 +56,13 @@ pub struct IdCheck {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Attach {
     pub name: String,
-    /// Selects the child rows of one parent; the parent's `_pk` binds to
-    /// the parameter after `params`.
+    /// The child rows of a page's parents, whose `_pk`s bind as one JSON
+    /// array to the parameter after `params`: each row's parent key as
+    /// `_parent`, then its columns, in each parent's order and inside the
+    /// attachment's windows.
     pub sql: String,
     pub params: Vec<Param>,
     pub columns: Vec<Column>,
-    pub first: Option<u64>,
-    pub last: Option<u64>,
 }
 
 /// One top-level condition counted alone, for `--why`.
@@ -146,14 +147,8 @@ pub struct Program {
     pub row_basis: RowBasis,
     pub unit: Unit,
     pub shape: Shape,
-    /// The whole answer, in order, without paging.
-    pub sql: String,
-    /// Exact cardinality and missing similarities, without presentation work
-    /// that does not affect which rows the query selects.
-    pub row_count_sql: Option<String>,
-    /// Selected ordinary-row keys and their own similarity witness, without
-    /// presentation order. Combining queries deduplicates only the keys.
-    pub row_membership_sql: Option<String>,
+    /// The statements that select, page, count and read the answer's rows.
+    pub statements: Statements,
     pub params: Vec<Param>,
     /// Every output column but `_pk` (each row unit's key).
     pub columns: Vec<Column>,
@@ -199,28 +194,10 @@ pub struct Program {
     /// `| measure WHAT`: the measurement to run over the sessions `sql`
     /// selects, instead of returning its rows.
     pub measure: Option<Measure>,
-    /// The answer's total order, as columns of `sql`; a page continues
-    /// after the last row's values of these columns. Empty for a summary,
-    /// which is one row.
+    /// The answer's total order, as columns of its page statement; a page
+    /// continues after the last row's values of these columns. Empty for a
+    /// summary, which is one row.
     pub order: Vec<OrderKey>,
-    /// Native rows are paged key first; `None` for a derived relation.
-    pub keyed: Option<KeyedRows>,
-}
-
-/// An answer of native rows read in two statements: every selected row's
-/// key with its order values, of which a page takes its rows' keys, then
-/// the row columns of only those keys. Sorting and paging then touch keys,
-/// never the columns of rows off the page.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct KeyedRows {
-    /// `_pk`, `_rank` when ranked, `_near` and the order columns of every
-    /// selected row, unordered.
-    pub keys: String,
-    /// The row columns read from the unit's rows, without the condition
-    /// that names which: [`Program::hydrate_sql`] adds it.
-    pub rows: String,
-    /// The unit's key expression in `rows`.
-    pub key: String,
 }
 
 /// One term of an answer's order: a column of the answer and its
@@ -300,107 +277,18 @@ impl Program {
         self.column_slots.get(name).map_or(name, String::as_str)
     }
 
-    /// One page in order, `reverse`d or not. With `after`, it holds the rows
-    /// that sort after a row whose order-key values are bound after
-    /// `params`, one per key; the page size is bound last. Native rows page
-    /// their keys, which [`Program::hydrate_sql`] turns into rows; a derived
-    /// relation pages its rows.
-    pub fn page_sql(&self, after: bool, reverse: bool) -> String {
-        self.page_projected(after, reverse, "*")
+    /// The rows of a stage's or combination's input, in order.
+    fn rows(&self) -> &str {
+        &self.statements.derived().rows
     }
 
-    /// The order values of one page and nothing else, so ordering sorts no
-    /// row bodies.
-    pub(crate) fn order_page_sql(&self, after: bool, reverse: bool) -> String {
-        let columns = self
-            .order
-            .iter()
-            .map(|key| format!("\"{}\"", key.column))
-            .collect::<Vec<_>>()
-            .join(", ");
-        self.page_projected(after, reverse, &columns)
-    }
-
-    /// The one derived row at the order values bound after `params`.
-    pub(crate) fn row_at_sql(&self) -> String {
-        let predicate = self
-            .order
-            .iter()
-            .enumerate()
-            .map(|(i, key)| format!("\"{}\" IS ?{}", key.column, self.params.len() + i + 1))
-            .collect::<Vec<_>>()
-            .join(" AND ");
-        format!("SELECT * FROM ({}) WHERE {predicate} LIMIT 1", self.sql)
-    }
-
-    /// The row columns of the native keys bound as one JSON array after
-    /// `params`; `None` for a derived relation, whose page holds its rows.
-    pub fn hydrate_sql(&self) -> Option<String> {
-        self.keyed.as_ref().map(|keyed| {
-            format!(
-                "{} WHERE {} IN (SELECT value FROM json_each(?{}))",
-                keyed.rows,
-                keyed.key,
-                self.params.len() + 1
-            )
-        })
-    }
-
-    fn page_projected(&self, after: bool, reverse: bool, projection: &str) -> String {
-        let n = self.params.len();
-        let source = self.keyed.as_ref().map_or(&self.sql, |keyed| &keyed.keys);
-        let mut sql = format!("SELECT {projection} FROM ({source})");
-        if after && !self.order.is_empty() {
-            sql.push_str(" WHERE ");
-            sql.push_str(&self.after_condition(n, reverse));
+    fn derived_mut(&mut self) -> &mut DerivedRows {
+        match &mut self.statements {
+            Statements::Derived(rows) => rows,
+            Statements::Keyed(_) => {
+                unreachable!("a relation's input is lowered to a derived statement")
+            }
         }
-        if !self.order.is_empty() {
-            sql.push_str(" ORDER BY ");
-            sql.push_str(&order_by_in_direction(&self.order, reverse));
-        }
-        let limit = if after {
-            n + self.order.len() + 1
-        } else {
-            n + 1
-        };
-        sql.push_str(&format!(" LIMIT ?{limit}"));
-        sql
-    }
-
-    /// Rows after the bound key values `?{first+1}`...: equal on every
-    /// earlier key and after on this one, for some key. Reversing the order
-    /// reverses NULL placement together with each value comparison.
-    fn after_condition(&self, first: usize, reverse: bool) -> String {
-        let mut any = vec![];
-        for (i, key) in self.order.iter().enumerate() {
-            let mut all: Vec<String> = self.order[..i]
-                .iter()
-                .enumerate()
-                .map(|(j, k)| format!("\"{}\" IS ?{}", k.column, first + j + 1))
-                .collect();
-            let (column, value) = (format!("\"{}\"", key.column), format!("?{}", first + i + 1));
-            all.push(if key.descending ^ reverse {
-                format!("({column} < {value} OR ({column} IS NULL AND {value} IS NOT NULL))")
-            } else {
-                format!("({column} > {value} OR ({value} IS NULL AND {column} IS NOT NULL))")
-            });
-            any.push(format!("({})", all.join(" AND ")));
-        }
-        any.join(" OR ")
-    }
-
-    pub fn count_sql(&self) -> String {
-        self.row_count_sql.clone().unwrap_or_else(|| {
-            format!(
-                "SELECT count(*), {} FROM ({})",
-                if self.counts_near {
-                    "count(*) FILTER (WHERE _near IS NULL)"
-                } else {
-                    "0"
-                },
-                self.sql
-            )
-        })
     }
 }
 
@@ -438,6 +326,7 @@ pub fn lower(plan: &polylogue_query::plan::Plan, opts: &Options) -> Result<Progr
     compiler.query_scope = bound.typing().query(&Default::default()).cloned();
     compiler.typing = Some(std::sync::Arc::new(bound.typing().clone()));
     compiler.catalog = Some(catalog.clone());
+    compiler.answer = true;
     let mut program = compiler.program(bound.query())?;
     for definition in plan.definitions() {
         let used = Definition {
@@ -525,6 +414,9 @@ pub(crate) struct Compiler<'a> {
     measuring: bool,
     /// Top-level `since:`/`until:` bounds on the sessions, for measures.
     session_window: (Option<i64>, Option<i64>),
+    /// Lowering the answer itself, whose own rows are read key first;
+    /// otherwise the input of a stage or combination, read whole.
+    answer: bool,
 }
 
 /// A fused ranking: the join that brings it to the rows, and the rank
@@ -569,6 +461,7 @@ impl<'a> Compiler<'a> {
             near_unavailable: false,
             measuring: false,
             session_window: (None, None),
+            answer: false,
         }
     }
 

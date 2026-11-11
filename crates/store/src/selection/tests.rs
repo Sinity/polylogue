@@ -1006,7 +1006,19 @@ fn cwd_searches_recorded_directories_and_never_scans_sessions() {
     ] {
         let program = crate::query::compile(text, &options()).unwrap();
         let plan: Vec<String> = reader
-            .query(&format!("EXPLAIN QUERY PLAN {}", program.sql), &[])
+            .query(
+                &format!(
+                    "EXPLAIN QUERY PLAN {}",
+                    program.statements.page(
+                        &program.order,
+                        program.params.len(),
+                        false,
+                        false,
+                        crate::query::PageColumns::All,
+                    )
+                ),
+                &[],
+            )
             .unwrap()
             .into_iter()
             .map(|row| row["detail"].as_str().unwrap().to_owned())
@@ -1172,7 +1184,16 @@ fn session_field_uses_session_index() {
     let program = crate::query::compile("tool_calls where session:test:one", &options()).unwrap();
     let plan: Vec<String> = reader
         .query(
-            &format!("EXPLAIN QUERY PLAN {}", program.sql),
+            &format!(
+                "EXPLAIN QUERY PLAN {}",
+                program.statements.page(
+                    &program.order,
+                    program.params.len(),
+                    false,
+                    false,
+                    crate::query::PageColumns::All,
+                )
+            ),
             &values(&program.params),
         )
         .unwrap()
@@ -1204,7 +1225,7 @@ fn session_field_and_reference_return_same_rows() {
     let rows = |text: &str| {
         let program = crate::query::compile(text, &options).unwrap();
         let mut keys: Vec<i64> = reader
-            .query(&program.sql, &values(&program.params))
+            .query_rows(&program)
             .unwrap()
             .into_iter()
             .map(|row| row["_pk"].as_i64().unwrap())
