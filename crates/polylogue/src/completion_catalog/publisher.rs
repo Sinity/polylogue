@@ -631,10 +631,7 @@ impl State {
         update: &VocabularyUpdate,
         reader: &Reader<'_>,
     ) -> Result<()> {
-        let mut put = |change| match change {
-            SessionChange::Upsert(session) => writer.put_session(&session),
-            SessionChange::Removed(id) => writer.remove_session(&id),
-        };
+        let mut put = |change| writer.apply(change);
         let first = match sessions {
             Sessions::All => {
                 reader.visit_completion_sessions(None, &mut put)?;

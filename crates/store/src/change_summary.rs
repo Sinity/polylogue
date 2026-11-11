@@ -22,6 +22,8 @@ struct Before {
     session: i64,
     parent: Option<String>,
     key: OrderKey,
+    /// What it contributed to completion ([`crate::session_values`]).
+    values: Vec<crate::session_values::Value>,
 }
 
 #[derive(Default)]
@@ -81,9 +83,15 @@ impl ChangeSummary {
                     session: row.get(0)?,
                     parent: row.get(1)?,
                     key: (row.get(2)?, row.get(3)?),
+                    values: Vec::new(),
                 })
             })
-            .optional()?;
+            .optional()?
+            .map(|mut before| {
+                before.values = crate::session_values::of_message(conn, pk, before.session)?;
+                Ok::<_, crate::StoreError>(before)
+            })
+            .transpose()?;
         self.changed.borrow_mut().messages.insert(pk, before);
         Ok(())
     }
@@ -133,6 +141,19 @@ impl ChangeSummary {
             .filter(|(_, before)| before.as_ref().is_some_and(|b| b.session == session_pk))
             .map(|(pk, _)| *pk)
             .collect()
+    }
+
+    /// What a changed message contributed to completion before the
+    /// transaction, when it was in `session_pk` then.
+    pub(crate) fn values_before(
+        &self,
+        pk: i64,
+        session_pk: i64,
+    ) -> Vec<crate::session_values::Value> {
+        match self.changed.borrow().messages.get(&pk) {
+            Some(Some(before)) if before.session == session_pk => before.values.clone(),
+            _ => Vec::new(),
+        }
     }
 
     /// The places in `session_pk`'s order that changed messages of it held

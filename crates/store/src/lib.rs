@@ -61,6 +61,7 @@ pub mod session_alias;
 pub mod session_export;
 mod session_row;
 pub mod session_sql;
+mod session_values;
 pub mod signals;
 pub(crate) mod source;
 pub mod sql_functions;

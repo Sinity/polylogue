@@ -533,6 +533,7 @@ pub(crate) fn finish(
     first_build: bool,
 ) -> Result<u64> {
     let read = crate::items::refresh(tx, changes)?;
+    crate::session_values::refresh(tx, changes)?;
     // A first build derives every session once, when it ends.
     if !first_build {
         let sessions = changes.sessions(tx)?;

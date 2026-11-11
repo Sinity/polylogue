@@ -312,6 +312,7 @@ impl<'a> Pass<'a> {
                 .execute([pk])?;
         }
         crate::items::refresh(&tx, &changes)?;
+        crate::session_values::refresh(&tx, &changes)?;
         tx.commit()?;
         if let Some(events) = commits {
             events.committed();

@@ -50,8 +50,11 @@ fn changes(
     let position = reader
         .visit_completion_sessions(Some(after), |change| {
             match change {
-                SessionChange::Upsert(session) => upserted.push(session.id),
+                SessionChange::Upsert(session) | SessionChange::Recreated(session) => {
+                    upserted.push(session.id)
+                }
                 SessionChange::Removed(id) => removed.push(id),
+                SessionChange::Value { .. } => {}
             }
             Ok(())
         })
@@ -144,10 +147,7 @@ fn completion_removal_delta_keeps_a_recreated_session_in_the_same_cursor_window(
                 ..metadata
             },
             |writer| {
-                reader.visit_completion_sessions(Some(&before), |change| match change {
-                    SessionChange::Upsert(session) => writer.put_session(&session),
-                    SessionChange::Removed(id) => writer.remove_session(&id),
-                })?;
+                reader.visit_completion_sessions(Some(&before), |change| writer.apply(change))?;
                 Ok(())
             },
         )
@@ -293,5 +293,149 @@ fn authored_deltas_follow_only_affected_families_and_setting_keys() {
     assert_eq!(
         delta.definitions[0].saved.as_ref().unwrap().text,
         "messages | group by role | count"
+    );
+}
+
+thread_local! {
+    static STATEMENTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+fn counted(event: rusqlite::trace::TraceEvent<'_>) {
+    if let rusqlite::trace::TraceEvent::Profile(..) = event {
+        STATEMENTS.with(|count| count.set(count.get() + 1));
+    }
+}
+
+/// Counts the statements `conn` runs from now on, or stops counting.
+fn count_statements(conn: &rusqlite::Connection, on: bool) {
+    if on {
+        conn.trace_v2(
+            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_PROFILE,
+            Some(counted),
+        );
+    } else {
+        conn.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+    }
+}
+
+#[test]
+fn completion_refresh_statements_proportional_to_changes() {
+    use crate::fixture::writer::call;
+    /// Statements to bring a published catalog up to date after one call
+    /// is appended to a session that already uses `tools` distinct tools,
+    /// and the published values against a catalog built afresh.
+    fn refresh_after_append(tools: u32) -> u64 {
+        let mut archive = WriterArchive::new();
+        let mut messages = prose("big", 0, 50, "the first prompt");
+        for n in 1..=tools {
+            let mut pair = call(
+                "big",
+                n,
+                100 + i64::from(n) * 10,
+                &format!("tool-{n}"),
+                None,
+                serde_json::Value::Null,
+                Ok("done"),
+            );
+            pair[0].model = Some(format!("model-{}", n % 3));
+            messages.extend(pair);
+        }
+        archive.write("big", messages);
+        archive.write("other", prose("other", 1, 100, "another session"));
+        let reads = crate::ReadPool::open(&archive.archive).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let build = |name: &str| {
+            let reader = reads.reader().unwrap();
+            let position = reader.change_position().unwrap();
+            let metadata = Metadata {
+                archive: "synthetic".into(),
+                position: position.clone(),
+                written_at: 1,
+            };
+            let writer = CatalogWriter::build(&directory.path().join(name), &metadata, |writer| {
+                reader.visit_completion_sessions(None, |change| writer.apply(change))?;
+                Ok(())
+            })
+            .unwrap();
+            (writer, metadata)
+        };
+        let (mut catalog, metadata) = build("published");
+        let mut appended = call(
+            "big",
+            tools + 1,
+            100 + i64::from(tools + 1) * 10,
+            "tool-1",
+            None,
+            serde_json::Value::Null,
+            Ok("done"),
+        );
+        appended[0].model = Some("model-new".into());
+        archive.write("big", appended);
+        let reader = reads.reader().unwrap();
+        let position = reader.change_position().unwrap();
+        assert!(position.index > metadata.position.index);
+        let before = STATEMENTS.with(std::cell::Cell::get);
+        count_statements(reader.conn().unwrap(), true);
+        count_statements(catalog.connection(), true);
+        catalog
+            .update(
+                &Metadata {
+                    position: position.clone(),
+                    written_at: 2,
+                    ..metadata.clone()
+                },
+                |writer| {
+                    reader.visit_completion_sessions(Some(&metadata.position), |change| {
+                        writer.apply(change)
+                    })?;
+                    Ok(())
+                },
+            )
+            .unwrap();
+        count_statements(reader.conn().unwrap(), false);
+        count_statements(catalog.connection(), false);
+        let count = STATEMENTS.with(std::cell::Cell::get) - before;
+        drop(catalog);
+        drop(reader);
+        let (fresh, _) = build("fresh");
+        drop(fresh);
+        let published = CatalogReader::open(&directory.path().join("published"), "synthetic")
+            .unwrap()
+            .unwrap();
+        let rebuilt = CatalogReader::open(&directory.path().join("fresh"), "synthetic")
+            .unwrap()
+            .unwrap();
+        for field in ["model", "tool", "origin", "repo"] {
+            let values = |catalog: &CatalogReader| {
+                catalog
+                    .values(field, "")
+                    .unwrap()
+                    .into_iter()
+                    .map(|value| (value.value, value.count))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(values(&published), values(&rebuilt), "{field}");
+        }
+        let tool = published.values("tool", "tool-1").unwrap();
+        assert_eq!(tool[0].count, 2, "the appended call counts");
+        assert_eq!(
+            published
+                .session_details("claude-code:big")
+                .unwrap()
+                .unwrap()
+                .first_prompt,
+            rebuilt
+                .session_details("claude-code:big")
+                .unwrap()
+                .unwrap()
+                .first_prompt
+        );
+        count
+    }
+    let small = refresh_after_append(4);
+    let large = refresh_after_append(40);
+    assert_eq!(
+        small, large,
+        "statements to publish one appended call: {small} with 4 tools, {large} with 40"
     );
 }

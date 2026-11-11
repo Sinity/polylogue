@@ -473,7 +473,9 @@ pub(crate) fn refresh_stale(conn: &Connection) -> Result<()> {
         )?
         .query_map([], |row| row.get(0))?
         .collect::<rusqlite::Result<_>>()?;
+    let counter = crate::session_values::write_counter(conn)?;
     for pk in sessions {
+        crate::session_values::rebuild(conn, pk, counter)?;
         conn.execute_batch("SAVEPOINT fixture_items")?;
         match rebuild(conn, pk, None, &BTreeSet::new()) {
             Ok(_) => conn.execute_batch("RELEASE fixture_items")?,

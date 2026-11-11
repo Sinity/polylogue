@@ -3,12 +3,23 @@ use super::catalog::Session;
 use crate::source::Source;
 use crate::{Reader, Result, StoreError};
 use polylogue_model::ChangePosition;
-use rusqlite::OptionalExtension;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub enum SessionChange {
+    /// A session's own row: its fields other than the counted values.
     Upsert(Box<Session>),
+    /// A session removed and stored again since the last publication: every
+    /// value it held before is gone, and its values come again.
+    Recreated(Box<Session>),
     Removed(String),
+    /// How many of a session's messages name a model, or of its calls use
+    /// a tool; 0 when it no longer has the value.
+    Value {
+        session: String,
+        field: String,
+        value: String,
+        count: u64,
+    },
 }
 /// One source snapshot's authored changes, bounded by its existing source cursor.
 pub struct VocabularyChanges {
@@ -46,8 +57,11 @@ pub struct NativeKept {
     pub row_count: Option<u64>,
 }
 impl Reader<'_> {
-    /// Streams session-grain projections. `None` is the single startup snapshot;
-    /// subsequent calls use the indexed change feed, including removed sessions.
+    /// Streams session-grain projections. `None` is the single startup
+    /// snapshot; later calls read only the rows changed since `after`:
+    /// sessions whose own row or first prompt changed, the values whose
+    /// counts the writer changed (`session_value`), and removed sessions.
+    /// Sessions come first, then values, then removals.
     pub fn visit_completion_sessions(
         &self,
         after: Option<&ChangePosition>,
@@ -63,32 +77,38 @@ impl Reader<'_> {
         }
         let conn = self.conn()?;
         let columns = format!(
-            "pk,id,native_id,coalesce({},''),origin,repo,last_activity_at,cwd,branch,harness",
-            crate::session_sql::display_title("session")
+            "s.pk,s.id,s.native_id,coalesce({},''),s.origin,s.repo,s.last_activity_at,s.cwd,s.branch,s.harness,
+             (SELECT t.body FROM session_first_prompt f JOIN block b ON b.message_pk=f.message_pk AND b.kind='text'
+              JOIN text t ON t.id=b.text_id WHERE f.session_pk=s.pk ORDER BY b.idx LIMIT 1),
+             ?1>=0 AND EXISTS(SELECT 1 FROM removed_session r WHERE r.session_id=s.id AND r.changed>?1)",
+            crate::session_sql::display_title("s")
         );
-        // A session changes when its rows do or when its authored title does.
+        // A session changes when its row or first prompt does, or when its
+        // authored title does.
         let retitled = match after {
             Some(after) => crate::read::retitled_sessions(conn, after.archive)?,
             None => Default::default(),
         };
+        let since = after.map_or(-1, |after| after.index);
         let mut statement = conn.prepare(&if after.is_some() {
             format!(
-                "SELECT {columns} FROM session WHERE changed>?1 OR id IN (SELECT value FROM json_each(?2)) ORDER BY changed,pk"
+                "SELECT {columns} FROM session s WHERE s.changed>?1
+                 OR s.pk IN (SELECT session_pk FROM session_first_prompt WHERE changed>?1)
+                 OR s.id IN (SELECT value FROM json_each(?2)) ORDER BY s.changed,s.pk"
             )
         } else {
-            format!("SELECT {columns} FROM session ORDER BY pk")
+            format!("SELECT {columns} FROM session s ORDER BY s.pk")
         })?;
-        let mut rows = if let Some(after) = after {
+        let mut rows = if after.is_some() {
             statement.query(rusqlite::params![
-                after.index,
+                since,
                 serde_json::to_string(&retitled).map_err(|e| StoreError::Invalid(e.to_string()))?
             ])?
         } else {
-            statement.query([])?
+            statement.query([since])?
         };
         while let Some(row) = rows.next()? {
             self.check()?;
-            let pk: i64 = row.get(0)?;
             let mut item = Session {
                 id: row.get(1)?,
                 native_id: row.get(2)?,
@@ -97,7 +117,10 @@ impl Reader<'_> {
                 origin: row.get(4)?,
                 repo: row.get(5)?,
                 last_activity: row.get(6)?,
-                first_prompt: None,
+                first_prompt: row
+                    .get::<_, Option<Vec<u8>>>(10)?
+                    .map(|body| crate::encoding::unpack_text(&body))
+                    .transpose()?,
                 values: BTreeMap::new(),
             };
             for (field, value) in [
@@ -107,8 +130,8 @@ impl Reader<'_> {
                 ("branch", row.get(8)?),
                 ("harness", row.get(9)?),
             ] {
-                if let Some(value) = value.filter(|value| !value.is_empty()) {
-                    let values = item.values.entry(field.into()).or_default();
+                let values = item.values.entry(field.into()).or_default();
+                if let Some(value) = value.filter(|value: &String| !value.is_empty()) {
                     if field == "cwd" {
                         for (at, _) in value.match_indices('/').skip(1) {
                             values.insert(value[..at].to_owned(), 1);
@@ -117,30 +140,31 @@ impl Reader<'_> {
                     values.insert(value, 1);
                 }
             }
-            let mut counts=conn.prepare("SELECT 'model',model,count(*) FROM message WHERE session_pk=?1 AND model IS NOT NULL AND model<>'' GROUP BY model UNION ALL SELECT 'tool',tool,count(*) FROM tool_call WHERE session_pk=?1 GROUP BY tool")?;
-            for row in counts.query_map([pk], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)?,
-                ))
-            })? {
-                let (field, value, count) = row?;
-                item.values
-                    .entry(field)
-                    .or_default()
-                    .insert(value, count as u64);
-            }
-            let prompt:Option<Vec<u8>>=conn.query_row("SELECT t.body FROM message m JOIN block b ON b.message_pk=m.pk JOIN text t ON t.id=b.text_id WHERE m.session_pk=?1 AND m.written_by='human' AND m.prompt_kind='prose' AND b.kind='text' ORDER BY m.session_order,m.id,b.idx LIMIT 1",[pk],|row|row.get(0)).optional()?;
-            item.first_prompt = prompt
-                .map(|body| crate::encoding::unpack_text(&body))
-                .transpose()?;
-            visit(SessionChange::Upsert(Box::new(item)))?;
+            visit(if row.get(11)? {
+                SessionChange::Recreated(Box::new(item))
+            } else {
+                SessionChange::Upsert(Box::new(item))
+            })?;
         }
-        if let Some(after) = after {
+        drop(rows);
+        let mut values = conn.prepare(
+            "SELECT s.id,v.field,v.value,v.n FROM session_value v JOIN session s ON s.pk=v.session_pk
+             WHERE v.changed>?1 AND (?1>=0 OR v.n>0) ORDER BY v.changed,v.session_pk,v.field,v.value",
+        )?;
+        let mut rows = values.query([since])?;
+        while let Some(row) = rows.next()? {
+            self.check()?;
+            visit(SessionChange::Value {
+                session: row.get(0)?,
+                field: row.get(1)?,
+                value: row.get(2)?,
+                count: row.get::<_, i64>(3)? as u64,
+            })?;
+        }
+        if after.is_some() {
             let mut removed = conn
                 .prepare("SELECT r.session_id FROM removed_session r WHERE r.changed>?1 AND NOT EXISTS(SELECT 1 FROM session s WHERE s.id=r.session_id) ORDER BY r.changed,r.session_id")?;
-            for id in removed.query_map([after.index], |row| row.get::<_, String>(0))? {
+            for id in removed.query_map([since], |row| row.get::<_, String>(0))? {
                 visit(SessionChange::Removed(id?))?;
             }
         }
