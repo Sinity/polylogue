@@ -278,9 +278,19 @@ fn wait_ledger(
     ready: impl Fn(&serde_json::Value) -> bool,
 ) -> serde_json::Value {
     loop {
-        let rows = ledger_rows(env);
-        if ready(&rows) {
-            return rows;
+        let out = cli(env, &["--json", "events where source:hermes | sort by id"]);
+        let answer: command_surface::Answer<serde_json::Value> =
+            serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(i32::from(answer.exit_code())),
+            "{out:?}"
+        );
+        if !matches!(&answer.outcome, command_surface::Outcome::Degraded { .. }) {
+            let rows = query_rows(&out);
+            if ready(&rows) {
+                return rows;
+            }
         }
         std::thread::sleep(Duration::from_millis(5));
     }

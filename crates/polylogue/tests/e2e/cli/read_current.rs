@@ -90,7 +90,7 @@ fn typed_read_real_cli_pages_unicode_once_and_publishes_a_canonical_bundle() {
     let expected = "A synthetic λ🙂 prompt across source and transport boundaries.";
     std::fs::write(project.join("typed.jsonl"), line("u1", "typed", expected)).unwrap();
     let _daemon = start_daemon(&fixture);
-    super::stored_text::wait_for_source(&fixture, 1);
+    wait_status(&fixture, |status| status["store"]["messages"] == 1);
     let target = "session:claude-code:typed";
     let whole = typed_page(&cli(
         &fixture,

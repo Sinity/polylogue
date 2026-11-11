@@ -17,43 +17,11 @@ pub(super) fn with_source(records: &[Value], check: impl FnOnce(&crate::Fixture,
         &directory.path().join("config"),
     );
     let _daemon = start_daemon(&fixture);
-    wait_for_source(&fixture, records.len());
+    wait_status(&fixture, |status| {
+        status["store"]["messages"] == records.len()
+    });
     check(&fixture, directory.path());
     assert_eq!(std::fs::read_to_string(source).unwrap(), original);
-}
-// Serving precedes index construction. Wait for the source and a current
-// freshness report before testing commands that require a settled archive.
-pub(super) fn wait_for_source(fixture: &crate::Fixture, messages: usize) {
-    let until = Instant::now() + Duration::from_secs(30);
-    loop {
-        let output = cli(fixture, &["--deadline", "none", "--json", "status"]);
-        let answer: command_surface::Answer<Value> = serde_json::from_slice(&output.stdout)
-            .unwrap_or_else(|error| panic!("invalid startup status answer: {error}: {output:?}"));
-        assert_eq!(
-            output.status.code(),
-            Some(i32::from(answer.exit_code())),
-            "startup status exit disagrees with its answer: {output:?}"
-        );
-        let (value, current) = match answer {
-            command_surface::Answer {
-                outcome: command_surface::Outcome::Ok(value),
-                ..
-            } => (value, true),
-            command_surface::Answer {
-                outcome: command_surface::Outcome::Degraded { value, .. },
-                ..
-            } => (value, false),
-            answer => panic!("startup status failed: {answer:?}; {output:?}"),
-        };
-        if current && value["busy"] == false && value["store"]["messages"] == messages {
-            return;
-        }
-        assert!(
-            Instant::now() < until,
-            "source never became ready; last status: {value}"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
 }
 
 pub(super) fn native(id: &str, role: &str, content: Value) -> Value {

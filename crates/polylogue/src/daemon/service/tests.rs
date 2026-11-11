@@ -247,9 +247,18 @@ fn an_old_daemon_handle_does_not_prevent_empty_archive_restart() {
     let mut runtime =
         test_daemon::start_runtime(&root, config(dir.path()), ArchiveMode::Standalone).unwrap();
     let old = Arc::clone(&runtime.daemon);
-    crate::test_answers::ok(
-        crate::test_daemon::Call::new("status", serde_json::json!({})).answer(&old),
-    );
+    let check_empty_status = |daemon: &Daemon| {
+        let answer = crate::test_daemon::Call::new("status", serde_json::json!({})).answer(daemon);
+        assert!(
+            matches!(
+                &answer.outcome,
+                command_surface::Outcome::Ok(_) | command_surface::Outcome::Degraded { .. }
+            ),
+            "{answer:?}"
+        );
+        assert_eq!(answer.value().unwrap()["store"]["sessions"], 0);
+    };
+    check_empty_status(&old);
     runtime.shutdown().unwrap();
     assert!(matches!(
         old.reads.reader(),
@@ -257,9 +266,7 @@ fn an_old_daemon_handle_does_not_prevent_empty_archive_restart() {
     ));
     let mut next =
         test_daemon::start_runtime(&root, config(dir.path()), ArchiveMode::Standalone).unwrap();
-    crate::test_answers::ok(
-        crate::test_daemon::Call::new("status", serde_json::json!({})).answer(&next.daemon),
-    );
+    check_empty_status(&next.daemon);
     next.shutdown().unwrap();
     assert!(
         matches!(crate::test_daemon::Call::new("status", serde_json::json!({})).answer(&old), command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("shutting_down"))

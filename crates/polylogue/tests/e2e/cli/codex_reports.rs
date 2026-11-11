@@ -16,6 +16,7 @@ fn native_codex_counts_usage_and_selected_items_preserve_exact_recorded_text() {
     std::fs::write(&source, &original).unwrap();
     let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let _daemon = start_daemon(&env);
+    wait_status(&env, |status| status["store"]["sessions"] == 1);
     let answer = loop {
         let out = cli(&env, &["--json", "measure", "usage"]);
         assert!(out.status.success(), "{out:?}");
