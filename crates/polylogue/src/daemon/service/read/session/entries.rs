@@ -1,145 +1,333 @@
-//! A composed reading over cached physical-session prefix sums. Only the
-//! selected page's positions are collected; composition costs one span each.
+//! The entries a composed reading shows, read from the session item index
+//! in windows next to a page. Where an entry sits among the shown entries
+//! comes from the counts the writer stores per entry class, so a page in the
+//! middle of a long session reads its own entries and the unit it starts
+//! in, not the entries before it.
 use super::{Composed, Runs};
-use crate::daemon::service::Daemon;
-use polylogue_model::read::{EntryKind, FoldProfile, RunningSums, View};
-use std::{ops::Range, sync::Arc};
+use crate::daemon::service::Failure;
+use polylogue_model::read::{EntryKind, FoldProfile, IndexEntry, ItemCounts, View};
+use polylogue_store::Reader;
 
-struct Run {
+/// One shown entry: its part, its place in the part's session, and itself.
+#[derive(Debug, Clone)]
+pub(super) struct PageEntry {
+    pub part: usize,
+    pub seq: usize,
+    pub entry: IndexEntry,
+}
+impl PageEntry {
+    pub(super) fn place(&self) -> (usize, usize) {
+        (self.part, self.seq)
+    }
+}
+
+/// The entries of one page, and the shown entry after them.
+pub(super) struct Page {
+    pub entries: Vec<PageEntry>,
+    pub next: Option<PageEntry>,
+}
+
+/// A run of one part's entries in the reading.
+struct Span {
     part: usize,
-    sums: Arc<RunningSums>,
-    first: usize,
+    start: usize,
     end: usize,
-    shown_before: usize,
-    tokens_before: u64,
+    /// A header the span shows none of the blocks of: hidden in this span.
+    dropped: Option<usize>,
+    /// Shown entries before the span.
+    before: u64,
 }
 
-pub(super) struct ShownEntries {
-    runs: Vec<Run>,
-    len: usize,
-    tokens: u64,
+pub(super) struct ShownEntries<'r, 'c> {
+    reader: &'r Reader<'r>,
+    composed: &'c Composed,
+    profile: FoldProfile,
+    spans: Vec<Span>,
+    total: u64,
 }
-impl ShownEntries {
-    pub(super) fn new(d: &Daemon, composed: &Composed, runs: &Runs, profile: FoldProfile) -> Self {
+
+/// Rows read per window at first; later windows of one page read more.
+const FIRST_WINDOW: usize = 16;
+
+impl<'r, 'c> ShownEntries<'r, 'c> {
+    pub(super) fn new(
+        reader: &'r Reader<'r>,
+        composed: &'c Composed,
+        runs: &Runs,
+        profile: FoldProfile,
+    ) -> Result<Self, Failure> {
         let mut out = Self {
-            runs: Vec::new(),
-            len: 0,
-            tokens: 0,
+            reader,
+            composed,
+            profile,
+            spans: Vec::new(),
+            total: 0,
         };
+        let headers_alone = matches!(profile.view, View::Transcript | View::Context | View::Raw);
         for &(part, start, end) in &runs.spans {
-            let sums = d.warm.items.visible(&composed.indexes[part], profile);
-            let first = sums.shown.partition_point(|shown| shown.entry < start);
-            let mut through = sums.shown.partition_point(|shown| shown.entry < end);
-            // A clipped span can end after a header but before any shown
-            // block. Whole-session preparation saw that block outside the
-            // span; this span must apply the header rule to its own range.
-            if !matches!(profile.view, View::Transcript | View::Context | View::Raw)
-                && through > first
-                && composed.entries(part)[sums.shown[through - 1].entry].kind == EntryKind::Header
+            if start >= end {
+                continue;
+            }
+            let shown = composed
+                .counts_at(reader, part, end)?
+                .since(&composed.counts_at(reader, part, start)?)
+                .shown(&profile);
+            // A span cut inside a message can end after a header but before
+            // any of its shown blocks; the header is then not shown here.
+            let index = &composed.indexes[part];
+            let mut dropped = None;
+            if !headers_alone && end < index.entries as usize && shown > 0 {
+                let last =
+                    reader.item_window(index.pk, start as u64..end as u64, false, 1, |class| {
+                        profile.shows(class)
+                    })?;
+                if let Some(last) = last.first()
+                    && last.entry.kind == EntryKind::Header
+                {
+                    dropped = Some(last.seq as usize);
+                }
+            }
+            let shown = shown - u64::from(dropped.is_some());
+            out.spans.push(Span {
+                part,
+                start,
+                end,
+                dropped,
+                before: out.total,
+            });
+            out.total += shown;
+        }
+        Ok(out)
+    }
+
+    /// How many entries the reading shows.
+    pub(super) fn len(&self) -> u64 {
+        self.total
+    }
+
+    /// The shown entries before a place.
+    pub(super) fn position(&self, (part, seq): (usize, usize)) -> Result<u64, Failure> {
+        let Some(at) = self.span_at(part, seq) else {
+            return Ok(self.total);
+        };
+        let span = &self.spans[at];
+        if (part, seq) <= (span.part, span.start) {
+            return Ok(span.before);
+        }
+        let shown = self
+            .composed
+            .counts_at(self.reader, part, seq)?
+            .since(&self.composed.counts_at(self.reader, part, span.start)?)
+            .shown(&self.profile);
+        let dropped = span.dropped.is_some_and(|dropped| dropped < seq);
+        Ok(span.before + shown - u64::from(dropped))
+    }
+
+    /// The first span that holds a place or comes after it.
+    fn span_at(&self, part: usize, seq: usize) -> Option<usize> {
+        let at = self
+            .spans
+            .partition_point(|span| (span.part, span.end) <= (part, seq));
+        (at < self.spans.len()).then_some(at)
+    }
+
+    /// Shown entries from a place on, in order, while `more` accepts them.
+    fn walk(
+        &self,
+        from: (usize, usize),
+        mut more: impl FnMut(&PageEntry) -> bool,
+    ) -> Result<(), Failure> {
+        let Some(first) = self.span_at(from.0, from.1) else {
+            return Ok(());
+        };
+        let mut window = FIRST_WINDOW;
+        for span in &self.spans[first..] {
+            let index = &self.composed.indexes[span.part];
+            let mut seq = if span.part == from.0 {
+                from.1.max(span.start)
+            } else {
+                span.start
+            };
+            while seq < span.end {
+                let rows = self.reader.item_window(
+                    index.pk,
+                    seq as u64..span.end as u64,
+                    true,
+                    window,
+                    |class| self.profile.shows(class),
+                )?;
+                window = window.saturating_mul(2);
+                let Some(last) = rows.last() else { break };
+                seq = last.seq as usize + 1;
+                for stored in rows {
+                    if span.dropped == Some(stored.seq as usize) {
+                        continue;
+                    }
+                    let entry = PageEntry {
+                        part: span.part,
+                        seq: stored.seq as usize,
+                        entry: stored.entry,
+                    };
+                    if !more(&entry) {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Shown entries before a place, nearest first, while `more` accepts them.
+    fn walk_back(
+        &self,
+        before: (usize, usize),
+        mut more: impl FnMut(&PageEntry) -> bool,
+    ) -> Result<(), Failure> {
+        let last = match self.span_at(before.0, before.1) {
+            Some(at) => at + 1,
+            None => self.spans.len(),
+        };
+        let mut window = FIRST_WINDOW;
+        for span in self.spans[..last].iter().rev() {
+            let index = &self.composed.indexes[span.part];
+            let mut end = if span.part == before.0 {
+                before.1.min(span.end)
+            } else if (span.part, span.start) >= before {
+                continue;
+            } else {
+                span.end
+            };
+            while end > span.start {
+                let rows = self.reader.item_window(
+                    index.pk,
+                    span.start as u64..end as u64,
+                    false,
+                    window,
+                    |class| self.profile.shows(class),
+                )?;
+                window = window.saturating_mul(2);
+                let Some(last) = rows.last() else { break };
+                end = last.seq as usize;
+                for stored in rows {
+                    if span.dropped == Some(stored.seq as usize) {
+                        continue;
+                    }
+                    let entry = PageEntry {
+                        part: span.part,
+                        seq: stored.seq as usize,
+                        entry: stored.entry,
+                    };
+                    if !more(&entry) {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn cost(&self, entry: &IndexEntry) -> u64 {
+        self.profile.cost(entry).unwrap_or(0)
+    }
+
+    /// The page that starts at the first shown entry at or after `from`: as
+    /// many whole entries as fit in `tokens` and `items`, at least one, and
+    /// the shown entry after them.
+    pub(super) fn page_after(
+        &self,
+        from: (usize, usize),
+        tokens: u64,
+        items: usize,
+    ) -> Result<Page, Failure> {
+        let items = items.max(1);
+        let mut page = Page {
+            entries: Vec::new(),
+            next: None,
+        };
+        let mut used = 0u64;
+        self.walk(from, |entry| {
+            let cost = self.cost(&entry.entry);
+            if page.entries.len() >= items
+                || (!page.entries.is_empty() && used.saturating_add(cost) > tokens)
             {
-                through -= 1;
+                page.next = Some(entry.clone());
+                return false;
             }
-            out.push(part, sums, first..through);
-        }
-        out
+            used = used.saturating_add(cost);
+            page.entries.push(entry.clone());
+            true
+        })?;
+        Ok(page)
     }
-    fn push(&mut self, part: usize, sums: Arc<RunningSums>, range: Range<usize>) {
-        if range.is_empty() {
-            return;
-        }
-        let tokens = sums.sums[range.end].saturating_sub(sums.sums[range.start]);
-        let len = range.len();
-        self.runs.push(Run {
-            part,
-            sums,
-            first: range.start,
-            end: range.end,
-            shown_before: self.len,
-            tokens_before: self.tokens,
-        });
-        self.len += len;
-        self.tokens = self.tokens.saturating_add(tokens);
+
+    /// The first shown entry at or after a place.
+    pub(super) fn first_at(&self, from: (usize, usize)) -> Result<Option<PageEntry>, Failure> {
+        let mut found = None;
+        self.walk(from, |entry| {
+            found = Some(entry.clone());
+            false
+        })?;
+        Ok(found)
     }
-    pub(super) fn len(&self) -> usize {
-        self.len
+
+    /// The last shown entry before a place.
+    pub(super) fn last_before(&self, before: (usize, usize)) -> Result<Option<PageEntry>, Failure> {
+        let mut found = None;
+        self.walk_back(before, |entry| {
+            found = Some(entry.clone());
+            false
+        })?;
+        Ok(found)
     }
-    pub(super) fn get(&self, at: usize) -> Option<(usize, usize)> {
-        if at >= self.len {
-            return None;
-        }
-        let run = &self.runs[self
-            .runs
-            .partition_point(|run| run.shown_before + run.end - run.first <= at)];
-        Some((
-            run.part,
-            run.sums.shown[run.first + at - run.shown_before].entry,
-        ))
-    }
-    pub(super) fn range(&self, range: Range<usize>) -> Vec<(usize, usize)> {
-        range
-            .map(|at| self.get(at).expect("a selected page is inside its reading"))
-            .collect()
-    }
-    pub(super) fn partition_point(&self, predicate: impl Fn((usize, usize)) -> bool) -> usize {
-        let (mut low, mut high) = (0, self.len);
-        while low < high {
-            let mid = low + (high - low) / 2;
-            if predicate(self.get(mid).expect("inside reading")) {
-                low = mid + 1;
-            } else {
-                high = mid;
+
+    /// The page that ends just before a place: the most whole entries before
+    /// it that fit in `tokens` and `items`, at least one, in reading order.
+    pub(super) fn page_before(
+        &self,
+        before: (usize, usize),
+        tokens: u64,
+        items: usize,
+    ) -> Result<Vec<PageEntry>, Failure> {
+        let items = items.max(1);
+        let mut out: Vec<PageEntry> = Vec::new();
+        let mut used = 0u64;
+        self.walk_back(before, |entry| {
+            let cost = self.cost(&entry.entry);
+            if out.len() >= items || (!out.is_empty() && used.saturating_add(cost) > tokens) {
+                return false;
             }
-        }
-        low
+            used = used.saturating_add(cost);
+            out.push(entry.clone());
+            true
+        })?;
+        out.reverse();
+        Ok(out)
     }
-    fn prefix(&self, at: usize) -> u64 {
-        if at == self.len {
-            return self.tokens;
-        }
-        let run = &self.runs[self
-            .runs
-            .partition_point(|run| run.shown_before + run.end - run.first <= at)];
-        run.tokens_before.saturating_add(
-            run.sums.sums[run.first + at - run.shown_before]
-                .saturating_sub(run.sums.sums[run.first]),
-        )
+
+    /// Where the reading starts and where it ends.
+    pub(super) fn start(&self) -> (usize, usize) {
+        self.spans
+            .first()
+            .map_or((0, 0), |span| (span.part, span.start))
     }
-    pub(super) fn page_after(&self, start: usize, tokens: u64, items: usize) -> usize {
-        if start >= self.len {
-            return start;
-        }
-        let limit = self.prefix(start).saturating_add(tokens);
-        let (mut low, mut high) = (start + 1, self.len + 1);
-        while low < high {
-            let mid = low + (high - low) / 2;
-            if self.prefix(mid) <= limit {
-                low = mid + 1;
-            } else {
-                high = mid;
-            }
-        }
-        (low - 1)
-            .max(start + 1)
-            .min(start.saturating_add(items.max(1)))
-    }
-    pub(super) fn page_before(&self, end: usize, tokens: u64, items: usize) -> usize {
-        let end = end.min(self.len);
-        if end == 0 {
-            return 0;
-        }
-        let floor = self.prefix(end).saturating_sub(tokens);
-        let (mut low, mut high) = (0, end);
-        while low < high {
-            let mid = low + (high - low) / 2;
-            if self.prefix(mid) < floor {
-                low = mid + 1;
-            } else {
-                high = mid;
-            }
-        }
-        low.min(end - 1).max(end.saturating_sub(items.max(1)))
+    pub(super) fn end(&self) -> (usize, usize) {
+        self.spans
+            .last()
+            .map_or((0, 0), |span| (span.part, span.end))
     }
 }
 
-#[cfg(test)]
-mod tests;
+/// The counts of a part's session before `seq`.
+pub(super) fn counts_before(
+    reader: &Reader<'_>,
+    index: &super::SessionIndex,
+    seq: usize,
+) -> Result<ItemCounts, Failure> {
+    Ok(if seq == 0 {
+        ItemCounts::default()
+    } else if seq as u64 >= index.entries {
+        index.counts.clone()
+    } else {
+        reader.item_counts_before(index.pk, seq as u64)?
+    })
+}

@@ -14,6 +14,36 @@ fn assert_matches_rows(w: &TestArchive, session: &str) {
     let computed =
         crate::items::computed_entries(reader.conn().unwrap(), index.session_pk).unwrap();
     assert_eq!(index.entries, computed, "session {session}");
+    // What is stored beside the entries equals a recount of every entry.
+    let classes = polylogue_model::read::entry_classes(&computed);
+    let (columns, entries, total) =
+        crate::items::stored_columns(reader.conn().unwrap(), index.session_pk).unwrap();
+    assert_eq!(entries, computed.len() as u64, "session {session}");
+    let mut running = polylogue_model::read::ItemCounts::default();
+    let units: Vec<bool> = {
+        let conn = reader.conn().unwrap();
+        let mut statement = conn
+            .prepare("SELECT unit IS NOT NULL FROM session_item WHERE session_pk = ?1 ORDER BY seq")
+            .unwrap();
+        statement
+            .query_map([index.session_pk], |row| row.get::<_, bool>(0))
+            .unwrap()
+            .map(|unit| unit.unwrap())
+            .collect()
+    };
+    for (at, ((entry, class), (stored_class, call_id, counts))) in
+        computed.iter().zip(&classes).zip(&columns).enumerate()
+    {
+        assert_eq!(stored_class, class, "session {session} entry {at}");
+        assert_eq!(call_id, &entry.call_id, "session {session} entry {at}");
+        assert_eq!(
+            counts.as_ref(),
+            units[at].then_some(&running),
+            "session {session} entry {at}"
+        );
+        running.add(entry, *class);
+    }
+    assert_eq!(total, running, "session {session}");
 }
 
 fn message(id: &str, role: Role, text: &str) -> Message {

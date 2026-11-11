@@ -7,6 +7,9 @@ use super::{EntryKey, Expansion, ReadOptions, View, estimate_tokens};
 use crate::{Block, Message, PromptKind, ToolAction, WrittenBy};
 use serde::{Deserialize, Serialize};
 
+mod counts;
+pub use counts::*;
+
 /// What an entry stands for. One message gives a header entry and one entry
 /// per stored block; an event gives one entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
@@ -516,32 +519,6 @@ impl RunningSums {
     }
     pub fn is_empty(&self) -> bool {
         self.shown.is_empty()
-    }
-
-    /// The end (exclusive) of the page that starts at shown entry `start`:
-    /// as many whole entries as fit in `tokens` and `items`, and at least
-    /// one, so an oversized entry still makes progress.
-    pub fn page_after(&self, start: usize, tokens: u64, items: usize) -> usize {
-        if start >= self.len() {
-            return start;
-        }
-        let limit = self.sums[start].saturating_add(tokens);
-        // The first index whose running sum passes the limit.
-        let fits = self.sums[start + 1..].partition_point(|sum| *sum <= limit);
-        let end = start + fits.max(1);
-        end.min(start.saturating_add(items.max(1)))
-    }
-
-    /// The start of the page that ends (exclusive) at shown entry `end`.
-    pub fn page_before(&self, end: usize, tokens: u64, items: usize) -> usize {
-        let end = end.min(self.len());
-        if end == 0 {
-            return 0;
-        }
-        let floor = self.sums[end].saturating_sub(tokens);
-        let start = self.sums[..end].partition_point(|sum| *sum < floor);
-        let start = start.min(end - 1);
-        start.max(end.saturating_sub(items.max(1)))
     }
 }
 
