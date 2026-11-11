@@ -1565,3 +1565,77 @@ fn a_user_write_wakes_an_idle_writer_while_the_bulk_queue_lock_is_held() {
     drop(held);
     assert_eq!(committed, Ok(true));
 }
+
+#[cfg(feature = "faults")]
+#[test]
+fn a_stop_during_deferred_indexes_keeps_committed_rows_for_restart() {
+    crate::fault::clear();
+    let w = test_archive();
+    w.store_reading(
+        batch(
+            "stop-input",
+            Route::Live,
+            0,
+            vec![row(
+                0,
+                text_message(
+                    "stop-message",
+                    "stop-session",
+                    Role::User,
+                    "searchableword",
+                    None,
+                ),
+            )],
+            &["stop-session"],
+        ),
+        Some(&SOURCE_RECORD),
+    )
+    .unwrap();
+    w.writer.flush().unwrap();
+    let stop = w.writer.stop_handle();
+    let sender = w.writer.sender().unwrap();
+    crate::fault::arm(
+        "index.deferred",
+        &w.archive.root.to_string_lossy(),
+        crate::fault::Action::Hold,
+        0,
+        1,
+    );
+    let run = std::thread::spawn(move || sender.derive());
+    let guard = std::time::Instant::now();
+    while !crate::fault::held() {
+        assert!(
+            guard.elapsed() < std::time::Duration::from_secs(30),
+            "index finish did not reach barrier"
+        );
+        std::thread::yield_now();
+    }
+    stop.request();
+    crate::fault::release();
+    assert!(run.join().unwrap().is_ok());
+    crate::fault::clear();
+    let index = crate::archive::open_read(&w.archive.index_db()).unwrap();
+    assert!(crate::schema::building(&index).unwrap());
+    drop(index);
+    let TestArchive {
+        writer,
+        archive,
+        _lock,
+        _dir,
+    } = w;
+    drop(writer);
+    let writer = Writer::start(&archive).unwrap();
+    writer.derive().unwrap();
+    let index = crate::archive::open_read(&archive.index_db()).unwrap();
+    assert!(!crate::schema::building(&index).unwrap());
+    assert_eq!(
+        index
+            .query_row(
+                "SELECT count(*) FROM text_fts WHERE text_fts MATCH 'searchableword'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+}

@@ -148,10 +148,29 @@ enum Msg {
     Derive(SyncSender<Result<u64>>),
 }
 
+/// Asks the writer to end its long work early, for a stop of the process:
+/// a derive pass ends after the transaction in progress, and a first build's
+/// ending (its deferred indexes) ends at its next step, rolling back the
+/// statement in progress. What committed stays; the rest is done at the next
+/// start. Ordinary writes are not affected.
+#[derive(Clone, Default)]
+pub struct WriterStop(Arc<std::sync::atomic::AtomicBool>);
+
+impl WriterStop {
+    pub fn request(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    fn requested(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
 /// Handle to the writer thread. Dropping it stops the thread after the
 /// batches already sent are written.
 pub struct Writer {
     tx: Option<WriterQueue>,
+    stop: WriterStop,
     handle: Option<JoinHandle<()>>,
     /// The index was empty when the writer started: its first pass is a
     /// first build.
@@ -466,9 +485,11 @@ impl Writer {
         let dispatch = dispatch::Barriers::default();
         let (tx, rx) = sync_channel::<Msg>(QUEUE);
         let (users, users_rx) = sync_channel::<UserMsg>(USER_QUEUE);
+        let stop = WriterStop::default();
         let mut inner = Inner {
             #[cfg(any(test, feature = "fixture"))]
             dispatch: dispatch.clone(),
+            stop: stop.clone(),
             commits: commits.clone(),
             resolver: Arc::clone(&resolver),
             segment,
@@ -500,6 +521,7 @@ impl Writer {
             .transpose()?;
         Ok(Self {
             tx: Some(queue),
+            stop,
             handle: Some(handle),
             started_empty: empty,
             resolver,
@@ -532,6 +554,11 @@ impl Writer {
             .map_err(|_| StoreError::WriterGone)?;
         wait.recv().map_err(|_| StoreError::WriterGone)??;
         follower.synchronize()
+    }
+
+    /// The handle that ends this writer's long work early ([`WriterStop`]).
+    pub fn stop_handle(&self) -> WriterStop {
+        self.stop.clone()
     }
 
     /// Whether the index was empty when the writer started.
@@ -1149,6 +1176,8 @@ fn user_via(
 }
 
 struct Inner {
+    /// Ends a derive pass or a first build's ending early.
+    stop: WriterStop,
     #[cfg(any(test, feature = "fixture"))]
     dispatch: dispatch::Barriers,
     commits: crate::completion::CommitEvents,
@@ -1542,7 +1571,6 @@ impl Inner {
                 break;
             }
         }
-        let _ = self.finish_build();
         let closed = self.refresh_chain_progress().and_then(|()| {
             if self.sinex.is_none() {
                 crate::chain_progress::close(&self.index)?;
@@ -1685,15 +1713,40 @@ impl Inner {
         }
         let pass = crate::derive::Pass::builtin(&mut self.index)?;
         let mut derived = 0;
-        loop {
-            let next = crate::timing::time(crate::timing::Stage::Derive, || {
-                pass.next(&mut self.index, Some(&self.commits))
+        while !self.stop.requested() {
+            let next = self.until_stopped(|inner| {
+                crate::timing::time(crate::timing::Stage::Derive, || {
+                    pass.next(&mut inner.index, Some(&inner.commits))
+                })
             })?;
-            let Some(n) = next else { break };
+            let Some(Some(n)) = next else { break };
             derived += n;
             self.serve_users();
         }
         Ok(derived)
+    }
+
+    /// Runs `work`, whose statements on the index a stop interrupts: one
+    /// index statement or derive transaction over a large archive runs for
+    /// minutes. Stopped, its statement and transaction roll back and the
+    /// answer is `None`; the work is done again at the next start.
+    fn until_stopped<T>(&mut self, work: impl FnOnce(&mut Self) -> Result<T>) -> Result<Option<T>> {
+        let stop = self.stop.clone();
+        self.index
+            .progress_handler(10_000, Some(move || stop.requested()))?;
+        let result = work(self);
+        self.index.progress_handler(0, None::<fn() -> bool>)?;
+        match result {
+            Ok(value) => Ok(Some(value)),
+            Err(StoreError::Sqlite(error))
+                if self.stop.requested()
+                    && error.sqlite_error_code()
+                        == Some(rusqlite::ErrorCode::OperationInterrupted) =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Clears the build marker only after every deferred index has committed.
@@ -1703,19 +1756,22 @@ impl Inner {
     /// Its commits therefore need no sync of their own, which on a small
     /// archive were most of the startup's time.
     fn finish_build(&mut self) -> Result<()> {
-        if self.first_build.is_none() {
+        if self.first_build.is_none() || self.stop.requested() {
             return Ok(());
         }
         self.index.pragma_update(None, "synchronous", "normal")?;
-        let finished = self.build_deferred().and_then(|()| {
-            self.index
+        let finished = self.until_stopped(|inner| {
+            inner.build_deferred()?;
+            inner
+                .index
                 .execute("UPDATE meta SET value = '0' WHERE key = 'building'", [])?;
             Ok(())
         });
-        if let Err(error) = finished {
-            // Rows written while the build continues are synced again.
+        if !matches!(finished, Ok(Some(()))) {
+            // Rows written while the build continues are synced again; a
+            // stopped ending is done at the next start.
             self.index.pragma_update(None, "synchronous", "full")?;
-            return Err(error);
+            return finished.map(drop);
         }
         self.first_build = None;
         self.search.ready();
@@ -1747,6 +1803,13 @@ impl Inner {
         add(Stage::TrigramIndex, started.elapsed());
         let started = std::time::Instant::now();
         for sql in &self.deferred_indexes {
+            if self.stop.requested() {
+                return Err(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERRUPT),
+                    None,
+                )
+                .into());
+            }
             let sql = sql
                 .replacen(
                     "CREATE UNIQUE INDEX ",

@@ -419,9 +419,11 @@ pub enum LoopMsg {
 }
 
 /// Asks a running loop to end its pass at the next batch boundary: parses
-/// already handed to workers commit, work not yet started is left for the
-/// next start, and [`Engine::run`] returns. A loop waiting between passes
-/// also needs [`LoopMsg::Stop`] to wake.
+/// already handed to workers commit, a chain reading in preparation is
+/// dropped, the writer's derive pass or first-build ending ends early
+/// ([`polylogue_store::writer::WriterStop`]), work not yet started is left
+/// for the next start, and [`Engine::run`] returns. A loop waiting between
+/// passes also needs [`LoopMsg::Stop`] to wake.
 #[derive(Clone, Default)]
 pub struct StopRequest(Arc<StopState>);
 
@@ -430,13 +432,22 @@ struct StopState {
     requested: std::sync::atomic::AtomicBool,
     /// Parse pools whose submitters wait for room; a request wakes them.
     pools: Mutex<Vec<std::sync::Weak<pool::Shared>>>,
+    writer: polylogue_store::writer::WriterStop,
 }
 
 impl StopRequest {
+    fn for_writer(writer: &Writer) -> Self {
+        Self(Arc::new(StopState {
+            writer: writer.stop_handle(),
+            ..StopState::default()
+        }))
+    }
+
     pub fn request(&self) {
         self.0
             .requested
             .store(true, std::sync::atomic::Ordering::Release);
+        self.0.writer.request();
         let pools = self
             .0
             .pools
@@ -540,6 +551,7 @@ impl Engine {
         let reader_memory = config.reader_memory_per_connection()?;
         let reads = ReadPool::with_budget(&archive, 1, reader_memory)?;
         let blobs = Arc::new(archive.blobs()?);
+        let stop = StopRequest::for_writer(&writer);
         Ok(Self {
             config,
             archive,
@@ -563,7 +575,7 @@ impl Engine {
             lookups: repo_lookup::Cache::default(),
             lookups_at: None,
             collectors: collectors::Collectors::default(),
-            stop: StopRequest::default(),
+            stop,
         })
     }
 
