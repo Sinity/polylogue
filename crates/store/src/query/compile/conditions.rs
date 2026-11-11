@@ -16,7 +16,8 @@ impl<'a> Compiler<'a> {
     }
 
     /// A condition as written, over `scope`'s rows. `top` is true for the
-    /// query's own `where`, where a top-level text term ranks the rows.
+    /// query's own `where`, where a top-level text term of the search
+    /// leg's index ranks the rows.
     pub(super) fn cond(
         &mut self,
         c: &Condition,
@@ -228,43 +229,6 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    /// The positive terms of a top-level condition, for the snippet
-    /// ([`SnippetTerms`]): words under `NOT` and reference words are left
-    /// out, and an `OR` keeps its branches.
-    pub(super) fn positive_terms(&self, filter: &Filter, unit: Unit) -> Option<SnippetTerms> {
-        use crate::search::SnippetIndex;
-        let collect = |all: &[Filter]| -> Vec<SnippetTerms> {
-            all.iter()
-                .filter_map(|x| self.positive_terms(x, unit))
-                .collect()
-        };
-        let one =
-            |mut parts: Vec<SnippetTerms>, many: fn(Vec<SnippetTerms>) -> SnippetTerms| match parts
-                .len()
-            {
-                0 => None,
-                1 => parts.pop(),
-                _ => Some(many(parts)),
-            };
-        match filter {
-            Filter::Word(word) if text_unit(unit) => Some(SnippetTerms::Word {
-                text: word.text.clone(),
-                index: SnippetIndex::Prose,
-            }),
-            Filter::Field(FieldTest {
-                field,
-                test: Test::Written(Comparison::Match(value)),
-                ..
-            }) if field.declaration().name == "output" => Some(SnippetTerms::Word {
-                text: value_text(value).ok()?.to_owned(),
-                index: SnippetIndex::Output,
-            }),
-            Filter::All(all) => one(collect(all), SnippetTerms::All),
-            Filter::Any(any) => one(collect(any), SnippetTerms::Any),
-            _ => None,
-        }
-    }
-
     /// A full-text condition over one index. Terms ANDed together must all
     /// occur in the same message (or block).
     pub(super) fn text(
@@ -326,7 +290,12 @@ impl<'a> Compiler<'a> {
         self.ctes.push(format!(
             "{cte} AS MATERIALIZED (SELECT rowid AS text_id, bm25({table}) AS rank FROM {table} WHERE {table} MATCH {param})"
         ));
-        if top && index != Index::Thinking && self.rank.is_none() {
+        let ranks = match index {
+            Index::Prose => Some(polylogue_query::search::SnippetIndex::Prose),
+            Index::Output => Some(polylogue_query::search::SnippetIndex::Output),
+            Index::Thinking => None,
+        };
+        if top && ranks.is_some() && ranks == self.rank_index && self.rank.is_none() {
             self.rank = Some(rank);
         }
         Ok(cond)

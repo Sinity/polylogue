@@ -10,7 +10,8 @@ use crate::query::units::{self, Index, Search, Via};
 use combine::join;
 use polylogue_query::QueryError;
 use polylogue_query::compile::Parameters;
-use polylogue_query::selection::{Projection, Selection, contains_order, top_level};
+pub use polylogue_query::search::SnippetTerms;
+use polylogue_query::selection::{Order, Projection, Selection, contains_order, top_level};
 pub use polylogue_query::{
     ChatPage, ColKind, Column, ColumnReference, Definition, Kept, Options, SavedQuery, Shape,
 };
@@ -71,57 +72,6 @@ pub struct Attach {
 pub struct WhyClause {
     pub clause: String,
     pub sql: String,
-}
-
-/// The positive terms of a top-level condition, which a ranked row's snippet
-/// looks for: bare words and phrases search prose, `output:` values tool
-/// output. Negated terms and reference words are not among them; an `OR`
-/// keeps its branches as alternatives.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SnippetTerms {
-    /// A word or phrase as written, a trailing `*` marking a prefix.
-    Word {
-        text: String,
-        index: crate::search::SnippetIndex,
-    },
-    All(Vec<SnippetTerms>),
-    Any(Vec<SnippetTerms>),
-}
-
-impl SnippetTerms {
-    /// The FTS5 expression of the terms searching `index`.
-    pub fn fts(&self, index: crate::search::SnippetIndex) -> Option<String> {
-        let group = |parts: &[SnippetTerms], joiner: &str| {
-            let mut parts: Vec<String> = parts.iter().filter_map(|p| p.fts(index)).collect();
-            match parts.len() {
-                0 => None,
-                1 => parts.pop(),
-                _ => Some(format!("({})", parts.join(joiner))),
-            }
-        };
-        match self {
-            SnippetTerms::Word { text, index: own } if *own == index => {
-                polylogue_model::text::fts_phrase(text)
-            }
-            SnippetTerms::Word { .. } => None,
-            SnippetTerms::All(parts) => group(parts, " AND "),
-            SnippetTerms::Any(parts) => group(parts, " OR "),
-        }
-    }
-
-    /// The words and phrases searching `index`, for marking the cut text.
-    pub fn words<'t>(&'t self, index: crate::search::SnippetIndex, out: &mut Vec<&'t str>) {
-        match self {
-            SnippetTerms::Word { text, index: own } if *own == index => out.push(text),
-            SnippetTerms::Word { .. } => {}
-            SnippetTerms::All(parts) | SnippetTerms::Any(parts) => {
-                for part in parts {
-                    part.words(index, out);
-                }
-            }
-        }
-    }
 }
 
 /// A `similar:` term to rank by: the text whose similarity to each stored
@@ -406,7 +356,9 @@ pub(crate) struct Compiler<'a> {
     /// A semantic ranking requested by the source conditions, built only
     /// when rows must be ordered.
     near_request: Option<(Near, RowContext)>,
-    near_needed: bool,
+    /// The index whose relevance ranks the rows, from the selection's
+    /// search leg.
+    rank_index: Option<polylogue_query::search::SnippetIndex>,
     source_near_allowed: bool,
     /// An unavailable semantic order affects the answer or an earlier selection.
     near_unavailable: bool,
@@ -457,7 +409,7 @@ impl<'a> Compiler<'a> {
             near: None,
             definitions: vec![],
             near_request: None,
-            near_needed: true,
+            rank_index: None,
             source_near_allowed: true,
             near_unavailable: false,
             measuring: false,
@@ -515,11 +467,7 @@ fn and_all(parts: &[String]) -> String {
 
 /// Plain words search this unit.
 fn text_unit(unit: Unit) -> bool {
-    match units::spec(unit).search {
-        Search::Hits { words, .. } => words,
-        Search::Substring(_) => true,
-        Search::None => false,
-    }
+    polylogue_query::units::spec(unit).words.plain()
 }
 
 fn like_escape(s: &str) -> String {

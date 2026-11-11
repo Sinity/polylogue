@@ -10,6 +10,7 @@ use crate::{
     ast::*,
     defaults::{self, DefaultId},
     filter::{Binder, Filter},
+    search::Search,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -24,11 +25,17 @@ pub struct Selection {
     /// Those conditions bound to the unit's fields: what selects the rows,
     /// or `None` for every row.
     pub filter: Option<Filter>,
+    /// What the words search for and which index ranks by them.
+    pub search: Search,
     /// The `similar:` text the rows rank by.
     pub semantic: Option<Semantic>,
+    pub order: Order,
     /// The index of the first transform that stays a stage; the filter
     /// holds the `| where` stages before it.
     pub stages_from: usize,
+    /// The index of the first stage that reads the selection's rows as a
+    /// relation, or `None` when every stage reads the selection itself.
+    pub relations_from: Option<usize>,
     /// A `| measure` stage measures the selection, whose population then
     /// includes hidden sessions.
     pub measured: bool,
@@ -44,6 +51,33 @@ pub struct Semantic {
     pub text: String,
     pub unit: Unit,
     pub span: Span,
+}
+
+/// How the selection's rows are ordered (docs/search.md: Hits and
+/// ranking, Fusion).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Order {
+    /// The unit's own order: time, then identity.
+    Default,
+    /// By one ranking, lower first.
+    Ranked(Ranking),
+    /// By the words' relevance and the similarity together, fused by
+    /// reciprocal rank.
+    Fused,
+    /// A later stage sorts, groups, aggregates, rescopes or measures the
+    /// rows before anything reads their order: no similarity is computed
+    /// for it.
+    Sorted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Ranking {
+    /// The search leg's bm25 relevance.
+    Relevance,
+    /// Similarity to the semantic leg's text.
+    Similarity,
 }
 
 /// The columns each row shows.
@@ -81,12 +115,22 @@ impl Selection {
             None => (None, None),
         };
         let top = condition.as_ref().map(top_level).unwrap_or_default();
-        let measured = query.transforms.iter().any(|stage| {
-            matches!(&stage.kind, TransformKind::Extension { name, .. }
-                if name == crate::catalog::MEASURE)
-        });
-        let defaults = defaults::bind(unit, &top, origins, measured);
         let folded = stages_from(query);
+        let relations_from = if condition.as_ref().is_some_and(contains_order) {
+            Some(0)
+        } else {
+            query.transforms[folded..]
+                .iter()
+                .position(|stage| relational(&stage.kind))
+                .map(|at| at + folded)
+        };
+        let measured = query.transforms[folded..relations_from.unwrap_or(query.transforms.len())]
+            .iter()
+            .any(|stage| {
+                matches!(&stage.kind, TransformKind::Extension { name, .. }
+                if name == crate::catalog::MEASURE)
+            });
+        let defaults = defaults::bind(unit, &top, origins, measured);
         let mut written: Vec<Condition> = condition.into_iter().collect();
         written.extend(
             query.transforms[..folded]
@@ -107,13 +151,32 @@ impl Selection {
                     .collect::<Result<_, _>>()?,
             )),
         };
+        // An order condition's witness is read by the relation holding it.
+        let search = if written.iter().any(contains_order) {
+            Search::default()
+        } else {
+            Search::of(filter.as_ref(), unit)
+        };
+        let order = if !order_read(&query.transforms[folded..]) {
+            Order::Sorted
+        } else {
+            match (search.rank.is_some(), semantic.is_some()) {
+                (true, true) => Order::Fused,
+                (true, false) => Order::Ranked(Ranking::Relevance),
+                (false, true) => Order::Ranked(Ranking::Similarity),
+                (false, false) => Order::Default,
+            }
+        };
         Ok(Some(Selection {
             unit,
             defaults,
             written,
             filter,
+            search,
             semantic,
+            order,
             stages_from: folded,
+            relations_from,
             measured,
             attach: query.attach.clone(),
             projection: if fields.is_empty() {
@@ -159,6 +222,73 @@ pub fn stages_from(query: &Query) -> usize {
             _ => false,
         })
         .count()
+}
+
+/// Whether anything reads the order of rows entering `stages`: a row
+/// selection (`limit`, `first`, `offset`, `| group by K | first N`), a
+/// diff, or the answer itself, unless a sort, grouping, aggregate, rescope,
+/// `| matches` or `| measure` replaces it first.
+fn order_read(stages: &[Transform]) -> bool {
+    let mut inherited = true;
+    let mut group_input = None;
+    for stage in stages {
+        match &stage.kind {
+            TransformKind::Group { .. } => {
+                group_input = Some(inherited);
+                inherited = false;
+                continue;
+            }
+            TransformKind::First { .. } if group_input.is_some() => {
+                inherited = group_input.take().expect("group input order");
+                if inherited {
+                    return true;
+                }
+            }
+            TransformKind::Limit { .. }
+            | TransformKind::Offset { .. }
+            | TransformKind::First { .. } => {
+                if inherited {
+                    return true;
+                }
+            }
+            TransformKind::Sort { .. }
+            | TransformKind::Aggregate { .. }
+            | TransformKind::Scope { .. }
+            | TransformKind::Matches => inherited = false,
+            TransformKind::Extension { name, .. } if name == crate::catalog::MEASURE => {
+                inherited = false
+            }
+            TransformKind::Diff { .. } => return true,
+            TransformKind::Combine {
+                how: Combination::Union | Combination::Fuse,
+                ..
+            } => inherited = true,
+            _ => {}
+        }
+        group_input = None;
+    }
+    inherited
+}
+
+/// A stage that reads the rows entering it as a relation.
+fn relational(kind: &TransformKind) -> bool {
+    matches!(
+        kind,
+        TransformKind::Where { .. }
+            | TransformKind::Sort { .. }
+            | TransformKind::Fields { .. }
+            | TransformKind::Group { .. }
+            | TransformKind::Aggregate { .. }
+            | TransformKind::First { .. }
+            | TransformKind::Limit { .. }
+            | TransformKind::Offset { .. }
+            | TransformKind::Distinct
+            | TransformKind::Join { .. }
+            | TransformKind::Diff { .. }
+            | TransformKind::Scope { .. }
+            | TransformKind::Matches
+            | TransformKind::Combine { .. }
+    )
 }
 
 /// Takes the one `similar:` term out of the source's top-level ANDs. A

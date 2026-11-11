@@ -7,6 +7,9 @@ use serde::Serialize;
 pub struct Explanation {
     pub parsed: ast::Query,
     pub units: Vec<ast::Unit>,
+    /// The ranking in effect: none, relevance, similarity or fused, or
+    /// replaced by a later stage; `None` for a kept result's rows.
+    pub order: Option<polylogue_query::selection::Order>,
     pub program: crate::query::Program,
 }
 
@@ -16,6 +19,9 @@ pub fn query(expression: &str, options: &Options) -> Result<Explanation, QueryEr
         let plan = polylogue_query::compile(expression, options)?;
         let parsed = plan.bound_query().query().clone();
         let program = crate::query::lower(&plan, options)?;
+        let order = plan
+            .selection(&options.fields, &options.clock)?
+            .map(|selection| selection.order);
         let mut units = selected_units(plan.expanded_query().query());
         if !units.contains(&program.unit) {
             units.insert(0, program.unit);
@@ -23,6 +29,7 @@ pub fn query(expression: &str, options: &Options) -> Result<Explanation, QueryEr
         Ok(Explanation {
             units,
             parsed,
+            order,
             program,
         })
     })

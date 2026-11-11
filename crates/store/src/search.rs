@@ -57,14 +57,7 @@ pub enum Within {
     Message(i64),
 }
 
-/// The index a snippet's terms search: prose (`text_fts`) or tool output
-/// (`output_fts`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SnippetIndex {
-    Prose,
-    Output,
-}
+pub use polylogue_query::search::SnippetIndex;
 
 /// What a snippet looks for in one index: the FTS5 expression choosing the
 /// text and the words or phrases marked in it.

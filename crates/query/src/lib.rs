@@ -11,6 +11,7 @@ pub mod fields;
 pub mod filter;
 pub mod parse;
 pub mod plan;
+pub mod search;
 pub mod selection;
 pub mod time;
 pub mod units;

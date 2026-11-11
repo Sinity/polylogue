@@ -35,6 +35,7 @@ impl Unit {
 }
 
 use crate::ColKind;
+use crate::search::SnippetIndex;
 use ColKind::*;
 pub struct ColumnSpec {
     pub name: &'static str,
@@ -47,7 +48,39 @@ pub struct UnitSpec {
     pub identity: &'static [&'static str],
     pub main_time: Option<&'static str>,
     pub columns: &'static [ColumnSpec],
+    /// How search words find its rows (docs/search.md: Terms).
+    pub words: Words,
     pub relations: &'static [Relation],
+}
+/// How search words find a unit's rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Words {
+    /// Words do not search it.
+    None,
+    /// Hits in the full-text indexes: plain words search it when `plain`
+    /// (otherwise only `output:` and `thinking:` do), and the hits of the
+    /// `ranks` indexes rank its rows by relevance.
+    Index {
+        plain: bool,
+        ranks: &'static [SnippetIndex],
+    },
+    /// Each word is a substring of a stored value; it filters and does not
+    /// rank.
+    Substring,
+}
+impl Words {
+    /// Plain words search the unit.
+    pub fn plain(self) -> bool {
+        match self {
+            Words::Index { plain, .. } => plain,
+            Words::Substring => true,
+            Words::None => false,
+        }
+    }
+    /// The hits of `index` rank the unit's rows.
+    pub fn ranks(self, index: SnippetIndex) -> bool {
+        matches!(self, Words::Index { ranks, .. } if ranks.contains(&index))
+    }
 }
 pub struct Relation {
     pub prefix: &'static str,
@@ -167,6 +200,10 @@ pub static UNITS: &[UnitSpec] = &[
                 kind: Text,
             },
         ],
+        words: Words::Index {
+            plain: true,
+            ranks: &[SnippetIndex::Prose, SnippetIndex::Output],
+        },
         relations: &[],
     },
     UnitSpec {
@@ -201,6 +238,10 @@ pub static UNITS: &[UnitSpec] = &[
                 kind: Text,
             },
         ],
+        words: Words::Index {
+            plain: true,
+            ranks: &[SnippetIndex::Prose],
+        },
         relations: &[],
     },
     UnitSpec {
@@ -235,6 +276,10 @@ pub static UNITS: &[UnitSpec] = &[
                 kind: Text,
             },
         ],
+        words: Words::Index {
+            plain: true,
+            ranks: &[SnippetIndex::Prose, SnippetIndex::Output],
+        },
         relations: &[Relation {
             prefix: "session",
             target: Unit::Sessions,
@@ -268,6 +313,10 @@ pub static UNITS: &[UnitSpec] = &[
                 kind: Time,
             },
         ],
+        words: Words::Index {
+            plain: true,
+            ranks: &[SnippetIndex::Prose, SnippetIndex::Output],
+        },
         relations: &[
             Relation {
                 prefix: "session",
@@ -327,6 +376,10 @@ pub static UNITS: &[UnitSpec] = &[
                 kind: Time,
             },
         ],
+        words: Words::Index {
+            plain: false,
+            ranks: &[SnippetIndex::Output],
+        },
         relations: &[
             Relation {
                 prefix: "session",
@@ -386,6 +439,7 @@ pub static UNITS: &[UnitSpec] = &[
                 kind: Time,
             },
         ],
+        words: Words::None,
         relations: &[Relation {
             prefix: "session",
             target: Unit::Sessions,
@@ -427,6 +481,7 @@ pub static UNITS: &[UnitSpec] = &[
                 kind: ColKind::Json,
             },
         ],
+        words: Words::None,
         relations: &[Relation {
             prefix: "session",
             target: Unit::Sessions,
@@ -476,6 +531,7 @@ pub static UNITS: &[UnitSpec] = &[
                 kind: Text,
             },
         ],
+        words: Words::Substring,
         relations: &[],
     },
     UnitSpec {
@@ -510,6 +566,7 @@ pub static UNITS: &[UnitSpec] = &[
                 kind: Bool,
             },
         ],
+        words: Words::None,
         relations: &[
             Relation {
                 prefix: "parent",
@@ -597,6 +654,7 @@ pub static UNITS: &[UnitSpec] = &[
                 kind: Bool,
             },
         ],
+        words: Words::None,
         relations: &[Relation {
             prefix: "session",
             target: Unit::Sessions,
@@ -634,6 +692,7 @@ pub static UNITS: &[UnitSpec] = &[
                 kind: Number,
             },
         ],
+        words: Words::None,
         relations: &[
             Relation {
                 prefix: "session",
@@ -681,6 +740,7 @@ pub static UNITS: &[UnitSpec] = &[
                 kind: Text,
             },
         ],
+        words: Words::None,
         relations: &[Relation {
             prefix: "session",
             target: Unit::Sessions,
@@ -742,6 +802,7 @@ pub static UNITS: &[UnitSpec] = &[
                 kind: Text,
             },
         ],
+        words: Words::None,
         relations: &[Relation {
             prefix: "session",
             target: Unit::Sessions,
@@ -775,6 +836,7 @@ pub static UNITS: &[UnitSpec] = &[
                 kind: Text,
             },
         ],
+        words: Words::None,
         relations: &[],
     },
 ];

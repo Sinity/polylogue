@@ -69,10 +69,8 @@ pub enum Search {
     None,
     /// Full-text hits related to the row, as a condition and a rank (lower
     /// is better), or `None` when the index does not apply to the unit.
-    /// With `words`, plain words search it; otherwise only `output:` and
-    /// `thinking:` do.
+    /// Which words search it is the query unit's declaration.
     Hits {
-        words: bool,
         rows: fn(&Aliases, &Hits<'_>) -> Option<(String, String)>,
     },
     /// Each word is a substring of this column: notes are few and live in
@@ -368,7 +366,6 @@ static SESSIONS: UnitSpec = UnitSpec {
     session_pk: "{r}.session_pk",
     session_scope: None,
     search: Search::Hits {
-        words: true,
         rows: sessions_hits,
     },
     relations: &[],
@@ -395,7 +392,6 @@ static DOCUMENTS: UnitSpec = UnitSpec {
     session_pk: "",
     session_scope: None,
     search: Search::Hits {
-        words: true,
         rows: documents_hits,
     },
     relations: &[],
@@ -422,7 +418,6 @@ static MESSAGES: UnitSpec = UnitSpec {
     session_pk: "{m}.session_pk",
     session_scope: None,
     search: Search::Hits {
-        words: true,
         rows: messages_hits,
     },
     relations: MESSAGE_RELATIONS,
@@ -449,10 +444,7 @@ static BLOCKS: UnitSpec = UnitSpec {
     until: Some("{m}.at < {v}"),
     session_pk: "{b}.session_pk",
     session_scope: None,
-    search: Search::Hits {
-        words: true,
-        rows: blocks_hits,
-    },
+    search: Search::Hits { rows: blocks_hits },
     relations: &[
         rel("session", Unit::Sessions, Via::Same),
         rel("message", Unit::Messages, Via::Same),
@@ -494,7 +486,6 @@ static TOOL_CALLS: UnitSpec = UnitSpec {
     session_pk: "{t}.session_pk",
     session_scope: None,
     search: Search::Hits {
-        words: false,
         rows: tool_call_hits,
     },
     relations: &[

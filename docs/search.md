@@ -20,7 +20,7 @@ The search index has no legitimately incomplete state: it converges with the arc
 - Text is stored once per distinct content. A hit expands to every block using that text; then the defaults and the rest of the query apply. A subagent's hit makes its logical session match and names the subagent (`via: subagent`).
 - Session rows of a text query carry `hits: [{message, session, via, written_by, at, snippet, marks}]`: the best `hits_per_row` (default 3) plus `more_hits`. `snippet` is about 12 words around the first match, shown as stored; `marks` are character offsets.
 - When a term matches fewer than three prose messages, `notes` give counts and runnable queries for the same words in commands, tool output and thinking (`also in 14 tool commands: tool_calls where command ~ "nextest --partition"`).
-- Every other condition restricts first; ranking orders only the survivors. Relevance is bm25 with no column weights; a session ranks by its best message; ties go to the more recent message, then identity. Relevance is the default order when a text term is present; `sort by` replaces it.
+- Every other condition restricts first; ranking orders only the survivors. The words that rank are the top-level prose words when the query has any, else its top-level `output:` terms; words under OR or NOT, `thinking:` and substring terms filter without ranking. Relevance is bm25 with no column weights; a session ranks by its best message; ties go to the more recent message, then identity. Relevance is the default order when a text term is present; `sort by` replaces it.
 
 ## The search leg
 

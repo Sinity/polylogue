@@ -4,16 +4,15 @@
 use super::*;
 
 impl<'a> Compiler<'a> {
+    /// A selection and the `stages` that read its rows as they are.
     pub(super) fn native_program_with(
         mut self,
-        q: &Query,
+        selection: &Selection,
+        stages: &[Transform],
         preset: Option<MatchRel>,
     ) -> Result<Program, QueryError> {
-        let Some(selection) = Selection::of(q, &self.binder(), &self.opts.fields)? else {
-            return Err(not_built("this shared query source"));
-        };
-        let stages = &q.transforms[selection.stages_from..];
         self.measuring = selection.measured;
+        self.rank_index = selection.search.rank;
         let mut scope = RowContext::plain(selection.unit);
         if let Some(semantic) = &selection.semantic {
             if !self.source_near_allowed {
@@ -48,10 +47,8 @@ impl<'a> Compiler<'a> {
             && !selection.written.iter().any(contains_order)
         {
             where_sql.push(self.lower(filter, &scope, true)?);
-            if let Some(terms) = self.positive_terms(filter, scope.unit) {
-                self.snippet_terms.push(terms);
-            }
         }
+        self.snippet_terms.extend(selection.search.terms.clone());
         for c in &top {
             if contains_order(c) {
                 continue;
@@ -82,7 +79,7 @@ impl<'a> Compiler<'a> {
                 alone,
             ));
         }
-        if !self.near_needed {
+        if selection.order == Order::Sorted {
             self.near_request = None;
         }
         let mut matched = preset;
@@ -113,6 +110,7 @@ impl<'a> Compiler<'a> {
                     // The session ranking selects sessions; children have their own order.
                     self.near_request = None;
                     self.rank = None;
+                    self.rank_index = None;
                     self.near_rank = None;
                     self.near_join = None;
                     self.fusion = None;
@@ -131,10 +129,10 @@ impl<'a> Compiler<'a> {
                     self.snippet_terms.clear();
                     if let Some(c) = cond {
                         let filter = self.binder().bind(c, unit)?;
+                        let search = polylogue_query::search::Search::of(Some(&filter), unit);
+                        self.rank_index = search.rank;
                         w.push(self.lower(&filter, &next, true)?);
-                        if let Some(terms) = self.positive_terms(&filter, unit) {
-                            self.snippet_terms.push(terms);
-                        }
+                        self.snippet_terms.extend(search.terms);
                     }
                     scope = next;
                     top = ntop;
