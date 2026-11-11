@@ -85,10 +85,7 @@ impl<'a> Compiler<'a> {
                 transforms: vec![],
                 attach: vec![],
             };
-            let catalog = self
-                .catalog
-                .clone()
-                .unwrap_or_else(|| std::sync::Arc::new(self.opts.catalog()));
+            let catalog = self.catalog.clone().unwrap_or_else(|| self.opts.catalog());
             let clause = query_language::format::format_query(&clause, &catalog)
                 .map_err(|error| QueryError::language(error, self.text))?;
             let prefix = format!("{} where ", scope.unit.name());
