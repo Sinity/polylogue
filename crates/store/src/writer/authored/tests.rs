@@ -664,52 +664,71 @@ fn imported(archive: &Archive, bytes: &[u8]) -> crate::staging::PreparedBatch {
     }
 }
 
-/// A commit whose register sync failed is visible but may not be on disk,
-/// so a retry that finds it stored must not answer success: the writer stops
-/// and refuses, and a new writer answers only after it has synced the
-/// register.
+/// Fails the next register sync before it reaches the disk call, so the
+/// tests below show what the writer answers and refuses after a failed sync;
+/// they cannot show what a real disk error left on the disk.
+fn fail_next_sync() {
+    crate::fault::arm("write.register_sync", "", crate::fault::Action::Fail, 0, 1);
+}
+
+/// What a refused writer start names: the register's log, which failed.
+fn assert_refused_start(archive: &Archive) {
+    match Writer::start(archive) {
+        Err(StoreError::StorageFailed(failure)) => {
+            assert!(
+                failure.path.ends_with("archive.db-wal"),
+                "{}",
+                failure.path.display()
+            );
+            assert_eq!(crate::storage_failure::recorded(), Some(failure));
+        }
+        Err(other) => panic!("refused for another reason: {other}"),
+        Ok(_) => panic!("a writer started after a failed sync in this process"),
+    }
+}
+
+/// An authored restore whose sync failed is visible but not known to be on
+/// disk: neither it nor its identical retry is answered, and no writer starts
+/// again in this process.
 #[test]
-fn after_a_failed_register_sync_nothing_is_acknowledged_until_a_writer_has_synced() {
+fn a_failed_sync_refuses_an_authored_retry_and_every_later_writer() {
     let original = rendition();
     let directory = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(directory.path()).unwrap();
-    let blobs = || Arc::new(archive.blobs().unwrap());
-    let bytes = b"exported conversation bytes\n";
-
     let writer = Writer::start(&archive).unwrap();
-    crate::fault::arm("write.register_sync", "", crate::fault::Action::Fail, 0, 1);
+    fail_next_sync();
     let first = writer.restore_authored(original.clone());
     assert!(matches!(first, Err(StoreError::WriterGone)), "{first:?}");
     let retry = writer.restore_authored(original.clone());
     assert!(
         matches!(retry, Err(StoreError::WriterGone)),
-        "a retry was answered before the commit was synced: {retry:?}"
+        "a retry was answered after the failed sync: {retry:?}"
     );
     drop(writer);
-    // A new writer refuses to start while the register cannot be synced.
-    crate::fault::arm("write.register_sync", "", crate::fault::Action::Fail, 0, 1);
-    assert!(Writer::start(&archive).is_err());
-    let writer = Writer::start(&archive).unwrap();
-    assert!(writer.restore_authored(original.clone()).unwrap().repeat);
+    assert_refused_start(&archive);
+    crate::fault::clear();
+}
 
-    crate::fault::arm("write.register_sync", "", crate::fault::Action::Fail, 0, 1);
+/// The same for an import: the repeated import that would find its bytes
+/// stored is refused, not answered as already stored.
+#[test]
+fn a_failed_sync_refuses_a_repeated_import_and_every_later_writer() {
+    let directory = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_or_create(directory.path()).unwrap();
+    let blobs = || Arc::new(archive.blobs().unwrap());
+    let bytes = b"exported conversation bytes\n";
+    let writer = Writer::start(&archive).unwrap();
     let sender = writer.sender().unwrap();
-    // The import commits, its sync fails, and the writer stops.
+    fail_next_sync();
     let first = sender.store_group(vec![imported(&archive, bytes)], blobs());
     assert!(matches!(first, Err(StoreError::WriterGone)), "{first:?}");
     let retry = sender.store_group(vec![imported(&archive, bytes)], blobs());
     assert!(
         matches!(retry, Err(StoreError::WriterGone)),
-        "a repeated import was answered before the commit was synced: {retry:?}"
+        "a repeated import was answered after the failed sync: {retry:?}"
     );
     drop(sender);
     drop(writer);
-    let writer = Writer::start(&archive).unwrap();
-    let stored = writer
-        .sender()
-        .unwrap()
-        .store_group(vec![imported(&archive, bytes)], blobs())
-        .unwrap();
-    assert!(stored[0].as_ref().unwrap().already_stored);
+    assert_refused_start(&archive);
     crate::fault::clear();
 }

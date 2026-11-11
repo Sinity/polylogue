@@ -154,11 +154,14 @@ segments sync before their extents commit. `index.db` is rebuilt from those,
 so it commits with `NORMAL`. The `archive.db` sync happens after the commit is
 visible and outside the lock readers take to start a read, so a read never
 waits for a disk sync; a power loss during that sync loses only that commit,
-which nothing was written after. A failed sync stops the writer: the commit
-is visible, so a retry would find it stored and answer success, and after a
-failed sync the kernel may have dropped the unwritten pages, so a later
-successful sync proves nothing. Every request is then refused, and a writer
-syncs `archive.db` and its log when it starts, before it answers anything.
+which nothing was written after. A writer also syncs `archive.db` and its log
+when it starts, so what an earlier process committed and the kernel still
+holds is written before it answers anything. A failed sync stops writing for
+the rest of the boot: the commit is visible, so a retry would find it stored
+and answer success, and the kernel may have marked the unwritten pages clean,
+so no later sync in that boot, in the same process or a new one, shows that
+they reached the disk. Recovery starts with a reboot
+([operations.md#storage-failure](operations.md#storage-failure)).
 
 ## Pipeline
 

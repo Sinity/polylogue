@@ -19,6 +19,7 @@ pub(crate) mod schema;
 pub mod scope;
 pub mod server;
 pub mod service;
+pub(crate) mod storage_stop;
 pub(crate) mod stream_buffer;
 pub(crate) mod streaming;
 mod verify;

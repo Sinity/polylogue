@@ -32,7 +32,22 @@ No step rewrites `archive.db`, the segment log or the embeddings store to get pa
 
 **Without sources.** `polylogue daemon --no-sources` reads none of its sources: no root is scanned or watched, no spool or tool database is read, no collector runs and no repository lookup is written, so no input, observation or coverage is recorded from the machine. It parses and derives what the archive already stores (an index behind its archive catches up, a reading-version change re-parses) and serves every request, `import` included. A file that has gone from its location is not observed as gone, because nothing looked. With `--until-idle` it processes what is stored and exits. An archive that receives another archive's contents (`import`) is started this way, so that none of its locations is watched before the import, and the restore drill uses it to check a restored copy without touching the machine's live files.
 
-**Exits:** 0 clean stop; 1 failure or lock held; 78 refused archive (`archive.db` or `embeddings.db` in another format; an index never causes it). The service sets `RestartPreventExitStatus=78`, and the service manager's failure notification reports it, since no daemon is running to send a notice.
+**Exits:** 0 clean stop; 1 failure or lock held; 74 storage failure (the disk failed a sync of `archive.db`; [below](#storage-failure)); 78 refused archive (`archive.db` or `embeddings.db` in another format; an index never causes it). The service sets `RestartPreventExitStatus=74 78`, and the service manager's failure notification reports either, since no daemon is running to send a notice.
+
+### Storage failure
+
+The writer syncs `archive.db`'s log after each commit ([architecture.md#durability](architecture.md#durability)). When that sync, or the sync a writer makes when it starts, fails, the daemon stops writing for the rest of the boot:
+
+- **It stops.** The writer stops at once, so no request is answered after the failure, not even a retry that would find its rows already stored. The journal names the file and the operating system's error number (`storage I/O error syncing …/archive.db-wal: … (errno 5); writing stopped for this boot`), and the daemon exits 74. The service does not restart it.
+- **It stays stopped until the machine reboots.** The failure is kept in the archive's runtime directory with the boot's identifier, and a daemon started again in the same boot refuses with the same message and exit 74. After a failed sync the kernel may have marked the unwritten pages clean, and they stay in the page cache across a process restart, so no later sync in that boot can show that they reached the disk. A reboot drops the page cache.
+
+Recovery:
+
+1. Check the device and the filesystem: `dmesg` for I/O errors; on btrfs, `btrfs device stats` and `btrfs scrub`. Replace or repair the device before writing to it again.
+2. Reboot.
+3. Start the daemon. Its ordinary open recovers the archive as after a crash: SQLite's log recovery keeps only the frames whose checksums hold, ending at the last complete commit, and a segment tail past its last committed extent is truncated.
+4. Run `polylogue verify` ([Verification](#verification)) and restore from backup if it names a problem.
+5. What the lost commits held is read again where its source still has it. Files that tools keep where they wrote them (session logs, the hook spools, which are never deleted, and the browser host's capture logs) are re-read from their source positions, which are saved only for committed rows. Not re-readable from the machine: a tool database row the tool has since deleted; a file a tool has since pruned or rewritten; an AI Studio prompt revision whose spooled body the Drive collector removed after delivery (only Drive itself or a Takeout has it); an export, which is stored again only by importing it again. Records written through Polylogue itself (notes, tags, judgments, settings and other assertions, and query runs) have no other source; one whose commit was lost is gone, and the client that wrote it was not told it was stored, because the writer stopped before answering.
 
 Requests that need the archive, schema inference, verification and import included, go to the daemon at idle priority.
 
@@ -193,7 +208,7 @@ Terminal styling follows whether stdout and stderr are terminals, each on its ow
 
 - **The flake** exports `packages.polylogue`, `nixosModules.polylogue` and `homeModules.polylogue`. The modules' options are typed from the same declaration as the configuration above, through one shared settings library; a deployment only sets options. Any deployment works the same way; none is a dependency of Polylogue's behaviour.
 - **The package** can be built with the Sinex adapter, a Cargo feature outside the default build, so the standalone build has no NATS dependency. The binary reports its version and commit (`--version`, `status`).
-- **The Home Manager module installs:** one wrapper used as the CLI, the daemon command and the browser host, passing `--archive` explicitly and setting the XDG directories; shell completion for every installed name; `polylogue`, `plg` and `plog` as shell names of the same wrapper; the browser extension and its native-messaging manifest; hooks and MCP registration ([Installing into harnesses](#installing-into-harnesses)); `sinex.toml` and `signals.toml`; and one user service per archive with `Type=notify`, `WatchdogSec`, `Restart=on-failure`, `RestartPreventExitStatus=78`, a failure notification, and a resource class that yields I/O and CPU to interactive work with no memory cap.
+- **The Home Manager module installs:** one wrapper used as the CLI, the daemon command and the browser host, passing `--archive` explicitly and setting the XDG directories; shell completion for every installed name; `polylogue`, `plg` and `plog` as shell names of the same wrapper; the browser extension and its native-messaging manifest; hooks and MCP registration ([Installing into harnesses](#installing-into-harnesses)); `sinex.toml` and `signals.toml`; and one user service per archive with `Type=notify`, `WatchdogSec`, `Restart=on-failure`, `RestartPreventExitStatus=74 78`, a failure notification, and a resource class that yields I/O and CPU to interactive work with no memory cap.
 - **The daemon restarts only when its binary changes;** activating unrelated changes leaves it running.
 - **Placement of stores on the host** (separate volumes, snapshot schedules, copy-on-write settings) is deployment configuration. Whatever the placement, the archive stays covered by a backup.
 
@@ -220,6 +235,7 @@ An upgrade is a version change in `status` and, when a parser changed, a while i
 | a change to the index schema | the old index is set aside and a new one built from stored bytes ([below](#replacing-an-index-from-another-schema)) | every read answers; reads report the index as building until the first build ends |
 | a table added to `embeddings.db` | added in place at start; stored vectors are untouched | down for the restart |
 | `archive.db` or `embeddings.db` in another format than the binary's | refused, exit 78, not restarted | down |
+| the disk failed a sync of `archive.db` (any time, not an upgrade) | exit 74, not restarted, refuses until the machine reboots ([Storage failure](#storage-failure)) | down |
 
 **Spools across a rollback.** Hooks and the browser host keep writing their spools while the daemon is replaced, and the spools are never deleted, so the build a deployment rolls back to reads what the newer build wrote. A spool line's shape is therefore part of the deployed format: the hook's line shapes are pinned by a fixture that the previous build's reader is checked against, and a change to them is checked against the deployed reader before it ships.
 

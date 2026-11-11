@@ -1172,6 +1172,9 @@ pub fn start(
     stopped_attempt: Option<polylogue_model::batch::StoppedAttempt>,
 ) -> std::io::Result<Runtime> {
     let root = deployment.archive.as_path();
+    if let Some(stopped) = super::storage_stop::this_boot(root) {
+        return Err(std::io::Error::other(stopped));
+    }
     let completion_path = deployment.paths.completion_catalog(root);
     let to_io = |e: &dyn std::fmt::Display| std::io::Error::other(e.to_string());
     let pointer = polylogue_store::completion::CatalogPointer::new(completion_path.clone());
@@ -1355,6 +1358,15 @@ pub fn start(
         }
         return Ok(runtime);
     };
+    // A failed register sync stops the writer; the daemon then stops too,
+    // with its storage exit code.
+    let storage_events = runtime.worker_events.clone();
+    std::thread::Builder::new()
+        .name("polylogue-storage".into())
+        .spawn(move || {
+            polylogue_store::storage_failure::wait();
+            storage_events.send_replace(Some("the register failed a disk sync"));
+        })?;
     runtime.engine_stop = Some(engine.stop_request());
     let (ready, wait) = sync_channel(1);
     let worker_events = runtime.worker_events.clone();
