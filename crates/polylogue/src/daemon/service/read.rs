@@ -273,6 +273,14 @@ fn reading(request: &ReadRequest) -> Result<(Reading, Option<&str>), Failure> {
     ))
 }
 
+/// A reading's target as compiled against the reader: the selection the
+/// reading visits, and what its run record is built from.
+struct Compiled<'a> {
+    selection: &'a PreparedSelection<'a>,
+    options: &'a polylogue_store::query::Options,
+    ranking_identity: Option<String>,
+}
+
 /// Prepare a row reading: compile the target against this reader and run
 /// `run` over the selection. The seed is the target's, so a sampled or
 /// shuffled reading keeps its order across pages.
@@ -282,7 +290,7 @@ fn prepared<T>(
     operation: &Arc<crate::operation::Context>,
     reading: &Reading,
     run: impl FnOnce(
-        &PreparedSelection,
+        &Compiled<'_>,
         ReadSnapshot,
         ReadHeader,
         Option<&polylogue_store::selection::NearFn<'_>>,
@@ -302,7 +310,7 @@ fn prepared<T>(
                 session: None,
                 context: Arc::clone(operation),
                 embeddings,
-                ranking_identity,
+                ranking_identity: ranking_identity.clone(),
                 near: Some(near),
                 fields: &[],
             };
@@ -374,7 +382,12 @@ fn prepared<T>(
             polylogue_store::probe_tmp::log("read.snapshot_header", probe.elapsed());
             polylogue_store::read::limit::ReadLimit::set_stage("read records");
             let probe = std::time::Instant::now();
-            let ran = run(&selection, snapshot, header, Some(near));
+            let compiled = Compiled {
+                selection: &selection,
+                options: &compile,
+                ranking_identity,
+            };
+            let ran = run(&compiled, snapshot, header, Some(near));
             polylogue_store::probe_tmp::log("read.records", probe.elapsed());
             ran
         },
@@ -623,7 +636,9 @@ fn attachment_call(
 /// Record the reading's question and run after the answer, as the
 /// operations log does for every query: the records are handed to the
 /// writer without waiting, so nothing on the answer path writes. Only the
-/// first page of a reading is a run; continuations are pages of it.
+/// first page of a reading is a run; continuations are pages of it. A
+/// session reading compiles its target here; a row reading records from the
+/// selection it already compiled ([`record_compiled`]).
 fn record_run(
     reader: &Reader<'_>,
     d: &Daemon,
@@ -631,13 +646,9 @@ fn record_run(
     request: &ReadRequest,
     reading: &Reading,
 ) -> Result<(), Failure> {
-    use polylogue_model::query_objects::{
-        ExecutionPresentation, QueryRun, QueryRunOutcome, RunBinding, RunOutcome,
-    };
-    let ReadRequest { delivery, .. } = request;
-    let Some(writer) = d.writes.as_ref() else {
+    if d.writes.is_none() {
         return Ok(());
-    };
+    }
     crate::daemon::query::with_ranking(
         reader,
         &d.warm,
@@ -655,75 +666,102 @@ fn record_run(
                 near: Some(near),
                 fields: &[],
             };
-            let probe = std::time::Instant::now();
-            let compile = crate::daemon::query::options(reader, &ask, seed(&reading.target))?;
-            polylogue_store::probe_tmp::log("record.compile_options", probe.elapsed());
-            let probe = std::time::Instant::now();
+            let options = crate::daemon::query::options(reader, &ask, seed(&reading.target))?;
             let target = reading
                 .target
                 .strip_prefix("root:")
                 .unwrap_or(&reading.target);
-            let selection = reader.prepare_selection(target, &compile)?;
-            polylogue_store::probe_tmp::log("record.prepare_selection", probe.elapsed());
-            let probe = std::time::Instant::now();
-            let object = selection.query_object()?;
-            polylogue_store::probe_tmp::log("record.query_object", probe.elapsed());
-            let probe = std::time::Instant::now();
-            let query_options = polylogue_store::query::execute::options_snapshot(
-                &compile,
-                false,
-                ranking_identity,
-            )?;
-            let accepted = operation
-                .accepted_request()
-                .map(serde_json::to_value)
-                .transpose()
-                .map_err(|e| Failure::new("internal", e))?;
-            let mut binding = selection.execution_binding(
-                query_options,
-                ExecutionPresentation::Read {
-                    options: reading.options.clone(),
-                    delivery: *delivery,
-                    format: reading.format,
-                    page_budget: reading.budget,
-                    direct_source: None,
+            let selection = reader.prepare_selection(target, &options)?;
+            record_compiled(
+                reader,
+                d,
+                operation,
+                request,
+                reading,
+                &Compiled {
+                    selection: &selection,
+                    options: &options,
+                    ranking_identity,
                 },
-                accepted,
-            )?;
-            binding
-                .replay
-                .context
-                .versions
-                .extend(operation.cursor_versions());
-            let run = QueryRun {
-                id: crate::operation::new_run_id(),
-                question: Some(selection.question_id()),
-                at: operation.ran_at,
-                read_at: reader.change_position()?,
-                machine: operation.machine.clone(),
-                authorship: operation.authorship.clone(),
-                binding: RunBinding::Original {
-                    execution: Box::new(binding),
-                },
-            };
-            let outcome = QueryRunOutcome {
-                run: run.id.clone(),
-                binding_hash: run
-                    .binding_hash()
-                    .map_err(|e| Failure::new("internal", e))?,
-                run_hash: run.record_hash().map_err(|e| Failure::new("internal", e))?,
-                at: d.config.requests.now(),
-                outcome: RunOutcome::Ok,
-                count: None,
-                exact: false,
-                next: None,
-            };
-            polylogue_store::probe_tmp::log("record.binding_run", probe.elapsed());
-            writer
-                .record_after_answer(object, run, outcome)
-                .map_err(Failure::from)
+            )
         },
     )
+}
+
+/// Record a reading's run from its compiled target, as [`record_run`] says.
+fn record_compiled(
+    reader: &Reader<'_>,
+    d: &Daemon,
+    operation: &Arc<crate::operation::Context>,
+    request: &ReadRequest,
+    reading: &Reading,
+    compiled: &Compiled<'_>,
+) -> Result<(), Failure> {
+    use polylogue_model::query_objects::{
+        ExecutionPresentation, QueryRun, QueryRunOutcome, RunBinding, RunOutcome,
+    };
+    let ReadRequest { delivery, .. } = request;
+    let Some(writer) = d.writes.as_ref() else {
+        return Ok(());
+    };
+    let Compiled {
+        selection,
+        options,
+        ranking_identity,
+    } = compiled;
+    let object = selection.query_object()?;
+    let query_options = polylogue_store::query::execute::options_snapshot(
+        options,
+        false,
+        ranking_identity.clone(),
+    )?;
+    let accepted = operation
+        .accepted_request()
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|e| Failure::new("internal", e))?;
+    let mut binding = selection.execution_binding(
+        query_options,
+        ExecutionPresentation::Read {
+            options: reading.options.clone(),
+            delivery: *delivery,
+            format: reading.format,
+            page_budget: reading.budget,
+            direct_source: None,
+        },
+        accepted,
+    )?;
+    binding
+        .replay
+        .context
+        .versions
+        .extend(operation.cursor_versions());
+    let run = QueryRun {
+        id: crate::operation::new_run_id(),
+        question: Some(selection.question_id()),
+        at: operation.ran_at,
+        read_at: reader.change_position()?,
+        machine: operation.machine.clone(),
+        authorship: operation.authorship.clone(),
+        binding: RunBinding::Original {
+            execution: Box::new(binding),
+        },
+    };
+    let outcome = QueryRunOutcome {
+        run: run.id.clone(),
+        binding_hash: run
+            .binding_hash()
+            .map_err(|e| Failure::new("internal", e))?,
+        run_hash: run.record_hash().map_err(|e| Failure::new("internal", e))?,
+        at: d.config.requests.now(),
+        outcome: RunOutcome::Ok,
+        count: None,
+        exact: false,
+        next: None,
+    };
+    writer
+        .record_after_answer(object, run, outcome)
+        .map_err(Failure::from)
 }
 
 /// A reading's seed is its target's, so a sampled or shuffled reading
@@ -815,7 +853,7 @@ pub(crate) fn page(
                 "streaming reads require stream delivery",
             ));
         }
-        let page = match session::scope(reader, &reading.target)? {
+        let session_page = match session::scope(reader, &reading.target)? {
             Some(scope)
                 if matches!(
                     reading.options.view,
@@ -827,14 +865,14 @@ pub(crate) fn page(
             Some(scope) if reading.options.view == View::Links => {
                 session::links_page(reader, d, request, operation, scope)?
             }
-            _ => rows_page(reader, d, request, operation, &reading, cursor)?,
+            _ => return rows_page(reader, d, request, operation, &reading, cursor),
         };
         if cursor.is_none() {
             // The answer stands whatever happens to its run record;
             // building it needs this reader, storing it happens after.
             let _ = record_run(reader, d, operation, request, &reading);
         }
-        Ok(page)
+        Ok(session_page)
     })();
     match result {
         Ok(page) => match serde_json::to_value(&page) {
@@ -886,7 +924,8 @@ fn rows_page(
         d,
         operation,
         reading,
-        |selection, snapshot, header, near| {
+        |compiled, snapshot, header, near| {
+            let selection = compiled.selection;
             let ready_attachment =
                 |message: &polylogue_model::MessageId, block, index, input: Option<&str>| {
                     attachment_call(d, message, block, index, input)
@@ -1025,6 +1064,10 @@ fn rows_page(
                 }
             }
             scope.check()?;
+            if cursor.is_none() {
+                // The answer stands whatever happens to its run record.
+                let _ = record_compiled(reader, d, operation, request, reading, compiled);
+            }
             Ok(ReadPage {
                 format: reading.format,
                 snapshot: ReadPageSnapshot::from(&snapshot),
@@ -1060,7 +1103,8 @@ pub(crate) fn produce(
             d,
             operation,
             &reading,
-            |selection, snapshot, header, near| {
+            |compiled, snapshot, header, near| {
+                let selection = compiled.selection;
                 let ready_attachment =
                     |message: &polylogue_model::MessageId, block, index, input: Option<&str>| {
                         attachment_call(d, message, block, index, input)
