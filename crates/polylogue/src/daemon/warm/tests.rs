@@ -244,6 +244,32 @@ fn a_read_after_a_revision_commit_never_extends_inline() {
             assert_eq!(ranked.of(&[text]), loaded.of(&[text]), "text {text}");
         }
     }
+    // A read that comes before the worker has extended the set waits for it.
+    let (started, entered) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    warm.vectors.cache.lock().unwrap().gate = Some((started, released));
+    put_vector(&daemon, key, 6, [0., 1.]);
+    entered.recv_timeout(Duration::from_secs(10)).unwrap();
+    let waited = warm.vectors.cache.lock().unwrap().waited;
+    std::thread::scope(|scope| {
+        let reading = scope.spawn(|| {
+            let loads = super::loads_here();
+            let set = read();
+            (super::loads_here() - loads, set)
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while warm.vectors.cache.lock().unwrap().waited == waited && !reading.is_finished() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the read neither waited nor answered"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        release.send(()).unwrap();
+        let (loads, set) = reading.join().unwrap();
+        assert_eq!(loads, 0, "the read loaded or extended vectors itself");
+        assert_eq!(set.vectors(), 6);
+    });
     assert_eq!(warm.counts.vector_loads.load(Ordering::Relaxed), 1);
 }
 

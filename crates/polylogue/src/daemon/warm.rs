@@ -83,6 +83,9 @@ struct VectorCache {
     /// publish after it.
     invalidation: Arc<()>,
     stopping: bool,
+    /// Reads that have waited for the worker.
+    #[cfg(test)]
+    waited: usize,
     #[cfg(test)]
     gate: Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
 }
@@ -235,6 +238,10 @@ impl Warm {
             })
         });
         let mut cache = cache_lock(&self.vectors.cache)?;
+        #[cfg(test)]
+        {
+            cache.waited += 1;
+        }
         let mut asked = None;
         loop {
             if let Some(set) = cache.exact(key, revision) {
