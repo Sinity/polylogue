@@ -347,7 +347,7 @@ fn deliver(
             crate::client::stream::run_call(
                 &archive,
                 &call,
-                crate::client::stream::declared_budget(&call),
+                crate::client::connection_budget(&call, None),
                 callback,
             )
         },
