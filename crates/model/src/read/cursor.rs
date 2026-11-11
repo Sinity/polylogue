@@ -74,8 +74,8 @@ pub enum PagePosition {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         inside: Option<ItemPlace>,
     },
-    /// A node of a links tree, by session.
-    Node { session: SessionId },
+    /// A place in the depth-first walk of a links tree.
+    Links { place: LinksPlace },
     /// A place in a row reading (documents, events, authored records and
     /// query rows). `anchor_row` holds the order values of the row the place
     /// is in, so the selection resumes by key; `place.selection.row` is 0.
@@ -84,6 +84,38 @@ pub enum PagePosition {
         anchor_row: Option<OrderPosition>,
         place: ItemPlace,
     },
+}
+
+/// A place in the depth-first walk of a links tree: what the walk holds
+/// there, so a page resumes from it without walking the nodes before it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LinksPlace {
+    /// How many nodes come before the place.
+    pub before: u64,
+    /// The nodes being walked, outermost first, each with how many of its
+    /// tree links were taken; the first has no session and holds the roots.
+    pub frames: Vec<LinksFrame>,
+    /// The nodes before the place that more than one link reaches, each
+    /// with the link that showed it; a later link to one is a cross-link.
+    pub shown: Vec<LinksShown>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LinksFrame {
+    pub session: Option<String>,
+    pub taken: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LinksShown {
+    pub session: String,
+    /// The node whose link showed it; none for a root.
+    pub parent: Option<String>,
+    /// That link's place among the parent's tree links (or the roots).
+    pub slot: u32,
 }
 
 /// Everything a continuation needs, sealed by the daemon with the index

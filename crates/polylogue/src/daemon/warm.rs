@@ -2,8 +2,12 @@
 //! come without reloading or recomputing.
 //!
 //! - **Vectors**: every vector of the embedding key `similar:` ranks by, in
-//!   memory, keyed by the model revision of the requesting read snapshot. A
-//!   newer revision reads only the vectors stored since the held one.
+//!   memory. One worker thread loads them, extends them with the vectors
+//!   stored since whenever a vector write commits, and publishes each set
+//!   with the model revision of the snapshot it read. A read uses the set
+//!   of its own snapshot's revision, waiting for the worker when that set is
+//!   not published yet; it neither loads nor extends vectors itself, except
+//!   a read whose snapshot is older than both sets held, which loads its own.
 //! - **Query vectors**: the provider's vector for each recent `similar:` text,
 //!   so a repeated or paged query neither pays nor waits for the provider
 //!   again, and ranks by the same values. Concurrent reads of one text share
@@ -64,10 +68,69 @@ struct Counts {
     query_vectors_reused: AtomicU64,
 }
 
+/// The vectors the worker published, and what reads asked it for.
 #[derive(Default)]
 struct VectorCache {
-    loaded: Option<Arc<Loaded>>,
+    /// The newest set and the one it extended, newest last: a read from a
+    /// snapshot taken before the newest commit still has its set.
+    sets: Vec<Arc<Loaded>>,
+    /// The embedding key reads rank by.
+    wanted: Option<String>,
+    /// Passes the worker finished, and how the last one failed.
+    passes: u64,
+    failure: Option<String>,
+    /// Replaced by [`Warm::clear`]: a pass that started before cannot
+    /// publish after it.
     invalidation: Arc<()>,
+    stopping: bool,
+    /// Reads that have waited for the worker.
+    #[cfg(test)]
+    waited: usize,
+    #[cfg(test)]
+    gate: Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
+}
+
+impl VectorCache {
+    fn exact(&self, key: &str, revision: i64) -> Option<Arc<Loaded>> {
+        self.sets
+            .iter()
+            .find(|set| set.key == key && set.revision == revision)
+            .cloned()
+    }
+
+    fn newest(&self, key: &str) -> Option<&Arc<Loaded>> {
+        self.sets.last().filter(|set| set.key == key)
+    }
+}
+
+/// What the vectors worker shares with reads.
+#[derive(Default)]
+struct VectorShare {
+    cache: Mutex<VectorCache>,
+    published: std::sync::Condvar,
+}
+
+struct VectorWorker {
+    wake: std::sync::mpsc::SyncSender<()>,
+    thread: std::thread::JoinHandle<()>,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Vector loads and extensions run on this thread: a read must leave
+    /// them to the worker.
+    static LOADS_HERE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn loads_here() -> u64 {
+    LOADS_HERE.with(std::cell::Cell::get)
+}
+
+fn counted_load<T>(load: impl FnOnce() -> T) -> T {
+    #[cfg(test)]
+    LOADS_HERE.with(|count| count.set(count.get() + 1));
+    load()
 }
 
 /// A provider call for one query text that later reads of the same text
@@ -81,19 +144,22 @@ struct Flight {
 }
 
 pub struct Warm {
-    vectors: Mutex<VectorCache>,
+    archive: polylogue_store::Archive,
+    vectors: Arc<VectorShare>,
+    worker: Mutex<Option<VectorWorker>>,
     query_vectors: Mutex<Recent<Arc<Vec<f32>>>>,
     in_flight: Mutex<std::collections::HashMap<String, Arc<Flight>>>,
-    counts: Counts,
+    counts: Arc<Counts>,
 }
 
-impl Default for Warm {
-    fn default() -> Self {
-        Self {
-            vectors: Mutex::new(VectorCache::default()),
-            query_vectors: Mutex::new(Recent::new(QUERY_VECTORS)),
-            in_flight: Mutex::default(),
-            counts: Counts::default(),
+impl Drop for Warm {
+    fn drop(&mut self) {
+        if let Ok(mut cache) = self.vectors.cache.lock() {
+            cache.stopping = true;
+        }
+        if let Some(worker) = self.worker.get_mut().ok().and_then(Option::take) {
+            let _ = worker.wake.try_send(());
+            let _ = worker.thread.join();
         }
     }
 }
@@ -105,8 +171,19 @@ fn cache_lock<T>(lock: &Mutex<T>) -> Result<std::sync::MutexGuard<'_, T>, String
 }
 
 impl Warm {
-    /// The loaded vectors of the embedding key `similar:` ranks by, loading
-    /// them when absent or stale. `None`: no vectors for this provider.
+    pub fn new(archive: &polylogue_store::Archive) -> Self {
+        Self {
+            archive: archive.clone(),
+            vectors: Arc::default(),
+            worker: Mutex::default(),
+            query_vectors: Mutex::new(Recent::new(QUERY_VECTORS)),
+            in_flight: Mutex::default(),
+            counts: Arc::default(),
+        }
+    }
+
+    /// The loaded vectors of the embedding key `similar:` ranks by, in the
+    /// reader's snapshot. `None`: no vectors for this provider.
     pub fn vectors(
         &self,
         reader: &Reader<'_>,
@@ -120,68 +197,115 @@ impl Warm {
         key.map(|key| self.vectors_of(reader, &key)).transpose()
     }
 
-    /// The vectors of one embedding key in the reader's snapshot.
+    /// The vectors of one embedding key in the reader's snapshot: the set
+    /// the worker published for its revision, waited for when not yet
+    /// published. The wait holds no executor place.
     fn vectors_of(&self, reader: &Reader<'_>, key: &str) -> Result<Arc<Loaded>, String> {
-        let store = reader.vectors().map_err(|e| e.to_string())?;
-        let revision = store.revision(key).map_err(|e| e.to_string())?;
-        self.cached_vectors(reader, key, revision, |held| {
-            match held {
-                Some(held) => store.append(held),
-                None => store.load(key),
+        let revision = reader
+            .vectors()
+            .and_then(|store| store.revision(key))
+            .map_err(|e| e.to_string())?;
+        if let Some(set) = cache_lock(&self.vectors.cache)?.exact(key, revision) {
+            return Ok(set);
+        }
+        match super::executor::outside(|| self.wait_for_worker(key, revision))? {
+            Some(set) => Ok(set),
+            // The snapshot is older than both sets held: its own load serves
+            // it and is not kept.
+            None => {
+                let loaded = counted_load(|| {
+                    reader
+                        .vectors()
+                        .and_then(|store| store.load(key))
+                        .map_err(|e| e.to_string())
+                })?;
+                reader.check().map_err(|e| e.to_string())?;
+                Ok(Arc::new(loaded))
             }
-            .map_err(|e| e.to_string())
-        })
+        }
     }
 
-    /// The vectors of `key` at `revision`: the held set when it is that
-    /// revision, else `load` given the held set of the same key when it is
-    /// older (to extend it), or nothing (to read every vector).
-    fn cached_vectors(
-        &self,
-        reader: &Reader<'_>,
-        key: &str,
-        revision: i64,
-        load: impl FnOnce(Option<&Loaded>) -> Result<Loaded, String>,
-    ) -> Result<Arc<Loaded>, String> {
-        let (invalidation, older) = {
-            let held = cache_lock(&self.vectors)?;
-            let same_key = held.loaded.as_ref().filter(|loaded| loaded.key == key);
-            if let Some(loaded) = same_key
-                && loaded.revision == revision
-            {
-                return Ok(Arc::clone(loaded));
-            }
-            (
-                Arc::clone(&held.invalidation),
-                same_key
-                    .filter(|loaded| loaded.revision < revision)
-                    .cloned(),
-            )
-        };
-        // SQL and quantization never hold the shared cache lock. The reader's
-        // snapshot, rather than a process counter, identifies these values.
-        let loaded = Arc::new(load(older.as_deref())?);
-        if older.is_none() {
-            self.counts.vector_loads.fetch_add(1, Ordering::Relaxed);
+    /// Asks the worker for `key` and waits until it publishes the set of
+    /// `revision` (`Some`) or a newer one only (`None`), or fails. The read's
+    /// deadline bounds the wait and its cancellation wakes it.
+    fn wait_for_worker(&self, key: &str, revision: i64) -> Result<Option<Arc<Loaded>>, String> {
+        let limit = polylogue_store::read::limit::ReadLimit::current();
+        let _wake = limit.as_ref().map(|limit| {
+            let share = Arc::clone(&self.vectors);
+            limit.cancellation.on_cancel(move || {
+                let _held = share.cache.lock();
+                share.published.notify_all();
+            })
+        });
+        let mut cache = cache_lock(&self.vectors.cache)?;
+        #[cfg(test)]
+        {
+            cache.waited += 1;
         }
-        reader.check().map_err(|e| e.to_string())?;
-        let mut held = cache_lock(&self.vectors)?;
-        if Arc::ptr_eq(&invalidation, &held.invalidation) {
-            if let Some(current) = &held.loaded
-                && current.key == key
-                && current.revision == loaded.revision
-            {
-                return Ok(Arc::clone(current));
+        let mut asked = None;
+        loop {
+            if let Some(set) = cache.exact(key, revision) {
+                return Ok(Some(set));
             }
-            let newer = held
-                .loaded
+            if asked.is_some_and(|asked| cache.passes > asked) {
+                if let Some(failure) = &cache.failure {
+                    return Err(failure.clone());
+                }
+                if cache.newest(key).is_some_and(|set| set.revision > revision) {
+                    return Ok(None);
+                }
+                // A pass that published nothing for us (it read an older
+                // snapshot, or a clear discarded it): ask again.
+                asked = None;
+            }
+            if asked.is_none() {
+                cache.wanted = Some(key.to_owned());
+                asked = Some(cache.passes);
+                self.wake_worker()?;
+                continue;
+            }
+            if let Some(limit) = &limit {
+                limit.check().map_err(|error| error.to_string())?;
+            }
+            cache = match limit
                 .as_ref()
-                .is_some_and(|current| current.key == key && current.revision > loaded.revision);
-            if !newer {
-                held.loaded = Some(Arc::clone(&loaded));
-            }
+                .and_then(polylogue_store::read::limit::ReadLimit::remaining)
+            {
+                Some(left) => {
+                    self.vectors
+                        .published
+                        .wait_timeout(cache, left)
+                        .map_err(|_| "read cache poisoned".to_owned())?
+                        .0
+                }
+                None => self
+                    .vectors
+                    .published
+                    .wait(cache)
+                    .map_err(|_| "read cache poisoned".to_owned())?,
+            };
         }
-        Ok(loaded)
+    }
+
+    /// Wakes the worker, starting it on first use.
+    fn wake_worker(&self) -> Result<(), String> {
+        let mut worker = cache_lock(&self.worker)?;
+        if worker.is_none() {
+            let events = polylogue_store::vectors::write_events();
+            let wake = events.wake_handle();
+            let share = Arc::clone(&self.vectors);
+            let counts = Arc::clone(&self.counts);
+            let archive = self.archive.clone();
+            let thread = std::thread::Builder::new()
+                .name("polylogue-vectors".into())
+                .spawn(move || run_worker(&archive, &share, &counts, &events))
+                .map_err(|e| e.to_string())?;
+            *worker = Some(VectorWorker { wake, thread });
+        }
+        if let Some(worker) = worker.as_ref() {
+            let _ = worker.wake.try_send(());
+        }
+        Ok(())
     }
 
     /// Every stored text's similarity to `text`, for `similar:`.
@@ -278,8 +402,11 @@ impl Warm {
 
     /// Drops everything; the next requests rebuild what they use.
     pub fn clear(&self) {
-        if let Ok(mut v) = self.vectors.lock() {
-            *v = VectorCache::default();
+        if let Ok(mut v) = self.vectors.cache.lock() {
+            v.sets.clear();
+            v.wanted = None;
+            v.failure = None;
+            v.invalidation = Arc::new(());
         }
         if let Ok(mut q) = self.query_vectors.lock() {
             q.clear();
@@ -289,8 +416,8 @@ impl Warm {
     /// What `status` shows.
     pub fn summary(&self) -> crate::protocol::status::Warm {
         use crate::protocol::status::{Vectors, Warm};
-        let vectors = self.vectors.lock().ok().and_then(|vectors| {
-            vectors.loaded.as_ref().map(|loaded| Vectors {
+        let vectors = self.vectors.cache.lock().ok().and_then(|vectors| {
+            vectors.sets.last().map(|loaded| Vectors {
                 key: loaded.key.clone(),
                 vectors: loaded.vectors(),
             })
@@ -343,26 +470,87 @@ fn wait_for(flight: &Arc<Flight>) -> Result<Arc<Vec<f32>>, String> {
     }
 }
 
+/// The vectors worker: on each cue (a vector write committed, or a read
+/// asked), brings the wanted key's set to the revision of a fresh snapshot,
+/// extending the newest set held, and publishes it.
+fn run_worker(
+    archive: &polylogue_store::Archive,
+    share: &VectorShare,
+    counts: &Counts,
+    events: &polylogue_store::completion::CommitSubscription,
+) {
+    // A small page cache: the worker reads each stored row once.
+    const CACHE_KIB: i64 = 2048;
+    while events.recv().is_ok() {
+        let (key, held, invalidation) = {
+            let Ok(cache) = share.cache.lock() else {
+                return;
+            };
+            if cache.stopping {
+                return;
+            }
+            let Some(key) = cache.wanted.clone() else {
+                continue;
+            };
+            let held = cache.newest(&key).cloned();
+            (key, held, Arc::clone(&cache.invalidation))
+        };
+        #[cfg(test)]
+        if let Ok(mut cache) = share.cache.lock()
+            && let Some((started, release)) = cache.gate.take()
+        {
+            drop(cache);
+            let _ = started.send(());
+            let _ = release.recv();
+        }
+        let result = polylogue_store::vectors::Vectors::snapshot(archive, CACHE_KIB)
+            .and_then(|store| {
+                let revision = store.revision(&key)?;
+                match held {
+                    Some(held) if held.revision == revision => Ok(None),
+                    Some(held) => counted_load(|| store.append(&held)).map(Some),
+                    None => {
+                        counts.vector_loads.fetch_add(1, Ordering::Relaxed);
+                        counted_load(|| store.load(&key)).map(Some)
+                    }
+                }
+            })
+            .map_err(|e| e.to_string());
+        let Ok(mut cache) = share.cache.lock() else {
+            return;
+        };
+        if Arc::ptr_eq(&invalidation, &cache.invalidation) {
+            match result {
+                Ok(Some(loaded)) => {
+                    let keep = cache.newest(&key).cloned();
+                    cache.sets = keep.into_iter().chain([Arc::new(loaded)]).collect();
+                    cache.failure = None;
+                }
+                Ok(None) => cache.failure = None,
+                Err(error) => cache.failure = Some(error),
+            }
+        }
+        cache.passes += 1;
+        drop(cache);
+        share.published.notify_all();
+    }
+}
+
 #[cfg(test)]
 mod tests;
 
 #[cfg(test)]
 impl Warm {
-    /// A vector load that, once started, waits for `release` before it reads.
+    /// A vector load that, once the worker starts it, waits for `release`.
     pub(crate) fn load_vectors_until(
         &self,
         reader: &Reader<'_>,
         started: std::sync::mpsc::Sender<()>,
         release: std::sync::mpsc::Receiver<()>,
     ) {
-        let _ = self.cached_vectors(reader, "synthetic/empty", 0, |_| {
-            started.send(()).unwrap();
-            let _ = release.recv();
-            reader
-                .vectors()
-                .map_err(|e| e.to_string())?
-                .load("synthetic/empty")
-                .map_err(|e| e.to_string())
-        });
+        if let Ok(mut cache) = self.vectors.cache.lock() {
+            cache.gate = Some((started, release));
+        }
+        let _ = self.vectors_of(reader, "synthetic/empty");
     }
 }

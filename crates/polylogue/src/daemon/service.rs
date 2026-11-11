@@ -1250,6 +1250,7 @@ pub fn start(
     }));
     let mail = crate::mailbox::dir(&archive.root);
     let hosts = crate::hosting::dir(&archive.root);
+    let warm = super::warm::Warm::new(&archive);
     let daemon = Arc::new(Daemon {
         config: deployment,
         operations: std::sync::OnceLock::new(),
@@ -1260,7 +1261,7 @@ pub fn start(
         callers: crate::protocol::caller::hooks::Registry::new(
             settings.spool_dir(polylogue_sources::hook_spool::ORIGIN),
         ),
-        warm: super::warm::Warm::default(),
+        warm,
         scope: super::scope::SharedScopeIndex::default(),
         queued_deliveries: super::queued_deliveries::QueuedDeliveries::default(),
         advisories: crate::advisory::Cooldowns::default(),

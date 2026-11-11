@@ -7,7 +7,8 @@
 //! a dot product against a unit query vector, the best chunk per text. The
 //! daemon keeps loaded vectors by model revision read from the same SQLite
 //! snapshot as their rows, and brings them to a newer revision by reading
-//! only the rows stored since ([`Vectors::append`]). [`writes`] is a coarse process-local invalidation
+//! only the rows stored since ([`Vectors::append`]), on a cue from
+//! [`write_events`]. [`writes`] is a coarse process-local invalidation
 //! counter for query continuations, not the identity of a loaded snapshot.
 
 use crate::archive::{Archive, open_read, open_write};
@@ -33,6 +34,17 @@ pub fn writes() -> u64 {
 
 pub(crate) fn wrote() {
     WRITES.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    WRITE_EVENTS.committed();
+}
+
+/// Cues after each commit that stored vectors in this process.
+static WRITE_EVENTS: std::sync::LazyLock<crate::completion::CommitEvents> =
+    std::sync::LazyLock::new(Default::default);
+
+/// A coalesced cue after each commit that stores vectors; the daemon's
+/// vectors worker extends its loaded set on it.
+pub fn write_events() -> crate::completion::CommitSubscription {
+    WRITE_EVENTS.subscribe()
 }
 
 /// One vector to store.
@@ -92,6 +104,12 @@ impl Vectors {
             conn.execute_batch("BEGIN")?;
         }
         Ok(Self { conn, writable })
+    }
+
+    /// A read-only handle on its own snapshot of the embeddings database,
+    /// for the daemon's vectors worker, which reads outside any request.
+    pub fn snapshot(archive: &Archive, cache_kib: i64) -> Result<Self> {
+        Self::for_reader(archive, cache_kib, false, None)
     }
 
     pub(crate) fn writable(&self) -> bool {

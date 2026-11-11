@@ -131,142 +131,153 @@ fn completion_request_preserves_full_text_offsets_and_reports_invalid_boundaries
     }
 }
 
+fn put_vector(daemon: &crate::test_daemon::TestDaemon, key: &str, hash: u8, values: [f32; 2]) {
+    let reader = daemon.daemon.reads.reader().unwrap();
+    reader
+        .vectors_writer()
+        .unwrap()
+        .put(
+            key,
+            &[polylogue_store::vectors::Vector {
+                text_hash: vec![hash],
+                chunk: 0,
+                values: values.to_vec(),
+            }],
+        )
+        .unwrap();
+}
+
 #[test]
 fn vector_loading_leaves_the_cache_unlocked_and_clear_prevents_publication() {
     let daemon = crate::test_daemon::start("vector cache ownership");
-    let warm = Warm::default();
+    let warm = Warm::new(&daemon.daemon.archive);
     let (started, entered) = std::sync::mpsc::channel();
     let (release, released) = std::sync::mpsc::channel();
     std::thread::scope(|scope| {
         let warm = &warm;
         let daemon = &daemon;
-        let worker = scope.spawn(move || {
+        let reading = scope.spawn(move || {
             let reader = daemon.daemon.reads.reader().unwrap();
-            warm.cached_vectors(&reader, "synthetic/empty", 0, |_| {
-                started.send(()).unwrap();
-                released.recv().unwrap();
-                reader
-                    .vectors()
-                    .unwrap()
-                    .load("synthetic/empty")
-                    .map_err(|e| e.to_string())
-            })
-            .unwrap()
+            warm.load_vectors_until(&reader, started, released);
         });
         entered.recv_timeout(Duration::from_secs(10)).unwrap();
-        let unlocked = warm.vectors.try_lock().is_ok();
+        let unlocked = warm.vectors.cache.try_lock().is_ok();
         if unlocked {
             warm.clear();
         }
         release.send(()).unwrap();
-        let result = worker.join().unwrap();
+        reading.join().unwrap();
         assert!(unlocked, "loading must not hold the shared cache mutex");
-        assert_eq!(result.vectors(), 0);
-        assert!(
-            warm.vectors.lock().unwrap().loaded.is_none(),
+        let cache = warm.vectors.cache.lock().unwrap();
+        // The cleared pass published nothing; the read asked again.
+        assert_eq!(
+            cache.passes, 2,
             "clear invalidates an in-flight publication"
         );
+        assert_eq!(cache.sets.len(), 1);
+        assert_eq!(cache.sets[0].vectors(), 0);
     });
 }
 
 #[test]
 fn older_vector_snapshot_does_not_replace_newer_cached_values() {
-    use polylogue_store::vectors::Vector;
     let daemon = crate::test_daemon::start("vector snapshot ordering");
-    let warm = Warm::default();
-    let reader = daemon.daemon.reads.reader().unwrap();
+    let warm = Warm::new(&daemon.daemon.archive);
     let key = "synthetic/model/2/document/unit";
-    let mut writer = reader.vectors_writer().unwrap();
-    writer
-        .put(
-            key,
-            &[Vector {
-                text_hash: vec![1],
-                chunk: 0,
-                values: vec![1., 0.],
-            }],
-        )
-        .unwrap();
-    let first = writer.load(key).unwrap();
-    // A later write: another text's vector.
-    writer
-        .put(
-            key,
-            &[Vector {
-                text_hash: vec![2],
-                chunk: 0,
-                values: vec![0., 1.],
-            }],
-        )
-        .unwrap();
-    let second = writer.load(key).unwrap();
-    drop(writer);
-    drop(reader);
-    let older = first.revision;
-    let newer = second.revision;
+    put_vector(&daemon, key, 1, [1., 0.]);
+    // A read whose snapshot predates the next write.
+    let older = daemon.daemon.reads.reader().unwrap();
+    let older_revision = older.vectors().unwrap().revision(key).unwrap();
+    put_vector(&daemon, key, 2, [0., 1.]);
+    let reader = daemon.daemon.reads.reader().unwrap();
+    let current = warm.vectors_of(&reader, key).unwrap();
+    assert!(current.revision > older_revision);
+    assert_eq!(current.vectors(), 2);
+    // The older read loads its own set, which serves it and is not kept.
+    let old = warm.vectors_of(&older, key).unwrap();
+    assert_eq!(old.revision, older_revision);
+    assert_eq!(old.vectors(), 1);
+    let cache = warm.vectors.cache.lock().unwrap();
+    assert_eq!(cache.sets.len(), 1);
+    assert!(Arc::ptr_eq(&cache.sets[0], &current));
+}
+
+#[test]
+fn a_read_after_a_revision_commit_never_extends_inline() {
+    let daemon = crate::test_daemon::start("vectors worker");
+    let warm = Warm::new(&daemon.daemon.archive);
+    let key = "synthetic/model/2/document/unit";
+    put_vector(&daemon, key, 1, [1., 0.]);
+    let read = || {
+        let reader = daemon.daemon.reads.reader().unwrap();
+        warm.vectors_of(&reader, key).unwrap()
+    };
+    assert_eq!(read().vectors(), 1);
+    for hash in 2..=5 {
+        let held = warm.summary().vectors.unwrap().vectors;
+        put_vector(&daemon, key, hash, [0., 1.]);
+        // The worker extends the set on the commit, before any read asks.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while warm.summary().vectors.unwrap().vectors == held {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the worker did not extend the set"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let loads = super::loads_here();
+        let current = read();
+        assert_eq!(
+            super::loads_here(),
+            loads,
+            "the read loaded or extended vectors itself"
+        );
+        assert_eq!(current.vectors(), usize::from(hash));
+        assert_eq!(current.rows_read, 1, "the worker read only the new vector");
+        // The set the read got ranks like a full load of its snapshot.
+        let reader = daemon.daemon.reads.reader().unwrap();
+        let whole = Arc::new(reader.vectors().unwrap().load(key).unwrap());
+        assert_eq!(current.revision, whole.revision);
+        let ranked = current.similarity(&[0.6, 0.8]).unwrap();
+        let loaded = whole.similarity(&[0.6, 0.8]).unwrap();
+        for text in 1..=hash {
+            assert_eq!(ranked.of(&[text]), loaded.of(&[text]), "text {text}");
+        }
+    }
+    // A read that comes before the worker has extended the set waits for it.
     let (started, entered) = std::sync::mpsc::channel();
     let (release, released) = std::sync::mpsc::channel();
+    warm.vectors.cache.lock().unwrap().gate = Some((started, released));
+    put_vector(&daemon, key, 6, [0., 1.]);
+    entered.recv_timeout(Duration::from_secs(10)).unwrap();
+    let waited = warm.vectors.cache.lock().unwrap().waited;
     std::thread::scope(|scope| {
-        let warm = &warm;
-        let daemon = &daemon;
-        let worker = scope.spawn(move || {
-            let reader = daemon.daemon.reads.reader().unwrap();
-            warm.cached_vectors(&reader, key, older, |_| {
-                started.send(()).unwrap();
-                released.recv().unwrap();
-                Ok(first)
-            })
-            .unwrap()
+        let reading = scope.spawn(|| {
+            let loads = super::loads_here();
+            let set = read();
+            (super::loads_here() - loads, set)
         });
-        entered.recv_timeout(Duration::from_secs(10)).unwrap();
-        let reader = daemon.daemon.reads.reader().unwrap();
-        let current = warm
-            .cached_vectors(&reader, key, newer, |_| Ok(second))
-            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while warm.vectors.cache.lock().unwrap().waited == waited && !reading.is_finished() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the read neither waited nor answered"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
         release.send(()).unwrap();
-        let old = worker.join().unwrap();
-        assert_eq!(old.revision, older);
-        assert_eq!(current.revision, newer);
-        assert_eq!(
-            warm.vectors
-                .lock()
-                .unwrap()
-                .loaded
-                .as_ref()
-                .unwrap()
-                .revision,
-            newer
-        );
-        let reused = warm
-            .cached_vectors(&reader, key, newer, |_| {
-                panic!("current snapshot should reuse the cache")
-            })
-            .unwrap();
-        assert!(Arc::ptr_eq(&current, &reused));
-        assert!(
-            warm.cached_vectors(&reader, "synthetic/failure", 0, |_| Err(
-                "cancelled load".into()
-            ))
-            .is_err()
-        );
-        assert_eq!(
-            warm.vectors
-                .lock()
-                .unwrap()
-                .loaded
-                .as_ref()
-                .unwrap()
-                .revision,
-            newer
-        );
+        let (loads, set) = reading.join().unwrap();
+        assert_eq!(loads, 0, "the read loaded or extended vectors itself");
+        assert_eq!(set.vectors(), 6);
     });
+    assert_eq!(warm.counts.vector_loads.load(Ordering::Relaxed), 1);
 }
 
 #[test]
 fn vector_write_appends_without_reload() {
     use polylogue_store::vectors::Vector;
     let daemon = crate::test_daemon::start("vector appends");
-    let warm = Warm::default();
+    let warm = Warm::new(&daemon.daemon.archive);
     let key = "synthetic/model/2/document/unit";
     let put = |hash: u8, values: [f32; 2]| {
         let reader = daemon.daemon.reads.reader().unwrap();
@@ -346,7 +357,7 @@ fn vector_write_appends_without_reload() {
 #[test]
 fn summary_does_not_wait_for_a_load() {
     let daemon = crate::test_daemon::start("status during a vector load");
-    let warm = Warm::default();
+    let warm = Warm::new(&daemon.daemon.archive);
     let before = serde_json::to_value(warm.summary()).unwrap();
     let (started, entered) = std::sync::mpsc::channel();
     let (release, released) = std::sync::mpsc::channel();

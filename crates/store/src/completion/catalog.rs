@@ -198,6 +198,10 @@ impl CatalogWriter {
             identity: (file.dev(), file.ino()),
         })
     }
+    #[cfg(test)]
+    pub(crate) fn connection(&self) -> &Connection {
+        &self.conn
+    }
     /// A deleted derived file is rebuilt on the next ordinary publication.
     pub fn is_current_file(&self) -> bool {
         fs::metadata(&self.path).is_ok_and(|file| (file.dev(), file.ino()) == self.identity)
@@ -232,11 +236,96 @@ impl CatalogWriter {
         self.conn.execute("INSERT INTO metadata VALUES('catalog',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [serde_json::to_string(catalog)?])?;
         Ok(())
     }
+    /// A session's row, and the values of each field `session.values`
+    /// names: those fields' values become exactly the given ones. Values of
+    /// other fields (the counted models and tools) stay as they are.
     pub fn put_session(&mut self, session: &Session) -> Result<()> {
+        let existed: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM session WHERE id=?1)",
+            [&session.id],
+            |row| row.get(0),
+        )?;
         self.conn.execute("INSERT INTO session VALUES(?1,?2,'',?3,?4,?5,?6,?7,?8) ON CONFLICT(id) DO UPDATE SET native_id=excluded.native_id,title=excluded.title,title_key=excluded.title_key,origin=excluded.origin,repo=excluded.repo,last_activity=excluded.last_activity,first_prompt=excluded.first_prompt",
             params![session.id,session.native_id,session.title,text_key(&session.title),session.origin,session.repo,session.last_activity,session.first_prompt])?;
-        self.put_values(&format!("session:{}", session.id), &session.values)?;
-        self.refresh_neighbors(&session.id)
+        let owner = format!("session:{}", session.id);
+        for (field, values) in &session.values {
+            let stored = self
+                .conn
+                .prepare_cached("SELECT value FROM contribution WHERE session=?1 AND field=?2")?
+                .query_map([&owner, field], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            for value in stored {
+                if !values.contains_key(&value) {
+                    self.set_value(&owner, field, &value, 0)?;
+                }
+            }
+            for (value, n) in values {
+                self.set_value(&owner, field, value, *n)?;
+            }
+        }
+        // An ID's shortest unique prefix changes only when IDs come or go.
+        if !existed {
+            self.refresh_neighbors(&session.id)?;
+        }
+        Ok(())
+    }
+    /// One change read from the index ([`crate::Reader::visit_completion_sessions`]).
+    pub fn apply(&mut self, change: super::SessionChange) -> Result<()> {
+        use super::SessionChange;
+        match change {
+            SessionChange::Upsert(session) => self.put_session(&session),
+            SessionChange::Recreated(session) => {
+                self.remove_session(&session.id)?;
+                self.put_session(&session)
+            }
+            SessionChange::Removed(id) => self.remove_session(&id),
+            SessionChange::Value {
+                session,
+                field,
+                value,
+                count,
+            } => self.set_value(&format!("session:{session}"), &field, &value, count),
+        }
+    }
+    /// One owner's count of one value; 0 removes it.
+    pub fn set_value(&mut self, owner: &str, field: &str, value: &str, n: u64) -> Result<()> {
+        let old: i64 = self
+            .conn
+            .prepare_cached(
+                "SELECT n FROM contribution WHERE session=?1 AND field=?2 AND value=?3",
+            )?
+            .query_row(params![owner, field, value], |row| row.get(0))
+            .optional()?
+            .unwrap_or(0);
+        let new = count(n)?;
+        if old == new {
+            return Ok(());
+        }
+        if new == 0 {
+            self.conn
+                .prepare_cached(
+                    "DELETE FROM contribution WHERE session=?1 AND field=?2 AND value=?3",
+                )?
+                .execute(params![owner, field, value])?;
+        } else {
+            self.conn
+                .prepare_cached("INSERT INTO contribution VALUES(?1,?2,?3,?4) ON CONFLICT(session,field,value) DO UPDATE SET n=excluded.n")?
+                .execute(params![owner, field, value, new])?;
+        }
+        // SQLite checks the proposed row of an upsert, so a decrease updates.
+        if new > old {
+            self.conn
+                .prepare_cached("INSERT INTO value_count VALUES(?1,?2,?3) ON CONFLICT(field,value) DO UPDATE SET n=n+excluded.n")?
+                .execute(params![field, value, new - old])?;
+        } else {
+            self.conn
+                .prepare_cached("UPDATE value_count SET n=n-?3 WHERE field=?1 AND value=?2")?
+                .execute(params![field, value, old - new])?;
+            self.conn
+                .prepare_cached("DELETE FROM value_count WHERE field=?1 AND value=?2 AND n=0")?
+                .execute(params![field, value])?;
+        }
+        Ok(())
     }
     pub fn put_values(
         &mut self,
