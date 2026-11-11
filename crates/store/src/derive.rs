@@ -427,15 +427,16 @@ impl<'a> Pass<'a> {
                     return Err(StoreError::WriterGone);
                 }
                 let snapshot = read.unchecked_transaction()?;
-                let token = Token::read(&snapshot, t.pk)?;
+                let marked = Token::read(&snapshot, t.pk)?;
+                let token = marked.map(|(token, _)| token);
                 if wave == 0 {
-                    let Some(token) = token else {
+                    let Some((token, due)) = marked else {
                         // Its mark is gone already.
                         t.admitted = false;
                         continue;
                     };
                     t.token = Some(token);
-                    t.stale = self.stale(&snapshot, t.pk, token)?;
+                    t.stale = self.stale(&snapshot, t.pk, token, due)?;
                 } else if token != t.token {
                     // Its rows changed since its first wave: it stays due.
                     t.admitted = false;
@@ -490,21 +491,16 @@ impl<'a> Pass<'a> {
     /// nothing: every session derivation when its rows changed, each
     /// derivation a marked cause dirties, and each derivation whose stored
     /// version is not its current one.
-    fn stale(&self, read: &Connection, pk: i64, token: Token) -> Result<Vec<(usize, bool)>> {
+    fn stale(
+        &self,
+        read: &Connection,
+        pk: i64,
+        token: Token,
+        due: Due,
+    ) -> Result<Vec<(usize, bool)>> {
         if token.changed.is_none() {
             return Ok(Vec::new());
         }
-        let due = read
-            .prepare_cached(
-                "SELECT rows_changed, repo_lookup, rewritten FROM derive_due WHERE session_pk = ?1",
-            )?
-            .query_row([pk], |r| {
-                Ok(Due {
-                    rows_changed: r.get(0)?,
-                    repo_lookup: r.get(1)?,
-                    rewritten: r.get(2)?,
-                })
-            })?;
         let mut stored = std::collections::HashMap::new();
         let mut statement =
             read.prepare_cached("SELECT name, version FROM derive_state WHERE session_pk = ?1")?;
@@ -558,20 +554,33 @@ pub(crate) struct Token {
 }
 
 impl Token {
-    /// The session's token now; `None` when it is not due.
-    fn read(conn: &Connection, pk: i64) -> Result<Option<Self>> {
-        Ok(conn
+    /// The session's token now, with why it is due; `None` when it is not
+    /// due.
+    fn read(conn: &Connection, pk: i64) -> Result<Option<(Self, Due)>> {
+        let due = conn
             .prepare_cached(
-                "SELECT s.changed, d.marked FROM derive_due d LEFT JOIN session s ON s.pk = d.session_pk
-                 WHERE d.session_pk = ?1",
+                "SELECT marked, rows_changed, repo_lookup, rewritten FROM derive_due
+                 WHERE session_pk = ?1",
             )?
             .query_row([pk], |r| {
-                Ok(Self {
-                    changed: r.get(0)?,
-                    marked: r.get(1)?,
-                })
+                Ok((
+                    r.get(0)?,
+                    Due {
+                        rows_changed: r.get(1)?,
+                        repo_lookup: r.get(2)?,
+                        rewritten: r.get(3)?,
+                    },
+                ))
             })
-            .optional()?)
+            .optional()?;
+        let Some((marked, due)) = due else {
+            return Ok(None);
+        };
+        let changed = conn
+            .prepare_cached("SELECT changed FROM session WHERE pk = ?1")?
+            .query_row([pk], |r| r.get(0))
+            .optional()?;
+        Ok(Some((Self { changed, marked }, due)))
     }
 }
 
@@ -611,7 +620,7 @@ pub(crate) fn apply(index: &Connection, write: &Write) -> Result<Vec<bool>> {
          ON CONFLICT(name, session_pk) DO UPDATE SET version = excluded.version",
     )?;
     for session in &write.sessions {
-        if Token::read(&tx, session.pk)? != Some(session.token) {
+        if Token::read(&tx, session.pk)?.map(|(token, _)| token) != Some(session.token) {
             applied.push(false);
             continue;
         }

@@ -646,6 +646,10 @@ fn derive_steps(sessions: i64) -> usize {
     index
         .execute("UPDATE session SET changed = 2 WHERE pk = 1", [])
         .unwrap();
+    // Statements the first pass cached are prepared again after a schema
+    // change, a number of times that depends on that pass's history; the
+    // measured pass starts with none cached.
+    index.flush_prepared_statement_cache();
     let steps = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&steps);
     index
