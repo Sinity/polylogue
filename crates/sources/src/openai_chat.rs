@@ -57,44 +57,48 @@ struct ChatState {
     position: usize,
 }
 
-static DOCUMENT_FIELDS: Fields = Fields::new(&[
-    ("messages", Rule::Read(T::Array)),
-    ("id", Rule::Read(T::String)),
-    ("model", Rule::Read(T::String)),
-    ("title", Rule::Read(T::String)),
-])
-.for_kind("document");
+static DOCUMENT_FIELDS: Fields = Fields::new(
+    "document",
+    &[
+        ("messages", Rule::Read(T::Array)),
+        ("id", Rule::Read(T::String)),
+        ("model", Rule::Read(T::String)),
+        ("title", Rule::Read(T::String)),
+    ],
+);
 
-static MESSAGE_FIELDS: Fields = Fields::new(&[
-    ("tool_calls[].id", Rule::Read(T::String)),
-    ("tool_calls[].type", Rule::Read(T::String)),
-    ("tool_calls[].function.name", Rule::Read(T::String)),
-    (
-        "tool_calls[].function.arguments",
-        Rule::Kept("complete parsed tool input"),
-    ),
-    ("function_call.name", Rule::Read(T::String)),
-    (
-        "function_call.arguments",
-        Rule::Kept("complete parsed tool input"),
-    ),
-    ("content[].type", Rule::Read(T::String)),
-    ("content[].text", Rule::Read(T::String)),
-    ("content[].image_url.url", Rule::Read(T::String)),
-    ("role", Rule::Read(T::String)),
-    ("content", Rule::Read(T::StringOrArray)),
-    (
-        "name",
-        Rule::Kept("the speaker's name in a multi-party chat"),
-    ),
-    ("tool_calls", Rule::Read(T::Array)),
-    ("tool_call_id", Rule::Read(T::String)),
-    ("reasoning", Rule::Read(T::StringOrArray)),
-    ("reasoning_content", Rule::Read(T::StringOrArray)),
-    ("refusal", Rule::Read(T::String)),
-    ("function_call", Rule::Read(T::Object)),
-])
-.for_kind("message");
+static MESSAGE_FIELDS: Fields = Fields::new(
+    "message",
+    &[
+        ("tool_calls[].id", Rule::Read(T::String)),
+        ("tool_calls[].type", Rule::Read(T::String)),
+        ("tool_calls[].function.name", Rule::Read(T::String)),
+        (
+            "tool_calls[].function.arguments",
+            Rule::Kept("complete parsed tool input"),
+        ),
+        ("function_call.name", Rule::Read(T::String)),
+        (
+            "function_call.arguments",
+            Rule::Kept("complete parsed tool input"),
+        ),
+        ("content[].type", Rule::Read(T::String)),
+        ("content[].text", Rule::Read(T::String)),
+        ("content[].image_url.url", Rule::Read(T::String)),
+        ("role", Rule::Read(T::String)),
+        ("content", Rule::Read(T::StringOrArray)),
+        (
+            "name",
+            Rule::Kept("the speaker's name in a multi-party chat"),
+        ),
+        ("tool_calls", Rule::Read(T::Array)),
+        ("tool_call_id", Rule::Read(T::String)),
+        ("reasoning", Rule::Read(T::StringOrArray)),
+        ("reasoning_content", Rule::Read(T::StringOrArray)),
+        ("refusal", Rule::Read(T::String)),
+        ("function_call", Rule::Read(T::Object)),
+    ],
+);
 
 impl ExportParser for OpenAiChat {
     fn scan(

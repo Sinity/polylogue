@@ -86,11 +86,13 @@ impl Records {
     /// Native database table names are schema identifiers. Row scalar bodies
     /// remain absent from these derived observations.
     pub fn unknown_table(&mut self, kind: &str, table: &str, row: &Json) {
-        static ROW: Fields = Fields::new(&[(
-            "",
-            crate::fields::Rule::Read(crate::fields::ExpectedType::Object),
-        )])
-        .for_kind("row");
+        static ROW: Fields = Fields::new(
+            "row",
+            &[(
+                "",
+                crate::fields::Rule::Read(crate::fields::ExpectedType::Object),
+            )],
+        );
         self.account(kind, row, &ROW, Some(table), true);
     }
 
@@ -98,13 +100,15 @@ impl Records {
     /// separately so a new envelope field cannot disappear behind that walk.
     pub fn unknown_table_row_envelope(&mut self, table: &str, record: &Json) {
         use crate::fields::{ExpectedType as T, Rule};
-        static ENVELOPE: Fields = Fields::new(&[
-            ("t", Rule::Read(T::String)),
-            ("k", Rule::Read(T::Any)),
-            ("h", Rule::Read(T::String)),
-            ("r", Rule::Read(T::Object)),
-        ])
-        .for_kind("row_envelope");
+        static ENVELOPE: Fields = Fields::new(
+            "row_envelope",
+            &[
+                ("t", Rule::Read(T::String)),
+                ("k", Rule::Read(T::Any)),
+                ("h", Rule::Read(T::String)),
+                ("r", Rule::Read(T::Object)),
+            ],
+        );
         self.account(
             "row envelope",
             &crate::fields::header(record, &["r"]),
@@ -118,46 +122,52 @@ impl Records {
     /// names and SQL type declarations remain values, never observation paths.
     pub fn table_metadata(&mut self, table: &str, metadata: &Json) {
         use crate::fields::{ExpectedType as T, Rule};
-        static METADATA: Fields = Fields::new(&[
-            ("columns", Rule::Read(T::Array)),
-            ("columns[].cid", Rule::Read(T::Number)),
-            ("columns[].name", Rule::Read(T::String)),
-            ("columns[].declared_type", Rule::Read(T::String)),
-            ("columns[].not_null", Rule::Read(T::Boolean)),
-            ("columns[].primary_key", Rule::Read(T::Number)),
-            ("columns[].hidden", Rule::Read(T::Number)),
-            ("without_rowid", Rule::Read(T::Boolean)),
-        ])
-        .for_kind("table_metadata");
+        static METADATA: Fields = Fields::new(
+            "table_metadata",
+            &[
+                ("columns", Rule::Read(T::Array)),
+                ("columns[].cid", Rule::Read(T::Number)),
+                ("columns[].name", Rule::Read(T::String)),
+                ("columns[].declared_type", Rule::Read(T::String)),
+                ("columns[].not_null", Rule::Read(T::Boolean)),
+                ("columns[].primary_key", Rule::Read(T::Number)),
+                ("columns[].hidden", Rule::Read(T::Number)),
+                ("without_rowid", Rule::Read(T::Boolean)),
+            ],
+        );
         self.account("table metadata", metadata, &METADATA, Some(table), false);
     }
     /// A row disappearance carries table identity and framing fields rather
     /// than a replacement sample of that table's columns.
     pub fn unknown_table_gone(&mut self, table: &str, record: &Json) {
-        static GONE: Fields = Fields::new(&[
-            (
-                "t",
-                crate::fields::Rule::Read(crate::fields::ExpectedType::String),
-            ),
-            (
-                "k",
-                crate::fields::Rule::Read(crate::fields::ExpectedType::Any),
-            ),
-            (
-                "gone",
-                crate::fields::Rule::Read(crate::fields::ExpectedType::Boolean),
-            ),
-        ])
-        .for_kind("gone");
+        static GONE: Fields = Fields::new(
+            "gone",
+            &[
+                (
+                    "t",
+                    crate::fields::Rule::Read(crate::fields::ExpectedType::String),
+                ),
+                (
+                    "k",
+                    crate::fields::Rule::Read(crate::fields::ExpectedType::Any),
+                ),
+                (
+                    "gone",
+                    crate::fields::Rule::Read(crate::fields::ExpectedType::Boolean),
+                ),
+            ],
+        );
         self.account("gone", record, &GONE, Some(table), true);
     }
 
     pub fn unknown_table_schema(&mut self, table: &str, schema: &Json) {
-        static SCHEMA: Fields = Fields::new(&[(
-            "",
-            crate::fields::Rule::Read(crate::fields::ExpectedType::Any),
-        )])
-        .for_kind("schema");
+        static SCHEMA: Fields = Fields::new(
+            "schema",
+            &[(
+                "",
+                crate::fields::Rule::Read(crate::fields::ExpectedType::Any),
+            )],
+        );
         self.account("schema", schema, &SCHEMA, Some(table), true);
     }
 
@@ -174,21 +184,25 @@ impl Records {
         payload_kept: bool,
     ) {
         use crate::fields::{ExpectedType as T, Rule};
-        static RETAINED: Fields = Fields::new(&[
-            ("", Rule::Kept("complete event payload")),
-            ("type", Rule::Read(T::String)),
-            ("timestamp", Rule::Read(T::StringOrNumber)),
-        ])
-        .for_kind("event");
+        static RETAINED: Fields = Fields::new(
+            "event",
+            &[
+                ("", Rule::Kept("complete event payload")),
+                ("type", Rule::Read(T::String)),
+                ("timestamp", Rule::Read(T::StringOrNumber)),
+            ],
+        );
         // Each declaration has a kind of its own: a reading declares one
         // shape per kind and path.
-        static PAYLOAD: Fields = Fields::new(&[
-            ("type", Rule::Read(T::String)),
-            ("timestamp", Rule::Read(T::StringOrNumber)),
-            ("payload", Rule::Kept("complete native event payload")),
-        ])
-        .for_kind("event_payload");
-        static UNREAD: Fields = Fields::new(&[]).for_kind("unread");
+        static PAYLOAD: Fields = Fields::new(
+            "event_payload",
+            &[
+                ("type", Rule::Read(T::String)),
+                ("timestamp", Rule::Read(T::StringOrNumber)),
+                ("payload", Rule::Kept("complete native event payload")),
+            ],
+        );
+        static UNREAD: Fields = Fields::new("unread", &[]);
         self.fields(
             kind,
             value,

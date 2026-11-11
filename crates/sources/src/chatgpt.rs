@@ -115,58 +115,63 @@ impl crate::export::ExportParser for Export {
 }
 
 /// A mapping node's own fields.
-static NODE_FIELDS: Fields = Fields::new(&[
-    ("id", Rule::Read(T::String)),
-    ("message", Rule::Read(T::Object)),
-    ("parent", Rule::Read(T::String)),
-    (
-        "children",
-        Rule::Excluded("the parent links carry the same tree"),
-    ),
-])
-.for_kind("node");
+static NODE_FIELDS: Fields = Fields::new(
+    "node",
+    &[
+        ("id", Rule::Read(T::String)),
+        ("message", Rule::Read(T::Object)),
+        ("parent", Rule::Read(T::String)),
+        (
+            "children",
+            Rule::Excluded("the parent links carry the same tree"),
+        ),
+    ],
+);
 
 /// A message's fields. `metadata` holds dozens of provider keys (search
 /// results, citations, task state); it is kept whole in the stored export
 /// and read where it says something about the message (model, finish,
 /// attachments, hidden prompts).
-static MESSAGE_FIELDS: Fields = Fields::new(&[
-    ("id", Rule::Read(T::String)),
-    ("author", Rule::Read(T::Object)),
-    ("author.role", Rule::Read(T::String)),
-    ("author.name", Rule::Read(T::String)),
-    ("author.metadata", Rule::Kept("tool display details")),
-    ("create_time", Rule::Read(T::StringOrNumber)),
-    (
-        "update_time",
-        Rule::Excluded("edit time; the creation time orders messages"),
-    ),
-    ("content", Rule::Read(T::Object)),
-    ("content.content_type", Rule::Read(T::String)),
-    ("content.parts[]", Rule::Read(T::StringOrObject)),
-    ("content.parts[].content_type", Rule::Read(T::String)),
-    ("content.parts[].asset_pointer", Rule::Read(T::String)),
-    ("content.parts[].mime_type", Rule::Read(T::String)),
-    ("content.parts[].size_bytes", Rule::Read(T::Number)),
-    ("content.parts[].text", Rule::Read(T::String)),
-    ("content.text", Rule::Read(T::String)),
-    ("content.language", Rule::Read(T::String)),
-    ("content.thoughts", Rule::Read(T::Array)),
-    ("content.thoughts[].summary", Rule::Read(T::String)),
-    ("content.thoughts[].content", Rule::Read(T::String)),
-    ("content.model_set_context", Rule::Read(T::String)),
-    ("content.user_profile", Rule::Read(T::String)),
-    ("content.user_instructions", Rule::Read(T::String)),
-    ("status", Rule::Read(T::String)),
-    (
-        "end_turn",
-        Rule::Excluded("turn boundaries follow from the roles"),
-    ),
-    ("weight", Rule::Kept("message attrs weight")),
-    ("metadata", Rule::Kept("provider metadata in message attrs")),
-    ("recipient", Rule::Read(T::String)),
-    ("channel", Rule::Kept("message attrs channel")),
-])
+static MESSAGE_FIELDS: Fields = Fields::new(
+    "message",
+    &[
+        ("id", Rule::Read(T::String)),
+        ("author", Rule::Read(T::Object)),
+        ("author.role", Rule::Read(T::String)),
+        ("author.name", Rule::Read(T::String)),
+        ("author.metadata", Rule::Kept("tool display details")),
+        ("create_time", Rule::Read(T::StringOrNumber)),
+        (
+            "update_time",
+            Rule::Excluded("edit time; the creation time orders messages"),
+        ),
+        ("content", Rule::Read(T::Object)),
+        ("content.content_type", Rule::Read(T::String)),
+        ("content.parts[]", Rule::Read(T::StringOrObject)),
+        ("content.parts[].content_type", Rule::Read(T::String)),
+        ("content.parts[].asset_pointer", Rule::Read(T::String)),
+        ("content.parts[].mime_type", Rule::Read(T::String)),
+        ("content.parts[].size_bytes", Rule::Read(T::Number)),
+        ("content.parts[].text", Rule::Read(T::String)),
+        ("content.text", Rule::Read(T::String)),
+        ("content.language", Rule::Read(T::String)),
+        ("content.thoughts", Rule::Read(T::Array)),
+        ("content.thoughts[].summary", Rule::Read(T::String)),
+        ("content.thoughts[].content", Rule::Read(T::String)),
+        ("content.model_set_context", Rule::Read(T::String)),
+        ("content.user_profile", Rule::Read(T::String)),
+        ("content.user_instructions", Rule::Read(T::String)),
+        ("status", Rule::Read(T::String)),
+        (
+            "end_turn",
+            Rule::Excluded("turn boundaries follow from the roles"),
+        ),
+        ("weight", Rule::Kept("message attrs weight")),
+        ("metadata", Rule::Kept("provider metadata in message attrs")),
+        ("recipient", Rule::Read(T::String)),
+        ("channel", Rule::Kept("message attrs channel")),
+    ],
+)
 .shape(
     &[],
     &[
@@ -187,19 +192,20 @@ static MESSAGE_FIELDS: Fields = Fields::new(&[
             ],
         },
     ],
-)
-.for_kind("message");
+);
 
-static CONVERSATION_FIELDS: Fields = Fields::new(&[
-    ("", Rule::Kept("conversation settings event")),
-    ("id", Rule::Read(T::String)),
-    ("conversation_id", Rule::Read(T::String)),
-    ("title", Rule::Read(T::String)),
-    ("create_time", Rule::Read(T::StringOrNumber)),
-    ("update_time", Rule::Read(T::StringOrNumber)),
-    ("mapping", Rule::Read(T::Object)),
-])
-.for_kind("conversation");
+static CONVERSATION_FIELDS: Fields = Fields::new(
+    "conversation",
+    &[
+        ("", Rule::Kept("conversation settings event")),
+        ("id", Rule::Read(T::String)),
+        ("conversation_id", Rule::Read(T::String)),
+        ("title", Rule::Read(T::String)),
+        ("create_time", Rule::Read(T::StringOrNumber)),
+        ("update_time", Rule::Read(T::StringOrNumber)),
+        ("mapping", Rule::Read(T::Object)),
+    ],
+);
 
 /// One conversation object: its session, messages and events. Shared by
 /// the export and by browser captures of the same conversation, so both

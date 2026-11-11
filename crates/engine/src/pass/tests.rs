@@ -779,3 +779,65 @@ fn unparseable_stored_input_refused_and_pass_continues() {
         "a recorded refusal settles: {again:?}"
     );
 }
+
+/// A watched input whose recorded path its origin's parser does not read (an
+/// earlier build captured a file this build's declaration no longer lists)
+/// is refused with its reason at its stored length when the index is built
+/// again; it is not read range by range with nothing recorded, and the
+/// refusal settles.
+#[test]
+fn a_watched_input_no_parser_reads_is_refused_and_settles() {
+    let home = ClaudeHome::new();
+    home.append("kept.jsonl", &claude_user("k1", "kept", "still indexed"));
+    let odd_text = claude_user("o1", "odd", "refused");
+    home.append("odd.jsonl", &odd_text);
+    {
+        let (mut engine, _lock) = home.engine(64 << 10);
+        assert!(engine.run_pass().unwrap().errors.is_empty());
+    }
+    let odd = home.file("odd.jsonl");
+    let unreadable = odd.with_extension("txt");
+    let archive = rusqlite::Connection::open(home.root.join("archive.db")).unwrap();
+    let moved = archive
+        .execute(
+            "UPDATE observation SET path = ?1, path_bytes = CAST(?1 AS BLOB) WHERE path = ?2",
+            [unreadable.to_str().unwrap(), odd.to_str().unwrap()],
+        )
+        .unwrap();
+    assert!(moved > 0);
+    drop(archive);
+    polylogue_testkit::delete_index(&home.root);
+
+    let (archive, _lock) = Archive::open_or_create(&home.root).unwrap();
+    let mut config = home.config(64 << 10);
+    config.reads_sources = false;
+    let mut engine = Engine::new(config, archive, polylogue_testkit::stopped_attempt()).unwrap();
+    let pass = engine.run_pass().unwrap();
+    assert_eq!(home.texts("kept"), ["still indexed"]);
+    assert!(home.texts("odd").is_empty());
+    let reason = format!(
+        "no claude-code parser reads the recorded path {}",
+        unreadable.display()
+    );
+    assert_eq!(pass.errors.len(), 1, "{:?}", pass.errors);
+    assert!(pass.errors[0].ends_with(&reason), "{:?}", pass.errors);
+    let refused = home
+        .reads()
+        .reader()
+        .unwrap()
+        .query(
+            "SELECT reason, at_length FROM parse_state WHERE status = 'refused'",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(
+        refused,
+        [serde_json::json!({"reason": reason, "at_length": odd_text.len()})]
+    );
+    let again = engine.run_pass().unwrap();
+    assert!(
+        again.errors.is_empty(),
+        "a recorded refusal settles: {again:?}"
+    );
+    assert_eq!(again.bytes_read, 0);
+}

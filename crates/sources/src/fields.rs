@@ -1,7 +1,7 @@
 //! Each leaf is read at its path, retained in row attributes, or reported unused.
 
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 use polylogue_model::Json;
 use std::collections::{BTreeMap, HashMap};
@@ -45,16 +45,19 @@ pub struct Fields {
     rules: &'static [(&'static str, Rule)],
     pub dynamic_maps: &'static [&'static str],
     pub known_kinds: &'static [KnownKinds],
-    record_kind: Option<&'static str>,
+    /// The wire-shape kind of the records this declaration reads.
+    record_kind: &'static str,
     compiled: OnceLock<HashMap<String, Rule>>,
 }
 impl Fields {
-    pub const fn new(rules: &'static [(&'static str, Rule)]) -> Self {
+    /// A declaration for records of kind `kind`, which names this
+    /// declaration alone among its origin's.
+    pub const fn new(kind: &'static str, rules: &'static [(&'static str, Rule)]) -> Self {
         Self {
             rules,
             dynamic_maps: &[],
             known_kinds: &[],
-            record_kind: None,
+            record_kind: kind,
             compiled: OnceLock::new(),
         }
     }
@@ -67,25 +70,17 @@ impl Fields {
         self.known_kinds = kinds;
         self
     }
-    pub const fn for_kind(mut self, kind: &'static str) -> Self {
-        self.record_kind = Some(kind);
-        self
-    }
     /// Public shape kinds come from declarations, never arbitrary wire scalars.
     /// A wire shape is keyed by its kind and path, and a reading version
-    /// declares one shape per key, so a kind names one declaration: a kind
-    /// the declaration does not list is `unknown_kind`, which no other
-    /// declaration names.
+    /// declares one shape per key, so a kind names one declaration: the
+    /// declaration's own kind, or a `type` it lists as known.
     pub fn kind(&self, supplied: &str) -> &'static str {
-        if let Some(kind) = self.record_kind {
-            return kind;
-        }
         let tail = supplied.rsplit('/').next().unwrap_or(supplied);
         self.known_kinds
             .iter()
             .filter(|known| known.path == "type")
             .find_map(|known| known.values.iter().copied().find(|kind| *kind == tail))
-            .unwrap_or("unknown_kind")
+            .unwrap_or(self.record_kind)
     }
     pub fn declarations(&self) -> &'static [(&'static str, Rule)] {
         self.rules

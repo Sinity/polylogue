@@ -27,25 +27,27 @@ pub(super) fn open(path: &Path) -> Option<Parse> {
 
 struct Atof;
 
-static FIELDS: Fields = Fields::new(&[
-    ("atof_version", Rule::Read(T::Number)),
-    ("kind", Rule::Read(T::String)),
-    ("uuid", Rule::Read(T::String)),
-    ("parent_uuid", Rule::Read(T::String)),
-    ("timestamp", Rule::Read(T::StringOrNumber)),
-    ("name", Rule::Read(T::String)),
-    ("scope_category", Rule::Read(T::String)),
-    ("category", Rule::Read(T::String)),
-    ("data", Rule::Kept("complete native observation event data")),
-    ("data_schema", Rule::Kept("native observation schema")),
-    (
-        "metadata",
-        Rule::Kept("native run metadata does not prove a conversation association"),
-    ),
-    ("attributes", Rule::Kept("native observation attributes")),
-    ("category_profile", Rule::Kept("native observation profile")),
-])
-.for_kind("atof");
+static FIELDS: Fields = Fields::new(
+    "atof",
+    &[
+        ("atof_version", Rule::Read(T::Number)),
+        ("kind", Rule::Read(T::String)),
+        ("uuid", Rule::Read(T::String)),
+        ("parent_uuid", Rule::Read(T::String)),
+        ("timestamp", Rule::Read(T::StringOrNumber)),
+        ("name", Rule::Read(T::String)),
+        ("scope_category", Rule::Read(T::String)),
+        ("category", Rule::Read(T::String)),
+        ("data", Rule::Kept("complete native observation event data")),
+        ("data_schema", Rule::Kept("native observation schema")),
+        (
+            "metadata",
+            Rule::Kept("native run metadata does not prove a conversation association"),
+        ),
+        ("attributes", Rule::Kept("native observation attributes")),
+        ("category_profile", Rule::Kept("native observation profile")),
+    ],
+);
 
 fn kind(value: &Json) -> Option<&'static str> {
     match value.get("kind")?.as_str()? {

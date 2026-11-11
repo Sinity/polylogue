@@ -61,67 +61,70 @@ struct SessionState {
     previous: Option<polylogue_model::MessageId>,
 }
 
-static MESSAGE_FIELDS: Fields = Fields::new(&[
-    ("content[].text", Rule::Read(T::String)),
-    ("thoughts[].subject", Rule::Read(T::String)),
-    ("thoughts[].description", Rule::Read(T::String)),
-    (
-        "thoughts[].timestamp",
-        Rule::Excluded("native thought time not interpreted as message time"),
-    ),
-    ("tokens.input", Rule::Read(T::Number)),
-    ("tokens.output", Rule::Read(T::Number)),
-    ("tokens.cached", Rule::Read(T::Number)),
-    ("tokens.thoughts", Rule::Read(T::Number)),
-    (
-        "tokens.tool",
-        Rule::Excluded("native tool-token lane has no domain usage lane"),
-    ),
-    (
-        "tokens.total",
-        Rule::Excluded("reported aggregate; individual lanes are read"),
-    ),
-    ("id", Rule::Read(T::String)),
-    ("timestamp", Rule::Read(T::StringOrNumber)),
-    ("type", Rule::Read(T::String)),
-    ("content", Rule::Read(T::StringOrArray)),
-    (
-        "displayContent",
-        Rule::Excluded("the prompt as shown, with file references collapsed"),
-    ),
-    ("thoughts", Rule::Read(T::Array)),
-    ("model", Rule::Read(T::String)),
-    ("tokens", Rule::Read(T::Object)),
-    ("toolCalls", Rule::Read(T::Array)),
-    ("toolCalls[].id", Rule::Read(T::String)),
-    ("toolCalls[].name", Rule::Read(T::String)),
-    ("toolCalls[].args", Rule::Kept("complete call input")),
-    (
-        "toolCalls[].result",
-        Rule::Kept("complete native result data"),
-    ),
-    ("toolCalls[].status", Rule::Read(T::String)),
-    (
-        "toolCalls[].timestamp",
-        Rule::Excluded("the turn's time places the call"),
-    ),
-    (
-        "toolCalls[].resultDisplay",
-        Rule::Kept("native result display data"),
-    ),
-    (
-        "toolCalls[].displayName",
-        Rule::Excluded("label for the tool name"),
-    ),
-    (
-        "toolCalls[].description",
-        Rule::Excluded("the tool's own description"),
-    ),
-    (
-        "toolCalls[].renderOutputAsMarkdown",
-        Rule::Excluded("display setting"),
-    ),
-])
+static MESSAGE_FIELDS: Fields = Fields::new(
+    "unlisted_message",
+    &[
+        ("content[].text", Rule::Read(T::String)),
+        ("thoughts[].subject", Rule::Read(T::String)),
+        ("thoughts[].description", Rule::Read(T::String)),
+        (
+            "thoughts[].timestamp",
+            Rule::Excluded("native thought time not interpreted as message time"),
+        ),
+        ("tokens.input", Rule::Read(T::Number)),
+        ("tokens.output", Rule::Read(T::Number)),
+        ("tokens.cached", Rule::Read(T::Number)),
+        ("tokens.thoughts", Rule::Read(T::Number)),
+        (
+            "tokens.tool",
+            Rule::Excluded("native tool-token lane has no domain usage lane"),
+        ),
+        (
+            "tokens.total",
+            Rule::Excluded("reported aggregate; individual lanes are read"),
+        ),
+        ("id", Rule::Read(T::String)),
+        ("timestamp", Rule::Read(T::StringOrNumber)),
+        ("type", Rule::Read(T::String)),
+        ("content", Rule::Read(T::StringOrArray)),
+        (
+            "displayContent",
+            Rule::Excluded("the prompt as shown, with file references collapsed"),
+        ),
+        ("thoughts", Rule::Read(T::Array)),
+        ("model", Rule::Read(T::String)),
+        ("tokens", Rule::Read(T::Object)),
+        ("toolCalls", Rule::Read(T::Array)),
+        ("toolCalls[].id", Rule::Read(T::String)),
+        ("toolCalls[].name", Rule::Read(T::String)),
+        ("toolCalls[].args", Rule::Kept("complete call input")),
+        (
+            "toolCalls[].result",
+            Rule::Kept("complete native result data"),
+        ),
+        ("toolCalls[].status", Rule::Read(T::String)),
+        (
+            "toolCalls[].timestamp",
+            Rule::Excluded("the turn's time places the call"),
+        ),
+        (
+            "toolCalls[].resultDisplay",
+            Rule::Kept("native result display data"),
+        ),
+        (
+            "toolCalls[].displayName",
+            Rule::Excluded("label for the tool name"),
+        ),
+        (
+            "toolCalls[].description",
+            Rule::Excluded("the tool's own description"),
+        ),
+        (
+            "toolCalls[].renderOutputAsMarkdown",
+            Rule::Excluded("display setting"),
+        ),
+    ],
+)
 .shape(
     &[],
     &[crate::fields::KnownKinds {

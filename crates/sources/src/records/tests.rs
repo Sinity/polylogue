@@ -3,8 +3,8 @@ use crate::fields::ExpectedType as T;
 use crate::fields::Rule;
 use serde_json::json;
 
-static KNOWN: Fields = Fields::new(&[("known", Rule::Read(T::String))]).for_kind("known");
-static EMPTY: Fields = Fields::new(&[]).for_kind("empty");
+static KNOWN: Fields = Fields::new("known", &[("known", Rule::Read(T::String))]);
+static EMPTY: Fields = Fields::new("empty", &[]);
 
 #[test]
 fn line_and_document_records_keep_the_same_classifications_and_field_counts() {
@@ -58,13 +58,15 @@ fn unused_leaf_counted_without_changing_record_outcomes() {
         "excluded": 3,
         "items": [{"known": 1, "extra": 2}, {"known": 2, "extra": 3}],
     });
-    static FIELDS: Fields = Fields::new(&[
-        ("read", Rule::Read(T::String)),
-        ("kept", Rule::Kept("kept as event data")),
-        ("excluded", Rule::Excluded("not parsed")),
-        ("items[].known", Rule::Read(T::String)),
-    ])
-    .for_kind("record");
+    static FIELDS: Fields = Fields::new(
+        "record",
+        &[
+            ("read", Rule::Read(T::String)),
+            ("kept", Rule::Kept("kept as event data")),
+            ("excluded", Rule::Excluded("not parsed")),
+            ("items[].known", Rule::Read(T::String)),
+        ],
+    );
     records.fields("event", &value, &FIELDS);
     let counts = records.finish().unwrap();
     assert_eq!(counts.records, 0);
@@ -80,7 +82,7 @@ fn unused_leaf_counted_without_changing_record_outcomes() {
 
 #[test]
 fn public_shape_kind_uses_declarations_instead_of_wire_discriminator_values() {
-    static FIELDS: Fields = Fields::new(&[("type", Rule::Read(T::String))]).shape(
+    static FIELDS: Fields = Fields::new("unlisted_item", &[("type", Rule::Read(T::String))]).shape(
         &[],
         &[crate::fields::KnownKinds {
             path: "type",
@@ -94,8 +96,8 @@ fn public_shape_kind_uses_declarations_instead_of_wire_discriminator_values() {
         &FIELDS,
     );
     let got = records.finish().unwrap();
-    let shape = &got.wire_shapes[&serde_json::to_string(&("unknown_kind", "/type")).unwrap()];
-    assert_eq!(shape.record_kind, "unknown_kind");
+    let shape = &got.wire_shapes[&serde_json::to_string(&("unlisted_item", "/type")).unwrap()];
+    assert_eq!(shape.record_kind, "unlisted_item");
     assert_eq!(shape.unknown_kind_count, 1);
     assert!(
         !serde_json::to_string(&got.wire_shapes)

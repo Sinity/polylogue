@@ -44,34 +44,39 @@ pub struct Export {
     occurrences: HashMap<String, usize>,
 }
 
-static EXPORT_FIELDS: Fields =
-    Fields::new(&[("conversations", Rule::Read(T::Array))]).for_kind("export");
-static CONVERSATION_FIELDS: Fields = Fields::new(&[
-    ("id", Rule::Read(T::String)),
-    ("conversationId", Rule::Read(T::String)),
-    ("title", Rule::Read(T::String)),
-    ("create_time", Rule::Read(T::StringOrNumber)),
-    ("createTime", Rule::Read(T::StringOrNumber)),
-])
-.for_kind("conversation");
-static RESPONSE_FIELDS: Fields = Fields::new(&[
-    ("id", Rule::Read(T::String)),
-    ("responseId", Rule::Read(T::String)),
-    ("sender", Rule::Read(T::String)),
-    ("message", Rule::Read(T::String)),
-    ("create_time", Rule::Read(T::StringOrNumber)),
-    ("createTime", Rule::Read(T::StringOrNumber)),
-    ("model", Rule::Read(T::String)),
-    ("parentResponseId", Rule::Read(T::String)),
-])
-.for_kind("response");
-static WRAPPER_FIELDS: Fields = Fields::new(&[
-    ("conversation", Rule::Read(T::Object)),
-    ("responses", Rule::Read(T::Array)),
-])
-.for_kind("wrapper");
+static EXPORT_FIELDS: Fields = Fields::new("export", &[("conversations", Rule::Read(T::Array))]);
+static CONVERSATION_FIELDS: Fields = Fields::new(
+    "conversation",
+    &[
+        ("id", Rule::Read(T::String)),
+        ("conversationId", Rule::Read(T::String)),
+        ("title", Rule::Read(T::String)),
+        ("create_time", Rule::Read(T::StringOrNumber)),
+        ("createTime", Rule::Read(T::StringOrNumber)),
+    ],
+);
+static RESPONSE_FIELDS: Fields = Fields::new(
+    "response",
+    &[
+        ("id", Rule::Read(T::String)),
+        ("responseId", Rule::Read(T::String)),
+        ("sender", Rule::Read(T::String)),
+        ("message", Rule::Read(T::String)),
+        ("create_time", Rule::Read(T::StringOrNumber)),
+        ("createTime", Rule::Read(T::StringOrNumber)),
+        ("model", Rule::Read(T::String)),
+        ("parentResponseId", Rule::Read(T::String)),
+    ],
+);
+static WRAPPER_FIELDS: Fields = Fields::new(
+    "wrapper",
+    &[
+        ("conversation", Rule::Read(T::Object)),
+        ("responses", Rule::Read(T::Array)),
+    ],
+);
 static RESPONSE_WRAPPER: Fields =
-    Fields::new(&[("response", Rule::Read(T::Object))]).for_kind("response_wrapper");
+    Fields::new("response_wrapper", &[("response", Rule::Read(T::Object))]);
 
 impl ExportParser for Export {
     fn scan(

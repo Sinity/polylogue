@@ -4,29 +4,31 @@ use crate::fields::{Fields, Rule};
 use polylogue_model::{Block, Json, Message, MessageId, PromptKind, Role, SessionId, ToolAction};
 use std::collections::HashSet;
 
-pub(super) static FIELDS: Fields = Fields::new(&[
-    ("id", Rule::Read(T::Number)),
-    ("session_id", Rule::Read(T::String)),
-    ("role", Rule::Read(T::String)),
-    ("content", Rule::Read(T::StringOrArray)),
-    ("platform_message_id", Rule::Read(T::String)),
-    ("tool_calls", Rule::Read(T::Array)),
-    ("tool_call_id", Rule::Read(T::String)),
-    ("tool_name", Rule::Read(T::String)),
-    ("reasoning_content", Rule::Read(T::StringOrArray)),
-    ("reasoning", Rule::Read(T::StringOrArray)),
-    ("reasoning_details", Rule::Read(T::Array)),
-    ("codex_reasoning_items", Rule::Read(T::Array)),
-    ("codex_message_items", Rule::Read(T::Array)),
-    ("timestamp", Rule::Read(T::StringOrNumber)),
-    ("active", Rule::Read(T::Number)),
-    ("compacted", Rule::Read(T::Number)),
-    ("observed", Rule::Read(T::Number)),
-    ("token_count", Rule::Read(T::Number)),
-    ("finish_reason", Rule::Read(T::String)),
-    ("_empty_recovery_synthetic", Rule::Read(T::Number)),
-])
-.for_kind("record");
+pub(super) static FIELDS: Fields = Fields::new(
+    "record",
+    &[
+        ("id", Rule::Read(T::Number)),
+        ("session_id", Rule::Read(T::String)),
+        ("role", Rule::Read(T::String)),
+        ("content", Rule::Read(T::StringOrArray)),
+        ("platform_message_id", Rule::Read(T::String)),
+        ("tool_calls", Rule::Read(T::Array)),
+        ("tool_call_id", Rule::Read(T::String)),
+        ("tool_name", Rule::Read(T::String)),
+        ("reasoning_content", Rule::Read(T::StringOrArray)),
+        ("reasoning", Rule::Read(T::StringOrArray)),
+        ("reasoning_details", Rule::Read(T::Array)),
+        ("codex_reasoning_items", Rule::Read(T::Array)),
+        ("codex_message_items", Rule::Read(T::Array)),
+        ("timestamp", Rule::Read(T::StringOrNumber)),
+        ("active", Rule::Read(T::Number)),
+        ("compacted", Rule::Read(T::Number)),
+        ("observed", Rule::Read(T::Number)),
+        ("token_count", Rule::Read(T::Number)),
+        ("finish_reason", Rule::Read(T::String)),
+        ("_empty_recovery_synthetic", Rule::Read(T::Number)),
+    ],
+);
 
 pub(super) fn active(row: &Json) -> Option<bool> {
     match (

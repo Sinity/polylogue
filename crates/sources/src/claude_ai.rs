@@ -96,100 +96,103 @@ impl crate::export::ExportParser for Export {
     }
 }
 
-static MESSAGE_FIELDS: Fields = Fields::new(&[
-    ("content[].remaining", Rule::Read(T::Number)),
-    ("attachments[].file_name", Rule::Read(T::String)),
-    ("attachments[].file_type", Rule::Read(T::String)),
-    ("attachments[].file_size", Rule::Read(T::Number)),
-    ("attachments[].extracted_content", Rule::Read(T::String)),
-    ("attachments[].file_uuid", Rule::Read(T::String)),
-    ("attachments[].file_kind", Rule::Read(T::String)),
-    ("files[].file_name", Rule::Read(T::String)),
-    ("files[].file_type", Rule::Read(T::String)),
-    ("files[].file_size", Rule::Read(T::Number)),
-    ("files[].extracted_content", Rule::Read(T::String)),
-    ("files[].file_uuid", Rule::Read(T::String)),
-    ("files[].file_kind", Rule::Read(T::String)),
-    ("files_v2[].file_name", Rule::Read(T::String)),
-    ("files_v2[].file_type", Rule::Read(T::String)),
-    ("files_v2[].file_size", Rule::Read(T::Number)),
-    ("files_v2[].extracted_content", Rule::Read(T::String)),
-    ("files_v2[].file_uuid", Rule::Read(T::String)),
-    ("files_v2[].file_kind", Rule::Read(T::String)),
-    ("content[].type", Rule::Read(T::String)),
-    ("content[].text", Rule::Read(T::String)),
-    ("content[].thinking", Rule::Read(T::String)),
-    ("content[].signature", Rule::Read(T::String)),
-    ("content[].thinking_hidden", Rule::Read(T::Boolean)),
-    (
-        "content[].summaries",
-        Rule::Kept("summaries in indexed block attributes"),
-    ),
-    (
-        "content[].citations",
-        Rule::Kept("citation blocks and indexed attributes"),
-    ),
-    (
-        "content[].start_timestamp",
-        Rule::Kept("indexed block time"),
-    ),
-    ("content[].stop_timestamp", Rule::Kept("indexed block time")),
-    ("content[].id", Rule::Read(T::String)),
-    ("content[].name", Rule::Read(T::String)),
-    ("content[].input", Rule::Kept("tool input in call block")),
-    (
-        "content[].content",
-        Rule::Kept("complete structured tool content"),
-    ),
-    ("content[].tool_use_id", Rule::Read(T::String)),
-    ("content[].is_error", Rule::Read(T::Boolean)),
-    (
-        "content[].structured_content",
-        Rule::Kept("structured tool result"),
-    ),
-    ("content[].source.type", Rule::Read(T::String)),
-    ("content[].source.media_type", Rule::Read(T::String)),
-    ("content[].source.data", Rule::Read(T::String)),
-    ("content[].source.url", Rule::Read(T::String)),
-    ("uuid", Rule::Read(T::String)),
-    ("text", Rule::Read(T::String)),
-    ("content", Rule::Read(T::StringOrArray)),
-    ("sender", Rule::Read(T::String)),
-    ("index", Rule::Read(T::Number)),
-    ("created_at", Rule::Read(T::StringOrNumber)),
-    (
-        "updated_at",
-        Rule::Excluded("edit time; the creation time orders messages"),
-    ),
-    (
-        "edited_at",
-        Rule::Excluded("edit time; the creation time orders messages"),
-    ),
-    // The model that wrote this message.for_kind("message"); it overrides the conversation's.
-    ("model", Rule::Read(T::String)),
-    (
-        "metadata",
-        Rule::Kept("message settings such as the thinking configuration"),
-    ),
-    (
-        "truncated",
-        Rule::Kept("the export marks a message it shortened"),
-    ),
-    ("attachments", Rule::Read(T::Array)),
-    ("files", Rule::Read(T::Array)),
-    ("files_v2", Rule::Read(T::Array)),
-    (
-        "sync_sources",
-        Rule::Kept("connected drive and repository sources"),
-    ),
-    ("parent_message_uuid", Rule::Read(T::String)),
-    ("stop_reason", Rule::Read(T::String)),
-    ("input_mode", Rule::Kept("how the prompt was entered")),
-    (
-        "compaction_summary",
-        Rule::Kept("native compaction event and message attributes"),
-    ),
-])
+static MESSAGE_FIELDS: Fields = Fields::new(
+    "claude_message",
+    &[
+        ("content[].remaining", Rule::Read(T::Number)),
+        ("attachments[].file_name", Rule::Read(T::String)),
+        ("attachments[].file_type", Rule::Read(T::String)),
+        ("attachments[].file_size", Rule::Read(T::Number)),
+        ("attachments[].extracted_content", Rule::Read(T::String)),
+        ("attachments[].file_uuid", Rule::Read(T::String)),
+        ("attachments[].file_kind", Rule::Read(T::String)),
+        ("files[].file_name", Rule::Read(T::String)),
+        ("files[].file_type", Rule::Read(T::String)),
+        ("files[].file_size", Rule::Read(T::Number)),
+        ("files[].extracted_content", Rule::Read(T::String)),
+        ("files[].file_uuid", Rule::Read(T::String)),
+        ("files[].file_kind", Rule::Read(T::String)),
+        ("files_v2[].file_name", Rule::Read(T::String)),
+        ("files_v2[].file_type", Rule::Read(T::String)),
+        ("files_v2[].file_size", Rule::Read(T::Number)),
+        ("files_v2[].extracted_content", Rule::Read(T::String)),
+        ("files_v2[].file_uuid", Rule::Read(T::String)),
+        ("files_v2[].file_kind", Rule::Read(T::String)),
+        ("content[].type", Rule::Read(T::String)),
+        ("content[].text", Rule::Read(T::String)),
+        ("content[].thinking", Rule::Read(T::String)),
+        ("content[].signature", Rule::Read(T::String)),
+        ("content[].thinking_hidden", Rule::Read(T::Boolean)),
+        (
+            "content[].summaries",
+            Rule::Kept("summaries in indexed block attributes"),
+        ),
+        (
+            "content[].citations",
+            Rule::Kept("citation blocks and indexed attributes"),
+        ),
+        (
+            "content[].start_timestamp",
+            Rule::Kept("indexed block time"),
+        ),
+        ("content[].stop_timestamp", Rule::Kept("indexed block time")),
+        ("content[].id", Rule::Read(T::String)),
+        ("content[].name", Rule::Read(T::String)),
+        ("content[].input", Rule::Kept("tool input in call block")),
+        (
+            "content[].content",
+            Rule::Kept("complete structured tool content"),
+        ),
+        ("content[].tool_use_id", Rule::Read(T::String)),
+        ("content[].is_error", Rule::Read(T::Boolean)),
+        (
+            "content[].structured_content",
+            Rule::Kept("structured tool result"),
+        ),
+        ("content[].source.type", Rule::Read(T::String)),
+        ("content[].source.media_type", Rule::Read(T::String)),
+        ("content[].source.data", Rule::Read(T::String)),
+        ("content[].source.url", Rule::Read(T::String)),
+        ("uuid", Rule::Read(T::String)),
+        ("text", Rule::Read(T::String)),
+        ("content", Rule::Read(T::StringOrArray)),
+        ("sender", Rule::Read(T::String)),
+        ("index", Rule::Read(T::Number)),
+        ("created_at", Rule::Read(T::StringOrNumber)),
+        (
+            "updated_at",
+            Rule::Excluded("edit time; the creation time orders messages"),
+        ),
+        (
+            "edited_at",
+            Rule::Excluded("edit time; the creation time orders messages"),
+        ),
+        // The model that wrote this message; it overrides the conversation's.
+        ("model", Rule::Read(T::String)),
+        (
+            "metadata",
+            Rule::Kept("message settings such as the thinking configuration"),
+        ),
+        (
+            "truncated",
+            Rule::Kept("the export marks a message it shortened"),
+        ),
+        ("attachments", Rule::Read(T::Array)),
+        ("files", Rule::Read(T::Array)),
+        ("files_v2", Rule::Read(T::Array)),
+        (
+            "sync_sources",
+            Rule::Kept("connected drive and repository sources"),
+        ),
+        ("parent_message_uuid", Rule::Read(T::String)),
+        ("stop_reason", Rule::Read(T::String)),
+        ("input_mode", Rule::Kept("how the prompt was entered")),
+        (
+            "compaction_summary",
+            Rule::Kept("native compaction event and message attributes"),
+        ),
+    ],
+)
 .shape(
     &[],
     &[
@@ -213,15 +216,17 @@ static MESSAGE_FIELDS: Fields = Fields::new(&[
     ],
 );
 
-static CONVERSATION_FIELDS: Fields = Fields::new(&[
-    ("", Rule::Kept("conversation settings event")),
-    ("uuid", Rule::Read(T::String)),
-    ("name", Rule::Read(T::String)),
-    ("created_at", Rule::Read(T::StringOrNumber)),
-    ("updated_at", Rule::Read(T::StringOrNumber)),
-    ("chat_messages", Rule::Read(T::Array)),
-])
-.for_kind("conversation");
+static CONVERSATION_FIELDS: Fields = Fields::new(
+    "claude_conversation",
+    &[
+        ("", Rule::Kept("conversation settings event")),
+        ("uuid", Rule::Read(T::String)),
+        ("name", Rule::Read(T::String)),
+        ("created_at", Rule::Read(T::StringOrNumber)),
+        ("updated_at", Rule::Read(T::StringOrNumber)),
+        ("chat_messages", Rule::Read(T::Array)),
+    ],
+);
 
 /// One claude.ai conversation object, shared with browser captures.
 pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {

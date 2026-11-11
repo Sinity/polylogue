@@ -26,6 +26,18 @@ pub(crate) enum Chains {
     Older,
 }
 
+/// Why `origin`'s parser does not read the bytes recorded at `path`, when
+/// it does not.
+fn unread_path(origin: &OriginSpec, path: &Path) -> Option<String> {
+    (origin.support == Support::Parsed && (origin.open)(path).is_none()).then(|| {
+        format!(
+            "no {} parser reads the recorded path {}",
+            origin.name,
+            path.display()
+        )
+    })
+}
+
 impl Engine {
     /// Fails `plan` with `error` and records the failure as its chain's parse
     /// state, at the position the chain was parsed to. Recording needs stored
@@ -1085,18 +1097,10 @@ impl Engine {
                             PathBuf::new(),
                             "the stored import has no recorded path".to_owned(),
                         )),
-                        Some(path)
-                            if origin.support == Support::Parsed
-                                && (origin.open)(&path).is_none() =>
-                        {
-                            let reason = format!(
-                                "no {} parser reads the recorded path {}",
-                                origin.name,
-                                path.display()
-                            );
-                            Err((path, reason))
-                        }
-                        Some(path) => Ok(path),
+                        Some(path) => match unread_path(origin, &path) {
+                            Some(reason) => Err((path, reason)),
+                            None => Ok(path),
+                        },
                     };
                     match path {
                         Ok(path) => (path, origin),
@@ -1439,6 +1443,23 @@ impl Engine {
                 continue;
             }
 
+            if matches!(plan.change, Change::Reparse { .. })
+                && let Some(reason) = unread_path(plan.origin, &plan.path)
+            {
+                // Stored bytes at a path this build's parser does not read
+                // (an earlier build captured it): refused with the reason,
+                // never read range by range with nothing to record.
+                pass.errors
+                    .push(format!("refuse stored input {}: {reason}", plan.input.id));
+                plan.failed = true;
+                self.record_stop(
+                    &mut plan,
+                    polylogue_model::batch::StepProgress::Refused { reason },
+                    pass,
+                );
+                self.finish_plan(plan);
+                continue;
+            }
             if let Err(error) = self.restore_captured_authored(&plan, pass) {
                 let error = format!("authored restoration {}: {error}", plan.path.display());
                 self.record_failure(&mut plan, error, pass);

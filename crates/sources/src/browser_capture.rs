@@ -55,93 +55,110 @@ pub fn open(path: &Path) -> Option<Parse> {
         .then(|| Parse::CaptureLog(Box::new(Capture)))
 }
 
-static CAPTURE_FIELDS: Fields = Fields::new(&[
-    (KIND_KEY, Rule::Read(T::String)),
-    ("schema_version", Rule::Read(T::Number)),
-    (
-        "capture_id",
-        Rule::Excluded("the extension's own key; the provider IDs identify the conversation"),
-    ),
-    (
-        "source",
-        Rule::Excluded("names the capturing program, always the extension"),
-    ),
-    (
-        "provenance",
-        Rule::Kept("complete browser capture provenance event"),
-    ),
-    ("provenance.captured_at", Rule::Read(T::String)),
-    (
-        "provider_meta",
-        Rule::Kept("complete browser capture provider metadata"),
-    ),
-    ("raw_provider_payload", Rule::Read(T::Object)),
-    ("session", Rule::Read(T::Object)),
-])
-.for_kind("capture");
+static CAPTURE_FIELDS: Fields = Fields::new(
+    "capture",
+    &[
+        (KIND_KEY, Rule::Read(T::String)),
+        ("schema_version", Rule::Read(T::Number)),
+        (
+            "capture_id",
+            Rule::Excluded("the extension's own key; the provider IDs identify the conversation"),
+        ),
+        (
+            "source",
+            Rule::Excluded("names the capturing program, always the extension"),
+        ),
+        (
+            "provenance",
+            Rule::Kept("complete browser capture provenance event"),
+        ),
+        ("provenance.captured_at", Rule::Read(T::String)),
+        (
+            "provider_meta",
+            Rule::Kept("complete browser capture provider metadata"),
+        ),
+        ("raw_provider_payload", Rule::Read(T::Object)),
+        ("session", Rule::Read(T::Object)),
+    ],
+);
 
-static NATIVE_SESSION_FIELDS: Fields = Fields::new(&[
-    ("provider", Rule::Read(T::String)),
-    ("session_kind", Rule::Read(T::String)),
-    ("attachments", Rule::Read(T::Array)),
-]);
-static TURN_SESSION_FIELDS: Fields = Fields::new(&[
-    ("provider", Rule::Read(T::String)),
-    ("session_kind", Rule::Read(T::String)),
-    ("provider_session_id", Rule::Read(T::String)),
-    ("title", Rule::Read(T::String)),
-    ("turns", Rule::Read(T::Array)),
-    ("attachments", Rule::Read(T::Array)),
-]);
-static ATTACHMENT_FIELDS: Fields = Fields::new(&[
-    ("content_base64", Rule::Read(T::String)),
-    ("blob", Rule::Read(T::String)),
-    ("size_bytes", Rule::Read(T::Number)),
-    ("provider_attachment_id", Rule::Read(T::String)),
-    ("message_provider_id", Rule::Read(T::String)),
-    ("name", Rule::Read(T::String)),
-    ("mime_type", Rule::Read(T::String)),
-    ("url", Rule::Read(T::String)),
-    ("extracted_content", Rule::Read(T::String)),
-    ("not_fetched", Rule::Read(T::Any)),
-]);
+static NATIVE_SESSION_FIELDS: Fields = Fields::new(
+    "native_session",
+    &[
+        ("provider", Rule::Read(T::String)),
+        ("session_kind", Rule::Read(T::String)),
+        ("attachments", Rule::Read(T::Array)),
+    ],
+);
+static TURN_SESSION_FIELDS: Fields = Fields::new(
+    "turn_session",
+    &[
+        ("provider", Rule::Read(T::String)),
+        ("session_kind", Rule::Read(T::String)),
+        ("provider_session_id", Rule::Read(T::String)),
+        ("title", Rule::Read(T::String)),
+        ("turns", Rule::Read(T::Array)),
+        ("attachments", Rule::Read(T::Array)),
+    ],
+);
+static ATTACHMENT_FIELDS: Fields = Fields::new(
+    "attachment",
+    &[
+        ("content_base64", Rule::Read(T::String)),
+        ("blob", Rule::Read(T::String)),
+        ("size_bytes", Rule::Read(T::Number)),
+        ("provider_attachment_id", Rule::Read(T::String)),
+        ("message_provider_id", Rule::Read(T::String)),
+        ("name", Rule::Read(T::String)),
+        ("mime_type", Rule::Read(T::String)),
+        ("url", Rule::Read(T::String)),
+        ("extracted_content", Rule::Read(T::String)),
+        ("not_fetched", Rule::Read(T::Any)),
+    ],
+);
 
 /// Fields of the extension's normalized turns. Only read when the page
 /// exposed no provider JSON.
-static TURN_FIELDS: Fields = Fields::new(&[
-    ("provider_turn_id", Rule::Read(T::String)),
-    ("role", Rule::Read(T::String)),
-    ("text", Rule::Read(T::String)),
-    ("timestamp", Rule::Read(T::StringOrNumber)),
-    ("ordinal", Rule::Read(T::Number)),
-    ("parent_turn_id", Rule::Read(T::String)),
-    ("model", Rule::Read(T::String)),
-    ("blocks", Rule::Read(T::Array)),
-    ("attachments", Rule::Read(T::Array)),
-    (
-        "provider_meta",
-        Rule::Kept("the adapter's page observations for the turn; no reader yet"),
-    ),
-    (
-        "identity_observation",
-        Rule::Kept("how the adapter matched the turn to the page; no reader yet"),
-    ),
-])
-.for_kind("turn");
+static TURN_FIELDS: Fields = Fields::new(
+    "turn",
+    &[
+        ("provider_turn_id", Rule::Read(T::String)),
+        ("role", Rule::Read(T::String)),
+        ("text", Rule::Read(T::String)),
+        ("timestamp", Rule::Read(T::StringOrNumber)),
+        ("ordinal", Rule::Read(T::Number)),
+        ("parent_turn_id", Rule::Read(T::String)),
+        ("model", Rule::Read(T::String)),
+        ("blocks", Rule::Read(T::Array)),
+        ("attachments", Rule::Read(T::Array)),
+        (
+            "provider_meta",
+            Rule::Kept("the adapter's page observations for the turn; no reader yet"),
+        ),
+        (
+            "identity_observation",
+            Rule::Kept("how the adapter matched the turn to the page; no reader yet"),
+        ),
+    ],
+);
 
-static TURN_BLOCK_FIELDS: Fields = Fields::new(&[
-    ("type", Rule::Read(T::String)),
-    ("text", Rule::Read(T::String)),
-    ("name", Rule::Read(T::String)),
-    ("mime_type", Rule::Read(T::String)),
-    ("url", Rule::Read(T::String)),
-])
-.for_kind("block");
-static OTHER_BLOCK_FIELDS: Fields = Fields::new(&[(
-    "",
-    Rule::Kept("the normalized block is retained whole as Other data"),
-)])
-.for_kind("other_block");
+static TURN_BLOCK_FIELDS: Fields = Fields::new(
+    "block",
+    &[
+        ("type", Rule::Read(T::String)),
+        ("text", Rule::Read(T::String)),
+        ("name", Rule::Read(T::String)),
+        ("mime_type", Rule::Read(T::String)),
+        ("url", Rule::Read(T::String)),
+    ],
+);
+static OTHER_BLOCK_FIELDS: Fields = Fields::new(
+    "other_block",
+    &[(
+        "",
+        Rule::Kept("the normalized block is retained whole as Other data"),
+    )],
+);
 
 /// The origin a capture's `session.provider` names: the provider's export
 /// origin, so a capture and an export of one conversation unite.

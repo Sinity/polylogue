@@ -147,129 +147,133 @@ struct PromptState {
     ids: crate::content_ids::ContentIds,
 }
 
-static DOCUMENT_FIELDS: Fields = Fields::new(&[
-    ("runSettings", Rule::Kept("complete run settings event")),
-    ("runSettings.model", Rule::Read(T::String)),
-    ("systemInstruction", Rule::Read(T::StringOrObject)),
-    ("systemInstruction.text", Rule::Read(T::String)),
-    ("systemInstruction.parts[].text", Rule::Read(T::String)),
-    ("chunkedPrompt", Rule::Read(T::Object)),
-    ("chunkedPrompt.chunks", Rule::Read(T::Array)),
-    (
-        "chunkedPrompt.pendingInputs",
-        Rule::Kept("the unsent draft in the input box"),
-    ),
-    ("citations", Rule::Kept("sources the replies cited")),
-])
-.for_kind("document");
+static DOCUMENT_FIELDS: Fields = Fields::new(
+    "document",
+    &[
+        ("runSettings", Rule::Kept("complete run settings event")),
+        ("runSettings.model", Rule::Read(T::String)),
+        ("systemInstruction", Rule::Read(T::StringOrObject)),
+        ("systemInstruction.text", Rule::Read(T::String)),
+        ("systemInstruction.parts[].text", Rule::Read(T::String)),
+        ("chunkedPrompt", Rule::Read(T::Object)),
+        ("chunkedPrompt.chunks", Rule::Read(T::Array)),
+        (
+            "chunkedPrompt.pendingInputs",
+            Rule::Kept("the unsent draft in the input box"),
+        ),
+        ("citations", Rule::Kept("sources the replies cited")),
+    ],
+);
 
-static CHUNK_FIELDS: Fields = Fields::new(&[
-    ("inlineData.mimeType", Rule::Read(T::String)),
-    ("inlineData.data", Rule::Read(T::String)),
-    ("fileData.mimeType", Rule::Read(T::String)),
-    ("fileData.fileUri", Rule::Read(T::String)),
-    ("parts[].inlineData.mimeType", Rule::Read(T::String)),
-    ("parts[].inlineData.data", Rule::Read(T::String)),
-    ("parts[].fileData.mimeType", Rule::Read(T::String)),
-    ("parts[].fileData.fileUri", Rule::Read(T::String)),
-    ("driveDocument.id", Rule::Read(T::String)),
-    ("driveDocument.fileId", Rule::Read(T::String)),
-    ("driveDocument.name", Rule::Read(T::String)),
-    ("driveDocument.title", Rule::Read(T::String)),
-    ("driveDocument.mimeType", Rule::Read(T::String)),
-    ("driveImage.id", Rule::Read(T::String)),
-    ("driveImage.fileId", Rule::Read(T::String)),
-    ("driveImage.name", Rule::Read(T::String)),
-    ("driveImage.title", Rule::Read(T::String)),
-    ("driveImage.mimeType", Rule::Read(T::String)),
-    ("driveAudio.id", Rule::Read(T::String)),
-    ("driveAudio.fileId", Rule::Read(T::String)),
-    ("driveAudio.name", Rule::Read(T::String)),
-    ("driveAudio.title", Rule::Read(T::String)),
-    ("driveAudio.mimeType", Rule::Read(T::String)),
-    ("driveVideo.id", Rule::Read(T::String)),
-    ("driveVideo.fileId", Rule::Read(T::String)),
-    ("driveVideo.name", Rule::Read(T::String)),
-    ("driveVideo.title", Rule::Read(T::String)),
-    ("driveVideo.mimeType", Rule::Read(T::String)),
-    ("inlineImage.data", Rule::Read(T::String)),
-    ("inlineImage.mimeType", Rule::Read(T::String)),
-    ("inlineImage.name", Rule::Read(T::String)),
-    ("inlineFile.data", Rule::Read(T::String)),
-    ("inlineFile.mimeType", Rule::Read(T::String)),
-    ("inlineFile.name", Rule::Read(T::String)),
-    ("youtubeVideo.id", Rule::Read(T::String)),
-    ("role", Rule::Read(T::String)),
-    ("author", Rule::Read(T::String)),
-    ("id", Rule::Read(T::String)),
-    ("text", Rule::Read(T::String)),
-    ("parts", Rule::Read(T::Array)),
-    ("parts[].text", Rule::Read(T::String)),
-    ("parts[].thought", Rule::Read(T::Boolean)),
-    ("parts[].thoughtSignature", Rule::Read(T::String)),
-    (
-        "parts[].executableCode",
-        Rule::Kept("complete code input in tool block"),
-    ),
-    (
-        "parts[].codeExecutionResult",
-        Rule::Kept("complete code result in tool block"),
-    ),
-    ("parts[].inlineData", Rule::Read(T::Object)),
-    ("parts[].fileData", Rule::Read(T::Object)),
-    (
-        "thoughtSignatures",
-        Rule::Kept("the thoughts' signatures, also read from their parts"),
-    ),
-    ("isEdited", Rule::Kept("the operator edited the chunk")),
-    (
-        "safetyRatings",
-        Rule::Kept("the model's safety classification of the reply"),
-    ),
-    (
-        "videoMetadata",
-        Rule::Kept("the clip range of an attached video"),
-    ),
-    ("isThought", Rule::Read(T::Boolean)),
-    ("tokenCount", Rule::Read(T::Number)),
-    ("finishReason", Rule::Read(T::String)),
-    ("createTime", Rule::Read(T::StringOrNumber)),
-    (
-        "updateTime",
-        Rule::Excluded("edit time; the creation time orders chunks"),
-    ),
-    (
-        "thinkingBudget",
-        Rule::Kept("the request's reasoning budget, kept with the run settings"),
-    ),
-    ("driveDocument", Rule::Read(T::Object)),
-    ("driveImage", Rule::Read(T::Object)),
-    ("driveAudio", Rule::Read(T::Object)),
-    ("driveVideo", Rule::Read(T::Object)),
-    ("inlineImage", Rule::Read(T::Object)),
-    ("inlineFile", Rule::Read(T::Object)),
-    ("youtubeVideo", Rule::Read(T::Object)),
-    (
-        "executableCode",
-        Rule::Kept("complete code input in tool block"),
-    ),
-    (
-        "codeExecutionResult",
-        Rule::Kept("complete code result in tool block"),
-    ),
-    ("errorMessage", Rule::Read(T::String)),
-    ("grounding", Rule::Kept("search grounding sources")),
-    (
-        "branchParent",
-        Rule::Kept("native branch marker in message attributes"),
-    ),
-    ("branchParent.promptId", Rule::Read(T::String)),
-    (
-        "branchChildren",
-        Rule::Kept("other prompts branched from here"),
-    ),
-])
-.for_kind("chunk");
+static CHUNK_FIELDS: Fields = Fields::new(
+    "chunk",
+    &[
+        ("inlineData.mimeType", Rule::Read(T::String)),
+        ("inlineData.data", Rule::Read(T::String)),
+        ("fileData.mimeType", Rule::Read(T::String)),
+        ("fileData.fileUri", Rule::Read(T::String)),
+        ("parts[].inlineData.mimeType", Rule::Read(T::String)),
+        ("parts[].inlineData.data", Rule::Read(T::String)),
+        ("parts[].fileData.mimeType", Rule::Read(T::String)),
+        ("parts[].fileData.fileUri", Rule::Read(T::String)),
+        ("driveDocument.id", Rule::Read(T::String)),
+        ("driveDocument.fileId", Rule::Read(T::String)),
+        ("driveDocument.name", Rule::Read(T::String)),
+        ("driveDocument.title", Rule::Read(T::String)),
+        ("driveDocument.mimeType", Rule::Read(T::String)),
+        ("driveImage.id", Rule::Read(T::String)),
+        ("driveImage.fileId", Rule::Read(T::String)),
+        ("driveImage.name", Rule::Read(T::String)),
+        ("driveImage.title", Rule::Read(T::String)),
+        ("driveImage.mimeType", Rule::Read(T::String)),
+        ("driveAudio.id", Rule::Read(T::String)),
+        ("driveAudio.fileId", Rule::Read(T::String)),
+        ("driveAudio.name", Rule::Read(T::String)),
+        ("driveAudio.title", Rule::Read(T::String)),
+        ("driveAudio.mimeType", Rule::Read(T::String)),
+        ("driveVideo.id", Rule::Read(T::String)),
+        ("driveVideo.fileId", Rule::Read(T::String)),
+        ("driveVideo.name", Rule::Read(T::String)),
+        ("driveVideo.title", Rule::Read(T::String)),
+        ("driveVideo.mimeType", Rule::Read(T::String)),
+        ("inlineImage.data", Rule::Read(T::String)),
+        ("inlineImage.mimeType", Rule::Read(T::String)),
+        ("inlineImage.name", Rule::Read(T::String)),
+        ("inlineFile.data", Rule::Read(T::String)),
+        ("inlineFile.mimeType", Rule::Read(T::String)),
+        ("inlineFile.name", Rule::Read(T::String)),
+        ("youtubeVideo.id", Rule::Read(T::String)),
+        ("role", Rule::Read(T::String)),
+        ("author", Rule::Read(T::String)),
+        ("id", Rule::Read(T::String)),
+        ("text", Rule::Read(T::String)),
+        ("parts", Rule::Read(T::Array)),
+        ("parts[].text", Rule::Read(T::String)),
+        ("parts[].thought", Rule::Read(T::Boolean)),
+        ("parts[].thoughtSignature", Rule::Read(T::String)),
+        (
+            "parts[].executableCode",
+            Rule::Kept("complete code input in tool block"),
+        ),
+        (
+            "parts[].codeExecutionResult",
+            Rule::Kept("complete code result in tool block"),
+        ),
+        ("parts[].inlineData", Rule::Read(T::Object)),
+        ("parts[].fileData", Rule::Read(T::Object)),
+        (
+            "thoughtSignatures",
+            Rule::Kept("the thoughts' signatures, also read from their parts"),
+        ),
+        ("isEdited", Rule::Kept("the operator edited the chunk")),
+        (
+            "safetyRatings",
+            Rule::Kept("the model's safety classification of the reply"),
+        ),
+        (
+            "videoMetadata",
+            Rule::Kept("the clip range of an attached video"),
+        ),
+        ("isThought", Rule::Read(T::Boolean)),
+        ("tokenCount", Rule::Read(T::Number)),
+        ("finishReason", Rule::Read(T::String)),
+        ("createTime", Rule::Read(T::StringOrNumber)),
+        (
+            "updateTime",
+            Rule::Excluded("edit time; the creation time orders chunks"),
+        ),
+        (
+            "thinkingBudget",
+            Rule::Kept("the request's reasoning budget, kept with the run settings"),
+        ),
+        ("driveDocument", Rule::Read(T::Object)),
+        ("driveImage", Rule::Read(T::Object)),
+        ("driveAudio", Rule::Read(T::Object)),
+        ("driveVideo", Rule::Read(T::Object)),
+        ("inlineImage", Rule::Read(T::Object)),
+        ("inlineFile", Rule::Read(T::Object)),
+        ("youtubeVideo", Rule::Read(T::Object)),
+        (
+            "executableCode",
+            Rule::Kept("complete code input in tool block"),
+        ),
+        (
+            "codeExecutionResult",
+            Rule::Kept("complete code result in tool block"),
+        ),
+        ("errorMessage", Rule::Read(T::String)),
+        ("grounding", Rule::Kept("search grounding sources")),
+        (
+            "branchParent",
+            Rule::Kept("native branch marker in message attributes"),
+        ),
+        ("branchParent.promptId", Rule::Read(T::String)),
+        (
+            "branchChildren",
+            Rule::Kept("other prompts branched from here"),
+        ),
+    ],
+);
 
 impl ExportParser for AiStudio {
     fn message_range(&self, message: &Message) -> Option<std::ops::Range<u64>> {
@@ -857,25 +861,27 @@ pub struct Listing {
     files_array: bool,
 }
 
-static LISTING_FIELDS: Fields = Fields::new(&[
-    ("id", Rule::Read(T::String)),
-    ("name", Rule::Read(T::String)),
-    ("createdTime", Rule::Read(T::String)),
-    (
-        "modifiedTime",
-        Rule::Excluded("the revisions carry when the prompt changed"),
-    ),
-    (
-        "mimeType",
-        Rule::Excluded("always the AI Studio prompt type"),
-    ),
-    (
-        "headRevisionId",
-        Rule::Excluded("the collector's own bookkeeping"),
-    ),
-    ("size", Rule::Excluded("each stored revision has its size")),
-])
-.for_kind("listing");
+static LISTING_FIELDS: Fields = Fields::new(
+    "listing",
+    &[
+        ("id", Rule::Read(T::String)),
+        ("name", Rule::Read(T::String)),
+        ("createdTime", Rule::Read(T::String)),
+        (
+            "modifiedTime",
+            Rule::Excluded("the revisions carry when the prompt changed"),
+        ),
+        (
+            "mimeType",
+            Rule::Excluded("always the AI Studio prompt type"),
+        ),
+        (
+            "headRevisionId",
+            Rule::Excluded("the collector's own bookkeeping"),
+        ),
+        ("size", Rule::Excluded("each stored revision has its size")),
+    ],
+);
 
 impl ExportParser for Listing {
     fn scan(

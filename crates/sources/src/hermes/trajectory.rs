@@ -49,38 +49,44 @@ struct Item {
     start: u64,
 }
 
-static ROOT: Fields = Fields::new(&[
-    ("schema_version", Rule::Read(T::StringOrNumber)),
-    ("session_id", Rule::Read(T::String)),
-    ("trajectory_id", Rule::Read(T::String)),
-    (
-        "agent",
-        Rule::Kept("native agent configuration; only name/version/model descriptors are projected"),
-    ),
-    ("steps", Rule::Read(T::Array)),
-    ("subagent_trajectories", Rule::Read(T::Array)),
-    ("notes", Rule::Kept("native annotation")),
-    ("final_metrics", Rule::Read(T::Object)),
-    ("continued_trajectory_ref", Rule::Read(T::String)),
-    ("extra", Rule::Kept("native trajectory metadata")),
-])
-.for_kind("root");
-static STEP: Fields = Fields::new(&[
-    ("step_id", Rule::Read(T::String)),
-    ("timestamp", Rule::Read(T::StringOrNumber)),
-    ("source", Rule::Read(T::String)),
-    ("message", Rule::Read(T::String)),
-    ("model_name", Rule::Read(T::String)),
-    ("reasoning_effort", Rule::Read(T::String)),
-    ("reasoning_content", Rule::Read(T::StringOrArray)),
-    ("tool_calls", Rule::Read(T::Array)),
-    ("observation", Rule::Read(T::Object)),
-    ("metrics", Rule::Read(T::Object)),
-    ("llm_call_count", Rule::Read(T::Number)),
-    ("is_copied_context", Rule::Read(T::Boolean)),
-    ("extra", Rule::Kept("native step extensions")),
-])
-.for_kind("step");
+static ROOT: Fields = Fields::new(
+    "root",
+    &[
+        ("schema_version", Rule::Read(T::StringOrNumber)),
+        ("session_id", Rule::Read(T::String)),
+        ("trajectory_id", Rule::Read(T::String)),
+        (
+            "agent",
+            Rule::Kept(
+                "native agent configuration; only name/version/model descriptors are projected",
+            ),
+        ),
+        ("steps", Rule::Read(T::Array)),
+        ("subagent_trajectories", Rule::Read(T::Array)),
+        ("notes", Rule::Kept("native annotation")),
+        ("final_metrics", Rule::Read(T::Object)),
+        ("continued_trajectory_ref", Rule::Read(T::String)),
+        ("extra", Rule::Kept("native trajectory metadata")),
+    ],
+);
+static STEP: Fields = Fields::new(
+    "step",
+    &[
+        ("step_id", Rule::Read(T::String)),
+        ("timestamp", Rule::Read(T::StringOrNumber)),
+        ("source", Rule::Read(T::String)),
+        ("message", Rule::Read(T::String)),
+        ("model_name", Rule::Read(T::String)),
+        ("reasoning_effort", Rule::Read(T::String)),
+        ("reasoning_content", Rule::Read(T::StringOrArray)),
+        ("tool_calls", Rule::Read(T::Array)),
+        ("observation", Rule::Read(T::Object)),
+        ("metrics", Rule::Read(T::Object)),
+        ("llm_call_count", Rule::Read(T::Number)),
+        ("is_copied_context", Rule::Read(T::Boolean)),
+        ("extra", Rule::Kept("native step extensions")),
+    ],
+);
 
 fn selected(value: &Json, names: &[&str]) -> Json {
     Json::Object(
