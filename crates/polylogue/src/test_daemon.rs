@@ -177,6 +177,10 @@ fn start_with_clock_and_workers(
 }
 
 impl TestDaemon {
+    pub(crate) fn worker_events(&self) -> tokio::sync::watch::Receiver<Option<&'static str>> {
+        self.runtime.worker_events()
+    }
+
     pub(crate) fn pause_signals(&mut self) {
         self.runtime.pause_signals().unwrap();
     }

@@ -67,6 +67,7 @@ pub(crate) mod source;
 pub mod sql_functions;
 pub mod sql_views;
 pub mod staging;
+pub mod storage_failure;
 mod text_rows;
 pub mod timeline;
 pub mod timing;
@@ -145,6 +146,10 @@ pub enum StoreError {
     Counts(#[from] polylogue_model::CountMismatch),
     #[error("the writer has stopped")]
     WriterGone,
+    /// The disk failed a sync of the register: writing stopped for the rest
+    /// of this boot ([`storage_failure`]).
+    #[error("{0}")]
+    StorageFailed(storage_failure::StorageFailure),
     #[error("the read deadline was exceeded")]
     ReadDeadlineExceeded,
     #[error("the read was cancelled")]

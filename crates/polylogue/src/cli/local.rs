@@ -38,6 +38,15 @@ pub fn daemon(_: &Command, v: &Values, startup: &crate::config::Startup, json: b
                 "{}",
                 super::print::diagnostic("", &e.to_string(), None, startup.output.stderr_color())
             );
+            if let Some(failure) = polylogue_store::storage_failure::recorded() {
+                crate::daemon::storage_stop::remember(&startup.config.archive, &failure);
+                return ExitCode::from(crate::EXIT_STORAGE_FAILED);
+            }
+            if e.get_ref()
+                .is_some_and(|inner| inner.is::<crate::daemon::storage_stop::StorageStopped>())
+            {
+                return ExitCode::from(crate::EXIT_STORAGE_FAILED);
+            }
             let refused = e
                 .get_ref()
                 .and_then(|inner| inner.downcast_ref::<polylogue_store::StoreError>())

@@ -55,6 +55,11 @@ pub const EXIT_DAEMON_REQUIRED: u8 = 6;
 /// `RestartPreventExitStatus=78`).
 pub const EXIT_SCHEMA_REFUSED: u8 = 78;
 
+/// Exit code when the disk failed a sync of the register (sysexits'
+/// `EX_IOERR`). Writing stops for the rest of the boot, so a service manager
+/// should not restart on it (systemd: `RestartPreventExitStatus=74`).
+pub const EXIT_STORAGE_FAILED: u8 = 74;
+
 fn main() -> ExitCode {
     // A harness treats a non-zero hook exit as a refusal of its tool call, so
     // a hook that cannot start says why on stderr and exits 0.

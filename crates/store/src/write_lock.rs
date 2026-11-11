@@ -90,13 +90,10 @@ pub(crate) fn hold(conn: &Connection) -> Result<WriteLock> {
 /// it, so the register is as durable as with `FULL` while readers that start
 /// meanwhile read the commit instead of waiting for the disk.
 ///
-/// A failed sync stops the writer thread (a panic) instead of returning an
-/// error. The commit is already visible, so a retry would find it stored and
-/// answer success without it ever reaching disk; and after a failed sync the
-/// kernel may have dropped the dirty pages, so a later sync that succeeds
-/// proves nothing about them. With the writer gone every request is refused,
-/// and the next writer syncs the register before it serves anything
-/// ([`sync_register`]).
+/// A failed sync is recorded ([`crate::storage_failure`]) and stops the
+/// writer thread (a panic) instead of returning an error: the commit is
+/// already visible, so a retry would find it stored and answer success
+/// without it reaching the disk. No writer starts again in this process.
 pub(crate) fn commit(tx: rusqlite::Transaction<'_>) -> Result<()> {
     let lock = hold(&tx)?;
     let log = register_log(&tx);
@@ -106,26 +103,39 @@ pub(crate) fn commit(tx: rusqlite::Transaction<'_>) -> Result<()> {
     if let Some(log) = log
         && let Err(error) = sync_log(&log)
     {
-        panic!(
-            "the register's log could not be synced after a commit ({error}); \
-             the writer stops so that nothing is acknowledged before a sync"
-        );
+        let failure = crate::storage_failure::StorageFailure::of(log, &error);
+        crate::storage_failure::record(failure.clone());
+        panic!("{failure}");
     }
     Ok(())
 }
 
-/// Syncs the register's database and log, as a writer does before it serves
-/// any request: what an earlier writer committed is durable before this one
-/// acknowledges anything, including a retry that finds it already stored.
+/// Syncs the register's database and log before a writer serves anything,
+/// so what an earlier process committed and the kernel still holds is
+/// written before this writer acknowledges a retry that finds it stored.
+/// It cannot repair an earlier failed sync in this boot, which is why a
+/// writer refuses to start once one is recorded.
 pub(crate) fn sync_register(archive: &Archive) -> Result<()> {
+    if let Some(failure) = crate::storage_failure::recorded() {
+        return Err(StoreError::StorageFailed(failure));
+    }
     let mut log = archive.archive_db().into_os_string();
     log.push("-wal");
     let log = std::path::PathBuf::from(log);
-    if log.exists() {
-        sync_log(&log)?;
-    }
-    File::open(archive.archive_db())?.sync_all()?;
-    Ok(())
+    let database = archive.archive_db();
+    let sync_database = || -> Result<()> {
+        File::open(&database)?.sync_all()?;
+        Ok(())
+    };
+    let (path, synced) = match log.exists().then(|| sync_log(&log)) {
+        Some(Err(error)) => (log, Err(error)),
+        _ => (database.clone(), sync_database()),
+    };
+    synced.map_err(|error| {
+        let failure = crate::storage_failure::StorageFailure::of(path, &error);
+        crate::storage_failure::record(failure.clone());
+        StoreError::StorageFailed(failure)
+    })
 }
 
 fn sync_log(log: &Path) -> Result<()> {

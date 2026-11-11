@@ -107,7 +107,9 @@ in
     NotifyAccess = "main";
     WatchdogSec = cfg.watchdogSec;
     Restart = "on-failure";
-    RestartPreventExitStatus = 78;
+    # 78: the archive's format is refused; 74: the disk failed a sync of the
+    # register, and writing stays stopped until the machine reboots.
+    RestartPreventExitStatus = "74 78";
     # A stop or restart signals the daemon only: the `polylogue host`
     # processes of hosted sessions, and headless resumed runs, keep their
     # agents running, and the next daemon reattaches to them.
