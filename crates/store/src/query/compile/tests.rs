@@ -712,6 +712,8 @@ mod slots;
 
 mod combine;
 
+mod stage_filters;
+
 #[test]
 fn explicit_projection_reference_metadata_shadows_native_match_sources() {
     for query in [
