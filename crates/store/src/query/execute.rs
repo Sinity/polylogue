@@ -45,6 +45,13 @@ impl Reader<'_> {
                         message,
                     })
                 })?;
+                crate::read::limit::ReadLimit::set_stage("similarity");
+                self.rank_selection(
+                    &similarity,
+                    &program.statements.members(true),
+                    &crate::selection::values(&program.params),
+                )
+                .map_err(|error| E::from(SelectionError::from(error)))?;
                 self.with_similarity(similarity, run)
             } else {
                 run()

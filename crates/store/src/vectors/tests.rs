@@ -403,3 +403,201 @@ fn put_refuses_different_vector() {
     assert!(matches!(error, crate::StoreError::Conflict(_)), "{error}");
     assert_eq!(stored(), first);
 }
+
+/// Options for compiling a ranked query over a fixture archive.
+fn ranked_options() -> crate::query::Options {
+    crate::query::Options {
+        clock: query_language::time::Clock::new(
+            "2026-10-29T12:00:00Z".parse().unwrap(),
+            query_language::time::DaySetting::new(
+                jiff::tz::TimeZone::get("Europe/Warsaw").unwrap(),
+                jiff::civil::time(4, 0, 0, 0),
+            )
+            .unwrap(),
+        ),
+        origins: vec!["test".into()],
+        page_size: None,
+        random_seed: Some(7),
+        embeddings: true,
+        self_session: None,
+        saved: Default::default(),
+        fields: vec![],
+        kept: Default::default(),
+        chat_pages: vec![],
+    }
+}
+
+/// An archive of `sessions` sessions whose answers each have one text,
+/// every text with a vector from `vector(session number)`.
+fn ranked_archive(
+    sessions: usize,
+    vector: impl Fn(usize) -> Vec<f32>,
+) -> (tempfile::TempDir, crate::fixture::Fixture) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = crate::fixture::Fixture::new(dir.path()).unwrap();
+    f.many_sessions(crate::fixture::ManySessions {
+        prefix: "/home/op/work",
+        sessions,
+        messages: 3,
+        answered: sessions,
+        last: 1_800_000_000_000,
+    })
+    .unwrap();
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let texts = reader
+        .query(
+            "SELECT hex(t.hash) AS hash, s.native_id AS native FROM text t
+             JOIN block b ON b.text_id = t.id JOIN session s ON s.pk = b.session_pk",
+            &[],
+        )
+        .unwrap();
+    let vectors: Vec<Vector> = texts
+        .iter()
+        .map(|row| {
+            let hash = row["hash"].as_str().unwrap();
+            let n: usize = row["native"].as_str().unwrap()["many-".len()..]
+                .parse()
+                .unwrap();
+            Vector {
+                text_hash: (0..hash.len())
+                    .step_by(2)
+                    .map(|at| u8::from_str_radix(&hash[at..at + 2], 16).unwrap())
+                    .collect(),
+                chunk: 0,
+                values: vector(n),
+            }
+        })
+        .collect();
+    assert_eq!(vectors.len(), sessions);
+    reader
+        .vectors_writer()
+        .unwrap()
+        .put("local/test/2/document/unit", &vectors)
+        .unwrap();
+    drop(reader);
+    drop(pool);
+    (dir, f)
+}
+
+/// The message IDs `text` answers in order, ranked by `similarity`.
+fn ranked_ids(
+    f: &crate::fixture::Fixture,
+    text: &str,
+    similarity: &Arc<Similarity>,
+) -> Vec<String> {
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let program = crate::query::compile(text, &ranked_options()).unwrap();
+    assert!(program.near.is_some(), "{text}");
+    let near = |_: &str| Ok(Arc::clone(similarity));
+    let mut ids = Vec::new();
+    reader
+        .visit_query_values(&program, Some(&near), |row| {
+            ids.push(row["id"].as_str().unwrap().to_owned());
+            Ok::<_, crate::selection::SelectionError>(std::ops::ControlFlow::Continue(()))
+        })
+        .unwrap();
+    ids
+}
+
+fn loaded_similarity(f: &crate::fixture::Fixture, query: &[f32]) -> Arc<Similarity> {
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let loaded = Arc::new(
+        reader
+            .vectors()
+            .unwrap()
+            .load("local/test/2/document/unit")
+            .unwrap(),
+    );
+    Arc::new(loaded.similarity(query).unwrap())
+}
+
+#[test]
+fn similar_scores_only_the_selected_rows_vectors() {
+    // Session 3 alone works in d3/w3 below 1261 sessions; its answer is
+    // its one text with a vector.
+    for text in [
+        "sessions where cwd:/home/op/work/d3/w3 similar:\"finished work\"",
+        "messages where session.cwd:/home/op/work/d3/w3 similar:\"finished work\"",
+    ] {
+        for sessions in [100, 1_200] {
+            let (_dir, f) = ranked_archive(sessions, |_| unit(&[1.0, 1.0]));
+            let similarity = loaded_similarity(&f, &unit(&[1.0, 0.0]));
+            let ids = ranked_ids(&f, text, &similarity);
+            assert!(!ids.is_empty(), "{text}");
+            assert_eq!(
+                similarity.vectors_scored(),
+                1,
+                "{text} over {sessions} sessions"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_f32_rescore_orders_what_int8_misorders() {
+    // Along the query, 0.303 is nearer than 0.298, but as int8 copies
+    // (each scaled by its larger value) both take 40 steps of their scale,
+    // and 0.298's scale is the larger: int8 ranks it first.
+    let along = |x: f32| vec![x, (1.0 - x * x).sqrt()];
+    let (_dir, f) = ranked_archive(12, |n| match n {
+        4 => along(0.298),
+        7 => along(0.303),
+        _ => vec![0.0, 1.0],
+    });
+    let int8 = loaded_similarity(&f, &[1.0, 0.0]);
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let hash_of = |native: &str| -> Vec<u8> {
+        let hex = reader
+            .query(
+                "SELECT hex(t.hash) AS hash FROM text t JOIN block b ON b.text_id = t.id
+                 JOIN session s ON s.pk = b.session_pk WHERE s.native_id = ?1",
+                &[crate::SqlValue::Text(native.into())],
+            )
+            .unwrap()[0]["hash"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        (0..hex.len())
+            .step_by(2)
+            .map(|at| u8::from_str_radix(&hex[at..at + 2], 16).unwrap())
+            .collect()
+    };
+    let (four, seven) = (int8.of(&hash_of("many-4")), int8.of(&hash_of("many-7")));
+    assert!(four.unwrap() > seven.unwrap(), "{four:?} {seven:?}");
+    drop(reader);
+    drop(pool);
+    let similarity = loaded_similarity(&f, &[1.0, 0.0]);
+    let ids = ranked_ids(&f, "messages where similar:\"near\"", &similarity);
+    assert_eq!(ids[..2], ["many-7-2", "many-4-2"], "{ids:?}");
+}
+
+#[test]
+fn query_vectors_are_stored_once_by_key_and_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_or_create(&dir.path().join("a")).unwrap();
+    let writer = Vectors::writer(&archive, 256).unwrap();
+    let prefix = "local/synthetic/";
+    assert_eq!(writer.query_vector(prefix, "parser").unwrap(), None);
+    writer
+        .put_query_vector("local/synthetic/2/query/unit", "parser", &[0.6, 0.8])
+        .unwrap();
+    // The vector stored first stays: every earlier ranking used it.
+    writer
+        .put_query_vector("local/synthetic/2/query/unit", "parser", &[0.8, 0.6])
+        .unwrap();
+    drop(writer);
+    let snapshot = Vectors::snapshot(&archive, 256).unwrap();
+    assert_eq!(
+        snapshot.query_vector(prefix, "parser").unwrap(),
+        Some(vec![0.6, 0.8])
+    );
+    assert_eq!(snapshot.query_vector(prefix, "parsers").unwrap(), None);
+    assert_eq!(
+        snapshot.query_vector("voyage/voyage-4/", "parser").unwrap(),
+        None
+    );
+}

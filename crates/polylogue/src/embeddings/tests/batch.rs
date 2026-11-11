@@ -35,6 +35,7 @@ fn provider(replies: Vec<(u16, String)>) -> (Provider, std::thread::JoinHandle<V
             endpoint,
             model: "batch-test".into(),
             price_per_mtok: Some(polylogue_model::Rate::ZERO),
+            calls: true,
             credentials: Credentials::new(None),
         },
         server,

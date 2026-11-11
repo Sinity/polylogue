@@ -61,6 +61,7 @@ impl TestDaemon {
             &format!("http://{}", listener.local_addr().unwrap()),
         );
         self.set("embed.provider", "local");
+        self.set("embed.calls", "on");
         self.set("embed.model", "synthetic");
         {
             let reader = self.daemon.reads.reader().unwrap();

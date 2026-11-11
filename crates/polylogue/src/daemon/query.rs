@@ -30,13 +30,13 @@ pub struct Ask<'a> {
     pub embeddings: bool,
     /// Captured provider/vector basis; never inferred from availability.
     pub ranking_identity: Option<String>,
-    /// For `similar:`: every stored text's similarity to a text.
+    /// For `similar:`: texts' similarity to a text.
     pub near: Option<&'a NearFn<'a>>,
     /// The columns to show instead of the unit's defaults.
     pub fields: &'a [String],
 }
 
-/// Every stored text's similarity to a text, for `similar:`.
+/// Texts' similarity to a text, for `similar:`.
 pub type NearFn<'a> =
     dyn Fn(&str) -> Result<std::sync::Arc<polylogue_store::vectors::Similarity>, String> + 'a;
 
@@ -304,9 +304,13 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<QueryAnswer, Failure> {
     // unranked, and says so, instead of failing the query.
     let similarity = match (&program.near, ask.near) {
         (Some(request), Some(near)) => Some(near(&request.text).unwrap_or_else(|message| {
-            program.incomplete.push(format!(
-                "semantic ranking failed ({message}); rows are unranked"
-            ));
+            program
+                .incomplete
+                .push(if message == crate::embeddings::CALLS_OFF {
+                    message
+                } else {
+                    format!("semantic ranking failed ({message}); rows are unranked")
+                });
             std::sync::Arc::new(polylogue_store::vectors::Similarity::unknown())
         })),
         _ => None,

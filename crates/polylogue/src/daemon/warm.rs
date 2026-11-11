@@ -8,10 +8,13 @@
 //!   of its own snapshot's revision, waiting for the worker when that set is
 //!   not published yet; it neither loads nor extends vectors itself, except
 //!   a read whose snapshot is older than both sets held, which loads its own.
-//! - **Query vectors**: the provider's vector for each recent `similar:` text,
-//!   so a repeated or paged query neither pays nor waits for the provider
-//!   again, and ranks by the same values. Concurrent reads of one text share
-//!   one provider call: one provider call per query text is in flight.
+//! - **Query vectors**: the vector for each recent `similar:` text, so a
+//!   repeated or paged query neither reads nor waits again and ranks by the
+//!   same values. A text's vector is the one stored in `embeddings.db` when
+//!   there is one; otherwise, with model calls on, the provider's answer,
+//!   which is stored, so no text is paid for twice. Concurrent reads of one
+//!   text share one lookup and one provider call: one provider call per
+//!   query text is in flight.
 //!
 //! Entries are bound to their read position or embeddings snapshot revision.
 //! SQL reads and quantization do not hold the vector cache mutex.
@@ -308,7 +311,8 @@ impl Warm {
         Ok(())
     }
 
-    /// Every stored text's similarity to `text`, for `similar:`.
+    /// Texts' similarity to `text`, for `similar:`, scored as the query
+    /// asks for them.
     pub fn similarity(
         &self,
         reader: &Reader<'_>,
@@ -325,14 +329,17 @@ impl Warm {
             .map_err(|e| e.to_string())
     }
 
-    /// The provider's vector for `text`: kept from an earlier read, taken
-    /// from a call another read has in flight, or asked for. Neither the
-    /// call nor the wait for it holds an executor place.
+    /// The vector for `text`: kept from an earlier read, taken from a
+    /// lookup or call another read has in flight, read from the stored
+    /// query vectors, or, with model calls on, asked for and stored.
+    /// Neither the lookup, the call nor the wait for them holds an executor
+    /// place.
     pub(crate) fn query_vector(
         &self,
         provider: &Provider,
         text: &str,
     ) -> Result<Arc<Vec<f32>>, String> {
+        let text = &crate::embeddings::query_text(text);
         // A query vector depends on the provider's model and the text only.
         let key = &format!("{}\0{text}", provider.key_prefix());
         let cached = cache_lock(&self.query_vectors)?.get(key);
@@ -387,17 +394,41 @@ impl Warm {
             key,
             flight,
         };
-        let result = super::executor::outside(|| {
-            crate::embeddings::query_vector(provider, text)
-                .map(Arc::new)
-                .map_err(|e| e.to_string())
-        });
+        let result =
+            super::executor::outside(|| self.stored_or_asked(provider, text).map(Arc::new));
         if let Ok(vector) = &result {
             cache_lock(&self.query_vectors)?.put(key.to_owned(), Arc::clone(vector));
         }
         *cache_lock(&land.flight.result)? = Some(result.clone());
         drop(land);
         result
+    }
+
+    /// The stored vector of `text` (NFC), or the provider's answer, stored
+    /// under its query key, when model calls are on.
+    fn stored_or_asked(&self, provider: &Provider, text: &str) -> Result<Vec<f32>, String> {
+        // One page read at most: a lookup by key.
+        const CACHE_KIB: i64 = 64;
+        let stored = polylogue_store::vectors::Vectors::snapshot(&self.archive, CACHE_KIB)
+            .and_then(|store| store.query_vector(&provider.key_prefix(), text))
+            .map_err(|e| e.to_string())?;
+        if let Some(vector) = stored {
+            return Ok(vector);
+        }
+        if !provider.calls {
+            return Err(crate::embeddings::CALLS_OFF.into());
+        }
+        let vector = crate::embeddings::query_vector(provider, text).map_err(|e| e.to_string())?;
+        // A failed store keeps the ranking: the vector is kept in memory and
+        // asked for again only after the daemon restarts.
+        if let Err(error) = polylogue_store::vectors::Vectors::writer(&self.archive, CACHE_KIB)
+            .and_then(|store| {
+                store.put_query_vector(&provider.query_key(vector.len()), text, &vector)
+            })
+        {
+            eprintln!("polylogue: storing a query vector: {error}");
+        }
+        Ok(vector)
     }
 
     /// Drops everything; the next requests rebuild what they use.

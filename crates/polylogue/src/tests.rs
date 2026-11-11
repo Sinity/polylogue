@@ -185,6 +185,12 @@ fn every_catalog_key_changes_an_output() {
         }),
         ("embed.provider", "local", &[], provider_output),
         (
+            "embed.calls",
+            "on",
+            &[("embed.provider", "local")],
+            provider_output,
+        ),
+        (
             "embed.endpoint",
             "http://127.0.0.1:9000/v1",
             &[("embed.provider", "local")],
