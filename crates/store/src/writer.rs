@@ -42,6 +42,7 @@ mod follow;
 mod primary;
 mod primary_capture;
 mod query_objects;
+pub use query_objects::HistorySlot;
 mod saved;
 mod scoped;
 mod source_snapshot;
@@ -54,6 +55,7 @@ pub(crate) mod resolve;
 mod rows;
 mod search;
 mod staging;
+mod user_queue;
 pub use chain::ChainReading;
 
 #[cfg(test)]
@@ -199,7 +201,7 @@ struct WriterQueue {
     /// user write. Its lock is held only for one `try_send`, never while a
     /// bulk sender waits for room, so a user write always sends its wake.
     wake: Arc<Mutex<Option<SyncSender<Msg>>>>,
-    users: Arc<Mutex<Option<SyncSender<UserMsg>>>>,
+    users: Arc<user_queue::UserQueue>,
     resolver: Arc<resolve::Resolver>,
     commits: crate::completion::CommitEvents,
     #[cfg(any(test, feature = "fixture"))]
@@ -228,6 +230,7 @@ enum UserMsg {
         Box<polylogue_model::query_objects::QueryRunOutcome>,
         SyncSender<Result<polylogue_model::query_objects::QueryCustody>>,
     ),
+    History(Box<query_objects::History>),
 }
 
 /// User writes waiting before their senders block.
@@ -236,7 +239,7 @@ const USER_QUEUE: usize = 64;
 impl WriterQueue {
     fn new(
         bulk: SyncSender<Msg>,
-        users: SyncSender<UserMsg>,
+        users: Arc<user_queue::UserQueue>,
         resolver: Arc<resolve::Resolver>,
         commits: crate::completion::CommitEvents,
         #[cfg(any(test, feature = "fixture"))] dispatch: dispatch::Barriers,
@@ -244,7 +247,7 @@ impl WriterQueue {
         Self {
             wake: Arc::new(Mutex::new(Some(bulk.clone()))),
             bulk: Arc::new(Mutex::new(Some(bulk))),
-            users: Arc::new(Mutex::new(Some(users))),
+            users,
             resolver,
             commits,
             #[cfg(any(test, feature = "fixture"))]
@@ -273,13 +276,7 @@ impl WriterQueue {
     }
 
     fn send_user(&self, message: UserMsg) -> std::result::Result<(), ()> {
-        self.users
-            .lock()
-            .map_err(|_| ())?
-            .as_ref()
-            .ok_or(())?
-            .send(message)
-            .map_err(|_| ())?;
+        self.users.push_wait(message).map_err(|_| ())?;
         self.wake();
         Ok(())
     }
@@ -298,24 +295,13 @@ impl WriterQueue {
     /// As [`Self::send_user`], but a full queue hands the message back
     /// instead of waiting for room.
     fn try_send_user(&self, message: UserMsg) -> std::result::Result<(), Option<UserMsg>> {
-        self.users
-            .lock()
-            .map_err(|_| None)?
-            .as_ref()
-            .ok_or(None)?
-            .try_send(message)
-            .map_err(|error| match error {
-                std::sync::mpsc::TrySendError::Full(message) => Some(message),
-                std::sync::mpsc::TrySendError::Disconnected(_) => None,
-            })?;
+        self.users.try_push(message)?;
         self.wake();
         Ok(())
     }
 
     fn stop(&self) {
-        if let Ok(mut users) = self.users.lock() {
-            users.take();
-        }
+        self.users.close();
         if let Ok(mut wake) = self.wake.lock() {
             wake.take();
         }
@@ -488,11 +474,11 @@ impl Writer {
         #[cfg(any(test, feature = "fixture"))]
         let dispatch = dispatch::Barriers::default();
         let (tx, rx) = sync_channel::<Msg>(QUEUE);
-        let (users, users_rx) = sync_channel::<UserMsg>(USER_QUEUE);
+        let users = Arc::new(user_queue::UserQueue::default());
         let stop = WriterStop::default();
         let queue = WriterQueue::new(
             tx,
-            users,
+            Arc::clone(&users),
             Arc::clone(&resolver),
             commits.clone(),
             #[cfg(any(test, feature = "fixture"))]
@@ -510,7 +496,7 @@ impl Writer {
             report: WriteReport::default(),
             first_build,
             deferred_indexes,
-            users: users_rx,
+            users,
             search: Search::start(archive.index_db(), !building)?,
             derive: derive_thread::DeriveThread::start(
                 archive.index_db(),
@@ -1201,7 +1187,7 @@ struct Inner {
     /// Secondary indexes dropped for a first build, recreated when it ends.
     deferred_indexes: Vec<String>,
     /// User requests, served between the writer's transactions.
-    users: Receiver<UserMsg>,
+    users: Arc<user_queue::UserQueue>,
     /// The search thread ([`search_thread`]): woken after each commit, and
     /// allowed to write once the index is out of a first build.
     search: Search,
@@ -1214,10 +1200,21 @@ struct Inner {
     stream_error: Option<String>,
 }
 
+impl Drop for Inner {
+    fn drop(&mut self) {
+        self.users.disconnect();
+    }
+}
+
 impl Inner {
     /// Writes every waiting user request, each answered once committed.
     fn serve_users(&mut self) {
-        while let Ok(message) = self.users.try_recv() {
+        // New arrivals wake the next turn; this turn finishes its existing
+        // user requests before bulk work, even under a continuous read load.
+        for _ in 0..self.users.waiting() {
+            let Some(message) = self.users.pop() else {
+                break;
+            };
             match message {
                 UserMsg::Request(request, scope, preparation, parent, reply) => {
                     let result = self
@@ -1260,6 +1257,16 @@ impl Inner {
                     }
                     let _ = reply.send(result);
                 }
+                UserMsg::History(history) => {
+                    if let Err(error) = self
+                        .admit_user_parent(history.run.id.as_str(), None)
+                        .and_then(|()| self.write_history(&history))
+                    {
+                        self.report
+                            .errors
+                            .push(format!("query history {}: {error}", history.run.id));
+                    }
+                }
             }
         }
     }
@@ -1269,13 +1276,16 @@ impl Inner {
     /// successful one, prepare the facts of captures Sinex confirmed and derive.
     fn stream_followed(&mut self, error: Option<String>) {
         let result = match error {
-            Some(error) => Err(StoreError::Sinex(error)),
-            None => self.complete_ready_captures().map(|()| {
-                // A first build derives every session once, when it ends.
-                if self.first_build.is_none() {
-                    self.request_derive(derive_thread::Waiting::Nobody);
-                }
-            }),
+            Some(error) => Err(error),
+            None => self
+                .complete_ready_captures()
+                .map(|()| {
+                    // A first build derives every session once, when it ends.
+                    if self.first_build.is_none() {
+                        self.request_derive(derive_thread::Waiting::Nobody);
+                    }
+                })
+                .map_err(|error| error.to_string()),
         };
         match result {
             Ok(()) => self.stream_error = None,

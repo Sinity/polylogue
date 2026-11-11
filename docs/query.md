@@ -149,7 +149,7 @@ Queries, their runs, kept results, figures and findings are stored objects with 
 
 - Every executed query writes a run: `query_run(id, query, at, resolved, read_at, author, via, outcome, count, exact)`, with the author computed as for every authored record ([assertions.md](assertions.md#authorship)). `explain` and completion write none.
 - `query(hash, normal_form, first_run)` holds each distinct query once.
-- Runs are written by the writer in its ordinary groups, never inside the read, so a read never waits on its run row.
+- Runs are written by the writer in its ordinary groups. A first ordinary page reserves space in the bounded user queue within its existing deadline, before acquiring the reader that prepares its page, then hands its completed execution to the writer without waiting for a commit. The run and its outcome commit together; the question is independently reusable under its hash. A cancelled or refused admission starts no page and creates no run.
 - Every answer carries `query: "query:<hash>"` and `run: "<run id>"`; a kept answer also carries `result:<id>`.
 
 ### Saved queries

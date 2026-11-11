@@ -634,27 +634,31 @@ impl Reader<'_> {
             )
             .transpose()?;
         if let Some(pending) = pending {
-            pending.visit_named_products(
-                &crate::primary::NamedProductSelector::Exact(format!("query-run-outcome:{id}")),
-                &mut |product| {
-                    if let Product::QueryRunOutcome { outcome } = product
-                        && &outcome.run == id
-                    {
-                        validate_run_outcome(outcome)?;
-                        if let Some(existing) = &found {
-                            if existing.value != **outcome {
-                                return Err(StoreError::Conflict(format!("run outcome:{id}")));
+            // Ordinary reads hand over a completed run group. Retained-object
+            // executions acknowledge Begin first and finish in a later group.
+            for name in [format!("query-run:{id}"), format!("query-run-outcome:{id}")] {
+                pending.visit_named_products(
+                    &crate::primary::NamedProductSelector::Exact(name),
+                    &mut |product| {
+                        if let Product::QueryRunOutcome { outcome } = product
+                            && &outcome.run == id
+                        {
+                            validate_run_outcome(outcome)?;
+                            if let Some(existing) = &found {
+                                if existing.value != **outcome {
+                                    return Err(StoreError::Conflict(format!("run outcome:{id}")));
+                                }
+                            } else {
+                                found = Some(QueryLookup {
+                                    value: *outcome.clone(),
+                                    custody: QueryCustody::Queued,
+                                });
                             }
-                        } else {
-                            found = Some(QueryLookup {
-                                value: *outcome.clone(),
-                                custody: QueryCustody::Queued,
-                            });
                         }
-                    }
-                    Ok(())
-                },
-            )?;
+                        Ok(())
+                    },
+                )?;
+            }
         }
         self.conn()?;
         Ok(found)
