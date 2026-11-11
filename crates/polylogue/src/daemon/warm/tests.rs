@@ -285,3 +285,67 @@ fn summary_does_not_wait_for_a_load() {
         assert_eq!(during.expect("status waited for the vector load"), before);
     });
 }
+
+#[test]
+fn one_provider_call_per_query_text_in_flight() {
+    use std::sync::atomic::AtomicUsize;
+    let daemon = crate::test_daemon::start("parser text");
+    let listener = daemon.embedding_endpoint();
+    let d = &daemon.daemon;
+    let provider = {
+        let reader = d.reads.reader().unwrap();
+        let settings = reader.settings_snapshot(&daemon.config.machine).unwrap();
+        crate::embeddings::Provider::from_settings(&settings, &d.config.embedding_credentials)
+            .unwrap()
+            .expect("the local provider is configured")
+    };
+    let calls = AtomicUsize::new(0);
+    // Each read holds a reader slot while it waits, so this stays within the pool.
+    let readers = 2;
+    let answers: Vec<_> = std::thread::scope(|scope| {
+        let reads: Vec<_> = (0..readers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let reader = d.reads.reader().unwrap();
+                    d.warm.similarity(&reader, &provider, "parser").map(drop)
+                })
+            })
+            .collect();
+        // The provider answers its first call only once every other read of
+        // the same text waits for that call.
+        let (peer, _) = listener.accept().unwrap();
+        calls.fetch_add(1, Ordering::Relaxed);
+        let until = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let waiting = d
+                .warm
+                .in_flight
+                .lock()
+                .unwrap()
+                .values()
+                .map(|flight| flight.waiting.load(Ordering::Relaxed))
+                .sum::<usize>();
+            if waiting == readers - 1 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < until,
+                "the other reads never waited"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        crate::test_daemon::embeddings::response(
+            peer,
+            200,
+            r#"{"data":[{"index":0,"embedding":[1.0,0.0]}]}"#,
+        );
+        reads.into_iter().map(|read| read.join().unwrap()).collect()
+    });
+    listener.set_nonblocking(true).unwrap();
+    assert!(
+        listener.accept().is_err(),
+        "a second provider call was made"
+    );
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    assert_eq!(answers, vec![Ok(()); readers]);
+}

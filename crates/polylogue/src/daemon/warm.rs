@@ -5,7 +5,8 @@
 //!   memory, keyed by the model revision of the requesting read snapshot.
 //! - **Query vectors**: the provider's vector for each recent `similar:` text,
 //!   so a repeated or paged query neither pays nor waits for the provider
-//!   again, and ranks by the same values.
+//!   again, and ranks by the same values. Concurrent reads of one text share
+//!   one provider call: one provider call per query text is in flight.
 //!
 //! Entries are bound to their read position or embeddings snapshot revision.
 //! SQL reads and quantization do not hold the vector cache mutex.
@@ -68,9 +69,20 @@ struct VectorCache {
     invalidation: Arc<()>,
 }
 
+/// A provider call for one query text that later reads of the same text
+/// wait for.
+#[derive(Default)]
+struct Flight {
+    result: Mutex<Option<Result<Arc<Vec<f32>>, String>>>,
+    done: std::sync::Condvar,
+    #[cfg(test)]
+    waiting: std::sync::atomic::AtomicUsize,
+}
+
 pub struct Warm {
     vectors: Mutex<VectorCache>,
     query_vectors: Mutex<Recent<Arc<Vec<f32>>>>,
+    in_flight: Mutex<std::collections::HashMap<String, Arc<Flight>>>,
     counts: Counts,
     /// Session item indexes read by recent reads.
     pub(crate) items: super::items::ItemCache,
@@ -81,6 +93,7 @@ impl Default for Warm {
         Self {
             vectors: Mutex::new(VectorCache::default()),
             query_vectors: Mutex::new(Recent::new(QUERY_VECTORS)),
+            in_flight: Mutex::default(),
             counts: Counts::default(),
             items: super::items::ItemCache::default(),
         }
@@ -165,33 +178,85 @@ impl Warm {
             return Err("no vectors for this provider's model: `polylogue embed build`".into());
         };
         let key = format!("{}\0{text}", loaded.key);
-        let cached = self
-            .query_vectors
-            .lock()
-            .map_err(|_| "vector cache poisoned")?
-            .get(&key);
-        let query = match cached {
-            Some(v) => {
-                self.counts
-                    .query_vectors_reused
-                    .fetch_add(1, Ordering::Relaxed);
-                v
-            }
-            None => {
-                let v = Arc::new(
-                    crate::embeddings::query_vector(provider, text).map_err(|e| e.to_string())?,
-                );
-                self.query_vectors
-                    .lock()
-                    .map_err(|_| "vector cache poisoned")?
-                    .put(key, Arc::clone(&v));
-                v
-            }
-        };
+        let query = self.query_vector(&key, provider, text)?;
         loaded
             .similarity(&query)
             .map(Arc::new)
             .map_err(|e| e.to_string())
+    }
+
+    /// The provider's vector for `text`: kept from an earlier read, taken
+    /// from a call another read has in flight, or asked for. Neither the
+    /// call nor the wait for it holds an executor place.
+    fn query_vector(
+        &self,
+        key: &str,
+        provider: &Provider,
+        text: &str,
+    ) -> Result<Arc<Vec<f32>>, String> {
+        let cached = cache_lock(&self.query_vectors)?.get(key);
+        if let Some(vector) = cached {
+            self.counts
+                .query_vectors_reused
+                .fetch_add(1, Ordering::Relaxed);
+            return Ok(vector);
+        }
+        let (flight, leader) = {
+            let mut in_flight = cache_lock(&self.in_flight)?;
+            match in_flight.get(key) {
+                Some(flight) => (Arc::clone(flight), false),
+                None => {
+                    let flight = Arc::new(Flight::default());
+                    in_flight.insert(key.to_owned(), Arc::clone(&flight));
+                    (flight, true)
+                }
+            }
+        };
+        if !leader {
+            self.counts
+                .query_vectors_reused
+                .fetch_add(1, Ordering::Relaxed);
+            return super::executor::outside(|| wait_for(&flight));
+        }
+        // Waiting reads hear how the call ended, however it ends.
+        struct Land<'a> {
+            warm: &'a Warm,
+            key: &'a str,
+            flight: Arc<Flight>,
+        }
+        impl Drop for Land<'_> {
+            fn drop(&mut self) {
+                let mut result = self
+                    .flight
+                    .result
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                result.get_or_insert_with(|| Err("the provider call did not finish".into()));
+                drop(result);
+                self.warm
+                    .in_flight
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(self.key);
+                self.flight.done.notify_all();
+            }
+        }
+        let land = Land {
+            warm: self,
+            key,
+            flight,
+        };
+        let result = super::executor::outside(|| {
+            crate::embeddings::query_vector(provider, text)
+                .map(Arc::new)
+                .map_err(|e| e.to_string())
+        });
+        if let Ok(vector) = &result {
+            cache_lock(&self.query_vectors)?.put(key.to_owned(), Arc::clone(vector));
+        }
+        *cache_lock(&land.flight.result)? = Some(result.clone());
+        drop(land);
+        result
     }
 
     /// Drops everything; the next requests rebuild what they use.
@@ -218,6 +283,46 @@ impl Warm {
             vector_loads: self.counts.vector_loads.load(Ordering::Relaxed),
             query_vectors_reused: self.counts.query_vectors_reused.load(Ordering::Relaxed),
         }
+    }
+}
+
+/// Waits for another read's provider call; the read's deadline bounds the
+/// wait and its cancellation wakes it.
+fn wait_for(flight: &Arc<Flight>) -> Result<Arc<Vec<f32>>, String> {
+    #[cfg(test)]
+    flight.waiting.fetch_add(1, Ordering::Relaxed);
+    let limit = polylogue_store::read::limit::ReadLimit::current();
+    let _wake = limit.as_ref().map(|limit| {
+        let flight = Arc::clone(flight);
+        limit.cancellation.on_cancel(move || {
+            let _held = flight.result.lock();
+            flight.done.notify_all();
+        })
+    });
+    let mut result = cache_lock(&flight.result)?;
+    loop {
+        if let Some(result) = result.as_ref() {
+            return result.clone();
+        }
+        if let Some(limit) = &limit {
+            limit.check().map_err(|error| error.to_string())?;
+        }
+        result = match limit
+            .as_ref()
+            .and_then(polylogue_store::read::limit::ReadLimit::remaining)
+        {
+            Some(left) => {
+                flight
+                    .done
+                    .wait_timeout(result, left)
+                    .map_err(|_| "read cache poisoned".to_owned())?
+                    .0
+            }
+            None => flight
+                .done
+                .wait(result)
+                .map_err(|_| "read cache poisoned".to_owned())?,
+        };
     }
 }
 
