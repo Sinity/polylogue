@@ -1,6 +1,76 @@
 use super::*;
 
 #[test]
+fn open_refuses_mode_mismatch_before_creating_files() {
+    fn files(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+        let mut result = Vec::new();
+        for entry in fs::read_dir(root).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_dir() {
+                result.extend(files(&entry.path()));
+            } else {
+                result.push((entry.path(), fs::read(entry.path()).unwrap()));
+            }
+        }
+        result.sort();
+        result
+    }
+    for primary in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("owner");
+        let root = dir.path().join("archive");
+        let (archive, lock) = if primary {
+            Archive::open_primary(&root, &store).unwrap()
+        } else {
+            Archive::open_or_create(&root).unwrap()
+        };
+        drop(lock);
+        fs::remove_file(root.join("lock")).unwrap();
+        fs::remove_dir_all(archive.staging_dir()).unwrap();
+        let before = files(&root);
+        let error = if primary {
+            Archive::open_or_create(&root).unwrap_err()
+        } else {
+            Archive::open_primary(&root, &store).unwrap_err()
+        }
+        .to_string();
+        assert!(
+            error.contains(if primary {
+                "is primary"
+            } else {
+                "is standalone"
+            }),
+            "{error}"
+        );
+        assert!(
+            error.contains(if primary {
+                "requests standalone"
+            } else {
+                "requests primary"
+            }),
+            "{error}"
+        );
+        assert_eq!(files(&root), before);
+    }
+}
+
+#[test]
+fn primary_mode_identity_survives_reset_and_index_recreation() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("archive");
+    let store = dir.path().join("owner");
+    let (archive, lock) = Archive::open_primary(&root, &store).unwrap();
+    let identity = fs::read(root.join("meta.json")).unwrap();
+    archive.advance_generation_for_test().unwrap();
+    assert_eq!(fs::read(root.join("meta.json")).unwrap(), identity);
+    drop(lock);
+    fs::remove_file(archive.index_db()).unwrap();
+    let (_archive, _lock) = Archive::open_primary(&root, &store).unwrap();
+    assert_eq!(Archive::recorded_mode(&root).unwrap(), Some(Mode::Primary));
+    assert_eq!(fs::read(root.join("meta.json")).unwrap(), identity);
+}
+
+#[test]
 fn a_second_open_is_refused_while_the_lock_is_held() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("a");

@@ -2,6 +2,8 @@
 
 pub(crate) mod generation;
 pub mod index_rebuild;
+mod metadata;
+pub use metadata::Mode;
 
 use crate::{Result, StoreError, schema};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction};
@@ -262,7 +264,10 @@ impl Archive {
         archive: Self,
         setup: impl FnOnce(&Self) -> Result<T>,
     ) -> Result<(Self, ArchiveLock, T)> {
+        metadata::check(&archive)?;
         let lock = Self::lock(&archive.root)?;
+        metadata::check(&archive)?;
+        metadata::create(&archive)?;
         let setup = setup(&archive)?;
         if !archive.is_primary() {
             fs::create_dir_all(archive.blobs_dir())?;
@@ -273,6 +278,30 @@ impl Archive {
         }
         archive.finish_open()?;
         Ok((archive, lock, setup))
+    }
+
+    /// The archive's durable identity, read without opening or creating a database.
+    pub fn recorded_mode(root: &Path) -> Result<Option<Mode>> {
+        metadata::read(root)
+    }
+
+    /// Broken deployment settings pause capture and writes while the recorded
+    /// archive remains readable. They never choose another storage mode.
+    pub fn open_blocked_with_invalidator(
+        root: &Path,
+        invalidate: impl Fn() -> Result<()> + Send + Sync + 'static,
+    ) -> Result<(Self, ArchiveLock, crate::ScopeInvalidation)> {
+        let archive = match Self::recorded_mode(root)? {
+            Some(Mode::Standalone) => Self::at(root),
+            Some(Mode::Primary) => Self::primary_cache(root),
+            None => {
+                return Err(StoreError::Invalid(format!(
+                    "archive {} has no recorded mode; fix its configuration before creating it",
+                    root.display()
+                )));
+            }
+        };
+        Self::open_configured(archive, |archive| archive.read_scope.register(invalidate))
     }
 
     /// Where input bytes wait, in primary mode, until the writer sends them

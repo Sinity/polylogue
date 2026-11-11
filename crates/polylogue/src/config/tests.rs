@@ -277,7 +277,8 @@ fn outlets_use_typed_arguments_and_stable_resolved_identity() {
 fn primary_mode_keeps_unavailable_credentials_and_never_supplies_a_local_day() {
     let root = tempfile::tempdir().unwrap();
     deployment(root.path(), "");
-    let path = root.path().join("config/polylogue/sinex.toml");
+    let path = root.path().join("home/.local/share/polylogue/sinex.toml");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, "mode='primary'\nnats='nats://127.0.0.1:1'\nstore='store'\npassword_file='missing-password'\n").unwrap();
     let startup = Startup::load(&process(root.path()), Overrides::default()).unwrap();
     assert!(matches!(
@@ -312,7 +313,7 @@ fn unreadable_primary_deployment_stays_blocked_without_local_day() {
     let root = tempfile::tempdir().unwrap();
     deployment(root.path(), "");
     // A directory gives a deterministic read failure even under a privileged test runner.
-    std::fs::create_dir(root.path().join("config/polylogue/sinex.toml")).unwrap();
+    std::fs::create_dir_all(root.path().join("home/.local/share/polylogue/sinex.toml")).unwrap();
     let startup = Startup::load(&process(root.path()), Overrides::default()).unwrap();
     assert!(matches!(
         startup.mode,
@@ -426,4 +427,37 @@ fn captured_terminal_hints_disable_both_sinks_without_environment_rereads() {
     );
     assert!(!output.stdout_color());
     assert!(!output.stderr_color());
+}
+
+#[test]
+fn archive_override_selects_its_own_mode_configuration() {
+    let root = tempfile::tempdir().unwrap();
+    deployment(root.path(), "");
+    let first = root.path().join("first");
+    let second = root.path().join("second");
+    std::fs::create_dir(&first).unwrap();
+    std::fs::create_dir(&second).unwrap();
+    std::fs::write(first.join("sinex.toml"), "mode='unknown'\n").unwrap();
+    std::fs::write(second.join("sinex.toml"), "mode='standalone'\n").unwrap();
+    let load = |archive| {
+        Startup::load(
+            &process(root.path()),
+            Overrides {
+                archive: Some(archive),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    };
+    let broken = load(first.clone());
+    let crate::daemon::service::ArchiveMode::Blocked { path, error, .. } = broken.mode else {
+        panic!("invalid archive configuration was accepted")
+    };
+    assert_eq!(path, first.join("sinex.toml"));
+    assert!(!error.is_empty());
+    assert!(broken.config.standalone_day().is_err());
+    assert!(matches!(
+        load(second).mode,
+        crate::daemon::service::ArchiveMode::Standalone
+    ));
 }

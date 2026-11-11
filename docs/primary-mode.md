@@ -141,11 +141,20 @@ before updating its local index.
 ## Local state
 
 What a host keeps locally in primary mode:
+- `meta.json`, the archive's durable storage identity, containing its mode;
 - `index.db`, a cache holding its stream position;
 - the embeddings store, local and backed up, since recomputing it costs money;
 - the producer client's spool, where bytes and prepared writes wait until Sinex acknowledges them; it sits under Sinex's store root on the same host. Material bytes are acknowledged before the events that cite them.
 
 There is no local ledger of inputs, no local segment log and no send cursor. The Sinex adapter is the Cargo feature `sinex`, off in a plain `cargo build` and included in the Nix package.
+
+Every archive records its mode in `meta.json` before creating its stores. The
+identity is independent of deployment configuration and survives rebuilding
+the derived index. Opening compares the requested mode with this identity
+before creating any file; a mismatch names both modes and refuses the open.
+An archive's mode is never inferred from its database files. Configuration
+selects the intended mode; it cannot relabel an existing archive.
+
 
 ### Online backup
 

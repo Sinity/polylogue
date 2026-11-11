@@ -2,7 +2,7 @@ use super::*;
 use polylogue_testkit::{ClaudeHome, claude_user as user};
 
 fn path(home: &ClaudeHome) -> std::path::PathBuf {
-    home.dir.path().join("config/polylogue/sinex.toml")
+    home.root.join("sinex.toml")
 }
 
 fn startup(home: &ClaudeHome) -> crate::config::Startup {
@@ -159,8 +159,10 @@ fn malformed_config_keeps_primary_status_and_refuses_reads_and_writes() {
 #[test]
 fn malformed_primary_configuration_does_not_reclassify_a_standalone_archive() {
     let w = seeded();
-    let refused = launch(loaded(&w, "mode = ["));
-    assert!(refused.is_err());
+    let runtime = launch(loaded(&w, "mode = [")).unwrap();
+    blocked(&runtime, &path(&w));
+    assert!(!runtime.daemon.archive.is_primary());
+    drop(runtime);
     assert_eq!(w.count("SELECT count(*) AS n FROM message"), 1);
     assert!(
         Archive::open_or_create(&w.root).is_ok(),
