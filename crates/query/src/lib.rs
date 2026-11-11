@@ -13,6 +13,7 @@ pub mod parse;
 pub mod plan;
 pub mod search;
 pub mod selection;
+pub mod stages;
 pub mod time;
 pub mod units;
 

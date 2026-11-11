@@ -11,6 +11,7 @@ use crate::{
     defaults::{self, DefaultId},
     filter::{Binder, Filter},
     search::Search,
+    stages::Stage,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -33,6 +34,8 @@ pub struct Selection {
     /// The index of the first transform that stays a stage; the filter
     /// holds the `| where` stages before it.
     pub stages_from: usize,
+    /// The stages from `stages_from` on.
+    pub stages: Vec<Stage>,
     /// The index of the first stage that reads the selection's rows as a
     /// relation, or `None` when every stage reads the selection itself.
     pub relations_from: Option<usize>,
@@ -176,6 +179,7 @@ impl Selection {
             semantic,
             order,
             stages_from: folded,
+            stages: crate::stages::stages(&query.transforms, folded)?,
             relations_from,
             measured,
             attach: query.attach.clone(),

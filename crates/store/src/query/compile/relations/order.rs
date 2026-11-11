@@ -18,7 +18,7 @@ impl Compiler<'_> {
     pub(super) fn rel_order_pair(
         &mut self,
         outer: &mut Relation,
-        inner: Relation,
+        mut inner: Relation,
         relation: OrderRelation,
         within: Option<&Distance>,
         point: TimePoint,
@@ -26,14 +26,13 @@ impl Compiler<'_> {
         pick: &MatchChoice,
         at: usize,
     ) -> Result<String, QueryError> {
-        outer.reserve(&inner);
         let pair = self.pair_order(outer, &inner, relation, within, point, scope, at)?;
-        let index = outer.slot();
-        let chosen = outer.slot();
-        let unknown = outer.slot();
-        let truth = outer.slot();
-        let inner_name = outer.slot();
-        let outer_name = outer.slot();
+        let index = self.slot();
+        let chosen = self.slot();
+        let unknown = self.slot();
+        let truth = self.slot();
+        let inner_name = self.slot();
+        let outer_name = self.slot();
         let ctes = if pair.ctes.is_empty() {
             String::new()
         } else {
@@ -125,27 +124,28 @@ impl Compiler<'_> {
             column_sql(&unknown),
             column_sql(&truth)
         ));
-        outer.program.derived_mut().rows = format!(
-            "WITH {ctes}{inner_name} AS MATERIALIZED (SELECT i.*, row_number() OVER (ORDER BY {}) AS {} FROM ({}) i), \
+        let inner_input = self.input(&mut inner);
+        let outer_input = self.input(outer);
+        let sql = format!(
+            "WITH {ctes}{inner_name} AS MATERIALIZED (SELECT i.*, row_number() OVER (ORDER BY {}) AS {} FROM {inner_input} i), \
              {outer_name} AS MATERIALIZED (SELECT r.*, \
              (SELECT i.{} FROM {inner_name} i WHERE ({}) ORDER BY {witness_order} LIMIT 1) AS {}, \
-             (({}) OR EXISTS (SELECT 1 FROM {inner_name} i WHERE ({}) IS NULL)) AS {} FROM ({}) r) \
+             (({}) OR EXISTS (SELECT 1 FROM {inner_name} i WHERE ({}) IS NULL)) AS {} FROM {outer_input} r) \
              SELECT {} FROM {outer_name} r LEFT JOIN {inner_name} i ON i.{} = r.{} ORDER BY {}",
             qualified_order(&inner.program.order, "i"),
             column_sql(&index),
-            inner.program.rows(),
             column_sql(&index),
             pair.predicate,
             column_sql(&chosen),
             pair.outer_unknown,
             pair.predicate,
             column_sql(&unknown),
-            outer.program.rows(),
             projections.join(", "),
             column_sql(&index),
             column_sql(&chosen),
             qualified_order(&outer.program.order, "r")
         );
+        self.set_rows(outer, sql);
         outer.program.derived_mut().count = None;
         outer.program.derived_mut().members = None;
         Ok(format!("r.{}", column_sql(&truth)))
@@ -154,11 +154,10 @@ impl Compiler<'_> {
     pub(super) fn rel_join_pair(
         &mut self,
         outer: &mut Relation,
-        inner: Relation,
+        mut inner: Relation,
         on: &JoinOn,
         at: usize,
     ) -> Result<(), QueryError> {
-        outer.reserve(&inner);
         let pair = match on {
             JoinOn::Order {
                 relation,
@@ -216,19 +215,19 @@ impl Compiler<'_> {
         );
         let mut identity = identity_columns(outer);
         for key in identity_columns(&inner) {
-            let slot = outer.slot();
+            let slot = self.slot();
             projections.push(format!("i.{} AS {}", column_sql(&key), column_sql(&slot)));
             identity.push(slot);
         }
         if matches!(on, JoinOn::Order { .. }) {
             for value in [&pair.coarse, &pair.distance_key] {
-                let slot = outer.slot();
+                let slot = self.slot();
                 projections.push(format!("{value} AS {}", column_sql(&slot)));
                 outer.program.order.push(OrderKey::ascending(&slot));
             }
         }
         for key in identity_columns(&inner) {
-            let slot = outer.slot();
+            let slot = self.slot();
             projections.push(format!("i.{} AS {}", column_sql(&key), column_sql(&slot)));
             outer.program.order.push(OrderKey::ascending(&slot));
         }
@@ -237,14 +236,15 @@ impl Compiler<'_> {
         } else {
             format!("WITH {} ", pair.ctes.join(", "))
         };
-        outer.program.derived_mut().rows = format!(
-            "{ctes}SELECT {} FROM ({}) r JOIN ({}) i ON ({}) ORDER BY {}",
+        let inner_input = self.input(&mut inner);
+        let outer_input = self.input(outer);
+        let sql = format!(
+            "{ctes}SELECT {} FROM {outer_input} r JOIN {inner_input} i ON ({}) ORDER BY {}",
             projections.join(", "),
-            outer.program.rows(),
-            inner.program.rows(),
             pair.predicate,
             relation_order(&outer.program.order)
         );
+        self.set_rows(outer, sql);
         outer.program.row_basis = RowBasis::Distinct { columns: identity };
         outer.program.derived_mut().count = None;
         outer.program.derived_mut().members = None;
@@ -271,7 +271,7 @@ impl Compiler<'_> {
             .time_text_columns
             .retain(|name| !name.starts_with("match."));
         for column in &inner.program.columns {
-            let slot = outer.slot();
+            let slot = self.slot();
             projections.push(format!(
                 "i.{} AS {}",
                 column_sql(inner.program.column_slot(&column.name)),
@@ -293,7 +293,7 @@ impl Compiler<'_> {
             .sources
             .retain(|source| !source.prefix.starts_with("match."));
         for source in &inner.sources {
-            let slot = outer.slot();
+            let slot = self.slot();
             projections.push(format!(
                 "i.{} AS {}",
                 column_sql(&source.key),
@@ -306,7 +306,7 @@ impl Compiler<'_> {
             });
         }
         if let Some((distance, kind)) = distance {
-            let slot = outer.slot();
+            let slot = self.slot();
             projections.push(format!("{distance} AS {}", column_sql(&slot)));
             let name = "match.distance".to_owned();
             outer.program.columns.retain(|prior| prior.name != name);

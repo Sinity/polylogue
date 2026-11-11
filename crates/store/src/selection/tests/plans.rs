@@ -311,3 +311,34 @@ fn attachment_reads_children_through_each_parent_key() {
         "{steps:#?}"
     );
 }
+
+/// A grouping with the `first N` or `agg …` after it reads the rows
+/// entering the grouping once: the unit's rows are scanned once however
+/// many such stages follow.
+#[test]
+fn per_group_stages_read_the_rows_entering_them_once() {
+    let (_dir, f) = fixture();
+    for (text, alias) in [
+        ("sessions | group by origin | first 1", "s"),
+        ("sessions | group by origin | count", "s"),
+        (
+            "sessions | group by origin | agg count(), min(started)",
+            "s",
+        ),
+        (
+            "sessions | group by origin | first 2 | group by repo | first 1 | group by origin | count",
+            "s",
+        ),
+        ("messages | group by role | first 1", "m"),
+    ] {
+        let steps = page_plan(&f, text);
+        let scans = steps
+            .iter()
+            .filter(|step| {
+                step.strip_prefix("SCAN ")
+                    .is_some_and(|rest| rest == alias || rest.starts_with(&format!("{alias} ")))
+            })
+            .count();
+        assert_eq!(scans, 1, "{text}: {steps:#?}");
+    }
+}
