@@ -549,7 +549,12 @@ impl Startup {
                 "a non-loopback listen address requires an authentication token file".into(),
             ));
         }
-        let (mode, _primary_auth) = load_mode(&base.join("sinex.toml"))?;
+        let mode_path = if overrides.config_file.is_some() {
+            base.join("sinex.toml")
+        } else {
+            archive.join("sinex.toml")
+        };
+        let (mode, _primary_auth) = load_mode(&mode_path)?;
         let standalone = matches!(mode, crate::daemon::service::ArchiveMode::Standalone);
         let standalone_day = if standalone {
             let DayFile { zone, start } = file.day.unwrap_or(DayFile {
@@ -788,21 +793,36 @@ pub(crate) fn load_mode(
 }
 #[cfg(not(feature = "sinex"))]
 pub(crate) fn load_mode(path: &Path) -> Result<(crate::daemon::service::ArchiveMode, ()), Error> {
+    use crate::daemon::service::ArchiveMode;
     #[derive(Deserialize)]
     struct Header {
         mode: String,
     }
-    if let Some(text) = optional_file(path)? {
-        let header: Header = toml::from_str(&text)
-            .map_err(|error| Error::Invalid(format!("{}: {error}", path.display())))?;
-        if header.mode != "standalone" {
-            return Err(Error::Invalid(format!(
-                "{} requires a build with primary-mode support",
-                path.display()
-            )));
+    let result = optional_file(path).and_then(|text| match text {
+        None => Ok(()),
+        Some(text) => {
+            let header: Header =
+                toml::from_str(&text).map_err(|error| Error::Invalid(error.to_string()))?;
+            match header.mode.as_str() {
+                "standalone" => Ok(()),
+                "primary" => Err(Error::Invalid(
+                    "this build has no primary-mode support".into(),
+                )),
+                mode => Err(Error::Invalid(format!("unknown archive mode {mode:?}"))),
+            }
         }
-    }
-    Ok((crate::daemon::service::ArchiveMode::Standalone, ()))
+    });
+    Ok((
+        match result {
+            Ok(()) => ArchiveMode::Standalone,
+            Err(error) => ArchiveMode::Blocked {
+                configured: None,
+                path: path.into(),
+                error: error.to_string(),
+            },
+        },
+        (),
+    ))
 }
 
 #[cfg(test)]

@@ -89,7 +89,6 @@ impl Daemon {
                     .map_err(crate::protocol::context_failure)?;
                 crate::operation::Context::primary(invocation, policy)?
             }
-            #[cfg(feature = "sinex")]
             ModeState::Blocked { error: reason, .. } => {
                 return Err(Failure::new("sinex_unavailable", reason.clone()));
             }
@@ -173,7 +172,9 @@ impl Daemon {
             ModeState::Primary { connection } => connection
                 .currency(reader.confirmed_checkpoint()?, reader.confirmed_scope()?)
                 .map_err(StoreError::from),
-            #[cfg(feature = "sinex")]
+            ModeState::Blocked { .. } if !self.archive.is_primary() => {
+                Ok(IndexCurrency::Standalone)
+            }
             ModeState::Blocked { error, .. } => Ok(IndexCurrency::primary(
                 reader.confirmed_checkpoint()?,
                 None,
@@ -1068,8 +1069,7 @@ impl Drop for Runtime {
 
 /// Standalone, primary on Sinex, or blocked: a Sinex configuration that
 /// cannot be read, or a Sinex that cannot be reached at start; never a
-/// fallback to another mode. Only a build with the
-/// `sinex` feature reads a Sinex configuration, so only it can be blocked.
+/// fallback to another mode.
 #[derive(Clone)]
 pub enum ArchiveMode {
     Standalone,
@@ -1077,7 +1077,6 @@ pub enum ArchiveMode {
     Primary {
         config: polylogue_sinex::Config,
     },
-    #[cfg(feature = "sinex")]
     Blocked {
         /// The mode the configuration asked for, when it could be read.
         configured: Option<&'static str>,
@@ -1092,7 +1091,6 @@ impl ArchiveMode {
             Self::Standalone => true,
             #[cfg(feature = "sinex")]
             Self::Primary { .. } => true,
-            #[cfg(feature = "sinex")]
             Self::Blocked { .. } => false,
         }
     }
@@ -1107,7 +1105,6 @@ enum ModeState {
         #[serde(skip)]
         connection: Arc<polylogue_sinex::Sinex>,
     },
-    #[cfg(feature = "sinex")]
     Blocked {
         configured: Option<&'static str>,
         path: std::path::PathBuf,
@@ -1119,19 +1116,11 @@ impl ModeState {
     /// Writes are paused until the Sinex configuration is fixed or Sinex
     /// can be reached.
     fn blocked(&self) -> bool {
-        #[cfg(feature = "sinex")]
-        {
-            matches!(self, Self::Blocked { .. })
-        }
-        #[cfg(not(feature = "sinex"))]
-        {
-            false
-        }
+        matches!(self, Self::Blocked { .. })
     }
 
     /// The answer to a write the daemon cannot take.
     fn write_refusal(&self) -> Failure {
-        #[cfg(feature = "sinex")]
         if let Self::Blocked {
             path,
             error: reason,
@@ -1181,15 +1170,13 @@ pub fn start(
             let engine = Engine::new(config, archive.clone(), attempt).map_err(|e| to_io(&e))?;
             (archive, lock, ModeState::Standalone, Some(engine), scope)
         }
-        #[cfg(feature = "sinex")]
         ArchiveMode::Blocked {
             configured,
             path,
             error,
         } => {
-            let (archive, lock, scope) =
-                Archive::open_primary_cache_with_invalidator(root, invalidate)
-                    .map_err(std::io::Error::other)?;
+            let (archive, lock, scope) = Archive::open_blocked_with_invalidator(root, invalidate)
+                .map_err(std::io::Error::other)?;
             let state = ModeState::Blocked {
                 configured,
                 path,

@@ -68,7 +68,20 @@ pub(super) fn answer(
         primary: primary(d, reader),
     };
     match serde_json::to_value(status) {
-        Ok(value) => crate::protocol::read(value, &currency),
+        Ok(value) => {
+            let super::ModeState::Blocked { path, error, .. } = &d.mode else {
+                return crate::protocol::read(value, &currency);
+            };
+            let mut missing: Vec<String> = crate::protocol::currency_note(&currency)
+                .map(str::to_owned)
+                .into_iter()
+                .collect();
+            missing.push(format!("{}: {error}", path.display()));
+            command_surface::Answer {
+                outcome: command_surface::Outcome::Degraded { value, missing },
+                envelope: command_surface::Envelope::default(),
+            }
+        }
         Err(problem) => error("internal", problem),
     }
 }

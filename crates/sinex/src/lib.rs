@@ -72,13 +72,13 @@ pub enum Mode {
     Primary,
 }
 
-/// `$XDG_CONFIG_HOME/polylogue/sinex.toml`. It lives outside the archive,
-/// so an archive can be rebuilt from Sinex into an empty directory.
+/// One archive's `sinex.toml`, selected by the startup boundary.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub mode: Mode,
     /// NATS server URL, without credentials.
+    #[serde(default)]
     pub nats: String,
     /// A file holding this producer's NATS password, when the server
     /// requires one. The NATS user is the producer's name, as Sinex
@@ -93,6 +93,7 @@ pub struct Config {
     /// Sinex's store root on this host. Polylogue writes the bytes it sends
     /// into frame directories under it and reads stored bytes from its
     /// content store.
+    #[serde(default)]
     pub store: PathBuf,
 }
 
@@ -136,6 +137,14 @@ impl Config {
     /// A password in the URL would sit in the configuration file, and the
     /// NATS client ignores it there, so it is refused.
     fn check(&self) -> std::result::Result<(), String> {
+        if self.mode == Mode::Primary {
+            if self.nats.trim().is_empty() {
+                return Err("primary mode requires `nats`".into());
+            }
+            if self.store.as_os_str().is_empty() {
+                return Err("primary mode requires `store`".into());
+            }
+        }
         let authority = self
             .nats
             .split_once("://")
