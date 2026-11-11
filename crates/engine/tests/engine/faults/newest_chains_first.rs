@@ -246,9 +246,9 @@ fn a_range_the_writer_refuses_fails_its_chain_and_the_first_build_ends() {
     fault::clear();
     const CHUNK: u64 = 4 << 10;
     let w = ClaudeHome::new();
-    let session: String = (0..60)
+    let session: String = (0..120)
         .map(|n| {
-            let text = format!("turn {n} {}", "words of a long turn ".repeat(n % 5 + 8));
+            let text = format!("turn {n} {}", "words of a long turn ".repeat(n % 7 + 6));
             if n % 2 == 0 {
                 user(&format!("u{n}"), "big", &text)
             } else {
