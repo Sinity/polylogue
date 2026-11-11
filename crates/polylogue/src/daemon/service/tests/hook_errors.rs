@@ -64,9 +64,13 @@ fn message_id(item: &ReadItem) -> polylogue_model::MessageId {
     id
 }
 fn mcp_page(archive: &Archive, arguments: serde_json::Value) -> ReadPage {
-    let answer =
-        crate::mcp::tests::call(archive, "read", arguments.as_object().unwrap().clone()).unwrap();
-    serde_json::from_str(&answer).unwrap()
+    let answer = crate::mcp::tests::structured_call_as(
+        archive,
+        "read",
+        arguments.as_object().unwrap().clone(),
+        &uuid::Uuid::now_v7().to_string(),
+    );
+    serde_json::from_value(answer.value().expect("MCP read page").clone()).unwrap()
 }
 
 #[test]

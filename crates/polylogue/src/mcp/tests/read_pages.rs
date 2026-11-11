@@ -397,7 +397,10 @@ pub(super) fn collect(
 
 /// Whole-byte reconstruction uses the documented lifted deadline at the root.
 /// Children retain that accepted choice; the client never edits their deadlines.
-pub(super) fn read_without_deadline(archive: &Archive, arguments: Value) -> Result<String, String> {
+pub(super) fn structured_read_without_deadline(
+    archive: &Archive,
+    arguments: Value,
+) -> Result<ReadPage, String> {
     let envelope = serde_json::to_value(crate::mcp::ToolCall {
         operation: Some("read".into()),
         arguments,
@@ -408,7 +411,7 @@ pub(super) fn read_without_deadline(archive: &Archive, arguments: Value) -> Resu
     })
     .unwrap();
     assert_eq!(envelope.get("deadline"), Some(&Value::Null));
-    let (text, _, failed) = call_with_limit(
+    let (text, structured, failed) = call_with_limit(
         archive,
         Tool::Read.name(),
         envelope.as_object().unwrap().clone(),
@@ -416,7 +419,16 @@ pub(super) fn read_without_deadline(archive: &Archive, arguments: Value) -> Resu
         &tokio_util::sync::CancellationToken::new(),
         None,
     )?;
-    if failed { Err(text) } else { Ok(text) }
+    decode_page(text, structured, failed)
+}
+
+fn decode_page(text: String, structured: Value, failed: bool) -> Result<ReadPage, String> {
+    if failed {
+        return Err(text);
+    }
+    let answer: command_surface::Answer<ReadPage> =
+        serde_json::from_value(structured).map_err(|error| error.to_string())?;
+    answer.value().cloned().ok_or(text)
 }
 
 pub(crate) fn execute_ready(archive: &Archive, ready: &ReadyCall) -> Result<ReadPage, String> {
@@ -425,7 +437,7 @@ pub(crate) fn execute_ready(archive: &Archive, ready: &ReadyCall) -> Result<Read
         .as_object()
         .expect("generated complete envelope")
         .clone();
-    let (text, _, failed) = call_with_limit(
+    let (text, structured, failed) = call_with_limit(
         archive,
         name,
         arguments,
@@ -433,11 +445,7 @@ pub(crate) fn execute_ready(archive: &Archive, ready: &ReadyCall) -> Result<Read
         &tokio_util::sync::CancellationToken::new(),
         None,
     )?;
-    if failed {
-        Err(text)
-    } else {
-        serde_json::from_str(&text).map_err(|error| error.to_string())
-    }
+    decode_page(text, structured, failed)
 }
 
 #[test]
@@ -445,12 +453,12 @@ fn mcp_read_pages_execute_the_generated_continuation_without_losing_unicode() {
     let source = "synthetic MCP prompt λ🙂 boundary ".repeat(1000);
     let daemon = test_daemon::start(&source);
     let archive = Archive::at(&daemon.daemon.archive.root);
-    let first = read_without_deadline(
+    let first = structured_read_without_deadline(
         &archive,
         json!({"target":"session:claude-code:s1", "page_tokens":256}),
     )
     .unwrap();
-    let page: ReadPage = serde_json::from_str(&first).unwrap();
+    let page = first;
     let first_next = page
         .document
         .footer
@@ -479,12 +487,12 @@ fn budgeted_mcp_output_contains_one_bounded_layout_and_no_duplicate_source_recor
     let source = "synthetic word ".repeat(10000);
     let daemon = test_daemon::start(&source);
     let archive = Archive::at(&daemon.daemon.archive.root);
-    let output = read_without_deadline(
+    let output = structured_read_without_deadline(
         &archive,
         json!({"target":"session:claude-code:s1","page_tokens":2048}),
     )
     .unwrap();
-    let page: ReadPage = serde_json::from_str(&output).unwrap();
+    let page = output;
     assert!(page.document.footer.next.is_some());
     // A bounded page may finish at a header or inside encoded item JSON.
     // The client follows the actual continuation until the complete body decodes.
@@ -511,13 +519,13 @@ fn budgeted_mcp_output_contains_one_bounded_layout_and_no_duplicate_source_recor
 fn an_omitted_read_deadline_stays_default_in_the_next_call() {
     let daemon = test_daemon::start(&"small default read fragment ".repeat(100));
     let archive = Archive::at(&daemon.daemon.archive.root);
-    let first = call(
+    let answer = structured_call_as(
         &archive,
         "read",
         args(json!({"target":"session:claude-code:s1","page_tokens":256})),
-    )
-    .unwrap();
-    let page: ReadPage = serde_json::from_str(&first).unwrap();
+        &uuid::Uuid::now_v7().to_string(),
+    );
+    let page: ReadPage = serde_json::from_value(answer.value().unwrap().clone()).unwrap();
     let next = page
         .document
         .footer
