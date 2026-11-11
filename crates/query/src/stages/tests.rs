@@ -93,11 +93,13 @@ fn the_selection_holds_the_stages_after_its_folded_filters() {
 #[test]
 fn a_measure_ends_the_query() {
     let plan = plan("sessions | measure cost | limit 1");
-    let error = stages(&plan.expanded_query().query().transforms, 0).unwrap_err();
+    let transforms = &plan.expanded_query().query().transforms;
+    let error = stages(transforms, 0).unwrap_err();
     let QueryError::Invalid { message, position } = error else {
         panic!("{error:?}");
     };
     assert_eq!(message, "`| measure WHAT` is the last stage");
-    assert_eq!(position, "sessions | measure cost ".len());
+    // The refusal points at the stage after the measure.
+    assert_eq!(position, transforms[1].span.start);
     assert_eq!(shapes("sessions | limit 3 | measure cost").len(), 2);
 }
