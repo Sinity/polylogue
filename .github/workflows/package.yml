@@ -4,16 +4,23 @@ name: package
 # closure to sinity.cachix.org, where Sinnix fetches it when it moves its pin
 # to that commit; Sinnix never compiles a product. The build is the flake at
 # the pushed revision, so it is the same derivation Sinnix evaluates (the
-# product keeps its own nixpkgs). Sinnix can pin a deployment branch other
-# than master: build that branch's head with
-# `gh workflow run package --ref <branch>`.
+# product keeps its own nixpkgs). Sinnix can pin a revision master does not
+# contain, such as a deployment branch's head: build it with
+# `gh workflow run package -f rev=<commit>`.
 on:
   push:
     branches: [master]
   workflow_dispatch:
+    inputs:
+      rev:
+        description: Commit to build and publish
+        required: true
+
+env:
+  REV: ${{ inputs.rev || github.sha }}
 
 concurrency:
-  group: package-${{ github.sha }}
+  group: package-${{ inputs.rev || github.sha }}
 
 jobs:
   package:
@@ -32,7 +39,7 @@ jobs:
           skipPush: true
       - name: Build the package
         run: |
-          out=$(nix build --no-link --print-out-paths "github:${GITHUB_REPOSITORY}/${GITHUB_SHA}#default")
+          out=$(nix build --no-link --print-out-paths "github:${GITHUB_REPOSITORY}/${REV}#default")
           echo "built $out"
           echo "out=$out" >> "$GITHUB_ENV"
       - name: Publish its closure to sinity.cachix.org
