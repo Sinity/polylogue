@@ -67,6 +67,14 @@ describes.
 
 A host may queue these commands through its own job runner.
 
+## Published package
+
+The `package` workflow builds `.#default` for every master commit and pushes
+its runtime closure to `sinity.cachix.org`. Sinnix deploys a revision only
+after fetching that package, so its switches never compile Polylogue. To
+deploy a branch other than master, build its head first with
+`gh workflow run package --ref <branch>`.
+
 ## Deployment modules
 
 Import `homeModules.polylogue` into Home Manager or `nixosModules.polylogue`

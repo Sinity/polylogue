@@ -1,0 +1,39 @@
+name: package
+
+# Builds the Nix package of each master commit and publishes its runtime
+# closure to sinity.cachix.org, where Sinnix fetches it when it moves its pin
+# to that commit; Sinnix never compiles a product. The build is the flake at
+# the pushed revision, so it is the same derivation Sinnix evaluates (the
+# product keeps its own nixpkgs). Sinnix can pin a deployment branch other
+# than master: build that branch's head with
+# `gh workflow run package --ref <branch>`.
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: package-${{ github.sha }}
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Free disk space for the build
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc
+          sudo nohup rm -rf /usr/local/lib/android /opt/hostedtoolcache/CodeQL >/dev/null 2>&1 &
+      - uses: cachix/install-nix-action@v31
+      - uses: cachix/cachix-action@v17
+        with:
+          name: sinity
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          skipPush: true
+      - name: Build the package
+        run: |
+          out=$(nix build --no-link --print-out-paths "github:${GITHUB_REPOSITORY}/${GITHUB_SHA}#default")
+          echo "built $out"
+          echo "out=$out" >> "$GITHUB_ENV"
+      - name: Publish its closure to sinity.cachix.org
+        run: cachix push sinity "$out"
