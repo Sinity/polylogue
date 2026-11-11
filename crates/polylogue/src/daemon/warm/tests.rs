@@ -309,6 +309,7 @@ fn vector_write_appends_without_reload() {
         put(hash, [0., 1.]);
         let current = read();
         assert_eq!(current.vectors(), usize::from(hash));
+        assert_eq!(current.rows_read, 1, "only the new vector is read");
         agree((*current).clone(), hash);
     }
     // A text's second chunk, stored later, ranks it by its best chunk.
@@ -329,6 +330,7 @@ fn vector_write_appends_without_reload() {
     }
     let current = read();
     assert_eq!(current.vectors(), 10);
+    assert_eq!(current.rows_read, 1);
     let similarity = Arc::new((*current).clone()).similarity(&[0., 1.]).unwrap();
     assert_eq!(similarity.of(&[1]), similarity.of(&[2]));
     agree((*current).clone(), 9);

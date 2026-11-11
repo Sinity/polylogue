@@ -397,6 +397,7 @@ impl Vectors {
             revision: self.revision(key)?,
             dims: base.dims,
             through: base.through,
+            rows_read: 0,
             runs: base.runs.clone(),
         };
         let mut run = Run::default();
@@ -406,6 +407,7 @@ impl Vectors {
         let mut rows = stmt.query(params![key, base.through])?;
         while let Some(row) = rows.next()? {
             loaded.through = row.get(0)?;
+            loaded.rows_read += 1;
             let hash: Vec<u8> = row.get(1)?;
             let dims = usize::try_from(row.get::<_, i64>(2)?).unwrap_or(0);
             let bytes: Vec<u8> = row.get(3)?;
@@ -539,6 +541,8 @@ pub struct Loaded {
     pub dims: usize,
     /// The last stored row held.
     through: i64,
+    /// Rows the load or extension that made this set read from the store.
+    pub rows_read: usize,
     runs: Vec<Arc<Run>>,
 }
 
@@ -595,6 +599,7 @@ impl Loaded {
             revision: 0,
             dims: 0,
             through: 0,
+            rows_read: 0,
             runs: Vec::new(),
         }
     }
