@@ -380,7 +380,7 @@ fn archived_html_and_dangerous_urls_stay_inert() {
     let item = text(
         "[bad](javascript:alert%281%29) [encoded](java&#x73;cript:foo) ![pic](https://example.test/a.png) <img src=x onerror=alert(1)>\n<script>bad()</script>",
     );
-    let output = html::item(&item).into_string();
+    let output = html::item(&item, 0, &jiff::tz::TimeZone::UTC).into_string();
     assert!(!output.contains("href=\"javascript:"));
     assert!(!output.contains("<img"));
     assert!(!output.contains("<script"));
@@ -858,36 +858,36 @@ fn inline_images_need_exact_hash_safe_raster_type_and_size() {
         },
     };
     assert!(
-        html::item_with_inline_limit(&make(attachment.clone()), 100)
+        html::item(&make(attachment.clone()), 100, &jiff::tz::TimeZone::UTC)
             .into_string()
             .contains("data:image/png;base64,")
     );
     assert!(
-        !html::item_with_inline_limit(&make(attachment.clone()), 3)
+        !html::item(&make(attachment.clone()), 3, &jiff::tz::TimeZone::UTC)
             .into_string()
             .contains("<img")
     );
     assert!(
-        !html::item(&make(attachment.clone()))
+        !html::item(&make(attachment.clone()), 0, &jiff::tz::TimeZone::UTC)
             .into_string()
             .contains("<img")
     );
     attachment.media_type = Some("image/svg+xml".into());
     assert!(
-        !html::item_with_inline_limit(&make(attachment.clone()), 100)
+        !html::item(&make(attachment.clone()), 100, &jiff::tz::TimeZone::UTC)
             .into_string()
             .contains("<img")
     );
     attachment.media_type = Some("text/html".into());
     assert!(
-        !html::item_with_inline_limit(&make(attachment.clone()), 100)
+        !html::item(&make(attachment.clone()), 100, &jiff::tz::TimeZone::UTC)
             .into_string()
             .contains("<img")
     );
     attachment.media_type = Some("image/png".into());
     attachment.blob = Some(polylogue_model::BlobHash::of(b"different"));
     assert!(
-        !html::item_with_inline_limit(&make(attachment), 100)
+        !html::item(&make(attachment), 100, &jiff::tz::TimeZone::UTC)
             .into_string()
             .contains("<img")
     );
@@ -1915,7 +1915,7 @@ fn verified_bound_rasters_inline_without_overriding_canonical_attachment_hashes(
         matches!(&items[0].kind,ItemKind::Attachment{attachment,verified_hash:Some(value),..} if attachment.blob.is_none() && *value==hash)
     );
     assert!(
-        html::item_with_inline_limit(&items[0], 100)
+        html::item(&items[0], 100, &jiff::tz::TimeZone::UTC)
             .into_string()
             .contains("data:image/png;base64,")
     );
@@ -1925,7 +1925,7 @@ fn verified_bound_rasters_inline_without_overriding_canonical_attachment_hashes(
         attachment.media_type = Some("image/svg+xml".into());
     }
     assert!(
-        !html::item_with_inline_limit(&svg, 100)
+        !html::item(&svg, 100, &jiff::tz::TimeZone::UTC)
             .into_string()
             .contains("data:image/svg")
     );
@@ -2842,7 +2842,7 @@ fn typed_lineage_issues_fragment_losslessly_and_escape_prose_markup() {
 #[test]
 fn html_relationship_links_encode_only_exact_recorded_session_references() {
     let render = |from: &str, to: &str| {
-        crate::html::item_with_inline_limit(
+        crate::html::item(
             &ReadItem {
                 source: Source::record("link:synthetic"),
                 kind: ItemKind::Card {
@@ -2856,6 +2856,7 @@ fn html_relationship_links_encode_only_exact_recorded_session_references() {
                 },
             },
             1000,
+            &jiff::tz::TimeZone::UTC,
         )
         .into_string()
     };
@@ -2882,7 +2883,7 @@ fn html_relationship_links_encode_only_exact_recorded_session_references() {
 }
 
 #[test]
-fn text_views_show_times_in_the_header_zone_and_say_which() {
+fn times_render_local_with_quality() {
     let mut record = message(vec![Block::Text {
         text: "hello".into(),
     }]);
@@ -2901,9 +2902,61 @@ fn text_views_show_times_in_the_header_zone_and_say_which() {
         footer: ReadFooter::default(),
     };
     doc.header.zone = Some("Europe/Warsaw".into());
+    for format in [Format::Terminal, Format::Markdown, Format::Html] {
+        let text = encode(&doc, format);
+        assert!(
+            text.contains("2026-11-09 09:12 +01:00 (intrinsic, instant)"),
+            "{format:?}: {text}"
+        );
+    }
+    if let ItemKind::MessageHeader { header } = &mut doc.items[0].kind {
+        header.time.evidence = polylogue_model::TimeEvidence {
+            quality: TimeQuality::Captured,
+            precision: Some(polylogue_model::Precision::Bounded),
+            until: Some(polylogue_model::Timestamp::parse_rfc3339("2026-11-09T08:13:00Z").unwrap()),
+        };
+    } else {
+        panic!("message header");
+    }
+    let mut session = polylogue_model::Session::new(
+        SessionId::parse("test:time-session").unwrap(),
+        polylogue_model::SessionKind::Main,
+    );
+    session
+        .set_time(
+            Some(polylogue_model::Timestamp::parse_rfc3339("2026-11-09T08:12:00Z").unwrap()),
+            polylogue_model::TimeEvidence {
+                quality: TimeQuality::Captured,
+                precision: Some(polylogue_model::Precision::Bounded),
+                until: Some(
+                    polylogue_model::Timestamp::parse_rfc3339("2026-11-09T08:13:00Z").unwrap(),
+                ),
+            },
+        )
+        .unwrap();
+    doc.items.push(ReadItem {
+        source: Source::record("session:test:time-session"),
+        kind: ItemKind::Card {
+            card: Box::new(Card::Session {
+                session: Box::new(session),
+                open: None,
+                lineage_complete: ValueState::NotApplicable,
+            }),
+        },
+    });
+    for format in [Format::Terminal, Format::Markdown, Format::Html] {
+        let text = encode(&doc, format);
+        assert_eq!(
+            text.matches(
+                "2026-11-09 09:12 +01:00 (captured, bounded until 2026-11-09 09:13 +01:00)"
+            )
+            .count(),
+            2,
+            "message and session card in {format:?}: {text}"
+        );
+    }
     let text = encode(&doc, Format::Terminal);
     assert!(text.contains("Times Europe/Warsaw."), "{text}");
-    assert!(text.contains("2026-11-09 09:12 +01:00"), "{text}");
     doc.header.zone = None;
     let text = encode(&doc, Format::Terminal);
     assert!(!text.contains("Times "), "{text}");
@@ -3083,7 +3136,7 @@ fn no_debug_formatting_in_rendered_output() {
             },
         )
         .unwrap();
-    let card = crate::encode::session_lines(&session).join("\n");
+    let card = crate::encode::session_lines(&session, &jiff::tz::TimeZone::UTC).join("\n");
     assert!(card.contains("(captured, minute)"), "{card}");
     for (error, words) in [
         (crate::pager::PageError::ItemChanged, "changed"),

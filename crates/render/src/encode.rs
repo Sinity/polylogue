@@ -46,11 +46,7 @@ impl<'a> Encoder<'a> {
             format,
             options,
             first: true,
-            zone: header
-                .zone
-                .as_deref()
-                .and_then(|name| jiff::tz::TimeZone::get(name).ok())
-                .unwrap_or(jiff::tz::TimeZone::UTC),
+            zone: header_zone(header),
         };
         match format {
             Format::Json => {
@@ -147,13 +143,14 @@ impl<'a> Encoder<'a> {
             Format::Html => write!(
                 self.out,
                 "{}",
-                html::item_with_inline_limit(
+                html::item(
                     item,
                     if self.options.standalone_html {
                         self.options.inline_image_bytes
                     } else {
                         0
-                    }
+                    },
+                    &self.zone,
                 )
                 .into_string()
             )?,
@@ -206,7 +203,7 @@ impl<'a> Encoder<'a> {
                 let time = header
                     .time
                     .at
-                    .map(|at| polylogue_model::local_minute(at, &self.zone))
+                    .map(|at| recorded_time(Some(at), header.time.evidence, &self.zone))
                     .unwrap_or_else(|| "--:--".into());
                 let author = if self.options.model_facing
                     && header.author.value().is_some_and(|a| a == "you")
@@ -492,7 +489,7 @@ impl<'a> Encoder<'a> {
                         .map(|title| title.text.as_str())
                         .unwrap_or("title unknown")
                 ))?;
-                for line in session_lines(session) {
+                for line in session_lines(session, &self.zone) {
                     self.line(&line)?;
                 }
                 if let Some(open) = open {
@@ -697,16 +694,15 @@ pub(crate) fn fence(text: &str, language: &str) -> String {
 }
 
 /// Session cards use header facts, never instruction text or a transcript.
-pub(crate) fn session_lines(session: &polylogue_model::Session) -> Vec<String> {
+pub(crate) fn session_lines(
+    session: &polylogue_model::Session,
+    zone: &jiff::tz::TimeZone,
+) -> Vec<String> {
     vec![
         format!(
-            "{} · started {} ({})",
+            "{} · started {}",
             session.kind.as_str(),
-            session
-                .started
-                .map(|at| at.to_string())
-                .unwrap_or_else(|| "unknown".into()),
-            session.time_evidence()
+            recorded_time(session.started, session.time_evidence(), zone)
         ),
         format!(
             "working directories: {}",
@@ -769,4 +765,33 @@ pub(crate) fn logical_line(kind: &HeaderKind) -> Option<String> {
         value_text(own_messages),
         value_text(inherited_messages)
     ))
+}
+
+pub(crate) fn header_zone(header: &ReadHeader) -> jiff::tz::TimeZone {
+    header
+        .zone
+        .as_deref()
+        .and_then(|name| jiff::tz::TimeZone::get(name).ok())
+        .unwrap_or(jiff::tz::TimeZone::UTC)
+}
+
+pub(crate) fn recorded_time(
+    at: Option<polylogue_model::Timestamp>,
+    evidence: polylogue_model::TimeEvidence,
+    zone: &jiff::tz::TimeZone,
+) -> String {
+    let time = at
+        .map(|at| polylogue_model::local_minute(at, zone))
+        .unwrap_or_else(|| "unknown".into());
+    let mut quality = evidence.quality.as_str().to_owned();
+    if let Some(precision) = evidence.precision {
+        quality.push_str(&format!(", {}", precision.as_str()));
+    }
+    if let Some(until) = evidence.until {
+        quality.push_str(&format!(
+            " until {}",
+            polylogue_model::local_minute(until, zone)
+        ));
+    }
+    format!("{time} ({quality})")
 }

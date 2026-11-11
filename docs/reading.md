@@ -102,6 +102,7 @@ The compaction summary is a message (`written_by: harness`, `prompt_kind: compac
 ## Message headers
 
 - Each message starts with one header line: local time (`HH:MM`, with the date when the range spans days; `--:--` when unknown, never invented), then the author, labelled from [`written_by`](sessions.md#message-authorship), never from the provider's role:
+- Displayed message and session times carry their recorded quality and precision. A bounded time shows its recorded upper bound in the same zone; the record itself retains its original timestamp precision.
 
   | `written_by` | Label to a person | Label to a model |
   |---|---|---|
