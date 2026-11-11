@@ -143,7 +143,7 @@ fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
                 | "polylogue.background"
                 | "polylogue.repository" => 5,
                 "polylogue.parse_progress" => 6,
-                "polylogue.input_observation" => 5,
+                "polylogue.input_observation" => 6,
                 "polylogue.query_run" => 4,
                 "polylogue.blob" | "polylogue.coverage" | "polylogue.fragment" => 3,
                 "polylogue.assertion" | "polylogue.query" => 2,
@@ -300,9 +300,35 @@ fn an_input_payload_at_an_earlier_kind_version_is_refused() {
         version: 4,
         ..current
     };
-    let error = products::decode(&kind, earlier).unwrap_err();
+    let error = products::decode(&kind, earlier.clone()).unwrap_err();
     assert!(
         matches!(&error, crate::Error::Invalid(reason) if reason == "unsupported Polylogue kind polylogue.input_observation@4"),
         "{error}"
+    );
+    // A spool body of product writes carries no kind version: its rows in
+    // the earlier shape are refused, not read as rows without extents.
+    let write = json!([{
+        "product": earlier["record"],
+        "location": null,
+        "parents": [],
+        "machine": null,
+        "output_index": 0
+    }]);
+    let body = serde_json::to_vec(&write).unwrap();
+    let error =
+        crate::spool::decode_json::<Vec<polylogue_store::primary::ProductWrite>>(body.as_slice())
+            .unwrap_err();
+    assert!(
+        error.to_string().contains("unknown field `extent`"),
+        "{error}"
+    );
+    let mut current_write = write;
+    current_write[0]["product"] = products::payload(&product, 0).unwrap()["record"].clone();
+    let body = serde_json::to_vec(&current_write).unwrap();
+    assert_eq!(
+        crate::spool::decode_json::<Vec<polylogue_store::primary::ProductWrite>>(body.as_slice())
+            .unwrap()[0]
+            .product,
+        product
     );
 }

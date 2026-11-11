@@ -274,15 +274,13 @@ fn apply_rows(
             *last = (*last).max(at);
         }
     }
-    // A message read again with a later time raises the order time of the
-    // chain's readings after it (membership `raise_later`).
-    for (session_pk, after, time) in &choices.raised_order_times {
+    // A message read again with another time changes the order times of the
+    // chain's readings after it (membership `recompute_later`).
+    for (message_pk, time) in &choices.recomputed_order_times {
         tx.prepare_cached(
-            "UPDATE message_source SET order_time=?6
-             WHERE input_pk=?1 AND chain=?2 AND session_pk=?3 AND (seq,record_position)>(?4,?5)
-               AND (order_time IS NULL OR order_time<?6)",
+            "UPDATE message_source SET order_time=?4 WHERE message_pk=?1 AND input_pk=?2 AND chain=?3",
         )?
-        .execute(params![input_pk, chain, session_pk, after.0, after.1, time])?;
+        .execute(params![message_pk, input_pk, chain, time])?;
     }
     if b.input.route.lists_every_conversation(&b.input.format) {
         let mut latest = HashMap::<&str, i64>::new();
@@ -764,6 +762,7 @@ impl RowWriter<'_, '_> {
         let new = pk.is_none();
         let route = row.route(self.route);
         let completion = Completion::of(m, route);
+        let at = ms(row.message.at);
         let v = Version {
             time: prepared.time.clone(),
             input_pk: self.input_pk,
@@ -797,19 +796,19 @@ impl RowWriter<'_, '_> {
         let (route, completion) = (route.as_str(), completion.as_str());
         if new {
             self.tx.prepare_cached(
-                "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,completion,version_hash,session_pk,main,route,seq,record_position,order_time)
-                 VALUES (?1,?2,?3,?4,?5,?13,?6,?7,?8,?9,?10,?11,?12,?14)"
-            )?.execute(params![pk,v.input_pk,v.chain,v.start,v.end,completion,hash,session_pk,main,route,position.0,position.1,id_kind,order_time])?;
+                "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,completion,version_hash,session_pk,main,route,seq,record_position,order_time,at)
+                 VALUES (?1,?2,?3,?4,?5,?13,?6,?7,?8,?9,?10,?11,?12,?14,?15)"
+            )?.execute(params![pk,v.input_pk,v.chain,v.start,v.end,completion,hash,session_pk,main,route,position.0,position.1,id_kind,order_time,at])?;
             return Ok(false);
         }
         self.tx.prepare_cached(
-            "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,completion,version_hash,session_pk,main,route,seq,record_position,order_time)
-             VALUES (?1,?2,?3,?4,?5,?13,?6,?7,?8,?9,?10,?11,?12,?14)
+            "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,completion,version_hash,session_pk,main,route,seq,record_position,order_time,at)
+             VALUES (?1,?2,?3,?4,?5,?13,?6,?7,?8,?9,?10,?11,?12,?14,?15)
              ON CONFLICT(message_pk,input_pk,chain) DO UPDATE SET source_start=excluded.source_start,
              source_end=excluded.source_end,id_kind=excluded.id_kind,completion=excluded.completion,version_hash=excluded.version_hash,
              session_pk=excluded.session_pk,main=excluded.main,route=excluded.route,
-             seq=excluded.seq,record_position=excluded.record_position,order_time=excluded.order_time"
-        )?.execute(params![pk,v.input_pk,v.chain,v.start,v.end,completion,hash,session_pk,main,route,position.0,position.1,id_kind,order_time])?;
+             seq=excluded.seq,record_position=excluded.record_position,order_time=excluded.order_time,at=excluded.at"
+        )?.execute(params![pk,v.input_pk,v.chain,v.start,v.end,completion,hash,session_pk,main,route,position.0,position.1,id_kind,order_time,at])?;
         Ok(false)
     }
 
