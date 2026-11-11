@@ -485,22 +485,27 @@ CREATE INDEX derive_state_session ON derive_state(session_pk);
 -- Sessions whose derived rows are behind, marked by their causes in the
 -- transaction that caused them: the derive step finds its work here, never
 -- by scanning sessions. `rows_changed` 1: the session's rows changed, so
--- every derivation runs; `repo_lookup` 1: a repository lookup at or above
--- its working directory changed, so the derivations it dirties run (the
--- repository); both 0: only derivations whose version moved.
+-- every session derivation runs; `repo_lookup` 1: a repository lookup at or
+-- above its working directory changed, so the derivations it dirties run
+-- (the repository); `rewritten` 1: a stored message of it was rewritten, so
+-- the folds that cannot add a rewrite's share run (the links); all 0: only
+-- derivations whose version moved. `marked` counts the markings: the derive
+-- step stores what it computed only while the count is the one it read.
 CREATE TABLE derive_due (
   session_pk        INTEGER PRIMARY KEY REFERENCES session(pk) ON DELETE CASCADE,
   rows_changed      INTEGER NOT NULL,
-  repo_lookup       INTEGER NOT NULL DEFAULT 0
+  repo_lookup       INTEGER NOT NULL DEFAULT 0,
+  rewritten         INTEGER NOT NULL DEFAULT 0,
+  marked            INTEGER NOT NULL DEFAULT 0
 ) STRICT;
 CREATE TRIGGER session_derive_due AFTER INSERT ON session BEGIN
   INSERT INTO derive_due(session_pk, rows_changed) VALUES (NEW.pk, 1)
-    ON CONFLICT(session_pk) DO UPDATE SET rows_changed = 1;
+    ON CONFLICT(session_pk) DO UPDATE SET rows_changed = 1, marked = marked + 1;
 END;
 CREATE TRIGGER session_rows_derive_due AFTER UPDATE OF changed ON session
 WHEN NEW.changed IS NOT OLD.changed BEGIN
   INSERT INTO derive_due(session_pk, rows_changed) VALUES (NEW.pk, 1)
-    ON CONFLICT(session_pk) DO UPDATE SET rows_changed = 1;
+    ON CONFLICT(session_pk) DO UPDATE SET rows_changed = 1, marked = marked + 1;
 END;
 
 -- Clocks and interval calculations over one session's parsed rows.

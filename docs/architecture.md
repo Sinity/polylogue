@@ -177,8 +177,9 @@ Building the archive overlaps every stage:
   the parser state kept between an input's ranges leaves out the keyed
   context's changes, which the next range reads from the index;
 - one writer that only appends and commits;
-- consumers of committed positions: derived data, the request-log projection
-  and the completion catalog;
+- consumers of committed positions: derived data (computed on a thread of
+  its own and written by the writer only if its inputs are unchanged), the
+  request-log projection and the completion catalog;
 - at the end of a first build, full-text and secondary indexes built in
   parallel, with the archive searchable before the trigram index finishes,
   then the query planner's statistics gathered from a sample of each index,

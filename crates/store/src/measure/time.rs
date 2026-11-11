@@ -469,27 +469,32 @@ fn settled(before: Option<i64>, rows: &Rows) -> Option<usize> {
     found
 }
 
+/// A session's span and lanes, with the calculation's state at its last
+/// settled message when it has one ([`derive`]).
+#[derive(Debug)]
+pub(crate) struct Derived {
+    span: Span,
+    lanes: Vec<Lane>,
+    prefix: Option<Prefix>,
+}
+
 /// Derives the session's span and lanes: from the stored prefix when
-/// nothing up to its settled message changed, reading only the messages
-/// after it, else from the whole session. Returns the messages read.
-pub(crate) fn derive(
-    tx: &Connection,
-    pk: i64,
-    changes: &crate::change_summary::ChangeSummary,
-    from_start: bool,
-) -> Result<usize> {
-    let script: bool = tx
+/// nothing up to its settled message changed since it was stored, reading
+/// only the messages after it, else from the whole session. Returns them
+/// with the number of messages read.
+pub(crate) fn derive(conn: &Connection, pk: i64, from_start: bool) -> Result<(Derived, usize)> {
+    let script: bool = conn
         .prepare_cached(
             "SELECT EXISTS(SELECT 1 FROM tool_call WHERE session_pk=?1 AND run_by_script=1)",
         )?
         .query_row([pk], |r| r.get(0))?;
     let mut resumed = None;
-    if !from_start && let Some(prefix) = resumable(tx, pk, changes, script)? {
+    if !from_start && let Some(prefix) = resumable(conn, pk, script)? {
         let (key, at) = prefix
             .end
             .clone()
             .expect("a stored prefix ends at a message");
-        let rows = rows(tx, pk, Some(&key))?;
+        let rows = rows(conn, pk, Some(&key))?;
         if earliest(&rows).is_none_or(|e| e >= at) {
             resumed = Some((prefix, rows));
         }
@@ -497,11 +502,17 @@ pub(crate) fn derive(
     let (mut prefix, rows) = match resumed {
         Some(found) => found,
         None => {
-            let rows = rows(tx, pk, None)?;
+            let rows = rows(conn, pk, None)?;
             if rows.messages.is_empty() {
-                let (span, lanes) = from_events(tx, pk)?.finish();
-                write(tx, pk, &span, &lanes, None)?;
-                return Ok(0);
+                let (span, lanes) = from_events(conn, pk)?.finish();
+                return Ok((
+                    Derived {
+                        span,
+                        lanes,
+                        prefix: None,
+                    },
+                    0,
+                ));
             }
             (Prefix::default(), rows)
         }
@@ -525,22 +536,32 @@ pub(crate) fn derive(
         }
     };
     let (span, lanes) = whole.finish();
-    write(tx, pk, &span, &lanes, stored.as_ref())?;
-    Ok(rows.messages.len())
+    Ok((
+        Derived {
+            span,
+            lanes,
+            prefix: stored,
+        },
+        rows.messages.len(),
+    ))
+}
+
+pub(crate) fn write_derived(conn: &Connection, pk: i64, derived: &Derived) -> Result<()> {
+    write(
+        conn,
+        pk,
+        &derived.span,
+        &derived.lanes,
+        derived.prefix.as_ref(),
+    )
 }
 
 /// The stored prefix of the session, when the calculation can resume from
-/// it: no message up to its settled message changed in this transaction
-/// (the writer forgets the prefix when one of its own transactions changes
-/// one, [`forget_settled`]), no call up to it got its result after it, and
-/// whether the session has a script call is unchanged.
-fn resumable(
-    tx: &Connection,
-    pk: i64,
-    changes: &crate::change_summary::ChangeSummary,
-    script: bool,
-) -> Result<Option<Prefix>> {
-    let stored: Option<String> = tx
+/// it: it is forgotten whenever a transaction changes a message up to its
+/// settled message ([`forget_settled`]); no call up to it got its result
+/// after it, and whether the session has a script call is unchanged.
+fn resumable(conn: &Connection, pk: i64, script: bool) -> Result<Option<Prefix>> {
+    let stored: Option<String> = conn
         .prepare_cached("SELECT prefix FROM session_span WHERE session_pk=?1")?
         .query_row([pk], |r| r.get(0))
         .optional()?
@@ -555,16 +576,8 @@ fn resumable(
     if prefix.script != script {
         return Ok(None);
     }
-    let changed = changes.messages_before(pk);
-    if changes
-        .places(tx, pk, &changed)?
-        .iter()
-        .any(|place| place <= end)
-    {
-        return Ok(None);
-    }
     let (order, id) = end;
-    let answered_later: bool = tx
+    let answered_later: bool = conn
         .prepare_cached(
             "SELECT EXISTS(SELECT 1 FROM message m CROSS JOIN block b ON b.message_pk=m.pk
                CROSS JOIN tool_call t ON t.result_block_pk=b.pk

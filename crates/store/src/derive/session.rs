@@ -20,10 +20,10 @@
 //! Remaining ties between inputs with equal times go to the greater
 //! content, so the result is the same in every arrival order.
 
-use super::{Class, Derivation, Version};
+use super::{Class, Derivation, Output, Version};
 use crate::Result;
 use polylogue_model::Session;
-use rusqlite::Transaction;
+use rusqlite::{Connection, Transaction, params};
 use std::cmp::Ordering;
 
 pub(super) const DERIVATION: Derivation = Derivation {
@@ -33,7 +33,7 @@ pub(super) const DERIVATION: Derivation = Derivation {
     version: Version::Rules(6),
     after: &[],
     dirtied_by: &[],
-    run: |tx, pk, _| run(tx, pk),
+    compute: |conn, pk, _| compute(conn, pk).map(|facts| Output::Session(Box::new(facts))),
 };
 
 struct Input {
@@ -57,17 +57,35 @@ fn later(a: Option<i64>, b: Option<i64>) -> Ordering {
     a.cmp(&b)
 }
 
-fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
-    let reset: bool = tx.query_row(
-        "SELECT live_reparse FROM session WHERE pk=?1",
-        [session_pk],
-        |r| r.get(0),
-    )?;
-    if reset {
-        reset_live(tx, session_pk)?;
-    }
-    tx.execute("UPDATE session SET last_activity_at=(SELECT max(at) FROM message WHERE session_pk=?1) WHERE pk=?1",[session_pk])?;
-    let mut statement = tx.prepare_cached(
+/// What the session derivation stores for a session.
+#[derive(Debug)]
+pub(crate) struct Facts {
+    /// Its live facts folded again, when evidence arrived out of order.
+    live: Option<crate::live::Refold>,
+    last_activity_at: Option<i64>,
+    columns: Columns,
+}
+
+#[derive(Debug)]
+enum Columns {
+    /// No input states anything of the session: its columns stay.
+    Kept,
+    /// Every input that stated something of it is gone: it is a stub.
+    Stub(Box<Session>),
+    Merged(Box<Session>),
+}
+
+fn compute(conn: &Connection, session_pk: i64) -> Result<Facts> {
+    let reset: bool = conn
+        .prepare_cached("SELECT live_reparse FROM session WHERE pk=?1")?
+        .query_row([session_pk], |r| r.get(0))?;
+    let live = reset
+        .then(|| crate::live::refold(conn, session_pk))
+        .transpose()?;
+    let last_activity_at: Option<i64> = conn
+        .prepare_cached("SELECT max(at) FROM message WHERE session_pk=?1")?
+        .query_row([session_pk], |r| r.get(0))?;
+    let mut statement = conn.prepare_cached(
         "SELECT r.input_pk,r.facts,
                 (SELECT MIN(m.at) FROM message_source ms JOIN message m ON m.pk=ms.message_pk
                  WHERE ms.input_pk=r.input_pk AND m.session_pk=r.session_pk),
@@ -99,40 +117,51 @@ fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
     }
     drop(rows);
     drop(statement);
-    if inputs.is_empty() {
-        if !reset {
-            return Ok(());
+    let columns = if inputs.is_empty() {
+        if reset {
+            let id: String = conn
+                .prepare_cached("SELECT id FROM session WHERE pk=?1")?
+                .query_row([session_pk], |r| r.get(0))?;
+            let id = polylogue_model::SessionId::parse(&id)
+                .map_err(|e| crate::StoreError::Invalid(format!("session id: {e}")))?;
+            Columns::Stub(Box::new(Session::new(
+                id,
+                polylogue_model::SessionKind::Main,
+            )))
+        } else {
+            Columns::Kept
         }
-        let id: String = tx.query_row("SELECT id FROM session WHERE pk=?1", [session_pk], |r| {
-            r.get(0)
-        })?;
-        let id = polylogue_model::SessionId::parse(&id)
-            .map_err(|e| crate::StoreError::Invalid(format!("session id: {e}")))?;
-        crate::session_row::write(
-            tx,
-            session_pk,
-            &Session::new(id, polylogue_model::SessionKind::Main),
-        )?;
-        tx.execute("UPDATE session SET stub=1 WHERE pk=?1", [session_pk])?;
-        return Ok(());
-    }
-    // A fixed order for every later choice: time, then content.
-    inputs.sort_by(|a, b| {
-        by_first(a, b)
-            .then_with(|| a.last.cmp(&b.last))
-            .then_with(|| content(&a.facts).cmp(&content(&b.facts)))
-    });
-    let merged = merge(&inputs);
-    crate::session_row::write(tx, session_pk, &merged)?;
-    tx.execute("UPDATE session SET stub = 0 WHERE pk = ?1", [session_pk])?;
-    Ok(())
+    } else {
+        // A fixed order for every later choice: time, then content.
+        inputs.sort_by(|a, b| {
+            by_first(a, b)
+                .then_with(|| a.last.cmp(&b.last))
+                .then_with(|| content(&a.facts).cmp(&content(&b.facts)))
+        });
+        Columns::Merged(Box::new(merge(&inputs)))
+    };
+    Ok(Facts {
+        live,
+        last_activity_at,
+        columns,
+    })
 }
 
-fn reset_live(tx: &Transaction<'_>, pk: i64) -> Result<()> {
-    let counter: i64 = tx.query_row("SELECT changed FROM session WHERE pk=?1", [pk], |r| {
-        r.get(0)
-    })?;
-    crate::live::refold(tx, pk, counter)
+pub(super) fn apply(tx: &Transaction<'_>, session_pk: i64, facts: &Facts) -> Result<()> {
+    if let Some(refold) = &facts.live {
+        crate::live::write_refold(tx, session_pk, refold)?;
+    }
+    tx.prepare_cached("UPDATE session SET last_activity_at=?2 WHERE pk=?1")?
+        .execute(params![session_pk, facts.last_activity_at])?;
+    let (session, stub) = match &facts.columns {
+        Columns::Kept => return Ok(()),
+        Columns::Stub(session) => (session, true),
+        Columns::Merged(session) => (session, false),
+    };
+    crate::session_row::write(tx, session_pk, session)?;
+    tx.prepare_cached("UPDATE session SET stub=?2 WHERE pk=?1")?
+        .execute(params![session_pk, stub])?;
+    Ok(())
 }
 
 /// The session's facts from every input, `inputs` sorted by time then

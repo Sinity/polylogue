@@ -13,11 +13,11 @@
 //! turn whose shape differs stays shown from both inputs. The result
 //! depends only on the stored rows, never on which input arrived first.
 
-use super::{Class, Derivation, Version};
+use super::{Class, Derivation, Output, Version};
 use crate::Result;
 use crate::encoding::{restore_text, unpack_block, unpack_text};
 use polylogue_model::Block;
-use rusqlite::{Transaction, params};
+use rusqlite::{Connection, Transaction, params};
 use std::collections::HashMap;
 
 pub(super) const DERIVATION: Derivation = Derivation {
@@ -27,7 +27,7 @@ pub(super) const DERIVATION: Derivation = Derivation {
     version: Version::Rules(1),
     after: &[],
     dirtied_by: &[],
-    run: |tx, pk, inputs| run(tx, pk, inputs.changes),
+    compute: |conn, pk, _| compute(conn, pk).map(Output::Duplicates),
 };
 
 /// The format of browser captures (`input_ref.format`).
@@ -49,43 +49,54 @@ struct Turn {
     replies: Vec<(i64, String, String)>,
 }
 
-/// Marks the session's repeated turns; only marks that change are written.
-pub(super) fn run(
-    tx: &Transaction<'_>,
-    session_pk: i64,
-    changes: &crate::change_summary::ChangeSummary,
-) -> Result<()> {
-    let marked: HashMap<i64, String> = tx
+/// The session's messages whose repeat mark changes, each with the message
+/// it now repeats (`None`: shown).
+fn compute(conn: &Connection, session_pk: i64) -> Result<Vec<(i64, Option<String>)>> {
+    let marked: HashMap<i64, String> = conn
         .prepare_cached(
             "SELECT pk, duplicate_of FROM message WHERE session_pk = ?1 AND duplicate_of IS NOT NULL",
         )?
         .query_map([session_pk], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
-    let wanted = repeated(tx, session_pk)?;
+    let wanted = repeated(conn, session_pk)?;
+    let mut changed: Vec<(i64, Option<String>)> = marked
+        .keys()
+        .filter(|pk| !wanted.contains_key(pk))
+        .map(|pk| (*pk, None))
+        .collect();
+    changed.extend(
+        wanted
+            .into_iter()
+            .filter(|(pk, of)| marked.get(pk) != Some(of))
+            .map(|(pk, of)| (pk, Some(of))),
+    );
+    changed.sort_unstable();
+    Ok(changed)
+}
+
+pub(super) fn apply(
+    tx: &Transaction<'_>,
+    marks: &[(i64, Option<String>)],
+    changes: &crate::change_summary::ChangeSummary,
+) -> Result<()> {
     let mut mark = tx.prepare_cached(
         "UPDATE message SET duplicate_of = ?2, duplicate_reason = ?3 WHERE pk = ?1",
     )?;
-    for (pk, _) in marked.iter().filter(|(pk, _)| !wanted.contains_key(pk)) {
+    for (pk, of) in marks {
         changes.message(tx, *pk)?;
-        mark.execute(params![pk, None::<String>, None::<String>])?;
-    }
-    for (pk, of) in &wanted {
-        if marked.get(pk) != Some(of) {
-            changes.message(tx, *pk)?;
-            mark.execute(params![pk, of, REASON])?;
-        }
+        mark.execute(params![pk, of, of.as_ref().map(|_| REASON)])?;
     }
     Ok(())
 }
 
 /// Each repeated message of the session, with the message it repeats.
-fn repeated(tx: &Transaction<'_>, session_pk: i64) -> Result<HashMap<i64, String>> {
+fn repeated(conn: &Connection, session_pk: i64) -> Result<HashMap<i64, String>> {
     let mut wanted = HashMap::new();
     // Through the inputs parsed into the session, not its messages: a
     // session without a capture input costs one look at its few inputs.
     // CROSS JOIN keeps the session's inputs the outer loop; the planner
     // would otherwise scan every input of the format.
-    let has_capture: bool = tx
+    let has_capture: bool = conn
         .prepare_cached(
             "SELECT EXISTS (SELECT 1 FROM parsed p CROSS JOIN input_ref r ON r.pk = p.input_pk
                             WHERE p.session_pk = ?1 AND r.format = ?2)",
@@ -94,7 +105,7 @@ fn repeated(tx: &Transaction<'_>, session_pk: i64) -> Result<HashMap<i64, String
     if !has_capture {
         return Ok(wanted);
     }
-    let mut statement = tx.prepare_cached(
+    let mut statement = conn.prepare_cached(
         "SELECT m.pk, m.id, m.role, count(*), sum(r.format = ?2)
          FROM message m JOIN message_source s ON s.message_pk = m.pk
          JOIN input_ref r ON r.pk = s.input_pk
@@ -132,7 +143,7 @@ fn repeated(tx: &Transaction<'_>, session_pk: i64) -> Result<HashMap<i64, String
         };
         if role == "user" {
             turns.push(Turn {
-                key: prompt_key(tx, pk)?,
+                key: prompt_key(conn, pk)?,
                 prompt: (pk, id),
                 replies: Vec::new(),
             });
@@ -157,8 +168,8 @@ fn repeated(tx: &Transaction<'_>, session_pk: i64) -> Result<HashMap<i64, String
 }
 
 /// The prompt's text blocks, whitespace runs read as one space.
-fn prompt_key(tx: &Transaction<'_>, message_pk: i64) -> Result<String> {
-    let mut statement = tx.prepare_cached(
+fn prompt_key(conn: &Connection, message_pk: i64) -> Result<String> {
+    let mut statement = conn.prepare_cached(
         "SELECT b.body, t.body FROM block b LEFT JOIN text t ON t.id = b.text_id
          WHERE b.message_pk = ?1 ORDER BY b.idx",
     )?;

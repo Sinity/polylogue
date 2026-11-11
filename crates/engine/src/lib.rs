@@ -581,7 +581,12 @@ impl Engine {
 
     /// Derives changed sessions. Primary facts are emitted with their source reading.
     fn derive(&self) -> Result<u64, EngineError> {
-        Ok(self.writer.derive()?)
+        match self.writer.derive() {
+            Err(polylogue_store::StoreError::WriterGone) if self.stop.requested() => {
+                Err(EngineError::Stopped)
+            }
+            result => Ok(result?),
+        }
     }
 
     fn location_id(&self, path: &Path) -> String {

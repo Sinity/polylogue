@@ -425,6 +425,9 @@ pub mod cache {
     pub const INDEX_WRITER: i64 = 768;
     /// The search thread's `index.db` connection (writer.rs, `Search`).
     pub const SEARCH: i64 = 64;
+    /// The derive thread's `index.db` connection (writer.rs, `DeriveThread`):
+    /// it reads one session at a time.
+    pub const DERIVE: i64 = 64;
     /// The writer's `archive.db` connection: inputs, revisions, extents.
     pub const ARCHIVE_WRITER: i64 = 256;
     /// Schema setup and one-off maintenance.

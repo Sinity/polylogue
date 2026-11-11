@@ -161,34 +161,55 @@ pub(crate) fn apply(
     store(tx, session_pk, &facts, counter)
 }
 
-/// Folds every stored live evidence event of the session again, in
-/// (time, line) order, replacing its facts, intervals and process rows.
-pub(crate) fn refold(tx: &Transaction<'_>, session_pk: i64, counter: i64) -> Result<()> {
-    tx.prepare_cached("DELETE FROM live_interval WHERE session_pk = ?1")?
-        .execute([session_pk])?;
-    tx.prepare_cached("DELETE FROM process WHERE session_pk = ?1")?
-        .execute([session_pk])?;
+/// A session's live facts folded again from every stored live evidence
+/// event, in (time, line) order: what each event closed and the process
+/// line it is, then the facts after the last.
+#[derive(Debug)]
+pub(crate) struct Refold {
+    events: Vec<(Vec<LiveInterval>, String, i64, Json)>,
+    facts: LiveFacts,
+}
+
+/// Folds every stored live evidence event of the session again.
+pub(crate) fn refold(conn: &rusqlite::Connection, session_pk: i64) -> Result<Refold> {
     let mut facts = LiveFacts::default();
-    let mut statement = tx.prepare(&format!(
+    let mut statement = conn.prepare_cached(&format!(
         "SELECT e.kind, e.at, e.data FROM event e JOIN input_ref i ON i.pk = e.input_pk
          WHERE e.session_pk = ?1 AND e.at IS NOT NULL AND {EVIDENCE_KINDS}
          ORDER BY e.at, i.id, e.source_start, e.id"
     ))?;
-    let events = statement.query_map([session_pk], |r| {
+    let rows = statement.query_map([session_pk], |r| {
         Ok((
             r.get::<_, String>(0)?,
             r.get::<_, i64>(1)?,
             r.get::<_, Vec<u8>>(2)?,
         ))
     })?;
-    for event in events {
-        let (kind, at, data) = event?;
+    let mut events = Vec::new();
+    for row in rows {
+        let (kind, at, data) = row?;
         let data: Json = crate::encoding::unpack_json(&data)?;
         let closed = live::fold(&mut facts, &kind, at, &data);
-        record_intervals(tx, session_pk, &closed)?;
-        record_process(tx, session_pk, &kind, at, &data)?;
+        events.push((closed, kind, at, data));
     }
-    store(tx, session_pk, &facts, counter)?;
+    Ok(Refold { events, facts })
+}
+
+/// Replaces the session's live facts, intervals and process rows with a
+/// refold's.
+pub(crate) fn write_refold(tx: &Transaction<'_>, session_pk: i64, refold: &Refold) -> Result<()> {
+    let counter: i64 = tx
+        .prepare_cached("SELECT changed FROM session WHERE pk = ?1")?
+        .query_row([session_pk], |r| r.get(0))?;
+    tx.prepare_cached("DELETE FROM live_interval WHERE session_pk = ?1")?
+        .execute([session_pk])?;
+    tx.prepare_cached("DELETE FROM process WHERE session_pk = ?1")?
+        .execute([session_pk])?;
+    for (closed, kind, at, data) in &refold.events {
+        record_intervals(tx, session_pk, closed)?;
+        record_process(tx, session_pk, kind, *at, data)?;
+    }
+    store(tx, session_pk, &refold.facts, counter)?;
     tx.prepare_cached("UPDATE session SET live_reparse = 0 WHERE pk = ?1")?
         .execute([session_pk])?;
     Ok(())

@@ -37,6 +37,7 @@ mod bytes;
 mod chain;
 mod compose;
 mod confirmed;
+mod derive_thread;
 mod follow;
 mod primary;
 mod primary_capture;
@@ -146,6 +147,9 @@ enum Msg {
     /// Run the derive step over sessions whose derived rows are stale;
     /// answered with the number of sessions derived.
     Derive(SyncSender<Result<u64>>),
+    /// One wave of derived values from the derive thread, answered with
+    /// which sessions it applied.
+    DeriveWrite(Box<crate::derive::Write>, SyncSender<Result<Vec<bool>>>),
 }
 
 /// Asks the writer to end its long work early, for a stop of the process:
@@ -486,6 +490,14 @@ impl Writer {
         let (tx, rx) = sync_channel::<Msg>(QUEUE);
         let (users, users_rx) = sync_channel::<UserMsg>(USER_QUEUE);
         let stop = WriterStop::default();
+        let queue = WriterQueue::new(
+            tx,
+            users,
+            Arc::clone(&resolver),
+            commits.clone(),
+            #[cfg(any(test, feature = "fixture"))]
+            dispatch.clone(),
+        );
         let mut inner = Inner {
             #[cfg(any(test, feature = "fixture"))]
             dispatch: dispatch.clone(),
@@ -500,6 +512,11 @@ impl Writer {
             deferred_indexes,
             users: users_rx,
             search: Search::start(archive.index_db(), !building)?,
+            derive: derive_thread::DeriveThread::start(
+                archive.index_db(),
+                queue.clone(),
+                Arc::clone(&stop.0),
+            )?,
             location: archive.clone(),
             sinex,
             stream_error: None,
@@ -508,14 +525,6 @@ impl Writer {
         let handle = std::thread::Builder::new()
             .name("polylogue-writer".into())
             .spawn(move || inner.run(&rx))?;
-        let queue = WriterQueue::new(
-            tx,
-            users,
-            Arc::clone(&resolver),
-            commits,
-            #[cfg(any(test, feature = "fixture"))]
-            dispatch,
-        );
         let follower = stream_source
             .map(|sinex| follow::Follower::start(sinex, queue.clone(), archive))
             .transpose()?;
@@ -1196,6 +1205,8 @@ struct Inner {
     /// The search thread ([`search_thread`]): woken after each commit, and
     /// allowed to write once the index is out of a first build.
     search: Search,
+    /// Runs derive passes, sending their values here to be applied.
+    derive: derive_thread::DeriveThread,
     location: Archive,
     /// In primary mode, where every register row goes before it commits.
     sinex: Option<std::sync::Arc<dyn crate::primary::Sinex>>,
@@ -1259,9 +1270,12 @@ impl Inner {
     fn stream_followed(&mut self, error: Option<String>) {
         let result = match error {
             Some(error) => Err(StoreError::Sinex(error)),
-            None => self
-                .complete_ready_captures()
-                .and_then(|()| self.derive().map(drop)),
+            None => self.complete_ready_captures().map(|()| {
+                // A first build derives every session once, when it ends.
+                if self.first_build.is_none() {
+                    self.request_derive(derive_thread::Waiting::Nobody);
+                }
+            }),
         };
         match result {
             Ok(()) => self.stream_error = None,
@@ -1282,6 +1296,7 @@ impl Inner {
         let _worker = crate::timing::worker();
         let mut flushes = Vec::new();
         let mut derives = Vec::new();
+        let mut derive_writes = Vec::new();
         let mut single_files = Vec::new();
         let mut file_groups = Vec::new();
         let mut assets = Vec::new();
@@ -1420,6 +1435,10 @@ impl Inner {
                         derives.push(reply);
                         false
                     }
+                    Msg::DeriveWrite(write, reply) => {
+                        derive_writes.push((write, reply));
+                        false
+                    }
                 };
             if push(first, &mut group, &mut rows, &mut bytes) {
                 while rows < ROWS_PER_TRANSACTION && bytes < BYTES_PER_TRANSACTION {
@@ -1448,6 +1467,14 @@ impl Inner {
             // Later queue replies also observe release of the parsed batches'
             // memory charges, not only their committed database rows.
             drop(group);
+            for (write, reply) in derive_writes.drain(..) {
+                let result = crate::derive::apply(&self.index, &write);
+                if result.is_ok() {
+                    self.commits
+                        .committed(crate::completion::Committed::CONTENT);
+                }
+                let _ = reply.send(result);
+            }
             for (prepared, batch, reply) in single_files.drain(..) {
                 let _ = reply.send(self.store_bytes(*prepared, *batch));
             }
@@ -1474,24 +1501,15 @@ impl Inner {
             }
             self.serve_users();
 
-            if !derives.is_empty() {
+            for reply in derives.drain(..) {
                 // A first build's indexes exist before anything is derived
                 // from its rows.
-                let result = self.finish_build().and_then(|()| self.derive());
-                for reply in derives.drain(..) {
-                    let _ = reply.send(match &result {
-                        Ok(n) => Ok(*n),
-                        Err(e) => Err(StoreError::Invalid(format!("derive: {e}"))),
-                    });
+                match self.finish_build() {
+                    Ok(()) => self.request_derive(derive_thread::Waiting::Derive(reply)),
+                    Err(e) => {
+                        let _ = reply.send(Err(StoreError::Invalid(format!("derive: {e}"))));
+                    }
                 }
-            }
-            // Whatever a flush reports written is also derived, except in a
-            // first build, which a flush in the middle of a pass (each import
-            // item, each run of the parse pool) must not end.
-            let derived_on_flush =
-                flushes.iter().any(|(_, derive)| *derive) && self.first_build.is_none();
-            if derived_on_flush && let Err(e) = self.derive() {
-                self.report.errors.push(format!("derive: {e}"));
             }
             for (staged, reply) in assets.drain(..) {
                 let before = self.index.total_changes();
@@ -1562,8 +1580,16 @@ impl Inner {
             if let Err(error) = self.refresh_chain_progress() {
                 self.report.errors.push(format!("chain progress: {error}"));
             }
-            for (reply, _) in flushes.drain(..) {
-                let _ = reply.send(std::mem::take(&mut self.report));
+            for (reply, derive) in flushes.drain(..) {
+                let report = std::mem::take(&mut self.report);
+                // Whatever a flush reports written is also derived, except in
+                // a first build, which a flush in the middle of a pass (each
+                // import item, each run of the parse pool) must not end.
+                if derive && self.first_build.is_none() {
+                    self.request_derive(derive_thread::Waiting::Flush(reply, Box::new(report)));
+                } else {
+                    let _ = reply.send(report);
+                }
             }
             self.restart_full_logs();
 
@@ -1571,6 +1597,11 @@ impl Inner {
                 break;
             }
         }
+        // A derive pass waiting for a write this loop will not apply ends.
+        for message in rx.try_iter() {
+            drop(message);
+        }
+        self.derive.stop();
         let closed = self.refresh_chain_progress().and_then(|()| {
             if self.sinex.is_none() {
                 crate::chain_progress::close(&self.index)?;
@@ -1703,27 +1734,39 @@ impl Inner {
         Ok(())
     }
 
-    /// Derives the sessions marked due, one bounded transaction at a time,
-    /// serving the user requests waiting between them, so a long derive
-    /// never holds a user write for longer than one of its transactions.
-    fn derive(&mut self) -> Result<u64> {
-        self.project_variant_text()?;
-        if self.first_build.is_none() {
-            crate::text_rows::index_pending(&self.index, || ())?;
+    /// Starts a derive pass on the derive thread, answering `waiting` once
+    /// it is done; the writer goes on with other work meanwhile. Here the
+    /// writer only marks what the pass must see: sessions whose derivation
+    /// version moved, variants' text and the search entries waiting.
+    fn request_derive(&mut self, waiting: derive_thread::Waiting) {
+        let prepared = self
+            .until_stopped(|inner| {
+                if inner.stop.requested() {
+                    return Err(StoreError::WriterGone);
+                }
+                inner.project_variant_text()?;
+                if inner.first_build.is_none() {
+                    crate::text_rows::index_pending(&inner.index, || ())?;
+                }
+                crate::derive::mark_moved_versions(&mut inner.index)
+            })
+            .and_then(|prepared| prepared.ok_or(StoreError::WriterGone));
+        match (prepared, waiting) {
+            (Ok(()), waiting) => self.derive.request(waiting),
+            (Err(StoreError::WriterGone), derive_thread::Waiting::Derive(reply)) => {
+                let _ = reply.send(Err(StoreError::WriterGone));
+            }
+            (Err(e), derive_thread::Waiting::Derive(reply)) => {
+                let _ = reply.send(Err(StoreError::Invalid(format!("derive: {e}"))));
+            }
+            (Err(e), derive_thread::Waiting::Flush(reply, mut report)) => {
+                report.errors.push(format!("derive: {e}"));
+                let _ = reply.send(*report);
+            }
+            (Err(e), derive_thread::Waiting::Nobody) => {
+                self.report.errors.push(format!("derive: {e}"));
+            }
         }
-        let pass = crate::derive::Pass::builtin(&mut self.index)?;
-        let mut derived = 0;
-        while !self.stop.requested() {
-            let next = self.until_stopped(|inner| {
-                crate::timing::time(crate::timing::Stage::Derive, || {
-                    pass.next(&mut inner.index, Some(&inner.commits))
-                })
-            })?;
-            let Some(Some(n)) = next else { break };
-            derived += n;
-            self.serve_users();
-        }
-        Ok(derived)
     }
 
     /// Runs `work`, whose statements on the index a stop interrupts: one

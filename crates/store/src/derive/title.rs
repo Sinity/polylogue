@@ -6,9 +6,9 @@
 //! Kept apart from the recorded title, which always wins when present and
 //! is never replaced by this display fallback in exports.
 
-use super::{Class, Derivation, Version};
+use super::{Class, Derivation, Output, Version};
 use crate::Result;
-use rusqlite::{OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "title",
@@ -17,15 +17,15 @@ pub(super) const DERIVATION: Derivation = Derivation {
     version: Version::Rules(5),
     after: &["duplicates", "session"],
     dirtied_by: &[],
-    run: |tx, pk, _| run(tx, pk),
+    compute: |conn, pk, _| compute(conn, pk).map(Output::Title),
 };
 
 /// Characters kept of the prompt's first line.
 const LENGTH: usize = 80;
 
-fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
+fn compute(conn: &Connection, session_pk: i64) -> Result<Option<String>> {
     // The first text block a person typed as prose, in reading order.
-    let first: Option<i64> = tx
+    let first: Option<i64> = conn
         .prepare_cached(
             "SELECT b.pk FROM message m JOIN block b ON b.message_pk=m.pk
              WHERE m.session_pk=?1 AND m.duplicate_of IS NULL AND m.written_by='human'
@@ -36,16 +36,19 @@ fn run(tx: &Transaction<'_>, session_pk: i64) -> Result<()> {
         .optional()?;
     let prompt = match first {
         None => None,
-        Some(pk) => crate::ordered_blocks::one(tx, pk)?
+        Some(pk) => crate::ordered_blocks::one(conn, pk)?
             .text()
             .map(str::to_owned),
     };
-    let title = match prompt {
+    Ok(match prompt {
         Some(text) if !is_fork_instructions(&text) => title_of(&text),
-        _ => subagent_description(tx, session_pk)?
+        _ => subagent_description(conn, session_pk)?
             .as_deref()
             .and_then(title_of),
-    };
+    })
+}
+
+pub(super) fn apply(tx: &Transaction<'_>, session_pk: i64, title: Option<&str>) -> Result<()> {
     tx.prepare_cached(
         "UPDATE session SET derived_title = ?2 WHERE pk = ?1 AND derived_title IS NOT ?2",
     )?
@@ -59,8 +62,8 @@ fn is_fork_instructions(text: &str) -> bool {
 }
 
 /// The description in the subagent's latest metadata record.
-fn subagent_description(tx: &Transaction<'_>, session_pk: i64) -> Result<Option<String>> {
-    let data: Option<Vec<u8>> = tx
+fn subagent_description(conn: &Connection, session_pk: i64) -> Result<Option<String>> {
+    let data: Option<Vec<u8>> = conn
         .prepare_cached(
             "SELECT data FROM event WHERE session_pk=?1 AND kind='subagent_meta'
              ORDER BY at DESC, seq DESC LIMIT 1",
