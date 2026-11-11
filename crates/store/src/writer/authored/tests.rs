@@ -626,3 +626,90 @@ fn a_failed_later_position_reports_earlier_commits_without_inventing_progress() 
         Some(2)
     );
 }
+
+/// One imported file's bytes, prepared for `archive`.
+fn imported(archive: &Archive, bytes: &[u8]) -> crate::staging::PreparedBatch {
+    let (new_blob, file) = archive.prepare_blob(bytes).unwrap();
+    crate::staging::PreparedBatch {
+        batch: crate::Batch {
+            required_disposition: None,
+            // An import is named by its complete bytes.
+            input: InputKey {
+                id: new_blob.hash.to_string(),
+                format: "test-bytes".into(),
+                route: polylogue_model::Route::Export,
+            },
+            change: Change::First,
+            observation: Some(Observation {
+                machine: "test-machine".into(),
+                host: "test-host".into(),
+                path: "/home/op/export.json".into(),
+                path_bytes: b"/home/op/export.json".to_vec(),
+                facts: None,
+                seen_at_ms: 1,
+                import: None,
+                container: None,
+                database: None,
+            }),
+            continues: false,
+            new_blob: Some(new_blob.clone()),
+            blobs: Vec::new(),
+            length: bytes.len() as u64,
+            parse: Vec::new(),
+            acquisition: None,
+            basis: None,
+            release: Default::default(),
+        },
+        files: file.into_iter().collect(),
+    }
+}
+
+/// A commit whose register sync failed is visible but may not be on disk,
+/// so a retry that finds it stored must not answer success: the writer stops
+/// and refuses, and a new writer answers only after it has synced the
+/// register.
+#[test]
+fn after_a_failed_register_sync_nothing_is_acknowledged_until_a_writer_has_synced() {
+    let original = rendition();
+    let directory = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_or_create(directory.path()).unwrap();
+    let blobs = || Arc::new(archive.blobs().unwrap());
+    let bytes = b"exported conversation bytes\n";
+
+    let writer = Writer::start(&archive).unwrap();
+    crate::fault::arm("write.register_sync", "", crate::fault::Action::Fail, 0, 1);
+    let first = writer.restore_authored(original.clone());
+    assert!(matches!(first, Err(StoreError::WriterGone)), "{first:?}");
+    let retry = writer.restore_authored(original.clone());
+    assert!(
+        matches!(retry, Err(StoreError::WriterGone)),
+        "a retry was answered before the commit was synced: {retry:?}"
+    );
+    drop(writer);
+    // A new writer refuses to start while the register cannot be synced.
+    crate::fault::arm("write.register_sync", "", crate::fault::Action::Fail, 0, 1);
+    assert!(Writer::start(&archive).is_err());
+    let writer = Writer::start(&archive).unwrap();
+    assert!(writer.restore_authored(original.clone()).unwrap().repeat);
+
+    crate::fault::arm("write.register_sync", "", crate::fault::Action::Fail, 0, 1);
+    let sender = writer.sender().unwrap();
+    // The import commits, its sync fails, and the writer stops.
+    let first = sender.store_group(vec![imported(&archive, bytes)], blobs());
+    assert!(matches!(first, Err(StoreError::WriterGone)), "{first:?}");
+    let retry = sender.store_group(vec![imported(&archive, bytes)], blobs());
+    assert!(
+        matches!(retry, Err(StoreError::WriterGone)),
+        "a repeated import was answered before the commit was synced: {retry:?}"
+    );
+    drop(sender);
+    drop(writer);
+    let writer = Writer::start(&archive).unwrap();
+    let stored = writer
+        .sender()
+        .unwrap()
+        .store_group(vec![imported(&archive, bytes)], blobs())
+        .unwrap();
+    assert!(stored[0].as_ref().unwrap().already_stored);
+    crate::fault::clear();
+}

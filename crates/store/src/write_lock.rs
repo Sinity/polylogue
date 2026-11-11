@@ -89,16 +89,48 @@ pub(crate) fn hold(conn: &Connection) -> Result<WriteLock> {
 /// returns before the commit is acknowledged or anything is written after
 /// it, so the register is as durable as with `FULL` while readers that start
 /// meanwhile read the commit instead of waiting for the disk.
+///
+/// A failed sync stops the writer thread (a panic) instead of returning an
+/// error. The commit is already visible, so a retry would find it stored and
+/// answer success without it ever reaching disk; and after a failed sync the
+/// kernel may have dropped the dirty pages, so a later sync that succeeds
+/// proves nothing about them. With the writer gone every request is refused,
+/// and the next writer syncs the register before it serves anything
+/// ([`sync_register`]).
 pub(crate) fn commit(tx: rusqlite::Transaction<'_>) -> Result<()> {
     let lock = hold(&tx)?;
     let log = register_log(&tx);
     let committed = tx.commit();
     drop(lock);
     committed?;
-    if let Some(log) = log {
-        crate::fault::check("write.register_sync", "")?;
-        File::open(&log)?.sync_data()?;
+    if let Some(log) = log
+        && let Err(error) = sync_log(&log)
+    {
+        panic!(
+            "the register's log could not be synced after a commit ({error}); \
+             the writer stops so that nothing is acknowledged before a sync"
+        );
     }
+    Ok(())
+}
+
+/// Syncs the register's database and log, as a writer does before it serves
+/// any request: what an earlier writer committed is durable before this one
+/// acknowledges anything, including a retry that finds it already stored.
+pub(crate) fn sync_register(archive: &Archive) -> Result<()> {
+    let mut log = archive.archive_db().into_os_string();
+    log.push("-wal");
+    let log = std::path::PathBuf::from(log);
+    if log.exists() {
+        sync_log(&log)?;
+    }
+    File::open(archive.archive_db())?.sync_all()?;
+    Ok(())
+}
+
+fn sync_log(log: &Path) -> Result<()> {
+    crate::fault::check("write.register_sync", "")?;
+    File::open(log)?.sync_data()?;
     Ok(())
 }
 
