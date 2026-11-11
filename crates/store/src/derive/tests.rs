@@ -1038,15 +1038,16 @@ fn a_value_computed_from_rows_that_changed_is_not_stored() {
     let sender = w.writer.sender().unwrap();
     let barrier = sender.pause_derive_for_test();
     let index = rusqlite::Connection::open(w.archive.index_db()).unwrap();
-    let state = || -> (Option<i64>, i64, i64) {
+    let state = || -> (Option<i64>, i64, i64, i64) {
         index
             .query_row(
                 "SELECT (SELECT sp.last_at FROM session_span sp WHERE sp.session_pk = s.pk),
                         s.message_count,
-                        (SELECT count(*) FROM derive_due d WHERE d.session_pk = s.pk)
+                        (SELECT count(*) FROM derive_due d WHERE d.session_pk = s.pk),
+                        (SELECT count(*) FROM derive_state d WHERE d.session_pk = s.pk)
                  FROM session s WHERE s.id = 'claude-code:a'",
                 [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .unwrap()
     };
@@ -1067,7 +1068,7 @@ fn a_value_computed_from_rows_that_changed_is_not_stored() {
     });
     // The counts fold kept up with both messages; nothing the pass computed
     // was stored, and the session is still due.
-    assert_eq!(state(), (None, 2, 1));
+    assert_eq!(state(), (None, 2, 1, 0));
     assert!(w.writer.derive().unwrap() > 0);
-    assert_eq!(state(), (Some(3_000), 2, 0));
+    assert_eq!(state(), (Some(3_000), 2, 0, 11));
 }
