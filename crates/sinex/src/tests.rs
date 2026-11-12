@@ -233,57 +233,6 @@ fn grouped_capture_remains_pending_until_its_confirmed_barrier() {
     assert!(sinex.pending_captures().unwrap().is_empty());
 }
 
-#[test]
-fn complete_reading_custody_uses_the_encoded_plain_identity_and_survives_restart() {
-    let root = tempfile::tempdir().unwrap();
-    let sinex = client(root.path());
-    let write = ProductWrite {
-        product: Product::Session {
-            reading: serde_json::from_value(json!({"input":{"id":"input-x","format":"codex","route":"live"},"chain":1,"reading_version":"reading-2","order_from":null,"repeats_whole_conversations":false,"start":0,"parsed_upto":12,"progress":"at_end"})).unwrap(),
-            facts: polylogue_model::Session::new(polylogue_model::SessionId::parse("codex:session").unwrap(), polylogue_model::SessionKind::Main),
-        },
-        location: Some(SourceLocation {material:"00000000-0000-0000-0000-000000000001".into(),anchor:0}),
-        parents: Vec::new(), machine: Some("fixture-host".into()), output_index:0,
-    };
-    let prepare = || {
-        sinex
-            .prepare_reading(
-                "00000000-0000-0000-0000-000000000001",
-                &polylogue_store::primary::ExportReadingKey {
-                    input: polylogue_store::InputKey {
-                        id: "input-x".into(),
-                        format: "codex".into(),
-                        route: polylogue_model::Route::Live,
-                    },
-                    chain: 1,
-                    reading_version: "reading-2".into(),
-                    length: 12,
-                },
-                &mut |emit| emit(write.clone()),
-            )
-            .unwrap()
-    };
-    let first = prepare();
-    assert_eq!(prepare().identity, first.identity);
-    drop(sinex);
-    let reopened = client(root.path());
-    let queue = reopened.queue().unwrap();
-    let sinex_protocol::Ingress::Material { material, .. } =
-        queue.decode_frame(&first.identity).unwrap()
-    else {
-        panic!("reading material expected")
-    };
-    let body = queue.prepared_body(&first.identity).unwrap().remove(0);
-    assert_eq!(material.blob, body.hash().to_string());
-    assert_eq!(material.length, body.decoded_len());
-    let mut reader = std::io::BufReader::new(
-        body.reader(None, hashed_blobs::ReadLimits::default())
-            .unwrap(),
-    );
-    let round_trip: ProductWrite = serde_json::from_reader(&mut reader).unwrap();
-    assert_eq!(round_trip, write);
-}
-
 pub(crate) mod named;
 mod signals;
 

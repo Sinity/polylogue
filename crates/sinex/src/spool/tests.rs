@@ -848,7 +848,7 @@ fn replay_capture_group_retains_its_material_until_applied() {
         .unwrap();
     assert!(matches!(
         prepared.payload,
-        Payload::ReplaySequence { group: Some(_) }
+        Payload::ReplaySequence { group: Some(_), .. }
     ));
     assert_eq!(spool.decode_frame("replacement").unwrap(), replay);
     let mut replayed = ack("replacement", false, Some(21));
@@ -1832,4 +1832,65 @@ fn a_published_acknowledgment_finishes_its_queue_transition_after_a_crash() {
     spool.acknowledge(acknowledgment).unwrap();
     assert_eq!(spool.counts().unwrap().2, bytes);
     assert!(spool.ready(&[], 1).unwrap().is_empty());
+}
+
+#[test]
+fn admitted_source_publication_survives_until_its_local_interpretation_commits() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = ParsedSource {
+        root_material: "00000000-0000-0000-0000-000000000001".into(),
+        reading: serde_json::from_value(serde_json::json!({
+            "input":{"id":"original","format":"codex","route":"live"},
+            "chain":1,"reading_version":"codex=2","source_length":12,
+            "order_from":null,"repeats_whole_conversations":false,
+            "start":0,"parsed_upto":12,"progress":"at_end"
+        }))
+        .unwrap(),
+    };
+    let frame = events("interpreted-original", "native fact");
+    let spool = Spool::open(directory.path(), "host").unwrap();
+    spool.prepare_parsed(frame.clone(), &source).unwrap();
+    assert_eq!(
+        spool.publication(frame.frame(), "producer").unwrap(),
+        ParsedPublication::Pending {
+            identity: frame.frame().into()
+        }
+    );
+    spool
+        .acknowledge(crate::tests::no_event_acknowledgment(&frame))
+        .unwrap();
+    let expected = PublicationReceipt {
+        producer: "producer".into(),
+        frame: frame.frame().into(),
+        number: 1,
+        root_material: source.root_material.clone(),
+    };
+    assert_eq!(
+        spool.publication(frame.frame(), "producer").unwrap(),
+        ParsedPublication::Admitted(expected.clone())
+    );
+    drop(spool);
+    let spool = Spool::open(directory.path(), "host").unwrap();
+    spool
+        .remove_confirmed(
+            &crate::tests::applied(100),
+            &crate::tests::every_event_applied,
+            "producer",
+            &|queued, receipt| {
+                assert_eq!(queued, &source);
+                assert_eq!(receipt, &expected);
+                Ok(false)
+            },
+        )
+        .unwrap();
+    assert!(spool.get(frame.frame()).unwrap().is_some());
+    spool
+        .remove_confirmed(
+            &crate::tests::applied(100),
+            &crate::tests::every_event_applied,
+            "producer",
+            &|queued, receipt| Ok(queued == &source && receipt == &expected),
+        )
+        .unwrap();
+    assert!(spool.get(frame.frame()).unwrap().is_none());
 }

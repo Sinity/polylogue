@@ -405,7 +405,7 @@ fn confirmed_fetches_overlap_with_a_bound_and_keep_order_refusals_and_erasure() 
                 assert!(matches!(&page[37].change, ConfirmedChange::Control(c) if matches!(c.as_ref(), ReplayControl::Completion { position: 17, delivery: Some(receipt) } if receipt.stream_sequence == 37 && receipt.fingerprint.len() == 64)));
                 assert!(matches!(&page[38].change, ConfirmedChange::Control(c) if matches!(c.as_ref(), ReplayControl::Delivered { delivery } if delivery.stream_sequence == 37)));
                 // Transport delivery alone cannot authorize ACK or retire producer custody.
-                assert!(client.acknowledge(&state, &|_| Ok(false)).await.unwrap_err().to_string().contains("not been durably staged"));
+                assert!(client.acknowledge(&state, &|_| Ok(false), &|_, _| Ok(false)).await.unwrap_err().to_string().contains("not been durably staged"));
                 assert_eq!(client.pending.len(), 37);
             };
             tokio::join!(owner, reader);

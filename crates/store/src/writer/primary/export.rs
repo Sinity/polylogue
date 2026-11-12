@@ -32,12 +32,4 @@ impl Inner {
         })?;
         Ok(prefix)
     }
-    pub(super) fn admit_primary_export(
-        &self,
-        key: &ExportReadingKey,
-        step: &ParseStep,
-    ) -> Result<bool> {
-        let mut prefix = self.pending_export_prefix(key)?;
-        crate::wire_shapes::advance_prefix(&mut prefix, key.length, step)
-    }
 }

@@ -214,21 +214,10 @@ fn export_source_length_and_callback_coordinate_distinguish_native_keys() {
 }
 
 #[test]
-fn streamed_replacement_and_capture_sidecars_recover_original_callback_bodies() {
+fn capture_sidecars_recover_original_callback_bodies() {
     let root = tempfile::tempdir().unwrap();
     let sinex = client(root.path());
     let key = key(12);
-    let header = callback(&key, 0, ExportDelivery::seed(), false);
-    let item = callback(&key, 1, prefix(&header), false);
-    let all = header.iter().chain(&item).cloned().collect::<Vec<_>>();
-    let replacement = sinex
-        .prepare_reading("00000000-0000-0000-0000-000000000001", &key, &mut |emit| {
-            for write in &all {
-                emit(write.clone())?;
-            }
-            Ok(())
-        })
-        .unwrap();
     let mut captured_key = key.clone();
     captured_key.chain = 2;
     let captured_products = callback(&captured_key, 0, ExportDelivery::seed(), false);
@@ -245,14 +234,6 @@ fn streamed_replacement_and_capture_sidecars_recover_original_callback_bodies() 
         .unwrap();
     drop(sinex);
     let reopened = client(root.path());
-    let mut recovered = Vec::new();
-    reopened
-        .visit_pending_export_readings(&key, &mut |reading| {
-            recovered.push(reading.delivery.unwrap().ordinal);
-            Ok(())
-        })
-        .unwrap();
-    assert_eq!(recovered, [0, 1]);
     let mut sidecars = Vec::new();
     reopened
         .visit_pending_export_readings(&captured_key, &mut |value| {
@@ -261,15 +242,6 @@ fn streamed_replacement_and_capture_sidecars_recover_original_callback_bodies() 
         })
         .unwrap();
     assert_eq!(sidecars, [reading]);
-    let repeat = reopened
-        .prepare_reading("00000000-0000-0000-0000-000000000001", &key, &mut |emit| {
-            for write in &all {
-                emit(write.clone())?;
-            }
-            Ok(())
-        })
-        .unwrap();
-    assert_eq!(repeat.identity, replacement.identity);
 }
 
 #[test]

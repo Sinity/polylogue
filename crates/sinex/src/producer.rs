@@ -434,7 +434,7 @@ impl Sinex {
             }
             if matches!(entry.phase, polylogue_store::primary::queue::Phase::Pending) {
                 return Ok(ParsedPublication::Pending {
-                    identity: entry.identity,
+                    identity: entry.record.identity,
                 });
             }
         }
