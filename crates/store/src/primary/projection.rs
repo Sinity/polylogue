@@ -888,8 +888,11 @@ fn requests(tx: &rusqlite::Transaction<'_>, plan: &Plan) -> Result<()> {
             Product::RestoredRequest { prepared } => {
                 super::authored::restore(tx, &prepared, admitted)?;
             }
-            Product::RestoredAssertion { fact } => {
+            Product::RestoredAssertion { fact, import } => {
                 crate::assertions::apply(tx, std::slice::from_ref(&fact), admitted)?;
+                if let Some(import) = import {
+                    crate::assertions::imports::record(tx, &fact.id, &import, admitted)?;
+                }
             }
             _ => unreachable!(),
         }

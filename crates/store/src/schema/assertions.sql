@@ -7,7 +7,7 @@ CREATE TABLE assertion (
   author      TEXT NOT NULL,      -- computed from the channel, never supplied by a caller
   via         TEXT NOT NULL,
   machine     TEXT NOT NULL,
-  created_at  INTEGER NOT NULL,   -- Unix milliseconds, the writer's clock: display and as-of reads only
+  created_at  INTEGER,            -- Original authored Unix milliseconds; NULL when unknown
   valid_until INTEGER,            -- Unix milliseconds
   commit_seq  INTEGER NOT NULL CHECK(commit_seq>=0)
 ) STRICT;
@@ -44,4 +44,16 @@ CREATE TABLE assertion_slot (
   slot      BLOB NOT NULL CHECK(length(slot)=32),
   id        TEXT NOT NULL REFERENCES assertion(id),
   PRIMARY KEY(slot,id)
+) STRICT, WITHOUT ROWID;
+
+-- A source can contain a fact already held through another physical ingress.
+CREATE TABLE assertion_import (
+  assertion TEXT NOT NULL REFERENCES assertion(id),
+  input TEXT NOT NULL,
+  chain INTEGER NOT NULL,
+  machine TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  at TEXT NOT NULL,
+  commit_seq INTEGER NOT NULL,
+  PRIMARY KEY(assertion,input,chain,machine,actor)
 ) STRICT, WITHOUT ROWID;

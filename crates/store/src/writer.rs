@@ -601,7 +601,22 @@ impl Writer {
     ) -> Result<polylogue_model::user::UserOutcome> {
         assertions::restore_via(
             self.tx.as_ref().ok_or(StoreError::WriterGone)?,
-            assertions::Restoration { fact },
+            assertions::Restoration { fact, import: None },
+        )
+    }
+
+    /// Restore a fact with its independently observed physical source ingress.
+    pub fn restore_assertion_from(
+        &self,
+        fact: polylogue_model::assertion::AssertionFact,
+        import: polylogue_model::authored::ImportAttribution,
+    ) -> Result<polylogue_model::user::UserOutcome> {
+        assertions::restore_via(
+            self.tx.as_ref().ok_or(StoreError::WriterGone)?,
+            assertions::Restoration {
+                fact,
+                import: Some(import),
+            },
         )
     }
 
@@ -931,7 +946,22 @@ impl WriterSender {
         &self,
         fact: polylogue_model::assertion::AssertionFact,
     ) -> Result<polylogue_model::user::UserOutcome> {
-        assertions::restore_via(&self.0, assertions::Restoration { fact })
+        assertions::restore_via(&self.0, assertions::Restoration { fact, import: None })
+    }
+
+    /// Restore an immutable fact and record the independently observed source ingress.
+    pub fn restore_assertion_from(
+        &self,
+        fact: polylogue_model::assertion::AssertionFact,
+        import: polylogue_model::authored::ImportAttribution,
+    ) -> Result<polylogue_model::user::UserOutcome> {
+        assertions::restore_via(
+            &self.0,
+            assertions::Restoration {
+                fact,
+                import: Some(import),
+            },
+        )
     }
 
     /// As [`Writer::user`].

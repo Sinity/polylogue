@@ -14,7 +14,7 @@ fn fact(root: &str, id: &str, kind: AssertionKind, links: &[(LinkRole, &str)]) -
         author: Author::Unattributed,
         via: polylogue_model::authorship::Channel::Import,
         machine: "synthetic-host".into(),
-        created_at: polylogue_model::Timestamp::from_unix_ms(1).unwrap(),
+        created_at: Some(polylogue_model::Timestamp::from_unix_ms(1).unwrap()),
         valid_until: None,
         links: links
             .iter()
@@ -125,7 +125,7 @@ fn canonical_query_and_typed_about_share_forks_withdrawal_and_snapshot_retiremen
         ))
         .unwrap()
         .unwrap();
-    assert_eq!(exact.fact.created_at, Timestamp::from_unix_ms(1).unwrap());
+    assert_eq!(exact.fact.created_at, Timestamp::from_unix_ms(1));
     assert_eq!(exact.fact.author, Author::Unattributed);
     assert_eq!(exact.fact.value, Some(serde_json::json!("left")));
 }
@@ -194,4 +194,80 @@ fn exact_no_effect_request_exports_its_original_action_outcome_and_provenance() 
         panic!("import lost the no-effect request")
     };
     assert_eq!(copied.prepared, record.prepared);
+}
+
+#[test]
+fn unknown_authored_time_keeps_currency_queries_and_distinct_source_memberships() {
+    use polylogue_model::{RevisionReference, authored::ImportAttribution};
+    let archive = test_archive();
+    let mut undated = fact(
+        "undated",
+        "undated",
+        AssertionKind::Note,
+        &[(LinkRole::About, "session:codex:subject")],
+    );
+    undated.created_at = None;
+    let ingress = |input: &str, at: i64| ImportAttribution {
+        input: input.into(),
+        chain: 1,
+        machine: "receiving-host".into(),
+        actor: Author::Unattributed,
+        at: Timestamp::from_unix_ms(at).unwrap(),
+    };
+    assert!(
+        !archive
+            .writer
+            .restore_assertion_from(undated.clone(), ingress("physical-one", 50))
+            .unwrap()
+            .repeat
+    );
+    assert!(
+        archive
+            .writer
+            .restore_assertion_from(undated.clone(), ingress("physical-two", 60))
+            .unwrap()
+            .repeat
+    );
+    assert!(
+        archive
+            .writer
+            .restore_assertion_from(undated.clone(), ingress("physical-one", 70))
+            .unwrap()
+            .repeat
+    );
+    let mut dated = undated.clone();
+    dated.id = "dated".into();
+    dated.root = "dated".into();
+    dated.created_at = Timestamp::from_unix_ms(5);
+    archive.writer.restore_assertion(dated.clone()).unwrap();
+    let mut conflicting = dated.clone();
+    conflicting.created_at = None;
+    assert!(archive.writer.restore_assertion(conflicting).is_err());
+    let reads = ReadPool::open(&archive.archive).unwrap();
+    let reader = reads.reader().unwrap();
+    assert_eq!(selected(&reader, "assertions"), ["dated", "undated"]);
+    assert_eq!(
+        selected(&reader, "assertions where created_at:unknown"),
+        ["undated"]
+    );
+    assert_eq!(
+        selected(&reader, "assertions where created_at:known"),
+        ["dated"]
+    );
+    let reference = RevisionReference::exact("undated".into(), "undated".into());
+    let restored = reader.assertion(&reference).unwrap().unwrap();
+    assert_eq!(restored.fact, undated);
+    let ingresses = reader.assertion_imports(&reference).unwrap().unwrap();
+    assert_eq!(
+        ingresses,
+        [ingress("physical-one", 50), ingress("physical-two", 60)]
+    );
+    assert_eq!(
+        reader
+            .assertion(&RevisionReference::exact("dated".into(), "dated".into()))
+            .unwrap()
+            .unwrap()
+            .fact,
+        dated
+    );
 }

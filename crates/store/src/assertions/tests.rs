@@ -19,7 +19,7 @@ fn assertion(
         author: Author::Unattributed,
         via: Channel::Import,
         machine: "synthetic".into(),
-        created_at: Timestamp::parse_rfc3339("2026-01-02T03:04:05.123456789Z").unwrap(),
+        created_at: Some(Timestamp::parse_rfc3339("2026-01-02T03:04:05.123456789Z").unwrap()),
         valid_until: None,
         links: links
             .iter()
@@ -65,7 +65,7 @@ fn frozen_assertions_replay_exact_facts_and_first_admission() {
         ],
     );
     original.author = Author::AgentOrigin(polylogue_model::Origin::new("codex").unwrap());
-    original.valid_until = Some(original.created_at);
+    original.valid_until = original.created_at;
     original.value =
         Some(serde_json::json!({"text":"exact text","check":{"query":"messages","expect":"rows"}}));
     apply(&conn, std::slice::from_ref(&original), 7).unwrap();

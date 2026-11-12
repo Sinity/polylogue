@@ -42,7 +42,7 @@ fn assertion(author: polylogue_model::Author) -> polylogue_model::assertion::Ass
             author,
             via: polylogue_model::authorship::Channel::Import,
             machine: "synthetic-host".into(),
-            created_at: polylogue_model::Timestamp::from_unix_ms(1).unwrap(),
+            created_at: Some(polylogue_model::Timestamp::from_unix_ms(1).unwrap()),
             valid_until: None,
             links: vec![],
         },

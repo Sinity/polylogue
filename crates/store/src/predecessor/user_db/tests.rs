@@ -45,7 +45,7 @@ fn every_predecessor_form_maps_with_its_author_and_history() {
     assert_eq!(open.author, Author::Script(fixture::DETECTOR.into()));
     assert_eq!(open.via, Channel::Import);
     assert_eq!(open.machine, "machine-1");
-    assert_eq!(open.created_at.unix_ms(), 1_000);
+    assert_eq!(open.created_at.unwrap().unix_ms(), 1_000);
     assert_eq!(
         links(open, LinkRole::About),
         ["session:chatgpt:00000000-0000-4000-8000-00000000aaaa"]
@@ -220,7 +220,7 @@ fn the_pass_is_the_same_for_the_same_rows() {
     let first = pass("pass-1", &rows, "machine-1").unwrap();
     assert_eq!(first, pass("pass-1", &rows, "machine-1").unwrap());
     assert_eq!(first.kind, AssertionKind::Pass);
-    assert_eq!(first.created_at.unix_ms(), 6_000);
+    assert_eq!(first.created_at.unwrap().unix_ms(), 6_000);
     assert_eq!(first.value.as_ref().unwrap()["counts"]["assertions"], 12);
 }
 
@@ -232,13 +232,12 @@ fn an_annotation_schema_becomes_a_rubric_with_its_fields() {
     let db = UserDb::open(&path, dir.path()).unwrap();
     let schemas = db.schemas().unwrap();
     assert_eq!(schemas.len(), 1);
-    let pass = RevisionReference::exact("pass-1".into(), "pass-1".into());
-    let fact = rubric(&schemas[0], "machine-1", &pass, 6_000).unwrap();
+    let fact = rubric(&schemas[0], "machine-1").unwrap();
     assert_eq!(fact.kind, AssertionKind::Rubric);
     assert_eq!(fact.key.as_deref(), Some("seed.example"));
     assert_eq!(fact.id, "predecessor-schema:seed.example@1");
     assert_eq!(fact.author, Author::Script("polylogue".into()));
-    assert_eq!(fact.created_at.unix_ms(), 6_000);
+    assert_eq!(fact.created_at, None);
     let value = fact.value.unwrap();
     assert_eq!(
         value["instructions"],
@@ -257,4 +256,26 @@ fn an_annotation_schema_becomes_a_rubric_with_its_fields() {
     );
     assert_eq!(value["predecessor"]["schema_id"], "seed.example");
     assert_eq!(value["predecessor"]["definition_json"], fixture::SCHEMA);
+}
+
+#[test]
+fn rubric_registration_time_is_source_evidence_not_another_assertions_clock() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("user.db");
+    fixture::user_db(&path);
+    let db = UserDb::open(&path, dir.path()).unwrap();
+    let mut schema = db.schemas().unwrap().remove(0);
+    let unknown = rubric(&schema, "machine-1").unwrap();
+    assert_eq!(unknown.created_at, None);
+    assert!(unknown.links.is_empty());
+    schema.stored["registered_at_ms"] = 1234.into();
+    let known = rubric(&schema, "machine-1").unwrap();
+    assert_eq!(known.created_at, Timestamp::from_unix_ms(1234));
+    assert_eq!(known.id, unknown.id);
+    assert_eq!(known.root, unknown.root);
+    assert_eq!(known.key, unknown.key);
+    assert_ne!(
+        known, unknown,
+        "different original facts cannot silently overwrite"
+    );
 }
