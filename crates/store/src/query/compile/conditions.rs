@@ -3,7 +3,7 @@
 //! binding gave its value.
 
 use super::*;
-use polylogue_query::filter::{Binder, Comparison, FieldTest, Filter, Test, TimeTest};
+use polylogue_query::filter::{Binder, FieldTest, Filter, Test, TimeTest};
 
 impl<'a> Compiler<'a> {
     /// What binding reads from the query.
