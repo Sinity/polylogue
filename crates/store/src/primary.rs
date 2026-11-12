@@ -18,7 +18,7 @@ pub use raw_acquisition::{
 };
 pub use replay::{
     ConfirmedOrigin, NativeDeliveryCursor, NativeFactContext, NativeKind, NativeSource,
-    ProjectionIdentity, ReplayControl, ReplayState,
+    ProjectionBasis, ProjectionIdentity, ProjectionReplay, ReplayControl, ReplayState,
 };
 pub(crate) mod projection;
 pub(crate) mod scope;

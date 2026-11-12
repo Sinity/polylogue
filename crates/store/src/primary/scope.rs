@@ -38,13 +38,14 @@ pub(crate) fn reset(
     archive: &Archive,
     resolver: &crate::writer::resolve::Resolver,
     scope: &str,
+    replace: bool,
 ) -> Result<bool> {
     if scope.is_empty() {
         return Err(StoreError::Invalid(
             "a confirmed scope needs its owner identity".into(),
         ));
     }
-    if current(index)?.as_deref() == Some(scope) && require_readable(index).is_ok() {
+    if !replace && current(index)?.as_deref() == Some(scope) && require_readable(index).is_ok() {
         return Ok(false);
     }
     // Reads stop before the clear starts. A failed clear leaves reads blocked

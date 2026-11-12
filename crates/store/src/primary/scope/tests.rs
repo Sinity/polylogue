@@ -77,7 +77,7 @@ fn narrowing_and_widening_reset_cached_payloads_and_require_a_new_barrier() {
         .unwrap();
     let cache_identity = super::super::cache_identity(&index).unwrap();
     let token = archive.read_scope.token().unwrap();
-    assert!(reset(&mut index, &archive, &resolver, "narrow").unwrap());
+    assert!(reset(&mut index, &archive, &resolver, "narrow", false).unwrap());
     assert!(matches!(token.check(), Err(StoreError::ScopeChanged)));
     assert_eq!(projection::checkpoint(&index).unwrap(), None);
     for table in [
@@ -117,13 +117,13 @@ fn narrowing_and_widening_reset_cached_payloads_and_require_a_new_barrier() {
             .unwrap(),
         before
     );
-    assert!(!reset(&mut index, &archive, &resolver, "narrow").unwrap());
+    assert!(!reset(&mut index, &archive, &resolver, "narrow", false).unwrap());
     projection::apply(&mut index, &resolver, &[barrier(0)]).unwrap();
     assert_eq!(projection::checkpoint(&index).unwrap(), Some(0));
     drop(index);
     let mut index = Connection::open(archive.index_db()).unwrap();
     assert_eq!(current(&index).unwrap().as_deref(), Some("narrow"));
-    assert!(reset(&mut index, &archive, &resolver, "wide").unwrap());
+    assert!(reset(&mut index, &archive, &resolver, "wide", false).unwrap());
     assert_eq!(projection::checkpoint(&index).unwrap(), None);
     projection::apply(&mut index, &resolver, &[input(1, "private"), barrier(1)]).unwrap();
     assert_eq!(
@@ -151,7 +151,7 @@ fn a_failed_scope_transaction_keeps_readers_blocked_until_retry_commits() {
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
     projection::apply(&mut index, &resolver, &[input(1, "private"), barrier(1)]).unwrap();
     index.execute_batch("CREATE TRIGGER stop_reset BEFORE DELETE ON source_input BEGIN SELECT raise(ABORT,'stop'); END").unwrap();
-    assert!(reset(&mut index, &archive, &resolver, "changed").is_err());
+    assert!(reset(&mut index, &archive, &resolver, "changed", false).is_err());
     assert!(matches!(
         archive.read_scope.token(),
         Err(StoreError::ScopeChanged)
@@ -172,7 +172,7 @@ fn a_failed_scope_transaction_keeps_readers_blocked_until_retry_commits() {
         Err(StoreError::ScopeChanged)
     ));
     index.execute_batch("DROP TRIGGER stop_reset").unwrap();
-    assert!(reset(&mut index, &reopened, &resolver, "changed").unwrap());
+    assert!(reset(&mut index, &reopened, &resolver, "changed", false).unwrap());
     assert!(pool.reader().unwrap().query("SELECT 1", &[]).is_ok());
     assert_eq!(projection::checkpoint(&index).unwrap(), None);
 }
@@ -185,7 +185,7 @@ fn failure_to_persist_owner_control_blocks_current_reads_without_claiming_durabi
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
     projection::apply(&mut index, &resolver, &[input(1, "private"), barrier(1)]).unwrap();
     index.execute_batch("CREATE TRIGGER stop_control BEFORE INSERT ON meta WHEN new.key='confirmed_scope_pending' BEGIN SELECT raise(ABORT,'stop'); END").unwrap();
-    assert!(reset(&mut index, &archive, &resolver, "changed").is_err());
+    assert!(reset(&mut index, &archive, &resolver, "changed", false).is_err());
     assert!(matches!(
         archive.read_scope.token(),
         Err(StoreError::ScopeChanged)
@@ -194,7 +194,7 @@ fn failure_to_persist_owner_control_blocks_current_reads_without_claiming_durabi
     assert_eq!(current(&index).unwrap(), None);
     assert_eq!(projection::checkpoint(&index).unwrap(), Some(1));
     index.execute_batch("DROP TRIGGER stop_control").unwrap();
-    assert!(reset(&mut index, &archive, &resolver, "changed").unwrap());
+    assert!(reset(&mut index, &archive, &resolver, "changed", false).unwrap());
     assert!(archive.read_scope.token().is_ok());
 }
 
@@ -228,14 +228,14 @@ fn cache_clear_cannot_commit_until_registered_outputs_are_invalidated() {
     })
     .unwrap();
     fail.store(true, Ordering::SeqCst);
-    assert!(reset(&mut index, &archive, &resolver, "new").is_err());
+    assert!(reset(&mut index, &archive, &resolver, "new", false).is_err());
     assert_eq!(projection::checkpoint(&index).unwrap(), Some(1));
     assert!(matches!(
         require_readable(&index),
         Err(StoreError::ScopeChanged)
     ));
     fail.store(false, Ordering::SeqCst);
-    assert!(reset(&mut index, &archive, &resolver, "new").unwrap());
+    assert!(reset(&mut index, &archive, &resolver, "new", false).unwrap());
     assert_eq!(std::fs::read(&pointer).unwrap(), b"unavailable");
     assert!(matches!(
         old.with_current(|| {

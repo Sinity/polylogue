@@ -29,6 +29,94 @@ fn rows(index: &Connection, sql: &str) -> i64 {
 }
 
 #[test]
+fn projection_pages_resume_hidden_and_install_the_certificate_with_the_complete_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("index.db");
+    let mut index = cache(&path);
+    let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    crate::primary::scope::reset(&mut index, &archive, &resolver, "scope", false).unwrap();
+    apply(&mut index, &resolver, &[input(1, "obsolete"), barrier(1)]).unwrap();
+    // An equal scope can still need replacement at a new stream origin.
+    assert!(crate::primary::scope::reset(&mut index, &archive, &resolver, "scope", true).unwrap());
+    let mut state = replay_state(&index).unwrap();
+    state.projection = Some(ProjectionReplay {
+        origin: 4,
+        stream_instance: "new-stream".into(),
+        position: None,
+        cursor: None,
+    });
+    save_replay(&index, &state).unwrap();
+    let page = vec![
+        input(2, "retained"),
+        control(ReplayControl::ProjectionPage {
+            position: 8,
+            cursor: "next-page".into(),
+        }),
+    ];
+    apply(&mut index, &resolver, &page).unwrap();
+    // A lost reply can repeat the same already-staged page.
+    apply(&mut index, &resolver, &page).unwrap();
+    assert_eq!(rows(&index, "SELECT count(*) FROM source_input"), 0);
+    assert_eq!(checkpoint(&index).unwrap(), None);
+    drop(index);
+    let mut index = Connection::open(&path).unwrap();
+    let state = replay_state(&index).unwrap();
+    assert_eq!(
+        state.projection.as_ref().unwrap().cursor.as_deref(),
+        Some("next-page")
+    );
+    assert_eq!(state.basis, None);
+    assert!(apply(&mut index, &resolver, &[barrier(8)]).is_err());
+    let basis = ProjectionBasis {
+        stamp: "owner-signature".into(),
+        position: 8,
+        scope: "scope".into(),
+        catalog: "catalog".into(),
+    };
+    index.execute_batch("CREATE TRIGGER stop_snapshot BEFORE INSERT ON meta WHEN new.key='confirmed_position' BEGIN SELECT raise(ABORT,'stop snapshot'); END").unwrap();
+    assert!(
+        apply(
+            &mut index,
+            &resolver,
+            &[
+                input(3, "archived"),
+                Confirmed {
+                    position: 6,
+                    event: input(3, "archived").event,
+                    output_index: 0,
+                    native: None,
+                    change: ConfirmedChange::Archived
+                },
+                control(ReplayControl::ProjectionComplete {
+                    basis: basis.clone()
+                })
+            ]
+        )
+        .is_err()
+    );
+    assert_eq!(checkpoint(&index).unwrap(), None);
+    assert_eq!(replay_state(&index).unwrap().basis, None);
+    assert_eq!(rows(&index, "SELECT count(*) FROM source_input"), 0);
+    index.execute_batch("DROP TRIGGER stop_snapshot").unwrap();
+    apply(&mut index, &resolver, &[]).unwrap();
+    assert_eq!(checkpoint(&index).unwrap(), Some(8));
+    let state = replay_state(&index).unwrap();
+    assert_eq!(state.basis, Some(basis));
+    assert_eq!(state.projection, None);
+    assert_eq!(rows(&index, "SELECT count(*) FROM source_input"), 1);
+    assert_eq!(
+        rows(
+            &index,
+            "SELECT count(*) FROM primary_fact WHERE state='archived'"
+        ),
+        1
+    );
+    assert_eq!(rows(&index, "SELECT count(*) FROM primary_pending"), 0);
+    assert!(!has_fact(&index, &input(1, "obsolete").event).unwrap());
+}
+
+#[test]
 fn a_staged_delivery_survives_reopen_without_advancing_the_applied_position() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("index.db");
@@ -223,7 +311,7 @@ fn primary_source_cut_requires_completed_scope_and_survives_new_admissions() {
     let mut index =
         crate::archive::open_write(&archive.index_db(), crate::archive::cache::SETUP).unwrap();
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
-    crate::primary::scope::reset(&mut index, &archive, &resolver, "scope-a").unwrap();
+    crate::primary::scope::reset(&mut index, &archive, &resolver, "scope-a", false).unwrap();
     let boundary =
         |index: &Connection| crate::primary::SourceBoundary::read(index, index, &archive).unwrap();
     assert!(boundary(&index).is_none());
@@ -312,7 +400,7 @@ fn primary_source_cut_requires_completed_scope_and_survives_new_admissions() {
         Err(StoreError::ScopeChanged)
     ));
     let previous = boundary(&index).unwrap();
-    crate::primary::scope::reset(&mut index, &archive, &resolver, "scope-b").unwrap();
+    crate::primary::scope::reset(&mut index, &archive, &resolver, "scope-b", false).unwrap();
     assert!(boundary(&index).is_none());
     assert!(matches!(
         previous.through(&index, &archive),
@@ -328,7 +416,7 @@ fn unreadable_input_blocks_absence_until_its_real_lifecycle_or_readable_replacem
     let mut index =
         crate::archive::open_write(&archive.index_db(), crate::archive::cache::SETUP).unwrap();
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
-    crate::primary::scope::reset(&mut index, &archive, &resolver, "scope").unwrap();
+    crate::primary::scope::reset(&mut index, &archive, &resolver, "scope", false).unwrap();
     let boundary =
         |index: &Connection| crate::primary::SourceBoundary::read(index, index, &archive).unwrap();
     let refused = |position, event: &str, unreadable_input| Confirmed {

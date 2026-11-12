@@ -3,7 +3,7 @@ use sinex_protocol::{ProducerWelcome, Subjects};
 use std::{path::Path, time::Duration};
 const PASSWORD: &str = "synthetic-password";
 
-fn server() -> devkit::nats::Server {
+pub(super) fn server() -> devkit::nats::Server {
     let config = Subjects::new("auth").authorization(
         ("daemon", "synthetic-daemon-password"),
         &[("polylogue", PASSWORD)],
@@ -225,6 +225,8 @@ fn authenticated_private_reply_and_complete_registration_acknowledgment_establis
         scope: Some("old-scope".into()),
         head: None,
         staged_delivery: None,
+        basis: None,
+        projection: None,
     };
     // A committed local frame can fail before reaching ingress. Its retry
     // error belongs to publication, while confirmed reads remain available.
@@ -275,6 +277,8 @@ fn authenticated_private_reply_and_complete_registration_acknowledgment_establis
         scope: Some("test-scope".into()),
         head: None,
         staged_delivery: None,
+        basis: None,
+        projection: None,
     };
     let refused = primary::Sinex::confirmed(&sinex, &state, "cache-test").unwrap_err();
     assert!(

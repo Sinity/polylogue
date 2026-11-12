@@ -17,6 +17,8 @@ pub(crate) fn replay_state(conn: &Connection) -> Result<ReplayState> {
             scope: super::super::scope::current(conn)?,
             head: None,
             staged_delivery: None,
+            basis: None,
+            projection: None,
         },
     })
 }
@@ -88,8 +90,43 @@ pub(super) fn stage_control(
     control: &ReplayControl,
 ) -> Result<()> {
     match control {
-        ReplayControl::Reset { .. } => {
+        ReplayControl::Reset { .. } | ReplayControl::ProjectionStart { .. } => {
             return Err(invalid("a scope reset must be a separate control page"));
+        }
+        ReplayControl::ProjectionPage { position, cursor } => {
+            let projection = state
+                .projection
+                .as_mut()
+                .ok_or_else(|| invalid("a projection page has no start"))?;
+            if *position < projection.origin
+                || cursor.is_empty()
+                || projection.position.is_some_and(|old| old != *position)
+            {
+                return Err(invalid(
+                    "a projection page changed its cut or did not advance",
+                ));
+            }
+            projection.position = Some(*position);
+            projection.cursor = Some(cursor.clone());
+        }
+        ReplayControl::ProjectionComplete { basis } => {
+            let projection = state
+                .projection
+                .as_ref()
+                .ok_or_else(|| invalid("a projection completion has no start"))?;
+            if basis.position < projection.origin
+                || projection
+                    .position
+                    .is_some_and(|position| position != basis.position)
+                || state.scope.as_deref() != Some(basis.scope.as_str())
+                || basis.stamp.is_empty()
+                || basis.catalog.is_empty()
+            {
+                return Err(invalid(
+                    "a projection certificate differs from the staged snapshot",
+                ));
+            }
+            conn.execute("INSERT INTO primary_complete(position,evidence) VALUES (?1,?2) ON CONFLICT(position) DO UPDATE SET evidence=excluded.evidence", params![basis.position, packed(basis)?])?;
         }
         ReplayControl::Head { position } => {
             if *position < 0 {
@@ -98,6 +135,11 @@ pub(super) fn stage_control(
             state.head = Some(*position);
         }
         ReplayControl::Delivered { delivery } => {
+            if state.projection.is_some() {
+                return Err(invalid(
+                    "a partial projection cannot acknowledge stream deliveries",
+                ));
+            }
             if delivery.stream_instance.is_empty() || delivery.stream_sequence == 0 {
                 return Err(invalid("a staged delivery needs its stream receipt"));
             }
@@ -106,6 +148,11 @@ pub(super) fn stage_control(
             state.staged_delivery = Some(delivery.clone());
         }
         ReplayControl::Completion { position } => {
+            if state.projection.is_some() {
+                return Err(invalid(
+                    "a projection needs its owner certificate before completion",
+                ));
+            }
             if *position < 0 {
                 return Err(invalid("a completed position cannot be negative"));
             }
@@ -126,6 +173,16 @@ pub(super) fn stage_control(
 
 pub(super) fn complete(conn: &Connection, position: i64) -> Result<()> {
     let mut state = replay_state(conn)?;
+    let evidence: Option<Vec<u8>> = conn.query_row(
+        "SELECT evidence FROM primary_complete WHERE position=?1",
+        [position],
+        |row| row.get(0),
+    )?;
+    if let Some(evidence) = evidence {
+        state.basis = Some(unpacked(&evidence)?);
+        state.projection = None;
+        state.staged_delivery = None;
+    }
     state.applied_position = Some(position);
     save(conn, &state)
 }
