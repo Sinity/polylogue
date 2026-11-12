@@ -948,6 +948,10 @@ fn an_idle_continuation_reports_queued_writer_errors_without_clearing_custody() 
             release: Default::default(),
         })
         .unwrap();
+    // Derivation waits for earlier queued batches without consuming their
+    // write report. Observe the intended identity refusal before invalidating
+    // the access scope, which would otherwise race it with another refusal.
+    engine.writer().unwrap().derive().unwrap();
     archive.advance_generation_for_test().unwrap();
     let continued = engine.run_pass().unwrap();
     assert!(

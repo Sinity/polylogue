@@ -949,7 +949,6 @@ impl RowWriter<'_, '_> {
     }
 
     fn refresh_message(&self, pk: i64) -> Result<bool> {
-        self.changes.message(self.tx, pk)?;
         let choice = self
             .choices
             .messages
@@ -980,6 +979,7 @@ impl RowWriter<'_, '_> {
             )? {
                 return Ok(false);
             }
+            self.changes.message(self.tx, pk)?;
             self.clear_blocks(pk)?;
             self.update_event_anchors(pk, false)?;
             self.tx
@@ -990,26 +990,58 @@ impl RowWriter<'_, '_> {
         let choice = choice.as_ref().expect("selected message");
         let order = &choice.order;
         if !choice.changed {
+            let (unchanged, items_unchanged) = self
+                .tx
+                .prepare_cached(
+                    "SELECT input_pk IS ?2 AND source_chain IS ?3 AND source_start IS ?4
+                 AND source_end IS ?5 AND session_order IS ?6 AND in_progress IS ?7,
+                 session_order IS ?6 AND in_progress IS ?7
+                 FROM message WHERE pk=?1",
+                )?
+                .query_row(
+                    params![
+                        pk,
+                        v.input_pk,
+                        v.chain,
+                        v.start,
+                        v.end,
+                        order,
+                        v.in_progress
+                    ],
+                    |row| Ok((row.get::<_, bool>(0)?, row.get::<_, bool>(1)?)),
+                )?;
+            if !unchanged {
+                // Items and completion use the selected body and placement;
+                // record citations are read from the current message row.
+                if !items_unchanged {
+                    self.changes.message(self.tx, pk)?;
+                }
+                self.tx.execute(
+                    "UPDATE message SET input_pk=?2,source_chain=?3,source_start=?4,source_end=?5,
+                     session_order=?6,in_progress=?7 WHERE pk=?1",
+                    params![
+                        pk,
+                        v.input_pk,
+                        v.chain,
+                        v.start,
+                        v.end,
+                        order,
+                        v.in_progress
+                    ],
+                )?;
+            }
+            // Adding or removing a source claim can change session
+            // derivations even when the displayed message stays equal.
             self.tx.execute(
-                "UPDATE message SET input_pk=?2,source_chain=?3,source_start=?4,source_end=?5,
-                session_order=?6,in_progress=?7 WHERE pk=?1",
-                params![
-                    pk,
-                    v.input_pk,
-                    v.chain,
-                    v.start,
-                    v.end,
-                    order,
-                    v.in_progress
-                ],
-            )?;
-            self.tx.execute(
-                "UPDATE session SET changed=?2 WHERE pk=?1",
+                "UPDATE session SET changed=?2 WHERE pk=?1 AND changed IS NOT ?2",
                 params![session_pk, self.counter],
             )?;
+            // The main reading's sequence can move anchored events even
+            // when every displayed message column stays the same.
             self.update_event_anchors(pk, true)?;
             return Ok(false);
         }
+        self.changes.message(self.tx, pk)?;
         let m = choice.message.as_ref().ok_or_else(|| {
             StoreError::Invalid("a changed version has no prepared message".into())
         })?;

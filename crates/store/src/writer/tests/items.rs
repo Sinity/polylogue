@@ -51,6 +51,225 @@ fn message(id: &str, role: Role, text: &str) -> Message {
 }
 
 #[test]
+fn identical_lower_priority_claims_leave_shown_messages_and_items_untouched() {
+    let w = test_archive();
+    let messages: Vec<_> = (0..256)
+        .map(|n| {
+            let mut m = message(&format!("m{n}"), Role::Assistant, "same answer");
+            m.at = Timestamp::from_unix_ms(1000 + n * 10);
+            row(n as u64 / 3, m)
+        })
+        .collect();
+    w.store_reading(
+        batch("a-main", Route::Live, 0, messages.clone(), &["s"]),
+        Some(&SOURCE_RECORD),
+    )
+    .unwrap();
+    w.writer.flush().unwrap();
+    let before = stored(&w, "s");
+    let conn = rusqlite::Connection::open(w.archive.index_db()).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE test_message_updates(n INTEGER NOT NULL);
+         INSERT INTO test_message_updates VALUES(0);
+         CREATE TRIGGER test_message_updates AFTER UPDATE OF
+         input_pk,source_chain,source_start,source_end,session_order,in_progress ON message
+         BEGIN UPDATE test_message_updates SET n=n+1; END;",
+    )
+    .unwrap();
+    w.store_reading(
+        batch("z-extra", Route::Capture, 0, messages, &[]),
+        Some(&SOURCE_RECORD),
+    )
+    .unwrap();
+    let report = w.writer.flush().unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let claims: i64 = conn
+        .query_row("SELECT count(*) FROM message_source", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(claims, 512);
+    assert_eq!(stored(&w, "s").entries, before.entries);
+    assert_matches_rows(&w, "s");
+    let updates: i64 = conn
+        .query_row("SELECT n FROM test_message_updates", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        (updates, report.item_units_read),
+        (0, 0),
+        "unchanged displayed message updates and session item reads"
+    );
+}
+
+#[test]
+fn a_new_citation_chain_does_not_reread_unchanged_message_items() {
+    let w = test_archive();
+    let messages: Vec<_> = (0..256)
+        .map(|n| {
+            let mut m = message(&format!("m{n}"), Role::Assistant, "same answer");
+            m.at = Timestamp::from_unix_ms(1000 + n * 10);
+            row(n as u64 / 3, m)
+        })
+        .collect();
+    w.store_reading(
+        batch("main", Route::Live, 0, messages.clone(), &["s"]),
+        Some(&SOURCE_RECORD),
+    )
+    .unwrap();
+    w.writer.flush().unwrap();
+    let before = stored(&w, "s").entries;
+    let mut rewrite = batch("main", Route::Live, 0, messages, &[]);
+    rewrite.change = Change::Rewritten;
+    w.store_reading(rewrite, Some(&[b'x'; 100])).unwrap();
+    let report = w.writer.flush().unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let conn = rusqlite::Connection::open(w.archive.index_db()).unwrap();
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM message WHERE source_chain=2",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        256
+    );
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM message_source", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        512
+    );
+    assert_eq!(stored(&w, "s").entries, before);
+    assert_matches_rows(&w, "s");
+    assert_eq!(
+        report.item_units_read, 0,
+        "citation-only changes preserve the indexed message units"
+    );
+}
+
+#[test]
+fn unchanged_shown_message_still_moves_events_to_its_new_source_sequence() {
+    let w = test_archive();
+    let rows = vec![row(10, message("anchor", Role::User, "anchor"))];
+    w.store_reading(
+        batch("a-order", Route::Capture, 0, rows.clone(), &["s"]),
+        Some(&SOURCE_RECORD),
+    )
+    .unwrap();
+    let mut main = batch("z-main", Route::Live, 0, rows, &["s"]);
+    main.parse[0].order_from = Some(9);
+    w.store_reading(main.clone(), Some(&SOURCE_RECORD)).unwrap();
+    let mut events = batch("events", Route::Live, 0, vec![], &[]);
+    events.parse[0].output.events.push(Event {
+        at_quality: polylogue_model::TimeQuality::Unknown,
+        at_precision: None,
+        at_until: None,
+        session: Some(sid("s")),
+        kind: "message_position".into(),
+        at: None,
+        after: Some(MessageId::parse("claude-code:anchor").unwrap()),
+        range: None,
+        data: serde_json::json!({}),
+    });
+    w.store_reading(events, Some(&SOURCE_RECORD)).unwrap();
+    w.writer.flush().unwrap();
+    let pool = ReadPool::open(&w.archive).unwrap();
+    let shown = || {
+        pool.reader().unwrap().query("SELECT input_pk,source_chain,source_start,source_end,session_order,in_progress FROM message", &[]).unwrap()
+    };
+    let before = shown();
+    assert_eq!(
+        pool.reader()
+            .unwrap()
+            .query("SELECT seq FROM event", &[])
+            .unwrap()[0]["seq"],
+        9
+    );
+    main.parse[0].order_from = Some(1);
+    let mut reading = ChainReading::new().unwrap();
+    reading.push(&mut main.parse[0]).unwrap();
+    w.writer
+        .sender()
+        .unwrap()
+        .replace_chain(main.input, 1, 100, reading)
+        .unwrap();
+    w.writer.derive().unwrap();
+    assert_eq!(shown(), before);
+    assert_eq!(
+        pool.reader()
+            .unwrap()
+            .query("SELECT seq FROM event", &[])
+            .unwrap()[0]["seq"],
+        1
+    );
+    assert_matches_rows(&w, "s");
+}
+
+#[test]
+fn removing_a_redundant_content_claim_still_invalidates_session_derivations() {
+    let w = test_archive();
+    let reading = MessageRow {
+        id_kind: polylogue_model::IdKind::Content,
+        ..row(10, message("shared", Role::User, "same prompt"))
+    };
+    for (input, route, sessions) in [
+        ("a-main", Route::Live, &["s"][..]),
+        ("z-copy", Route::Capture, &[][..]),
+    ] {
+        w.store_reading(
+            batch(input, route, 0, vec![reading.clone()], sessions),
+            Some(&SOURCE_RECORD),
+        )
+        .unwrap();
+        assert!(w.writer.flush().unwrap().errors.is_empty());
+    }
+    w.writer.derive().unwrap();
+    let before = stored(&w, "s").entries;
+    let conn = rusqlite::Connection::open(w.archive.index_db()).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM derive_due", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    conn.execute_batch(
+        "CREATE TABLE test_message_updates(n INTEGER NOT NULL);
+         INSERT INTO test_message_updates VALUES(0);
+         CREATE TRIGGER test_message_updates AFTER UPDATE OF
+         input_pk,source_chain,source_start,source_end,session_order,in_progress ON message
+         BEGIN UPDATE test_message_updates SET n=n+1; END;",
+    )
+    .unwrap();
+    let mut empty = batch("z-copy", Route::Capture, 0, vec![], &[]);
+    empty.change = Change::Rewritten;
+    w.store_reading(empty, Some(&[b'x'; 100])).unwrap();
+    let report = w.writer.flush_rows().unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM message_source", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.query_row("SELECT n FROM test_message_updates", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(report.item_units_read, 0);
+    assert_eq!(stored(&w, "s").entries, before);
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM derive_due WHERE rows_changed=1",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1,
+        "source membership remains an input to session derivations"
+    );
+}
+
+#[test]
 fn every_committed_batch_leaves_the_index_equal_to_the_rows() {
     let w = test_archive();
     w.store_reading(
