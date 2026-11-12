@@ -159,6 +159,32 @@ impl Unit {
     }
 }
 
+/// Whether an event's stored item already describes its current metadata.
+/// Older item fingerprints are repaired by the ordinary session rewrite.
+pub(crate) fn event_is_current(
+    conn: &Connection,
+    pk: i64,
+    session: i64,
+    id: &str,
+    kind: &str,
+    at: Option<i64>,
+    data_bytes: u64,
+) -> Result<bool> {
+    let expected = Unit::Event {
+        pk,
+        id: id.into(),
+        kind: kind.into(),
+        at,
+        data_bytes,
+    }
+    .identity();
+    let stored: Option<Vec<u8>> = conn
+        .prepare_cached("SELECT unit FROM session_item WHERE event_pk=?1 AND session_pk=?2")?
+        .query_row(params![pk, session], |row| row.get(0))
+        .optional()?;
+    Ok(stored.as_ref() == Some(&expected))
+}
+
 /// An indexed message entry the rebuild starts from: entries before it stay.
 #[derive(Debug, Clone, Copy)]
 struct Anchor {

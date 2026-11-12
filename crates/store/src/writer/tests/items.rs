@@ -120,6 +120,70 @@ fn identical_lower_priority_event_claims_leave_selected_events_and_items_untouch
 }
 
 #[test]
+fn an_identical_event_claim_repairs_retained_old_item_metadata() {
+    let w = test_archive();
+    let mut input = batch("a-events", Route::Live, 0, vec![], &["s"]);
+    input.parse[0].output.events.push(Event {
+        at_quality: polylogue_model::TimeQuality::Unknown,
+        at_precision: None,
+        at_until: None,
+        session: Some(sid("s")),
+        kind: "synthetic.observation".into(),
+        at: None,
+        after: None,
+        range: None,
+        data: serde_json::json!({"value":1}),
+    });
+    w.store_reading(input.clone(), Some(&SOURCE_RECORD))
+        .unwrap();
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    let conn = rusqlite::Connection::open(w.archive.index_db()).unwrap();
+    let (pk, entry): (i64, Vec<u8>) = conn
+        .query_row(
+            "SELECT event_pk,entry FROM session_item WHERE event_pk IS NOT NULL",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    let mut stale: polylogue_model::read::IndexEntry = serde_json::from_slice(&entry).unwrap();
+    stale.at = Some(123);
+    let mut old = blake3::Hasher::new();
+    old.update(b"event\0");
+    old.update(&pk.to_le_bytes());
+    old.update(b"synthetic.observation");
+    conn.execute(
+        "UPDATE session_item SET unit=?1,entry=?2 WHERE event_pk=?3",
+        params![
+            old.finalize().as_bytes().as_slice(),
+            serde_json::to_vec(&stale).unwrap(),
+            pk
+        ],
+    )
+    .unwrap();
+    let before = stored(&w, "s");
+    let mut extra = batch("z-extra-events", Route::Capture, 0, vec![], &[]);
+    extra.parse[0].output.events = input.parse[0].output.events.clone();
+    w.store_reading(extra, Some(&SOURCE_RECORD)).unwrap();
+    let report = w.writer.flush().unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert!(
+        report.item_units_read > 0,
+        "retained stale items must be refreshed"
+    );
+    assert!(
+        stored(&w, "s").rewrite_version > before.rewrite_version,
+        "the existing item cursor version invalidates the stale reading"
+    );
+    assert_matches_rows(&w, "s");
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM event_source", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+}
+
+#[test]
 fn selected_event_changes_keep_their_payload_fields_and_placement() {
     for change in 0..6 {
         let w = test_archive();

@@ -38,13 +38,13 @@ impl RowWriter<'_, '_> {
                 .transpose()?
                 .unwrap_or(0),
         };
-        let unchanged = self
+        let (unchanged, id) = self
             .tx
             .prepare_cached(
                 "SELECT session_pk IS ?2 AND seq IS ?3 AND after_message_pk IS ?4 AND at IS ?5
              AND input_pk IS ?6 AND source_chain IS ?7 AND source_start IS ?8 AND source_end IS ?9
              AND after_message_id IS ?11 AND seq_from_message IS ?12 AND kind IS ?13
-             AND fields IS ?14 AND data IS ?10 FROM event WHERE pk=?1",
+             AND fields IS ?14 AND data IS ?10, id FROM event WHERE pk=?1",
             )?
             .query_row(
                 params![
@@ -63,9 +63,22 @@ impl RowWriter<'_, '_> {
                     choice.kind,
                     choice.fields
                 ],
-                |row| row.get::<_, bool>(0),
+                |row| Ok((row.get::<_, bool>(0)?, row.get::<_, String>(1)?)),
             )?;
         if unchanged {
+            if let Some(session) = choice.session
+                && !crate::items::event_is_current(
+                    self.tx,
+                    pk,
+                    session,
+                    &id,
+                    &choice.kind,
+                    choice.at,
+                    choice.body.len() as u64,
+                )?
+            {
+                self.changes.event(self.tx, pk)?;
+            }
             return Ok(());
         }
         self.changes.event(self.tx, pk)?;
