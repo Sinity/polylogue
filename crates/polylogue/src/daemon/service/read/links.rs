@@ -1,5 +1,6 @@
 //! The links view: every session linked to the seed, as a tree from the
-//! roots of its logical session, paged from a place in its depth-first walk.
+//! proven root or recorded ancestry frontiers, paged from a depth-first walk.
+//! A cycle entry is a display position; each node retains its typed root issue.
 //!
 //! The walk shows each node once, at the first link that reaches it; a later
 //! link to a node already shown is a cross-link, and `reference` links are
@@ -12,24 +13,13 @@
 use super::super::{Daemon, Failure};
 use super::ReadRequest;
 use polylogue_model::{SessionId, read::*};
-use polylogue_store::Reader;
-use std::collections::BTreeMap;
+use polylogue_store::{Reader, lineage::SessionLink};
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
-
-/// A tree link to take: to a root from the walk's top, or from a node.
-#[derive(Clone)]
-struct TreeLink {
-    child: String,
-    kind: String,
-    how: Option<String>,
-}
-
-/// A `reference` link from a node: the session it names and how.
-type ReferenceLink = (String, Option<String>);
 
 struct Frame {
     session: Option<String>,
-    links: Vec<TreeLink>,
+    links: Vec<SessionLink>,
     taken: usize,
 }
 
@@ -38,11 +28,12 @@ enum Step {
     Node {
         session: String,
         /// The node whose link reached it, with that link's kind and how.
-        joined: Option<(String, String, Option<String>)>,
-        references: Vec<ReferenceLink>,
+        joined: Option<SessionLink>,
+        references: Vec<SessionLink>,
+        parents: Vec<SessionLink>,
     },
     /// A tree link to a node already shown.
-    Cross { from: String, to: String },
+    Cross { link: SessionLink },
 }
 
 struct Walk<'r, 'a> {
@@ -52,13 +43,14 @@ struct Walk<'r, 'a> {
     /// parent and slot of the link that showed them.
     shown: BTreeMap<String, (Option<String>, usize)>,
     before: u64,
+    starts: HashSet<String>,
 }
 
 /// A node's tree links and its `reference` links, in stored order.
 fn links_of(
     reader: &Reader<'_>,
     session: &str,
-) -> Result<(Vec<TreeLink>, Vec<ReferenceLink>), Failure> {
+) -> Result<(Vec<SessionLink>, Vec<SessionLink>), Failure> {
     let Ok(id) = SessionId::parse(session) else {
         return Ok((Vec::new(), Vec::new()));
     };
@@ -66,56 +58,39 @@ fn links_of(
     let mut references = Vec::new();
     for link in reader.child_links(&id)? {
         if link.kind == "reference" {
-            references.push((link.child, link.how));
+            references.push(link);
         } else {
-            tree.push(TreeLink {
-                child: link.child,
-                kind: link.kind,
-                how: link.how,
-            });
+            tree.push(link);
         }
     }
     Ok((tree, references))
 }
 
-/// How many of a node's parents link to it other than by `reference`.
-fn tree_parents(reader: &Reader<'_>, session: &str) -> Result<usize, Failure> {
+/// Recorded structural parents, including alternative coordinates.
+fn structural_parents(reader: &Reader<'_>, session: &str) -> Result<Vec<SessionLink>, Failure> {
     Ok(match SessionId::parse(session) {
         Ok(id) => reader
             .parent_links(&id)?
-            .iter()
+            .into_iter()
             .filter(|link| link.kind != "reference")
-            .count(),
-        Err(_) => 0,
+            .collect(),
+        Err(_) => Vec::new(),
     })
 }
 
-/// The roots of the seed's logical session: the seed and its ancestors that
-/// no tree link reaches, or the seed alone when every one has a parent (a
-/// cycle).
-fn roots(reader: &Reader<'_>, seed: &SessionId) -> Result<Vec<String>, Failure> {
-    let mut family: Vec<String> = vec![seed.to_string()];
-    family.extend(reader.lineage(seed, polylogue_store::items::Lineage::Ancestors)?);
-    let mut roots = Vec::new();
-    for member in family {
-        if tree_parents(reader, &member)? == 0 {
-            roots.push(member);
-        }
-    }
-    if roots.is_empty() {
-        roots.push(seed.to_string());
-    }
-    Ok(roots)
-}
-
 impl<'r, 'a> Walk<'r, 'a> {
-    fn start(reader: &'r Reader<'a>, roots: Vec<String>) -> Self {
-        let links = roots
+    fn start(reader: &'r Reader<'a>, entries: Vec<String>) -> Self {
+        let starts = entries.iter().cloned().collect();
+        let links = entries
             .into_iter()
-            .map(|child| TreeLink {
+            .map(|child| SessionLink {
+                parent: String::new(),
                 child,
                 kind: String::new(),
                 how: None,
+                copies_prefix: false,
+                branch_point: None,
+                spawning_call: None,
             })
             .collect();
         Self {
@@ -127,6 +102,7 @@ impl<'r, 'a> Walk<'r, 'a> {
             }],
             shown: BTreeMap::new(),
             before: 0,
+            starts,
         }
     }
 
@@ -134,7 +110,7 @@ impl<'r, 'a> Walk<'r, 'a> {
     /// whose links changed since it was issued is stale.
     fn resume(
         reader: &'r Reader<'a>,
-        roots: Vec<String>,
+        starts: Vec<String>,
         place: &LinksPlace,
     ) -> Result<Self, Failure> {
         let stale = || {
@@ -143,7 +119,7 @@ impl<'r, 'a> Walk<'r, 'a> {
                 "the links changed since the cursor was issued",
             )
         };
-        let mut walk = Self::start(reader, roots);
+        let mut walk = Self::start(reader, starts);
         let mut frames = place.frames.iter();
         let top = frames
             .next()
@@ -230,14 +206,15 @@ impl<'r, 'a> Walk<'r, 'a> {
             top.taken += 1;
             let parent = top.session.clone();
             if self.shown.contains_key(&link.child) {
-                return Ok(Some(Step::Cross {
-                    from: parent.unwrap_or_default(),
-                    to: link.child,
-                }));
+                if parent.is_none() {
+                    continue;
+                }
+                return Ok(Some(Step::Cross { link }));
             }
             let (links, references) = links_of(self.reader, &link.child)?;
-            // A root counts as reached once by the walk itself.
-            let reaching = tree_parents(self.reader, &link.child)? + usize::from(parent.is_none());
+            // A starting position is a virtual incoming link for deduplication.
+            let parents = structural_parents(self.reader, &link.child)?;
+            let reaching = parents.len() + usize::from(self.starts.contains(&link.child));
             if reaching > 1 {
                 self.shown
                     .insert(link.child.clone(), (parent.clone(), slot));
@@ -249,9 +226,10 @@ impl<'r, 'a> Walk<'r, 'a> {
             });
             self.before += 1;
             return Ok(Some(Step::Node {
-                session: link.child,
-                joined: parent.map(|parent| (parent, link.kind, link.how)),
+                session: link.child.clone(),
+                joined: parent.map(|_| link),
                 references,
+                parents,
             }));
         }
     }
@@ -274,10 +252,12 @@ impl<'r, 'a> Walk<'r, 'a> {
                 self.shown.remove(&session);
                 self.before -= 1;
                 let (_, references) = links_of(self.reader, &session)?;
+                let parents = structural_parents(self.reader, &session)?;
                 return Ok(Some(Step::Node {
                     session,
-                    joined: parent.map(|parent| (parent, link.kind, link.how)),
+                    joined: parent.map(|_| link),
                     references,
+                    parents,
                 }));
             }
             let slot = top.taken - 1;
@@ -291,10 +271,10 @@ impl<'r, 'a> Walk<'r, 'a> {
                 .is_none_or(|(by, at)| *by == parent && *at == slot);
             if !showed {
                 top.taken = slot;
-                return Ok(Some(Step::Cross {
-                    from: parent.unwrap_or_default(),
-                    to: link.child,
-                }));
+                if parent.is_none() {
+                    continue;
+                }
+                return Ok(Some(Step::Cross { link }));
             }
             // Its subtree ends just before here: go back from its end.
             let (links, _) = links_of(self.reader, &link.child)?;
@@ -310,28 +290,29 @@ impl<'r, 'a> Walk<'r, 'a> {
 
 /// The items of one step.
 fn items(reader: &Reader<'_>, seed: &SessionId, step: &Step) -> Result<Vec<ReadItem>, Failure> {
-    let edge = |reference: &str, from: &str, to: &str, relation: &str, how, cross| ReadItem {
-        source: Source::record(reference),
+    let edge = |link: &SessionLink, cross| ReadItem {
+        source: Source::record(format!("session:{}", link.parent)),
         kind: ItemKind::Card {
             card: Box::new(Card::LinkEdge {
-                from: format!("session:{from}"),
-                to: format!("session:{to}"),
-                relation: relation.into(),
-                how,
+                from: format!("session:{}", link.parent),
+                to: format!("session:{}", link.child),
+                relation: link.kind.clone(),
+                how: link.how.clone(),
                 cross_link: cross,
+                branch_point: link.branch_point.as_ref().map(|at| format!("message:{at}")),
+                spawning_call: link.spawning_call.clone(),
+                copies_prefix: link.copies_prefix,
             }),
         },
     };
-    let (session, joined, references) = match step {
-        Step::Cross { from, to } => {
-            let reference = format!("session:{from}");
-            return Ok(vec![edge(&reference, from, to, "tree", None, true)]);
-        }
+    let (session, joined, references, parents) = match step {
+        Step::Cross { link } => return Ok(vec![edge(link, true)]),
         Step::Node {
             session,
             joined,
             references,
-        } => (session, joined, references),
+            parents,
+        } => (session, joined, references, parents),
     };
     let reference = format!("session:{session}");
     let id = SessionId::parse(session).ok();
@@ -362,9 +343,17 @@ fn items(reader: &Reader<'_>, seed: &SessionId, step: &Step) -> Result<Vec<ReadI
             card: Box::new(Card::LinkNode {
                 reference: reference.clone(),
                 title,
-                parents: joined
+                lineage: id
+                    .as_ref()
+                    .map(|id| reader.lineage_root(id))
+                    .transpose()?
+                    .flatten()
+                    .map(Box::new),
+                parents: parents
                     .iter()
-                    .map(|(parent, _, _)| format!("session:{parent}"))
+                    .map(|link| format!("session:{}", link.parent))
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
                     .collect(),
                 own_messages: own,
                 inherited_messages: ValueState::Unknown { reason: None },
@@ -376,18 +365,11 @@ fn items(reader: &Reader<'_>, seed: &SessionId, step: &Step) -> Result<Vec<ReadI
         },
     }];
     // The tree link that reached the node, then its `reference` links.
-    if let Some((parent, kind, how)) = joined {
-        out.push(edge(&reference, parent, session, kind, how.clone(), false));
+    if let Some(link) = joined {
+        out.push(edge(link, false));
     }
-    for (to, how) in references {
-        out.push(edge(
-            &reference,
-            session,
-            to,
-            "reference",
-            how.clone(),
-            true,
-        ));
+    for link in references {
+        out.push(edge(link, true));
     }
     Ok(out)
 }
@@ -428,9 +410,13 @@ pub(super) fn page(
     let digest = options_digest(&(options, format));
     let key = super::cursor_seal(reader)?;
     let seed = &scope.session;
-    let roots = roots(reader, seed)?;
+    let starts = reader
+        .lineage_starting_sessions(seed)?
+        .into_iter()
+        .map(|id| id.to_string())
+        .collect();
     let (mut walk, direction) = match cursor.as_deref() {
-        None => (Walk::start(reader, roots), ReadDirection::After),
+        None => (Walk::start(reader, starts), ReadDirection::After),
         Some(text) => {
             let opened = PageCursor::open(text, &key).map_err(super::cursor_failure)?;
             opened
@@ -448,7 +434,7 @@ pub(super) fn page(
                     "a links reading continues forward or backward only",
                 ));
             }
-            (Walk::resume(reader, roots, place)?, opened.direction)
+            (Walk::resume(reader, starts, place)?, opened.direction)
         }
     };
     let header = super::session::header(reader, seed, target, options)?;
@@ -472,11 +458,10 @@ pub(super) fn page(
         let node = matches!(step, Step::Node { .. });
         let step_items = items(reader, seed, &step)?;
         let (size, cost) = encoded_size(&step_items);
-        if node
-            && nodes > 0
+        if !steps.is_empty()
             && (used + size > limits.bytes.get()
                 || tokens + cost > limits.tokens.get()
-                || nodes >= limits.items.get())
+                || (node && nodes >= limits.items.get()))
         {
             break;
         }

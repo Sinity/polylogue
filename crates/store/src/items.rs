@@ -77,16 +77,6 @@ pub fn entries_decoded() -> u64 {
     ENTRIES_DECODED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// How many sessions' links reads have looked up, for tests of how much of
-/// a links tree a page reads.
-#[cfg(any(test, feature = "fixture"))]
-static LINK_READS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-#[cfg(any(test, feature = "fixture"))]
-pub fn link_reads() -> u64 {
-    LINK_READS.load(std::sync::atomic::Ordering::Relaxed)
-}
-
 /// The counters alone, read in O(1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ItemVersions {
@@ -1191,26 +1181,6 @@ impl RecordTable {
     }
 }
 
-/// One stored link between two sessions, as the reading needs it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SessionLink {
-    pub parent: String,
-    pub child: String,
-    /// A documented provider relationship, or `reference`.
-    pub kind: String,
-    pub how: Option<String>,
-    pub copies_prefix: bool,
-    pub branch_point: Option<String>,
-    pub spawning_call: Option<String>,
-}
-
-/// Which way a lineage walk goes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Lineage {
-    Ancestors,
-    Descendants,
-}
-
 /// A record's stored bytes, as the source wrote them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredRecord {
@@ -1231,29 +1201,6 @@ impl Reader<'_> {
             .collect::<rusqlite::Result<_>>()?)
     }
 
-    fn links_where(&self, column: &str, session: &str) -> Result<Vec<SessionLink>> {
-        #[cfg(any(test, feature = "fixture"))]
-        LINK_READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Ok(self
-            .conn()?
-            .prepare_cached(&format!(
-                "SELECT parent_id, child_id, kind, how, branch_point, spawning_call, copies_prefix FROM session_link
-                 WHERE {column} = ?1 ORDER BY pk"
-            ))?
-            .query_map([session], |row| {
-                Ok(SessionLink {
-                    parent: row.get(0)?,
-                    child: row.get(1)?,
-                    kind: row.get(2)?,
-                    how: row.get(3)?,
-                    copies_prefix: row.get(6)?,
-                    branch_point: row.get(4)?,
-                    spawning_call: row.get(5)?,
-                })
-            })?
-            .collect::<rusqlite::Result<_>>()?)
-    }
-
     /// A session's own message count, as derived, when it is stored and
     /// counted.
     pub fn own_message_count(&self, id: &SessionId) -> Result<Option<u64>> {
@@ -1264,42 +1211,6 @@ impl Reader<'_> {
             .optional()?
             .flatten()
             .and_then(|count| u64::try_from(count).ok()))
-    }
-
-    /// Links from `id` to its children, in the order they were stored.
-    pub fn child_links(&self, id: &SessionId) -> Result<Vec<SessionLink>> {
-        self.links_where("parent_id", &id.to_string())
-    }
-
-    /// Links from `id`'s parents to it, in the order they were stored.
-    pub fn parent_links(&self, id: &SessionId) -> Result<Vec<SessionLink>> {
-        self.links_where("child_id", &id.to_string())
-    }
-
-    /// Every session reached from `id` through links other than
-    /// `reference`, transitively, each once; a cycle ends where it closes.
-    pub fn lineage(&self, id: &SessionId, direction: Lineage) -> Result<Vec<String>> {
-        let mut seen = std::collections::HashSet::from([id.to_string()]);
-        let mut queue = std::collections::VecDeque::from([id.to_string()]);
-        let mut out = Vec::new();
-        while let Some(current) = queue.pop_front() {
-            self.check()?;
-            let links = match direction {
-                Lineage::Ancestors => self.links_where("child_id", &current)?,
-                Lineage::Descendants => self.links_where("parent_id", &current)?,
-            };
-            for link in links.into_iter().filter(|link| link.kind != "reference") {
-                let next = match direction {
-                    Lineage::Ancestors => link.parent,
-                    Lineage::Descendants => link.child,
-                };
-                if seen.insert(next.clone()) {
-                    out.push(next.clone());
-                    queue.push_back(next);
-                }
-            }
-        }
-        Ok(out)
     }
 
     /// The stored bytes of one message's or event's source record. When a

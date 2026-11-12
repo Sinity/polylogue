@@ -2858,6 +2858,9 @@ fn html_relationship_links_encode_only_exact_recorded_session_references() {
                         from: from.into(),
                         to: to.into(),
                         relation: "continuation".into(),
+                        branch_point: Some("message:claude-code:<anchor>".into()),
+                        spawning_call: Some("call <marker>".into()),
+                        copies_prefix: true,
                         how: Some("fork <marker>".into()),
                         cross_link: false,
                     }),
@@ -2872,6 +2875,10 @@ fn html_relationship_links_encode_only_exact_recorded_session_references() {
         "session:claude-code:parent",
         "session:claude-code:child\"<&",
     );
+    assert!(html.contains("copied prefix"));
+    assert!(html.contains("message:claude-code:&lt;anchor&gt;"));
+    assert!(html.contains("call &lt;marker&gt;"));
+    assert!(!html.contains("<anchor>"));
     assert!(html.contains("href=\"/s/claude-code%3Aparent\""), "{html}");
     assert!(
         html.contains("href=\"/s/claude-code%3Achild%22%3C%26\""),

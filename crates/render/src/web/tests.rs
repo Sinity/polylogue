@@ -141,7 +141,8 @@ fn continuation_links_use_service_calls_instead_of_template_cursor_state() {
 #[test]
 fn typed_lineage_issues_keep_unknowns_and_exact_evidence_in_every_encoder() {
     let mut page = page();
-    page.document.items = vec![
+    page.document.items =
+        vec![
         ReadItem {
             source: Source::record("session:codex:c"),
             kind: ItemKind::Indicator {
@@ -157,6 +158,13 @@ fn typed_lineage_issues_keep_unknowns_and_exact_evidence_in_every_encoder() {
             kind: ItemKind::Card {
                 card: Box::new(Card::LinkNode {
                     reference: "session:codex:p".into(),
+                    lineage: Some(Box::new(polylogue_model::read::SessionLineage {
+                        root:None,depth:None,root_pending:true,
+                        issue:Some(polylogue_model::read::LineageIssue::MissingParent {
+                            child:polylogue_model::SessionId::parse("codex:p").unwrap(),
+                            parent:polylogue_model::SessionId::parse("codex:<missing>").unwrap(),
+                        }),
+                    })),
                     title: ValueState::Unknown {
                         reason: Some("not stored".into()),
                     },
@@ -181,7 +189,21 @@ fn typed_lineage_issues_keep_unknowns_and_exact_evidence_in_every_encoder() {
         &mut output,
     )
     .unwrap();
+    let mut text = Vec::new();
+    crate::encode_document(
+        &page.document,
+        crate::Format::Terminal,
+        crate::EncodeOptions::default(),
+        &mut text,
+    )
+    .unwrap();
+    let text = String::from_utf8(text).unwrap();
+    assert!(text.contains("root pending"));
+    assert!(text.contains("parent codex:<missing> of codex:p is not available"));
     let html = String::from_utf8(output).unwrap();
+    assert!(html.contains("root pending"));
+    assert!(html.contains("codex:&lt;missing&gt;"));
+    assert!(!html.contains("codex:<missing>"));
     assert!(html.contains("missing_anchor"));
     assert!(html.contains("native.&lt;field&gt;"));
     assert!(!html.contains("native.<field>"));

@@ -213,3 +213,52 @@ fn lineage_has_no_silent_depth_limit_and_unrelated_components_are_not_dirtied() 
     );
     assert_eq!(read(&f, "test:1005"), rooted("test:1", 1004));
 }
+
+#[test]
+fn family_entries_keep_all_frontiers_and_cycle_components_without_claiming_a_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(dir.path()).unwrap();
+    for id in [
+        "test:root",
+        "test:cycle",
+        "test:other",
+        "test:fork",
+        "test:tail",
+        "test:reference",
+    ] {
+        session(&mut f, id);
+    }
+    for (parent, child, kind) in [
+        ("test:root", "test:fork", "fork"),
+        ("test:cycle", "test:fork", "spawn"),
+        ("test:cycle", "test:other", "continuation"),
+        ("test:other", "test:cycle", "resume"),
+        ("test:fork", "test:tail", "resume"),
+    ] {
+        f.link(parent, child, kind, None).unwrap();
+    }
+    f.link("test:reference", "test:tail", "reference", Some("mention"))
+        .unwrap();
+    f.derive().unwrap();
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let tail = SessionId::parse("test:tail").unwrap();
+    assert_eq!(reader.lineage_root(&tail).unwrap().unwrap().root, None);
+    assert_eq!(
+        reader
+            .lineage_starting_sessions(&tail)
+            .unwrap()
+            .into_iter()
+            .map(|id| id.to_string())
+            .collect::<std::collections::BTreeSet<_>>(),
+        ["test:root".to_owned(), "test:cycle".to_owned()]
+            .into_iter()
+            .collect()
+    );
+    assert_eq!(
+        reader
+            .lineage_starting_sessions(&SessionId::parse("test:root").unwrap())
+            .unwrap(),
+        vec![SessionId::parse("test:root").unwrap()]
+    );
+}

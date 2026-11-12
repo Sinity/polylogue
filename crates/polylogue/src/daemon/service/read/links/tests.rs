@@ -31,6 +31,14 @@ fn family(d: &test_daemon::TestDaemon) {
 }
 
 fn read(d: &test_daemon::TestDaemon, budget: usize, cursor: Option<&RunnableRequest>) -> ReadPage {
+    read_target(d, "session:claude-code:root", budget, cursor)
+}
+fn read_target(
+    d: &test_daemon::TestDaemon,
+    target: &str,
+    budget: usize,
+    cursor: Option<&RunnableRequest>,
+) -> ReadPage {
     let call = match cursor {
         Some(resume) => {
             let mut resume = resume.clone();
@@ -38,7 +46,7 @@ fn read(d: &test_daemon::TestDaemon, budget: usize, cursor: Option<&RunnableRequ
             test_daemon::Call::from_request(&resume)
         }
         None => test_daemon::read(crate::daemon::service::read::ReadRequest {
-            target: "session:claude-code:root".into(),
+            target: target.into(),
             options: ReadOptions {
                 view: View::Links,
                 ..ReadOptions::default()
@@ -133,9 +141,9 @@ fn a_middle_links_page_does_not_visit_the_prefix() {
         .find(|(_, (_, page))| page.document.footer.position > Some(total as u64 / 2))
         .unwrap();
     let shown = nodes(&expected.document.items).len() as u64;
-    let reads = polylogue_store::items::link_reads();
+    let reads = polylogue_store::lineage::link_reads();
     let again = read(&d, 200, anchor.as_ref());
-    let visited = polylogue_store::items::link_reads() - reads;
+    let visited = polylogue_store::lineage::link_reads() - reads;
     assert_eq!(again.document.items, expected.document.items);
     assert!(
         visited <= 2 * shown + 8,
@@ -161,4 +169,251 @@ fn a_middle_links_page_does_not_visit_the_prefix() {
             .position
             .map(|position| position - back_nodes)
     );
+}
+
+fn continued(parent: &str, child: &str) -> String {
+    format!(
+        "{}\n",
+        serde_json::json!({"type":"continued-in","sessionId":parent,"continuedInSessionId":child})
+    )
+}
+
+#[test]
+fn cyclic_and_conflicting_families_tile_both_directions_without_a_guessed_root() {
+    use polylogue_model::read::LineageIssue;
+    struct Case {
+        edges: &'static [(&'static str, &'static str)],
+        seed: &'static str,
+        cycle_issue: bool,
+    }
+    let cases = [
+        Case {
+            edges: &[("a", "b"), ("b", "a"), ("b", "tail")],
+            seed: "tail",
+            cycle_issue: true,
+        },
+        Case {
+            edges: &[
+                ("r", "fork"),
+                ("c", "d"),
+                ("d", "c"),
+                ("c", "fork"),
+                ("fork", "tail"),
+            ],
+            seed: "tail",
+            cycle_issue: false,
+        },
+        Case {
+            edges: &[("r", "c"), ("c", "d"), ("d", "c")],
+            seed: "d",
+            cycle_issue: false,
+        },
+    ];
+    for Case {
+        edges,
+        seed,
+        cycle_issue,
+    } in cases
+    {
+        let d = test_daemon::start("placeholder");
+        let ids = edges
+            .iter()
+            .flat_map(|(p, c)| [*p, *c])
+            .collect::<std::collections::BTreeSet<_>>();
+        for id in &ids {
+            let mut source = polylogue_testkit::claude_user(&format!("question-{id}"), id, id);
+            for (parent, child) in edges {
+                if parent == id {
+                    source.push_str(&continued(parent, child));
+                }
+            }
+            std::fs::write(
+                d.home
+                    .join(".claude/projects/-p")
+                    .join(format!("{id}.jsonl")),
+                source,
+            )
+            .unwrap();
+        }
+        d.wait_for(|status| status["store"]["messages"] == ids.len() + 1);
+        let target = format!("session:claude-code:{seed}");
+        let whole = read_target(&d, &target, 1_000_000, None);
+        let expected = ids
+            .iter()
+            .map(|id| format!("session:claude-code:{id}"))
+            .collect::<std::collections::BTreeSet<_>>();
+        let node_refs = nodes(&whole.document.items);
+        assert_eq!(node_refs.len(), expected.len());
+        assert_eq!(
+            node_refs
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>(),
+            expected
+        );
+        let actual = whole
+            .document
+            .items
+            .iter()
+            .filter_map(|item| match &item.kind {
+                ItemKind::Card { card } => match card.as_ref() {
+                    Card::LinkEdge {
+                        from, to, relation, ..
+                    } => Some((from.clone(), to.clone(), relation.clone())),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(actual.len(), edges.len());
+        assert_eq!(
+            actual
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>(),
+            edges
+                .iter()
+                .map(|(p, c)| (
+                    format!("session:claude-code:{p}"),
+                    format!("session:claude-code:{c}"),
+                    "continuation".to_owned()
+                ))
+                .collect()
+        );
+        let state = whole
+            .document
+            .items
+            .iter()
+            .find_map(|item| match &item.kind {
+                ItemKind::Card { card } => match card.as_ref() {
+                    Card::LinkNode {
+                        seed: true,
+                        lineage,
+                        ..
+                    } => lineage.as_deref(),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(state.root, None);
+        assert_eq!(state.depth, None);
+        if cycle_issue {
+            assert!(matches!(state.issue, Some(LineageIssue::Cycle { .. })));
+        } else {
+            assert!(matches!(
+                state.issue,
+                Some(LineageIssue::ConflictingParents { .. })
+            ));
+        }
+        let mut pages = vec![read_target(&d, &target, 60, None)];
+        while let Some(next) = resume(pages.last().unwrap().document.footer.next.as_ref()) {
+            pages.push(read_target(&d, &target, 60, Some(&next)));
+        }
+        let tiled = pages
+            .iter()
+            .flat_map(|page| page.document.items.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(tiled, whole.document.items);
+        assert_eq!(
+            pages.last().unwrap().document.footer.count,
+            ValueState::known(expected.len() as u64)
+        );
+        assert!(
+            pages
+                .iter()
+                .any(|page| nodes(&page.document.items).is_empty()),
+            "cross-edges must fit their own pages"
+        );
+        let mut offset = pages[0].document.items.len();
+        for page in pages.iter().skip(1) {
+            let previous = resume(page.document.footer.previous.as_ref()).unwrap();
+            let back = read_target(&d, &target, 60, Some(&previous));
+            assert!(!back.document.items.is_empty());
+            assert_eq!(
+                back.document.items,
+                tiled[offset - back.document.items.len()..offset]
+            );
+            offset += page.document.items.len();
+        }
+    }
+}
+
+#[test]
+fn alternative_native_anchors_and_spawning_calls_keep_their_exact_edge_facts() {
+    let d = test_daemon::start("placeholder");
+    let dir = d.home.join(".claude/projects/-p");
+    let mut parent = polylogue_testkit::claude_user("first", "root", "first prompt");
+    parent.push_str(&polylogue_testkit::claude_user(
+        "second",
+        "root",
+        "second prompt",
+    ));
+    parent.push_str(&format!("{}\n",serde_json::json!({"type":"progress","sessionId":"root","parentToolUseID":"spawn-call","data":{"type":"agent_progress","agentId":"worker"}})));
+    let mut child = polylogue_testkit::claude_user("own", "child", "child prompt");
+    for anchor in ["first", "second"] {
+        child.push_str(&format!("{}\n",serde_json::json!({"type":"fork-context-ref","sessionId":"child","parentSessionId":"root","parentLastUuid":anchor})));
+    }
+    std::fs::write(dir.join("root.jsonl"), parent).unwrap();
+    std::fs::write(dir.join("child.jsonl"), child).unwrap();
+    d.wait_for(|status| status["store"]["messages"] == 4);
+    let page = read_target(&d, "session:claude-code:child", 1_000_000, None);
+    let mut anchors = std::collections::BTreeSet::new();
+    let mut cross = 0;
+    let mut calls = Vec::new();
+    for item in &page.document.items {
+        if let ItemKind::Card { card } = &item.kind {
+            match card.as_ref() {
+                Card::LinkNode {
+                    reference,
+                    parents,
+                    lineage,
+                    ..
+                } if reference == "session:claude-code:child" => {
+                    assert_eq!(parents, &["session:claude-code:root"]);
+                    let lineage = lineage.as_deref().unwrap();
+                    assert_eq!(
+                        lineage.root.as_ref().unwrap().to_string(),
+                        "claude-code:root"
+                    );
+                    assert_eq!(lineage.depth, Some(1));
+                    assert!(lineage.issue.is_none());
+                }
+                Card::LinkEdge {
+                    from,
+                    to,
+                    relation,
+                    branch_point,
+                    spawning_call,
+                    copies_prefix,
+                    cross_link,
+                    ..
+                } => {
+                    assert_eq!(from, "session:claude-code:root");
+                    assert_eq!(relation, "spawn");
+                    if to == "session:claude-code:child" {
+                        anchors.insert(branch_point.clone().unwrap());
+                        assert!(spawning_call.is_none());
+                        assert!(*copies_prefix);
+                        cross += usize::from(*cross_link);
+                    }
+                    if to == "session:claude-code:agent-worker" {
+                        assert!(branch_point.is_none());
+                        assert!(!*copies_prefix);
+                        calls.push(spawning_call.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    assert_eq!(
+        anchors,
+        [
+            "message:claude-code:first".to_owned(),
+            "message:claude-code:second".to_owned()
+        ]
+        .into_iter()
+        .collect()
+    );
+    assert_eq!(cross, 1);
+    assert_eq!(calls, vec![Some("spawn-call".into())]);
 }
