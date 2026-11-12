@@ -559,8 +559,7 @@ pub fn parse(
                     facts: Box::new(ToolCall {
                         session: row.message.session.clone(),
                         message: row.message.id.clone(),
-                        block: output
-                            .message_projections
+                        block: message_projections
                             .get(&message_index)
                             .map_or(block as u64, |projection| projection.block_ordinals[block]),
                         source_start: row.offset,

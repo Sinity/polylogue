@@ -29,7 +29,7 @@ impl ParseStep {
         Ok(())
     }
 
-    pub(super) fn preserve_export_body(&mut self) -> Result<()> {
+    pub(in crate::writer) fn preserve_export_body(&mut self) -> Result<()> {
         self.validate_export()?;
         self.original_export_body = Some(self.export_body_hash()?);
         Ok(())

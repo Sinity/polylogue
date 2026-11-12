@@ -329,7 +329,7 @@ pub(super) fn product_writes(
     products: Vec<Product>,
 ) -> Result<Vec<ProductWrite>> {
     let mut writes = Vec::with_capacity(products.len());
-    for (index, product) in products.into_iter().enumerate() {
+    for (ordinal, product) in products.into_iter().enumerate() {
         let (location, machine) = if let Some(reading) = product.reading() {
             let start = match &product {
                 Product::Message { facts, .. } => facts.offset,
@@ -380,7 +380,7 @@ pub(super) fn product_writes(
             location,
             parents: Vec::new(),
             machine,
-            output_index: index as u64,
+            output_index: ordinal as u64,
             publish: true,
         });
     }

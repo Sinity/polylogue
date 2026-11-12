@@ -168,7 +168,7 @@ impl WriterSender {
             let snapshot = index.transaction()?;
             if publication.commit_seq.is_some_and(|position| {
                 crate::primary::projection::checkpoint(&snapshot)
-                    .map_or(true, |local| local < position)
+                    .map_or(true, |local| local.is_none_or(|local| local < position))
             }) {
                 drop(snapshot);
                 drop(index);
