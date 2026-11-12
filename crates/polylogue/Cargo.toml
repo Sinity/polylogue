@@ -12,7 +12,7 @@ publish.workspace = true
 sinex = ["dep:polylogue-sinex"]
 
 [dependencies]
-command-surface.workspace = true
+command-surface = { workspace = true, features = ["runtime"] }
 schemars.workspace = true
 
 web-shell.workspace = true

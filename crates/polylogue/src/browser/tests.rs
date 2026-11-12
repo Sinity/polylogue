@@ -561,7 +561,10 @@ fn grok_file_blobs(
                 polylogue_render::encode_document(
                     &page.document,
                     polylogue_render::Format::Markdown,
-                    polylogue_render::EncodeOptions::default(),
+                    polylogue_render::EncodeOptions {
+                        commands: Some(crate::commands::declarations()),
+                        ..Default::default()
+                    },
                     &mut output,
                 )
                 .unwrap();

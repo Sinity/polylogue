@@ -51,8 +51,7 @@ fn refused(response: command_surface::Answer<serde_json::Value>, expected: &str)
     );
 }
 fn call_cursor(call: &polylogue_model::read::ReadyCall) -> ResumeArguments {
-    let envelope: command_surface::RunnableRequest =
-        serde_json::from_value(call.http.arguments.clone()).unwrap();
+    let envelope: command_surface::RunnableRequest = call.request.clone();
     assert_eq!(envelope.operation, "read");
     envelope
 }

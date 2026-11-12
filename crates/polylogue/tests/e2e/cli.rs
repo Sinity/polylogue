@@ -8,6 +8,39 @@ use std::path::Path;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
+// Exercise the real CLI with the canonical envelope. Transport rendering itself
+// is covered by the command-declaration tests in the binary.
+fn continuation_arguments(call: &polylogue_model::read::ReadyCall) -> Vec<String> {
+    use command_surface::{Deadline, TokenBudget};
+    let request = &call.request;
+    assert!(matches!(request.operation.as_str(), "read" | "attachment"));
+    let mut arguments = vec![
+        "--json".into(),
+        request.operation.clone(),
+        "--request".into(),
+        serde_json::to_string(&request.arguments).unwrap(),
+        "--request-id".into(),
+        request.request_id.clone(),
+    ];
+    match request.deadline {
+        Deadline::Default => {}
+        Deadline::None => arguments.extend(["--deadline".into(), "none".into()]),
+        Deadline::Milliseconds(ms) => arguments.extend(["--deadline".into(), ms.to_string()]),
+    }
+    match request.budget_tokens {
+        TokenBudget::Default => {}
+        TokenBudget::Unlimited => arguments.extend(["--budget".into(), "none".into()]),
+        TokenBudget::Tokens(n) => arguments.extend(["--budget".into(), n.to_string()]),
+    }
+    if let Some(cursor) = &request.cursor {
+        arguments.extend(["--cursor".into(), cursor.clone()]);
+    }
+    if request.fresh {
+        arguments.push("--fresh".into());
+    }
+    arguments
+}
+
 const READY_DEADLINE: Duration = Duration::from_secs(60);
 
 pub(super) struct Daemon(Child);
@@ -512,14 +545,11 @@ fn ai_studio_drive_prompt_and_title_read_identically_after_a_rebuild_from_stored
                 break;
             };
             assert!(
-                continuations.insert(next.cli.clone()),
+                continuations.insert(serde_json::to_string(&next.request).unwrap()),
                 "repeated continuation"
             );
-            let stages = polylogue_model::command::effective_stages(&next.cli);
-            assert_eq!(stages.len(), 1);
-            assert_eq!(stages[0].program, "polylogue");
-            let mut args = vec!["--json"];
-            args.extend(stages[0].args.iter().map(String::as_str));
+            let continuation = continuation_arguments(&next);
+            let args = continuation.iter().map(String::as_str).collect::<Vec<_>>();
             out = cli(env, &args);
         }
         (header.unwrap(), items.into_values())

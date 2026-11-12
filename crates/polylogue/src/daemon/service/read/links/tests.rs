@@ -66,7 +66,7 @@ fn read_target(
 }
 
 fn resume(call: Option<&polylogue_model::read::ReadyCall>) -> Option<RunnableRequest> {
-    call.map(|call| serde_json::from_value(call.http.arguments.clone()).unwrap())
+    call.map(|call| call.request.clone())
 }
 
 fn nodes(items: &[ReadItem]) -> Vec<String> {

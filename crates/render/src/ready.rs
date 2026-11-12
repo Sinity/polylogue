@@ -1,29 +1,43 @@
-//! Pure links to complete operation-table supplied HTTP calls.
-use command_surface::{Failure, FailureKind};
-use polylogue_model::read::HttpCall;
+//! HTTP links derived from the request and its operation declaration.
+use command_surface::{Access, Failure, FailureKind, OperationDeclarations, RunnableRequest};
 use serde_json::Value;
 
 /// Encode the operation's complete HTTP form; no cursor parsing, target
 /// selection or option defaults occur here. Complex fields use JSON.
-pub fn http_url(call: &HttpCall) -> Result<String, Failure> {
-    if call.method != "GET"
-        || !call.path.starts_with('/')
-        || call.path.starts_with("//")
-        || call.path.contains(['?', '#'])
-        || !crate::html::safe_url(&call.path)
+pub fn http_url(
+    declarations: &OperationDeclarations,
+    request: &RunnableRequest,
+) -> Result<String, Failure> {
+    let operation = declarations
+        .descriptions()
+        .iter()
+        .find(|description| description.spec.name == request.operation)
+        .ok_or_else(|| Failure::new(FailureKind::BadRequest, "unknown operation"))?;
+    let path = operation
+        .spec
+        .http_route
+        .as_deref()
+        .ok_or_else(|| Failure::new(FailureKind::BadRequest, "operation has no HTTP route"))?;
+    if operation.spec.access != Access::Read
+        || !path.starts_with('/')
+        || path.starts_with("//")
+        || path.contains(['?', '#'])
+        || !crate::html::safe_url(path)
     {
         return Err(Failure::new(
             FailureKind::BadRequest,
             "read navigation requires a local GET operation",
         ));
     }
-    let fields = call.arguments.as_object().ok_or_else(|| {
+    let arguments = serde_json::to_value(request)
+        .map_err(|error| Failure::new(FailureKind::BadRequest, error.to_string()))?;
+    let fields = arguments.as_object().ok_or_else(|| {
         Failure::new(
             FailureKind::BadRequest,
             "read HTTP arguments must be an object",
         )
     })?;
-    let mut url = call.path.clone();
+    let mut url = path.to_owned();
     let mut first = true;
     for (name, value) in fields {
         // Null is a supplied wire value; only an absent field selects defaults.

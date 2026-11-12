@@ -4,7 +4,7 @@ use command_surface::{Failure, FailureKind, OperationDeclarations, RunnableReque
 use maud::{Markup, html};
 use polylogue_model::{
     currency::{CurrencyState, IndexCurrency},
-    read::{HttpCall, ReadError, ReadOptions, ReadPage, ReadyCall, View},
+    read::{ReadError, ReadOptions, ReadPage, ReadyCall, View},
 };
 use serde_json::Value;
 
@@ -35,21 +35,12 @@ pub fn read(
     frame.query = &query_display[1..query_display.len() - 1];
     frame.navigation = navigation_entries();
     frame.status = currency(&page.snapshot.freshness.owner);
-    let route = table
-        .descriptions()
-        .iter()
-        .find(|description| description.spec.name == request.operation)
-        .ok_or_else(|| Failure::new(FailureKind::BadRequest, "unknown read operation"))?
-        .spec
-        .http_route
-        .as_deref()
-        .ok_or_else(|| Failure::new(FailureKind::BadRequest, "read operation has no HTTP route"))?;
     let body = html! {
         (freshness_notice(&page.snapshot.freshness, &frame.command))
-        nav class="read-views" aria-label="Read view" { @for view in View::ALL { a href=(view_url(request,route,view)?) aria-current=[(view==page.document.header.view).then_some("page")] { (view) } } }
-        (navigation(page))
-        (crate::html::document(&page.document))
-        (navigation(page))
+        nav class="read-views" aria-label="Read view" { @for view in View::ALL { a href=(view_url(table,request,view)?) aria-current=[(view==page.document.header.view).then_some("page")] { (view) } } }
+        (navigation(page, table)?)
+        (crate::html::document(&page.document, Some(table))?)
+        (navigation(page, table)?)
         details class="read-position" { summary { "Recorded read position" } dl {
             dt { "Generation" } dd { (&page.snapshot.read_at.generation) }
             dt { "Index" } dd { (page.snapshot.read_at.index) }
@@ -64,19 +55,26 @@ pub fn read(
             .into_string(),
     ))
 }
-fn navigation(page: &ReadPage) -> Markup {
-    html! { nav class="paging" aria-label="Content pages" {
-        @if let Some(call)=&page.document.footer.previous { (follow(call,"Previous",false)) }
-        @if let Some(call)=&page.document.footer.next { (follow(call,"Next",true)) }
-    } }
+fn navigation(page: &ReadPage, table: &OperationDeclarations) -> Result<Markup, Failure> {
+    Ok(html! { nav class="paging" aria-label="Content pages" {
+        @if let Some(call)=&page.document.footer.previous { (follow(call,"Previous",false,table)?) }
+        @if let Some(call)=&page.document.footer.next { (follow(call,"Next",true,table)?) }
+    } })
 }
-fn follow(call: &ReadyCall, label: &str, next: bool) -> Markup {
-    match http_url(&call.http) {
+fn follow(
+    call: &ReadyCall,
+    label: &str,
+    next: bool,
+    table: &OperationDeclarations,
+) -> Result<Markup, Failure> {
+    Ok(match http_url(table, &call.request) {
         Ok(url) => {
             html! { a href=(url) rel=(if next {"next"}else{"prev"}) data-next[next] data-previous[!next] { (label) } }
         }
-        Err(_) => html! { span class="view-state" { (label) ": " code { (&call.cli) } } },
-    }
+        Err(_) => {
+            html! { span class="view-state" { (label) ": " code { (table.cli_command(&call.request)?) } } }
+        }
+    })
 }
 pub use crate::ready::http_url;
 fn currency(currency: &IndexCurrency) -> Markup {
@@ -120,7 +118,11 @@ pub fn navigation_entries() -> &'static [web_shell::Navigation<'static>] {
 
 /// A view switch is a new invocation. The model's own validation decides
 /// which view options must return to their defaults; cursor state is reset.
-fn view_url(request: &RunnableRequest, route: &str, view: View) -> Result<String, Failure> {
+fn view_url(
+    table: &OperationDeclarations,
+    request: &RunnableRequest,
+    view: View,
+) -> Result<String, Failure> {
     let mut args =
         request.arguments.as_object().cloned().ok_or_else(|| {
             Failure::new(FailureKind::BadRequest, "read arguments must be an object")
@@ -147,15 +149,14 @@ fn view_url(request: &RunnableRequest, route: &str, view: View) -> Result<String
             Err(error) => return Err(Failure::new(FailureKind::BadRequest, error.to_string())),
         }
     }
-    http_url(&HttpCall {
-        method: "GET".into(),
-        path: route.into(),
-        arguments: serde_json::to_value(RunnableRequest {
+    http_url(
+        table,
+        &RunnableRequest {
             arguments: Value::Object(args),
+            cursor: None,
             ..request.clone()
-        })
-        .expect("read invocation serializes"),
-    })
+        },
+    )
 }
 
 fn freshness_notice(freshness: &polylogue_model::currency::ReadFreshness, command: &str) -> Markup {

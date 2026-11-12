@@ -82,12 +82,12 @@ fn document_pages_preserve_exact_prefix_and_refuse_cross_content_stale_and_tampe
     assert!(html.contains("&lt;script&gt;") && html.contains("synthetic-secret-tail"));
     let first = reading(&env, reference, &["--page-tokens", "1"]);
     let next = first.document.footer.next.unwrap();
-    let args = next_args(&next);
+    let args = continuation_arguments(&next);
     let cursor = args.iter().position(|arg| arg == "--cursor").unwrap() + 1;
     assert!(!args[cursor].is_empty());
     assert!(!args[cursor].contains("synthetic-secret-tail"));
     let other_page = reading(&env, "document:claude-ai:other", &["--page-tokens", "1"]);
-    let other_args = next_args(&other_page.document.footer.next.unwrap());
+    let other_args = continuation_arguments(&other_page.document.footer.next.unwrap());
     let other_cursor = other_args.iter().position(|arg| arg == "--cursor").unwrap() + 1;
     for token in [
         other_args[other_cursor].clone(),

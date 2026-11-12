@@ -1,5 +1,6 @@
 //! Maud fragments shared by the web reader and script-free HTML exports.
 use crate::encode::value_text;
+use command_surface::{Failure, FailureKind, OperationDeclarations};
 use maud::{Markup, PreEscaped, html};
 use polylogue_model::read::*;
 use std::fmt::Display;
@@ -108,17 +109,30 @@ fn markdown(text: &str) -> Markup {
     pulldown_cmark::html::push_html(&mut output, events);
     PreEscaped(output)
 }
-fn ready(call: &ReadyCall) -> Markup {
-    html! { @if let Ok(url) = crate::ready::http_url(&call.http) { a class="ready-call" href=(url) { (&call.cli) } } @else { code class="ready-call" { (&call.cli) } } }
+fn ready(call: &ReadyCall, commands: Option<&OperationDeclarations>) -> Result<Markup, Failure> {
+    let commands = commands.ok_or_else(|| {
+        Failure::new(
+            FailureKind::BadRequest,
+            "rendering a ready call requires operation declarations",
+        )
+    })?;
+    let cli = commands.cli_command(&call.request)?;
+    Ok(
+        html! { @if let Ok(url) = crate::ready::http_url(commands, &call.request) { a class="ready-call" href=(url) { (cli) } } @else { code class="ready-call" { (cli) } } },
+    )
 }
 fn edit(edit: &EditView) -> Markup {
     html! { section class="edit" { h3 { (&edit.path) } p { @if edit.applied { "applied" } @else { "failed, may have changed the file" } " · " (edit.failed_edits) " failed edits" } pre { (value_text(&edit.diff)) } } }
 }
-fn card(card: &Card, zone: &jiff::tz::TimeZone) -> Markup {
-    html! { section class="read-card" { @match card {
+fn card(
+    card: &Card,
+    zone: &jiff::tz::TimeZone,
+    commands: Option<&OperationDeclarations>,
+) -> Result<Markup, Failure> {
+    Ok(html! { section class="read-card" { @match card {
         Card::Fields { title,figures } => { h3 { (title) } dl { @for figure in figures { dt { (&figure.name) } dd { (value(&figure.value)) @if let Some(unit)=&figure.unit { " " (unit) } } } } },
-        Card::Session { session,open,lineage_complete } => { @if lineage_complete == &ValueState::known(false) { p class="lineage-incomplete" { "Parents incomplete" } } h3 { "session:" (&session.id) " · " (session.title.as_ref().map(|title| title.text.as_str()).unwrap_or("title unknown")) } @for line in crate::encode::session_lines(session, zone) { p { (line) } } @if let Some(call)=open { (ready(call)) } },
-        Card::LinkNode { reference,lineage,title,parents,own_messages,inherited_messages,own_cost,tree_cost,seed,open } => { h3 { @if *seed { "▶ " } (reference) " · " (value(title)) } p { "parents: " (parents.join(", ")) } @if let Some(lineage)=lineage { p { (crate::encode::lineage_text(lineage)) } } p { (value(own_messages)) " own + " (value(inherited_messages)) " inherited · cost " (value(own_cost)) " own / " (value(tree_cost)) " tree" } @if let Some(call)=open { (ready(call)) } },
+        Card::Session { session,open,lineage_complete } => { @if lineage_complete == &ValueState::known(false) { p class="lineage-incomplete" { "Parents incomplete" } } h3 { "session:" (&session.id) " · " (session.title.as_ref().map(|title| title.text.as_str()).unwrap_or("title unknown")) } @for line in crate::encode::session_lines(session, zone) { p { (line) } } @if let Some(call)=open { (ready(call, commands)?) } },
+        Card::LinkNode { reference,lineage,title,parents,own_messages,inherited_messages,own_cost,tree_cost,seed,open } => { h3 { @if *seed { "▶ " } (reference) " · " (value(title)) } p { "parents: " (parents.join(", ")) } @if let Some(lineage)=lineage { p { (crate::encode::lineage_text(lineage)) } } p { (value(own_messages)) " own + " (value(inherited_messages)) " inherited · cost " (value(own_cost)) " own / " (value(tree_cost)) " tree" } @if let Some(call)=open { (ready(call, commands)?) } },
         Card::LinkEdge { from,to,relation,how,branch_point,spawning_call,copies_prefix,cross_link } => {
             // Stable session object URLs preserve recorded references without an execution envelope.
             @let href = |reference: &str| match polylogue_model::Reference::parse(reference) {
@@ -134,43 +148,73 @@ fn card(card: &Card, zone: &jiff::tz::TimeZone) -> Markup {
         },
         Card::Change { edit:e } => { (edit(e)) },
         Card::Live { state,waits_on,call,task,peers,processes } => { dl { dt { "State" } dd { (value(state)) } dt { "Waits on" } dd { (value(waits_on)) } dt { "Call" } dd { (value(call)) } dt { "Task" } dd { (value(task)) } } p { "Peers: " (peers.join(", ")) } ul { @for process in processes { li { code { (&process.reference) } " (parent " (process.parent.as_deref().unwrap_or("unknown")) ") · " (value(&process.command)) " · " (value(&process.state)) } } } },
-        Card::Delegation { card } => { h3 { "→ " (&card.child) } dl { dt { "Objective" } dd { (value(&card.objective)) } dt { "Result" } dd { (value(&card.result)) } dt { "Duration (ms)" } dd { (value(&card.duration_ms)) } dt { "Cost" } dd { (value(&card.cost)) } dt { "Result use" } dd { (value(&card.result_use)) } } p { "Retries: " (card.retries.join(", ")) } @if let Some(call)=&card.open { (ready(call)) } },
-    } } }
+        Card::Delegation { card } => { h3 { "→ " (&card.child) } dl { dt { "Objective" } dd { (value(&card.objective)) } dt { "Result" } dd { (value(&card.result)) } dt { "Duration (ms)" } dd { (value(&card.duration_ms)) } dt { "Cost" } dd { (value(&card.cost)) } dt { "Result use" } dd { (value(&card.result_use)) } } p { "Retries: " (card.retries.join(", ")) } @if let Some(call)=&card.open { (ready(call, commands)?) } },
+    } } })
 }
-pub fn item(item: &ReadItem, inline_limit: usize, zone: &jiff::tz::TimeZone) -> Markup {
-    visible_controls(item_markup(item, inline_limit, zone))
+pub fn item(
+    item: &ReadItem,
+    inline_limit: usize,
+    zone: &jiff::tz::TimeZone,
+    commands: Option<&OperationDeclarations>,
+) -> Result<Markup, Failure> {
+    Ok(visible_controls(item_markup(
+        item,
+        inline_limit,
+        zone,
+        commands,
+    )?))
 }
-fn item_markup(item: &ReadItem, inline_limit: usize, zone: &jiff::tz::TimeZone) -> Markup {
-    html! { section class="read-item" data-row="" tabindex="-1" data-reference=(&item.source.reference) data-block=[item.source.block] { @match &item.kind {
-        ItemKind::MessageHeader { header } => { h2 { time { (header.time.at.map(|at| crate::encode::recorded_time(Some(at), header.time.evidence, zone)).unwrap_or_else(||"--:--".into())) } " " (value(&header.author)) @if let Some(model)=header.model.value() { " · " (model) } @if header.inherited { " · inherited" } @match &header.branch { BranchState::Abandoned { n,total } => { " · abandoned branch " (n.map(|n|n.to_string()).unwrap_or_else(||"?".into())) "/" (total.map(|n|n.to_string()).unwrap_or_else(||"?".into())) }, BranchState::Unknown { versions:Some(n) } => { " · active version unknown: " (n) " versions" }, _ => {} } @if let Some(variant)=&header.variant { " · ≈ " (&variant.key) @if variant.stale { " (stale)" } @if let Some(call)=&variant.show_original { " " (ready(call)) } } } code { (&item.source.reference) } @for assertion in &header.assertions { aside { "◆ " (&assertion.kind) ": " (&assertion.value) " · " (assertion.author.to_string()) } } },
-        ItemKind::Text { text } => { div class="archived-text" { (markdown(text)) } },
-        ItemKind::Thinking { words,content } => { @match content {
-            ThinkingContent::Text { text } => { details class="thinking" { summary { "thinking (" (value(words)) " words)" } pre { (text) } } },
-            ThinkingContent::Collapsed => { p class="thinking" { "thinking (" (value(words)) " words)" } },
-            ThinkingContent::Encrypted => { p class="thinking" { "thinking (encrypted)" } }, ThinkingContent::Redacted => { p class="thinking" { "thinking (redacted)" } }, ThinkingContent::Absent { blocks } => { p class="thinking" { "thinking absent · " (blocks) " blocks" } }
-        } },
-        ItemKind::Call { call } => { details class="tool-call" open[call.input.is_some() || call.output.is_some()] { summary { "▸ " (crate::encode::call_label(call)) " " code { (value(&call.target)) } " " (value(&call.outcome)) @if let Some(exit)=call.exit { " · exit " (exit) } " · " (value(&call.duration_ms)) " ms" } @if let Some(error)=&call.error_line { p class="error" { (error) } } @if let Some(input)=&call.input { pre class="input" { (serde_json::to_string_pretty(input).expect("JSON serializes")) } } @if let Some(output)=&call.output { pre class="output" { (output) } } @if let Some(excerpt)=&call.output_excerpt { @for part in &excerpt.parts { @match part { OutputPart::Text {text,..}=>{ pre { (text) } }, OutputPart::Omission {lines,characters,..}=>{ p class="omission" { "… " (lines) " lines / " (characters) " characters skipped" } } } } @if let Some(open)=&excerpt.open { (ready(open)) } } @if let Some(e)=&call.edit { (edit(e)) } @if let Some(child)=&call.child { (card(&Card::Delegation { card:child.clone() }, zone)) } } },
-        ItemKind::Attachment { attachment,supplied_by,availability,link,inline_bytes,verified_hash,open } => { @if let Some(src)=inline_image(attachment,inline_bytes.as_deref(),verified_hash.as_ref(),inline_limit) { img src=(src) alt=(attachment.name.as_deref().unwrap_or("attachment")); } p class="attachment" { "▣ " @if let Some(url)=link.as_deref().filter(|url|safe_url(url)) { a href=(url) { (attachment.name.as_deref().unwrap_or("attachment")) } } @else { (attachment.name.as_deref().unwrap_or("attachment")) } " (" (attachment.media_type.as_deref().unwrap_or("media type unknown")) ", " (attachment.size.map(|n|format!("{n} bytes")).unwrap_or_else(||"size unknown".into())) ") · supplied by " (value(supplied_by)) " · " (value(availability)) @if let Some(open)=open { " " (ready(open)) } } },
-        ItemKind::TextFragment { record,origin } => { aside class="partial-source" { p { "Selected source text · " code { (&record.reference) } " · bytes " (record.fragment.coverage.start) ".." (record.fragment.coverage.end) } p { "Source classification: " (crate::encode::fragment_origin_label(origin)) " · recorded source length: " (record.fragment.coverage.total_bytes.map_or_else(||"unknown".into(),|total|total.to_string())) } pre class="archived-text" { (&record.fragment.text) } } },
-        ItemKind::LinkIssue { issue } => { aside class="indicator link-issue" { "Parents incomplete: " (issue) } },
-        ItemKind::Other { type_name,data } => { details { summary { (type_name) } pre { (serde_json::to_string_pretty(data).expect("JSON serializes")) } } },
-        ItemKind::Indicator { indicator,text,expand } => { aside class="indicator" data-kind=(indicator.as_str()) { (text) @if let Some(call)=expand { " " (ready(call)) } } },
-        ItemKind::Omission { count,unit,why,continue_call } => { aside class="omission" { "… " (value(count)) " " (unit) ": " (why) @if let Some(call)=continue_call { " " (ready(call)) } } },
-        ItemKind::Card { card:c } => { (card(c, zone)) },
-        ItemKind::Raw { record } => { p { (&record.reference) " · " (&record.input) " · " (&record.media_type) } @if let Ok(text)=std::str::from_utf8(&record.bytes) { pre { (text) } } @else { @let encoded = { use base64::Engine; base64::engine::general_purpose::STANDARD.encode(&record.bytes) }; p { "binary bytes (base64)" } pre { (encoded) } } },
-        ItemKind::Fragment { text,position,until,total } => { p { "Encoded ReadItem JSON fragment" } pre data-encoding="read_item_json" { (text) } p class="fragment-position" { "… encoded characters " (position.character) ".." (until) " of " (total) } },
-    } } }
+fn item_markup(
+    item: &ReadItem,
+    inline_limit: usize,
+    zone: &jiff::tz::TimeZone,
+    commands: Option<&OperationDeclarations>,
+) -> Result<Markup, Failure> {
+    Ok(
+        html! { section class="read-item" data-row="" tabindex="-1" data-reference=(&item.source.reference) data-block=[item.source.block] { @match &item.kind {
+            ItemKind::MessageHeader { header } => { h2 { time { (header.time.at.map(|at| crate::encode::recorded_time(Some(at), header.time.evidence, zone)).unwrap_or_else(||"--:--".into())) } " " (value(&header.author)) @if let Some(model)=header.model.value() { " · " (model) } @if header.inherited { " · inherited" } @match &header.branch { BranchState::Abandoned { n,total } => { " · abandoned branch " (n.map(|n|n.to_string()).unwrap_or_else(||"?".into())) "/" (total.map(|n|n.to_string()).unwrap_or_else(||"?".into())) }, BranchState::Unknown { versions:Some(n) } => { " · active version unknown: " (n) " versions" }, _ => {} } @if let Some(variant)=&header.variant { " · ≈ " (&variant.key) @if variant.stale { " (stale)" } @if let Some(call)=&variant.show_original { " " (ready(call, commands)?) } } } code { (&item.source.reference) } @for assertion in &header.assertions { aside { "◆ " (&assertion.kind) ": " (&assertion.value) " · " (assertion.author.to_string()) } } },
+            ItemKind::Text { text } => { div class="archived-text" { (markdown(text)) } },
+            ItemKind::Thinking { words,content } => { @match content {
+                ThinkingContent::Text { text } => { details class="thinking" { summary { "thinking (" (value(words)) " words)" } pre { (text) } } },
+                ThinkingContent::Collapsed => { p class="thinking" { "thinking (" (value(words)) " words)" } },
+                ThinkingContent::Encrypted => { p class="thinking" { "thinking (encrypted)" } }, ThinkingContent::Redacted => { p class="thinking" { "thinking (redacted)" } }, ThinkingContent::Absent { blocks } => { p class="thinking" { "thinking absent · " (blocks) " blocks" } }
+            } },
+            ItemKind::Call { call } => { details class="tool-call" open[call.input.is_some() || call.output.is_some()] { summary { "▸ " (crate::encode::call_label(call)) " " code { (value(&call.target)) } " " (value(&call.outcome)) @if let Some(exit)=call.exit { " · exit " (exit) } " · " (value(&call.duration_ms)) " ms" } @if let Some(error)=&call.error_line { p class="error" { (error) } } @if let Some(input)=&call.input { pre class="input" { (serde_json::to_string_pretty(input).expect("JSON serializes")) } } @if let Some(output)=&call.output { pre class="output" { (output) } } @if let Some(excerpt)=&call.output_excerpt { @for part in &excerpt.parts { @match part { OutputPart::Text {text,..}=>{ pre { (text) } }, OutputPart::Omission {lines,characters,..}=>{ p class="omission" { "… " (lines) " lines / " (characters) " characters skipped" } } } } @if let Some(open)=&excerpt.open { (ready(open, commands)?) } } @if let Some(e)=&call.edit { (edit(e)) } @if let Some(child)=&call.child { (card(&Card::Delegation { card:child.clone() }, zone, commands)?) } } },
+            ItemKind::Attachment { attachment,supplied_by,availability,link,inline_bytes,verified_hash,open } => { @if let Some(src)=inline_image(attachment,inline_bytes.as_deref(),verified_hash.as_ref(),inline_limit) { img src=(src) alt=(attachment.name.as_deref().unwrap_or("attachment")); } p class="attachment" { "▣ " @if let Some(url)=link.as_deref().filter(|url|safe_url(url)) { a href=(url) { (attachment.name.as_deref().unwrap_or("attachment")) } } @else { (attachment.name.as_deref().unwrap_or("attachment")) } " (" (attachment.media_type.as_deref().unwrap_or("media type unknown")) ", " (attachment.size.map(|n|format!("{n} bytes")).unwrap_or_else(||"size unknown".into())) ") · supplied by " (value(supplied_by)) " · " (value(availability)) @if let Some(open)=open { " " (ready(open, commands)?) } } },
+            ItemKind::TextFragment { record,origin } => { aside class="partial-source" { p { "Selected source text · " code { (&record.reference) } " · bytes " (record.fragment.coverage.start) ".." (record.fragment.coverage.end) } p { "Source classification: " (crate::encode::fragment_origin_label(origin)) " · recorded source length: " (record.fragment.coverage.total_bytes.map_or_else(||"unknown".into(),|total|total.to_string())) } pre class="archived-text" { (&record.fragment.text) } } },
+            ItemKind::LinkIssue { issue } => { aside class="indicator link-issue" { "Parents incomplete: " (issue) } },
+            ItemKind::Other { type_name,data } => { details { summary { (type_name) } pre { (serde_json::to_string_pretty(data).expect("JSON serializes")) } } },
+            ItemKind::Indicator { indicator,text,expand } => { aside class="indicator" data-kind=(indicator.as_str()) { (text) @if let Some(call)=expand { " " (ready(call, commands)?) } } },
+            ItemKind::Omission { count,unit,why,continue_call } => { aside class="omission" { "… " (value(count)) " " (unit) ": " (why) @if let Some(call)=continue_call { " " (ready(call, commands)?) } } },
+            ItemKind::Card { card:c } => { (card(c, zone, commands)?) },
+            ItemKind::Raw { record } => { p { (&record.reference) " · " (&record.input) " · " (&record.media_type) } @if let Ok(text)=std::str::from_utf8(&record.bytes) { pre { (text) } } @else { @let encoded = { use base64::Engine; base64::engine::general_purpose::STANDARD.encode(&record.bytes) }; p { "binary bytes (base64)" } pre { (encoded) } } },
+            ItemKind::Fragment { text,position,until,total } => { p { "Encoded ReadItem JSON fragment" } pre data-encoding="read_item_json" { (text) } p class="fragment-position" { "… encoded characters " (position.character) ".." (until) " of " (total) } },
+        } } },
+    )
 }
 /// Ordinary navigation consumes the daemon's sealed calls, never guesses URLs.
-pub fn footer(footer: &ReadFooter) -> Markup {
-    visible_controls(footer_markup(footer))
+pub fn footer(
+    footer: &ReadFooter,
+    commands: Option<&OperationDeclarations>,
+) -> Result<Markup, Failure> {
+    Ok(visible_controls(footer_markup(footer, commands)?))
 }
-fn footer_markup(footer: &ReadFooter) -> Markup {
-    html! { footer class="read-footer" { @for coverage in &footer.coverage { p { (coverage.omitted) " " (coverage.target.as_str()) " omitted from " (coverage.view) } } @for reference in &footer.referenced_by { p { "Referenced by " (&reference.reference) " · " (&reference.role) @if let Some(call)=&reference.open { " " (ready(call)) } } } @if let Some(call)=&footer.previous { nav aria-label="Previous page" { (ready(call)) } } @if let Some(call)=&footer.next { nav aria-label="Next page" { (ready(call)) } } } }
+fn footer_markup(
+    footer: &ReadFooter,
+    commands: Option<&OperationDeclarations>,
+) -> Result<Markup, Failure> {
+    Ok(
+        html! { footer class="read-footer" { @for coverage in &footer.coverage { p { (coverage.omitted) " " (coverage.target.as_str()) " omitted from " (coverage.view) } } @for reference in &footer.referenced_by { p { "Referenced by " (&reference.reference) " · " (&reference.role) @if let Some(call)=&reference.open { " " (ready(call, commands)?) } } } @if let Some(call)=&footer.previous { nav aria-label="Previous page" { (ready(call, commands)?) } } @if let Some(call)=&footer.next { nav aria-label="Next page" { (ready(call, commands)?) } } } },
+    )
 }
-pub fn document(document: &ReadDocument) -> Markup {
+pub fn document(
+    document: &ReadDocument,
+    commands: Option<&OperationDeclarations>,
+) -> Result<Markup, Failure> {
     let zone = crate::encode::header_zone(&document.header);
-    html! { article class="read-document" { (header(&document.header)) @for i in &document.items { (item(i, 0, &zone)) } (footer(&document.footer)) } }
+    Ok(
+        html! { article class="read-document" { (header(&document.header)) @for i in &document.items { (item(i, 0, &zone, commands)?) } (footer(&document.footer, commands)?) } },
+    )
 }
 /// Shared design tokens are embedded directly in the export. This is the same
 /// stylesheet served by web-shell, obtained through its pure asset adapter.

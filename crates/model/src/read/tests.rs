@@ -514,3 +514,45 @@ fn injected_and_summary_messages_are_harness_and_tool_only_rows_are_tools() {
     });
     assert_eq!(crate::WrittenBy::of(&tool), crate::WrittenBy::Harness);
 }
+
+#[test]
+fn follow_up_holds_one_request_per_direction() {
+    use command_surface::{Deadline, Format, Request, TokenBudget};
+    let request = Request {
+        operation: "read".into(),
+        arguments: serde_json::json!({"target":"session:test:one","view":"transcript","variants":["en","de"]}),
+        request_id: "next-child".into(),
+        deadline: Deadline::None,
+        budget_tokens: TokenBudget::Unlimited,
+        cursor: Some("opaque-next-cursor".into()),
+        fresh: true,
+        format: Format::Json,
+    };
+    let footer = ReadFooter {
+        next: Some(ReadyCall {
+            request: request.clone(),
+        }),
+        previous: Some(ReadyCall {
+            request: Request {
+                request_id: "previous-child".into(),
+                cursor: Some("opaque-previous-cursor".into()),
+                ..request
+            },
+        }),
+        ..Default::default()
+    };
+    let encoded = serde_json::to_string(&footer).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(
+        value["next"],
+        serde_json::json!({"operation":"read","arguments":{"target":"session:test:one","view":"transcript","variants":["en","de"]},"request_id":"next-child","deadline":null,"budget_tokens":null,"cursor":"opaque-next-cursor","fresh":true,"format":"json"})
+    );
+    assert_eq!(value["previous"]["request_id"], "previous-child");
+    assert_eq!(value["previous"]["cursor"], "opaque-previous-cursor");
+    assert_eq!(encoded.matches("opaque-next-cursor").count(), 1);
+    assert_eq!(encoded.matches("opaque-previous-cursor").count(), 1);
+    assert_eq!(
+        serde_json::from_str::<ReadFooter>(&encoded).unwrap(),
+        footer
+    );
+}

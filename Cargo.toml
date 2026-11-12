@@ -14,7 +14,7 @@ publish = false
 # the selected packages' features and can resolve a smaller dependency graph.
 [workspace.dependencies]
 web-shell = { git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master" }
-command-surface = { git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master" }
+command-surface = { git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master", default-features = false }
 authored = { git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master" }
 authored-generator = { git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master" }
 polylogue-model = { path = "crates/model" }

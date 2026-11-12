@@ -93,14 +93,6 @@ fn typed_page(output: &Output) -> ReadPage {
     assert!(output.status.success(), "{output:?}");
     serde_json::from_value(json(output)).unwrap()
 }
-fn ready_arguments(call: &ReadyCall) -> Vec<String> {
-    let stages = polylogue_model::command::effective_stages(&call.cli);
-    assert_eq!(stages.len(), 1);
-    assert_eq!(stages[0].program, "polylogue");
-    let mut args = vec!["--json".into()];
-    args.extend(stages[0].args.clone());
-    args
-}
 fn one_attachment(items: &[ReadItem]) -> &ReadItem {
     let attachments: Vec<_> = items
         .iter()
@@ -127,7 +119,7 @@ fn assert_available(env: &crate::Fixture, item: &ReadItem, descriptor: &Value) {
     );
     assert_eq!(attachment.source_id.as_deref(), Some("file-Native"));
     assert_eq!(availability.value().map(String::as_str), Some("present"));
-    let args = ready_arguments(
+    let args = continuation_arguments(
         open.as_deref()
             .expect("available stored attachment needs its typed open action"),
     );
@@ -425,9 +417,12 @@ fn unicode_attachment_pages_check_the_descriptor_and_refuse_a_changed_file() {
             complete = true;
             break;
         };
-        assert!(seen.insert(next.cli.clone()), "repeated continuation");
+        assert!(
+            seen.insert(serde_json::to_string(&next.request).unwrap()),
+            "repeated continuation"
+        );
         original_next.get_or_insert_with(|| next.clone());
-        args = ready_arguments(&next);
+        args = continuation_arguments(&next);
     }
     assert!(complete, "finite attachment reading did not finish");
     let joined = reconstructed.into_values();
@@ -477,7 +472,7 @@ fn unicode_attachment_pages_check_the_descriptor_and_refuse_a_changed_file() {
         .success()
     );
     let next = original_next.expect("small page must continue");
-    let args = ready_arguments(&next);
+    let args = continuation_arguments(&next);
     let refused = cli(
         &fixture.env(),
         &args.iter().map(String::as_str).collect::<Vec<_>>(),

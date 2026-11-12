@@ -508,6 +508,7 @@ impl Bundle {
                                 polylogue_render::Format::Markdown
                             },
                             polylogue_render::EncodeOptions {
+                                commands: Some(crate::commands::declarations()),
                                 standalone_html: true,
                                 ..Default::default()
                             },

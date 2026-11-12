@@ -88,8 +88,7 @@ fn stored_attachment_metadata_keeps_the_original_descriptor() {
         let call = open
             .as_ref()
             .expect("stored attachment bytes must be reachable");
-        let request: command_surface::RunnableRequest =
-            serde_json::from_value(call.http.arguments.clone()).unwrap();
+        let request: command_surface::RunnableRequest = call.request.clone();
         assert_eq!(request.operation, "attachment");
         let arguments: crate::protocol::attachment::Arguments =
             serde_json::from_value(request.arguments).unwrap();

@@ -77,7 +77,11 @@ fn generated_ready_cli_call_reaches_the_socket_with_its_identity_and_deadline() 
         format: Default::default(),
     };
     let ready = daemon.daemon.ready_call(&request).unwrap();
-    let stages = polylogue_model::command::effective_stages(&ready.cli);
+    let stages = polylogue_model::command::effective_stages(
+        &crate::commands::declarations()
+            .cli_command(&ready.request)
+            .unwrap(),
+    );
     assert_eq!(stages.len(), 1);
     assert_eq!(stages[0].args[0], "find");
     let root = tempfile::tempdir().unwrap();
@@ -312,9 +316,13 @@ fn literal_read_envelope_is_not_expanded_with_cli_defaults() {
             "generated" => {
                 let ready = daemon.daemon.ready_call(&expected).unwrap();
                 argv.extend(
-                    polylogue_model::command::effective_stages(&ready.cli)[0]
-                        .args
-                        .clone(),
+                    polylogue_model::command::effective_stages(
+                        &crate::commands::declarations()
+                            .cli_command(&ready.request)
+                            .unwrap(),
+                    )[0]
+                    .args
+                    .clone(),
                 );
             }
             "literal" => argv.extend([

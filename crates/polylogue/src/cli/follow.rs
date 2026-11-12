@@ -116,7 +116,10 @@ fn follow_session(
             match polylogue_render::Encoder::new(
                 &page.document.header,
                 polylogue_render::Format::Terminal,
-                polylogue_render::EncodeOptions::default(),
+                polylogue_render::EncodeOptions {
+                    commands: Some(crate::commands::declarations()),
+                    ..Default::default()
+                },
                 &mut out,
             ) {
                 Ok(started) => encoder = Some(started),
@@ -151,16 +154,7 @@ fn follow_session(
             }
             std::thread::sleep(QUIET_WAIT);
         }
-        let Ok(request) = serde_json::from_value(next.http.arguments.clone()) else {
-            return fail(
-                output,
-                json,
-                "internal",
-                "the follow call is not a request",
-                1,
-            );
-        };
-        call = request;
+        call = next.request.clone();
         let _ = io::stdout().flush();
     }
 }

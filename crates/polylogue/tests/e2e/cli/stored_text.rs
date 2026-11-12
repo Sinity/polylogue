@@ -290,10 +290,7 @@ fn indexed_tool_result_pages_reconstruct_the_exact_pair_once() {
                     break;
                 };
                 assert!(cursors.insert(serde_json::to_string(next).unwrap()));
-                let stages = polylogue_model::command::effective_stages(&next.cli);
-                assert_eq!(stages.len(), 1);
-                args = vec!["--json".into()];
-                args.extend(stages[0].args.clone());
+                args = continuation_arguments(next);
             }
             let values = items.into_values();
             let calls: Vec<_> = values

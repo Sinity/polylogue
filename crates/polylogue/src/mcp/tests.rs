@@ -624,16 +624,22 @@ fn generated_ready_mcp_call_executes_its_exact_typed_envelope() {
             deadline: command_surface::Deadline::None,
             budget_tokens: Default::default(),
             cursor: None,
-            fresh: false,
-            format: Default::default(),
+            fresh: true,
+            format: command_surface::Format::Json,
         })
         .unwrap();
+    let projected = crate::commands::declarations()
+        .mcp_call(&ready.request)
+        .unwrap();
+    let admitted: ToolCall = serde_json::from_value(projected["arguments"].clone()).unwrap();
+    assert!(admitted.fresh);
+    assert_eq!(admitted.format, command_surface::Format::Json);
     let mut session = Session {
         initialized: true,
         ..Default::default()
     };
     let reply = session
-        .prepare(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":ready.mcp}))
+        .prepare(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":crate::commands::declarations().mcp_call(&ready.request).unwrap()}))
         .answer(&daemon.daemon.archive)
         .unwrap();
     assert_eq!(reply["result"]["isError"], false, "{reply}");
@@ -641,8 +647,18 @@ fn generated_ready_mcp_call_executes_its_exact_typed_envelope() {
         reply["result"]["structuredContent"]["value"]["count"], 1,
         "{reply}"
     );
-    assert_eq!(ready.mcp["name"], "polylogue_read");
-    assert_eq!(ready.mcp["arguments"]["operation"], "query");
+    assert_eq!(
+        crate::commands::declarations()
+            .mcp_call(&ready.request)
+            .unwrap()["name"],
+        "polylogue_read"
+    );
+    assert_eq!(
+        crate::commands::declarations()
+            .mcp_call(&ready.request)
+            .unwrap()["arguments"]["operation"],
+        "query"
+    );
     // Every declared request retains an executable MCP form.
     let sql = daemon
         .daemon
@@ -657,14 +673,28 @@ fn generated_ready_mcp_call_executes_its_exact_typed_envelope() {
             format: Default::default(),
         })
         .unwrap();
-    assert_eq!(sql.mcp["name"], "polylogue_read");
-    assert_eq!(sql.mcp["arguments"]["operation"], "sql");
+    assert_eq!(
+        crate::commands::declarations()
+            .mcp_call(&sql.request)
+            .unwrap()["name"],
+        "polylogue_read"
+    );
+    assert_eq!(
+        crate::commands::declarations()
+            .mcp_call(&sql.request)
+            .unwrap()["arguments"]["operation"],
+        "sql"
+    );
     let reply = session
-        .prepare(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":sql.mcp}))
+        .prepare(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":crate::commands::declarations().mcp_call(&sql.request).unwrap()}))
         .answer(&daemon.daemon.archive)
         .unwrap();
     assert_eq!(reply["result"]["isError"], false, "{reply}");
-    assert_eq!(sql.http.path, "/api/v1/sql");
+    assert!(
+        polylogue_render::web::http_url(crate::commands::declarations(), &sql.request)
+            .unwrap()
+            .starts_with("/api/v1/sql?")
+    );
     let legacy = call_with_limit(
         &daemon.daemon.archive,
         "polylogue_read",

@@ -134,12 +134,11 @@ fn hook_items(
         let Some(next) = page.document.footer.next else {
             break;
         };
-        assert!(seen.insert(next.cli.clone()), "repeated continuation");
-        let stages = polylogue_model::command::effective_stages(&next.cli);
-        assert_eq!(stages.len(), 1);
-        assert_eq!(stages[0].program, "polylogue");
-        arguments = vec!["--json".into()];
-        arguments.extend(stages[0].args.clone());
+        assert!(
+            seen.insert(serde_json::to_string(&next.request).unwrap()),
+            "repeated continuation"
+        );
+        arguments = continuation_arguments(&next);
     }
     items.into_values()
 }
