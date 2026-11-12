@@ -42,7 +42,7 @@ blake3 = "1"
 memchr = "2"
 zstd = "0.13"
 jiff = { version = "0.2", default-features = false, features = ["std", "serde", "tz-system", "tzdb-zoneinfo", "tzdb-bundle-always"] }
-rusqlite = { version = "0.40.2", features = ["bundled", "functions", "blob", "hooks", "fallible_uint", "trace"] }
+rusqlite = { version = "0.40.2", features = ["bundled", "functions", "blob", "hooks", "fallible_uint", "trace", "backup"] }
 clap = { version = "4.6", features = ["string"] }
 clap_complete = { version = "4.6", features = ["unstable-dynamic"] }
 notify = "8.2"
