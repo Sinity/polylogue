@@ -591,6 +591,7 @@ fn start(conn: &Connection, session_pk: i64, change: &SessionChange) -> Result<S
          ORDER BY session_order, id",
     )?;
     let mut first_changed: Option<(String, String)> = None;
+    let mut parents: BTreeSet<&str> = change.parents.iter().map(String::as_str).collect();
     for &pk in &change.messages {
         if let Some(seq) = header(conn, session_pk, "message_pk", pk)? {
             lower(&mut limit, seq);
@@ -600,10 +601,12 @@ fn start(conn: &Connection, session_pk: i64, change: &SessionChange) -> Result<S
                 Ok((row.get(0)?, row.get(1)?))
             })
             .optional()?;
-        if let Some(order) = order
-            && first_changed.as_ref().is_none_or(|first| &order < first)
-        {
-            first_changed = Some(order);
+        if let Some(order) = order {
+            // Its own header and insertion bounds already cover this parent.
+            parents.remove(order.1.as_str());
+            if first_changed.as_ref().is_none_or(|first| &order < first) {
+                first_changed = Some(order);
+            }
         }
     }
     // Message headers follow this same order. The first unchanged successor
@@ -627,7 +630,7 @@ fn start(conn: &Connection, session_pk: i64, change: &SessionChange) -> Result<S
     let mut parent = conn.prepare_cached(
         "SELECT pk FROM message WHERE id = ?1 AND session_pk = ?2 AND duplicate_of IS NULL",
     )?;
-    for id in &change.parents {
+    for id in parents {
         if let Some(pk) = parent
             .query_row(params![id, session_pk], |row| row.get::<_, i64>(0))
             .optional()?
