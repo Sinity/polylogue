@@ -476,6 +476,7 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
             },
             String::new,
         );
+        engine.writer().unwrap().derive().unwrap();
         drop(engine);
         drop(lock);
         archive
