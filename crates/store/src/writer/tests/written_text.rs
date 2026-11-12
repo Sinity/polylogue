@@ -97,12 +97,15 @@ fn written_tool_text_searches_output_and_snippets_and_retracts_without_losing_in
                     .unwrap();
             assert_eq!(retained, original);
             assert_eq!(retained.content_hash().unwrap(), projection.source_version);
+            let terms = [polylogue_query::search::SnippetTerms::Word {
+                text: "needle".into(),
+                index: crate::search::SnippetIndex::Output,
+            }];
             let snippets = r
                 .snippets(
                     &[crate::search::SnippetQuery {
                         index: crate::search::SnippetIndex::Output,
-                        fts: "needle".into(),
-                        words: vec!["needle"],
+                        terms: &terms,
                     }],
                     &[crate::search::Within::Message(
                         block[0]["message_pk"].as_i64().unwrap(),

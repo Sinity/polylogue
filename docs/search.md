@@ -32,6 +32,8 @@ The compiler emits the non-text conditions as a filter plan plus a **search leg*
 
 All three return the same rows in the same order. Rows are joined to blocks, messages and sessions only for the page and what fills it.
 
+For this cost decision, the word's frequency counts eligible block occurrences before the non-text scope, including every block that shares an indexed text. The full-text vocabulary counts distinct stored texts; it can make a body repeated across thousands of messages look rare and underestimate expansion work. The store probes scope blocks and matching block occurrences together, stopping as soon as the 256-block or 64-to-one comparison is decided. The probe retains no prefix and changes only the physical plan.
+
 ## Counts
 
 `count` is the exact number of matching rows, computed after the page, snippets, attachments and requested explanations by a separate count plan in the same read transaction, and cached by the bound question and read position. Continuations reuse a count from that position. A cache miss or a changed read position runs the exact count again within the remaining deadline. If that deadline stops the count, `count` is `null` and `notes` give a runnable query with the deadline lifted; the prepared answer is unaffected. A count is never estimated.

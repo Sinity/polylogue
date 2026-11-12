@@ -16,7 +16,6 @@
 
 use crate::{Reader, Result, StoreError};
 use polylogue_model::text::{key, tokens};
-use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
 
@@ -59,14 +58,33 @@ pub enum Within {
 
 pub use polylogue_query::search::SnippetIndex;
 
-/// What a snippet looks for in one index: the FTS5 expression choosing the
-/// text and the words or phrases marked in it.
+/// The positive bound search terms whose first matching index supplies a snippet.
 #[derive(Debug, Clone)]
 pub struct SnippetQuery<'a> {
     pub index: SnippetIndex,
-    pub fts: String,
-    pub words: Vec<&'a str>,
+    pub terms: &'a [polylogue_query::search::SnippetTerms],
 }
+
+impl SnippetQuery<'_> {
+    fn fts(&self) -> Option<String> {
+        let expressions = self
+            .terms
+            .iter()
+            .filter_map(|term| term.fts(self.index))
+            .collect::<Vec<_>>();
+        (!expressions.is_empty()).then(|| expressions.join(" AND "))
+    }
+
+    fn words(&self) -> Vec<&str> {
+        let mut words = Vec::new();
+        for term in self.terms {
+            term.words(self.index, &mut words);
+        }
+        words
+    }
+}
+
+mod hits;
 
 struct Hit {
     /// Which of the queries found it.
@@ -85,10 +103,8 @@ impl Reader<'_> {
         queries: &[SnippetQuery<'_>],
         scopes: &[Within],
     ) -> Result<Vec<Option<Snippet>>> {
-        let hits = scopes
-            .iter()
-            .map(|scope| self.snippet_hit(queries, *scope))
-            .collect::<Result<Vec<_>>>()?;
+        let hits = self.snippet_hits(queries, scopes)?;
+        let words = queries.iter().map(SnippetQuery::words).collect::<Vec<_>>();
         let mut sessions: BTreeMap<i64, HashMap<(i64, usize), Vec<usize>>> = BTreeMap::new();
         for (index, hit) in hits.iter().enumerate() {
             if let Some(hit) = hit {
@@ -119,7 +135,7 @@ impl Reader<'_> {
                         ));
                     }
                 };
-                let (text, marks) = cut(text, &queries[query].words);
+                let (text, marks) = cut(text, &words[query]);
                 for index in indices {
                     let hit = hits[index].as_ref().expect("chosen hit index");
                     snippets[index] = Some(Snippet {
@@ -132,56 +148,6 @@ impl Reader<'_> {
             }
         }
         Ok(snippets)
-    }
-
-    /// The best-ranked text the first matching query finds within `within`.
-    /// Selection stays raw; chosen blocks are decoded after the batch.
-    fn snippet_hit(&self, queries: &[SnippetQuery<'_>], within: Within) -> Result<Option<Hit>> {
-        let (scope, pk) = match within {
-            Within::Session(pk) => (
-                "m.duplicate_of IS NULL AND COALESCE(m.on_active_path, 1) = 1 \
-                 AND m.session_pk IN \
-                 (WITH RECURSIVE tr(pk) AS (SELECT ?2 UNION SELECT l.child_pk FROM link l \
-                  JOIN session lp ON lp.id = l.parent_id JOIN tr ON tr.pk = lp.pk \
-                  WHERE l.kind = 'subagent' AND l.child_pk IS NOT NULL) SELECT pk FROM tr)",
-                pk,
-            ),
-            Within::Message(pk) => ("m.pk = ?2", pk),
-        };
-        for (query, SnippetQuery { index, fts, .. }) in queries.iter().enumerate() {
-            let (table, kinds, writer) = match index {
-                SnippetIndex::Prose => (
-                    "text_fts",
-                    "'text'",
-                    " AND m.written_by IN ('human', 'model')",
-                ),
-                SnippetIndex::Output => ("output_fts", "'tool_result','tool_call'", ""),
-            };
-            let sql = format!(
-                "SELECT b.pk, s.pk, s.id, m.id FROM {table} JOIN text tx ON tx.id = {table}.rowid \
-                 JOIN block b ON b.text_id = tx.id AND b.kind IN ({kinds}) \
-                 JOIN message m ON m.pk = b.message_pk JOIN session s ON s.pk = m.session_pk \
-                 WHERE {table} MATCH ?1 AND {scope}{writer} \
-                 ORDER BY bm25({table}), m.at DESC LIMIT 1"
-            );
-            let hit: Option<Hit> = self
-                .conn()?
-                .prepare_cached(&sql)?
-                .query_row(params![fts, pk], |r| {
-                    Ok(Hit {
-                        query,
-                        block: r.get(0)?,
-                        session_pk: r.get(1)?,
-                        session: r.get(2)?,
-                        message: r.get(3)?,
-                    })
-                })
-                .optional()?;
-            if hit.is_some() {
-                return Ok(hit);
-            }
-        }
-        Ok(None)
     }
 }
 
