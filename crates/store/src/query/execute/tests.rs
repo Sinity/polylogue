@@ -1,6 +1,7 @@
 use super::*;
 use crate::fixture::{Fixture, MessageFacts, SessionFacts};
 
+mod lineage;
 mod search;
 
 fn options() -> crate::query::Options {

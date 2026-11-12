@@ -248,3 +248,24 @@ pub const COUNT_FIELDS: &[(&str, &str)] = &[
     ("tool_calls", "tool_call_count"),
     ("errors", "error_count"),
 ];
+
+/// Exact structural ancestry excludes references and physical copy observations.
+pub const SESSION_LINEAGE: Construct = Construct {
+    name: "logical session",
+    catalog: "K6",
+    represents: "The root and depth of explicit provider ancestry",
+    reads: &[
+        "session.id",
+        "session.stub",
+        "link.parent_id",
+        "link.child_id",
+        "link.kind",
+    ],
+    unit: "session; parent steps",
+    denominator: Some("one physical session"),
+    unknown: "Missing parents, conflicting parents and cycles have no root or depth; missing parents set root_pending",
+    parameters: &[],
+    validity: Validity::Exact,
+    tests: &["arrival_order_permutation_oracle", "depth_cycle_reported"],
+    figures: &[],
+};

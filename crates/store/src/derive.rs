@@ -43,6 +43,7 @@ mod active_path;
 mod cost;
 pub(crate) mod counts;
 mod duplicates;
+mod lineage;
 pub(crate) mod links;
 mod repository;
 mod session;
@@ -93,6 +94,8 @@ enum Class {
 /// written.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Cause {
+    /// Explicit ancestry or a named endpoint changed.
+    LineageChanged,
     /// A repository lookup at or above the session's working directory
     /// changed (`derive_due.repo_lookup`).
     RepoLookupChanged,
@@ -124,6 +127,7 @@ pub(crate) enum Output {
         root: Option<String>,
     },
     Title(Option<String>),
+    Lineage(polylogue_model::read::SessionLineage),
     Links(links::Links),
     Cost(Vec<(i64, Option<i64>)>),
     Counts(counts::Counts),
@@ -149,6 +153,7 @@ impl Output {
             Self::ToolCalls(calls) => tool_calls::apply_reasons(tx, calls),
             Self::ActivePath(moved) => active_path::apply(tx, moved, changes),
             Self::Repository { repo, root } => repository::apply(tx, session_pk, repo, root),
+            Self::Lineage(value) => lineage::apply(tx, session_pk, value),
             Self::Title(title) => title::apply(tx, session_pk, title.as_deref()),
             Self::Links(links) => links::replace(tx, session_pk, links),
             Self::Cost(costs) => cost::apply(tx, costs),
@@ -190,6 +195,7 @@ impl Version {
 
 /// Every derivation, in an order where each comes after what it reads.
 const ALL: &[Derivation] = &[
+    lineage::DERIVATION,
     duplicates::DERIVATION,
     session::DERIVATION,
     tool_calls::COMMAND_NORM,
@@ -516,6 +522,7 @@ impl<'a> Pass<'a> {
                 let moved = stored.get(d.name) != Some(&self.versions[i]);
                 let stale = moved
                     || (due.rows_changed && d.class == Class::Session)
+                    || (due.lineage && d.dirtied_by.contains(&Cause::LineageChanged))
                     || (due.repo_lookup && d.dirtied_by.contains(&Cause::RepoLookupChanged))
                     || (due.rewritten && d.dirtied_by.contains(&Cause::MessagesRewritten));
                 stale.then_some((i, moved))
@@ -538,6 +545,7 @@ struct Taken {
 /// Why a session is due (`derive_due`).
 #[derive(Clone, Copy)]
 struct Due {
+    lineage: bool,
     rows_changed: bool,
     repo_lookup: bool,
     rewritten: bool,
@@ -559,7 +567,7 @@ impl Token {
     fn read(conn: &Connection, pk: i64) -> Result<Option<(Self, Due)>> {
         let due = conn
             .prepare_cached(
-                "SELECT marked, rows_changed, repo_lookup, rewritten FROM derive_due
+                "SELECT marked, rows_changed, repo_lookup, rewritten, lineage FROM derive_due
                  WHERE session_pk = ?1",
             )?
             .query_row([pk], |r| {
@@ -569,6 +577,7 @@ impl Token {
                         rows_changed: r.get(1)?,
                         repo_lookup: r.get(2)?,
                         rewritten: r.get(3)?,
+                        lineage: r.get(4)?,
                     },
                 ))
             })

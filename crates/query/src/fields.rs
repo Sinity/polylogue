@@ -595,9 +595,9 @@ fields! {
     SessionsRoot = sp(
         Sessions,
         "root",
-        "the subagent tree under the given session",
+        "sessions whose explicit ancestry has the given root",
     ),
-    SessionsDepth = sp(Sessions, "depth", "depth in the subagent tree"),
+    SessionsDepth = sp(Sessions, "depth", "depth in the explicit provider lineage"),
     SessionsLink = sp(
         Sessions,
         "link",
