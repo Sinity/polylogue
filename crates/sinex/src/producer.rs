@@ -396,7 +396,17 @@ impl Sinex {
             ));
         }
         for write in writes {
-            crate::products::require_source(&write.product)?;
+            if reading.delivery.is_none() {
+                crate::products::require_source(&write.product)?;
+            } else {
+                let key = polylogue_store::primary::ExportReadingKey {
+                    input: reading.input.clone(),
+                    chain: reading.chain,
+                    reading_version: reading.reading_version.clone(),
+                    length: reading.source_length.expect("validated source length"),
+                };
+                crate::products::require_reading(&write.product, &key)?;
+            }
             if write.product.reading() != Some(reading) || write.location.is_none() {
                 return Err(Error::Invalid(
                     "native fact differs from its original reading".into(),
@@ -408,15 +418,22 @@ impl Sinex {
             "parsed:{}:",
             blake3::hash(&serde_json::to_vec(&scope)?).to_hex()
         );
-        let desired = format!(
-            "{prefix}{}:",
-            blake3::hash(&serde_json::to_vec(&(
-                source,
-                writes,
-                crate::source_reference()
-            ))?)
-            .to_hex()
-        );
+        let mut original = blake3::Hasher::new();
+        serde_json::to_writer(&mut original, &(source, crate::source_reference()))?;
+        for write in writes {
+            serde_json::to_writer(
+                &mut original,
+                &(
+                    &write.product,
+                    &write.location,
+                    &write.parents,
+                    &write.machine,
+                    write.output_index,
+                ),
+            )?;
+            original.update(b"\n");
+        }
+        let desired = format!("{prefix}{}:", original.finalize().to_hex());
         let queue = self.queue()?;
         if let Some(entry) = queue
             .lookup(

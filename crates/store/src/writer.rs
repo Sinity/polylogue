@@ -573,16 +573,8 @@ impl Writer {
 
     /// Queues one batch. Blocks while the writer is busy and its queue is
     /// full, which is what holds the parse pool back.
-    pub fn send(&self, mut batch: Batch) -> Result<()> {
-        if !self.resolver.location().is_primary() || matches!(batch.change, Change::Reparse { .. })
-        {
-            self.resolver.batches(&mut [&mut batch])?;
-        }
-        self.tx
-            .as_ref()
-            .ok_or(StoreError::WriterGone)?
-            .send(Msg::Batch(Box::new(batch)))
-            .map_err(|_| StoreError::WriterGone)
+    pub fn send(&self, batch: Batch) -> Result<()> {
+        self.sender()?.send(batch)
     }
 
     /// A cheap handle the parse pool's threads send through.
@@ -883,6 +875,32 @@ impl WriterSender {
         mut group: Vec<crate::staging::PreparedBatch>,
         store: std::sync::Arc<crate::blobs::Blobs>,
     ) -> Result<Receiver<Vec<Result<crate::staging::StoredInput>>>> {
+        if self.0.sinex.is_some() {
+            for item in &mut group {
+                if matches!(item.batch.change, Change::Reparse { .. })
+                    && !item.batch.parse.is_empty()
+                {
+                    primary_capture::validate(item, self.0.resolver.location())?;
+                    let index = crate::archive::open_read(&self.0.resolver.location().index_db())?;
+                    primary::validate_primary_reading(&index, &item.batch)?;
+                    drop(index);
+                    let mut bodies = Vec::new();
+                    for file in &item.files {
+                        bodies.push((file.hash(), file.len()));
+                        match self
+                            .store_blob(NewBlob::whole(file.hash(), file.len()), Some(file.clone()))
+                        {
+                            Ok(_) | Err(StoreError::PrimaryPending { .. }) => {}
+                            Err(error) => return Err(error),
+                        }
+                    }
+                    self.wait_primary_blobs(&bodies)?;
+                    self.prepare_primary_batch(&mut item.batch)?;
+                    item.files.clear();
+                    item.batch.blobs.clear();
+                }
+            }
+        }
         let mut batches: Vec<_> = group.iter_mut().map(|item| &mut item.batch).collect();
         if !self.0.resolver.location().is_primary()
             || batches
@@ -899,6 +917,9 @@ impl WriterSender {
     }
 
     pub fn send(&self, mut batch: Batch) -> Result<()> {
+        if self.0.sinex.is_some() && matches!(batch.change, Change::Reparse { .. }) {
+            self.prepare_primary_batch(&mut batch)?;
+        }
         if !self.0.resolver.location().is_primary()
             || matches!(batch.change, Change::Reparse { .. })
         {
@@ -2109,7 +2130,7 @@ impl Inner {
         batches: impl Iterator<Item = &'a Batch> + Clone,
     ) -> Result<()> {
         let publications = if self.sinex.is_some() {
-            Some(self.prepare_primary_parsed(batches.clone())?)
+            Some(self.published_receipts(batches.clone())?)
         } else {
             None
         };

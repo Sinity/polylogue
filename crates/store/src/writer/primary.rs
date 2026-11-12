@@ -135,106 +135,29 @@ impl Inner {
 
     pub(super) fn validate_primary_reading(&self, batch: &Batch) -> Result<i64> {
         self.primary_cache_ready()?;
-        let Change::Reparse { chain } = batch.change else {
-            return Err(StoreError::Invalid(
-                "primary parsed products need their confirmed source chain".into(),
-            ));
-        };
-        if batch.acquisition.is_some()
-            || batch.observation.is_some()
-            || batch.new_blob.is_some()
-            || batch.basis.is_some()
-            || batch.required_disposition.is_some()
-            || batch.continues
-        {
-            return Err(StoreError::Invalid(
-                "a stored reading cannot acquire or rebind its source".into(),
-            ));
-        }
-        let exact: bool = self.index.query_row(
-            "SELECT EXISTS(SELECT 1 FROM source_input WHERE id=?1 AND format=?2)",
-            params![batch.input.id, batch.input.format],
-            |row| row.get(0),
-        )?;
-        if !exact {
-            return Err(StoreError::Invalid(
-                "stored reading input identity differs".into(),
-            ));
-        }
-        crate::staging::require_range(
-            &self.index,
-            "source_",
-            &batch.input.id,
-            chain,
-            0..batch.length,
-        )?;
-        if crate::source::Source::admitted_through(
-            &self.index,
-            &batch.input.id,
-            chain,
-            batch.length,
-        )?
-        .is_none()
-        {
-            return Err(StoreError::Invalid(
-                "stored reading source extents do not cover its range".into(),
-            ));
-        }
-        for step in &batch.parse {
-            step.counts.check()?;
-            if step.start > step.parsed_upto || step.parsed_upto > batch.length {
-                return Err(StoreError::Invalid(
-                    "stored reading exceeds its source range".into(),
-                ));
-            }
-        }
-        Ok(chain)
+        validate_primary_reading(&self.index, batch)
     }
 
-    pub(super) fn prepare_primary_parsed<'a>(
+    pub(super) fn published_receipts<'a>(
         &self,
         batches: impl Iterator<Item = &'a Batch>,
     ) -> Result<Vec<Vec<crate::primary::PublicationReceipt>>> {
-        let sinex = self.sinex.as_ref().expect("primary writer");
-        let mut publications = Vec::new();
-        for batch in batches {
-            let chain = self.validate_primary_reading(batch)?;
-            let root: String = self.index.query_row(
-                "SELECT id FROM source_material WHERE input=?1 AND chain=?2 AND offset=0 ORDER BY rowid LIMIT 1",
-                params![batch.input.id,chain], |row| row.get(0),
-            )?;
-            let mut admitted = Vec::new();
-            for step in &batch.parse {
-                let source = crate::primary::ParsedSource {
-                    root_material: root.clone(),
-                    reading: crate::primary::Reading::from_step(
-                        &batch.input,
-                        chain,
-                        Some(batch.length),
-                        step,
-                    ),
-                };
-                let writes = self.product_writes(crate::primary::products::parse(
-                    &batch.input,
-                    chain,
-                    Some(batch.length),
-                    step,
-                )?)?;
-                match sinex.prepare_parsed(&source, &writes)? {
-                    crate::primary::ParsedPublication::Following(_) => {
-                        return Err(StoreError::PrimaryPending {
-                            identity: root.clone(),
-                        });
-                    }
-                    crate::primary::ParsedPublication::Pending { identity } => {
-                        return Err(StoreError::PrimaryPending { identity });
-                    }
-                    crate::primary::ParsedPublication::Admitted(receipt) => admitted.push(receipt),
-                }
-            }
-            publications.push(admitted);
-        }
-        Ok(publications)
+        batches
+            .map(|batch| {
+                self.validate_primary_reading(batch)?;
+                batch
+                    .parse
+                    .iter()
+                    .map(|step| {
+                        step.publication.clone().ok_or_else(|| {
+                            StoreError::Invalid(
+                                "a primary batch has no admitted interpretation".into(),
+                            )
+                        })
+                    })
+                    .collect()
+            })
+            .collect()
     }
 
     pub(super) fn primary_request(
@@ -385,4 +308,50 @@ pub(super) fn product_writes(
         });
     }
     Ok(writes)
+}
+
+pub(super) fn validate_primary_reading(index: &Connection, batch: &Batch) -> Result<i64> {
+    let Change::Reparse { chain } = batch.change else {
+        return Err(StoreError::Invalid(
+            "primary parsed products need their confirmed source chain".into(),
+        ));
+    };
+    if batch.acquisition.is_some()
+        || batch.observation.is_some()
+        || batch.new_blob.is_some()
+        || batch.basis.is_some()
+        || batch.required_disposition.is_some()
+        || batch.continues
+    {
+        return Err(StoreError::Invalid(
+            "a stored reading cannot acquire or rebind its source".into(),
+        ));
+    }
+    let exact: bool = index.query_row(
+        "SELECT EXISTS(SELECT 1 FROM source_input WHERE id=?1 AND format=?2)",
+        params![batch.input.id, batch.input.format],
+        |row| row.get(0),
+    )?;
+    if !exact {
+        return Err(StoreError::Invalid(
+            "stored reading input identity differs".into(),
+        ));
+    }
+    crate::staging::require_range(index, "source_", &batch.input.id, chain, 0..batch.length)?;
+    if crate::source::Source::admitted_through(index, &batch.input.id, chain, batch.length)?
+        .is_none()
+    {
+        return Err(StoreError::Invalid(
+            "stored reading source extents do not cover its range".into(),
+        ));
+    }
+    for step in &batch.parse {
+        step.counts.check()?;
+        if step.start > step.parsed_upto || step.parsed_upto > batch.length {
+            return Err(StoreError::Invalid(
+                "stored reading exceeds its source range".into(),
+            ));
+        }
+    }
+    Ok(chain)
 }

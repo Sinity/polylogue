@@ -188,7 +188,7 @@ fn acquired_body(item: &PreparedBatch) -> Result<Option<AcquiredBody<'_>>> {
         .transpose()
 }
 
-fn validate(item: &PreparedBatch, archive: &Archive) -> Result<()> {
+pub(super) fn validate(item: &PreparedBatch, archive: &Archive) -> Result<()> {
     let batch = &item.batch;
     acquired_body(item)?;
     if batch.input.id.is_empty() || i64::try_from(batch.length).is_err() {
