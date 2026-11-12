@@ -22,6 +22,12 @@ No step rewrites `archive.db`, the segment log or the embeddings store to get pa
 
 **Stop.** On `SIGTERM` or `SIGINT` the daemon stops accepting connections and answers queued requests with `shutting_down`; lets the commit in progress finish or rolls it back; gives running requests 5 s to end after its transports stop, then stops without any that ignore their cancellation and logs how many it left; stops its pipeline at a writer-group boundary, abandoning uncommitted replacement readings and interrupting long derivation or deferred-index statements; checkpoints its SQLite write-ahead logs; records how the run ended; and releases the lock. A second signal ends the process at once, which is safe because the next open resumes every state a crash can leave. An interrupted derivation answers its waiter as cancelled, and the engine treats that requested cancellation as a clean stop. Committed progress stays. An interrupted derived transaction rolls back; the next start completes any unfinished indexing or derivation. Target: a stop within 5 s.
 
+During an index rebuild, shutdown can roll back a transaction that is replaying
+retained bytes. Its previous committed rows and source cursor remain unchanged;
+the next start resumes from that cursor. Captures of new bytes and authored
+writes already admitted finish normally. A recorded parse refusal or failure
+still commits its diagnosis.
+
 **How each run ended:** `clean` (with the signal), `refused` (exit 78, with the reason), `failed` (with the error kind), or `unknown` (no record: killed or crashed). `status` shows it. An `unknown` end is never given a cause by closeness in time to another event.
 
 **Liveness.** With `WatchdogSec`, the daemon feeds the watchdog after each `ping` its own socket answers, so a process that no longer answers its own socket is restarted by the service manager. Slow or stuck work is not a liveness failure: it is reported as stalled, never restarted away, because a restart would hide the defect that caused it.

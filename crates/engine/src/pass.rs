@@ -517,6 +517,10 @@ impl Engine {
             pass.errors.extend(report.errors);
         }
         self.execute(plans, &mut pass)?;
+        if self.stop.requested() {
+            pass.seconds = started.elapsed().as_secs_f64();
+            return Ok((pass, seen));
+        }
         if discover {
             // Every input's newest chain is read: a first build ends here, so
             // its read indexes exist while the older chains are read.

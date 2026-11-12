@@ -158,7 +158,8 @@ enum Msg {
 /// a derive pass ends after the transaction in progress, and a first build's
 /// ending (its deferred indexes) ends at its next step, rolling back the
 /// statement in progress. What committed stays; the rest is done at the next
-/// start. Ordinary writes are not affected.
+/// start. Capture and authored writes are not affected. Replaying retained bytes may
+/// roll back its unfinished index transaction; its earlier cursor remains.
 #[derive(Clone, Default)]
 pub struct WriterStop(Arc<std::sync::atomic::AtomicBool>);
 
@@ -1784,9 +1785,12 @@ impl Inner {
     /// minutes. Stopped, its statement and transaction roll back and the
     /// answer is `None`; the work is done again at the next start.
     fn until_stopped<T>(&mut self, work: impl FnOnce(&mut Self) -> Result<T>) -> Result<Option<T>> {
+        if self.stop.requested() {
+            return Ok(None);
+        }
         let stop = self.stop.clone();
         self.index
-            .progress_handler(10_000, Some(move || stop.requested()))?;
+            .progress_handler(1_000, Some(move || stop.requested()))?;
         let result = work(self);
         self.index.progress_handler(0, None::<fn() -> bool>)?;
         match result {
@@ -1887,14 +1891,15 @@ impl Inner {
     /// Writes a group in one transaction per database. If it fails, each
     /// batch is retried alone, so one bad batch costs only itself.
     fn write_group(&mut self, group: &[Box<Batch>]) {
-        if group.len() > 1 && self.write(group.iter().map(|b| &**b)).is_ok() {
+        let replay = group.iter().all(|batch| replay_only(batch));
+        if group.len() > 1 && self.write(group.iter().map(|b| &**b), replay).is_ok() {
             return;
         }
-        if group.len() == 1 && self.write(std::iter::once(&*group[0])).is_ok() {
+        if group.len() == 1 && self.write(std::iter::once(&*group[0]), replay).is_ok() {
             return;
         }
         for b in group {
-            if let Err(e) = self.write(std::iter::once(&**b)) {
+            if let Err(e) = self.write(std::iter::once(&**b), replay_only(b)) {
                 self.report
                     .errors
                     .push(format!("input {}: {e}", b.input.id));
@@ -2031,7 +2036,23 @@ impl Inner {
         Ok(outcome)
     }
 
-    fn write<'a>(&mut self, batches: impl Iterator<Item = &'a Batch> + Clone) -> Result<()> {
+    fn write<'a>(
+        &mut self,
+        batches: impl Iterator<Item = &'a Batch> + Clone,
+        replay: bool,
+    ) -> Result<()> {
+        if replay && self.sinex.is_none() {
+            self.until_stopped(|inner| inner.write_uninterrupted(batches))?
+                .ok_or(StoreError::WriterGone)
+        } else {
+            self.write_uninterrupted(batches)
+        }
+    }
+
+    fn write_uninterrupted<'a>(
+        &mut self,
+        batches: impl Iterator<Item = &'a Batch> + Clone,
+    ) -> Result<()> {
         if self.sinex.is_some() {
             return self.primary_products(batches);
         }
@@ -2122,6 +2143,7 @@ impl Inner {
         let itx = self
             .index
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        crate::fault::check("write.replay_rows", "")?;
         let counter = bump_counter(&itx)?;
         let changes = crate::change_summary::ChangeSummary::start(&itx)?;
         let mut stats = (0u64, 0u64);
@@ -2205,3 +2227,19 @@ fn weight(b: &Batch) -> usize {
 
 #[cfg(test)]
 mod tests;
+
+/// Replaying retained bytes can leave its last committed cursor for restart.
+/// Failure records still commit so a stop never erases their diagnosis.
+fn replay_only(batch: &Batch) -> bool {
+    matches!(batch.change, Change::Reparse { .. })
+        && batch.new_blob.is_none()
+        && batch.blobs.is_empty()
+        && batch.observation.is_none()
+        && batch.parse.iter().all(|step| {
+            !matches!(
+                step.progress,
+                polylogue_model::batch::StepProgress::Refused { .. }
+                    | polylogue_model::batch::StepProgress::Failed { .. }
+            )
+        })
+}

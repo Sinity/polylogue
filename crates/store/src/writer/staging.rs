@@ -132,6 +132,7 @@ impl Inner {
             return self.primary_store_group(group);
         }
         let independent = !atomic_acquisition(&group);
+        let replay = group.iter().all(|item| replay_only(&item.batch));
         for item in &group {
             if let Err(error) = self.check_staged(item) {
                 return errors(&group, error);
@@ -231,14 +232,14 @@ impl Inner {
             return results;
         }
         let Err(error) = crate::timing::time(crate::timing::Stage::Rows, || {
-            self.write(parsed.iter().map(|(_, batch)| batch))
+            self.write(parsed.iter().map(|(_, batch)| batch), replay)
         }) else {
             return results;
         };
         if independent && parsed.len() > 1 {
             for (position, batch) in &parsed {
                 if let Err(error) = crate::timing::time(crate::timing::Stage::Rows, || {
-                    self.write(std::iter::once(batch))
+                    self.write(std::iter::once(batch), replay)
                 }) {
                     results[*position] = rows_refused(results[*position].as_ref().ok(), error);
                 }
