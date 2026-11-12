@@ -215,3 +215,5 @@ fn no_position_confirmed_removal_requires_post_ack_head_in_the_applied_scope() {
         "a newer observed head must itself be saved before confirmed_removal"
     );
 }
+
+mod following;

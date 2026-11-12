@@ -4,7 +4,7 @@
 use super::*;
 use std::sync::mpsc::{RecvTimeoutError, Sender, channel};
 
-/// How long the follower waits between reads of the stream.
+/// How long the follower waits after reaching the current stream cut.
 const STREAM_POLL: std::time::Duration = std::time::Duration::from_secs(2);
 /// The longest wait while reading the stream keeps failing.
 const STREAM_POLL_LONGEST: std::time::Duration = std::time::Duration::from_secs(60);
@@ -72,29 +72,37 @@ fn run(
         };
         let outcome = follow_once(sinex, queue, index);
         wait = match &outcome {
+            Ok(followed) if followed.backlog => std::time::Duration::ZERO,
             Ok(_) => STREAM_POLL,
-            Err(_) => (wait * 2).min(STREAM_POLL_LONGEST),
+            Err(_) => (wait.max(STREAM_POLL) * 2).min(STREAM_POLL_LONGEST),
         };
         let error = outcome.as_ref().err().map(ToString::to_string);
         if queue.send(Msg::StreamFollowed(error)).is_err() {
             return;
         }
         if let Some(reply) = reply {
-            let _ = reply.send(outcome);
+            let _ = reply.send(outcome.map(|followed| followed.position));
         }
     }
 }
 
-/// One page: read after the applied position, saved by the writer, then
-/// acknowledged.
+struct Followed {
+    position: i64,
+    backlog: bool,
+}
+
+/// One bounded page per turn, so stop and synchronization requests are checked
+/// between applications even while draining a backlog.
 fn follow_once(
     sinex: &dyn crate::primary::Sinex,
     queue: &WriterQueue,
     index: &Connection,
-) -> Result<i64> {
+) -> Result<Followed> {
     let state = crate::primary::projection::replay_state(index)?;
     let cache = crate::primary::cache_identity(index)?;
     let page = sinex.confirmed(&state, &cache)?;
+    // New commits can arrive after the owner sampled the head for this page.
+    let delivered_position = page.iter().map(|event| event.position).max().unwrap_or(0);
     let (reply, wait) = sync_channel(1);
     queue
         .send(Msg::Confirmed(page, reply))
@@ -104,5 +112,18 @@ fn follow_once(
     sinex.acknowledge(&applied, &|event| {
         crate::primary::projection::has_fact(index, event)
     })?;
-    Ok(applied.applied_position.unwrap_or(0))
+    let progressed = applied.applied_position != state.applied_position
+        || applied.staged_delivery != state.staged_delivery
+        || applied.scope != state.scope
+        || applied.projection != state.projection;
+    let backlog = progressed
+        && (applied.projection.is_some()
+            || state.projection.is_some()
+            || applied.scope != state.scope
+            || applied.head.unwrap_or(0).max(delivered_position)
+                > applied.applied_position.unwrap_or(0));
+    Ok(Followed {
+        position: applied.applied_position.unwrap_or(0),
+        backlog,
+    })
 }

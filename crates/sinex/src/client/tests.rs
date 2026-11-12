@@ -24,7 +24,7 @@ fn config(server: &devkit::nats::Server, store: &Path, password_file: Option<&Pa
 
 // Low-level transport controls use one connection and explicit draining. Native
 // sender tests exercise the independently running worker.
-fn synchronous(config: &Config, authentication: &Authentication) -> Sinex {
+pub(super) fn synchronous(config: &Config, authentication: &Authentication) -> Sinex {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .enable_all()

@@ -2,7 +2,7 @@
 use super::Client;
 use crate::{Error, Result};
 use async_nats::jetstream;
-use futures_util::StreamExt;
+use futures_util::{StreamExt, stream};
 use polylogue_store::primary::{
     self as local, Confirmed, ConfirmedChange, ReplayControl, ReplayState,
 };
@@ -13,6 +13,9 @@ use sinex_protocol::{
 };
 use std::time::Duration;
 mod projection;
+
+/// Exact grant-checked requests in flight; results retain delivery order.
+const FETCH_CONCURRENCY: usize = 16;
 
 /// An event Polylogue cannot read (an unknown kind, a refused or
 /// inconsistent fetch) is refused at its position so the stream continues;
@@ -306,8 +309,7 @@ impl Client {
             .messages()
             .await
             .map_err(|error| Error::Unreachable(error.to_string()))?;
-        let mut page = Vec::new();
-        page.push(control_fact(ReplayControl::Head { position }));
+        let mut changes = Vec::new();
         let mut last = None;
         while let Some(message) = messages.next().await {
             let message = message.map_err(|error| Error::Unreachable(error.to_string()))?;
@@ -325,90 +327,108 @@ impl Client {
                 stream_instance: instance.clone(),
                 stream_sequence: sequence,
             });
-            let change: sinex_protocol::Confirmed = serde_json::from_slice(&message.payload)?;
-            let item = match change {
-                sinex_protocol::Confirmed::EventReference { commit_seq, event }
-                    if commit_seq > after =>
-                {
-                    match self.fetch_event(event, commit_seq).await {
-                        Ok(Some(fetched)) => {
-                            let same_position = fetched.commit_seq == commit_seq;
-                            let read = if same_position {
-                                decode_event(&fetched)
-                            } else {
-                                Err(Error::Invalid(
-                                    "a fetched event differs from its confirmed position".into(),
-                                ))
-                            };
-                            readable(
-                                commit_seq,
-                                &event.to_string(),
-                                format!("{}@{}", fetched.event_type, fetched.kind_version),
-                                same_position.then_some(fetched.kind_definition_hash.as_str()),
-                                read,
-                            )?
-                        }
-                        Ok(None) => Confirmed {
-                            position: commit_seq,
-                            event: event.to_string(),
-                            output_index: 0,
-                            native: None,
-                            change: ConfirmedChange::Tombstoned,
-                        },
-                        Err(error) => readable(
-                            commit_seq,
-                            &event.to_string(),
-                            String::new(),
-                            None,
-                            Err(error),
-                        )?,
-                    }
-                }
-                sinex_protocol::Confirmed::EventReference { .. } => continue,
-                sinex_protocol::Confirmed::Archived(change) => Confirmed {
-                    position: change.archived_seq,
-                    event: change.event.to_string(),
-                    output_index: 0,
-                    native: None,
-                    change: ConfirmedChange::Archived,
-                },
-                sinex_protocol::Confirmed::Restored(change) => Confirmed {
-                    position: change.restored_seq,
-                    event: change.event.to_string(),
-                    output_index: 0,
-                    native: None,
-                    change: ConfirmedChange::Restored,
-                },
-                sinex_protocol::Confirmed::Tombstoned {
-                    event, commit_seq, ..
-                } => Confirmed {
-                    position: commit_seq
-                        .ok_or_else(|| Error::Invalid("a tombstone has no position".into()))?,
-                    event: event.to_string(),
-                    output_index: 0,
-                    native: None,
-                    change: ConfirmedChange::Tombstoned,
-                },
-                sinex_protocol::Confirmed::Gap { reason } => {
-                    return Err(Error::Invalid(format!("confirmed history gap: {reason}")));
-                }
-                sinex_protocol::Confirmed::PositionComplete { commit_seq } => {
-                    if commit_seq >= after {
-                        page.push(control_fact(ReplayControl::Completion {
-                            position: commit_seq,
-                        }));
-                    }
-                    continue;
-                }
-            };
-            if item.position > after {
-                page.push(item);
-            }
+            changes.push(serde_json::from_slice::<sinex_protocol::Confirmed>(
+                &message.payload,
+            )?);
         }
+        let mut page = vec![control_fact(ReplayControl::Head { position })];
+        let mut reads = stream::iter(
+            changes
+                .into_iter()
+                .map(|change| self.read_change(change, after)),
+        )
+        .buffered(FETCH_CONCURRENCY);
+        while let Some(read) = reads.next().await {
+            page.extend(read?);
+        }
+        drop(reads);
         if let Some(delivery) = last {
             page.push(control_fact(ReplayControl::Delivered { delivery }));
         }
         Ok(page)
+    }
+
+    async fn read_change(
+        &self,
+        change: sinex_protocol::Confirmed,
+        after: i64,
+    ) -> Result<Option<Confirmed>> {
+        let item = match change {
+            sinex_protocol::Confirmed::EventReference { commit_seq, event }
+                if commit_seq > after =>
+            {
+                match self.fetch_event(event, commit_seq).await {
+                    Ok(Some(fetched)) => {
+                        let same_position = fetched.commit_seq == commit_seq;
+                        let read = if same_position {
+                            decode_event(&fetched)
+                        } else {
+                            Err(Error::Invalid(
+                                "a fetched event differs from its confirmed position".into(),
+                            ))
+                        };
+                        readable(
+                            commit_seq,
+                            &event.to_string(),
+                            format!("{}@{}", fetched.event_type, fetched.kind_version),
+                            same_position.then_some(fetched.kind_definition_hash.as_str()),
+                            read,
+                        )?
+                    }
+                    Ok(None) => Confirmed {
+                        position: commit_seq,
+                        event: event.to_string(),
+                        output_index: 0,
+                        native: None,
+                        change: ConfirmedChange::Tombstoned,
+                    },
+                    Err(error) => readable(
+                        commit_seq,
+                        &event.to_string(),
+                        String::new(),
+                        None,
+                        Err(error),
+                    )?,
+                }
+            }
+            sinex_protocol::Confirmed::EventReference { .. } => return Ok(None),
+            sinex_protocol::Confirmed::Archived(change) => Confirmed {
+                position: change.archived_seq,
+                event: change.event.to_string(),
+                output_index: 0,
+                native: None,
+                change: ConfirmedChange::Archived,
+            },
+            sinex_protocol::Confirmed::Restored(change) => Confirmed {
+                position: change.restored_seq,
+                event: change.event.to_string(),
+                output_index: 0,
+                native: None,
+                change: ConfirmedChange::Restored,
+            },
+            sinex_protocol::Confirmed::Tombstoned {
+                event, commit_seq, ..
+            } => Confirmed {
+                position: commit_seq
+                    .ok_or_else(|| Error::Invalid("a tombstone has no position".into()))?,
+                event: event.to_string(),
+                output_index: 0,
+                native: None,
+                change: ConfirmedChange::Tombstoned,
+            },
+            sinex_protocol::Confirmed::Gap { reason } => {
+                return Err(Error::Invalid(format!("confirmed history gap: {reason}")));
+            }
+            sinex_protocol::Confirmed::PositionComplete { commit_seq } => {
+                if commit_seq >= after {
+                    return Ok(Some(control_fact(ReplayControl::Completion {
+                        position: commit_seq,
+                    })));
+                }
+                return Ok(None);
+            }
+        };
+        Ok((item.position > after).then_some(item))
     }
 
     pub(crate) async fn acknowledge(

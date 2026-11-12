@@ -139,7 +139,7 @@ impl Client {
             });
             Ok(Some((live, archived)))
         }))
-        .buffered(16);
+        .buffered(FETCH_CONCURRENCY);
         let mut page = Vec::new();
         while let Some(read) = reads.next().await {
             let Some((live, archived)) = read? else {
