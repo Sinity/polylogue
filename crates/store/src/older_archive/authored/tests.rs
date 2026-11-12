@@ -27,7 +27,7 @@ fn notes_become_assertions_with_their_identity_revisions_and_withdrawals() {
     assert_eq!(first.value, Some(serde_json::json!("a first note")));
     assert_eq!(first.author, Author::Operator);
     assert_eq!(first.via, Channel::Import);
-    assert_eq!(first.created_at, Timestamp::from_unix_ms(10_000).unwrap());
+    assert_eq!(first.created_at, Timestamp::from_unix_ms(10_000));
     assert_eq!(
         first.links,
         [AssertionLink {

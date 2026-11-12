@@ -224,7 +224,7 @@ fn native_fact_preserves_captured_provenance_and_original_waiting_hash() {
     // Stored to the millisecond (`created_at INTEGER`, docs/assertions.md).
     assert_eq!(
         fact.created_at,
-        Timestamp::from_unix_ms(request("waiting").at.unix_ms()).unwrap()
+        Timestamp::from_unix_ms(request("waiting").at.unix_ms())
     );
     assert_eq!(fact.links[0].seen_hash, None);
     apply(&conn, std::slice::from_ref(&fact), 20).unwrap();
@@ -500,5 +500,53 @@ fn accepting_withdrawal_refuses_a_cycle_closed_by_an_imported_forward_link() {
             .unwrap()
             .exists([])
             .unwrap()
+    );
+}
+
+#[test]
+fn normal_revision_of_an_undated_rubric_uses_its_own_request_time_and_slot() {
+    let conn = db();
+    let req = request("undated-source");
+    let statement = statement(
+        AssertionKind::Rubric,
+        Some("synthetic-rubric"),
+        json!({"instructions":"Classify", "unit_query":"sessions", "fields":[{"name":"category","value_type":"string"}], "abstain":false,"confidence":false,"rationale":false}),
+        None,
+    );
+    let mut original =
+        AssertionFact::from_request("undated".into(), "undated".into(), statement, vec![], &req);
+    original.created_at = None;
+    apply(&conn, std::slice::from_ref(&original), 1).unwrap();
+    let patch = AssertionPatch {
+        value: Change::Set(
+            json!({"instructions":"Revised", "unit_query":"sessions", "fields":[{"name":"category","value_type":"string"}], "abstain":false,"confidence":false,"rationale":false}),
+        ),
+        ..Default::default()
+    };
+    let request = request("dated-revision");
+    let outcome = revise(
+        &conn,
+        &request,
+        &[RevisionReference::exact("undated".into(), "undated".into())],
+        &patch,
+        2,
+        &|_| Ok(None),
+        Owner::Standalone,
+    )
+    .unwrap();
+    assert!(!outcome.repeat);
+    let revised = get(&conn, &outcome.id).unwrap().unwrap().fact;
+    assert_eq!(
+        revised.created_at,
+        Some(Timestamp::from_unix_ms(request.at.unix_ms()).unwrap())
+    );
+    assert_eq!(revised.root, original.root);
+    assert_eq!(get(&conn, "undated").unwrap().unwrap().fact, original);
+    assert_eq!(
+        crate::assertions::currency::stored_heads(&conn, "undated").unwrap(),
+        [Reference::Assertion(RevisionReference::exact(
+            "undated".into(),
+            outcome.id
+        ))]
     );
 }

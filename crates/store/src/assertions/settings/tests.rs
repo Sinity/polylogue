@@ -35,7 +35,7 @@ fn setting(
         author: Author::Unattributed,
         via: Channel::Import,
         machine: "synthetic-host".into(),
-        created_at: date(at.unwrap_or(0)),
+        created_at: at.map(date),
         valid_until: None,
         links: base
             .into_iter()
@@ -61,7 +61,7 @@ fn withdraw(id: &str, target: &str, at: Option<i64>) -> AssertionFact {
         author: Author::Unattributed,
         via: polylogue_model::authorship::Channel::Import,
         machine: "synthetic-host".into(),
-        created_at: date(at.unwrap_or(0)),
+        created_at: at.map(date),
         valid_until: None,
         links: vec![AssertionLink {
             role: LinkRole::Withdraws,

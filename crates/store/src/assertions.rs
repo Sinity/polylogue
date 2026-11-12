@@ -20,6 +20,7 @@ pub(crate) use saved::{
     CurrentSavedDefinition, SavedInput, SavedPreparation, SavedResolver, saved_definition,
     saved_family, saved_query_snapshot,
 };
+pub(crate) mod imports;
 mod read;
 pub(crate) mod settings;
 mod write;
@@ -45,7 +46,7 @@ fn record(row: &rusqlite::Row<'_>) -> Result<Assertion> {
             author: row.id::<Author>(5)?,
             via: row.name::<Channel>(6)?,
             machine: row.get(7)?,
-            created_at: row.time_ms(8)?,
+            created_at: row.optional_time_ms(8)?,
             valid_until: row.optional_time_ms(9)?,
             links: Vec::new(),
         },
@@ -249,7 +250,7 @@ pub(crate) fn header(fact: &AssertionFact) -> authored::Header {
         value: fact.value.clone(),
         author: fact.author.to_string(),
         via: fact.via.as_str().into(),
-        at: fact.created_at.unix_ms(),
+        at: fact.created_at.map(Timestamp::unix_ms),
         revises,
         withdraws,
     }
@@ -306,7 +307,7 @@ pub(crate) fn insert(
         assertion.id, assertion.root, assertion.kind.as_str(), assertion.key,
         assertion.value.as_ref().map(serde_json::to_string).transpose()?,
         assertion.author.to_string(), assertion.via.as_str(), assertion.machine,
-        assertion.created_at.unix_ms(), assertion.valid_until.map(Timestamp::unix_ms), counter,
+        assertion.created_at.map(Timestamp::unix_ms), assertion.valid_until.map(Timestamp::unix_ms), counter,
     ])?;
     for link in &assertion.links {
         conn.execute(
@@ -410,17 +411,17 @@ impl<'a> StoredLinks<'a> {
             ..Self::new(conn)?
         })
     }
-    fn eligible(&self, created_at: i64) -> bool {
+    fn eligible(&self, created_at: Option<i64>) -> bool {
         match self.until {
             None => true,
             Some(Until {
                 millis,
                 inclusive: true,
-            }) => created_at <= millis,
+            }) => created_at.is_some_and(|at| at <= millis),
             Some(Until {
                 millis,
                 inclusive: false,
-            }) => created_at < millis,
+            }) => created_at.is_some_and(|at| at < millis),
         }
     }
     fn incoming(&self, reference: &Reference, role: LinkRole) -> Result<Vec<Revision>> {

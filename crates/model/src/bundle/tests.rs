@@ -338,7 +338,7 @@ fn an_assertion_record_carries_its_fact_without_an_invented_request() {
         author: Author::Operator,
         via: crate::authorship::Channel::Import,
         machine: "importing-host".into(),
-        created_at: crate::Timestamp::from_unix_ms(1).unwrap(),
+        created_at: Some(crate::Timestamp::from_unix_ms(1).unwrap()),
         valid_until: None,
         links: vec![AssertionLink {
             role: LinkRole::About,

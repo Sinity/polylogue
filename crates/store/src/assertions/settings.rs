@@ -97,7 +97,7 @@ fn history_boundaries(
         if let authored::Target::Revision(revision) = &target {
             let row = get(conn, &revision.rev)?
                 .ok_or_else(|| StoreError::NotFound(reference(revision).to_string()))?;
-            times.insert(row.fact.created_at);
+            times.extend(row.fact.created_at);
             pending.push(authored::Target::Root(revision.root.clone()));
         }
         // Restoration can be arbitrarily deep: walk exactly the withdrawal

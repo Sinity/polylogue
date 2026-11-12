@@ -187,7 +187,7 @@ fn saved_metadata_follows_committed_families_and_late_exact_query_bodies() {
     archive.writer.restore_assertion(AssertionFact {
         id:"historical-definition".into(),root:"historical-definition".into(),kind:AssertionKind::SavedQuery,
         key:Some("historical".into()),value:Some(serde_json::json!({"text":parent.text(),"hash":object.id.to_string(),"denominator":null})),
-        author:Author::Operator,via:Channel::Import,machine:"synthetic-machine".into(),created_at:Timestamp::from_unix_ms(1).unwrap(),valid_until:None,links:vec![],
+        author:Author::Operator,via:Channel::Import,machine:"synthetic-machine".into(),created_at: Some(Timestamp::from_unix_ms(1).unwrap()),valid_until:None,links:vec![],
     }).unwrap();
     state
         .refresh(&reads.reader().unwrap(), &path, "synthetic")
@@ -235,7 +235,7 @@ fn saved_metadata_follows_committed_families_and_late_exact_query_bodies() {
     archive.writer.restore_assertion(AssertionFact {
         id: "colliding-definition".into(), root: "colliding-definition".into(), kind: AssertionKind::SavedQuery,
         key: Some("historical".into()), value: Some(serde_json::json!({"text":parent.text(),"hash":object.id.to_string(),"denominator":null})),
-        author: Author::Operator, via: Channel::Import, machine: "synthetic-machine".into(), created_at: Timestamp::from_unix_ms(2).unwrap(), valid_until: None, links: vec![],
+        author: Author::Operator, via: Channel::Import, machine: "synthetic-machine".into(), created_at: Some(Timestamp::from_unix_ms(2).unwrap()), valid_until: None, links: vec![],
     }).unwrap();
     state
         .refresh(&reads.reader().unwrap(), &path, "synthetic")

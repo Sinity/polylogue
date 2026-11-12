@@ -1,10 +1,7 @@
-//! Table declarations. Each database has one baseline: an empty file is
-//! created at version 1 with exactly the tables declared here, and a file at
-//! version 1 with these tables opens. A newer file, or one whose tables differ
-//! (an archive in another format), is refused unchanged. An index refused
-//! this way is replaced by the archive's open, since it is derived.
-//! `embeddings.db` holds paid vectors and is never replaced: a file written by
-//! an earlier build gains the tables added since ([`ensure_embeddings`]).
+//! Current table declarations. The durable register converts its exact
+//! immediate predecessor at exclusive open; other differences are refused.
+//! Derived indexes with another schema are set aside and rebuilt. Paid-vector
+//! stores retain their bytes and gain declared additions at normal open.
 
 use crate::{Result, StoreError};
 use rusqlite::{Connection, OptionalExtension};
@@ -75,8 +72,8 @@ const EMBEDDINGS_ADDITIONS: &[&str] = &[
     include_str!("schema/query_vector.sql"),
 ];
 
-/// The version every baseline database is created at.
-pub const ARCHIVE_VERSION: u32 = 1;
+/// The current durable register version.
+pub const ARCHIVE_VERSION: u32 = 2;
 
 /// The index schema and row encoding version. Reading versions are independent.
 pub const INDEX_VERSION: u32 = 1;
@@ -264,16 +261,79 @@ pub fn building(conn: &Connection) -> Result<bool> {
     Ok(value.as_deref() == Some("1"))
 }
 
-/// Creates `archive.db` in an empty file, or opens one at the baseline.
+/// Creates the current durable register, or opens it under the archive's
+/// exclusive lock. The immediate predecessor gains unknown assertion times
+/// and source memberships in one transaction; all other shapes are refused.
 pub fn ensure_archive(conn: &Connection) -> Result<()> {
     crate::sql_functions::register(conn)?;
     check_format(conn, "archive")?;
-    // An empty file takes the identity before its tables, so no crash can
-    // leave a versioned archive without it.
-    if version(conn)? == 0 {
-        conn.pragma_update(None, "application_id", FORMAT_ID)?;
+    let found = version(conn)?;
+    if found > ARCHIVE_VERSION {
+        return Err(StoreError::NewerSchema {
+            database: "archive",
+            found,
+            current: ARCHIVE_VERSION,
+        });
     }
-    ensure(conn, "archive", &[ARCHIVE])
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    match found {
+        0 => {
+            tx.pragma_update(None, "application_id", FORMAT_ID)?;
+            tx.execute_batch(ARCHIVE)?;
+        }
+        1 => {
+            let previous = ARCHIVE.replacen(
+                crate::assertions::SCHEMA,
+                include_str!("schema/assertions_before_unknown_time.sql"),
+                1,
+            );
+            if !same_schema(&tx, &[&previous])? {
+                return Err(StoreError::NoMigration {
+                    database: "archive",
+                    found,
+                });
+            }
+            relax_assertion_time(&tx)?;
+        }
+        _ if same_schema(&tx, &[ARCHIVE])? => {}
+        _ => {
+            return Err(StoreError::NoMigration {
+                database: "archive",
+                found,
+            });
+        }
+    }
+    if found != ARCHIVE_VERSION {
+        set_version(&tx, ARCHIVE_VERSION)?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+fn relax_assertion_time(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    // Relax the constraint without rewriting assertion rows or their inbound
+    // references. The register remains under the same immediate transaction.
+    tx.execute_batch("ALTER TABLE assertion ALTER COLUMN created_at DROP NOT NULL")?;
+    let current = Connection::open_in_memory()?;
+    current.execute_batch(ARCHIVE)?;
+    let provenance: String = current.query_row(
+        "SELECT sql FROM sqlite_schema WHERE type='table' AND name='assertion_import'",
+        [],
+        |r| r.get(0),
+    )?;
+    tx.execute_batch(&provenance)?;
+    let file: String = tx.query_row(
+        "SELECT file FROM pragma_database_list WHERE name='main'",
+        [],
+        |r| r.get(0),
+    )?;
+    crate::fault::check("archive.authored_time_transition", &file)?;
+    if shape(tx)? != shape(&current)? {
+        return Err(StoreError::Invalid(
+            "authored-time transition did not produce the current register".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Creates `embeddings.db` in an empty file, or opens one at the baseline.
@@ -358,32 +418,6 @@ fn nearest_difference(
         .min_by_key(Vec::len)
         .unwrap_or_default()
         .join("; ")
-}
-
-/// Creates the database from `sql` in an empty file, or opens one at the
-/// baseline whose tables match `sql`. A newer database, or one whose tables
-/// differ, is refused unchanged.
-pub(crate) fn ensure(conn: &Connection, database: &'static str, sql: &[&str]) -> Result<()> {
-    let current = 1;
-    let found = version(conn)?;
-    if found > current {
-        return Err(StoreError::NewerSchema {
-            database,
-            found,
-            current,
-        });
-    }
-    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
-    if found == 0 {
-        for part in sql {
-            tx.execute_batch(part)?;
-        }
-        set_version(&tx, current)?;
-    } else if !same_schema(&tx, sql)? {
-        return Err(StoreError::NoMigration { database, found });
-    }
-    tx.commit()?;
-    Ok(())
 }
 
 /// Whether the database holds exactly the tables, indexes and triggers that
