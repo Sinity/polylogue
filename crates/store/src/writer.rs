@@ -345,8 +345,6 @@ const READ_ONLY_INDEXES: &[&str] = &[
     "tool_call_action",
     "tool_call_path",
     "tool_call_repo_command",
-    "link_child",
-    "event_after",
     "event_kind",
     "commit_link_hash",
     "pr_link_number",
@@ -429,7 +427,7 @@ impl Writer {
         let deferred_indexes = if building {
             let expected = Connection::open_in_memory()?;
             expected.execute_batch(crate::schema::INDEX)?;
-            expected.execute_batch(crate::schema::READ_INDEXES)?;
+            expected.execute_batch(crate::schema::OPEN_INDEXES)?;
             let mut defs = Vec::new();
             // One transaction: each drop committed alone cost a full sync.
             let tx = rusqlite::Transaction::new_unchecked(
