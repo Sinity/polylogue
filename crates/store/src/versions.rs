@@ -5,6 +5,9 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
 
+#[cfg(test)]
+mod tests;
+
 /// Each kind declares its source key, stored payload and shown-version order.
 #[derive(Clone, Copy)]
 pub(crate) enum VersionKind {
