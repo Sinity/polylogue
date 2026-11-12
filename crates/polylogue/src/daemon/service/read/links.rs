@@ -491,7 +491,7 @@ pub(super) fn page(
             target: target.clone(),
             options: digest.clone(),
             variants: request.options.variants.clone(),
-            versions: graph_version.clone(),
+            versions: graph_version,
             position: PagePosition::Links {
                 place: place.clone(),
             },
