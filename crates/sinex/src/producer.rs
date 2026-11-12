@@ -7,6 +7,7 @@ use polylogue_model::{
 use polylogue_store::primary::{
     Capture, CapturedInput, Material, PendingCapture, PreparedBody, PreparedInput, PreparedWrite,
     Product, ProductWrite, SourceLocation,
+    queue::{Completion, Lookup, Order},
 };
 use sinex_model::{InputRef, Manifest, MaterialId, MaterialRole};
 use sinex_protocol::{Ingress, MaterialFrame};
@@ -25,16 +26,39 @@ impl Sinex {
     }
 
     pub(crate) fn send_pending(&self) {
-        let result = self
-            .client_operation(async |client| client.retry_prepared().await)
-            .and_then(|()| self.drain_requests())
-            .and_then(|()| self.drain_observations())
-            .and_then(|()| self.drain_readings());
+        if let Some(sender) = &self.sender {
+            sender.wake();
+        }
+    }
+
+    pub(crate) fn drain_pending(&self) -> Result<()> {
+        let mut result = self.client_operation(async |client| client.retry_prepared().await);
+        if result.is_ok() || matches!(result, Err(Error::Refused { .. })) {
+            for complete in [
+                Self::drain_requests,
+                Self::drain_observations,
+                Self::drain_readings,
+            ] {
+                match complete(self) {
+                    Ok(()) => {}
+                    Err(error @ Error::Refused { .. }) => {
+                        if result.is_ok() {
+                            result = Err(error);
+                        }
+                    }
+                    Err(error) => {
+                        result = Err(error);
+                        break;
+                    }
+                }
+            }
+        }
         // Publication owns this complete retry result. Reading the confirmed
         // stream remains independent and cannot erase a failed publication.
         if let Ok(mut health) = self.health.lock() {
             health.publication_error = result.as_ref().err().map(ToString::to_string);
         }
+        result
     }
 
     pub(super) fn queue(&self) -> Result<std::sync::MutexGuard<'_, crate::spool::Spool>> {
@@ -43,14 +67,15 @@ impl Sinex {
             .map_err(|_| Error::Invalid("producer spool panicked".into()))
     }
 
-    pub(super) fn visit_prepared(
+    pub(super) fn visit_matching(
         &self,
+        lookup: Lookup<'_>,
         mut visit: impl FnMut(&crate::spool::Spool, crate::spool::Prepared) -> Result<()>,
     ) -> Result<()> {
         let queue = self.queue()?;
         let mut after = None;
         loop {
-            let page = queue.pending_after(after, 64)?;
+            let page = queue.lookup(lookup, after, None, Order::OldestFirst, 64)?;
             if page.is_empty() {
                 return Ok(());
             }
@@ -107,13 +132,17 @@ impl Sinex {
             "{prefix}{}:",
             blake3::hash(&serde_json::to_vec(&intent)?).to_hex()
         );
-        let mut latest = None;
-        self.visit_prepared(|_, entry| {
-            if entry.identity.starts_with(&prefix) {
-                latest = Some(entry);
-            }
-            Ok(())
-        })?;
+        let latest = self
+            .queue()?
+            .lookup(
+                Lookup::IdentityPrefix(&prefix),
+                None,
+                None,
+                Order::NewestFirst,
+                1,
+            )?
+            .into_iter()
+            .next();
         if let Some(entry) = latest.filter(|entry| entry.identity.starts_with(&desired)) {
             return Ok(PreparedWrite {
                 identity: entry.record.identity,
@@ -270,7 +299,7 @@ impl Sinex {
 
     pub(crate) fn pending_captures(&self) -> Result<Vec<PendingCapture>> {
         let mut pending = Vec::new();
-        self.visit_prepared(|queue, entry| {
+        self.visit_matching(Lookup::Captures, |queue, entry| {
             if entry.unresolved {
                 return Ok(());
             }
@@ -325,13 +354,17 @@ impl Sinex {
             .to_hex()
             .to_string();
         let prefix = format!("products:{scope}:");
-        let mut latest = None;
-        self.visit_prepared(|_, entry| {
-            if entry.identity.starts_with(&prefix) {
-                latest = Some(entry);
-            }
-            Ok(())
-        })?;
+        let latest = self
+            .queue()?
+            .lookup(
+                Lookup::IdentityPrefix(&prefix),
+                None,
+                None,
+                Order::NewestFirst,
+                1,
+            )?
+            .into_iter()
+            .next();
         let identity = match latest
             .filter(|entry| entry.identity.starts_with(&format!("{prefix}{digest}:")))
         {
@@ -557,21 +590,25 @@ impl Sinex {
 
     pub(crate) fn drain_observations(&self) -> Result<()> {
         let mut ready = Vec::new();
-        self.visit_prepared(|queue, entry| {
-            if entry.material().is_some()
-                && entry.phase.is_acknowledged()
-                && entry.capture().is_none()
-                && queue.capture_group(&entry.identity)?.is_none()
-                && let Ingress::Material { material, .. } = queue.decode_frame(&entry.identity)?
-                && matches!(
-                    material.parser.as_str(),
-                    "polylogue-products" | "polylogue-request-restore"
-                )
-            {
-                ready.push(entry.record.identity);
-            }
-            Ok(())
-        })?;
+        self.visit_matching(
+            Lookup::Completion(Completion::Observation),
+            |queue, entry| {
+                if entry.material().is_some()
+                    && entry.phase.is_acknowledged()
+                    && entry.capture().is_none()
+                    && queue.capture_group(&entry.identity)?.is_none()
+                    && let Ingress::Material { material, .. } =
+                        queue.decode_frame(&entry.identity)?
+                    && matches!(
+                        material.parser.as_str(),
+                        "polylogue-products" | "polylogue-request-restore"
+                    )
+                {
+                    ready.push(entry.record.identity);
+                }
+                Ok(())
+            },
+        )?;
         for observation in ready {
             let writes: Vec<ProductWrite> = {
                 let queue = self.queue()?;
@@ -838,28 +875,17 @@ impl Sinex {
         &self,
         visit: &mut dyn FnMut(&PendingAuthored) -> polylogue_store::Result<()>,
     ) -> polylogue_store::Result<()> {
-        let mut after = None;
-        loop {
-            let page = self.queue()?.pending_after(after, 64)?;
-            if page.is_empty() {
-                return Ok(());
-            }
-            for entry in page {
-                after = Some(entry.order);
-                if !entry.is_request() {
-                    continue;
-                }
-                let queue = self.queue()?;
-                requests::visit(&queue, &entry, visit)?;
-            }
-        }
+        Ok(self.visit_matching(Lookup::Requests, |queue, entry| {
+            requests::visit(queue, &entry, visit)?;
+            Ok(())
+        })?)
     }
 
     pub(crate) fn visit_pending_blobs(
         &self,
         visit: &mut dyn FnMut(&polylogue_store::NewBlob) -> polylogue_store::Result<()>,
     ) -> polylogue_store::Result<()> {
-        Ok(self.visit_prepared(|_, entry| {
+        Ok(self.visit_matching(Lookup::Blobs(None), |_, entry| {
             if let Some(Capture::Blob { hash, length }) = entry.capture().cloned() {
                 visit(&polylogue_store::NewBlob::whole(hash, length))
                     .map_err(|error| Error::Invalid(error.to_string()))?;
@@ -870,7 +896,7 @@ impl Sinex {
 
     pub(crate) fn drain_requests(&self) -> Result<()> {
         let mut ready = Vec::new();
-        self.visit_prepared(|queue, entry| {
+        self.visit_matching(Lookup::Completion(Completion::Request), |queue, entry| {
             if entry.is_request()
                 && entry.identity.starts_with("request:")
                 && matches!(
@@ -883,30 +909,44 @@ impl Sinex {
             }
             Ok(())
         })?;
+        let mut refusal = None;
         for identity in ready {
-            let request: PreparedRequest = {
-                let queue = self.queue()?;
-                let Ingress::Material { material, .. } = queue.decode_frame(&identity)? else {
-                    return Err(Error::Invalid("authored intent has no material".into()));
-                };
-                if material.source.name != "polylogue" || !matches!(material.source.version, 5 | 6)
-                {
-                    return Err(Error::Invalid(
-                        "authored intent belongs to an unsupported adapter source".into(),
-                    ));
+            match self.complete_request(&identity) {
+                Ok(()) => {}
+                Err(error @ Error::Refused { .. }) => {
+                    if refusal.is_none() {
+                        refusal = Some(error);
+                    }
                 }
-                crate::spool::decode_json(queue.body(&identity)?)?
+                Err(error) => return Err(error),
+            }
+        }
+        refusal.map_or(Ok(()), Err)
+    }
+
+    fn complete_request(&self, identity: &str) -> Result<()> {
+        let request: PreparedRequest = {
+            let queue = self.queue()?;
+            let Ingress::Material { material, .. } = queue.decode_frame(identity)? else {
+                return Err(Error::Invalid("authored intent has no material".into()));
             };
-            let mut dependencies = vec![identity.clone()];
-            let mut writes = Vec::new();
-            let mut waiting = false;
-            for attachment in request
-                .effect
-                .chats
-                .iter()
-                .flat_map(|change| &change.action.attachments)
-            {
-                self.visit_prepared(|queue,entry|{
+            if material.source.name != "polylogue" || !matches!(material.source.version, 5 | 6) {
+                return Err(Error::Invalid(
+                    "authored intent belongs to an unsupported adapter source".into(),
+                ));
+            }
+            crate::spool::decode_json(queue.body(identity)?)?
+        };
+        let mut dependencies = vec![identity.to_owned()];
+        let mut writes = Vec::new();
+        let mut waiting = false;
+        for attachment in request
+            .effect
+            .chats
+            .iter()
+            .flat_map(|change| &change.action.attachments)
+        {
+            self.visit_matching(Lookup::Blobs(Some(&attachment.blob.to_string())), |queue,entry|{
                     if matches!(entry.capture(),Some(Capture::Blob{hash,..}) if *hash==attachment.blob) {
                         if let Some(material)=Self::capture_material(queue,&entry)? {
                             writes.push(ProductWrite{location:Some(SourceLocation{material:material.id.clone(),anchor:0}),product:Product::Blob(material),parents:Vec::new(),machine:Some(request.request.machine.clone()),output_index:writes.len() as u64});
@@ -915,24 +955,23 @@ impl Sinex {
                     }
                     Ok(())
                 })?;
-            }
-            if waiting {
-                continue;
-            }
-            dependencies.sort();
-            dependencies.dedup();
-            writes.push(ProductWrite {
-                product: Product::Request(request.clone()),
-                location: Some(SourceLocation {
-                    material: crate::material_id(&self.config.producer, &identity).to_string(),
-                    anchor: 0,
-                }),
-                parents: Vec::new(),
-                machine: Some(request.request.machine),
-                output_index: writes.len() as u64,
-            });
-            self.complete_captures(&dependencies, &writes)?;
         }
+        if waiting {
+            return Ok(());
+        }
+        dependencies.sort();
+        dependencies.dedup();
+        writes.push(ProductWrite {
+            product: Product::Request(request.clone()),
+            location: Some(SourceLocation {
+                material: crate::material_id(&self.config.producer, identity).to_string(),
+                anchor: 0,
+            }),
+            parents: Vec::new(),
+            machine: Some(request.request.machine),
+            output_index: writes.len() as u64,
+        });
+        self.complete_captures(&dependencies, &writes)?;
         Ok(())
     }
 }

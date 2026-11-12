@@ -9,6 +9,7 @@ pub use acquisition::{
     SourceStatus, SourceSubject,
 };
 pub mod products;
+pub mod queue;
 pub mod raw_acquisition;
 pub mod replay;
 pub use raw_acquisition::{

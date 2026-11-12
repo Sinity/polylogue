@@ -15,6 +15,7 @@ mod material;
 pub(crate) mod native;
 mod producer;
 mod products;
+mod sender;
 mod spool;
 mod status;
 pub use status::Status;
@@ -28,10 +29,10 @@ pub enum Error {
     #[error("Sinex refused {name}: {reason}")]
     Refused { name: String, reason: String },
     #[error("Sinex recorded different logical bytes for {frame}")]
-    ReceiptConflict {
+    AcknowledgmentConflict {
         frame: String,
         offered_hash: String,
-        receipt: Box<sinex_protocol::Acknowledgment>,
+        acknowledgment: Box<sinex_protocol::Acknowledgment>,
     },
     #[error("{0}")]
     Invalid(String),
@@ -160,13 +161,16 @@ impl Config {
 }
 
 /// A connection to Sinex as the producer `config.producer`, used by the
-/// writer thread and the loop. One frame is in flight at a time.
+/// writer thread and the loop. Publication has its own bounded worker.
 pub struct Sinex {
     config: Config,
     authentication: Authentication,
     health: Arc<Mutex<status::Health>>,
     spool: Arc<Mutex<spool::Spool>>,
-    runtime: tokio::runtime::Runtime,
+    runtime: Arc<tokio::runtime::Runtime>,
+    publication: sinex_transport::backup::Publication,
+    sender: Option<sender::Sender>,
+    stopping: Option<Arc<sender::Stop>>,
     /// `None` only while dropping.
     client: Mutex<Option<Client>>,
     /// This host's name, for the register materials of requests.
@@ -192,15 +196,50 @@ impl Sinex {
             &config.store,
             &config.producer,
         )?));
-        Ok(Self {
+        let mut sinex = Self {
             config: config.clone(),
             authentication: authentication.clone(),
             health: Arc::new(Mutex::new(status::Health::default())),
+            publication: sinex_transport::backup::Publication::default(),
+            sender: None,
+            stopping: None,
             spool,
-            runtime,
+            runtime: Arc::new(runtime),
             client: Mutex::new(None),
             host: host.to_owned(),
-        })
+        };
+        sinex.start_sender()?;
+        Ok(sinex)
+    }
+
+    fn start_sender(&mut self) -> Result<()> {
+        let stop = Arc::new(sender::Stop::default());
+        let worker = Self {
+            config: self.config.clone(),
+            authentication: self.authentication.clone(),
+            health: self.health.clone(),
+            spool: self.spool.clone(),
+            runtime: self.runtime.clone(),
+            client: Mutex::new(
+                self.client
+                    .get_mut()
+                    .map_err(|_| Error::Invalid("the Sinex connection panicked".into()))?
+                    .take(),
+            ),
+            host: self.host.clone(),
+            publication: self.publication.clone(),
+            sender: None,
+            stopping: Some(stop.clone()),
+        };
+        let sender = sender::Sender::start(worker, stop)?;
+        self.spool
+            .lock()
+            .map_err(|_| Error::Invalid("producer spool panicked".into()))?
+            .set_waker(sender.waker());
+        self.sender = Some(sender);
+        self.stopping = None;
+        self.send_pending();
+        Ok(())
     }
 
     /// Opens this producer and requires Sinex to answer immediately.
@@ -219,19 +258,27 @@ impl Sinex {
         result
     }
 
-    /// Executes one client operation under the connection lock; frames never interleave.
+    /// Executes one operation under this connection's lock. Publication uses its own connection.
     fn client_operation<T>(&self, work: impl AsyncFnOnce(&mut Client) -> Result<T>) -> Result<T> {
         let mut client = self
             .client
             .lock()
             .map_err(|_| Error::Invalid("the Sinex connection panicked".into()))?;
         if client.is_none() {
-            let connected = self.runtime.block_on(Client::connect(
+            let connect = Client::connect_shared(
                 &self.config,
                 &self.authentication,
                 Arc::clone(&self.spool),
                 Arc::clone(&self.health),
-            ));
+                self.publication.clone(),
+                self.stopping.is_some(),
+            );
+            let connected = self.runtime.block_on(async {
+                match &self.stopping {
+                    Some(stop) => stop.until(connect).await,
+                    None => connect.await,
+                }
+            });
             match connected {
                 Ok(connected) => *client = Some(connected),
                 Err(error) => {
@@ -242,9 +289,13 @@ impl Sinex {
                 }
             }
         }
-        let result = self
-            .runtime
-            .block_on(work(client.as_mut().expect("connected client")));
+        let future = work(client.as_mut().expect("connected client"));
+        let result = self.runtime.block_on(async {
+            match &self.stopping {
+                Some(stop) => stop.until(future).await,
+                None => future.await,
+            }
+        });
         if let Ok(mut health) = self.health.lock() {
             health.reachable = Some(!matches!(result, Err(Error::Unreachable(_))));
         }
@@ -277,6 +328,9 @@ impl Drop for Sinex {
     /// The NATS client's subscriptions unsubscribe on a task of the runtime
     /// they were made in.
     fn drop(&mut self) {
+        if let Some(mut sender) = self.sender.take() {
+            sender.stop();
+        }
         let _inside = self.runtime.enter();
         if let Ok(client) = self.client.get_mut() {
             drop(client.take());
@@ -421,9 +475,8 @@ impl polylogue_store::primary::Sinex for Sinex {
         state: &polylogue_store::primary::ReplayState,
         cache: &str,
     ) -> polylogue_store::Result<Vec<polylogue_store::primary::Confirmed>> {
-        // Send durable preparations before reading the page that can confirm
-        // them. The follower owns both this read and its later acknowledgment.
-        self.send_pending();
+        // Publication has its own connection and worker. Reading confirmed
+        // pages never drains a producer backlog.
         Ok(self.read_client(async |client| client.confirmed(state, cache).await)?)
     }
     fn acknowledge(

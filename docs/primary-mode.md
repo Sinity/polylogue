@@ -24,7 +24,7 @@ producer-owned kinds exist. It then registers its `polylogue.*` declarations
 and requires the acknowledgment to name their exact definition hashes before
 sending materials or events. Each event selects its declaration by name and
 version. A refused hello or frame returns Sinex's reason. Retrying an operation
-with a durable refusal returns the same reason from its verified receipt.
+with a durable refusal returns the same reason from its verified acknowledgment.
 
 Each acknowledgment is one typed result (admitted, kinds registered, replayed
 or refused), and Polylogue checks that the result fits the operation it
@@ -34,9 +34,9 @@ other frame by an admission whose material is the prepared one. A complete
 producer acknowledgment can carry no admitted-event position: an
 empty frame, a repeated event or kind registration may admit no new events;
 a replay may archive readings without admitting replacements. Polylogue keeps
-that absent position in the original receipt. New admissions and replacements
-require their event position. A receipt alone never advances the local index.
-Ungrouped metadata operations can settle on their durable complete receipt.
+that absent position in the original acknowledgment. New admissions and replacements
+require their event position. A acknowledgment alone never advances the local index.
+Ungrouped metadata operations can finish with their durable complete acknowledgment.
 A group holding original source bytes also waits until the local index has
 applied a complete prefix in the same scope through an owner head observed
 after the acknowledgment. Sinex reads that head from its committed counter.
@@ -51,7 +51,7 @@ there are no new inputs to parse, while keeping the client's outstanding unackno
 
 A capture turn pins the existing read scope (the token naming which confirmed state a turn may use) before using cached confirmed state and checks that same token before reporting completion. A reset during a turn, or between turns, discards reconstructible input progress, parser and discovery caches; watched identities and entries still awaiting acknowledgment stay owned until their actual acknowledgments settle. The next turn reloads confirmed facts under a fresh scope and repeats discovery. The outer loop retries a scope interruption as a failed turn; queued writer and reset failures remain errors.
 
-A failed capture turn cannot mark earlier unacknowledged spool entries settled. The loop
+A failed capture turn cannot mark earlier unacknowledged spool entries finished. The loop
 keeps that continuation through a read or planning error until a completed
 pass observes its actual state; batch mode cannot report idle from that error.
 Affected paths remain scheduled through a failed turn and while confirmation
@@ -73,12 +73,12 @@ its seal remain unchanged.
 
 The stream follower alone reads and acknowledges confirmed pages. It sends each
 page to the writer and acknowledges it after durable application.
-Acknowledging a page retires the producer spool's operations it confirmed. An
-operation whose events Sinex admitted retires only when every one of those
+Acknowledging a page removes the producer spool operations that it confirmed. An
+operation whose events Sinex admitted is removed only when every one of those
 events has a fact in `index.db`; the applied position alone is not enough,
 because the confirmed stream can lose its newest messages in a host crash while
 later positions still arrive. Such an operation stays in the spool, with its
-bytes, until the events reach `index.db`. Operations, acquisitions and receipts
+bytes, until the events reach `index.db`. Operations, acquisitions and acknowledgments
 are prepared in dot-named directories and published by rename; opening the
 spool removes any such directory a crash left behind. Preparing a
 write does not start another stream read on the writer thread. Explicit
@@ -92,9 +92,9 @@ another acquisition, the sampler adopts the confirmed input and reading cursor.
 One transition adopts logical progress for watched inputs and exact database
 input IDs. It keeps parser continuation only at the same input, origin, chain
 and reading cursor, invalidates cached tail bytes when their stored range changes,
-and retires the unacknowledged spool entry only when the matching observation is covered.
+and removes the unacknowledged spool entry only when the matching observation is covered.
 A pending capture's raw byte cursor cannot advance that logical source state.
-Confirmed application can retire the producer body before the capture loop
+Confirmed application can remove the producer body before the capture loop
 receives its result. The loop then adopts the exact confirmed input, file facts
 and covered chain through that acquisition's actual range. A partial confirmed
 prefix leaves the remaining bytes and reading pending; the next normal plan
@@ -124,7 +124,7 @@ not a confirmation wait: successful parsing can start a database read in the
 same batch, while a failed parse stops that attempt. Errors in that attempt do
 not clear another input's confirmation wait. Once only confirmed application
 remains, the batch returns pending progress so its caller can wait for stream events.
-Later batches consult the original unacknowledged spool entries until it is retired; an
+Later batches consult the original unacknowledged spool entries until it is removed; an
 unchanged database does not need another physical read to report that wait.
 
 Confirmed payloads are checked against their current immutable kind declaration
@@ -146,6 +146,10 @@ What a host keeps locally in primary mode:
 - the embeddings store, local and backed up, since recomputing it costs money;
 - the producer client's spool, where bytes and prepared writes wait until Sinex acknowledges them; it sits under Sinex's store root on the same host. Material bytes are acknowledged before the events that cite them.
 
+The producer spool keeps immutable encoded frame and body files. One SQLite queue owns operation order, acknowledged or refused outcomes, names, dependencies, group membership and readiness. A preparation syncs its files before one queue transaction publishes them; an acquisition publishes all members together. Acknowledgments are validated once and store their admitted event identities alongside the finished phase. Confirmed removal selects acknowledged candidates by their applied position, checks the recorded event identities against the local index, and removes each complete group in one transaction. Refused and conflicting operations remain as evidence, stop their own dependents, and leave source-head and authored stale-base queries.
+
+A sender runs independently of confirmed-stream reads. It keeps several frames in flight, subscribes to each acknowledgment before transmission, and interleaves new independent captures with the oldest ready backlog. Durable queue changes wake the sender. Transient network or storage failures retry; a deterministic refusal remains diagnosed while unrelated operations continue. Shutdown cancels waits and preserves each unfinished operation's original identity and bytes.
+
 There is no local ledger of inputs, no local segment log and no send cursor. The Sinex adapter is the Cargo feature `sinex`, off in a plain `cargo build` and included in the Nix package.
 
 Every archive records its mode in `meta.json` before creating its stores. The
@@ -160,18 +164,17 @@ selects the intended mode; it cannot relabel an existing archive.
 
 Polylogue participates in Sinex's producer backup cut. Before Sinex fixes its
 core position, the producer freezes transmission through durable acknowledgment
-and freezes confirmed-stream spool retirement. Capture continues preparing new
+and freezes confirmed-stream spool confirmed removal. Capture continues preparing new
 operations. After the core cut, Polylogue pins the accepted spool operations
 under the queue mutex, including acquisition groups, original encoded frame and
-body bytes, immutable identities and receipts. It copies and hashes those pinned
-files outside the mutex into an immutable producer artifact. The coordinator
+body bytes, immutable identities and acknowledgments, and fixes a queue database read snapshot at the same cut. It copies that database snapshot and hashes the pinned files outside the mutex into an immutable producer artifact. The coordinator
 acquires those bytes before releasing the freeze through Sinex's participant
 protocol. A cancelled request stops pinning and copying and discards its partial
-artifact. Rebuildable indexes and unpublished temporary operations are excluded.
+artifact. Unpublished temporary operations are excluded.
 
 The producer artifact restores under the same producer identity alongside its
 paired core cut. Receipts in that artifact precede the core cut; operations
-without receipts retry their original identities. A later live spool or a
+without acknowledgments retry their original identities. A later live spool or a
 producer label alone cannot replace this artifact. A missing participant leaves
 the unacknowledged spool entries incomplete.
 

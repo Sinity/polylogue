@@ -33,7 +33,7 @@ pub(super) fn acquire(
         count: 1,
         mode,
     };
-    let receipt = sinex.prepare_input_group(&plan, &mut |emit| {
+    let acknowledgment = sinex.prepare_input_group(&plan, &mut |emit| {
         let mut input = capture(bytes, Vec::new());
         input.raw_range = Some(RawRange {
             start: 0,
@@ -42,7 +42,7 @@ pub(super) fn acquire(
         input.basis = Some(basis.clone());
         emit(input, vec![body(root, bytes)])
     })?;
-    match receipt {
+    match acknowledgment {
         CaptureReceipt::Accepted { write } => Ok(write),
         CaptureReceipt::UnresolvedBasisConflict { .. } => {
             Err(polylogue_store::StoreError::Conflict(
@@ -53,8 +53,8 @@ pub(super) fn acquire(
     }
 }
 
-fn accepted(receipt: CaptureReceipt) -> PreparedWrite {
-    let CaptureReceipt::Accepted { write } = receipt else {
+fn accepted(acknowledgment: CaptureReceipt) -> PreparedWrite {
+    let CaptureReceipt::Accepted { write } = acknowledgment else {
         panic!("accepted preparation required")
     };
     write

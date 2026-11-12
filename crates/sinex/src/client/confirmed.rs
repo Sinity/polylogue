@@ -392,8 +392,8 @@ impl Client {
         state: &ReplayState,
         applied: &dyn Fn(&str) -> Result<bool>,
     ) -> Result<()> {
-        // A confirmed delivery may retire original producer bytes. Freeze must
-        // cover that retirement until its immutable queue cut is acquired.
+        // A confirmed delivery may remove original producer bytes. Freeze must
+        // cover that confirmed removal until its immutable queue cut is acquired.
         let _publication = self.publication.enter().await;
         for message in &self.pending {
             let info = message
@@ -418,26 +418,26 @@ impl Client {
             .await
             .map_err(|error| Error::Unreachable(error.to_string()))?;
         self.pending.clear();
-        let retirement = {
+        let confirmed_removal = {
             let health = self
                 .health
                 .lock()
                 .map_err(|_| Error::Invalid("producer health panicked".into()))?;
-            retirement_state(state, &health)
+            confirmed_removal_state(state, &health)
         };
         self.spool
             .lock()
             .map_err(|_| Error::Invalid("producer spool panicked".into()))?
-            .retire(&retirement, applied)?;
+            .remove_confirmed(&confirmed_removal, applied)?;
         Ok(())
     }
 }
 
-/// A receipt without an admitted-event position needs a completed prefix
+/// An acknowledgment without an admitted-event position needs a completed prefix
 /// whose owner head was observed after the durable acknowledgment. The owner
 /// reads that head from its committed counter, not from the delivery broker.
-fn retirement_state(state: &ReplayState, health: &crate::status::Health) -> ReplayState {
-    let mut retirement = state.clone();
+fn confirmed_removal_state(state: &ReplayState, health: &crate::status::Health) -> ReplayState {
+    let mut confirmed_removal = state.clone();
     let fresh_head = health.owner_scope.as_ref() == state.scope.as_ref()
         && health.owner_position == state.head
         && health.position_observed.is_some_and(|observed| {
@@ -446,9 +446,9 @@ fn retirement_state(state: &ReplayState, health: &crate::status::Health) -> Repl
                 .is_none_or(|acknowledged| observed >= acknowledged)
         });
     if !fresh_head {
-        retirement.head = None;
+        confirmed_removal.head = None;
     }
-    retirement
+    confirmed_removal
 }
 
 fn control_fact(control: ReplayControl) -> Confirmed {
