@@ -20,6 +20,7 @@ async fn reply(
 async fn connections(
     server: &devkit::nats::Server,
     root: &std::path::Path,
+    spool: Arc<std::sync::Mutex<crate::spool::Spool>>,
 ) -> (async_nats::Client, Client) {
     let daemon = async_nats::ConnectOptions::with_user_and_password(
         "daemon".into(),
@@ -64,9 +65,7 @@ async fn connections(
         health: Default::default(),
         consumer: None,
         pending: Vec::new(),
-        spool: Arc::new(std::sync::Mutex::new(
-            crate::spool::Spool::open(root, "polylogue").unwrap(),
-        )),
+        spool,
         publication: Default::default(),
         _backup: None,
     };
@@ -120,7 +119,7 @@ fn background_follow_drains_split_position_after_durable_staging_then_waits_when
     let (observed, observations) = std::sync::mpsc::channel();
     let index = archive.clone();
     let (daemon, mut consumers) = sinex.runtime.block_on(async {
-        let (daemon, client) = connections(&server, &config.store).await;
+        let (daemon, client) = connections(&server, &config.store, sinex.spool.clone()).await;
         *sinex.client.lock().unwrap() = Some(client);
         for number in 1..=300 {
             publish(
@@ -295,7 +294,8 @@ fn confirmed_fetches_overlap_with_a_bound_and_keep_order_refusals_and_erasure() 
         .unwrap();
     runtime.block_on(async {
         tokio::time::timeout(Duration::from_secs(10), async {
-            let (daemon, mut client) = connections(&server, root.path()).await;
+            let spool = Arc::new(std::sync::Mutex::new(crate::spool::Spool::open(root.path(), "polylogue").unwrap()));
+            let (daemon, mut client) = connections(&server, root.path(), spool).await;
             let subjects = Subjects::new("auth");
             let mut consumers = daemon.subscribe(subjects.confirmed_consumer("polylogue")).await.unwrap();
             let mut fetches = daemon.subscribe(subjects.fetch_event("polylogue")).await.unwrap();
@@ -315,11 +315,9 @@ fn confirmed_fetches_overlap_with_a_bound_and_keep_order_refusals_and_erasure() 
                 for _ in 0..16 { interrupted.push(fetches.next().await.unwrap()); }
                 inflight.send(()).unwrap();
                 resumed.await.unwrap();
-                for request in interrupted {
-                    reply(&daemon, request, FetchEventReply::Refused(sinex_protocol::FetchRefusal {
-                        kind: sinex_protocol::FetchRefusalKind::Denied, reason: "cancelled attempt".into(),
-                    })).await;
-                }
+                // Their readers were cancelled; the framed reply has nobody
+                // to acknowledge it. The resumed call owns fresh reply inboxes.
+                drop(interrupted);
                 let request = consumers.next().await.unwrap();
                 reply(&daemon, request, provisioned()).await;
                 let mut count = 0;
