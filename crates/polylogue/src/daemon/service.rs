@@ -1148,7 +1148,7 @@ pub fn start(
     stopped_attempt: Option<polylogue_model::batch::StoppedAttempt>,
 ) -> std::io::Result<Runtime> {
     let root = deployment.archive.as_path();
-    if let Some(stopped) = super::storage_stop::this_boot(root) {
+    if let Some(stopped) = super::storage_stop::this_boot(&deployment.paths, root) {
         return Err(std::io::Error::other(stopped));
     }
     let completion_path = deployment.paths.completion_catalog(root);
@@ -1225,8 +1225,8 @@ pub fn start(
         busy: engine.is_some(),
         ..LoopStatus::default()
     }));
-    let mail = crate::mailbox::dir(&archive.root);
-    let hosts = crate::hosting::dir(&archive.root);
+    let mail = crate::mailbox::dir(&deployment.paths, &archive.root);
+    let hosts = crate::hosting::dir(&deployment.paths, &archive.root);
     let warm = super::warm::Warm::new(&archive);
     let daemon = Arc::new(Daemon {
         config: deployment,

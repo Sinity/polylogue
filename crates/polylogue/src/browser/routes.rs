@@ -106,7 +106,7 @@ async fn status(State(host): State<Arc<BrowserHost>>) -> HttpResponse {
 
 /// The address the running reader reports.
 async fn reader(State(host): State<Arc<BrowserHost>>) -> HttpResponse {
-    let dir = crate::runtime_dir::runtime_dir(&host.archive_key);
+    let dir = host.runtime_dir.clone();
     match blocking(move || crate::web::access::reader_url_in(&dir)).await {
         Some(Ok(url)) => Json(json!({ "url": url })).into_response(),
         _ => refuse(

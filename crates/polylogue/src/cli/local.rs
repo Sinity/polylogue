@@ -39,7 +39,11 @@ pub fn daemon(_: &Command, v: &Values, startup: &crate::config::Startup, json: b
                 super::print::diagnostic("", &e.to_string(), None, startup.output.stderr_color())
             );
             if let Some(failure) = polylogue_store::storage_failure::recorded() {
-                crate::daemon::storage_stop::remember(&startup.config.archive, &failure);
+                crate::daemon::storage_stop::remember(
+                    &startup.config.paths,
+                    &startup.config.archive,
+                    &failure,
+                );
                 return ExitCode::from(crate::EXIT_STORAGE_FAILED);
             }
             if e.get_ref()
@@ -109,6 +113,7 @@ pub fn browser_host(
     crate::browser::native::run(
         &startup.engine,
         &polylogue_store::Archive::at(&startup.config.archive),
+        &startup.config.paths,
     )
 }
 
@@ -340,7 +345,7 @@ fn install_chrome(
 fn open_reader(startup: &crate::config::Startup, json: bool) -> ExitCode {
     use crate::web::access;
     let root = startup.config.archive.clone();
-    let auth = match access::reader_url(&root) {
+    let auth = match access::reader_url(&startup.config.paths, &root) {
         Ok(url) => url,
         Err(error) => {
             return fail(

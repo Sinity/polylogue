@@ -33,9 +33,8 @@ pub const HOST_NAME: &str = "com.polylogue.browser_capture";
 pub struct BrowserHost {
     /// `<state>/browser-capture`: one capture log per conversation.
     pub spool: PathBuf,
-    /// Names the archive's runtime directory, where a running reader
-    /// records its address.
-    pub archive_key: String,
+    /// Where the daemon records its reader address.
+    pub runtime_dir: PathBuf,
     /// The daemon's socket.
     pub socket: PathBuf,
 }
@@ -43,12 +42,16 @@ pub struct BrowserHost {
 impl BrowserHost {
     /// The spool in Polylogue's state directory as the daemon's loop sees
     /// it (`config`), for the archive at `archive`.
-    pub fn at(config: &Config, archive: &Archive) -> std::io::Result<Self> {
+    pub fn at(
+        config: &Config,
+        archive: &Archive,
+        paths: &crate::config::Paths,
+    ) -> std::io::Result<Self> {
         let spool = config.spool_dir(polylogue_sources::browser_capture::ORIGIN);
         fs::create_dir_all(&spool)?;
         Ok(Self {
             spool,
-            archive_key: crate::runtime_dir::archive_key(&archive.root),
+            runtime_dir: paths.runtime_dir(&archive.root),
             socket: archive.socket(),
         })
     }

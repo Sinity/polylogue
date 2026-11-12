@@ -176,9 +176,17 @@ Sinex's own notices are Sinex's and reach the operator through Sinex's deliverer
 
 ## Several archives and machines
 
-**Several archives on one machine.** An archive is a directory. `--archive DIR` selects it on every command, so a client and the daemon it reaches always agree. Each archive has its own daemon, lock, socket (under `$XDG_RUNTIME_DIR/polylogue/<hash of the resolved path>/`) and unit instance. A command never acts on an archive it was not pointed at, and every `status` and error names the archive path. `demo tour DIR` builds its own archive and refuses an existing directory it did not create.
+**Several archives on one machine.** An archive is a directory. `--archive DIR` selects it on every command, so a client and the daemon it reaches always agree. Each archive has its own daemon, lock, socket (`daemon.sock` under the archive directory) and unit instance. A command never acts on an archive it was not pointed at, and every `status` and error names the archive path. `demo tour DIR` builds its own archive and refuses an existing directory it did not create.
 
 **Several machines.** Every observation records the machine ID and host name, so paths from two machines never collide, and sessions show their host where an archive holds more than one. Archives on different machines combine either through primary mode, each host sending to one Sinex as its own producer ([primary-mode.md](primary-mode.md)), or standalone, by writing a bundle with `polylogue QUERY read --to DIR` on one machine ([reading.md#writing-out](reading.md#writing-out)) and reading it with `polylogue import DIR` on the other. An archive directory is never synced live between machines.
+
+Runtime files use `$XDG_RUNTIME_DIR/polylogue/<archive key>/`. When
+`XDG_RUNTIME_DIR` is unset, they use
+`$XDG_STATE_HOME/runtime/polylogue/<archive key>/`; `XDG_STATE_HOME` defaults to
+`$HOME/.local/state`. The daemon and every client use the same resolved paths
+and archive key. Reader tokens and ports, mailbox flags, hosted-session
+records, terminal row references and this boot's storage-failure marker share
+that directory.
 
 ## Configuration
 

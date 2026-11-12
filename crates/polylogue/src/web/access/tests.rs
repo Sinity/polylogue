@@ -150,3 +150,40 @@ fn archive_path_substitution_preserves_colliding_keys_and_other_source_text() {
         serde_json::json!([token, "[archive]/blobs/example", ""])
     );
 }
+
+#[test]
+fn reader_location_agrees_with_daemon_paths_with_and_without_xdg_runtime_dir() {
+    for explicit_runtime in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let state = dir.path().join("state");
+        let runtime = dir.path().join("session-runtime");
+        let mut values = vec![
+            ("HOME".into(), home.into_os_string()),
+            ("XDG_STATE_HOME".into(), state.clone().into_os_string()),
+        ];
+        if explicit_runtime {
+            values.push(("XDG_RUNTIME_DIR".into(), runtime.clone().into_os_string()));
+        }
+        let paths = crate::config::Paths::resolve(&crate::config::EnvSnapshot::from_values(values))
+            .unwrap();
+        let archive = dir.path().join("archive");
+        fs::create_dir(&archive).unwrap();
+        let expected = if explicit_runtime {
+            runtime
+        } else {
+            state.join("runtime")
+        }
+        .join("polylogue")
+        .join(crate::runtime_dir::archive_key(&archive));
+        assert_eq!(paths.runtime_dir(&archive), expected);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // The daemon writes through Paths; the client reads through its own entry point.
+        write_access_files(&paths.runtime_dir(&archive), "synthetic-reader-token", port).unwrap();
+        assert_eq!(
+            reader_url(&paths, &archive).unwrap(),
+            format!("http://127.0.0.1:{port}/auth#synthetic-reader-token")
+        );
+    }
+}

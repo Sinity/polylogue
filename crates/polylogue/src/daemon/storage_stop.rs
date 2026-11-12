@@ -1,8 +1,7 @@
 //! A daemon whose register failed a disk sync stops writing for the rest of
 //! the boot (docs/operations.md, storage failure). The failure is kept in
-//! the archive's runtime directory with the boot's identifier: the runtime
-//! directory does not survive a reboot, and a later boot's identifier
-//! differs, so after a reboot the daemon starts again.
+//! the archive's runtime directory with the boot's identifier. A later
+//! boot's identifier differs, so after a reboot the daemon starts again.
 use polylogue_store::storage_failure::StorageFailure;
 use std::path::{Path, PathBuf};
 
@@ -11,8 +10,8 @@ use std::path::{Path, PathBuf};
 #[error("{0}")]
 pub struct StorageStopped(pub String);
 
-fn marker(root: &Path) -> PathBuf {
-    crate::runtime_dir::runtime_dir(&crate::runtime_dir::archive_key(root)).join("storage-failure")
+fn marker(paths: &crate::config::Paths, root: &Path) -> PathBuf {
+    paths.runtime_dir(root).join("storage-failure")
 }
 
 fn boot() -> Option<String> {
@@ -23,8 +22,8 @@ fn boot() -> Option<String> {
 }
 
 /// The failure recorded for `root` in this boot, if there is one.
-pub(crate) fn this_boot(root: &Path) -> Option<StorageStopped> {
-    let text = std::fs::read_to_string(marker(root)).ok()?;
+pub(crate) fn this_boot(paths: &crate::config::Paths, root: &Path) -> Option<StorageStopped> {
+    let text = std::fs::read_to_string(marker(paths, root)).ok()?;
     let (recorded_boot, message) = text.split_once('\n')?;
     (Some(recorded_boot) == boot().as_deref()).then(|| {
         StorageStopped(format!(
@@ -35,11 +34,11 @@ pub(crate) fn this_boot(root: &Path) -> Option<StorageStopped> {
 
 /// Keeps `failure` for the rest of this boot. A machine without a boot
 /// identifier keeps nothing, and only the stopped process refuses.
-pub(crate) fn remember(root: &Path, failure: &StorageFailure) {
+pub(crate) fn remember(paths: &crate::config::Paths, root: &Path, failure: &StorageFailure) {
     let Some(boot) = boot() else {
         return;
     };
-    let path = marker(root);
+    let path = marker(paths, root);
     let written = path
         .parent()
         .map_or(Ok(()), std::fs::create_dir_all)

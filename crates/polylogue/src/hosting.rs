@@ -53,8 +53,8 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// The hosted-session directory of the archive at `root`.
-pub fn dir(root: &Path) -> PathBuf {
-    crate::runtime_dir::runtime_dir(&crate::runtime_dir::archive_key(root)).join("hosts")
+pub fn dir(paths: &crate::config::Paths, root: &Path) -> PathBuf {
+    paths.runtime_dir(root).join("hosts")
 }
 
 /// What the daemon needs to reattach to a hosted session.

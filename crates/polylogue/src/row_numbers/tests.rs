@@ -31,7 +31,15 @@ fn positions_become_the_listed_ids() {
 fn a_leading_position_moves_after_its_verb() {
     let dir = tempfile::tempdir().unwrap();
     let args: Vec<String> = ["polylogue", "read", "x"].map(String::from).to_vec();
-    assert_eq!(rewrite_args(args.clone(), dir.path()).unwrap(), args);
+    let paths = crate::config::Paths::resolve(&crate::config::EnvSnapshot::from_values([(
+        "HOME".into(),
+        dir.path().as_os_str().to_owned(),
+    )]))
+    .unwrap();
+    assert_eq!(
+        rewrite_args(&paths, args.clone(), dir.path()).unwrap(),
+        args
+    );
     assert!(is_position("@12"));
     assert!(!is_position("@"));
     assert!(!is_position("@1x"));

@@ -11,21 +11,31 @@ fn failure(root: &Path) -> StorageFailure {
 #[test]
 fn a_remembered_failure_refuses_this_boot_and_names_the_file_and_errno() {
     let root = tempfile::tempdir().unwrap();
-    assert!(this_boot(root.path()).is_none());
-    remember(root.path(), &failure(root.path()));
-    let stopped = this_boot(root.path()).expect("the failure is kept for this boot");
+    let paths = crate::config::Paths::resolve(&crate::config::EnvSnapshot::from_values([(
+        "HOME".into(),
+        root.path().as_os_str().to_owned(),
+    )]))
+    .unwrap();
+    assert!(this_boot(&paths, root.path()).is_none());
+    remember(&paths, root.path(), &failure(root.path()));
+    let stopped = this_boot(&paths, root.path()).expect("the failure is kept for this boot");
     assert!(stopped.0.contains("archive.db-wal"), "{}", stopped.0);
     assert!(stopped.0.contains("errno 5"), "{}", stopped.0);
-    std::fs::remove_file(marker(root.path())).unwrap();
+    std::fs::remove_file(marker(&paths, root.path())).unwrap();
 }
 
 #[test]
 fn a_failure_from_another_boot_does_not_refuse() {
     let root = tempfile::tempdir().unwrap();
-    let path = marker(root.path());
+    let paths = crate::config::Paths::resolve(&crate::config::EnvSnapshot::from_values([(
+        "HOME".into(),
+        root.path().as_os_str().to_owned(),
+    )]))
+    .unwrap();
+    let path = marker(&paths, root.path());
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, format!("another-boot\n{}", failure(root.path()))).unwrap();
-    assert!(this_boot(root.path()).is_none());
+    assert!(this_boot(&paths, root.path()).is_none());
     std::fs::remove_file(path).unwrap();
 }
 
