@@ -434,7 +434,7 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
 
     let running = sinex(home.dir.path());
     let sdk = connect(&running.config);
-    let build = |source_home: &Path| {
+    let build = |source_home: &Path, wanted: &[polylogue_model::Message]| {
         let (archive, lock) = Archive::open_primary(&home.root, &running.config.store).unwrap();
         let mut config = home.config(1 << 20);
         config.home = source_home.into();
@@ -472,7 +472,7 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
             |_| {
                 let pool = ReadPool::open(&archive)?;
                 let reader = pool.reader()?;
-                Ok(reader.messages(&session, false)? == expected_messages)
+                Ok(reader.messages(&session, false)? == wanted)
             },
             String::new,
         );
@@ -481,7 +481,7 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
         drop(lock);
         archive
     };
-    let archive = build(&home.home);
+    let archive = build(&home.home, &expected_messages);
     let pool = ReadPool::open(&archive).unwrap();
     let reader = pool.reader().unwrap();
     let coordinates = reader.query(
@@ -523,7 +523,7 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
     fs::remove_dir_all(&home.root).unwrap();
     let empty = home.dir.path().join("empty-home");
     fs::create_dir(&empty).unwrap();
-    let rebuilt = build(&empty);
+    let rebuilt = build(&empty, &expected_messages);
     let after = ReadPool::open(&rebuilt)
         .unwrap()
         .reader()
@@ -532,6 +532,49 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
         .unwrap()
         .unwrap();
     assert_eq!(after, before);
+
+    let selected = native::request(
+        &running.socket,
+        "read",
+        serde_json::json!({
+            "method":"query", "query":"events where event_type = polylogue.message AND payload.message = 'claude-code:assistant-1' | fields id"
+        }),
+    );
+    let id = selected["result"]["rows"][0]["id"].as_str().unwrap();
+    let target = format!("sinex:ev/{id}");
+    let archived = native::request(
+        &running.socket,
+        "agent",
+        serde_json::json!({"method":"archive", "target":target}),
+    );
+    assert_eq!(archived["outcome"], "ok", "{archived}");
+    let hidden = build(&empty, &expected_messages[..1]);
+    assert_eq!(
+        ReadPool::open(&hidden)
+            .unwrap()
+            .reader()
+            .unwrap()
+            .messages(&session, false)
+            .unwrap(),
+        expected_messages[..1]
+    );
+    let restored = native::request(
+        &running.socket,
+        "agent",
+        serde_json::json!({"method":"restore", "target":target}),
+    );
+    assert_eq!(restored["outcome"], "ok", "{restored}");
+    let restored = build(&empty, &expected_messages);
+    assert_eq!(
+        ReadPool::open(&restored)
+            .unwrap()
+            .reader()
+            .unwrap()
+            .session_export(&session)
+            .unwrap()
+            .unwrap(),
+        before
+    );
 }
 
 #[test]

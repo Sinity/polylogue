@@ -70,6 +70,11 @@ pub(super) fn retain_source_records(
         let reading = product.reading().expect("parser fact has source");
         let record = SourceRecord::of(&product)?.expect("parser fact has identity");
         let keep = allowed(index, reading, &record)?;
+        // Native tool facts expose the call separately; its local blocks belong
+        // to the complete message reading, as they do in standalone mode.
+        if record.family == "tool_call" {
+            continue;
+        }
         if record.family == "parse_progress" {
             step.source_prefix_missing |= !keep;
         }
@@ -81,6 +86,7 @@ pub(super) fn retain_source_records(
     if all {
         return Ok(());
     }
+    step.source_prefix_missing = true;
     // A hidden value cannot supply the parser's resume context on this receiver.
     step.checkpoint = None;
     let event_ids = step.event_identities(&input.id, chain)?;
