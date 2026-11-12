@@ -6,6 +6,8 @@ if git diff --cached --quiet --diff-filter=ACMR -- '*.rs'; then
 fi
 # Enter once for the whole staged set, rather than once for each Rust file.
 if [[ -z "${IN_NIX_SHELL:-}" ]] || ! command -v rustfmt >/dev/null; then
+    # Formatting uses no compiler artifacts. Skip host cache selection/seeding.
+    export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}"
     exec nix develop --command bash "$0" "$@"
 fi
 while IFS= read -r -d '' path; do
