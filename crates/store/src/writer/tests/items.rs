@@ -89,8 +89,8 @@ fn identical_lower_priority_event_claims_leave_selected_events_and_items_untouch
     )
     .unwrap();
     let mut extra = batch("z-extra-events", Route::Capture, 0, vec![], &[]);
-    extra.parse[0].output.events = main.parse[0].output.events;
-    extra.parse[0].output.event_ids = main.parse[0].output.event_ids;
+    extra.parse[0].output.events = main.parse[0].output.events.clone();
+    extra.parse[0].output.event_ids = main.parse[0].output.event_ids.clone();
     w.store_reading(extra, Some(&SOURCE_RECORD)).unwrap();
     let report = w.writer.flush().unwrap();
     assert!(report.errors.is_empty(), "{:?}", report.errors);
