@@ -8,6 +8,7 @@ mod format;
 mod fragments;
 mod item_index;
 mod items;
+mod lineage;
 mod options;
 mod parents;
 
@@ -23,6 +24,7 @@ pub use format::*;
 pub use fragments::*;
 pub use item_index::*;
 pub use items::*;
+pub use lineage::*;
 pub use options::*;
 pub use parents::*;
 

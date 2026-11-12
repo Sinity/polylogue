@@ -136,4 +136,4 @@ The **logical session** is the default unit of work: the root of a tree of `spaw
 
 - Listings, counts and measures show logical sessions, each expandable into its physical sessions; `--physical` lists sessions one by one ([query.md](query.md#units-and-fields)).
 - References always name physical sessions exactly.
-- The stored root and depth are a derived product ([measures.md](measures.md#catalog)).
+- The stored root and depth are a derived product ([measures.md](measures.md#catalog)). Structural ancestry uses every explicit non-reference relation. Missing parents, conflicting parent identities and cycles produce typed unresolved results, with no chosen parent or cycle root. Physical copying alone never changes the logical root.

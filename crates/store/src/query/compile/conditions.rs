@@ -3,7 +3,7 @@
 //! binding gave its value.
 
 use super::*;
-use polylogue_query::filter::{Binder, Comparison, FieldTest, Filter, Test, TimeTest};
+use polylogue_query::filter::{Binder, FieldTest, Filter, Test, TimeTest};
 
 impl<'a> Compiler<'a> {
     /// What binding reads from the query.
@@ -607,19 +607,6 @@ impl<'a> Compiler<'a> {
         self.typed(def, def.kind, &expr, &t.test)
     }
 
-    /// `comparison`, as written, on `expr`, a value of `def` compared as
-    /// `kind`: for a field whose own rule compares a value it computes.
-    pub(super) fn compare_as(
-        &mut self,
-        def: &fields::Field,
-        kind: Kind,
-        expr: &str,
-        comparison: &Comparison,
-        span: Span,
-    ) -> Result<String, QueryError> {
-        let test = self.binder().test(def, kind, comparison, span)?;
-        self.typed(def, kind, expr, &test)
-    }
     pub(super) fn native_time_test(
         &mut self,
         native: &fields::NativeTime,

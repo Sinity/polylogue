@@ -40,7 +40,9 @@ pub const INDEX: &str = concat!(
     "\n",
     include_str!("schema/session_items.sql"),
     "\n",
-    include_str!("schema/session_values.sql")
+    include_str!("schema/session_values.sql"),
+    "\n",
+    include_str!("schema/lineage.sql")
 );
 #[cfg(test)]
 pub(crate) const QUERY_OBJECTS: &str = concat!(
