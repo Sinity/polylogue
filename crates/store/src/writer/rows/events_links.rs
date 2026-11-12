@@ -74,7 +74,7 @@ impl RowWriter<'_, '_> {
                     &id,
                     &choice.kind,
                     choice.at,
-                    choice.body.len() as u64,
+                    &choice.body,
                 )?
             {
                 self.changes.event(self.tx, pk)?;

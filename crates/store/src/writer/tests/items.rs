@@ -119,9 +119,9 @@ fn identical_lower_priority_event_claims_leave_selected_events_and_items_untouch
     );
     // Exercise the production validity lookup, with unrelated cached entries
     // before the selected header so a missing reverse index cannot pass early.
-    let (pk, session, kind, at, data_bytes): (i64, i64, String, Option<i64>, u64) = conn
+    let (pk, session, kind, at, data): (i64, i64, String, Option<i64>, Vec<u8>) = conn
         .query_row(
-            "SELECT pk,session_pk,kind,at,length(data) FROM event WHERE id=?1",
+            "SELECT pk,session_pk,kind,at,data FROM event WHERE id=?1",
             [&id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
@@ -142,9 +142,7 @@ fn identical_lower_priority_event_claims_leave_selected_events_and_items_untouch
             }),
         )
         .unwrap();
-        assert!(
-            crate::items::event_is_current(&conn, pk, session, &id, &kind, at, data_bytes).unwrap()
-        );
+        assert!(crate::items::event_is_current(&conn, pk, session, &id, &kind, at, &data).unwrap());
         conn.progress_handler(0, None::<fn() -> bool>).unwrap();
         steps.load(Ordering::Relaxed)
     };
@@ -235,6 +233,155 @@ fn an_identical_event_claim_repairs_retained_old_item_metadata() {
             .unwrap(),
         2
     );
+}
+
+#[test]
+fn equal_length_context_boundary_changes_refresh_typed_event_items() {
+    for kind in ["compaction", "microcompaction"] {
+        let w = test_archive();
+        let (before, after) = if kind == "compaction" {
+            (
+                serde_json::to_value(polylogue_model::CompactionBoundary {
+                    pre_tokens: Some(111),
+                    ..Default::default()
+                })
+                .unwrap(),
+                serde_json::to_value(polylogue_model::CompactionBoundary {
+                    pre_tokens: Some(222),
+                    ..Default::default()
+                })
+                .unwrap(),
+            )
+        } else {
+            (
+                serde_json::to_value(polylogue_model::MicrocompactionBoundary {
+                    removed_calls: vec!["call-a".into()],
+                    ..Default::default()
+                })
+                .unwrap(),
+                serde_json::to_value(polylogue_model::MicrocompactionBoundary {
+                    removed_calls: vec!["call-b".into()],
+                    ..Default::default()
+                })
+                .unwrap(),
+            )
+        };
+        let mut packer = crate::encoding::RowPacker::new().unwrap();
+        assert_eq!(
+            packer.pack_json(&before).unwrap().len(),
+            packer.pack_json(&after).unwrap().len(),
+            "the fixture must discriminate equal stored length for {kind}"
+        );
+        let mut input = batch("boundary", Route::Live, 0, vec![], &["s"]);
+        input.parse[0].output.events.push(Event {
+            at_quality: polylogue_model::TimeQuality::Unknown,
+            at_precision: None,
+            at_until: None,
+            session: Some(sid("s")),
+            kind: kind.into(),
+            at: None,
+            after: None,
+            range: Some((0, 1)),
+            data: before,
+        });
+        input.parse[0]
+            .output
+            .event_ids
+            .insert(0, "synthetic-boundary".into());
+        w.store_reading(input.clone(), Some(&SOURCE_RECORD))
+            .unwrap();
+        assert!(w.writer.flush().unwrap().errors.is_empty());
+        let original = stored(&w, "s");
+        input.parse[0].output.events[0].data = after;
+        input.parse[0].reading_version = "synthetic=2".into();
+        let expected = input.parse[0].output.events[0].clone();
+        let mut reading = ChainReading::new().unwrap();
+        reading.push(&mut input.parse[0]).unwrap();
+        w.writer
+            .sender()
+            .unwrap()
+            .replace_chain(input.input.clone(), 1, 100, reading)
+            .unwrap();
+        w.writer.derive().unwrap();
+        let pool = ReadPool::open(&w.archive).unwrap();
+        assert_eq!(
+            pool.reader()
+                .unwrap()
+                .event_record("synthetic-boundary")
+                .unwrap()
+                .unwrap()
+                .event,
+            expected
+        );
+        assert_ne!(
+            stored(&w, "s").entries,
+            original.entries,
+            "typed {kind} payload must refresh"
+        );
+        assert_matches_rows(&w, "s");
+        // Reopen the exact older metadata-only cache shape: its event row
+        // is current, but its embedded typed item still has the old payload.
+        let conn = rusqlite::Connection::open(w.archive.index_db()).unwrap();
+        let (pk, bytes): (i64, u64) = conn
+            .query_row("SELECT pk,length(data) FROM event", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        let mut old = blake3::Hasher::new();
+        old.update(b"event\0");
+        old.update(&pk.to_le_bytes());
+        for value in ["synthetic-boundary", kind] {
+            old.update(&(value.len() as u64).to_le_bytes());
+            old.update(value.as_bytes());
+        }
+        old.update(&[0]);
+        old.update(&0_i64.to_le_bytes());
+        old.update(&bytes.to_le_bytes());
+        conn.execute(
+            "UPDATE session_item SET unit=?1,entry=?2 WHERE event_pk=?3",
+            params![
+                old.finalize().as_bytes().as_slice(),
+                serde_json::to_vec(&original.entries[0]).unwrap(),
+                pk
+            ],
+        )
+        .unwrap();
+        conn.execute_batch(
+            "CREATE TABLE test_event_updates(n INTEGER NOT NULL);
+            INSERT INTO test_event_updates VALUES(0);
+            CREATE TRIGGER test_event_updates AFTER UPDATE ON event
+            BEGIN UPDATE test_event_updates SET n=n+1; END;",
+        )
+        .unwrap();
+        let stale = stored(&w, "s");
+        let mut extra = batch("z-copy", Route::Capture, 0, vec![], &[]);
+        extra.parse[0].output.events.push(expected.clone());
+        extra.parse[0]
+            .output
+            .event_ids
+            .insert(0, "synthetic-boundary".into());
+        w.store_reading(extra, Some(&SOURCE_RECORD)).unwrap();
+        let report = w.writer.flush().unwrap();
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert_eq!(
+            conn.query_row("SELECT n FROM test_event_updates", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert!(
+            report.item_units_read > 0,
+            "old typed item must refresh despite unchanged event row"
+        );
+        assert!(stored(&w, "s").rewrite_version > stale.rewrite_version);
+        assert_matches_rows(&w, "s");
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM event_source", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+    }
 }
 
 #[test]
