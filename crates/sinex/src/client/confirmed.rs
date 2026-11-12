@@ -386,10 +386,9 @@ impl Client {
                 change: ConfirmedChange::Control(control),
                 ..
             }) = &mut fact
+                && let ReplayControl::Completion { delivery, .. } = control.as_mut()
             {
-                if let ReplayControl::Completion { delivery, .. } = control.as_mut() {
-                    *delivery = Some(receipt);
-                }
+                *delivery = Some(receipt);
             }
             Ok::<_, Error>(fact)
         }))
