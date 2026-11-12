@@ -523,7 +523,8 @@ impl Queue {
 
     /// Select by the confirmed position, not by the number of unrelated
     /// pending operations. An unpositioned acknowledgement is a candidate
-    /// only when the caller established that the confirmed stream caught up.
+    /// for a source group only when the confirmed stream caught up. Ungrouped
+    /// metadata acknowledgments need no event position.
     pub fn confirmed_after(
         &self,
         applied: i64,
@@ -537,7 +538,7 @@ impl Queue {
         let mut query = self.connection.prepare_cached(&format!(
             "SELECT {COLUMNS},admitted,kind,group_hash FROM operation
              WHERE phase='acknowledged' AND ordering>?1
-               AND (position<=?2 OR (?3 AND position IS NULL))
+               AND (position<=?2 OR (position IS NULL AND ((group_hash IS NULL AND kind IN ('events','replay','registration')) OR ?3)))
              ORDER BY ordering LIMIT ?4"
         ))?;
         Ok(query

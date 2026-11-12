@@ -974,7 +974,11 @@ fn refused_attachment_retains_its_request_while_independent_completions_progress
         };
         sinex.prepare_request(&request).unwrap();
         let identity = format!("request:{id}");
-        sinex.queue().unwrap().acknowledge(serde_json::from_value(serde_json::json!({ "number":number, "frame":identity, "material":crate::material_id("polylogue", &identity), "material_extents":[], "admitted":[], "content_hash":null, "result":"admitted", "counts":crate::tests::zero_counts(), "commit_seq":number })).unwrap()).unwrap();
+        let physical = crate::tests::extent(
+            &root.path().join(id),
+            &serde_json::to_vec(&request).unwrap(),
+        );
+        sinex.queue().unwrap().acknowledge(serde_json::from_value(serde_json::json!({ "number":number, "frame":identity, "material":crate::material_id("polylogue", &identity), "material_extents":[physical.encode()], "admitted":[], "content_hash":null, "result":"admitted", "counts":crate::tests::zero_counts(), "commit_seq":number })).unwrap()).unwrap();
     }
     let (_, product) = crate::tests::named::phases().remove(0);
     sinex
@@ -990,10 +994,18 @@ fn refused_attachment_retains_its_request_while_independent_completions_progress
         )
         .unwrap();
     let observation = "independent-observation:observation";
-    sinex.queue().unwrap().acknowledge(serde_json::from_value(serde_json::json!({ "number":4, "frame":observation, "material":crate::material_id("polylogue", observation), "material_extents":[], "admitted":[], "content_hash":null, "result":"admitted", "counts":crate::tests::zero_counts(), "commit_seq":4 })).unwrap()).unwrap();
+    let mut body = Vec::new();
+    std::io::Read::read_to_end(
+        &mut sinex.queue().unwrap().body(observation).unwrap(),
+        &mut body,
+    )
+    .unwrap();
+    let physical = crate::tests::extent(&root.path().join("observation"), &body);
+    sinex.queue().unwrap().acknowledge(serde_json::from_value(serde_json::json!({ "number":4, "frame":observation, "material":crate::material_id("polylogue", observation), "material_extents":[physical.encode()], "admitted":[], "content_hash":null, "result":"admitted", "counts":crate::tests::zero_counts(), "commit_seq":4 })).unwrap()).unwrap();
     let result = sinex.drain_pending();
     assert!(
-        matches!(result, Err(Error::Refused { reason, .. }) if reason == "synthetic attachment refusal")
+        matches!(&result, Err(Error::Refused { reason, .. }) if reason == "synthetic attachment refusal"),
+        "{result:?}"
     );
     let queue = sinex.queue().unwrap();
     assert!(queue.capture_group("request:blocked").unwrap().is_none());

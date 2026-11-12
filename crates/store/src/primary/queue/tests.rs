@@ -135,8 +135,21 @@ fn backup_snapshot_keeps_its_queue_boundary_while_preparation_continues() {
 fn confirmed_candidates_keep_event_identity_and_respect_applied_position() {
     let home = tempfile::tempdir().unwrap();
     let queue = Queue::open(&home.path().join("queue.db")).unwrap();
+    let mut member = operation("member");
+    member.kind = Kind::Material;
+    member.material = Some("material".into());
+    queue.prepare(&member, None, &[]).unwrap();
+    queue
+        .acknowledge("member", &Phase::Acknowledged { commit_seq: None }, &[], 0)
+        .unwrap();
     for name in ["applied", "later", "unpositioned", "pending"] {
-        queue.prepare(&operation(name), None, &[]).unwrap();
+        if name == "unpositioned" {
+            queue
+                .prepare(&operation(name), Some("group-hash"), &["member".into()])
+                .unwrap();
+        } else {
+            queue.prepare(&operation(name), None, &[]).unwrap();
+        }
     }
     queue
         .acknowledge(

@@ -78,7 +78,7 @@ pub(crate) fn capture(bytes: &[u8], parsed: Vec<CapturedReading>) -> CapturedInp
         "index":0,"previous":null,"hash":BlobHash::of(bytes),"length":bytes.len(),"raw_range":{"start":0,"end":bytes.len()},"group":null,"route":"live","parsed":parsed
     })).unwrap()
 }
-fn extent(root: &std::path::Path, bytes: &[u8]) -> hashed_blobs::Extent {
+pub(crate) fn extent(root: &std::path::Path, bytes: &[u8]) -> hashed_blobs::Extent {
     let prepared = hashed_blobs::Preparation::new(root.join("scratch"))
         .unwrap()
         .plain(bytes, 1)

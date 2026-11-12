@@ -447,6 +447,13 @@ impl Spool {
             if !entry.file_name().to_str().is_some_and(hex_name) || !entry.file_type()?.is_dir() {
                 continue;
             }
+            refuse_previous_operation(&entry.path())?;
+            let members = entry.path().join("operations");
+            if members.is_dir() {
+                for member in fs::read_dir(&members)? {
+                    refuse_previous_operation(&member?.path())?;
+                }
+            }
             let relative = format!(
                 "operations/{}",
                 entry.file_name().to_str().expect("hex name checked")
@@ -456,7 +463,6 @@ impl Spool {
                 continue;
             }
             remove_dot_entries(&entry.path())?;
-            let members = entry.path().join("operations");
             if entry.path().join("acquisition.json").try_exists()? && members.is_dir() {
                 remove_staging_database(&entry.path())?;
                 remove_dot_entries(&members)?;
@@ -1476,6 +1482,15 @@ impl Spool {
 }
 
 /// Removes the `.preparing-*` and `.ack-preparing-*` directories in `directory`.
+fn refuse_previous_operation(directory: &Path) -> Result<()> {
+    if directory.join("frame.json").try_exists()? || directory.join("metadata.json").try_exists()? {
+        return invalid(
+            "producer spool contains an earlier pending payload format; preserve it before an explicit transition",
+        );
+    }
+    Ok(())
+}
+
 fn remove_staging_database(directory: &Path) -> Result<()> {
     // Every accepted member is already in the main queue transaction. The
     // closed private database is temporary metadata, not another authority.
