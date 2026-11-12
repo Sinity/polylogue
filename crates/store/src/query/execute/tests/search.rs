@@ -165,28 +165,6 @@ fn read(fixture: &Fixture, analyze: bool) -> (u64, u64) {
     let reader = pool.reader().unwrap();
     let program =
         crate::query::compile("sessions where kind:main needle", &options_for_search()).unwrap();
-    let mut page_params = crate::selection::values(&program.params);
-    page_params.push(crate::SqlValue::Int(-1));
-    let page = program.statements.page(
-        &program.order,
-        program.params.len(),
-        false,
-        false,
-        crate::query::compile::PageColumns::All,
-    );
-    for (name, sql, params) in [
-        ("page", page, page_params),
-        (
-            "count",
-            program.statements.count(program.counts_near),
-            crate::selection::values(&program.params),
-        ),
-    ] {
-        let plan = reader
-            .query(&format!("EXPLAIN QUERY PLAN {sql}"), &params)
-            .unwrap();
-        println!("statistics={analyze} {name}: {plan:?}\n{sql}");
-    }
     let (actual, actual_steps) = counted(&reader, || {
         let rows = reader.query_rows(&program).unwrap();
         assert_eq!(reader.query_count(&program).unwrap(), Some((2, 0)));

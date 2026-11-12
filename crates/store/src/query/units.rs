@@ -132,7 +132,9 @@ fn sessions_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
     let sessions = format!("{}_sessions", h.cte);
     // Find the owning sessions from the hits, then their subagent ancestors.
     // UNION over (session, rank) bounds cycles and shared descendants. A
-    // session's own best rank suffices for every ancestor's best rank.
+    // session's own best rank suffices for every ancestor's best rank. Keep
+    // the edge lookup indexed: statistics can otherwise choose a link-table
+    // scan for each ancestor, making unrelated links part of search cost.
     let rows = format!(
         "{sessions} AS MATERIALIZED (WITH RECURSIVE \
          matched(session_pk, rank) AS MATERIALIZED (\
@@ -143,7 +145,7 @@ fn sessions_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
          ancestors(session_pk, rank) AS (\
            SELECT session_pk, rank FROM matched UNION \
            SELECT parent.pk, child.rank FROM ancestors child \
-           CROSS JOIN link l ON l.child_pk=child.session_pk AND l.kind='subagent' \
+           CROSS JOIN link l INDEXED BY link_child ON l.child_pk=child.session_pk AND l.kind='subagent' \
            CROSS JOIN session parent ON parent.id=l.parent_id) \
          SELECT session_pk, min(rank) AS rank FROM ancestors GROUP BY session_pk)",
         h.block_kind("xb"),
