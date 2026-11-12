@@ -16,7 +16,7 @@ fn every_schema_applies_to_an_empty_database() {
 
 #[test]
 fn every_database_starts_at_its_current_version() {
-    assert_eq!(ARCHIVE_VERSION, 1);
+    assert_eq!(ARCHIVE_VERSION, 2);
     assert_eq!(INDEX_VERSION, 2);
     for (create, expected) in [
         (
@@ -337,3 +337,172 @@ fn parse_standings_require_their_length_and_reason() {
 
 mod context_cleanup;
 mod embeddings;
+
+fn archive_before_unknown_time(conn: &Connection) {
+    let previous = ARCHIVE.replacen(
+        crate::assertions::SCHEMA,
+        include_str!("assertions_before_unknown_time.sql"),
+        1,
+    );
+    conn.execute_batch(&previous).unwrap();
+    conn.pragma_update(None, "application_id", FORMAT_ID)
+        .unwrap();
+    set_version(conn, 1).unwrap();
+    conn.execute_batch("INSERT INTO meta VALUES ('write_counter','19');
+        INSERT INTO machine VALUES ('synthetic-machine','host',12);
+        INSERT INTO input VALUES ('synthetic-input','kept-text');
+        INSERT INTO assertion(rowid,id,root,kind,value,author,via,machine,created_at,commit_seq)
+        VALUES(17,'epoch','epoch','note','\"Known epoch\"','unattributed','import','host',0,11),
+              (29,'later','later','note','\"Known later\"','operator','cli','host',1234,19);
+        INSERT INTO link(record,role,ref) VALUES ('epoch','about','repo:synthetic'),('later','about','repo:synthetic');
+        INSERT INTO revision_state VALUES ('epoch','epoch',1,0),('later','later',1,0);
+        INSERT INTO assertion_slot VALUES (zeroblob(32),'epoch');").unwrap();
+}
+
+fn durable_rows(
+    conn: &Connection,
+) -> std::collections::BTreeMap<String, Vec<Vec<rusqlite::types::Value>>> {
+    let names:Vec<String> = conn.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name<>'assertion_import' ORDER BY name").unwrap()
+        .query_map([],|r|r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+    names
+        .into_iter()
+        .map(|name| {
+            let mut statement = conn
+                .prepare(&format!("SELECT * FROM \"{name}\" ORDER BY 1"))
+                .unwrap();
+            let count = statement.column_count();
+            let rows = statement
+                .query_map([], |r| (0..count).map(|i| r.get(i)).collect())
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            (name, rows)
+        })
+        .collect()
+}
+
+#[test]
+fn register_transition_preserves_all_durable_rows_and_known_times_and_repeats() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.pragma_update(None, "foreign_keys", true).unwrap();
+    archive_before_unknown_time(&conn);
+    let before = durable_rows(&conn);
+    let changes = conn.total_changes();
+    ensure_archive(&conn).unwrap();
+    assert_eq!(version(&conn).unwrap(), 2);
+    assert_eq!(conn.total_changes(), changes);
+    assert_eq!(durable_rows(&conn), before);
+    assert_eq!(
+        conn.query_row(
+            "SELECT group_concat(rowid) FROM assertion ORDER BY rowid",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "17,29"
+    );
+    assert!(
+        conn.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))
+            .unwrap()
+    );
+    assert!(
+        !conn
+            .prepare("PRAGMA foreign_key_check")
+            .unwrap()
+            .exists([])
+            .unwrap()
+    );
+    ensure_archive(&conn).unwrap();
+    assert_eq!(durable_rows(&conn), before);
+    assert_eq!(conn.total_changes(), changes);
+    conn.execute("INSERT INTO assertion(id,root,kind,value,author,via,machine,created_at,commit_seq) VALUES ('undated','undated','rubric','{}','unattributed','import','host',NULL,20)",[]).unwrap();
+    assert_eq!(
+        conn.query_row(
+            "SELECT created_at FROM assertion WHERE id='undated'",
+            [],
+            |r| r.get::<_, Option<i64>>(0)
+        )
+        .unwrap(),
+        None
+    );
+}
+
+#[cfg(feature = "faults")]
+#[test]
+fn register_transition_failure_rolls_back_rows_shape_version_and_foreign_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("authored-transition-failure.db");
+    let conn = Connection::open(&file).unwrap();
+    conn.pragma_update(None, "foreign_keys", true).unwrap();
+    archive_before_unknown_time(&conn);
+    let before = durable_rows(&conn);
+    let old_shape = shape(&conn).unwrap();
+    crate::fault::arm(
+        "archive.authored_time_transition",
+        "authored-transition-failure.db",
+        crate::fault::Action::Fail,
+        0,
+        1,
+    );
+    assert!(ensure_archive(&conn).is_err());
+    assert_eq!(version(&conn).unwrap(), 1);
+    assert_eq!(shape(&conn).unwrap(), old_shape);
+    assert_eq!(durable_rows(&conn), before);
+    assert!(
+        conn.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))
+            .unwrap()
+    );
+    assert!(
+        !conn
+            .prepare("PRAGMA foreign_key_check")
+            .unwrap()
+            .exists([])
+            .unwrap()
+    );
+    ensure_archive(&conn).unwrap();
+    assert_eq!(durable_rows(&conn), before);
+}
+
+#[test]
+fn ordinary_register_transition_keeps_partial_index_cursor_checkpoint_and_inode() {
+    use std::os::unix::fs::MetadataExt;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("archive");
+    std::fs::create_dir(&root).unwrap();
+    let mode = b"{\"mode\":\"standalone\"}\n";
+    std::fs::write(root.join("meta.json"), mode).unwrap();
+    let source = Connection::open(root.join("archive.db")).unwrap();
+    archive_before_unknown_time(&source);
+    let originals = durable_rows(&source);
+    drop(source);
+    let path = root.join("index.db");
+    let index = Connection::open(&path).unwrap();
+    ensure_index(&index).unwrap();
+    index.execute_batch("INSERT INTO input_ref(pk,id) VALUES(1,'synthetic-input');
+      INSERT INTO parse_state(input_pk,chain,reading_version,status,parsed_upto,records,used,commit_seq,checkpoint)
+      VALUES(1,7,'synthetic-reading','parsing',42,3,3,19,x'0001ff');").unwrap();
+    let cursor = |c: &Connection| {
+        c.query_row("SELECT chain,reading_version,status,parsed_upto,records,used,commit_seq,checkpoint FROM parse_state WHERE input_pk=1",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?,r.get::<_,i64>(5)?,r.get::<_,i64>(6)?,r.get::<_,Vec<u8>>(7)?))).unwrap()
+    };
+    let before = cursor(&index);
+    let inode = std::fs::metadata(&path).unwrap().ino();
+    drop(index);
+    let (archive, lock) = crate::Archive::open_or_create(&root).unwrap();
+    let source = Connection::open(archive.archive_db()).unwrap();
+    assert_eq!(version(&source).unwrap(), ARCHIVE_VERSION);
+    assert_eq!(durable_rows(&source), originals);
+    let index = Connection::open(archive.index_db()).unwrap();
+    assert_eq!(cursor(&index), before);
+    assert_eq!(std::fs::metadata(&path).unwrap().ino(), inode);
+    assert_eq!(std::fs::read(root.join("meta.json")).unwrap(), mode);
+    drop(index);
+    drop(source);
+    drop(lock);
+    drop(archive);
+    let (archive, _lock) = crate::Archive::open_or_create(&root).unwrap();
+    assert_eq!(
+        cursor(&Connection::open(archive.index_db()).unwrap()),
+        before
+    );
+    assert_eq!(std::fs::metadata(&path).unwrap().ino(), inode);
+}

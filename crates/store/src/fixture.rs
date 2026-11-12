@@ -802,8 +802,10 @@ impl Fixture {
             author: Author::Operator,
             via: Channel::Cli,
             machine: "test".into(),
-            created_at: Timestamp::from_unix_ms(self.commit_seq)
-                .expect("synthetic fixture counter is a timestamp"),
+            created_at: Some(
+                Timestamp::from_unix_ms(self.commit_seq)
+                    .expect("synthetic fixture counter is a timestamp"),
+            ),
             valid_until: None,
             links: vec![AssertionLink {
                 role: LinkRole::About,
@@ -844,7 +846,7 @@ impl Fixture {
             author: Author::Operator,
             via: Channel::Cli,
             machine: "test".into(),
-            created_at: Timestamp::from_unix_ms(self.commit_seq).unwrap(),
+            created_at: Some(Timestamp::from_unix_ms(self.commit_seq).unwrap()),
             valid_until: None,
             links: vec![],
         };

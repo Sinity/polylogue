@@ -355,7 +355,7 @@ fn preparation_hashes_native_text_from_original_and_authored_text_from_private_o
         author: Author::Unattributed,
         via: polylogue_model::authorship::Channel::Import,
         machine: "synthetic-host".into(),
-        created_at: polylogue_model::Timestamp::from_unix_ms(1).unwrap(),
+        created_at: Some(polylogue_model::Timestamp::from_unix_ms(1).unwrap()),
         valid_until: None,
         links: vec![AssertionLink {
             role: LinkRole::About,

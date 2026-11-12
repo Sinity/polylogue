@@ -299,7 +299,8 @@ pub struct AssertionFact {
     pub author: Author,
     pub via: Channel,
     pub machine: String,
-    pub created_at: Timestamp,
+    /// Original authored time; absent when the source did not record one.
+    pub created_at: Option<Timestamp>,
     pub valid_until: Option<Timestamp>,
     pub links: Vec<AssertionLink>,
 }
@@ -340,7 +341,7 @@ impl AssertionFact {
             .sort_by_cached_key(|link| (link.role.as_str(), link.reference.to_string()));
         let millisecond =
             |time: Timestamp| Timestamp::from_unix_ms(time.unix_ms()).ok_or(AssertionError::Time);
-        fact.created_at = millisecond(fact.created_at)?;
+        fact.created_at = fact.created_at.map(millisecond).transpose()?;
         fact.valid_until = fact.valid_until.map(millisecond).transpose()?;
         Ok(fact)
     }
@@ -362,7 +363,7 @@ impl AssertionFact {
             author: request.authorship.author.clone(),
             via: request.authorship.via,
             machine: request.machine.clone(),
-            created_at: request.at,
+            created_at: Some(request.at),
             valid_until: statement.valid_until,
             links,
         }

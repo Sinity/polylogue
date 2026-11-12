@@ -140,7 +140,7 @@ fn authored_records_carried() {
             "SELECT count(*) FROM link WHERE role = 'origin' AND ref = 'assertion:{pass}@{pass}'"
         ),
     );
-    assert_eq!(origins, [["12"]]);
+    assert_eq!(origins, [["11"]]);
     assert_eq!(
         std::fs::read(&path).unwrap(),
         before,
@@ -545,4 +545,182 @@ fn predecessor_spool_tree_imports_every_hook_and_capture_file() {
     assert!(again.pass.errors.is_empty(), "{:?}", again.pass.errors);
     assert!(again.imported.is_empty(), "{again:?}");
     assert_eq!(again.already_stored.len(), 4, "{again:?}");
+}
+
+#[test]
+fn schema_only_import_preserves_unknown_times_and_both_physical_origins() {
+    use polylogue_model::RevisionReference;
+    let w = ClaudeHome::new();
+    let first = w.dir.path().join("known.db");
+    let second = w.dir.path().join("undated.db");
+    fixture::user_db(&first);
+    let db = rusqlite::Connection::open(&first).unwrap();
+    db.execute(
+        "DELETE FROM assertions WHERE assertion_id=?1",
+        [fixture::MARK],
+    )
+    .unwrap();
+    db.execute("UPDATE annotation_schemas SET registered_at_ms=1234", [])
+        .unwrap();
+    drop(db);
+    std::fs::copy(&first, &second).unwrap();
+    let db = rusqlite::Connection::open(&second).unwrap();
+    db.execute("DELETE FROM assertions", []).unwrap();
+    for i in 0..5 {
+        let key = if i == 0 {
+            "seed.example".to_owned()
+        } else {
+            format!("synthetic.schema-{i}")
+        };
+        db.execute("INSERT INTO annotation_schemas SELECT ?1,2,definition_json,definition_sha256,0 FROM annotation_schemas WHERE schema_id='seed.example' AND schema_version=1", [key]).unwrap();
+    }
+    drop(db);
+    let originals = [
+        std::fs::read(&first).unwrap(),
+        std::fs::read(&second).unwrap(),
+    ];
+    let (mut engine, _lock) = crate::import::tests::engine(&w, 64);
+    let one = engine
+        .import_with_options(std::slice::from_ref(&first), &options(USER_DB))
+        .unwrap()
+        .predecessor
+        .unwrap();
+    assert_eq!(one.classes["annotation_schemas"].stored, 1);
+    let two = engine
+        .import_with_options(std::slice::from_ref(&second), &options(USER_DB))
+        .unwrap()
+        .predecessor
+        .unwrap();
+    assert_eq!(
+        (
+            two.classes["annotation_schemas"].found,
+            two.classes["annotation_schemas"].stored,
+            two.classes["annotation_schemas"].present,
+            two.classes["annotation_schemas"].refused
+        ),
+        (6, 5, 1, 0)
+    );
+    let again = engine
+        .import_with_options(std::slice::from_ref(&second), &options(USER_DB))
+        .unwrap()
+        .predecessor
+        .unwrap();
+    assert_eq!(
+        (
+            again.classes["annotation_schemas"].stored,
+            again.classes["annotation_schemas"].present,
+            again.classes["annotation_schemas"].refused
+        ),
+        (0, 6, 0)
+    );
+    let reader = engine.reads.reader().unwrap();
+    let reference = RevisionReference::exact(
+        "predecessor-schema:seed.example@1".into(),
+        "predecessor-schema:seed.example@1".into(),
+    );
+    let known = reader.assertion(&reference).unwrap().unwrap();
+    assert_eq!(
+        known.fact.created_at,
+        polylogue_model::Timestamp::from_unix_ms(1234)
+    );
+    let origins = reader.assertion_imports(&reference).unwrap().unwrap();
+    assert_eq!(origins.len(), 2);
+    let inputs: std::collections::BTreeSet<_> = origins.iter().map(|i| i.input.as_str()).collect();
+    assert_eq!(
+        inputs,
+        [
+            one.rows_input.as_deref().unwrap(),
+            two.rows_input.as_deref().unwrap()
+        ]
+        .into_iter()
+        .collect()
+    );
+    for i in 0..5 {
+        let key = if i == 0 {
+            "seed.example".to_owned()
+        } else {
+            format!("synthetic.schema-{i}")
+        };
+        let id = format!("predecessor-schema:{key}@2");
+        let assertion = reader
+            .assertion(&RevisionReference::exact(id.clone(), id))
+            .unwrap()
+            .unwrap();
+        assert_eq!(assertion.fact.created_at, None);
+        assert_eq!(assertion.fact.key.as_deref(), Some(key.as_str()));
+    }
+    let archive = read_only(&engine.archive.archive_db());
+    assert_eq!(
+        strings(
+            &archive,
+            "SELECT count(*) FROM assertion WHERE kind='rubric'"
+        ),
+        [["6"]]
+    );
+    assert_eq!(
+        strings(&archive, "SELECT count(*) FROM assertion_import"),
+        [["7"]]
+    );
+    assert_eq!(std::fs::read(&first).unwrap(), originals[0]);
+    assert_eq!(std::fs::read(&second).unwrap(), originals[1]);
+}
+
+#[test]
+fn undated_same_schema_key_cannot_replace_recorded_registration() {
+    use polylogue_model::RevisionReference;
+    let w = ClaudeHome::new();
+    let known = w.dir.path().join("known.db");
+    let undated = w.dir.path().join("undated.db");
+    fixture::user_db(&known);
+    let c = rusqlite::Connection::open(&known).unwrap();
+    c.execute("DELETE FROM assertions", []).unwrap();
+    c.execute("UPDATE annotation_schemas SET registered_at_ms=1234", [])
+        .unwrap();
+    drop(c);
+    std::fs::copy(&known, &undated).unwrap();
+    let c = rusqlite::Connection::open(&undated).unwrap();
+    c.execute("UPDATE annotation_schemas SET registered_at_ms=0", [])
+        .unwrap();
+    drop(c);
+    let original = std::fs::read(&undated).unwrap();
+    let (mut engine, _lock) = crate::import::tests::engine(&w, 64);
+    engine
+        .import_with_options(&[known], &options(USER_DB))
+        .unwrap();
+    let reference = RevisionReference::exact(
+        "predecessor-schema:seed.example@1".into(),
+        "predecessor-schema:seed.example@1".into(),
+    );
+    let before = engine
+        .reads
+        .reader()
+        .unwrap()
+        .assertion(&reference)
+        .unwrap()
+        .unwrap();
+    let report = engine
+        .import_with_options(std::slice::from_ref(&undated), &options(USER_DB))
+        .unwrap()
+        .predecessor
+        .unwrap();
+    assert_eq!(
+        (
+            report.classes["annotation_schemas"].stored,
+            report.classes["annotation_schemas"].refused
+        ),
+        (0, 1)
+    );
+    let reader = engine.reads.reader().unwrap();
+    assert_eq!(reader.assertion(&reference).unwrap().unwrap(), before);
+    assert_eq!(
+        before.fact.created_at,
+        polylogue_model::Timestamp::from_unix_ms(1234)
+    );
+    assert!(
+        reader
+            .input_progress(report.rows_input.as_deref().unwrap())
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(std::fs::read(undated).unwrap(), original);
 }

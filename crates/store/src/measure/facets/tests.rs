@@ -158,7 +158,7 @@ fn withdrawn_and_revised_tags_change_counts_without_derivation() {
     let mut revision = crate::assertions::get(&conn, &note).unwrap().unwrap().fact;
     revision.id = "revision".into();
     revision.key = Some("new".into());
-    revision.created_at = Timestamp::from_unix_ms(2).unwrap();
+    revision.created_at = Timestamp::from_unix_ms(2);
     revision.links.push(AssertionLink {
         role: LinkRole::Revises,
         reference: Reference::Assertion(RevisionReference {
@@ -184,7 +184,7 @@ fn withdrawn_and_revised_tags_change_counts_without_derivation() {
     withdrawal.kind = AssertionKind::Withdrawal;
     withdrawal.key = None;
     withdrawal.value = None;
-    withdrawal.created_at = Timestamp::from_unix_ms(3).unwrap();
+    withdrawal.created_at = Timestamp::from_unix_ms(3);
     withdrawal.links = vec![AssertionLink {
         role: LinkRole::Withdraws,
         reference: Reference::Assertion(RevisionReference {

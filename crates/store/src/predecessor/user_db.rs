@@ -513,8 +513,10 @@ pub fn facts(
             author: author(row)?,
             via: Channel::Import,
             machine: machine.to_owned(),
-            created_at: Timestamp::from_unix_ms(row.created_at)
-                .ok_or_else(|| format!("time {} is out of range", row.created_at))?,
+            created_at: Some(
+                Timestamp::from_unix_ms(row.created_at)
+                    .ok_or_else(|| format!("time {} is out of range", row.created_at))?,
+            ),
             valid_until,
             links,
         };
@@ -564,11 +566,11 @@ pub fn facts(
         .collect()
 }
 
-/// The `pass` every imported fact names as its origin, so one withdrawal
-/// removes them all. Its time is the newest row's, so importing the same
-/// rows again writes the same pass.
+/// The `pass` imported assertion rows name as their origin, so one withdrawal
+/// removes that group. Its population time is the newest row's; the same
+/// source rows produce the same pass. Shared rubrics have separate memberships.
 pub fn pass(id: &str, rows: &[Row], machine: &str) -> Mapped<AssertionFact> {
-    let newest = rows.iter().map(|row| row.created_at).max().unwrap_or(0);
+    let newest = rows.iter().map(|row| row.created_at).max();
     let fact = AssertionFact {
         id: id.to_owned(),
         root: id.to_owned(),
@@ -582,8 +584,11 @@ pub fn pass(id: &str, rows: &[Row], machine: &str) -> Mapped<AssertionFact> {
         author: Author::Script("polylogue-import".into()),
         via: Channel::Import,
         machine: machine.to_owned(),
-        created_at: Timestamp::from_unix_ms(newest)
-            .ok_or_else(|| format!("time {newest} is out of range"))?,
+        created_at: newest
+            .map(|at| {
+                Timestamp::from_unix_ms(at).ok_or_else(|| format!("time {at} is out of range"))
+            })
+            .transpose()?,
         valid_until: None,
         links: Vec::new(),
     };
@@ -607,14 +612,9 @@ fn unit_query(kind: &str) -> Option<&'static str> {
 /// A predecessor annotation schema as a `rubric`: its fields keep their
 /// names, types, enums, ranges, requirement and description; its abstain,
 /// confidence and rationale fields become the rubric's allowances; its
-/// description is the instructions. Its time is `at`, since the predecessor
-/// recorded none for the schemas it shipped.
-pub fn rubric(
-    schema: &Schema,
-    machine: &str,
-    pass: &RevisionReference,
-    at: i64,
-) -> Mapped<AssertionFact> {
+/// description is the instructions. An absent registration time stays unknown.
+/// Physical store membership is recorded separately from this immutable fact.
+pub fn rubric(schema: &Schema, machine: &str) -> Mapped<AssertionFact> {
     use polylogue_model::assertion::values::{Field, FieldType, Rubric};
     let definition: Json = serde_json::from_str(&schema.definition)
         .map_err(|error| format!("definition_json is not JSON: {error}"))?;
@@ -700,15 +700,14 @@ pub fn rubric(
         author: Author::Script("polylogue".into()),
         via: Channel::Import,
         machine: machine.to_owned(),
-        created_at: Timestamp::from_unix_ms(at)
-            .ok_or_else(|| format!("time {at} is out of range"))?,
+        created_at: match schema.stored.get("registered_at_ms").and_then(Json::as_i64) {
+            None | Some(0) => None,
+            Some(at) => Some(
+                Timestamp::from_unix_ms(at).ok_or_else(|| format!("time {at} is out of range"))?,
+            ),
+        },
         valid_until: None,
-        links: vec![AssertionLink {
-            role: LinkRole::Origin,
-            reference: Reference::Assertion(pass.clone()),
-            seen_hash: None,
-            quote: None,
-        }],
+        links: Vec::new(),
     };
     fact.canonicalized().map_err(|error| error.to_string())
 }

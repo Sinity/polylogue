@@ -719,7 +719,7 @@ fn default_numeric_and_unlimited_context_budgets_retain_their_distinct_meanings(
             author: Author::Operator,
             via: Channel::Cli,
             machine: "synthetic-machine".into(),
-            created_at: Timestamp::from_unix_ms(T0).unwrap(),
+            created_at: Some(Timestamp::from_unix_ms(T0).unwrap()),
             valid_until: None,
             links: vec![AssertionLink {
                 role: LinkRole::About,
@@ -926,7 +926,7 @@ fn contrary_evidence_precedes_any_claim_expansion_under_a_tight_budget() {
         author: Author::Operator,
         via: Channel::Cli,
         machine: "synthetic-machine".into(),
-        created_at: Timestamp::from_unix_ms(T0).unwrap(),
+        created_at: Some(Timestamp::from_unix_ms(T0).unwrap()),
         valid_until: None,
         links: std::iter::once(AssertionLink {
             role: LinkRole::About,
@@ -1158,7 +1158,7 @@ fn unjudged_contrary_bodies_are_counted_without_hiding_the_eligible_claim() {
         author,
         via: Channel::Cli,
         machine: "synthetic-machine".into(),
-        created_at: Timestamp::from_unix_ms(T0).unwrap(),
+        created_at: Some(Timestamp::from_unix_ms(T0).unwrap()),
         valid_until: None,
         links: std::iter::once(AssertionLink {
             role: LinkRole::About,

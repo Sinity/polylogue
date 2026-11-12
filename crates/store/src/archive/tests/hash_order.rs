@@ -31,7 +31,7 @@ fn a_deliberate_index_rebuild_keeps_authored_rows_and_vectors() {
             author: polylogue_model::Author::Operator,
             via: polylogue_model::authorship::Channel::Import,
             machine: "synthetic".into(),
-            created_at: polylogue_model::Timestamp::from_unix_ms(1).unwrap(),
+            created_at: Some(polylogue_model::Timestamp::from_unix_ms(1).unwrap()),
             valid_until: None,
             links: vec![AssertionLink {
                 role: LinkRole::About,

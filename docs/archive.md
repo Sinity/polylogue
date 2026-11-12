@@ -39,6 +39,16 @@ Polylogue keeps every input and every reading of it; the deletion stance is stat
 ## Evolution
 
 - **One baseline.** The segment format and the index schema reset once to version 1, with the earlier migrations collapsed; the live archive's inputs, authored state and vectors are kept across that reset. An archive written before the baseline is a declared older input format, imported once into a fresh archive with `polylogue import --from-archive PATH` ([capture.md](capture.md#an-archive-from-before-the-baseline)), never migrated in place.
+- **Current durable format.** Register version 2 makes assertion creation time
+  nullable and records physical authored-import memberships separately. At
+  exclusive archive open, the exact version-1 predecessor is converted in one
+  transaction: every row, row identity, recorded timestamp and reference is
+  retained. The source register and its WAL are preserved before a live
+  transition. Rollback leaves the predecessor intact; another open of version
+  2 changes nothing. This constraint relaxation does not change standalone
+  derived-index declarations, provider reading versions, cursors or raw storage.
+  Other schema mismatches remain refused; there is one current reader.
+
 - **One current format per database.** The current parsed index is Index2. At exclusive open, an exact supported Index1 is converted in one transaction: its packed message blocks become shared values, with row IDs, logical hashes, source memberships, parser checkpoints, generation and cursor key preserved. Missing delivered lineage declarations are added and their normal derivation work scheduled; provider bytes are not reparsed. A failure rolls back the whole index step; an unrecognized Index1 is refused unchanged. Runtime readers use only Index2, rather than retaining an old-format read mode. A reading-version change still re-parses exactly the chains it affects ([Parsing](#parsing)).
 - **`embeddings.db` gains tables in place.** It holds paid vectors, so it is never set aside or rebuilt. Its schema is the vectors and failures tables followed by an ordered list of added tables (with their indexes and triggers); a schema change appends one to the list and never edits a released one. At open, a file whose tables, indexes and triggers are those of the base and an earlier part of that list gains the rest in one transaction; the vectors table and its rows are never rewritten. Any other schema, a change to an existing table included, is refused (exit 78) with what differs from the nearest schema a build created, and the file is left as it was; such a change needs its own written plan.
 - **Other unrecognized derived schemas are replaced.** The daemon sets it aside under its schema identity, builds a new index from stored bytes, reports the rebuild in `status`, and removes the set-aside file once the first build ends ([operations.md](operations.md#replacing-an-index-from-another-schema)). `archive.db` in another format is refused and left as it was.

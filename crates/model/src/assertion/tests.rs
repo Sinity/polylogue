@@ -5,7 +5,7 @@ fn assertion_input_refuses_caller_authorship_and_seen_hash() {
     let value = serde_json::json!({"kind":"note","value":"A statement","links":[{"role":"about","reference":"message:codex:message"}]});
     let parsed: NewAssertion = serde_json::from_value(value.clone()).unwrap();
     assert_eq!(parsed.links[0].role, LinkRole::About);
-    for field in ["author", "via", "machine", "created_at"] {
+    for field in ["author", "via", "machine"] {
         let mut with_actor = value.clone();
         with_actor[field] = "operator".into();
         assert!(
@@ -113,7 +113,7 @@ fn assertion_text_uses_declared_prose_fields_and_preserves_recorded_empty_string
             author: crate::Author::Unattributed,
             via: crate::authorship::Channel::Import,
             machine: "importing-host".into(),
-            created_at: crate::Timestamp::from_unix_ms(1).unwrap(),
+            created_at: Some(crate::Timestamp::from_unix_ms(1).unwrap()),
             valid_until: None,
             links: if kind == AssertionKind::Judgment {
                 vec![AssertionLink {
@@ -132,14 +132,14 @@ fn assertion_text_uses_declared_prose_fields_and_preserves_recorded_empty_string
 }
 
 #[test]
-fn a_stored_fact_without_author_channel_machine_or_time_does_not_decode() {
+fn a_stored_fact_without_author_channel_or_machine_does_not_decode() {
     let complete = serde_json::json!({
         "id":"exact","root":"exact","kind":"note","key":null,"value":"text",
         "author":"operator","via":"cli","machine":"host","created_at":"2026-01-01T00:00:00Z",
         "valid_until":null,"links":[{"role":"about","reference":"session:codex:s","seen_hash":null}]
     });
     serde_json::from_value::<AssertionFact>(complete.clone()).unwrap();
-    for field in ["author", "via", "machine", "created_at"] {
+    for field in ["author", "via", "machine"] {
         let mut missing = complete.clone();
         missing[field] = serde_json::Value::Null;
         assert!(
@@ -187,4 +187,22 @@ fn only_a_span_link_carries_a_quote() {
         fact.validate(),
         Err(AssertionError::QuoteWithoutSpan)
     ));
+}
+
+#[test]
+fn authored_unknown_time_and_known_wire_identity_round_trip() {
+    let mut fact: AssertionFact = serde_json::from_value(serde_json::json!({
+        "id":"synthetic", "root":"synthetic", "kind":"rubric", "key":"synthetic",
+        "value":{"instructions":"Classify", "unit_query":"sessions", "fields":[], "abstain":false,"confidence":false,"rationale":false},
+        "author":"unattributed", "via":"import", "machine":"synthetic-host",
+        "created_at":null, "valid_until":null, "links":[]
+    })).unwrap();
+    let wire = serde_json::to_value(&fact).unwrap();
+    assert!(wire["created_at"].is_null());
+    assert_eq!(serde_json::from_value::<AssertionFact>(wire).unwrap(), fact);
+    let time = crate::Timestamp::from_unix_ms(1234).unwrap();
+    fact.created_at = Some(time);
+    let wire = serde_json::to_value(&fact).unwrap();
+    assert_eq!(wire["created_at"], serde_json::to_value(time).unwrap());
+    assert_eq!(serde_json::from_value::<AssertionFact>(wire).unwrap(), fact);
 }

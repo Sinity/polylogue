@@ -428,7 +428,7 @@ fn note_line(n: &Assertion, zone: &jiff::tz::TimeZone) -> String {
         "- [{label}] {} ({}, {}{by})  assertion:{}@{}",
         n.fact.text().unwrap_or(""),
         targets.join(", "),
-        day(Some(n.fact.created_at), zone),
+        day(n.fact.created_at, zone),
         n.fact.root,
         n.fact.id
     )

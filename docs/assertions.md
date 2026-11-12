@@ -22,7 +22,7 @@ CREATE TABLE assertion (
   author      TEXT NOT NULL,     -- computed, see Authorship
   via         TEXT NOT NULL,     -- mcp | cli | web | extension | hook | markup | import | daemon
   machine     TEXT NOT NULL,
-  created_at  INTEGER NOT NULL,  -- the writer's clock: display, age and as-of reads; never revision order
+  created_at  INTEGER,           -- original authored time; NULL when unknown; never revision order
   valid_until INTEGER,           -- optional; after it the assertion is shown as expired and left out of briefs
   commit_seq  INTEGER NOT NULL   -- this archive's write counter: change feed and send order only
 ) STRICT;
@@ -52,6 +52,24 @@ CREATE TABLE assertion_slot (    -- the uniqueness slots each revision occupies,
 CREATE INDEX assertion_kind_key ON assertion(kind, key);
 CREATE INDEX assertion_root     ON assertion(root);
 ```
+
+Original authored time is optional. Ordinary mutations use the accepting request's
+captured time; imports keep the recorded time or `null` when none was recorded.
+An undated assertion is current by the same link and slot rules as a dated one.
+Time-filtered and as-of reads exclude undated facts, whose eligibility at that
+instant cannot be established. Unbounded reads include them and show an unknown
+time. An import's observed time describes ingress, not original authorship.
+
+A predecessor rubric is identified by its stored schema name and version. Its
+registration time is retained when recorded; the predecessor's zero registration
+sentinel means unknown. Physical source memberships are kept separately in
+`assertion_import`, keyed by assertion, rows input, chain, machine and actor.
+Thus two stores containing an identical schema retain both original rows and
+memberships while restoring one immutable rubric. A different fact under that
+same ID is refused, including a conflicting time; import order never replaces a
+known time with an unknown one. Imported assertions retain their original pass
+links; shared schema definitions do not derive identity from a physical store's
+pass.
 
 - **One link table.** Target, evidence, scope, origin and every relation are the same fact: this assertion points at that reference, in this role.
 - **Nothing derived is stored except two indexes.** `revision_state` holds which revisions are current and withdrawn, and `assertion_slot` which uniqueness slots each revision holds. The write that adds a record recomputes them for exactly the roots it can affect, in the same transaction, so they always equal the rule over the links. Conflicts, judgment state, target state and work-item state are computed when read.

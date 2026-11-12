@@ -189,23 +189,32 @@ impl Engine {
             };
             report.tally("assertions", 1, &outcome, &id);
         }
-        // Annotation schemas become rubrics, dated by the newest assertion
-        // of the same store, since the predecessor recorded no time for the
-        // schemas it shipped.
-        let newest = rows.iter().map(|row| row.created_at).max();
+        // Source membership has its own observed import time; it never supplies
+        // a missing original authored time or changes a rubric's identity.
+        let chain = self
+            .reads
+            .reader()?
+            .input_progress(&rows_id)?
+            .ok_or_else(|| std::io::Error::other("the rows input was not stored"))?
+            .chain;
+        let ingress = polylogue_model::authored::ImportAttribution {
+            input: rows_id.clone(),
+            chain,
+            machine: machine.clone(),
+            actor: authorship.map_or_else(
+                || polylogue_model::Author::Script("polylogue-import".into()),
+                |a| a.author.clone(),
+            ),
+            at: self.config.clock.now().into(),
+        };
         for schema in db.schemas()? {
             let row = format!("{}@{}", schema.id, schema.version);
-            let outcome = match newest {
-                None => Restored::Refused(
-                    "no time is recorded for it and its store holds no assertion to date it".into(),
-                ),
-                Some(at) => match user_db::rubric(&schema, &machine, &pass, at) {
-                    Ok(fact) => match writer.restore_assertion(fact) {
-                        Ok(outcome) => restored(&outcome),
-                        Err(error) => refusal(error)?,
-                    },
-                    Err(reason) => Restored::Refused(reason),
+            let outcome = match user_db::rubric(&schema, &machine) {
+                Ok(fact) => match writer.restore_assertion_from(fact, ingress.clone()) {
+                    Ok(outcome) => restored(&outcome),
+                    Err(error) => refusal(error)?,
                 },
+                Err(reason) => Restored::Refused(reason),
             };
             report.tally("annotation_schemas", 1, &outcome, &row);
         }
