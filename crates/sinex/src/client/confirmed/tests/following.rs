@@ -284,6 +284,38 @@ fn background_follow_drains_split_position_after_durable_staging_then_waits_when
     owner.abort();
 }
 
+async fn answer_fetch(
+    daemon: &async_nats::Client,
+    request: async_nats::Message,
+    template: &ConfirmedEvent,
+) {
+    let query: sinex_protocol::FetchEvent = serde_json::from_slice(&request.payload).unwrap();
+    let number = query.event.0.as_u128();
+    let result = if number == 9 {
+        FetchEventReply::Refused(sinex_protocol::FetchRefusal {
+            kind: sinex_protocol::FetchRefusalKind::Denied,
+            reason: "exact grant refusal".into(),
+        })
+    } else if number == 36 {
+        FetchEventReply::Erased(sinex_protocol::ErasedEvent {
+            event: query.event,
+            original_commit_seq: 17,
+            commit_seq: 18,
+        })
+    } else {
+        let mut fetched = template.clone();
+        fetched.id = query.event;
+        match number {
+            18 => fetched.commit_seq = 18,
+            19 => fetched.payload = json!({"changed":"payload"}),
+            20 => fetched.kind_definition_hash = "0".repeat(64),
+            _ => (),
+        }
+        FetchEventReply::Event(Box::new(fetched))
+    };
+    reply(daemon, request, result).await;
+}
+
 #[test]
 fn confirmed_fetches_overlap_with_a_bound_and_keep_order_refusals_and_erasure() {
     let server = crate::client::tests::server();
@@ -308,7 +340,8 @@ fn confirmed_fetches_overlap_with_a_bound_and_keep_order_refusals_and_erasure() 
             publish(&daemon, sinex_protocol::Confirmed::PositionComplete { commit_seq: 17 }).await;
             let (inflight, first_fetches) = tokio::sync::oneshot::channel();
             let (resume, resumed) = tokio::sync::oneshot::channel();
-            let owner = tokio::spawn(async move {
+            let template = current_event(&document(polylogue_model::batch::StepProgress::AtEnd));
+            let owner = async move {
                 let request = consumers.next().await.unwrap();
                 reply(&daemon, request, provisioned()).await;
                 let mut interrupted = Vec::new();
@@ -325,63 +358,55 @@ fn confirmed_fetches_overlap_with_a_bound_and_keep_order_refusals_and_erasure() 
                     let mut requests = Vec::new();
                     for _ in 0..size { requests.push(fetches.next().await.unwrap()); }
                     assert!(tokio::time::timeout(Duration::from_millis(20), fetches.next()).await.is_err(), "payload fetch concurrency exceeded its bound");
-                    for request in requests.into_iter().rev() {
-                        let query: sinex_protocol::FetchEvent = serde_json::from_slice(&request.payload).unwrap();
-                        let number = query.event.0.as_u128();
-                        count += 1;
-                        let result = if number == 9 {
-                            FetchEventReply::Refused(sinex_protocol::FetchRefusal {
-                                kind: sinex_protocol::FetchRefusalKind::Denied, reason: "exact grant refusal".into(),
-                            })
-                        } else if number == 36 {
-                            FetchEventReply::Erased(sinex_protocol::ErasedEvent { event: query.event, original_commit_seq: 17, commit_seq: 18 })
-                        } else {
-                            let mut fetched = current_event(&document(polylogue_model::batch::StepProgress::AtEnd));
-                            fetched.id = query.event;
-                            match number {
-                                18 => fetched.commit_seq = 18,
-                                19 => fetched.payload = json!({"changed":"payload"}),
-                                20 => fetched.kind_definition_hash = "0".repeat(64),
-                                _ => (),
-                            }
-                            FetchEventReply::Event(Box::new(fetched))
-                        };
-                        reply(&daemon, request, result).await;
-                    }
+                    requests.sort_by_key(|request| {
+                        serde_json::from_slice::<sinex_protocol::FetchEvent>(&request.payload).unwrap().event.0.as_u128()
+                    });
+                    let first = requests.remove(0);
+                    // Complete later events before the first one, without
+                    // serializing every framed response and its acknowledgements.
+                    futures_util::stream::iter(requests.into_iter().rev().map(|request| answer_fetch(&daemon, request, &template)))
+                        .buffer_unordered(16)
+                        .collect::<Vec<_>>().await;
+                    answer_fetch(&daemon, first, &template).await;
+                    count += size;
                 }
                 assert_eq!(count, 36);
-            });
-            let state = ReplayState { scope: Some("test-scope".into()), ..Default::default() };
-            {
-                let attempt = client.confirmed(&state, "cache");
-                tokio::pin!(attempt);
-                tokio::select! {
-                    ready = first_fetches => ready.unwrap(),
-                    result = &mut attempt => panic!("held fetch returned before cancellation: {result:?}"),
+            };
+            // Both sides and all response futures belong to this join. A
+            // failure or timeout drops the whole exchange, not detached workers.
+            let reader = async {
+                let state = ReplayState { scope: Some("test-scope".into()), ..Default::default() };
+                {
+                    let attempt = client.confirmed(&state, "cache");
+                    tokio::pin!(attempt);
+                    tokio::select! {
+                        ready = first_fetches => ready.unwrap(),
+                        result = &mut attempt => panic!("held fetch returned before cancellation: {result:?}"),
+                    }
                 }
-            }
-            assert_eq!(client.pending.len(), 37, "cancelling payload reads must retain unacknowledged delivery");
-            resume.send(()).unwrap();
-            client.release_pending().await;
-            tokio::time::sleep(Duration::from_millis(1100)).await;
-            let page = client.confirmed(&state, "cache").await.unwrap();
-            assert_eq!(page.len(), 39);
-            for (number, item) in (1..=36).zip(&page[1..37]) {
-                assert_eq!(item.position, 17);
-                assert_eq!(item.event, EventId(uuid::Uuid::from_u128(number)).to_string());
-                match number {
-                    9 => assert!(matches!(&item.change, ConfirmedChange::Refused { reason, .. } if reason.contains("exact grant refusal"))),
-                    18..=20 => assert!(matches!(&item.change, ConfirmedChange::Refused { .. })),
-                    36 => assert!(matches!(&item.change, ConfirmedChange::Tombstoned)),
-                    _ => assert!(matches!(&item.change, ConfirmedChange::Live(_))),
+                assert_eq!(client.pending.len(), 37, "cancelling payload reads must retain unacknowledged delivery");
+                resume.send(()).unwrap();
+                client.release_pending().await;
+                tokio::time::sleep(Duration::from_millis(1100)).await;
+                let page = client.confirmed(&state, "cache").await.unwrap();
+                assert_eq!(page.len(), 39);
+                for (number, item) in (1..=36).zip(&page[1..37]) {
+                    assert_eq!(item.position, 17);
+                    assert_eq!(item.event, EventId(uuid::Uuid::from_u128(number)).to_string());
+                    match number {
+                        9 => assert!(matches!(&item.change, ConfirmedChange::Refused { reason, .. } if reason.contains("exact grant refusal"))),
+                        18..=20 => assert!(matches!(&item.change, ConfirmedChange::Refused { .. })),
+                        36 => assert!(matches!(&item.change, ConfirmedChange::Tombstoned)),
+                        _ => assert!(matches!(&item.change, ConfirmedChange::Live(_))),
+                    }
                 }
-            }
-            assert!(matches!(&page[37].change, ConfirmedChange::Control(c) if matches!(c.as_ref(), ReplayControl::Completion { position: 17 })));
-            assert!(matches!(&page[38].change, ConfirmedChange::Control(c) if matches!(c.as_ref(), ReplayControl::Delivered { delivery } if delivery.stream_sequence == 37)));
-            // Transport delivery alone cannot authorize ACK or retire producer custody.
-            assert!(client.acknowledge(&state, &|_| Ok(false)).await.unwrap_err().to_string().contains("not been durably staged"));
-            assert_eq!(client.pending.len(), 37);
-            owner.await.unwrap();
+                assert!(matches!(&page[37].change, ConfirmedChange::Control(c) if matches!(c.as_ref(), ReplayControl::Completion { position: 17 })));
+                assert!(matches!(&page[38].change, ConfirmedChange::Control(c) if matches!(c.as_ref(), ReplayControl::Delivered { delivery } if delivery.stream_sequence == 37)));
+                // Transport delivery alone cannot authorize ACK or retire producer custody.
+                assert!(client.acknowledge(&state, &|_| Ok(false)).await.unwrap_err().to_string().contains("not been durably staged"));
+                assert_eq!(client.pending.len(), 37);
+            };
+            tokio::join!(owner, reader);
         }).await.expect("bounded confirmed transport fixture");
     });
 }
