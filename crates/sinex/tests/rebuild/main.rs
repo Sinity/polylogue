@@ -490,13 +490,15 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
     assert_eq!(coordinates.len(), 1);
     let citation = &coordinates[0];
     assert_eq!(citation["start"].as_u64(), Some(user.len() as u64));
-    assert_eq!(citation["end"].as_u64(), Some(original.len() as u64));
+    // JSON record citations exclude their newline delimiter.
+    let end = original.len() as u64 - 1;
+    assert_eq!(citation["end"].as_u64(), Some(end));
     let material = sinex_model::MaterialId(citation["material"].as_str().unwrap().parse().unwrap());
     let mut offset = user.len() as u64;
     let mut quoted = Vec::new();
     loop {
         let page = sdk
-            .fetch_material_bytes(material, offset, Some(original.len() as u64), 37)
+            .fetch_material_bytes(material, offset, Some(end), 37)
             .unwrap();
         quoted.extend(page.bytes);
         match page.next_offset {
@@ -504,7 +506,7 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
             None => break,
         }
     }
-    assert_eq!(quoted, action.as_bytes());
+    assert_eq!(quoted, action.trim_end_matches('\n').as_bytes());
     assert_eq!(
         sinex_rows(
             &running.socket,
@@ -516,6 +518,7 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
     drop(reader);
     drop(pool);
     // Every removed path belongs to this fixture; the native originals remain.
+    fs::remove_file(home.file("original-session.jsonl")).unwrap();
     fs::remove_dir_all(&home.root).unwrap();
     let empty = home.dir.path().join("empty-home");
     fs::create_dir(&empty).unwrap();
