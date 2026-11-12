@@ -72,6 +72,11 @@ fn removal_steps(unrelated: usize, indexed: bool) -> u64 {
     tx.execute_batch("SAVEPOINT replacement").unwrap();
     let mut removed = batch("target", Route::Live, 0, vec![], &["target"]);
     removed.parse[0].reading_version = "synthetic=2".into();
+    // Production prepares keys/choices before entering the writer transaction.
+    // The fixture resolver reloads its first-build map; exclude that test-only work.
+    resolve::prepare_index(&tx, &mut removed, 1, true).unwrap();
+    let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
+    let receipt = fixture_receipt();
     use std::sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -86,7 +91,17 @@ fn removal_steps(unrelated: usize, indexed: bool) -> u64 {
         }),
     )
     .unwrap();
-    write_test_rows(&tx, &removed, &removed.parse[0], 1, 4, Some(&first)).unwrap();
+    write_rows(
+        &tx,
+        &removed,
+        &removed.parse[0],
+        removed.parse[0].resolution.as_ref().unwrap(),
+        4,
+        Some(&first),
+        Some(&receipt),
+        &changes,
+    )
+    .unwrap();
     tx.progress_handler(0, None::<fn() -> bool>).unwrap();
     let measured = steps.load(Ordering::Relaxed);
     assert_eq!(
