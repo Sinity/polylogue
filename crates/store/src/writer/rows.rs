@@ -619,11 +619,10 @@ fn admit_step(previous: Option<&checkpoint::Stored>, step: &ParseStep) -> Result
     Ok(true)
 }
 
-/// A block's packed body and structured value, as `block` stores them.
+/// A selected block's immutable payload and shared text.
 #[derive(Clone, Copy)]
-struct StoredBlock<'a> {
-    body: &'a [u8],
-    data: Option<&'a [u8]>,
+struct StoredBlock {
+    value_pk: i64,
     text_id: Option<i64>,
 }
 
@@ -1321,20 +1320,15 @@ impl RowWriter<'_, '_> {
             ));
         }
         prepared.projection.validate(m.blocks.len())?;
-        for (idx, ((block, body), data)) in m
-            .blocks
-            .iter()
-            .zip(&prepared.blocks)
-            .zip(&prepared.data)
-            .enumerate()
-        {
+        for (idx, block) in m.blocks.iter().enumerate() {
             let text_id = prepared.texts[idx]
                 .as_ref()
                 .map(|hash| self.keys.get(resolve::Kind::Text, hash).map(|key| key.pk))
                 .transpose()?;
             let stored = StoredBlock {
-                body,
-                data: data.as_deref(),
+                value_pk: self.tx.prepare_cached(
+                    "SELECT value_pk FROM message_version_block WHERE version_hash=?1 AND idx=?2",
+                )?.query_row(params![prepared.hash.as_slice(),idx as i64],|row|row.get(0))?,
                 text_id,
             };
             self.insert_block(
@@ -1358,11 +1352,7 @@ impl RowWriter<'_, '_> {
         origin: &str,
         position: (i64, u64),
         block: &Block,
-        StoredBlock {
-            body,
-            data,
-            text_id,
-        }: StoredBlock<'_>,
+        StoredBlock { value_pk, text_id }: StoredBlock,
         at: Option<i64>,
     ) -> Result<()> {
         let (idx, ordinal) = position;
@@ -1387,13 +1377,9 @@ impl RowWriter<'_, '_> {
         // the session its copy name is an alias of, as the message does.
         let call_id = call_id.map(|id| self.keys.identities.shown_call(origin, id));
         let call_id = call_id.as_deref();
-        let (signature, encrypted) = match block {
-            Block::Thinking {
-                signature,
-                redacted,
-                ..
-            } => (signature.as_deref(), *redacted),
-            _ => (None, false),
+        let encrypted = match block {
+            Block::Thinking { redacted, .. } => *redacted,
+            _ => false,
         };
         let other_type = match block {
             Block::Other { type_name, .. } => Some(type_name.as_str()),
@@ -1401,10 +1387,10 @@ impl RowWriter<'_, '_> {
         };
         self.tx
             .prepare_cached(
-                "INSERT INTO block(message_pk, session_pk, idx, kind, text_id, body, call_id,
-                     blob_hash, media_type, file_name, size, url, direction, signature, encrypted,
-                     other_type, data, ordinal)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+                "INSERT INTO block(message_pk, session_pk, idx, kind, text_id, value_pk, call_id,
+                     blob_hash, media_type, file_name, size, url, direction, encrypted,
+                     other_type, ordinal)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             )?
             .execute(params![
                 message_pk,
@@ -1412,7 +1398,7 @@ impl RowWriter<'_, '_> {
                 idx,
                 kind,
                 text_id,
-                body,
+                value_pk,
                 call_id,
                 attachment.and_then(|a| a.blob).map(|h| h.0.to_vec()),
                 attachment.and_then(|a| a.media_type.as_deref()),
@@ -1420,10 +1406,8 @@ impl RowWriter<'_, '_> {
                 attachment.and_then(|a| a.size).map(|s| s as i64),
                 attachment.and_then(|a| a.url.as_deref()),
                 attachment.map(|a| name(&a.direction)),
-                signature,
                 i64::from(encrypted),
                 other_type,
-                data,
                 ordinal.to_string(),
             ])?;
         let block_pk = self.tx.last_insert_rowid();
@@ -1521,7 +1505,7 @@ impl RowWriter<'_, '_> {
         let result: Option<(i64, Vec<u8>, Option<i64>)> = self
             .tx
             .prepare_cached(
-                "SELECT b.pk,b.body,m.at FROM block b JOIN message m ON m.pk=b.message_pk
+                "SELECT b.pk,bv.body,m.at FROM block b JOIN block_value bv ON bv.pk=b.value_pk JOIN message m ON m.pk=b.message_pk
                  WHERE b.session_pk = ?1 AND b.call_id = ?2 AND b.kind = 'tool_result'
                  ORDER BY b.pk LIMIT 1",
             )?

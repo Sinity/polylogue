@@ -70,6 +70,7 @@ pub(crate) fn store(
         text_rows,
         false,
     )
+    .map(drop)
 }
 
 struct ValueRows<'a> {
@@ -90,7 +91,7 @@ fn store_value(
     }: ValueRows<'_>,
     text_rows: TextRows<'_>,
     replace: bool,
-) -> Result<()> {
+) -> Result<bool> {
     let TextRows {
         packed,
         first_build,
@@ -104,8 +105,8 @@ fn store_value(
         format!("INSERT OR IGNORE INTO {kind}_version(version_hash,body) VALUES (?1,?2)")
     };
     let inserted = conn.prepare_cached(&sql)?.execute(params![hash, body])?;
-    if inserted == 0 {
-        return Ok(());
+    if inserted == 0 && !replace {
+        return Ok(false);
     }
     if replace {
         conn.execute(
@@ -141,7 +142,7 @@ fn store_value(
             }
         }
     }
-    Ok(())
+    Ok(true)
 }
 
 pub(crate) fn store_message(
@@ -156,7 +157,7 @@ pub(crate) fn store_message(
     if prepared.hash != prepared.projection.source_version.0 {
         return Err(polylogue_model::bundle::BundleError::SourceVersionMismatch.into());
     }
-    store_value(
+    let inserted = store_value(
         conn,
         VersionKind::Message,
         ValueRows {
@@ -168,6 +169,22 @@ pub(crate) fn store_message(
         text_rows,
         replace,
     )?;
+    if inserted || replace {
+        for (idx, (body, data)) in prepared.blocks.iter().zip(&prepared.data).enumerate() {
+            let value_pk = store_block_payload(conn, body, data.as_deref())?;
+            conn.prepare_cached(
+                "INSERT INTO message_version_block(version_hash,idx,value_pk) VALUES (?1,?2,?3)
+                 ON CONFLICT(version_hash,idx) DO UPDATE SET value_pk=excluded.value_pk
+                 WHERE value_pk IS NOT excluded.value_pk",
+            )?
+            .execute(params![prepared.hash.as_slice(), idx as i64, value_pk])?;
+        }
+        conn.prepare_cached("DELETE FROM message_version_block WHERE version_hash=?1 AND idx>=?2")?
+            .execute(params![
+                prepared.hash.as_slice(),
+                prepared.blocks.len() as i64
+            ])?;
+    }
     // A stored version no source row chose is deleted before the commit.
     conn.prepare_cached(
         "INSERT OR IGNORE INTO temp.unreferenced_version(kind,version_hash) VALUES ('message',?1)",
@@ -194,6 +211,25 @@ pub(crate) fn store_message(
         ],
     )?;
     Ok(())
+}
+
+/// Writes an encoded payload once, shared by version history and selected rows.
+pub(crate) fn store_block_payload(
+    conn: &Connection,
+    body: &[u8],
+    data: Option<&[u8]>,
+) -> Result<i64> {
+    let hash = encoding::block_value_hash(body, data);
+    if let Some(pk) = conn
+        .prepare_cached("SELECT pk FROM block_value WHERE hash=?1")?
+        .query_row([hash.as_slice()], |row| row.get(0))
+        .optional()?
+    {
+        return Ok(pk);
+    }
+    conn.prepare_cached("INSERT INTO block_value(hash,body,data) VALUES (?1,?2,?3) RETURNING pk")?
+        .query_row(params![hash.as_slice(), body, data], |row| row.get(0))
+        .map_err(Into::into)
 }
 
 pub(crate) fn message_layout(projection: &MessageProjection) -> Result<Vec<u8>> {
@@ -224,6 +260,26 @@ fn read_body<T: DeserializeOwned>(
     body: &[u8],
 ) -> Result<T> {
     let mut value: serde_json::Value = encoding::unpack_json(body)?;
+    if kind == "message" {
+        let mut statement = conn.prepare_cached(
+            "SELECT b.body,b.data FROM message_version_block v JOIN block_value b ON b.pk=v.value_pk
+             WHERE v.version_hash=?1 ORDER BY v.idx",
+        )?;
+        let blocks = statement
+            .query_map([hash], |row| {
+                Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Option<Vec<u8>>>(1)?))
+            })?
+            .map(|row| {
+                let (body, data) = row?;
+                let mut block = encoding::unpack_block(&body)?;
+                if let Some(data) = data {
+                    encoding::restore_data(&mut block, &data)?;
+                }
+                Ok(serde_json::to_value(block)?)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        value["blocks"] = blocks.into();
+    }
     let mut statement = conn.prepare_cached(&format!(
         "SELECT v.idx,t.body FROM {kind}_version_text v JOIN text t ON t.id=v.text_id WHERE v.version_hash=?1 ORDER BY v.idx"
     ))?;
@@ -356,6 +412,15 @@ fn reference_triggers() -> String {
             Some(name),
         );
     }
+    for table in ["block", "message_version_block"] {
+        trigger(
+            &format!("{table}_payload"),
+            table,
+            "value_pk",
+            "unreferenced_value",
+            Some("block"),
+        );
+    }
     for table in [
         "block",
         "document_block",
@@ -417,6 +482,13 @@ pub(crate) fn remove_unreferenced(conn: &Connection, bulk: bool) -> Result<()> {
     }
     conn.prepare_cached("DELETE FROM temp.unreferenced_version")?
         .execute([])?;
+    conn.prepare_cached(
+        "DELETE FROM block_value AS v
+         WHERE pk IN (SELECT value_pk FROM temp.unreferenced_value WHERE kind='block')
+         AND NOT EXISTS(SELECT 1 FROM block b WHERE b.value_pk=v.pk)
+         AND NOT EXISTS(SELECT 1 FROM message_version_block b WHERE b.value_pk=v.pk)",
+    )?
+    .execute([])?;
     conn.prepare_cached("DELETE FROM temp.unreferenced_value")?
         .execute([])?;
     // Candidates drive the lookup. An ordinary JOIN can scan every retained

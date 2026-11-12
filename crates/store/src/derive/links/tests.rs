@@ -194,7 +194,14 @@ fn compound_artifact_commands_keep_text_and_packed_result_provenance() {
                 &json!({"type":"tool_result", "outcome":{"kind":"ok"}, "output":output}),
             )
             .unwrap();
-            index.execute("UPDATE block SET text_id=NULL, body=?1 WHERE pk IN (SELECT result_block_pk FROM tool_call)", [body]).unwrap();
+            crate::fixture::change_block_payloads(
+                &index,
+                "SELECT result_block_pk FROM tool_call WHERE result_block_pk IS NOT NULL",
+                [],
+                |stored, _| *stored = body.clone(),
+            )
+            .unwrap();
+            index.execute("UPDATE block SET text_id=NULL WHERE pk IN (SELECT result_block_pk FROM tool_call)",[]).unwrap();
         }
         let session_pk = index
             .query_row("SELECT pk FROM session WHERE id='claude-code:s'", [], |r| {

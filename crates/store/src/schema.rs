@@ -1,14 +1,15 @@
-//! Table declarations. Each database has one baseline: an empty file is
-//! created at version 1 with exactly the tables declared here, and a file at
-//! version 1 with these tables opens. A newer file, or one whose tables differ
-//! (an archive in another format), is refused unchanged. An index refused
-//! this way is replaced by the archive's open, since it is derived.
+//! Current table declarations. An exact Index1 predecessor converts once to
+//! shared block values in Index2, preserving saved progress. Other unknown
+//! formats are refused; ordinary unrecognized derived schemas can be replaced
+//! by archive open. Runtime readers use only the current index encoding.
 //! `embeddings.db` holds paid vectors and is never replaced: a file written by
 //! an earlier build gains the tables added since ([`ensure_embeddings`]).
 
 use crate::{Result, StoreError};
 use rusqlite::{Connection, OptionalExtension};
 use std::collections::HashSet;
+
+mod shared_blocks;
 
 pub const ARCHIVE: &str = concat!(
     include_str!("schema/archive.sql"),
@@ -26,6 +27,10 @@ pub const ARCHIVE: &str = concat!(
     include_str!("schema/signals.sql")
 );
 pub const INDEX: &str = concat!(
+    include_str!("schema/block_values.sql"),
+    "\n",
+    include_str!("schema/blocks.sql"),
+    "\n",
     include_str!("schema/index.sql"),
     "\n",
     include_str!("schema/wire_shapes.sql"),
@@ -79,7 +84,7 @@ const EMBEDDINGS_ADDITIONS: &[&str] = &[
 pub const ARCHIVE_VERSION: u32 = 1;
 
 /// The index schema and row encoding version. Reading versions are independent.
-pub const INDEX_VERSION: u32 = 1;
+pub const INDEX_VERSION: u32 = 2;
 
 /// The SQLite `application_id` of an `archive.db` or `index.db` written at or
 /// after the baseline ("PLG1"). A non-empty file without it was written by an
@@ -166,7 +171,7 @@ fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
     // ALTER TABLE validates views that read packed bodies through these functions.
     crate::sql_functions::register(conn)?;
     check_format(conn, "index")?;
-    let found = version(conn)?;
+    let mut found = version(conn)?;
     if found > INDEX_VERSION {
         return Err(StoreError::IndexVersion {
             found,
@@ -177,6 +182,12 @@ fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
     if found == 0 {
         create_index_in(&tx, primary)?;
     } else {
+        let converted = found == 1;
+        if found == 1 {
+            shared_blocks::convert(&tx, primary)?;
+            set_version(&tx, INDEX_VERSION)?;
+            found = INDEX_VERSION;
+        }
         // This reverse reference is needed by the writer, including a resumed
         // first build. Adding the index preserves rows and table identity.
         tx.execute_batch(crate::parser_context::VERSION_INDEX)?;
@@ -213,6 +224,12 @@ fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
                 same_index_schema_in(&tx, primary)?
             };
         if !matches {
+            if converted {
+                return Err(StoreError::Invalid(
+                    "the converted index does not match Index2; its transaction was rolled back"
+                        .into(),
+                ));
+            }
             return Err(StoreError::NoMigration {
                 database: "index",
                 found,

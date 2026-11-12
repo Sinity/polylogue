@@ -1067,7 +1067,13 @@ fn indexing_errors_abort_the_changed_rows_transaction() {
             if invalid_json {
                 let body =
                     crate::encoding::pack_json(&serde_json::json!({"type":"not-a-block"})).unwrap();
-                tx.execute("UPDATE block SET body = ?1", [body]).unwrap();
+                crate::fixture::change_block_payloads(
+                    &tx,
+                    "SELECT pk FROM block",
+                    [],
+                    |stored, _| *stored = body.clone(),
+                )
+                .unwrap();
             } else {
                 tx.execute("UPDATE block SET idx = -1, ordinal = NULL", [])
                     .unwrap();

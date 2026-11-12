@@ -41,8 +41,9 @@ pub(crate) struct Links {
 fn result(conn: &Connection, call_pk: i64) -> Result<Option<String>> {
     let (text, body): (Option<Vec<u8>>, Option<Vec<u8>>) = conn
         .prepare_cached(
-            "SELECT rt.body, rb.body FROM tool_call t
+            "SELECT rt.body, rv.body FROM tool_call t
              LEFT JOIN block rb ON rb.pk = t.result_block_pk
+             LEFT JOIN block_value rv ON rv.pk=rb.value_pk
              LEFT JOIN text rt ON rt.id = rb.text_id WHERE t.pk = ?1",
         )?
         .query_row([call_pk], |r| Ok((r.get(0)?, r.get(1)?)))?;

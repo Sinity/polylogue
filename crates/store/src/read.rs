@@ -1006,13 +1006,13 @@ impl Reader<'_> {
     }
 
     /// A message's blocks; without `structured`, tool results lack their
-    /// structured data (`block.data`), which is then neither read nor decoded.
+    /// structured data (`block_value.data`), which is then neither read nor decoded.
     fn message_blocks(&self, message_pk: i64, structured: bool) -> Result<Vec<Block>> {
         let mut stmt = self.conn()?.prepare_cached(if structured {
-            "SELECT b.body, t.body, b.data FROM block b LEFT JOIN text t ON t.id=b.text_id
+            "SELECT bv.body, t.body, bv.data FROM block b JOIN block_value bv ON bv.pk=b.value_pk LEFT JOIN text t ON t.id=b.text_id
              WHERE b.message_pk=?1 ORDER BY b.idx"
         } else {
-            "SELECT b.body, t.body, NULL FROM block b LEFT JOIN text t ON t.id=b.text_id
+            "SELECT bv.body, t.body, NULL FROM block b JOIN block_value bv ON bv.pk=b.value_pk LEFT JOIN text t ON t.id=b.text_id
              WHERE b.message_pk=?1 ORDER BY b.idx"
         })?;
         let rows = stmt.query_map([message_pk], |r| {

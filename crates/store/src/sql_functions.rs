@@ -3,7 +3,7 @@
 //! logical day without a second pass in Rust:
 //!
 //! - `pl_text(body)`: a `text.body` decompressed to UTF-8;
-//! - `pl_block(body)`: a `block.body` decompressed to its JSON (text moved
+//! - `pl_block(body)`: an immutable block payload decompressed to its JSON (text moved
 //!   to `text` is not in it);
 //! - `pl_fold(text)`: letters with a stroke folded, as the index does;
 //! - `pl_key(text)`: [`polylogue_model::text::key`], for case- and

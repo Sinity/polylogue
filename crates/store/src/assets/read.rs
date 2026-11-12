@@ -47,7 +47,7 @@ impl Reader<'_> {
     ) -> Result<AttachmentResolution> {
         let conn = self.conn()?;
         let (version,body,source_input,source_chain):(Vec<u8>,Vec<u8>,String,i64)=conn.query_row(
-            "SELECT ms.version_hash,b.body,i.id,ms.chain FROM message m JOIN message_source ms ON ms.message_pk=m.pk AND ms.input_pk=m.input_pk AND ms.chain=m.source_chain JOIN input_ref i ON i.pk=ms.input_pk JOIN block b ON b.message_pk=m.pk WHERE m.id=?1 AND coalesce(b.ordinal,CAST(b.idx AS TEXT))=?2",
+            "SELECT ms.version_hash,bv.body,i.id,ms.chain FROM message m JOIN message_source ms ON ms.message_pk=m.pk AND ms.input_pk=m.input_pk AND ms.chain=m.source_chain JOIN input_ref i ON i.pk=ms.input_pk JOIN block b ON b.message_pk=m.pk JOIN block_value bv ON bv.pk=b.value_pk WHERE m.id=?1 AND coalesce(b.ordinal,CAST(b.idx AS TEXT))=?2",
             params![message.to_string(),block.to_string()],
             |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?
             .ok_or_else(||StoreError::NotFound(format!("attachment block {message}:{block}")))?;

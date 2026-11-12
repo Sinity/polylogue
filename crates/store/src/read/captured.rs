@@ -83,7 +83,7 @@ impl Reader<'_> {
     /// file ID; one entry per ID.
     pub fn stored_files(&self, session: &polylogue_model::SessionId) -> Result<Vec<StoredFile>> {
         let mut stmt = self.conn()?.prepare_cached(
-            "SELECT b.body FROM block b JOIN session s ON s.pk = b.session_pk
+            "SELECT bv.body FROM block b JOIN block_value bv ON bv.pk=b.value_pk JOIN session s ON s.pk = b.session_pk
              WHERE s.id = ?1 AND b.kind IN ('image', 'file', 'tool_result')",
         )?;
         let mut rows = stmt.query([session.to_string()])?;

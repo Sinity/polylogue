@@ -170,7 +170,7 @@ fn repeated(conn: &Connection, session_pk: i64) -> Result<HashMap<i64, String>> 
 /// The prompt's text blocks, whitespace runs read as one space.
 fn prompt_key(conn: &Connection, message_pk: i64) -> Result<String> {
     let mut statement = conn.prepare_cached(
-        "SELECT b.body, t.body FROM block b LEFT JOIN text t ON t.id = b.text_id
+        "SELECT bv.body, t.body FROM block b JOIN block_value bv ON bv.pk=b.value_pk LEFT JOIN text t ON t.id = b.text_id
          WHERE b.message_pk = ?1 ORDER BY b.idx",
     )?;
     let mut rows = statement.query([message_pk])?;

@@ -35,9 +35,10 @@ fn many_tool_calls_remove_exact_search_entries_and_keep_another_session() {
     let tx = db.transaction().unwrap();
     message(&tx, 1, 1);
     message(&tx, 2, 2);
+    let value = crate::versions::store_block_payload(&tx, &[0], None).unwrap();
     for pk in 1..=4097 {
         let session = if pk == 4097 { 2 } else { 1 };
-        tx.execute("INSERT INTO block(pk,message_pk,session_pk,idx,kind,body) VALUES(?1,?2,?2,?1,'tool_call',x'00')",params![pk,session]).unwrap();
+        tx.execute("INSERT INTO block(pk,message_pk,session_pk,idx,kind,value_pk) VALUES(?1,?2,?2,?1,'tool_call',?3)",params![pk,session,value]).unwrap();
         let command = format!("echo syntheticcommand{pk}");
         let path = format!("/synthetic/path/{pk}");
         tx.execute("INSERT INTO tool_call(pk,session_pk,call_block_pk,tool,command,path,outcome) VALUES(?1,?2,?1,'shell',?3,?4,'unknown')",params![pk,session,command,path]).unwrap();

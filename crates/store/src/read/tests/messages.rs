@@ -40,8 +40,13 @@ fn breaking_message_visit_does_not_decode_later_bodies() {
     let conn =
         crate::archive::open_write(&fixture.archive.index_db(), crate::archive::cache::SETUP)
             .unwrap();
-    conn.execute("UPDATE block SET body=X'00' WHERE message_pk=?1", [later])
-        .unwrap();
+    crate::fixture::change_block_payloads(
+        &conn,
+        "SELECT pk FROM block WHERE message_pk=?1",
+        [later],
+        |body, _| *body = vec![0],
+    )
+    .unwrap();
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
     let id = SessionId::parse("claude-code:bounded").unwrap();

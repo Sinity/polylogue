@@ -61,12 +61,13 @@ fn chosen_hit_batches_preserve_source_text_and_ignore_unselected_corruption() {
     let write =
         crate::archive::open_write(&fixture.archive.index_db(), crate::archive::cache::SETUP)
             .unwrap();
-    write
-        .execute(
-            "UPDATE block SET body=X'00' WHERE message_pk IN (?1,?2)",
-            [late, unrelated],
-        )
-        .unwrap();
+    crate::fixture::change_block_payloads(
+        &write,
+        "SELECT pk FROM block WHERE message_pk IN (?1,?2)",
+        [late, unrelated],
+        |body, _| *body = vec![0],
+    )
+    .unwrap();
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
     let scopes = [
@@ -104,15 +105,23 @@ fn chosen_hit_batches_preserve_source_text_and_ignore_unselected_corruption() {
     assert!(changed[0].as_ref().unwrap().text.contains("needleprivate"));
     drop(fresh);
     assert_eq!(reader.snippets(&queries, &scopes).unwrap(), snippets);
-    write
-        .execute("UPDATE block SET body=X'00' WHERE message_pk=?1", [header])
-        .unwrap();
+    crate::fixture::change_block_payloads(
+        &write,
+        "SELECT pk FROM block WHERE message_pk=?1",
+        [header],
+        |body, _| *body = vec![0],
+    )
+    .unwrap();
     let fresh = pool.reader().unwrap();
     assert_eq!(fresh.snippets(&queries, &scopes).unwrap(), snippets);
     drop(fresh);
-    write
-        .execute("UPDATE block SET body=X'00' WHERE message_pk=?1", [message])
-        .unwrap();
+    crate::fixture::change_block_payloads(
+        &write,
+        "SELECT pk FROM block WHERE message_pk=?1",
+        [message],
+        |body, _| *body = vec![0],
+    )
+    .unwrap();
     let fresh = pool.reader().unwrap();
     assert!(
         fresh.snippets(&queries, &scopes).is_err(),

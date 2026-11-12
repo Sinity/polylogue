@@ -190,34 +190,7 @@ CREATE TABLE text (
 
 -- What the provider wrote, one row per content item. Facts derived about a tool
 -- call (tool, command, outcome, exit code, duration) belong to tool_call alone.
-CREATE TABLE block (
-  pk                INTEGER PRIMARY KEY,
-  message_pk        INTEGER NOT NULL,
-  session_pk        INTEGER NOT NULL,       -- the message's session, enforced by the composite key below
-  idx               INTEGER,                -- compact position among the stored blocks, used for ordering
-  kind              TEXT NOT NULL,          -- text | thinking | tool_call | tool_result | image | file | other
-  text_id           INTEGER REFERENCES text(id),
-  body              BLOB NOT NULL,          -- the model Block as zstd-compressed JSON, with its prose or output
-                                            --   text moved to `text` (text_id): reading a block back is lossless
-  call_id           TEXT,                   -- tool_call and tool_result: the provider's call id (unique only in a session)
-  blob_hash         BLOB,                   -- image/file, large tool output: bytes in the blob store; export `blob`
-  direction         TEXT,                   -- image/file: input | output | unknown
-  media_type        TEXT,
-  file_name         TEXT,                   -- export `name`
-  size              INTEGER,                -- image/file
-  url               TEXT,                   -- image/file downloaded from a link
-  signature         TEXT,                   -- thinking
-  encrypted         INTEGER NOT NULL DEFAULT 0,  -- thinking kept encrypted
-  other_type        TEXT,                   -- other: the provider's content type name; export `type`
-  data              BLOB,                   -- tool_result: its structured data as zstd-compressed JSON, kept
-                                            --   out of body, so a text read never reads or decodes it
-  ordinal           TEXT,                   -- original u64 source position; NULL means native dense idx
-  FOREIGN KEY (message_pk, session_pk) REFERENCES message(pk, session_pk),
-  UNIQUE (pk, session_pk)
-) STRICT;
 CREATE UNIQUE INDEX text_hash ON text(hash);
-CREATE UNIQUE INDEX block_message ON block(message_pk, idx);
-CREATE INDEX block_text   ON block(text_id) WHERE text_id IS NOT NULL;   -- search hit -> blocks
 
 -- Full-text search: two contentless indexes keyed by text.id, holding folded
 -- text. text_fts: prose (text and thinking blocks). output_fts: tool output
@@ -688,7 +661,7 @@ CREATE TABLE document_block (
   body BLOB NOT NULL,
   text_id INTEGER REFERENCES text(id),
   blob_hash BLOB,
-  data BLOB,                                -- as block.data
+  data BLOB,                                -- as block_value.data
   PRIMARY KEY(document_pk,idx)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX document_block_text ON document_block(text_id) WHERE text_id IS NOT NULL;

@@ -41,6 +41,174 @@ fn cleanup_steps(conn: &Connection) -> u64 {
     steps.load(Ordering::Relaxed)
 }
 
+fn payload_cleanup_steps(unrelated: i64, without_indexes: bool) -> u64 {
+    let conn = database(0);
+    conn.execute_batch(
+        "INSERT INTO input_ref(pk,id) VALUES(1,'synthetic');
+         INSERT INTO session(pk,id,origin,native_id,kind,changed) VALUES(1,'claude-code:synthetic','claude-code','synthetic','main',1);
+         INSERT INTO message(pk,id,session_pk,session_order,role,written_by,input_pk) VALUES(1,'claude-code:synthetic',1,'0','user','human',1);
+         INSERT INTO message_version VALUES(x'01',x'00'),(x'02',x'00');",
+    ).unwrap();
+    let body = encoding::pack_json(&serde_json::json!({"type":"text","text":""})).unwrap();
+    let kept = store_block_payload(&conn, &body, None).unwrap();
+    let body = encoding::pack_json(
+        &serde_json::json!({"type":"other","type_name":"candidate","fields":{}}),
+    )
+    .unwrap();
+    let orphan = store_block_payload(&conn, &body, None).unwrap();
+    for idx in 0..unrelated {
+        conn.execute(
+            "INSERT INTO message_version_block VALUES(x'01',?1,?2)",
+            params![idx, kept],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO block(message_pk,session_pk,idx,kind,value_pk) VALUES(1,1,?1,'text',?2)",
+            params![idx, kept],
+        )
+        .unwrap();
+    }
+    conn.execute(
+        "INSERT INTO message_version_block VALUES(x'02',0,?1)",
+        [orphan],
+    )
+    .unwrap();
+    if without_indexes {
+        conn.execute_batch("DROP INDEX block_value_ref; DROP INDEX message_version_block_value")
+            .unwrap();
+    }
+    conn.execute_batch(
+        "SAVEPOINT retraction; DELETE FROM message_version_block WHERE version_hash=x'02'",
+    )
+    .unwrap();
+    let steps = cleanup_steps(&conn);
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM block_value WHERE pk=?1",
+            [orphan],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM block_value WHERE pk=?1",
+            [kept],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM block", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        unrelated
+    );
+    conn.execute_batch("ROLLBACK TO retraction; RELEASE retraction")
+        .unwrap();
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM message_version_block WHERE version_hash=x'02'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM block_value WHERE pk=?1",
+            [orphan],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+    steps
+}
+
+#[test]
+fn block_payload_cleanup_is_keyed_and_rolls_back_with_its_reading() {
+    let small = payload_cleanup_steps(1, false);
+    let large = payload_cleanup_steps(8192, false);
+    let unindexed = payload_cleanup_steps(8192, true);
+    assert!(
+        large <= small + 100,
+        "candidate cleanup grew with retained references: {small} -> {large}"
+    );
+    assert!(
+        unindexed > large + 8192,
+        "the control did not expose reference scans: {large} vs {unindexed}"
+    );
+}
+
+#[test]
+fn a_payload_is_kept_by_either_a_version_or_a_selected_block() {
+    let conn = database(0);
+    conn.execute_batch(
+        "INSERT INTO input_ref(pk,id) VALUES(1,'synthetic');
+         INSERT INTO session(pk,id,origin,native_id,kind,changed) VALUES(1,'claude-code:synthetic','claude-code','synthetic','main',1);
+         INSERT INTO message(pk,id,session_pk,session_order,role,written_by,input_pk) VALUES(1,'claude-code:synthetic',1,'0','user','human',1);
+         INSERT INTO message_version VALUES(x'01',x'00'),(x'02',x'00');",
+    ).unwrap();
+    let body = encoding::pack_json(&serde_json::json!({"type":"text","text":""})).unwrap();
+    let value = store_block_payload(&conn, &body, None).unwrap();
+    assert_eq!(store_block_payload(&conn, &body, None).unwrap(), value);
+    conn.execute(
+        "INSERT INTO message_version_block VALUES(x'01',0,?1),(x'02',7,?1)",
+        [value],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO block(message_pk,session_pk,idx,kind,value_pk) VALUES(1,1,0,'text',?1)",
+        [value],
+    )
+    .unwrap();
+    conn.execute_batch("DELETE FROM message_version_block WHERE version_hash=x'01'")
+        .unwrap();
+    remove_unreferenced(&conn, true).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM block_value", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    conn.execute_batch("DELETE FROM message_version_block WHERE version_hash=x'02'")
+        .unwrap();
+    remove_unreferenced(&conn, true).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM block_value", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    conn.execute_batch("DELETE FROM block").unwrap();
+    remove_unreferenced(&conn, true).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM block_value", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+}
+
 fn context_reference_cleanup_steps(unrelated: i64, without_index: bool) -> u64 {
     let conn = database(0);
     if without_index {
@@ -189,8 +357,9 @@ fn text_cleanup_checks_only_candidates_and_keeps_all_reference_kinds() {
              VALUES(1,'claude-code:synthetic','claude-code','synthetic','main',1);
          INSERT INTO message(pk,id,session_pk,session_order,role,written_by,input_pk)
              VALUES(1,'claude-code:synthetic',1,'0001','user','human',1);
-         INSERT INTO block(pk,message_pk,session_pk,idx,kind,body,text_id)
-             VALUES(1,1,1,0,'text',x'00',1);
+         INSERT INTO block_value(pk,hash,body) VALUES(1,x'01',x'00');
+         INSERT INTO block(pk,message_pk,session_pk,idx,kind,value_pk,text_id)
+             VALUES(1,1,1,0,'text',1,1);
          INSERT INTO document(pk,id,origin,native_id,purpose,authorship,version_hash,input_pk,
              source_chain,source_start,source_end,fields,changed)
              VALUES(1,'synthetic','claude-code','synthetic','context','human',x'01',1,1,0,1,x'00',1);

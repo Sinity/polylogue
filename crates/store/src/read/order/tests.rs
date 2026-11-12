@@ -26,9 +26,13 @@ fn message_session_lookup_never_hydrates_the_endpoint_body() {
     let connection =
         crate::archive::open_write(&fixture.archive.index_db(), crate::archive::cache::SETUP)
             .unwrap();
-    connection
-        .execute("UPDATE block SET body=X'00' WHERE message_pk=?1", [message])
-        .unwrap();
+    crate::fixture::change_block_payloads(
+        &connection,
+        "SELECT pk FROM block WHERE message_pk=?1",
+        [message],
+        |body, _| *body = vec![0],
+    )
+    .unwrap();
     drop(connection);
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
@@ -73,9 +77,13 @@ fn message_ordinal_seek_is_metadata_only_and_uses_canonical_physical_order() {
     let connection =
         crate::archive::open_write(&fixture.archive.index_db(), crate::archive::cache::SETUP)
             .unwrap();
-    connection
-        .execute("UPDATE block SET body=X'00' WHERE session_pk=?1", [session])
-        .unwrap();
+    crate::fixture::change_block_payloads(
+        &connection,
+        "SELECT pk FROM block WHERE session_pk=?1",
+        [session],
+        |body, _| *body = vec![0],
+    )
+    .unwrap();
     drop(connection);
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();

@@ -33,6 +33,18 @@ pub(crate) fn unpack_bytes(packed: &[u8]) -> std::io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
+/// Identity of the exact immutable encoded payload, independent of its text.
+pub(crate) fn block_value_hash(body: &[u8], data: Option<&[u8]>) -> [u8; 32] {
+    let mut hash = blake3::Hasher::new_derive_key("polylogue encoded block payload v1");
+    hash.update(&(body.len() as u64).to_le_bytes());
+    hash.update(body);
+    hash.update(&[u8::from(data.is_some())]);
+    if let Some(data) = data {
+        hash.update(data);
+    }
+    *hash.finalize().as_bytes()
+}
+
 pub(crate) fn pack_text(text: &str) -> std::io::Result<Vec<u8>> {
     pack_bytes(text.as_bytes())
 }
@@ -199,6 +211,7 @@ pub(crate) struct PreparedMessage {
     pub(crate) id: MessageId,
     pub(crate) projection: MessageProjection,
     pub(crate) time: Vec<u8>,
+    /// Packed message fields; immutable blocks are stored separately.
     pub(crate) body: Vec<u8>,
     content: PreparedContent,
 }
@@ -209,7 +222,7 @@ pub(crate) struct PreparedContent {
     pub(crate) hash: [u8; 32],
     pub(crate) blocks: Vec<Vec<u8>>,
     pub(crate) texts: Vec<Option<[u8; 32]>>,
-    /// Each block's structured value, packed for `block.data` ([`block_data`]).
+    /// Each block's structured value, packed for `block_value.data` ([`block_data`]).
     pub(crate) data: Vec<Option<Vec<u8>>>,
 }
 
@@ -341,7 +354,7 @@ impl RowPacker {
             id: message.id.clone(),
             projection: projection.clone(),
             time: time_bytes(message.at, message.time_evidence())?,
-            body: self.pack_version(message, &message.blocks)?,
+            body: self.pack_message_fields(message)?,
             content: self.pack_content(&message.blocks, projection.source_version.0)?,
         })
     }
@@ -371,7 +384,17 @@ impl RowPacker {
         })
     }
 
-    fn pack_version(&mut self, value: &impl Serialize, blocks: &[Block]) -> Result<Vec<u8>> {
+    fn pack_message_fields(&mut self, message: &Message) -> Result<Vec<u8>> {
+        let mut value = serde_json::to_value(message)?;
+        value["blocks"] = serde_json::Value::Array(Vec::new());
+        self.pack_json(&value)
+    }
+
+    pub(crate) fn pack_version(
+        &mut self,
+        value: &impl Serialize,
+        blocks: &[Block],
+    ) -> Result<Vec<u8>> {
         let mut value = serde_json::to_value(value)?;
         for (stored, block) in value["blocks"]
             .as_array_mut()
@@ -391,17 +414,36 @@ impl RowPacker {
         self.pack_json(&value)
     }
 
+    pub(crate) fn pack_block_payload(
+        &mut self,
+        block: &Block,
+    ) -> Result<(Vec<u8>, Option<Vec<u8>>)> {
+        let body = self.pack_row(&block_bytes(block, true)?)?;
+        let data = block_data(block)
+            .map(|value| self.pack_json(value))
+            .transpose()?;
+        Ok((body, data))
+    }
+
+    /// Splits a retained version's structured data without changing inline text.
+    pub(crate) fn pack_retained_block_payload(
+        &mut self,
+        block: &Block,
+    ) -> Result<(Vec<u8>, Option<Vec<u8>>)> {
+        let body = self.pack_row(&block_bytes(block, false)?)?;
+        let data = block_data(block)
+            .map(|value| self.pack_json(value))
+            .transpose()?;
+        Ok((body, data))
+    }
+
     fn pack_content(&mut self, blocks: &[Block], hash: [u8; 32]) -> Result<PreparedContent> {
         let mut packed = Vec::with_capacity(blocks.len());
         let mut data = Vec::with_capacity(blocks.len());
         for block in blocks {
-            let bytes = block_bytes(block)?;
-            packed.push(self.pack_row(&bytes)?);
-            data.push(
-                block_data(block)
-                    .map(|value| self.pack_json(value))
-                    .transpose()?,
-            );
+            let (body, value) = self.pack_block_payload(block)?;
+            packed.push(body);
+            data.push(value);
         }
         Ok(PreparedContent {
             hash,
@@ -420,19 +462,19 @@ impl RowPacker {
 /// One-shot block encoding for compatibility checks.
 #[cfg(test)]
 pub(crate) fn pack_block(block: &Block) -> Result<Vec<u8>> {
-    Ok(pack_bytes(&block_bytes(block)?)?)
+    Ok(pack_bytes(&block_bytes(block, true)?)?)
 }
 
-fn block_bytes(block: &Block) -> Result<Vec<u8>> {
+fn block_bytes(block: &Block, separate_text: bool) -> Result<Vec<u8>> {
     let body = match block {
-        Block::Text { .. } => Block::Text {
+        Block::Text { .. } if separate_text => Block::Text {
             text: String::new(),
         },
         Block::Thinking {
             text: Some(_),
             signature,
             redacted,
-        } => Block::Thinking {
+        } if separate_text => Block::Thinking {
             text: Some(String::new()),
             signature: signature.clone(),
             redacted: *redacted,
@@ -448,14 +490,18 @@ fn block_bytes(block: &Block) -> Result<Vec<u8>> {
             reported_duration_ms: *reported_duration_ms,
             call_id: call_id.clone(),
             outcome: outcome.clone(),
-            output: output.as_ref().map(|_| String::new()),
+            output: if separate_text {
+                output.as_ref().map(|_| String::new())
+            } else {
+                output.clone()
+            },
             data: None,
             attachments: attachments.clone(),
         },
         Block::ToolCall {
             written_text: Some(_),
             ..
-        } => {
+        } if separate_text => {
             let mut body = block.clone();
             if let Block::ToolCall { written_text, .. } = &mut body {
                 *written_text = Some(String::new());
@@ -531,7 +577,7 @@ fn reading_id(e: &Event) -> Option<String> {
     Some(h.finalize().to_hex().to_string())
 }
 
-/// Reads a block back from `block.body`.
+/// Reads a block back from its immutable payload body.
 pub(crate) fn unpack_block(packed: &[u8]) -> Result<Block> {
     unpack_json(packed)
 }
@@ -552,7 +598,7 @@ pub(crate) fn block_text(block: &Block) -> Option<&str> {
     }
 }
 
-/// The structured value a block keeps in `block.data` rather than its packed
+/// The structured value a block keeps in the immutable payload’s `data` rather than its packed
 /// body: a tool result's data. No text view shows it, and it can be most of
 /// a large message, so a text read never decodes it.
 pub(crate) fn block_data(block: &Block) -> Option<&serde_json::Value> {
@@ -564,7 +610,7 @@ pub(crate) fn block_data(block: &Block) -> Option<&serde_json::Value> {
     }
 }
 
-/// Puts a block's structured value back from `block.data`.
+/// Puts a block's structured value back from its immutable payload’s `data`.
 pub(crate) fn restore_data(block: &mut Block, packed: &[u8]) -> Result<()> {
     if let Block::ToolResult { data, .. } = block {
         *data = Some(unpack_json(packed)?);

@@ -19,6 +19,34 @@ use crate::{ReadPool, Result};
 use rusqlite::{Connection, params};
 use std::path::Path;
 
+/// Changes only selected test rows, since immutable payload values may be shared.
+#[cfg(test)]
+pub(crate) fn change_block_payloads(
+    conn: &Connection,
+    select: &str,
+    parameters: impl rusqlite::Params,
+    change: impl Fn(&mut Vec<u8>, &mut Option<Vec<u8>>),
+) -> Result<()> {
+    let selected = conn
+        .prepare(select)?
+        .query_map(parameters, |row| row.get::<_, i64>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for pk in selected {
+        let (mut body, mut data) = conn.query_row(
+            "SELECT v.body,v.data FROM block b JOIN block_value v ON v.pk=b.value_pk WHERE b.pk=?1",
+            [pk],
+            |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Option<Vec<u8>>>(1)?)),
+        )?;
+        change(&mut body, &mut data);
+        let value = crate::versions::store_block_payload(conn, &body, data.as_deref())?;
+        conn.execute(
+            "UPDATE block SET value_pk=?2 WHERE pk=?1",
+            params![pk, value],
+        )?;
+    }
+    Ok(())
+}
+
 pub struct Fixture {
     pub archive: Archive,
     _lock: ArchiveLock,
@@ -308,10 +336,11 @@ impl Fixture {
         body: serde_json::Value,
     ) -> Result<i64> {
         let packed = crate::encoding::pack_json(&body)?;
+        let value = crate::versions::store_block_payload(&self.index, &packed, None)?;
         self.index.execute(
-            "INSERT INTO block(message_pk, session_pk, idx, kind, text_id, body)
+            "INSERT INTO block(message_pk, session_pk, idx, kind, text_id, value_pk)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![message_pk, session_pk, idx, kind, text_id, packed],
+            params![message_pk, session_pk, idx, kind, text_id, value],
         )?;
         let block = self.index.last_insert_rowid();
         Ok(block)
@@ -468,11 +497,12 @@ impl Fixture {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, 3)",
             )?;
             let mut block = tx.prepare(
-                "INSERT INTO block(message_pk, session_pk, idx, kind, text_id, body)
+                "INSERT INTO block(message_pk, session_pk, idx, kind, text_id, value_pk)
                  VALUES (?1, ?2, 0, 'text', ?3, ?4)",
             )?;
             let text_body =
                 crate::encoding::pack_json(&serde_json::json!({"type": "text", "text": ""}))?;
+            let value = crate::versions::store_block_payload(&tx, &text_body, None)?;
             for n in 0..spec.sessions {
                 let native = format!("many-{n}");
                 let cwd = format!("{}/d{}/w{}", spec.prefix, n % 97, n % 13);
@@ -513,7 +543,7 @@ impl Fixture {
                             None,
                             None,
                         )?;
-                        block.execute(params![message_pk, pk, text, text_body])?;
+                        block.execute(params![message_pk, pk, text, value])?;
                     }
                 }
                 pks.push(pk);

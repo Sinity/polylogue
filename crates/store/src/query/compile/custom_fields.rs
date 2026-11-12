@@ -697,7 +697,7 @@ pub(crate) fn tool_call_text(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<S
 pub(crate) fn input(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
     let p = c.text_param(&x.value()?);
     Ok(format!(
-        "instr(pl_key(json_extract(pl_block({}.body), '$.input')), pl_key({p})) > 0",
+        "instr(pl_key(json_extract(pl_block((SELECT body FROM block_value WHERE pk={}.value_pk)), '$.input')), pl_key({p})) > 0",
         x.scope.a.cb
     ))
 }
