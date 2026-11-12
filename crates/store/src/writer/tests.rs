@@ -8,6 +8,7 @@ use polylogue_model::{
 mod append_cost;
 mod assertions;
 mod empty_source;
+mod event_fk;
 mod extent_checkpoint;
 mod input_events;
 mod items;
