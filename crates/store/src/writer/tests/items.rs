@@ -238,6 +238,93 @@ fn an_identical_event_claim_repairs_retained_old_item_metadata() {
 }
 
 #[test]
+fn equal_length_context_boundary_changes_refresh_typed_event_items() {
+    for kind in ["compaction", "microcompaction"] {
+        let w = test_archive();
+        let (before, after) = if kind == "compaction" {
+            (
+                serde_json::to_value(polylogue_model::CompactionBoundary {
+                    pre_tokens: Some(111),
+                    ..Default::default()
+                })
+                .unwrap(),
+                serde_json::to_value(polylogue_model::CompactionBoundary {
+                    pre_tokens: Some(222),
+                    ..Default::default()
+                })
+                .unwrap(),
+            )
+        } else {
+            (
+                serde_json::to_value(polylogue_model::MicrocompactionBoundary {
+                    removed_calls: vec!["call-a".into()],
+                    ..Default::default()
+                })
+                .unwrap(),
+                serde_json::to_value(polylogue_model::MicrocompactionBoundary {
+                    removed_calls: vec!["call-b".into()],
+                    ..Default::default()
+                })
+                .unwrap(),
+            )
+        };
+        let mut packer = crate::encoding::RowPacker::new().unwrap();
+        assert_eq!(
+            packer.pack_json(&before).unwrap().len(),
+            packer.pack_json(&after).unwrap().len(),
+            "the fixture must discriminate equal stored length for {kind}"
+        );
+        let mut input = batch("boundary", Route::Live, 0, vec![], &["s"]);
+        input.parse[0].output.events.push(Event {
+            at_quality: polylogue_model::TimeQuality::Unknown,
+            at_precision: None,
+            at_until: None,
+            session: Some(sid("s")),
+            kind: kind.into(),
+            at: None,
+            after: None,
+            range: Some((0, 1)),
+            data: before,
+        });
+        input.parse[0]
+            .output
+            .event_ids
+            .insert(0, "synthetic-boundary".into());
+        w.store_reading(input.clone(), Some(&SOURCE_RECORD))
+            .unwrap();
+        assert!(w.writer.flush().unwrap().errors.is_empty());
+        let original = stored(&w, "s");
+        input.parse[0].output.events[0].data = after;
+        input.parse[0].reading_version = "synthetic=2".into();
+        let expected = input.parse[0].output.events[0].clone();
+        let mut reading = ChainReading::new().unwrap();
+        reading.push(&mut input.parse[0]).unwrap();
+        w.writer
+            .sender()
+            .unwrap()
+            .replace_chain(input.input.clone(), 1, 100, reading)
+            .unwrap();
+        w.writer.derive().unwrap();
+        let pool = ReadPool::open(&w.archive).unwrap();
+        assert_eq!(
+            pool.reader()
+                .unwrap()
+                .event_record("synthetic-boundary")
+                .unwrap()
+                .unwrap()
+                .event,
+            expected
+        );
+        assert_ne!(
+            stored(&w, "s").entries,
+            original.entries,
+            "typed {kind} payload must refresh"
+        );
+        assert_matches_rows(&w, "s");
+    }
+}
+
+#[test]
 fn selected_event_changes_keep_their_payload_fields_and_placement() {
     for change in 0..6 {
         let w = test_archive();
