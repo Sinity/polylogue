@@ -41,6 +41,134 @@ fn cleanup_steps(conn: &Connection) -> u64 {
     steps.load(Ordering::Relaxed)
 }
 
+fn context_reference_cleanup_steps(unrelated: i64, without_index: bool) -> u64 {
+    let conn = database(0);
+    if without_index {
+        conn.execute_batch("DROP INDEX IF EXISTS parser_context_version")
+            .unwrap();
+    }
+    conn.execute_batch(
+        "INSERT INTO input_ref(pk,id) VALUES(1,'synthetic');
+         INSERT INTO session(pk,id,origin,native_id,kind,changed)
+             VALUES(1,'codex:synthetic','codex','synthetic','main',1);
+         INSERT INTO message(pk,id,session_pk,session_order,role,written_by,input_pk)
+             VALUES(1,'codex:response',1,'0001','assistant','model',1);",
+    )
+    .unwrap();
+    let orphan = [0u8; 32];
+    let winner = [255u8; 32];
+    for hash in [orphan, winner] {
+        conn.execute(
+            "INSERT INTO message_version(version_hash,body) VALUES(?1,x'00')",
+            [hash],
+        )
+        .unwrap();
+    }
+    for id in 1..=unrelated + 1 {
+        let mut hash = [0u8; 32];
+        hash[..8].copy_from_slice(&id.to_le_bytes());
+        conn.execute(
+            "INSERT INTO message_version(version_hash,body) VALUES(?1,x'00')",
+            [hash],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO parser_context VALUES(1,7,'synthetic',?1,?2,x'00',?3)",
+            params![id, format!("context-{id}"), hash],
+        )
+        .unwrap();
+    }
+    conn.execute("INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,session_pk,route,completion,version_hash) VALUES(1,1,7,0,1,'native',1,'live','finished',?1)",[orphan]).unwrap();
+    let mut protected = [0u8; 32];
+    protected[..8].copy_from_slice(&1i64.to_le_bytes());
+    conn.execute_batch("SAVEPOINT reading").unwrap();
+    // Actual source-reference changes queue both versions for collection.
+    for hash in [protected, winner] {
+        conn.execute(
+            "UPDATE message_source SET version_hash=?1 WHERE message_pk=1",
+            [hash],
+        )
+        .unwrap();
+    }
+    let steps = cleanup_steps(&conn);
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM message_version WHERE version_hash=?1",
+            [orphan],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM message_version WHERE version_hash=?1",
+            [protected],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM parser_context", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        unrelated + 1
+    );
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+    conn.execute_batch("ROLLBACK TO reading; RELEASE reading")
+        .unwrap();
+    assert_eq!(
+        conn.query_row(
+            "SELECT version_hash FROM message_source WHERE message_pk=1",
+            [],
+            |r| r.get::<_, Vec<u8>>(0)
+        )
+        .unwrap(),
+        orphan
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM message_version WHERE version_hash=?1",
+            [orphan],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM temp.unreferenced_version", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap(),
+        0
+    );
+    steps
+}
+
+#[test]
+fn version_cleanup_checks_context_references_without_scanning_history() {
+    let small = context_reference_cleanup_steps(0, false);
+    let large = context_reference_cleanup_steps(8192, false);
+    assert!(
+        large <= small + 64,
+        "SQLite {}: candidate version cleanup {small} -> {large} VM steps",
+        rusqlite::version()
+    );
+    let unindexed = context_reference_cleanup_steps(8192, true);
+    assert!(
+        unindexed >= 8192 * 4,
+        "missing-index positive control used only {unindexed} steps"
+    );
+}
+
 #[test]
 fn empty_text_cleanup_does_not_read_unrelated_history() {
     let small = cleanup_steps(&database(0));

@@ -1,6 +1,71 @@
 use super::*;
 
 #[test]
+fn existing_indexes_gain_context_reverse_lookup_without_reparse() {
+    assert!(!crate::writer::deferred_index_names().any(|name| name == "parser_context_version"));
+    for primary in [false, true] {
+        for building in [false, true] {
+            let conn = Connection::open_in_memory().unwrap();
+            conn.pragma_update(None, "foreign_keys", true).unwrap();
+            let ensure = if primary {
+                ensure_primary_index
+            } else {
+                ensure_index
+            };
+            ensure(&conn).unwrap();
+            conn.execute_batch(
+                "INSERT INTO input_ref(pk,id,format) VALUES(1,'context-input','codex');
+                 INSERT INTO message_version VALUES(x'01',x'626f6479');
+                 INSERT INTO parser_context_state VALUES(1,17,'synthetic',4);
+                 INSERT INTO parser_context VALUES(1,17,'synthetic',4,'retained',x'636f6e74657874',x'01');
+                 INSERT INTO parser_context VALUES(1,17,'synthetic',4,'independent',x'6f74686572',NULL);
+                 INSERT INTO parse_state(input_pk,chain,status,parsed_upto,reading_version,checkpoint)
+                     VALUES(1,17,'partial',4,'synthetic',x'636865636b706f696e74');
+                 DROP INDEX parser_context_version;"
+            ).unwrap();
+            if building {
+                conn.execute(
+                    "INSERT OR REPLACE INTO meta(key,value) VALUES('building','1')",
+                    [],
+                )
+                .unwrap();
+                for name in crate::writer::deferred_index_names() {
+                    conn.execute_batch(&format!("DROP INDEX IF EXISTS {name}"))
+                        .unwrap();
+                }
+            } else {
+                conn.execute("DELETE FROM meta WHERE key='building'", [])
+                    .unwrap();
+            }
+            let retained = snapshot(&conn);
+            let identity = index_identity(&conn).unwrap();
+            for _ in 0..2 {
+                ensure(&conn).unwrap();
+                assert_eq!(snapshot(&conn), retained);
+                assert_eq!(index_identity(&conn).unwrap(), identity);
+                assert_eq!(version(&conn).unwrap(), INDEX_VERSION);
+                assert_eq!(crate::schema::building(&conn).unwrap(), building);
+                assert_eq!(conn.query_row("SELECT count(*) FROM sqlite_master WHERE type='index' AND name='parser_context_version'",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+                assert_eq!(
+                    conn.query_row("SELECT count(*) FROM parser_context", [], |r| r
+                        .get::<_, i64>(0))
+                        .unwrap(),
+                    2
+                );
+                assert_eq!(
+                    conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+                        .get::<_, i64>(
+                        0
+                    ))
+                    .unwrap(),
+                    0
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn repeated_source_upserts_keep_context_bodies_until_the_context_goes() {
     for primary in [false, true] {
         let conn = Connection::open_in_memory().unwrap();

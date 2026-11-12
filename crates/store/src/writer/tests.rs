@@ -1424,19 +1424,7 @@ fn a_completed_empty_index_does_not_begin_another_first_build() {
     let writer = Writer::start(&archive).unwrap();
     let index = crate::archive::open_read(&archive.index_db()).unwrap();
     assert!(!crate::schema::building(&index).unwrap());
-    assert!(
-        crate::schema::same_schema(
-            &index,
-            &[
-                crate::schema::INDEX,
-                crate::coverage::SCHEMA,
-                crate::variants::SCHEMA,
-                crate::parser_context::SCHEMA,
-                crate::schema::READ_INDEXES
-            ]
-        )
-        .unwrap()
-    );
+    assert!(crate::schema::same_schema(&index, crate::schema::INDEX_SCHEMA).unwrap());
     drop(writer);
 }
 

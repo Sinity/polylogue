@@ -49,6 +49,15 @@ pub(crate) const QUERY_OBJECTS: &str = concat!(
     include_str!("schema/query_runs.sql")
 );
 pub(crate) const READ_INDEXES: &str = include_str!("schema/index_reads.sql");
+#[cfg(test)]
+pub(crate) const INDEX_SCHEMA: &[&str] = &[
+    INDEX,
+    crate::coverage::SCHEMA,
+    crate::variants::SCHEMA,
+    crate::parser_context::SCHEMA,
+    crate::parser_context::VERSION_INDEX,
+    READ_INDEXES,
+];
 /// The vectors and failures tables of `embeddings.db`, as the first build at
 /// the baseline created them.
 const EMBEDDINGS_BASE: &str = include_str!("schema/embeddings.sql");
@@ -117,6 +126,7 @@ fn base_index(conn: &Connection) -> Result<()> {
     conn.execute_batch(crate::coverage::SCHEMA)?;
     conn.execute_batch(crate::variants::SCHEMA)?;
     conn.execute_batch(crate::parser_context::SCHEMA)?;
+    conn.execute_batch(crate::parser_context::VERSION_INDEX)?;
     Ok(())
 }
 
@@ -164,6 +174,9 @@ fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
     if found == 0 {
         create_index_in(&tx, primary)?;
     } else {
+        // This reverse reference is needed by the writer, including a resumed
+        // first build. Adding the index preserves rows and table identity.
+        tx.execute_batch(crate::parser_context::VERSION_INDEX)?;
         // Read indexes are added before the shape check, so an index missing
         // only those is completed rather than refused. A first build still in
         // progress leaves out the ones it defers: it builds each once from a

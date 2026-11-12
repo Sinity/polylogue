@@ -353,19 +353,7 @@ fn a_stopped_process_resumes_its_committed_parse_positions() {
     writer.derive().unwrap();
     drop(writer);
     let index = open_read(&archive.index_db()).unwrap();
-    assert!(
-        schema::same_schema(
-            &index,
-            &[
-                schema::INDEX,
-                crate::coverage::SCHEMA,
-                crate::variants::SCHEMA,
-                crate::parser_context::SCHEMA,
-                schema::READ_INDEXES
-            ]
-        )
-        .unwrap()
-    );
+    assert!(schema::same_schema(&index, schema::INDEX_SCHEMA).unwrap());
     assert!(!schema::building(&index).unwrap());
 }
 
@@ -458,19 +446,7 @@ fn missing_time_indexes_are_created_without_rebuilding_the_index() {
     for _ in 0..2 {
         let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
         let index = open_read(&archive.index_db()).unwrap();
-        assert!(
-            schema::same_schema(
-                &index,
-                &[
-                    schema::INDEX,
-                    crate::coverage::SCHEMA,
-                    crate::variants::SCHEMA,
-                    crate::parser_context::SCHEMA,
-                    schema::READ_INDEXES
-                ]
-            )
-            .unwrap()
-        );
+        assert!(schema::same_schema(&index, schema::INDEX_SCHEMA).unwrap());
         assert_eq!(
             index
                 .query_row("SELECT value FROM meta WHERE key='index-marker'", [], |r| r
