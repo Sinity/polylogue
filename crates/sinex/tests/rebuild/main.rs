@@ -445,8 +445,25 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
             polylogue_testkit::stopped_attempt(),
         )
         .unwrap();
-        engine.writer().unwrap().synchronize_primary().unwrap();
         let commits = engine.writer().unwrap().completion_commits();
+        let ready = Instant::now();
+        loop {
+            match ReadPool::open(&archive)
+                .unwrap()
+                .reader()
+                .unwrap()
+                .source_boundary()
+            {
+                Ok(Some(_)) => break,
+                Ok(None) | Err(polylogue_store::StoreError::ScopeChanged) => {}
+                Err(error) => panic!("initial source snapshot: {error}"),
+            }
+            assert!(
+                ready.elapsed() < Duration::from_secs(30),
+                "initial source snapshot did not complete"
+            );
+            let _ = commits.recv_timeout(Duration::from_millis(200));
+        }
         confirm_capture(
             &mut engine,
             &commits,

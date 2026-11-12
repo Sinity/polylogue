@@ -725,24 +725,6 @@ impl Spool {
         self.prepare_operation(frame, Some(bytes), None, None, None, None)
     }
 
-    pub fn prepare_encoded_material(
-        &self,
-        frame: Ingress,
-        bytes: polylogue_store::primary::PreparedBody,
-    ) -> Result<Prepared> {
-        if !matches!(&frame, Ingress::Material { .. }) {
-            return invalid("only a material frame can own encoded bytes");
-        }
-        self.prepare_operation(
-            frame,
-            None::<std::io::Empty>,
-            None,
-            None,
-            Some(vec![bytes]),
-            None,
-        )
-    }
-
     /// `bytes` are the body's encodings in order: one, or one per chunk the
     /// frame names.
     pub fn prepare_encoded_capture(
