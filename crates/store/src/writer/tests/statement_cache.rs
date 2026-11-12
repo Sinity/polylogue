@@ -1,4 +1,5 @@
 use super::*;
+use crate::archive::open_write;
 use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 use std::sync::{
     Arc,

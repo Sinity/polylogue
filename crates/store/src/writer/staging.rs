@@ -132,7 +132,7 @@ impl Inner {
             return self.primary_store_group(group);
         }
         let independent = !atomic_acquisition(&group);
-        let replay = group.iter().all(|item| replay_only(&item.batch));
+        let replay = group.iter().all(|item| replayed_input(&item.batch));
         for item in &group {
             if let Err(error) = self.check_staged(item) {
                 return errors(&group, error);
@@ -231,15 +231,16 @@ impl Inner {
         if parsed.is_empty() {
             return results;
         }
+        let cancel = replay && parsed.iter().any(|(_, batch)| cancellable_replay(batch));
         let Err(error) = crate::timing::time(crate::timing::Stage::Rows, || {
-            self.write(parsed.iter().map(|(_, batch)| batch), replay)
+            self.write(parsed.iter().map(|(_, batch)| batch), cancel)
         }) else {
             return results;
         };
-        if independent && parsed.len() > 1 {
+        if parsed.len() > 1 && (independent || matches!(error, StoreError::WriteCancelled)) {
             for (position, batch) in &parsed {
                 if let Err(error) = crate::timing::time(crate::timing::Stage::Rows, || {
-                    self.write(std::iter::once(batch), replay)
+                    self.write(std::iter::once(batch), replay && cancellable_replay(batch))
                 }) {
                     results[*position] = rows_refused(results[*position].as_ref().ok(), error);
                 }

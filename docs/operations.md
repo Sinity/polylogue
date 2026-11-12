@@ -20,13 +20,14 @@ No step rewrites `archive.db`, the segment log or the embeddings store to get pa
 
 **Readiness.** With `Type=notify` the daemon signals readiness once the socket answers a `ping`, before catching up. The connection's thread answers `ping` without a reader or any cache, so a vector load or a full reader pool never delays readiness or the watchdog. Catching up is shown as work in `status`, never as unavailability.
 
-**Stop.** On `SIGTERM` or `SIGINT` the daemon stops accepting connections and answers queued requests with `shutting_down`; lets the commit in progress finish or rolls it back; gives running requests 5 s to end after its transports stop, then stops without any that ignore their cancellation and logs how many it left; stops its pipeline at a writer-group boundary, abandoning uncommitted replacement readings and interrupting long derivation or deferred-index statements; checkpoints its SQLite write-ahead logs; records how the run ended; and releases the lock. A second signal ends the process at once, which is safe because the next open resumes every state a crash can leave. An interrupted derivation answers its waiter as cancelled, and the engine treats that requested cancellation as a clean stop. Committed progress stays. An interrupted derived transaction rolls back; the next start completes any unfinished indexing or derivation. Target: a stop within 5 s.
+**Stop.** On `SIGTERM` or `SIGINT` the daemon stops accepting connections and answers queued requests with `shutting_down`; lets the commit in progress finish or rolls it back; gives running requests 5 s to end after its transports stop, then stops without any that ignore their cancellation and logs how many it left; stops its pipeline at a writer-group boundary, abandoning uncommitted replacement readings and interrupting long derivation or deferred-index statements; leaves committed SQLite write-ahead logs for the next open; records how the run ended; and releases the lock. A second signal ends the process at once, which is safe because the next open resumes every state a crash can leave. An interrupted derivation answers its waiter as cancelled, and the engine treats that requested cancellation as a clean stop. Committed progress stays. An interrupted derived transaction rolls back; the next start completes any unfinished indexing or derivation. Target: a stop within 5 s.
 
 During an index rebuild, shutdown can roll back a transaction that is replaying
 retained bytes. Its previous committed rows and source cursor remain unchanged;
 the next start resumes from that cursor. Captures of new bytes and authored
 writes already admitted finish normally. A recorded parse refusal or failure
-still commits its diagnosis.
+still commits its diagnosis. Inline assets and a refusal in another input do
+not keep ordinary replay running during shutdown.
 
 **How each run ended:** `clean` (with the signal), `refused` (exit 78, with the reason), `failed` (with the error kind), or `unknown` (no record: killed or crashed). `status` shows it. An `unknown` end is never given a cause by closeness in time to another event.
 
@@ -259,7 +260,7 @@ The first build reads every input's newest revision chain first and answers read
 
 - **Backup is the deployment's filesystem backup.** Polylogue has no backup command and keeps its stores consistent at every commit. A correct backup takes the segment log, the databases and the embeddings store together; `index.db` may be left out, since it is rebuilt from stored bytes.
   - An atomic snapshot of the archive directory is consistent.
-  - A file copy needs either a stopped daemon, or each SQLite database copied through SQLite's backup API followed by the segment log: committed extents never move and no row cites an extent before it commits, so databases first and segments after is consistent.
+  - A file copy needs either a stopped daemon with each database's `-wal` file included when present, or each SQLite database copied through SQLite's backup API followed by the segment log: committed extents never move and no row cites an extent before it commits, so databases first and segments after is consistent.
 - **Polylogue provides** the paths and sizes in `status`, and `verify` to check a restored copy.
 - **Restore** is putting the files back and starting the daemon. Each store opens as at any start; an uncommitted segment tail is truncated; an index behind its positions catches up; a daemon that finds a segment log but no `archive.db` refuses to start a fresh archive over it and says why. There is no restore command.
 - **A restore drill** restores the latest backup into a scratch directory, runs `polylogue --archive <dir> daemon --no-sources --until-idle`, then starts `polylogue --archive <dir> daemon --no-sources` and runs `polylogue --archive <dir> verify` against it. Someone runs it when they want the evidence, for example after changing the backup route.

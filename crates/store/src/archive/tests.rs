@@ -584,3 +584,59 @@ fn a_log_in_use_is_kept_until_its_reader_finishes() {
         .unwrap();
     assert_eq!(rows, 2);
 }
+
+#[test]
+fn runtime_connections_leave_committed_wal_for_reopen_while_setup_finishes_it() {
+    for reader_last in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wal.db");
+        let log = dir.path().join("wal.db-wal");
+        let writer = open_runtime_writer(&path, cache::SETUP).unwrap();
+        writer.pragma_update(None, "synchronous", "full").unwrap();
+        writer
+            .execute_batch("CREATE TABLE durable(value INTEGER); INSERT INTO durable VALUES(42)")
+            .unwrap();
+        let before = fs::read(&log).unwrap();
+        assert!(!before.is_empty());
+        let reader = reader_last.then(|| open_read(&path).unwrap());
+        if let Some(reader) = &reader {
+            assert_eq!(
+                reader
+                    .query_row("SELECT value FROM durable", [], |row| row.get::<_, i64>(0))
+                    .unwrap(),
+                42
+            );
+        }
+        drop(writer);
+        drop(reader);
+        assert_eq!(fs::read(&log).unwrap(), before);
+        let reader = open_read(&path).unwrap();
+        assert_eq!(
+            reader
+                .query_row("SELECT value FROM durable", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            42
+        );
+        drop(reader);
+        assert_eq!(fs::read(&log).unwrap(), before);
+        let setup = open_write(&path, cache::SETUP).unwrap();
+        assert_eq!(
+            setup
+                .query_row("SELECT value FROM durable", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            42
+        );
+        drop(setup);
+        match fs::metadata(&log) {
+            Ok(metadata) => assert_eq!(metadata.len(), 0),
+            Err(error) => assert_eq!(error.kind(), std::io::ErrorKind::NotFound),
+        }
+        assert_eq!(
+            open_read(&path)
+                .unwrap()
+                .query_row("SELECT value FROM durable", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            42
+        );
+    }
+}
