@@ -66,9 +66,9 @@ impl Call<'_, '_> {
         }
     }
 
-    /// The shared language's bound unknown predicate.
+    /// Special fields retain their written comparisons at the binding boundary.
     fn unknown(&self) -> bool {
-        matches!(self.test, Test::Unknown)
+        matches!(self.comparison(), Some(Comparison::Match(Value::Unknown)))
     }
 
     fn bad(&self, value: String, message: String) -> QueryError {
@@ -583,7 +583,7 @@ pub(crate) fn root(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Que
     if x.unknown() {
         return Ok(format!("{root} IS NULL"));
     }
-    if matches!(x.test, Test::Known) {
+    if matches!(x.comparison(), Some(Comparison::Match(Value::Known))) {
         return Ok(format!("{root} IS NOT NULL"));
     }
     Ok(c.session_reference(&root, "id", &x.value()?))
