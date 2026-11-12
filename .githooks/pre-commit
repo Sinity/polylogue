@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 git diff --cached --check
-formatter=(nix develop --command rustfmt)
-if [[ -n "${IN_NIX_SHELL:-}" ]] && command -v rustfmt >/dev/null; then
-    formatter=(rustfmt)
+if git diff --cached --quiet --diff-filter=ACMR -- '*.rs'; then
+    exit 0
+fi
+# Enter once for the whole staged set, rather than once for each Rust file.
+if [[ -z "${IN_NIX_SHELL:-}" ]] || ! command -v rustfmt >/dev/null; then
+    exec nix develop --command bash "$0" "$@"
 fi
 while IFS= read -r -d '' path; do
     # Format the staged blob, including when the worktree has later edits.
     # rustfmt --check on stdin does not report a formatting difference.
-    git show ":$path" | "${formatter[@]}" --edition 2024 --emit stdout |
+    git show ":$path" | rustfmt --edition 2024 --emit stdout |
         diff -u --label "staged:$path" --label "formatted:$path" <(git show ":$path") -
 done < <(git diff --cached --name-only --diff-filter=ACMR -z -- '*.rs')
