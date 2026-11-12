@@ -25,8 +25,6 @@ pub struct KeyedRows {
     /// The row columns read from the unit's rows, without the condition
     /// that names which: [`Statements::hydrate`] adds it.
     pub rows: String,
-    /// The unit's key expression in `rows`.
-    pub key: String,
     /// The count of selected rows and of those without a similarity.
     pub count: String,
 }
@@ -145,13 +143,14 @@ impl Statements {
     /// The row columns of the keys bound as one JSON array after the
     /// query's `params` parameters; `None` for a derived relation, whose
     /// page holds its rows.
+    // Drive from the page keys. With IN, ANALYZE can choose to scan an
+    // entire native unit even though only a few rows need hydration.
     pub fn hydrate(&self, params: usize) -> Option<String> {
         match self {
             Statements::Keyed(keyed) => Some(format!(
-                "{} WHERE {} IN (SELECT value FROM json_each(?{}))",
-                keyed.rows,
-                keyed.key,
-                params + 1
+                "SELECT found.* FROM json_each(?{}) selected CROSS JOIN ({}) found ON found._pk=selected.value",
+                params + 1,
+                keyed.rows
             )),
             Statements::Derived(_) => None,
         }

@@ -165,60 +165,11 @@ fn read(fixture: &Fixture, analyze: bool) -> (u64, u64) {
     let reader = pool.reader().unwrap();
     let program =
         crate::query::compile("sessions where kind:main needle", &options_for_search()).unwrap();
-    let (actual, page_steps) = counted(&reader, || reader.query_rows(&program).unwrap());
-    let (_, count_steps) = counted(&reader, || {
+    let (actual, actual_steps) = counted(&reader, || {
+        let rows = reader.query_rows(&program).unwrap();
         assert_eq!(reader.query_count(&program).unwrap(), Some((2, 0)));
-        vec![]
+        rows
     });
-    let actual_steps = page_steps + count_steps;
-    let mut page_params = crate::selection::values(&program.params);
-    page_params.push(crate::SqlValue::Int(-1));
-    let page = program.statements.page(
-        &program.order,
-        program.params.len(),
-        false,
-        false,
-        crate::query::compile::PageColumns::All,
-    );
-    let (keys, raw_page_steps) = counted(&reader, || reader.query(&page, &page_params).unwrap());
-    let count = program.statements.count(program.counts_near);
-    let (_, raw_count_steps) = counted(&reader, || {
-        reader
-            .query(&count, &crate::selection::values(&program.params))
-            .unwrap()
-    });
-    let mut details = vec![
-        ("page".to_string(), page, page_params),
-        (
-            "count".to_string(),
-            count,
-            crate::selection::values(&program.params),
-        ),
-    ];
-    if let Some(hydrate) = program.statements.hydrate(program.params.len()) {
-        let mut params = crate::selection::values(&program.params);
-        params.push(crate::SqlValue::Text(
-            Value::Array(keys.iter().map(|r| r["_pk"].clone()).collect()).to_string(),
-        ));
-        let (_, steps) = counted(&reader, || reader.query(&hydrate, &params).unwrap());
-        println!("statistics={analyze} hydrate_steps={steps}");
-        details.push(("hydrate".to_string(), hydrate, params));
-    }
-    println!(
-        "statistics={analyze} page_steps={page_steps} count_steps={count_steps} raw_page={raw_page_steps} raw_count={raw_count_steps}"
-    );
-    for (name, sql, params) in details {
-        let plan = reader
-            .query(&format!("EXPLAIN QUERY PLAN {sql}"), &params)
-            .unwrap();
-        println!(
-            "statistics={analyze} {name}: {}",
-            plan.iter()
-                .map(|r| r["detail"].as_str().unwrap())
-                .collect::<Vec<_>>()
-                .join("; ")
-        );
-    }
     let (expected, original_steps) = counted(&reader, || {
         reader
             .query(DOWNWARD, &[crate::SqlValue::Text("\"needle\"".into())])
