@@ -1095,3 +1095,77 @@ fn indexing_errors_abort_the_changed_rows_transaction() {
         assert_matches_rows(&w, "s");
     }
 }
+
+#[test]
+fn reply_batches_keep_changed_and_unchanged_parent_branch_points_current() {
+    let w = test_archive();
+    let mut root = message("root", Role::User, "question");
+    root.at = Timestamp::from_unix_ms(1000);
+    let mut tail = message("old-tail", Role::Assistant, "first reply");
+    tail.at = Timestamp::from_unix_ms(2000);
+    tail.parent = Some(root.id.clone());
+    w.store_reading(
+        batch(
+            "replies",
+            Route::Live,
+            0,
+            vec![row(0, root.clone()), row(1, tail)],
+            &["s"],
+        ),
+        Some(&SOURCE_RECORD),
+    )
+    .unwrap();
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    let before = stored(&w, "s");
+    assert!(!before.entries[0].branch_point);
+    assert_eq!(before.entries[0].at, Some(1000));
+    let rows = (0..128)
+        .map(|n| {
+            let mut reply = message(&format!("reply-{n}"), Role::Assistant, "more work");
+            reply.at = Timestamp::from_unix_ms(3000 + n as i64 * 10);
+            reply.parent = Some(if n == 0 {
+                root.id.clone()
+            } else {
+                MessageId::parse(&format!("claude-code:reply-{}", n - 1)).unwrap()
+            });
+            row(110 + n / 3, reply)
+        })
+        .collect();
+    w.store_reading(
+        batch("replies", Route::Live, 100, rows, &["s"]),
+        Some(&SOURCE_RECORD),
+    )
+    .unwrap();
+    let report = w.writer.flush().unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let after = stored(&w, "s");
+    assert!(after.entries[0].branch_point);
+    assert_eq!(after.entries[0].key, before.entries[0].key);
+    assert_eq!(after.entries[0].at, Some(1000));
+    assert!(
+        after.rewrite_version > before.rewrite_version,
+        "the unchanged root gained a second child"
+    );
+    assert_matches_rows(&w, "s");
+    // A parent that changes in the same transaction is covered by its own
+    // old header, while the reply chain still contributes its ordinary rows.
+    root.blocks = vec![Block::Text {
+        text: "corrected question".into(),
+    }];
+    let mut reply = message("last-reply", Role::Assistant, "another root reply");
+    reply.parent = Some(root.id.clone());
+    reply.at = Timestamp::from_unix_ms(6000);
+    w.store_reading(
+        batch(
+            "replies",
+            Route::Live,
+            200,
+            vec![row(210, root), row(211, reply)],
+            &["s"],
+        ),
+        Some(&SOURCE_RECORD),
+    )
+    .unwrap();
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    assert_matches_rows(&w, "s");
+}
