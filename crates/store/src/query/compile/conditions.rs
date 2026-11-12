@@ -276,21 +276,33 @@ impl<'a> Compiler<'a> {
             }
             Search::None => return Err(refuse(scope.unit)),
         };
-        let match_text = phrases.join(" AND ");
+        let match_text = if phrases.len() > 1 {
+            format!("({})", phrases.join(" AND "))
+        } else {
+            phrases.join(" AND ")
+        };
         let table = match index {
             Index::Output => "output_fts",
             _ => "text_fts",
         };
         let param = self.text_param(&match_text);
         let cte = format!("h{}", self.ctes.len() + 1);
-        let Some(hits) = rows(a, &units::Hits { cte: &cte, index }) else {
-            self.params.pop();
-            return Err(refuse(scope.unit));
-        };
         let ranks = match index {
             Index::Prose => Some(polylogue_query::search::SnippetIndex::Prose),
             Index::Output => Some(polylogue_query::search::SnippetIndex::Output),
             Index::Thinking => None,
+        };
+        let source = top && ranks.is_some() && ranks == self.rank_index && self.rank.is_none();
+        let Some(hits) = rows(
+            a,
+            &units::Hits {
+                cte: &cte,
+                index,
+                source,
+            },
+        ) else {
+            self.params.pop();
+            return Err(refuse(scope.unit));
         };
         let mut prefix = String::new();
         if let Some(rank_index) = ranks
@@ -299,6 +311,7 @@ impl<'a> Compiler<'a> {
             && self.rank.is_none()
         {
             self.rank = Some(hits.rank);
+            self.rank_source = hits.source;
             if self.answer
                 && !self.measuring
                 && self.near_request.is_none()

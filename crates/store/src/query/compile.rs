@@ -344,6 +344,7 @@ pub(crate) struct Compiler<'a> {
     /// The full-text ranking expression, when a top-level text term ranks
     /// the rows.
     rank: Option<String>,
+    rank_source: Option<units::HitSource>,
     ranked_search: Option<RankedSearch>,
     /// The semantic ranking expression of a `similar:` term, and the join
     /// that brings its similarities to the unit's rows.
@@ -407,6 +408,7 @@ impl<'a> Compiler<'a> {
             saved_stack: vec![],
             saved_relations: vec![],
             rank: None,
+            rank_source: None,
             ranked_search: None,
             near_rank: None,
             near_join: None,

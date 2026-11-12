@@ -280,6 +280,7 @@ impl<'a> Compiler<'a> {
         let saved_ctes = std::mem::take(&mut self.ctes);
         let saved_shown = std::mem::take(&mut self.shown);
         let saved_rank = self.rank.take();
+        let saved_rank_source = self.rank_source.take();
         let saved_near_rank = self.near_rank.take();
         let saved_near_join = self.near_join.take();
         let saved_fusion = self.fusion.take();
@@ -388,6 +389,7 @@ impl<'a> Compiler<'a> {
         self.ctes = saved_ctes;
         self.shown = saved_shown;
         self.rank = saved_rank;
+        self.rank_source = saved_rank_source;
         self.near_rank = saved_near_rank;
         self.near_join = saved_near_join;
         self.fusion = saved_fusion;

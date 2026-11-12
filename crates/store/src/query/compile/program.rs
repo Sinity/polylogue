@@ -104,6 +104,7 @@ impl<'a> Compiler<'a> {
                     // The session ranking selects sessions; children have their own order.
                     self.near_request = None;
                     self.rank = None;
+                    self.rank_source = None;
                     self.ranked_search = None;
                     self.rank_index = None;
                     self.near_rank = None;
@@ -350,6 +351,12 @@ impl<'a> Compiler<'a> {
                     let mut key_select = vec![format!("{pk} AS _pk")];
                     if let Some(rank) = self.ranking() {
                         key_select.push(format!("{rank} AS _rank"));
+                    }
+                    if self.fusion.is_none()
+                        && self.near_rank.is_none()
+                        && let Some(source) = &self.rank_source
+                    {
+                        key_select.push(format!("{} AS _hit_block", source.block));
                     }
                     key_select.push(format!(
                         "{} AS _near",
@@ -612,7 +619,14 @@ impl<'a> Compiler<'a> {
     pub(super) fn default_order(&self, scope: &RowContext) -> Vec<String> {
         let a = &scope.a;
         let spec = units::spec(scope.unit);
-        let time = a.expand(spec.time);
+        let time = if self.rank.is_some() && self.fusion.is_none() && self.near_rank.is_none() {
+            self.rank_source
+                .as_ref()
+                .map(|source| source.at.clone())
+                .unwrap_or_else(|| a.expand(spec.time))
+        } else {
+            a.expand(spec.time)
+        };
         if let Some(rank) = self.ranking() {
             // Equal ranks at equal times still need one order, or a page
             // continuing after one of them would skip the others.

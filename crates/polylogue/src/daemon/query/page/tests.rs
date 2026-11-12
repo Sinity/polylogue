@@ -152,6 +152,17 @@ fn authenticated_retired_context_and_changed_definitions_refuse_continuation() {
             .code(),
         "invalid_query"
     );
+    let mut retired = continuation.clone();
+    retired
+        .context
+        .versions
+        .insert("compiler".into(), "shared-query-v1".into());
+    assert_eq!(
+        check(&retired, &program, &options, false)
+            .unwrap_err()
+            .code(),
+        "stale_cursor"
+    );
     let mut changed = program.clone();
     changed.definitions.push(polylogue_query::Definition {
         name: "saved".into(),

@@ -140,8 +140,11 @@ fn scope_ctes(index: SnippetIndex) -> String {
     )
 }
 
-fn winner() -> &'static str {
-    "ranked AS (SELECT *,row_number() OVER(PARTITION BY ordinal ORDER BY rank,at DESC,message,block) AS choice FROM candidates) SELECT ordinal,block,session_pk,session,message FROM ranked WHERE choice=1"
+fn winner() -> String {
+    format!(
+        "ranked AS ({}) SELECT ordinal,block,session_pk,session,message FROM ranked",
+        super::best_source("candidates", "ordinal")
+    )
 }
 
 fn index_sql(index: SnippetIndex) -> String {

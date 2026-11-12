@@ -83,6 +83,7 @@ pub enum Search {
 pub struct Hits<'a> {
     pub cte: &'a str,
     pub index: Index,
+    pub source: bool,
 }
 
 impl Hits<'_> {
@@ -108,11 +109,18 @@ impl Hits<'_> {
     }
 }
 
-/// The membership and rank read from shared hit relations.
+/// Membership, rank and chosen-source expressions from shared hit relations.
 pub struct HitRelation {
     pub ctes: Vec<String>,
     pub condition: String,
     pub rank: String,
+    pub source: Option<HitSource>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HitSource {
+    pub block: String,
+    pub at: String,
 }
 
 fn documents_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
@@ -127,18 +135,40 @@ fn documents_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
         ctes: vec![],
         condition: format!("EXISTS(SELECT 1 {from})"),
         rank: format!("(SELECT min(h.rank) {from})"),
+        source: None,
     })
 }
 
 fn sessions_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
     let sessions = format!("{}_sessions", h.cte);
     // Find the owning sessions from the hits, then their subagent ancestors.
-    // UNION over (session, rank) bounds cycles and shared descendants. A
-    // session's own best rank suffices for every ancestor's best rank.
+    // A session's best own source suffices for every ancestor. UNION over
+    // the owner and retained score/source bounds cycles and shared descendants.
     // A first build defers the child lookup index, so this query must also
     // work without that index.
-    let rows = format!(
-        "{sessions} AS MATERIALIZED (WITH RECURSIVE \
+    let rows = if h.source {
+        let own = crate::search::best_source("candidates", "owner");
+        let inherited = crate::search::best_source("ancestors", "owner");
+        format!(
+            "{sessions} AS MATERIALIZED (WITH RECURSIVE \
+             candidates AS MATERIALIZED (SELECT xm.session_pk AS owner,xb.pk AS block,xm.at,xm.id AS message,h.rank \
+               FROM {texts} h CROSS JOIN block xb ON xb.text_id=h.text_id \
+               CROSS JOIN message xm ON xm.pk=xb.message_pk WHERE {}{} AND {}), \
+             owned AS MATERIALIZED ({own}), \
+             ancestors(owner,block,at,message,rank) AS (\
+               SELECT owner,block,at,message,rank FROM owned UNION \
+               SELECT parent.pk,child.block,child.at,child.message,child.rank FROM ancestors child \
+               CROSS JOIN session_link l ON l.child_pk=child.owner AND l.kind='spawn' \
+               CROSS JOIN session parent ON parent.id=l.parent_id) \
+             SELECT owner AS session_pk,block,at,rank FROM ({inherited}))",
+            h.block_kind("xb"),
+            h.writer("xm"),
+            fields::own_messages("xm", None),
+            texts = h.cte
+        )
+    } else {
+        format!(
+            "{sessions} AS MATERIALIZED (WITH RECURSIVE \
          matched(session_pk, rank) AS MATERIALIZED (\
            SELECT xm.session_pk, min(h.rank) FROM {texts} h \
            CROSS JOIN block xb ON xb.text_id=h.text_id \
@@ -150,11 +180,12 @@ fn sessions_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
            CROSS JOIN session_link l ON l.child_pk=child.session_pk AND l.kind='spawn' \
            CROSS JOIN session parent ON parent.id=l.parent_id) \
          SELECT session_pk, min(rank) AS rank FROM ancestors GROUP BY session_pk)",
-        h.block_kind("xb"),
-        h.writer("xm"),
-        fields::own_messages("xm", None),
-        texts = h.cte
-    );
+            h.block_kind("xb"),
+            h.writer("xm"),
+            fields::own_messages("xm", None),
+            texts = h.cte
+        )
+    };
     Some(HitRelation {
         ctes: vec![rows],
         // A missing related session has no hits, including under NOT.
@@ -166,10 +197,46 @@ fn sessions_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
             "(SELECT rank FROM {sessions} h WHERE h.session_pk={}.pk)",
             a.s
         ),
+        source: h.source.then(|| HitSource {
+            block: format!(
+                "(SELECT block FROM {sessions} h WHERE h.session_pk={}.pk)",
+                a.s
+            ),
+            at: format!(
+                "(SELECT at FROM {sessions} h WHERE h.session_pk={}.pk)",
+                a.s
+            ),
+        }),
     })
 }
 
 fn messages_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
+    if h.source {
+        let found = format!("{}_messages", h.cte);
+        let best = crate::search::best_source("candidates", "owner");
+        let rows = format!(
+            "{found} AS MATERIALIZED (WITH candidates AS MATERIALIZED (\
+              SELECT xm.pk AS owner,xb.pk AS block,xm.at,xm.id AS message,h.rank \
+              FROM {} h CROSS JOIN block xb ON xb.text_id=h.text_id \
+              CROSS JOIN message xm ON xm.pk=xb.message_pk WHERE {}{}) \
+              SELECT owner AS message_pk,block,at,rank FROM ({best}))",
+            h.cte,
+            h.block_kind("xb"),
+            h.writer("xm")
+        );
+        return Some(HitRelation {
+            ctes: vec![rows],
+            condition: format!("{}.pk IN (SELECT message_pk FROM {found})", a.m),
+            rank: format!("(SELECT rank FROM {found} h WHERE h.message_pk={}.pk)", a.m),
+            source: Some(HitSource {
+                block: format!(
+                    "(SELECT block FROM {found} h WHERE h.message_pk={}.pk)",
+                    a.m
+                ),
+                at: format!("(SELECT at FROM {found} h WHERE h.message_pk={}.pk)", a.m),
+            }),
+        });
+    }
     let from = format!(
         "FROM {cte} h JOIN block xb ON xb.text_id = h.text_id \
          WHERE xb.message_pk = {m}.pk AND {}",
@@ -188,6 +255,7 @@ fn messages_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
         ctes: vec![],
         condition: format!("({holding}{})", h.writer(&a.m)),
         rank: format!("(SELECT min(h.rank) {from})"),
+        source: None,
     })
 }
 
@@ -205,6 +273,7 @@ fn blocks_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
             b = a.b,
             cte = h.cte
         ),
+        source: None,
     })
 }
 
@@ -221,6 +290,7 @@ fn tool_call_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
         ctes: vec![],
         condition: format!("EXISTS (SELECT 1 {from})"),
         rank: format!("(SELECT min(h.rank) {from})"),
+        source: None,
     })
 }
 

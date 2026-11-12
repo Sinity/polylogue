@@ -10,6 +10,8 @@ use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+const COMPILER_VERSION: &str = "shared-query-v2";
+
 fn invalid(message: &str) -> Failure {
     Failure::from(Error::new(ErrorKind::InvalidQuery, message, 0))
 }
@@ -118,7 +120,7 @@ pub(super) fn context(
     why: bool,
 ) -> Result<CursorContext, Failure> {
     let mut versions = BTreeMap::from([
-        ("compiler".into(), "shared-query-v1".into()),
+        ("compiler".into(), COMPILER_VERSION.into()),
         ("binding".into(), binding(options, why)?),
         ("definitions".into(), definitions(program)?),
     ]);
@@ -161,7 +163,7 @@ pub(super) fn check(
             "the cursor belongs to different query options or ordering",
         ));
     }
-    if cursor.context.versions.get("compiler").map(String::as_str) != Some("shared-query-v1")
+    if cursor.context.versions.get("compiler").map(String::as_str) != Some(COMPILER_VERSION)
         || cursor.context.versions.get("definitions") != Some(&definitions(program)?)
     {
         return Err(stale("the query compiler or saved definitions changed"));
