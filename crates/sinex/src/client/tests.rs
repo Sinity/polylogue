@@ -109,7 +109,7 @@ fn authenticated_private_reply_and_complete_registration_acknowledgment_establis
             let subjects=Subjects::new("auth");
             let request=consumers.next().await.unwrap();
             let query:sinex_protocol::ConfirmedConsumer=serde_json::from_slice(&request.payload).unwrap();
-            assert_eq!(query,sinex_protocol::ConfirmedConsumer{basis:None,after:42,cache:"cache-test".into(),status_only:false});
+            assert_eq!(query,sinex_protocol::ConfirmedConsumer{basis:None,completion:None,after:42,cache:"cache-test".into(),status_only:false});
             let reply=sinex_protocol::ConfirmedConsumerReply::Provisioned{position:50,stream:subjects.confirmed_stream(),stream_instance:Some("instance".into()),consumer:"consumer".into(),scope:"test-scope".into()};
             sinex_transport::replies::publish_json(&client,request.reply.unwrap().to_string(),reply,Duration::from_secs(5)).await.unwrap();
             let request=consumers.next().await.unwrap();
