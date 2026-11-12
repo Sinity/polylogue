@@ -72,10 +72,6 @@ fn identical_lower_priority_event_claims_leave_selected_events_and_items_untouch
             range: None,
             data: serde_json::json!({"number": n}),
         });
-        main.parse[0]
-            .output
-            .event_ids
-            .insert(n, format!("synthetic-event-{n}"));
     }
     w.store_reading(main.clone(), Some(&SOURCE_RECORD)).unwrap();
     assert!(w.writer.flush().unwrap().errors.is_empty());
@@ -102,7 +98,10 @@ fn identical_lower_priority_event_claims_leave_selected_events_and_items_untouch
     );
     let pool = ReadPool::open(&w.archive).unwrap();
     let reader = pool.reader().unwrap();
-    let record = reader.event_record("synthetic-event-0").unwrap().unwrap();
+    let id: String = conn
+        .query_row("SELECT id FROM event ORDER BY pk LIMIT 1", [], |r| r.get(0))
+        .unwrap();
+    let record = reader.event_record(&id).unwrap().unwrap();
     assert_eq!(
         record.identity.sources.len(),
         2,
@@ -155,7 +154,10 @@ fn selected_event_changes_keep_their_payload_fields_and_placement() {
         assert!(w.writer.flush().unwrap().errors.is_empty());
         let event = &mut input.parse[0].output.events[0];
         match change {
-            0 => event.data = serde_json::json!({"value": 2}),
+            0 => {
+                event.data =
+                    serde_json::json!({"value": "a payload with a different stored length"})
+            }
             1 => event.kind = "synthetic.revised".into(),
             2 => event.at = Timestamp::from_unix_ms(1000),
             3 => event.after = Some(MessageId::parse("claude-code:next").unwrap()),

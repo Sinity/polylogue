@@ -129,10 +129,22 @@ impl Unit {
                     u8::from(place.branch_point),
                 ]);
             }
-            Self::Event { pk, kind, .. } => {
+            Self::Event {
+                pk,
+                id,
+                kind,
+                at,
+                data_bytes,
+            } => {
                 digest.update(b"event\0");
                 digest.update(&pk.to_le_bytes());
-                digest.update(kind.as_bytes());
+                for value in [id, kind] {
+                    digest.update(&(value.len() as u64).to_le_bytes());
+                    digest.update(value.as_bytes());
+                }
+                digest.update(&[u8::from(at.is_some())]);
+                digest.update(&at.unwrap_or(0).to_le_bytes());
+                digest.update(&data_bytes.to_le_bytes());
             }
         }
         digest.finalize().as_bytes().to_vec()
