@@ -26,6 +26,20 @@ let
       cargoExtraArgs = "--locked --workspace --all-features";
     }
   );
+  # The production graph has no workspace test dependencies or fault
+  # features. Resolve exactly the graph the package consumes, so changing
+  # source does not recompile dependencies under another feature set.
+  packageArgs = "--locked -p polylogue --features polylogue/sinex";
+  packageArtifacts = craneLib.buildDepsOnly (
+    common
+    // {
+      src = craneLib.cleanCargoSource source;
+      cargoExtraArgs = packageArgs;
+      # The package consumes codegen artifacts, not cargo-check metadata.
+      buildPhaseCargoCommand = "cargoWithProfile build ${packageArgs}";
+      doCheck = false;
+    }
+  );
   application = common // {
     inherit cargoArtifacts;
     POLYLOGUE_REVISION = revision;
@@ -34,7 +48,8 @@ let
   polylogue = craneLib.buildPackage (
     application
     // {
-      cargoExtraArgs = "--locked -p polylogue --features polylogue/sinex";
+      cargoArtifacts = packageArtifacts;
+      cargoExtraArgs = packageArgs;
       doCheck = false;
       nativeBuildInputs = common.nativeBuildInputs ++ [ pkgs.makeBinaryWrapper ];
       postInstall = ''
@@ -139,6 +154,7 @@ in
 {
   packages = {
     inherit polylogue;
+    polylogue-dependencies = packageArtifacts;
     polylogue-extension = extension;
     default = polylogue;
   };
