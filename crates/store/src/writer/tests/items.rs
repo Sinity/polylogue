@@ -51,6 +51,68 @@ fn message(id: &str, role: Role, text: &str) -> Message {
 }
 
 #[test]
+fn identical_lower_priority_event_claims_leave_selected_events_and_items_untouched() {
+    let w = test_archive();
+    let mut main = batch(
+        "a-events",
+        Route::Live,
+        0,
+        vec![row(0, message("anchor", Role::User, "anchor"))],
+        &["s"],
+    );
+    for n in 0..196 {
+        main.parse[0].output.events.push(Event {
+            at_quality: polylogue_model::TimeQuality::Unknown,
+            at_precision: None,
+            at_until: None,
+            session: Some(sid("s")),
+            kind: "synthetic.observation".into(),
+            at: None,
+            after: Some(MessageId::parse("claude-code:anchor").unwrap()),
+            range: None,
+            data: serde_json::json!({"number": n}),
+        });
+        main.parse[0]
+            .output
+            .event_ids
+            .insert(n, format!("synthetic-event-{n}"));
+    }
+    w.store_reading(main.clone(), Some(&SOURCE_RECORD)).unwrap();
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    let before = stored(&w, "s");
+    let conn = rusqlite::Connection::open(w.archive.index_db()).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE test_event_updates(n INTEGER NOT NULL);
+        INSERT INTO test_event_updates VALUES(0);
+        CREATE TRIGGER test_event_updates AFTER UPDATE ON event
+        BEGIN UPDATE test_event_updates SET n=n+1; END;",
+    )
+    .unwrap();
+    let mut extra = batch("z-extra-events", Route::Capture, 0, vec![], &[]);
+    extra.parse[0].output.events = main.parse[0].output.events;
+    extra.parse[0].output.event_ids = main.parse[0].output.event_ids;
+    w.store_reading(extra, Some(&SOURCE_RECORD)).unwrap();
+    let report = w.writer.flush().unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM event_source", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        392
+    );
+    assert_eq!(stored(&w, "s"), before);
+    assert_matches_rows(&w, "s");
+    let updates: i64 = conn
+        .query_row("SELECT n FROM test_event_updates", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        (updates, report.item_units_read),
+        (0, 0),
+        "unchanged selected event updates and session item reads"
+    );
+}
+
+#[test]
 fn identical_lower_priority_claims_leave_shown_messages_and_items_untouched() {
     let w = test_archive();
     let messages: Vec<_> = (0..256)
