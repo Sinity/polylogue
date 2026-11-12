@@ -353,9 +353,10 @@ CREATE INDEX prefix_member_message ON prefix_member(message_id,parent_id);
 -- known coordinates remain alternatives; partial markers still contribute
 -- evidence and copied-prefix observations. All correlated lookups use the
 -- affected edge's link_statement index, so a session read does not fold the graph.
-CREATE VIEW session_link AS
+CREATE VIEW session_link_identity AS
 WITH statements AS NOT MATERIALIZED (
-  SELECT l.*,
+  SELECT l.pk,l.parent_id,l.child_id,l.child_pk,l.kind,l.how,l.copies_prefix,
+    l.branch_point,l.spawning_call,l.source_chain,l.input_pk,
     (SELECT count(DISTINCT x.branch_point) FROM link x
      WHERE x.parent_id=l.parent_id AND x.child_id=l.child_id AND x.kind=l.kind AND x.how IS l.how) AS anchors,
     (SELECT count(DISTINCT x.spawning_call) FROM link x
@@ -374,8 +375,6 @@ SELECT s.pk,s.parent_id,s.child_id,s.child_pk,s.kind,s.how,
     (SELECT min(x.spawning_call) FROM link x
      WHERE x.parent_id=s.parent_id AND x.child_id=s.child_id AND x.kind=s.kind AND x.how IS s.how)
     ELSE s.spawning_call END AS spawning_call,
-  (SELECT min(x.evidence) FROM link x
-   WHERE x.parent_id=s.parent_id AND x.child_id=s.child_id AND x.kind=s.kind AND x.how IS s.how) AS evidence,
   s.source_chain,s.input_pk
 FROM statements s
 WHERE
@@ -397,6 +396,12 @@ WHERE
       AND (s.spawning_call IS NULL OR x.spawning_call=s.spawning_call)
       AND ((s.branch_point IS NULL AND x.branch_point IS NOT NULL)
         OR (s.spawning_call IS NULL AND x.spawning_call IS NOT NULL))));
+
+-- Evidence is loaded only by record readers, not membership/count queries.
+CREATE VIEW session_link AS
+SELECT s.*,(SELECT min(x.evidence) FROM link x
+  WHERE x.parent_id=s.parent_id AND x.child_id=s.child_id AND x.kind=s.kind AND x.how IS s.how) AS evidence
+FROM session_link_identity s;
 
 -- Physical inherited history also exists in copied files with no provider
 -- relationship. It never creates a logical-session edge.

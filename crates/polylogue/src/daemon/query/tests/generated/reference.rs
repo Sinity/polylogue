@@ -451,9 +451,9 @@ impl Leaf {
                     .map_or(0, |t| t.split_whitespace().count())
                     >= *n,
             ),
-            // Words are searched in prose: what a person or a model wrote.
+            // Unknown authorship remains searchable alongside human/model prose.
             Leaf::Word(w) => Truth::of(
-                matches!(m().speaker.1, "human" | "model")
+                matches!(m().speaker.1, "human" | "model" | "unknown")
                     && m()
                         .text
                         .as_deref()

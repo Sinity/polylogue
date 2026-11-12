@@ -287,7 +287,7 @@ fn natural_rows(w: &TestArchive) -> Json {
         ),
         (
             "links",
-            "SELECT parent_id,child_id,kind,how,branch_point,spawning_call,evidence,i.id AS input,source_chain FROM link l JOIN input_ref i ON i.pk=l.input_pk ORDER BY parent_id,child_id,kind,how",
+            "SELECT parent_id,child_id,kind,how,branch_point,spawning_call,evidence,i.id AS input,source_chain FROM link l JOIN input_ref i ON i.pk=l.input_pk ORDER BY parent_id,child_id,kind,how,branch_point,spawning_call,evidence,input,source_chain",
         ),
         (
             "event_sources",

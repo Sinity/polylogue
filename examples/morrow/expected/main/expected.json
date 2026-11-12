@@ -125,24 +125,11 @@
     ],
     "24 parent:claude-code:7f3a2c10-0002-4000-8000-000000000002": [
       [
-        "#4",
-        [
-          [
-            "continuation",
-            "resume"
-          ],
-          [
-            "reference",
-            "briefing"
-          ]
-        ]
-      ],
-      [
         "#3",
         [
           [
-            "subagent",
-            "fresh"
+            "spawn",
+            null
           ]
         ]
       ]
@@ -215,12 +202,7 @@
     "35 reop:morrow": {
       "outcome": "error"
     },
-    "36 links where kind:continuation": [
-      [
-        "#2",
-        "#4",
-        "resume"
-      ],
+    "36 links where kind:fork": [
       [
         "#5",
         "#6",

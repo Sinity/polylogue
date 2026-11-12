@@ -48,7 +48,16 @@ fn native_hermes_query_read_export_preserve_tool_data_and_supplied_compression_p
         .unwrap();
     assert!(child.starts_with("hermes:child@profile-"));
     let child_messages = messages(&env, child);
-    let messages = &child_messages;
+    assert_eq!(child_messages.len(), 3);
+    assert!(
+        child_messages
+            .iter()
+            .any(|message| message["blocks"][0]["text"] == "stored ancestor Ω")
+    );
+    let messages: Vec<_> = child_messages
+        .iter()
+        .filter(|m| m["session"] == child)
+        .collect();
     assert_eq!(messages.len(), 2);
     assert_eq!(messages[0]["role"], "assistant");
     assert_eq!(messages[0]["model"], "supplied-model");
@@ -69,37 +78,35 @@ fn native_hermes_query_read_export_preserve_tool_data_and_supplied_compression_p
     assert_eq!(messages[1]["prompt_kind"], "harness");
     assert_eq!(messages[1]["blocks"][0]["data"], result);
     let inherited = reading(&env, child, &["--show", "inherited"]);
-    // A supplied compression predecessor is retained as a link, rather than
-    // a fork whose messages are prepended to the child's active reading.
+    // The recorded continuation anchor includes the stored predecessor even
+    // though the child file did not physically copy it.
     let own = reading(&env, child, &[]);
-    // Only the session card differs: reading the parent prefix reports whether
-    // the lineage was complete (docs/reading.md, lineage).
-    let mut inherited_items = inherited.document.items.clone();
-    let mut own_items = own.document.items.clone();
-    for (items, expected) in [
-        (
-            &mut inherited_items,
-            polylogue_model::read::ValueState::known(true),
-        ),
-        (
-            &mut own_items,
-            polylogue_model::read::ValueState::NotApplicable,
-        ),
+    for (page, expected) in [
+        (&inherited, polylogue_model::read::ValueState::known(true)),
+        (&own, polylogue_model::read::ValueState::NotApplicable),
     ] {
-        match &mut items[0].kind {
-            polylogue_model::read::ItemKind::Card { card } => match card.as_mut() {
+        match &page.document.items[0].kind {
+            polylogue_model::read::ItemKind::Card { card } => match card.as_ref() {
                 polylogue_model::read::Card::Session {
                     lineage_complete, ..
                 } => {
                     assert_eq!(*lineage_complete, expected);
-                    *lineage_complete = polylogue_model::read::ValueState::NotApplicable;
                 }
                 other => panic!("first item is a session card, not {other:?}"),
             },
             other => panic!("first item is a card, not {other:?}"),
         }
     }
-    assert_eq!(inherited_items, own_items);
+    let has_ancestor = |page: &polylogue_model::read::ReadPage| {
+        page.document.items.iter().any(|item| {
+            matches!(
+                &item.kind, polylogue_model::read::ItemKind::Text { text }
+                    if text == "stored ancestor Ω"
+            )
+        })
+    };
+    assert!(has_ancestor(&inherited));
+    assert!(!has_ancestor(&own));
     let exported = records(&env, child);
     let mut exported_messages: Vec<_> = exported
         .iter()
@@ -108,6 +115,8 @@ fn native_hermes_query_read_export_preserve_tool_data_and_supplied_compression_p
             _ => None,
         })
         .collect();
+    assert_eq!(exported_messages.len(), 3);
+    exported_messages.retain(|record| record.message.session.to_string() == child);
     exported_messages.sort_by_key(|record| record.order);
     assert_eq!(exported_messages.len(), 2);
     let links: Vec<_> = exported

@@ -33,7 +33,7 @@ pub(crate) fn newest_identical(conn: &Connection, input: &str, chain: i64) -> Re
 
 /// The index tables that hold one chain's reading, keyed by `input_pk` and
 /// `chain`. Copying a reading copies each table's rows of the other chain.
-const READING_TABLES: [&str; 19] = [
+const READING_TABLES: [&str; 21] = [
     "parse_state",
     "parsed",
     "session_record",
@@ -53,6 +53,8 @@ const READING_TABLES: [&str; 19] = [
     "wire_type",
     "attachment_binding",
     "export_reading",
+    "prefix_copy",
+    "prefix_member",
 ];
 
 /// An older chain whose reading is recorded from a newer chain of the same
@@ -71,7 +73,8 @@ pub struct ReadingCopy {
 /// `input` and holding the same bytes. `false` when the copy would not equal
 /// parsing `to`: the bytes differ, `from` is not read to its end under
 /// `reading_version`, `to` already has a reading, or the input's reading
-/// writes rows shared by all its chains (a repository lookup, tool rows).
+/// writes rows shared by all its chains (a repository lookup, tool rows), or
+/// copied membership names its own chain and must be resolved by parsing.
 ///
 /// A message, document, event or link shows its source input's newest
 /// chain, and on equal values a newer chain wins, so an older chain's copy
@@ -107,7 +110,9 @@ pub(crate) fn copy_reading(tx: &Connection, copy: &ReadingCopy, counter: i64) ->
          AND NOT EXISTS(SELECT 1 FROM parse_state WHERE input_pk = ?1 AND chain = ?4)
          AND NOT EXISTS(SELECT 1 FROM repo_lookup WHERE input_pk = ?1)
          AND NOT EXISTS(SELECT 1 FROM tool_row WHERE input_pk = ?1)
-         AND NOT EXISTS(SELECT 1 FROM tool_database WHERE input_pk = ?1)"
+         AND NOT EXISTS(SELECT 1 FROM tool_database WHERE input_pk = ?1)
+         AND NOT EXISTS(SELECT 1 FROM prefix_member WHERE input_pk = ?1 AND chain = ?2
+             AND source_input = ?5 AND source_chain = ?2)"
         ),
         params![input_pk, from, reading_version, to, input],
         |row| row.get(0),
