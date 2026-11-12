@@ -163,6 +163,9 @@ impl Bundle {
                     new.source_version = projection.source_version;
                     new.block_count = projection.block_count;
                     new.block_ordinals = projection.block_ordinals;
+                    new.copied_for.extend(old.copied_for.iter().cloned());
+                    new.copied_for.sort();
+                    new.copied_for.dedup();
                     let mut merged = previous_parts;
                     for part in parts {
                         if !merged.contains(&part) {

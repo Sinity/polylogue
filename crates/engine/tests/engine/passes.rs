@@ -10,6 +10,7 @@ use polylogue_testkit::{
 use std::fs;
 use std::path::Path;
 
+mod compaction;
 mod export_round_trip;
 mod hook_events;
 mod large_sessions;

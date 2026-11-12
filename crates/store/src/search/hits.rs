@@ -113,7 +113,7 @@ fn parts(index: SnippetIndex) -> (&'static str, &'static str, &'static str) {
         SnippetIndex::Prose => (
             "text_fts",
             "'text'",
-            " AND m.written_by IN ('human','model')",
+            " AND (m.written_by IN ('human','model','unknown') OR m.prompt_kind='compaction_summary')",
         ),
         SnippetIndex::Output => ("output_fts", "'tool_result','tool_call'", ""),
     }
@@ -127,7 +127,7 @@ fn scope_ctes(index: SnippetIndex) -> String {
         "{WANTED}, \
       tree(ordinal,pk) AS (SELECT ordinal,pk FROM wanted WHERE is_session=1 \
         UNION SELECT t.ordinal,l.child_pk FROM tree t CROSS JOIN session p ON p.pk=t.pk \
-        CROSS JOIN link l INDEXED BY link_parent ON l.parent_id=p.id AND l.kind='subagent' WHERE l.child_pk IS NOT NULL), \
+        CROSS JOIN session_link l ON l.parent_id=p.id AND l.kind='spawn' WHERE l.child_pk IS NOT NULL), \
       eligible AS NOT MATERIALIZED (\
         SELECT w.ordinal,b.pk AS block,b.text_id,m.session_pk,s.id AS session,m.id AS message,m.at \
         FROM wanted w CROSS JOIN message m ON m.pk=w.pk CROSS JOIN block b ON b.message_pk=m.pk \
@@ -154,7 +154,7 @@ fn index_sql(index: SnippetIndex) -> String {
         CROSS JOIN message m ON m.pk=b.message_pk CROSS JOIN session s ON s.pk=m.session_pk WHERE b.kind IN ({kinds}){writer}), \
       ancestors(block,session_pk) AS (SELECT block,session_pk FROM matched WHERE duplicate_of IS NULL AND active=1 \
         AND EXISTS(SELECT 1 FROM wanted WHERE is_session=1) \
-        UNION SELECT c.block,p.pk FROM ancestors c CROSS JOIN link l ON l.child_pk=c.session_pk AND l.kind='subagent' CROSS JOIN session p ON p.id=l.parent_id), \
+        UNION SELECT c.block,p.pk FROM ancestors c CROSS JOIN session_link l ON l.child_pk=c.session_pk AND l.kind='spawn' CROSS JOIN session p ON p.id=l.parent_id), \
       candidates AS (SELECT w.ordinal,m.block,m.session_pk,m.session,m.message,m.at,m.rank FROM wanted w JOIN matched m ON m.message_pk=w.pk WHERE w.is_session=0 \
         UNION ALL SELECT w.ordinal,m.block,m.session_pk,m.session,m.message,m.at,m.rank FROM wanted w JOIN ancestors a ON a.session_pk=w.pk JOIN matched m ON m.block=a.block WHERE w.is_session=1), {}",
         winner()

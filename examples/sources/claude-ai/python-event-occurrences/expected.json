@@ -32,11 +32,15 @@
       {
         "at": "2026-01-01T00:00:00Z",
         "data": {
-          "summary": [
-            {
-              "text": "first summary"
-            }
-          ]
+          "summary": "claude-ai:event-occurrences~user-5f603704ace1995d-0",
+          "pre_tokens": null,
+          "post_tokens": null,
+          "trigger": null,
+          "evicted": [],
+          "kept": [],
+          "kept_range": null,
+          "kept_after": null,
+          "replacement_history": null
         },
         "kind": "compaction",
         "range": [
@@ -50,11 +54,15 @@
       {
         "at": "2026-01-01T00:02:00Z",
         "data": {
-          "summary": [
-            {
-              "text": "second summary"
-            }
-          ]
+          "summary": "claude-ai:event-occurrences~user-a2b4b000d70c62f8-0",
+          "pre_tokens": null,
+          "post_tokens": null,
+          "trigger": null,
+          "evicted": [],
+          "kept": [],
+          "kept_range": null,
+          "kept_after": null,
+          "replacement_history": null
         },
         "kind": "compaction",
         "range": [
@@ -68,6 +76,26 @@
     ],
     "links": [],
     "messages": [
+      {
+        "offset": 3,
+        "end": 987,
+        "message": {
+          "id": "claude-ai:event-occurrences~user-5f603704ace1995d-0",
+          "session": "claude-ai:event-occurrences",
+          "role": "user",
+          "prompt_kind": "compaction_summary",
+          "blocks": [
+            {
+              "type": "text",
+              "text": "first summary"
+            }
+          ],
+          "at": "2026-01-01T00:00:00Z",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
+        },
+        "id_kind": "content"
+      },
       {
         "end": 987,
         "message": {
@@ -88,17 +116,32 @@
                 "type": "enabled",
                 "budget_tokens": 100
               }
-            },
-            "compaction_summary": [
-              {
-                "text": "first summary"
-              }
-            ]
+            }
           },
           "at_quality": "intrinsic",
           "at_precision": "second"
         },
         "offset": 3
+      },
+      {
+        "offset": 3,
+        "end": 987,
+        "message": {
+          "id": "claude-ai:event-occurrences~user-a2b4b000d70c62f8-0",
+          "session": "claude-ai:event-occurrences",
+          "role": "user",
+          "prompt_kind": "compaction_summary",
+          "blocks": [
+            {
+              "type": "text",
+              "text": "second summary"
+            }
+          ],
+          "at": "2026-01-01T00:02:00Z",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
+        },
+        "id_kind": "content"
       },
       {
         "end": 987,
@@ -120,12 +163,7 @@
                 "type": "enabled",
                 "budget_tokens": 200
               }
-            },
-            "compaction_summary": [
-              {
-                "text": "second summary"
-              }
-            ]
+            }
           },
           "at_quality": "intrinsic",
           "at_precision": "second"

@@ -9,7 +9,7 @@
 //! tool result can sit in the assistant message that made the call.
 
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 use crate::fields::ExpectedType as T;
 mod fields;
@@ -22,8 +22,8 @@ use crate::parse::{DocumentParser, ExtractedBlob, MessageRow, Output, Parse};
 use crate::{RecordOutcome, Records};
 use base64::Engine as _;
 use polylogue_model::{
-    Attachment, AttachmentDirection, BlobHash, Block, Event, Json, Message, PromptKind, Role,
-    Session, SessionId, SessionKind, TitleSource, ToolAction, ToolOutcome,
+    Attachment, AttachmentDirection, BlobHash, Block, Event, Json, Message, MessageId, PromptKind,
+    Role, Session, SessionId, SessionKind, TitleSource, ToolAction, ToolOutcome,
 };
 use std::path::Path;
 
@@ -187,9 +187,12 @@ static MESSAGE_FIELDS: Fields = Fields::new(
         ("parent_message_uuid", Rule::Read(T::String)),
         ("stop_reason", Rule::Read(T::String)),
         ("input_mode", Rule::Kept("how the prompt was entered")),
+        ("compaction_summary", Rule::Read(T::Array)),
+        ("compaction_summary[].type", Rule::Read(T::String)),
+        ("compaction_summary[].text", Rule::Read(T::String)),
         (
-            "compaction_summary",
-            Rule::Kept("native compaction event and message attributes"),
+            "compaction_summary[].citations",
+            Rule::Kept("summary block citation metadata"),
         ),
     ],
 )
@@ -291,48 +294,104 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
         &CONVERSATION_FIELDS,
     );
     let model = string_of(conv, "model");
-    let mut rows: Vec<(Option<i64>, i64, usize, Message)> = Vec::new();
+    let mut rows = Vec::new();
+    let mut summary_ids = crate::content_ids::ContentIds::default();
     for (i, m) in messages.iter().enumerate() {
         let kind = str_of(m, "sender").unwrap_or("?").to_owned();
         sink.records.fields(&kind, m, &MESSAGE_FIELDS);
         match message(&sid, native, i, m, model.as_deref()) {
             Ok(msg) => {
-                // The summary claude.ai wrote when it compacted the
-                // conversation: a marked discontinuity before this message.
+                // Summaries are readable messages; the boundary names that
+                // message and preserves the provider's replacement context.
                 if let Some(summary) = m
                     .get("compaction_summary")
-                    .filter(|v| v.as_array().is_some_and(|a| !a.is_empty()))
+                    .and_then(Json::as_array)
+                    .filter(|parts| !parts.is_empty())
                 {
-                    sink.out.events.push({
-                        let (at, time_evidence) = (msg.at, msg.time_evidence());
-                        Event {
+                    let mut blocks: Vec<_> = summary
+                        .iter()
+                        .filter_map(|part| {
+                            str_of(part, "text").map(|text| Block::Text {
+                                text: text.to_owned(),
+                            })
+                        })
+                        .collect();
+                    let summary_id = (!blocks.is_empty())
+                        .then(|| summary_ids.next_blocks(&sid, Role::User, &mut blocks))
+                        .flatten();
+                    if let Some(id) = summary_id {
+                        let mut summary_message = context_summary(
+                            sid.clone(),
+                            id.clone(),
+                            msg.parent.clone(),
+                            msg.at,
+                            msg.time_evidence(),
+                            blocks,
+                        );
+                        let details = content_details(summary);
+                        if !details.is_empty() {
+                            summary_message
+                                .attrs
+                                .insert("content".into(), Json::Array(details));
+                        }
+                        let index = m.get("index").and_then(Json::as_i64).unwrap_or(i as i64);
+                        rows.push((
+                            msg.at.map(|at| at.unix_ms()),
+                            index,
+                            i,
+                            0,
+                            polylogue_model::IdKind::Content,
+                            summary_message,
+                        ));
+                        let time_evidence = msg.time_evidence();
+                        sink.out.events.push(Event {
                             session: Some(sid.clone()),
                             kind: "compaction".into(),
-                            at,
+                            at: msg.at,
                             at_quality: time_evidence.quality,
                             at_precision: time_evidence.precision,
                             at_until: time_evidence.until,
                             after: msg.parent.clone(),
                             range: None,
-                            data: serde_json::json!({ "summary": summary }),
-                        }
-                    });
+                            data: serde_json::to_value(polylogue_model::CompactionBoundary {
+                                summary: Some(id),
+                                ..Default::default()
+                            })
+                            .expect("boundary is JSON"),
+                        });
+                    } else {
+                        let evidence = msg.time_evidence();
+                        sink.out.events.push(Event {
+                            session: Some(sid.clone()),
+                            kind: "compaction".into(),
+                            at: msg.at,
+                            at_quality: evidence.quality,
+                            at_precision: evidence.precision,
+                            at_until: evidence.until,
+                            after: msg.parent.clone(),
+                            range: None,
+                            data: serde_json::to_value(
+                                polylogue_model::CompactionBoundary::default(),
+                            )
+                            .expect("boundary is JSON"),
+                        });
+                    }
                 }
                 collect_inline(m, &mut sink.out.blobs);
                 let at = msg.at.map(|t| t.unix_ms());
                 let index = m.get("index").and_then(Json::as_i64).unwrap_or(i as i64);
-                rows.push((at, index, i, msg));
+                rows.push((at, index, i, 1, polylogue_model::IdKind::Native, msg));
                 sink.records.record(&kind, &RecordOutcome::Used);
             }
             Err(d) => sink.records.record(&kind, &d),
         }
     }
-    rows.sort_by_key(|r| (r.0, r.1, r.2));
-    for (_, _, _, message) in rows {
+    rows.sort_by_key(|r| (r.0, r.1, r.2, r.3));
+    for (_, _, _, _, id_kind, message) in rows {
         let offset = sink.position();
         sink.out.messages.push(MessageRow {
             page_text: false,
-            id_kind: polylogue_model::IdKind::Native,
+            id_kind,
             offset,
             end: offset + 1,
             message,
@@ -447,11 +506,20 @@ fn content_attrs(message: &Json) -> serde_json::Map<String, Json> {
     if let Some(value) = message.get("metadata") {
         attrs.insert("metadata".into(), value.clone());
     }
-    let details: Vec<Json> = message
+    let details = message
         .get("content")
         .and_then(Json::as_array)
-        .into_iter()
-        .flatten()
+        .map(|parts| content_details(parts))
+        .unwrap_or_default();
+    if !details.is_empty() {
+        attrs.insert("content".into(), Json::Array(details));
+    }
+    attrs
+}
+
+fn content_details(parts: &[Json]) -> Vec<Json> {
+    parts
+        .iter()
         .enumerate()
         .filter_map(|(position, block)| {
             let fields: serde_json::Map<String, Json> = block
@@ -467,11 +535,7 @@ fn content_attrs(message: &Json) -> serde_json::Map<String, Json> {
                 .collect();
             (!fields.is_empty()).then(|| serde_json::json!({"position":position,"fields":fields}))
         })
-        .collect();
-    if !details.is_empty() {
-        attrs.insert("content".into(), Json::Array(details));
-    }
-    attrs
+        .collect()
 }
 
 /// One content block. Provider-only kinds remain structured index blocks.
@@ -837,3 +901,33 @@ mod tests;
 
 #[cfg(test)]
 mod sidecars_tests;
+
+/// A provider's context summary is harness material, not another model turn.
+fn context_summary(
+    session: SessionId,
+    id: MessageId,
+    parent: Option<MessageId>,
+    at: Option<polylogue_model::Timestamp>,
+    evidence: polylogue_model::TimeEvidence,
+    blocks: Vec<polylogue_model::Block>,
+) -> polylogue_model::Message {
+    polylogue_model::Message {
+        id,
+        session,
+        parent,
+        role: polylogue_model::Role::User,
+        at,
+        at_quality: evidence.quality,
+        at_precision: evidence.precision,
+        at_until: evidence.until,
+        model: None,
+        prompt_kind: Some(polylogue_model::PromptKind::CompactionSummary),
+        blocks,
+        usage: Default::default(),
+        stop_reason: None,
+        reported_cost_usd: None,
+        duration_ms: None,
+        attrs: Default::default(),
+        production: Default::default(),
+    }
+}

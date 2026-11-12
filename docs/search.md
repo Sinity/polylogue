@@ -8,7 +8,7 @@ The search index has no legitimately incomplete state: it converges with the arc
 
 ## Terms
 
-- A bare word or `"phrase"` in a query matches the prose of messages (text blocks written by a person or a model). Several words must all occur in the same message; `word*` is a prefix; there is no stemming.
+- A bare word or `"phrase"` in a query matches prose: text blocks written by a person or a model, text whose author is unknown, and compaction summaries. Other harness prompts are excluded. Several words must all occur in the same message; `word*` is a prefix; there is no stemming.
 - `thinking:"…"` searches thinking blocks; `output:"…"` searches tool output (tool results and the bodies of Write, Edit and `apply_patch`). Words inside `assertions where …` search assertion values; in `documents`, document text.
 - Compaction summaries are messages ([sessions.md](sessions.md#compaction-boundaries)) and are searched like prose.
 - `command ~ "…"` and `path ~ "…"` are substring matches through a trigram index on tool calls (three characters or more; shorter values scan within the other conditions); `input ~ "…"` narrows calls already selected.

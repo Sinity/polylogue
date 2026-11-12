@@ -274,8 +274,7 @@ fn every_stored_value_can_be_queried() {
         assert_eq!(offered, *names, "{query}");
     }
     for k in LinkKind::ALL {
-        let (kind, _) = k.columns();
-        c(&format!("sessions where link:{kind}"));
+        c(&format!("sessions where link:{}", k.as_str()));
     }
     c("sessions where link:fork");
     c("sessions where link:resume");
@@ -284,7 +283,7 @@ fn every_stored_value_can_be_queried() {
     for known in ["chat", "sessions", "main"] {
         assert!(refusal.to_string().contains(known), "{refusal}");
     }
-    assert!(compile_err("sessions where link:reference").contains("link is one of"));
+    c("sessions where link:reference");
 }
 
 #[test]

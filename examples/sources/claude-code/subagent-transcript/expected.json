@@ -36,17 +36,12 @@
     ],
     "links": [
       {
-        "child": "claude-code:agent-ab12",
-        "evidence": "agentId",
-        "kind": "spawn",
-        "parent": "claude-code:s1"
-      },
-      {
         "at": "claude-code:a9",
         "child": "claude-code:agent-ab12",
         "evidence": "fork-context-ref",
         "kind": "spawn",
-        "parent": "claude-code:s1"
+        "parent": "claude-code:s1",
+        "copies_prefix": true
       }
     ],
     "messages": [

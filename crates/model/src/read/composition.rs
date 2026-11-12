@@ -69,22 +69,124 @@ pub fn context_at<'a>(
         };
     };
     let boundary_place = places[boundary_at];
-    let evicted = places[..boundary_at]
+    let before = &places[..boundary_at];
+    let after = &places[boundary_at + 1..];
+    let boundary_data = entries(boundary_place.part)[boundary_place.entry]
+        .compaction
+        .as_ref();
+    let summary = after.iter().position(|place| {
+        let entry = &entries(place.part)[place.entry];
+        entry.kind == EntryKind::Header
+            && match boundary_data.and_then(|data| data.summary.as_ref()) {
+                Some(id) => entry.key.message() == Some(id),
+                None => entry.boundary == Some(Boundary::CompactionSummary),
+            }
+    });
+    let mut reasons = Vec::new();
+    if summary.is_none() {
+        reasons.push("the newest compaction's summary is not recorded".to_owned());
+    }
+    let mut by_message = std::collections::HashMap::new();
+    for place in &places {
+        if let Some(id) = entries(place.part)[place.entry].key.message() {
+            by_message
+                .entry(id.clone())
+                .or_insert_with(Vec::new)
+                .push(*place);
+        }
+    }
+    let mut kept = Vec::new();
+    let mut kept_ids = std::collections::HashSet::new();
+    if let Some(data) = boundary_data {
+        let mut ids = data.kept.clone();
+        if ids.is_empty()
+            && let Some(range) = &data.kept_range
+        {
+            let first = before.iter().position(|place| {
+                let entry = &entries(place.part)[place.entry];
+                entry.kind == EntryKind::Header && entry.key.message() == Some(&range.first)
+            });
+            let last = before.iter().position(|place| {
+                let entry = &entries(place.part)[place.entry];
+                entry.kind == EntryKind::Header && entry.key.message() == Some(&range.last)
+            });
+            match (first, last) {
+                (Some(first), Some(last)) if first <= last => {
+                    ids.extend(before[first..=last].iter().filter_map(|place| {
+                        let entry = &entries(place.part)[place.entry];
+                        (entry.kind == EntryKind::Header)
+                            .then(|| entry.key.message().cloned())
+                            .flatten()
+                    }))
+                }
+                _ => reasons.push(format!(
+                    "kept context range {} through {} is not available",
+                    range.first, range.last
+                )),
+            }
+        }
+        for id in ids {
+            let found = by_message.get(&id).cloned().unwrap_or_default();
+            if !found
+                .iter()
+                .any(|place| entries(place.part)[place.entry].kind == EntryKind::Header)
+            {
+                reasons.push(format!("kept context message {id} is not available"));
+            } else if kept_ids.insert(id) {
+                kept.extend(found);
+            }
+        }
+        if !data.replacement_history.is_null()
+            && !data
+                .replacement_history
+                .as_array()
+                .is_some_and(Vec::is_empty)
+        {
+            reasons.push("native replacement context is retained in the boundary event but is not fully reconstructed".into());
+        }
+    }
+    let mut members = Vec::new();
+    let summary_end = summary.map(|start| {
+        let end = after[start + 1..]
+            .iter()
+            .position(|place| {
+                matches!(
+                    entries(place.part)[place.entry].kind,
+                    EntryKind::Header | EntryKind::Event
+                )
+            })
+            .map_or(after.len(), |offset| start + 1 + offset);
+        members.extend_from_slice(&after[start..end]);
+        (start, end)
+    });
+    members.extend(kept);
+    members.extend(after.iter().enumerate().filter_map(|(index, place)| {
+        if summary_end.is_some_and(|(start, end)| (start..end).contains(&index))
+            || entries(place.part)[place.entry]
+                .key
+                .message()
+                .is_some_and(|id| kept_ids.contains(id))
+        {
+            None
+        } else {
+            Some(*place)
+        }
+    }));
+    let evicted = before
         .iter()
         .copied()
-        .filter(|place| entries(place.part)[place.entry].kind == EntryKind::Header)
+        .filter(|place| {
+            let entry = &entries(place.part)[place.entry];
+            entry.kind == EntryKind::Header
+                && !entry.key.message().is_some_and(|id| kept_ids.contains(id))
+        })
         .collect();
-    let after = &places[boundary_at + 1..];
-    let summary = after.iter().find(|place| {
-        entries(place.part)[place.entry].boundary == Some(Boundary::CompactionSummary)
-    });
-    let complete = summary.is_some();
     ContextReading {
-        members: without_microcompacted(after.to_vec(), &entries),
+        members: without_microcompacted(members, &entries),
         evicted,
         boundary: Some(boundary_place),
-        complete,
-        reason: (!complete).then(|| "the newest compaction's summary is not recorded".into()),
+        complete: reasons.is_empty(),
+        reason: (!reasons.is_empty()).then(|| reasons.join("; ")),
     }
 }
 

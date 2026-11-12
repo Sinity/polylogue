@@ -78,7 +78,7 @@ CREATE TABLE message (
                                             --   order time, input ID, position in that input, written so the
                                             --   text sorts in that order (encoding::session_order); ties by id
   role              TEXT NOT NULL,          -- user | assistant | system | tool (sources/ maps each provider's role)
-  written_by        TEXT NOT NULL,          -- human | model | harness | unknown
+  written_by        TEXT NOT NULL,          -- human | model | harness | tool | unknown
   prompt_kind       TEXT,                   -- written_by human: prose | command
   model             TEXT,
   at_time           BLOB NOT NULL DEFAULT X'5b6e756c6c2c7b227175616c697479223a22756e6b6e6f776e227d5d',
@@ -301,20 +301,121 @@ CREATE TABLE link (
   child_id          TEXT NOT NULL,          -- natural session id of the child (may not be ingested yet: a parent's
                                             --   thread_spawn_edges, continued-in or job children name it first)
   child_pk          INTEGER REFERENCES session(pk),  -- set once the child is stored; NULL while the link is pending
-  kind              TEXT NOT NULL,          -- subagent | continuation | reference
-  how               TEXT NOT NULL,          -- subagent: fresh | copied | summarized; continuation: resume | fork
-                                            -- | after_compaction; reference: briefing | ping | mention
+  kind              TEXT NOT NULL,          -- spawn | fork | continuation | resume | reference
+  how               TEXT,                   -- reference: briefing | ping | mention
+  copies_prefix     INTEGER NOT NULL DEFAULT 0 CHECK(copies_prefix IN (0,1)),
   branch_point      TEXT,                   -- natural message id where the child branches off
   spawning_call     TEXT,                   -- the spawning call's ID as the evidence names it (a tool-use ID)
   evidence          TEXT NOT NULL,          -- which input field established the parent
   source_chain      INTEGER NOT NULL DEFAULT 0,
-  input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),  -- the input holding that field
-  UNIQUE (parent_id, child_id, kind, how)
+  input_pk          INTEGER NOT NULL REFERENCES input_ref(pk)  -- the input holding that field
 ) STRICT;
+CREATE UNIQUE INDEX link_statement ON link(parent_id, child_id, kind, how IS NULL, coalesce(how,''), branch_point IS NULL, coalesce(branch_point,''), spawning_call IS NULL, coalesce(spawning_call,''));
 CREATE INDEX link_child  ON link(child_pk);                    -- parents
 CREATE INDEX link_child_id ON link(child_id);   -- parents by id; late children
 CREATE INDEX link_branch_point ON link(branch_point) WHERE branch_point IS NOT NULL;
 CREATE INDEX link_parent ON link(parent_id, kind);             -- children; late parents
+
+-- Source-owned copied-prefix facts never create a relationship on their own.
+CREATE TABLE prefix_copy (
+  input_pk INTEGER NOT NULL REFERENCES input_ref(pk),
+  chain INTEGER NOT NULL,
+  parent_id TEXT NOT NULL,
+  child_id TEXT NOT NULL,
+  admitted INTEGER CHECK(admitted > 0),
+  explicit_members INTEGER NOT NULL CHECK(explicit_members IN (0,1)),
+  PRIMARY KEY(input_pk,chain,parent_id,child_id)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX prefix_copy_edge ON prefix_copy(parent_id,child_id);
+CREATE INDEX prefix_copy_child ON prefix_copy(child_id,parent_id);
+
+-- Exact copied occurrences retain their original reading and order through exports.
+-- The owning input/chain controls retraction; source coordinates describe evidence.
+CREATE TABLE prefix_member (
+  input_pk INTEGER NOT NULL REFERENCES input_ref(pk),
+  chain INTEGER NOT NULL,
+  parent_id TEXT NOT NULL,
+  child_id TEXT NOT NULL,
+  message_id TEXT NOT NULL,
+  source_input TEXT NOT NULL,
+  source_chain INTEGER NOT NULL,
+  source_version TEXT NOT NULL,
+  sequence TEXT NOT NULL,
+  position TEXT NOT NULL,
+  admitted INTEGER CHECK(admitted > 0),
+  PRIMARY KEY(input_pk,chain,parent_id,child_id,message_id,source_input,source_chain,source_version,sequence,position)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX prefix_member_child ON prefix_member(child_id,parent_id,message_id);
+CREATE INDEX prefix_member_message ON prefix_member(message_id,parent_id);
+
+
+-- Every consumer sees one relation when recorded coordinates agree. Distinct
+-- known coordinates remain alternatives; partial markers still contribute
+-- evidence and copied-prefix observations. All correlated lookups use the
+-- affected edge's link_statement index, so a session read does not fold the graph.
+CREATE VIEW session_link_identity AS
+WITH statements AS NOT MATERIALIZED (
+  SELECT l.pk,l.parent_id,l.child_id,l.child_pk,l.kind,l.how,l.copies_prefix,
+    l.branch_point,l.spawning_call,l.source_chain,l.input_pk,
+    (SELECT count(DISTINCT x.branch_point) FROM link x
+     WHERE x.parent_id=l.parent_id AND x.child_id=l.child_id AND x.kind=l.kind AND x.how IS l.how) AS anchors,
+    (SELECT count(DISTINCT x.spawning_call) FROM link x
+     WHERE x.parent_id=l.parent_id AND x.child_id=l.child_id AND x.kind=l.kind AND x.how IS l.how) AS calls
+  FROM link l
+)
+SELECT s.pk,s.parent_id,s.child_id,s.child_pk,s.kind,s.how,
+  ((SELECT max(x.copies_prefix) FROM link x
+    WHERE x.parent_id=s.parent_id AND x.child_id=s.child_id AND x.kind=s.kind AND x.how IS s.how)
+    OR EXISTS(SELECT 1 FROM prefix_copy p WHERE p.parent_id=s.parent_id AND p.child_id=s.child_id)) AS copies_prefix,
+  CASE WHEN s.anchors <= 1 THEN
+    (SELECT min(x.branch_point) FROM link x
+     WHERE x.parent_id=s.parent_id AND x.child_id=s.child_id AND x.kind=s.kind AND x.how IS s.how)
+    ELSE s.branch_point END AS branch_point,
+  CASE WHEN s.calls <= 1 THEN
+    (SELECT min(x.spawning_call) FROM link x
+     WHERE x.parent_id=s.parent_id AND x.child_id=s.child_id AND x.kind=s.kind AND x.how IS s.how)
+    ELSE s.spawning_call END AS spawning_call,
+  s.source_chain,s.input_pk
+FROM statements s
+WHERE
+  (s.anchors <= 1 AND s.calls <= 1 AND s.pk =
+    (SELECT min(x.pk) FROM link x
+     WHERE x.parent_id=s.parent_id AND x.child_id=s.child_id AND x.kind=s.kind AND x.how IS s.how))
+  OR (s.anchors > 1 AND s.calls <= 1 AND s.branch_point IS NOT NULL AND s.pk =
+    (SELECT min(x.pk) FROM link x
+     WHERE x.parent_id=s.parent_id AND x.child_id=s.child_id AND x.kind=s.kind AND x.how IS s.how
+       AND x.branch_point=s.branch_point))
+  OR (s.anchors <= 1 AND s.calls > 1 AND s.spawning_call IS NOT NULL AND s.pk =
+    (SELECT min(x.pk) FROM link x
+     WHERE x.parent_id=s.parent_id AND x.child_id=s.child_id AND x.kind=s.kind AND x.how IS s.how
+       AND x.spawning_call=s.spawning_call))
+  OR (s.anchors > 1 AND s.calls > 1 AND NOT EXISTS (
+    SELECT 1 FROM link x
+    WHERE x.parent_id=s.parent_id AND x.child_id=s.child_id AND x.kind=s.kind AND x.how IS s.how
+      AND (s.branch_point IS NULL OR x.branch_point=s.branch_point)
+      AND (s.spawning_call IS NULL OR x.spawning_call=s.spawning_call)
+      AND ((s.branch_point IS NULL AND x.branch_point IS NOT NULL)
+        OR (s.spawning_call IS NULL AND x.spawning_call IS NOT NULL))));
+
+-- Evidence is loaded only by record readers, not membership/count queries.
+CREATE VIEW session_link AS
+SELECT s.*,(SELECT min(x.evidence) FROM link x
+  WHERE x.parent_id=s.parent_id AND x.child_id=s.child_id AND x.kind=s.kind AND x.how IS s.how) AS evidence
+FROM session_link_identity s;
+
+-- Physical inherited history also exists in copied files with no provider
+-- relationship. It never creates a logical-session edge.
+CREATE VIEW session_prefix AS
+SELECT DISTINCT parent_id,child_id,branch_point,copies_prefix
+FROM session_link
+WHERE kind <> 'reference' AND (kind IN ('fork','continuation','resume') OR copies_prefix=1)
+UNION
+SELECT DISTINCT p.parent_id,p.child_id,NULL,1
+FROM prefix_copy p
+WHERE NOT EXISTS (
+  SELECT 1 FROM session_link l
+  WHERE l.parent_id=p.parent_id AND l.child_id=p.child_id
+    AND l.kind <> 'reference' AND (l.kind IN ('fork','continuation','resume') OR l.copies_prefix=1));
 
 CREATE TABLE event (
   pk                INTEGER PRIMARY KEY,
@@ -332,7 +433,7 @@ CREATE TABLE event (
   source_start      INTEGER,
   source_end        INTEGER,
   fields            BLOB NOT NULL,          -- canonical Event without its shared data payload
-  data              BLOB NOT NULL           -- the provider's payload as given, zstd-compressed JSON; export `data`
+  data              BLOB NOT NULL           -- normalized event payload, zstd-compressed JSON; export `data`
 ) STRICT;
 CREATE UNIQUE INDEX event_id ON event(id);
 CREATE INDEX event_session ON event(session_pk, seq);

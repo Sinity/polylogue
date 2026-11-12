@@ -86,6 +86,8 @@ fn confirmed_forward_message_associations_survive_weaker_donors_and_target_arriv
     };
     let link = Link {
         kind: LinkKind::Spawn,
+        copies_prefix: false,
+        how: None,
         parent: parent.clone(),
         child: child.clone(),
         at: Some(anchor.clone()),
@@ -187,4 +189,124 @@ fn confirmed_forward_message_associations_survive_weaker_donors_and_target_arriv
         stored.1.is_some(),
         "target arrival resolves the cached pointer without changing its canonical reference"
     );
+}
+
+#[test]
+fn confirmed_explicit_copied_prefix_members_wait_for_message_and_keep_original_coordinates() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, _lock) =
+        crate::Archive::open_primary(&dir.path().join("cache"), &dir.path().join("bytes")).unwrap();
+    let mut index = crate::archive::open_write(&archive.index_db(), 1024).unwrap();
+    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    apply(
+        &mut index,
+        &resolver,
+        &[
+            input(1, "copy-source"),
+            input(2, "parent-source"),
+            barrier(2),
+        ],
+    )
+    .unwrap();
+    let parent = SessionId::parse("claude-code:parent").unwrap();
+    let child = SessionId::parse("claude-code:child").unwrap();
+    let copied = crate::fixture::writer::message(
+        "copied",
+        "parent",
+        polylogue_model::Role::User,
+        0,
+        vec![polylogue_model::Block::Text {
+            text: "copied".into(),
+        }],
+    );
+    let own = crate::fixture::writer::message(
+        "own",
+        "child",
+        polylogue_model::Role::User,
+        0,
+        vec![polylogue_model::Block::Text { text: "own".into() }],
+    );
+    let mut position = 2;
+    let row = |message| MessageRow {
+        page_text: false,
+        id_kind: polylogue_model::IdKind::Native,
+        offset: 0,
+        end: 1,
+        message,
+    };
+    admit_step(
+        &mut index,
+        &resolver,
+        "copy-source",
+        &mut position,
+        step(
+            Output {
+                sessions: vec![
+                    Session::new(parent.clone(), SessionKind::Main),
+                    Session::new(child.clone(), SessionKind::Main),
+                ],
+                messages: vec![row(own)],
+                prefix_members: vec![polylogue_model::PrefixMember {
+                    parent: parent.clone(),
+                    child: child.clone(),
+                    message: copied.id.clone(),
+                    source: Some(polylogue_model::PrefixSource {
+                        input: "original-source".into(),
+                        chain: 3,
+                        reading_version: "original-reading".into(),
+                    }),
+                    position: [u64::MAX, 7],
+                }],
+                ..Default::default()
+            },
+            0,
+        ),
+    );
+    {
+        let pool = crate::ReadPool::open(&archive).unwrap();
+        let reader = pool.reader().unwrap();
+        assert!(
+            matches!(reader.select_messages(&child,true).unwrap().parents().issues.as_slice(), [polylogue_model::read::ParentIssue::MissingCopiedMessage {message,..}] if message==&copied.id)
+        );
+    }
+    let uncopied = crate::fixture::writer::message(
+        "uncopied",
+        "parent",
+        polylogue_model::Role::User,
+        0,
+        vec![polylogue_model::Block::Text {
+            text: "uncopied".into(),
+        }],
+    );
+    admit_step(
+        &mut index,
+        &resolver,
+        "parent-source",
+        &mut position,
+        step(
+            Output {
+                sessions: vec![Session::new(parent, SessionKind::Main)],
+                messages: vec![row(copied.clone()), row(uncopied)],
+                ..Default::default()
+            },
+            0,
+        ),
+    );
+    let pool = crate::ReadPool::open(&archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let selection = reader.select_messages(&child, true).unwrap();
+    selection.require_complete().unwrap();
+    let mut texts = Vec::new();
+    selection
+        .visit(|message| {
+            texts.push(message.text());
+            std::ops::ControlFlow::Continue(())
+        })
+        .unwrap();
+    assert_eq!(texts, ["copied", "own"]);
+    assert!(reader.links(&child).unwrap().is_empty());
+    let copies = reader.copied_for(&copied.id).unwrap();
+    assert_eq!(copies.len(), 1);
+    assert_eq!(copies[0].source.input, "original-source");
+    assert_eq!(copies[0].position, [u64::MAX, 7]);
 }

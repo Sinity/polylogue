@@ -27,7 +27,7 @@ const FACTS: [(u8, Option<usize>, usize); 8] = [
     (1, Some(12), 3),
     (2, Some(18), 3),
     (3, Some(6), 0),
-    (4, Some(10), 3),
+    (4, Some(11), 3),
     (5, None, 2),
     (6, None, 1),
     (7, Some(8), 3),
@@ -73,6 +73,8 @@ fn a_continuation_reads_its_inherited_prefix_logically() {
     let w = Morrow::build(Set::Main);
     let pool = w.reads();
     let r = pool.reader().unwrap();
-    // #4 resumes #2: 18 inherited messages, then its 10 own.
-    assert_eq!(r.messages(&session(4), true).unwrap().len(), 28);
+    // #4 copies #2's prefix: 18 inherited messages, then its 10 own turns
+    // and the explicit isCompactSummary harness message (sessions.md compaction).
+    // Physical copied history needs no invented provider resume link.
+    assert_eq!(r.messages(&session(4), true).unwrap().len(), 29);
 }

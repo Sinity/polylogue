@@ -147,7 +147,7 @@ fn document_pages_preserve_exact_prefix_and_refuse_cross_content_stale_and_tampe
 
 fn write_documents(path: &Path, documents: &[Document]) {
     let manifest = json!({"record":"manifest","data":{
-        "format":"polylogue-bundle","version":2,"query":format!("query:{}", "0".repeat(64)),"query_text":"synthetic documents",
+        "format":"polylogue-bundle","version":3,"query":format!("query:{}", "0".repeat(64)),"query_text":"synthetic documents",
         "ran_at":"2026-01-01T00:00:00Z","read_at":{"generation":"synthetic","index":10,"archive":10},"freshness":{"local":{"parsing":{"state":"complete"},"derivation":{"state":"complete"},"search":{"state":"complete"},"projection":{"state":"not_applicable"},"kept_chains":0,"raw_only_chains":0},"owner":{"mode":"standalone"}},
         "counts":{"sessions":0,"messages":0,"documents":documents.len(),"events":0,"links":0,"authored":0,"assertions":0,"variants":0,"variant_parts":0,"text_fragments":0,"blobs":0},
         "flags":{"format":"jsonl","with_blobs":false,"read":{"view":"transcript","inherited":false,"assertions":true}},"enabled_variants":[],"author":"operator"}});

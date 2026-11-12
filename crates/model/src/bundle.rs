@@ -11,7 +11,7 @@ pub use fragments::{
 };
 
 pub const FORMAT: &str = "polylogue-bundle";
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 /// One reader's immutable context. Streaming batches share this snapshot;
 /// delivery computes record counts without collecting the complete selection.
@@ -128,6 +128,9 @@ pub struct SessionRecord {
     pub reference: String,
     pub commit: u64,
     pub session: Session,
+    /// Physical copied history is preserved without inventing provider links.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub copied_prefixes: Vec<crate::SessionId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -135,6 +138,8 @@ pub struct SessionRecord {
 pub struct MessageRecord {
     #[serde(rename = "ref")]
     pub reference: String,
+    /// Immutable admission of the selected source body; metadata sidecars
+    /// are covered by the enclosing read snapshot's freshness.
     pub commit: u64,
     /// Snapshot ordinal over the canonical, unfiltered physical session's full
     /// display order, including native ordering ties. Subsets never renumber it;
@@ -151,7 +156,23 @@ pub struct MessageRecord {
     /// Attachment provenance is independent of the source message value and hash.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bindings: Vec<crate::attachment_binding::AttachmentBinding>,
+    /// Exact inherited membership streams beside its message, without growing
+    /// the session header or changing the source message's identity.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub copied_for: Vec<CopiedFor>,
     pub message: Message,
+}
+
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(deny_unknown_fields)]
+pub struct CopiedFor {
+    /// The observed parent claim survives conflicting canonical ownership.
+    pub parent: crate::SessionId,
+    pub child: crate::SessionId,
+    pub source: crate::PrefixSource,
+    pub position: [u64; 2],
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -380,6 +401,8 @@ pub enum BundleError {
     InvalidPath,
     #[error("bundle record reference does not match its canonical identity")]
     ReferenceMismatch,
+    #[error("invalid session relationship: {0}")]
+    InvalidLink(&'static str),
     #[error("message projection has invalid original block positions")]
     InvalidBlockSelection,
     #[error("injection evidence does not match its source message or field")]
@@ -656,13 +679,10 @@ impl DocumentRecord {
 
 impl LinkRecord {
     pub fn reference(link: &Link) -> String {
-        // Only natural identity participates; later evidence can fill fields
-        // without changing the link's reference.
-        let key = serde_json::to_vec(&(link.kind, &link.parent, &link.child))
-            .expect("link keys serialize");
-        format!("link:{}", blake3::hash(&key).to_hex())
+        format!("link:{}", link.selection_tag())
     }
     pub fn validate(&self) -> Result<(), BundleError> {
+        self.link.validate().map_err(BundleError::InvalidLink)?;
         if self.reference != Self::reference(&self.link) {
             return Err(BundleError::ReferenceMismatch);
         }

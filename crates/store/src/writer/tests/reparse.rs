@@ -95,6 +95,8 @@ fn fixture(changed: bool) -> Vec<Batch> {
             parent: sid("main"),
             child: sid("child"),
             kind: LinkKind::Spawn,
+            copies_prefix: false,
+            how: None,
             at: None,
             call_id: None,
             evidence: b.input.id.clone(),
@@ -285,7 +287,7 @@ fn natural_rows(w: &TestArchive) -> Json {
         ),
         (
             "links",
-            "SELECT parent_id,child_id,kind,how,branch_point,spawning_call,evidence,i.id AS input,source_chain FROM link l JOIN input_ref i ON i.pk=l.input_pk ORDER BY parent_id,child_id,kind,how",
+            "SELECT parent_id,child_id,kind,how,branch_point,spawning_call,evidence,i.id AS input,source_chain FROM link l JOIN input_ref i ON i.pk=l.input_pk ORDER BY parent_id,child_id,kind,how,branch_point,spawning_call,evidence,input,source_chain",
         ),
         (
             "event_sources",

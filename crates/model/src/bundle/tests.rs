@@ -40,7 +40,7 @@ fn manifest() -> Manifest {
 fn bundle_header_refuses_earlier_and_newer_formats_before_contents() {
     let mut value = manifest();
     assert!(value.validate().is_ok());
-    for version in [0, 1, 3, u32::MAX] {
+    for version in [0, 1, 2, 4, u32::MAX] {
         value.version = version;
         assert_eq!(
             value.validate(),
@@ -140,6 +140,7 @@ fn message_record() -> MessageRecord {
         block_ordinals: vec![0, 1],
         injections: Vec::new(),
         bindings: Vec::new(),
+        copied_for: Vec::new(),
         message,
     }
 }
@@ -300,7 +301,7 @@ fn injected_field_evidence_keeps_message_identity_and_imports_as_declarations() 
 fn declared_blob_records_require_actual_blob_transfer() {
     let mut value: Manifest = serde_json::from_str(
         r#"{
-        "format":"polylogue-bundle","version":2,
+        "format":"polylogue-bundle","version":3,
         "query":"query:0000000000000000000000000000000000000000000000000000000000000000",
         "query_text":"synthetic","ran_at":"2026-01-01T00:00:00Z",
         "read_at":{"generation":"synthetic","index":0,"archive":0},

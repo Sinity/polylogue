@@ -19,11 +19,11 @@ CREATE TABLE session_item (
 CREATE INDEX session_item_message ON session_item(message_pk) WHERE message_pk IS NOT NULL;
 CREATE INDEX session_item_event ON session_item(event_pk) WHERE event_pk IS NOT NULL;
 -- A person's prompt (header kind 0, prompt author 2), a compaction (event kind 9) and a
--- microcompaction (event kind 11): the entries a reading finds by kind. The low six bits
+-- microcompaction (event kind 10): the entries a reading finds by kind. The low six bits
 -- of class are its kind and author.
 CREATE INDEX session_item_prompt ON session_item(session_pk, seq) WHERE class & 63 = 32;
 CREATE INDEX session_item_compaction ON session_item(session_pk, seq) WHERE class & 15 = 9;
-CREATE INDEX session_item_microcompaction ON session_item(session_pk, seq) WHERE class & 15 = 11;
+CREATE INDEX session_item_microcompaction ON session_item(session_pk, seq) WHERE class & 15 = 10;
 CREATE INDEX session_item_call ON session_item(session_pk, call_id) WHERE call_id IS NOT NULL;
 CREATE TABLE session_item_state (
   session_pk        INTEGER PRIMARY KEY REFERENCES session(pk),

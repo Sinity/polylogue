@@ -38,6 +38,8 @@ struct Counts {
     documents: u64,
     events: u64,
     links: u64,
+    prefix_copies: u64,
+    prefix_members: u64,
     background: u64,
     sessions: u64,
 }
@@ -170,6 +172,8 @@ fn scan_reader(parser: &Parse, mut reader: impl Read) -> Scanned {
             counts.documents += step.output.documents.len() as u64;
             counts.events += step.output.events.len() as u64;
             counts.links += step.output.links.len() as u64;
+            counts.prefix_copies += step.output.prefix_copies.len() as u64;
+            counts.prefix_members += step.output.prefix_members.len() as u64;
             counts.background += step.output.background.len() as u64;
             counts.sessions = counts.sessions.max(step.output.sessions.len() as u64);
         }
@@ -263,6 +267,8 @@ fn run(selection: input::Selection) -> (serde_json::Value, bool) {
         total.documents += result.counts.documents;
         total.events += result.counts.events;
         total.links += result.counts.links;
+        total.prefix_copies += result.counts.prefix_copies;
+        total.prefix_members += result.counts.prefix_members;
         total.background += result.counts.background;
         total.sessions += result.counts.sessions;
     }
@@ -280,7 +286,7 @@ fn run(selection: input::Selection) -> (serde_json::Value, bool) {
             "used": total.counts.used.values().sum::<u64>(),
             "skipped": total.counts.skipped.values().sum::<u64>(),
             "unreadable": total.counts.unreadable.values().sum::<u64>(),
-            "messages": total.messages, "documents": total.documents, "events": total.events, "links": total.links,
+            "messages": total.messages, "documents": total.documents, "events": total.events, "links": total.links, "prefix_copies": total.prefix_copies,"prefix_members":total.prefix_members,
             "background_updates": total.background, "sessions": total.sessions,
             "skipped_by_reason": top(&total.counts.skipped),
             "unreadable_by_reason": top(&total.counts.unreadable),

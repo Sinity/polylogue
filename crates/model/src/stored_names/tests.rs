@@ -114,13 +114,12 @@ fn block_kind_names_are_the_serde_tags() {
 
 #[test]
 fn link_names_cover_every_kind_once() {
-    assert_eq!(LINK_KIND_NAMES, ["continuation", "subagent"]);
     assert_eq!(
-        LINK_HOW_NAMES,
-        ["fork", "fresh", "after_compaction", "resume"]
+        LINK_KIND_NAMES,
+        ["spawn", "fork", "continuation", "resume", "reference"]
     );
-    for k in LinkKind::ALL {
-        let (kind, how) = k.columns();
-        assert_eq!(LinkKind::from_columns(kind, how), Some(*k));
+    assert_eq!(LINK_HOW_NAMES, ["briefing", "ping", "mention"]);
+    for kind in LinkKind::ALL {
+        assert_eq!(LinkKind::from_name(kind.as_str()), Some(*kind));
     }
 }

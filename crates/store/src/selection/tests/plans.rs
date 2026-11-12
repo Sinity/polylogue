@@ -221,7 +221,7 @@ fn parent_links_use_index() {
     let pool = f.reads().unwrap();
     let reader = pool.reader().unwrap();
     for sql in [
-        "SELECT parent_id FROM link WHERE child_id = ?1 AND kind = 'continuation' AND how IN ('fork', 'resume')",
+        "SELECT parent_id FROM session_link WHERE child_id = ?1 AND kind <> 'reference' AND (kind = 'fork' OR copies_prefix = 1)",
         "SELECT pk FROM link WHERE parent_id = ?1 OR child_id = ?1",
     ] {
         let steps = plan(&reader, sql);

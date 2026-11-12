@@ -12,10 +12,10 @@
 //! records sharing `message.id`, one per content block; they become one
 //! message. A message copied from another session (a resume replays the
 //! earlier history) keeps its ID and its original session, so it is stored
-//! once, and the copying session gets a `copy` link.
+//! once. Copying is recorded independently of explicit provider links.
 
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 7;
+pub const VERSION: u32 = 8;
 
 mod blocks;
 mod fields;
@@ -168,10 +168,16 @@ pub struct ParserState {
     open: Option<Response>,
     /// Recently closed responses that a late continuation may reopen.
     recent: VecDeque<Response>,
-    /// Links already sent, as `kind parent child`.
+    /// Exact link statements already sent.
     links: BTreeSet<String>,
+    #[serde(default)]
+    prefix_copies: BTreeSet<(SessionId, SessionId)>,
     /// The latest message, for placing events on the timeline.
     last: Option<MessageId>,
+    #[serde(default)]
+    compaction_pending: bool,
+    #[serde(default)]
+    compaction_ownership_reported: bool,
     /// Names the messages of records without a `uuid`.
     #[serde(default)]
     ids: crate::content_ids::ContentIds,
@@ -313,38 +319,51 @@ impl ClaudeCode {
         let record_session = self.record_session(v);
         let id = session_id(&record_session.native)?;
         let parent = str_field(v, "sessionId").and_then(session_id);
-        match (&self.file, record_session.kind) {
-            (File::Main { stem }, SessionKind::Main) if record_session.native != *stem => {
-                if let Some(child) = session_id(stem) {
-                    link(
-                        parser_state,
-                        out,
-                        LinkKind::Copy,
-                        id.clone(),
-                        child,
-                        "sessionId",
-                    );
-                }
+        if let Some(parent) = str_field(v, "resumeSessionId").and_then(session_id)
+            && parent != id
+        {
+            link(
+                parser_state,
+                out,
+                LinkKind::Resume,
+                parent,
+                id.clone(),
+                "resumeSessionId",
+            );
+        }
+        let copied_into = match (&self.file, record_session.kind) {
+            (File::Main { stem }, SessionKind::Main) => Some(stem),
+            (File::Subagent { stem }, SessionKind::Subagent)
+                if !stem.starts_with("agent-acompact") =>
+            {
+                Some(stem)
             }
-            (_, SessionKind::Sidechain)
-            | (File::Subagent { .. }, SessionKind::Subagent | SessionKind::Compaction) => {
-                if let Some(parent) = parent.filter(|p| *p != id) {
-                    let evidence = match record_session.kind {
-                        SessionKind::Sidechain => "isSidechain",
-                        SessionKind::Compaction => "agentId acompact",
-                        _ => "agentId",
-                    };
-                    link(
-                        parser_state,
-                        out,
-                        LinkKind::Spawn,
-                        parent,
-                        id.clone(),
-                        evidence,
-                    );
-                }
-            }
-            _ => {}
+            _ => None,
+        };
+        if let Some(stem) = copied_into
+            && record_session.native != *stem
+            && let Some(child) = session_id(stem)
+            && parser_state
+                .prefix_copies
+                .insert((id.clone(), child.clone()))
+        {
+            out.prefix_copies.push(polylogue_model::PrefixCopy {
+                explicit_members: false,
+                parent: id.clone(),
+                child,
+            });
+        }
+        if record_session.kind == SessionKind::Sidechain
+            && let Some(parent) = parent.filter(|parent| *parent != id)
+        {
+            link(
+                parser_state,
+                out,
+                LinkKind::Spawn,
+                parent,
+                id.clone(),
+                "isSidechain",
+            );
         }
         let s = parser_state
             .sessions
@@ -474,10 +493,46 @@ impl ClaudeCode {
                 at_until: time_evidence.until,
                 after: parser_state.last.clone(),
                 range: Some(range(record)),
-                data: v.clone(),
+                data: context_boundary(kind, v),
             }
         });
         RecordOutcome::Used
+    }
+
+    fn compaction_summary(
+        &self,
+        parser_state: &mut ParserState,
+        record: Record<'_>,
+        value: &Json,
+        out: &mut Output,
+        records: &mut Records,
+    ) -> RecordOutcome {
+        close(parser_state, out);
+        let boundary = if parser_state.compaction_pending {
+            None
+        } else {
+            let index = out.events.len();
+            if self.event(parser_state, record, value, "compaction", out) != RecordOutcome::Used {
+                return RecordOutcome::unreadable("compaction has no session");
+            }
+            Some(index)
+        };
+        let mut value = value.clone();
+        value["isCompactSummary"] = Json::Bool(true);
+        if value.get("message").is_none() {
+            value["message"] =
+                serde_json::json!({"content":value.get("summary").cloned().unwrap_or(Json::Null)});
+        }
+        let outcome = self.message(parser_state, record, &value, Role::User, out, records);
+        if let Some(index) = boundary {
+            out.events[index].data = serde_json::to_value(polylogue_model::CompactionBoundary {
+                summary: parser_state.last.clone(),
+                ..Default::default()
+            })
+            .expect("boundary is JSON");
+        }
+        parser_state.compaction_pending = false;
+        outcome
     }
 
     fn hook_summary(
@@ -517,7 +572,8 @@ impl ClaudeCode {
             // This sidecar cites native fields, not an authored claim in the
             // message. Admission determines whether they were observed locally
             // or merely declared by an import; neither changes the message hash.
-            if !context_blocks.is_empty() {
+            let injected_context = !context_blocks.is_empty();
+            if injected_context {
                 out.native_hook_fields.insert(
                     out.messages.len(),
                     context_blocks
@@ -549,7 +605,11 @@ impl ClaudeCode {
                         at_precision: time_evidence.precision,
                         at_until: time_evidence.until,
                         model: None,
-                        prompt_kind: Some(PromptKind::Harness),
+                        prompt_kind: Some(if injected_context {
+                            PromptKind::InjectedContext
+                        } else {
+                            PromptKind::Harness
+                        }),
                         blocks,
                         usage: Usage::default(),
                         stop_reason: None,
@@ -764,11 +824,11 @@ impl ClaudeCode {
                     at_precision: time_evidence.precision,
                     at_until: time_evidence.until,
                     model,
-                    prompt_kind: Some(if harness {
-                        PromptKind::Harness
+                    prompt_kind: if harness {
+                        Some(PromptKind::Harness)
                     } else {
                         self.prompt_kind(v, content)
-                    }),
+                    },
                     blocks,
                     usage,
                     stop_reason,
@@ -832,23 +892,26 @@ impl ClaudeCode {
         self.event(parser_state, record, v, kind, out)
     }
 
-    /// Who wrote a user record. A subagent transcript's root record (no
-    /// parent) is the task its parent model wrote; a compaction call's is
-    /// the harness's summarizing instruction.
-    fn prompt_kind(&self, v: &Json, content: &Json) -> PromptKind {
-        let kind = blocks::prompt_kind(v, content);
-        match &self.file {
-            File::Subagent { stem }
-                if kind == PromptKind::Prose && str_field(v, "parentUuid").is_none() =>
-            {
-                if stem.starts_with("agent-acompact") {
-                    PromptKind::Harness
-                } else {
-                    PromptKind::Model
-                }
-            }
-            _ => kind,
+    /// Native authorship markers win. Unmarked prose in an unknown
+    /// compaction carrier does not establish who originally wrote it.
+    fn prompt_kind(&self, v: &Json, content: &Json) -> Option<PromptKind> {
+        if v.get("isCompactSummary").and_then(Json::as_bool) == Some(true) {
+            return Some(PromptKind::CompactionSummary);
         }
+        let kind = blocks::prompt_kind(v, content);
+        let human = v.pointer("/origin/kind").and_then(Json::as_str) == Some("human");
+        let owner = self.record_session(v).kind;
+        if kind == PromptKind::Prose && owner == SessionKind::Compaction && !human {
+            return None;
+        }
+        if kind == PromptKind::Prose
+            && owner == SessionKind::Subagent
+            && !human
+            && str_field(v, "parentUuid").is_none()
+        {
+            return Some(PromptKind::Model);
+        }
+        Some(kind)
     }
 
     fn title(
@@ -893,11 +956,12 @@ fn link_at(
     call_id: Option<String>,
     evidence: &str,
 ) {
-    // A later record may add the branch point; the writer merges them.
-    let key = format!("{kind:?} {parent} {child} {}", at.is_some());
+    let key = format!("{kind:?} {parent} {child} {at:?} {call_id:?}");
     if parser_state.links.insert(key) {
         out.links.push(Link {
             kind,
+            copies_prefix: evidence == "fork-context-ref",
+            how: None,
             parent,
             child,
             at,
@@ -1034,6 +1098,68 @@ fn production(v: &Json, msg: &Json) -> Production {
         request_id: s("requestId"),
         turn_origin: s("turnOrigin"),
         quota: v.get("quotaLimits").and_then(quota),
+    }
+}
+
+fn context_boundary(kind: &str, value: &Json) -> Json {
+    let strings = |pointer: &str| {
+        value
+            .pointer(pointer)
+            .and_then(Json::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Json::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    match kind {
+        "compaction" => serde_json::to_value(polylogue_model::CompactionBoundary {
+            pre_tokens: value
+                .pointer("/compactMetadata/preTokens")
+                .and_then(Json::as_u64),
+            post_tokens: value
+                .pointer("/compactMetadata/postTokens")
+                .and_then(Json::as_u64),
+            trigger: value
+                .pointer("/compactMetadata/trigger")
+                .and_then(Json::as_str)
+                .map(str::to_owned),
+            kept: value
+                .pointer("/compactMetadata/preservedMessages/uuids")
+                .and_then(Json::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Json::as_str)
+                .filter_map(message_id)
+                .collect(),
+            kept_range: value
+                .pointer("/compactMetadata/preservedSegment")
+                .and_then(|segment| {
+                    Some(polylogue_model::KeptRange {
+                        first: segment.get("headUuid")?.as_str().and_then(message_id)?,
+                        last: segment.get("tailUuid")?.as_str().and_then(message_id)?,
+                    })
+                }),
+            kept_after: value
+                .pointer("/compactMetadata/preservedMessages/anchorUuid")
+                .or_else(|| value.pointer("/compactMetadata/preservedSegment/anchorUuid"))
+                .and_then(Json::as_str)
+                .and_then(message_id),
+            ..Default::default()
+        })
+        .expect("boundary is JSON"),
+        "microcompaction" => serde_json::to_value(polylogue_model::MicrocompactionBoundary {
+            tokens_saved: value
+                .pointer("/microcompactMetadata/tokensSaved")
+                .and_then(Json::as_u64),
+            removed_calls: strings("/microcompactMetadata/compactedToolIds"),
+            removed_attachments: strings("/microcompactMetadata/clearedAttachmentUUIDs"),
+        })
+        .expect("boundary is JSON"),
+        _ => value.clone(),
     }
 }
 
@@ -1308,8 +1434,7 @@ impl Parser for ClaudeCode {
         }
         let hook = (ty == "system" && str_field(v, "subtype") == Some("stop_hook_summary"))
             .then(|| hook_text(v));
-        let message_record = (matches!(ty, "user" | "assistant")
-            && v.get("isCompactSummary").and_then(Json::as_bool) != Some(true))
+        let message_record = matches!(ty, "user" | "assistant" | "summary")
             || hook
                 .as_ref()
                 .is_some_and(|summary| !summary.blocks.is_empty());
@@ -1323,6 +1448,19 @@ impl Parser for ClaudeCode {
             parser_state.alias(uuid, target);
         }
         self.names(parser_state, record, v, out);
+        if self.record_session(v).kind == SessionKind::Compaction
+            && !parser_state.compaction_ownership_reported
+        {
+            let session = self.own_session(parser_state);
+            let (at, evidence) = crate::time::parts(v.get("timestamp").and_then(time::rfc3339));
+            out.events.push(Event {
+                session, kind: "compaction_ownership_unknown".into(),
+                at, at_quality: evidence.quality, at_precision: evidence.precision,
+                at_until: evidence.until, after: None, range: Some(range(record)),
+                data: serde_json::json!({"reason":"compactor identity and root carrier do not establish which work session owns the replay"}),
+            });
+            parser_state.compaction_ownership_reported = true;
+        }
         if matches!(ty, "summary" | "custom-title" | "ai-title") {
             records.fields(ty, v, &fields::TITLE_FIELDS);
         }
@@ -1331,7 +1469,7 @@ impl Parser for ClaudeCode {
         }
         match ty {
             "user" if v.get("isCompactSummary").and_then(Json::as_bool) == Some(true) => {
-                self.event(parser_state, record, v, "compaction_summary", out)
+                self.compaction_summary(parser_state, record, v, out, records)
             }
             "user" => self.message(parser_state, record, v, Role::User, out, records),
             "assistant" => self.message(parser_state, record, v, Role::Assistant, out, records),
@@ -1343,8 +1481,18 @@ impl Parser for ClaudeCode {
                     hook.expect("recognized stop-hook summary"),
                     out,
                 ),
-                Some("compact_boundary") => self.event(parser_state, record, v, "compaction", out),
+                Some("compact_boundary") => {
+                    records.fields("system/compact_boundary", v, &fields::COMPACTION_FIELDS);
+                    close(parser_state, out);
+                    parser_state.compaction_pending = true;
+                    self.event(parser_state, record, v, "compaction", out)
+                }
                 Some("microcompact_boundary") => {
+                    records.fields(
+                        "system/microcompact_boundary",
+                        v,
+                        &fields::COMPACTION_FIELDS,
+                    );
                     self.event(parser_state, record, v, "microcompaction", out)
                 }
                 Some(sub) => self.event(parser_state, record, v, &sub.replace('-', "_"), out),
@@ -1413,7 +1561,12 @@ impl Parser for ClaudeCode {
             }
             "custom-title" => self.title(parser_state, v, "customTitle", TitleSource::Custom),
             "ai-title" => self.title(parser_state, v, "aiTitle", TitleSource::Generated),
-            "summary" => self.title(parser_state, v, "summary", TitleSource::Summary),
+            "summary" => {
+                if v.get("summary").is_some() {
+                    self.title(parser_state, v, "summary", TitleSource::Summary);
+                }
+                self.compaction_summary(parser_state, record, v, out, records)
+            }
             "continued-in" => {
                 let (Some(parent), Some(child)) = (
                     self.own_session(parser_state),

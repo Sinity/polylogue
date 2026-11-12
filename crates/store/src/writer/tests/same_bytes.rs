@@ -17,6 +17,16 @@ fn document(body: &str) -> Document {
 /// Chain `number` of input `doc`, holding `fill` bytes and, when `parsed`,
 /// its reading: one document named by those bytes.
 fn chain(w: &TestArchive, number: u64, fill: u8, parsed: bool) {
+    chain_with_member(w, number, fill, parsed, None);
+}
+
+fn chain_with_member(
+    w: &TestArchive,
+    number: u64,
+    fill: u8,
+    parsed: bool,
+    member: Option<polylogue_model::PrefixMember>,
+) {
     let mut batch = batch("doc", Route::Live, 0, Vec::new(), &[]);
     batch.input.format = "claude-ai".into();
     if number > 1 {
@@ -28,6 +38,7 @@ fn chain(w: &TestArchive, number: u64, fill: u8, parsed: bool) {
             end: 100,
             document: document(&(fill as char).to_string()),
         });
+        batch.parse[0].output.prefix_members.extend(member);
         batch.parse[0].counts = counts(1);
     } else {
         batch.parse.clear();
@@ -177,6 +188,58 @@ fn a_copied_document_source_equals_its_parse_and_is_not_shown() {
                 newer_admitted.map(|n| n as u64),
                 "{body}"
             );
+        }
+    }
+}
+
+#[test]
+fn reading_copies_preserve_portable_members_and_reparse_chain_owned_members() {
+    for native in [false, true] {
+        let w = test_archive();
+        chain(&w, 1, b'a', false);
+        let member = polylogue_model::PrefixMember {
+            parent: polylogue_model::SessionId::parse("test:parent").unwrap(),
+            child: polylogue_model::SessionId::parse("test:child").unwrap(),
+            message: polylogue_model::MessageId::parse("test:copied").unwrap(),
+            source: (!native).then(|| polylogue_model::PrefixSource {
+                input: "original".into(),
+                chain: 7,
+                reading_version: "original=1".into(),
+            }),
+            position: [u64::MAX, 2],
+        };
+        chain_with_member(&w, 2, b'a', true, Some(member));
+        let result = w
+            .writer
+            .sender()
+            .unwrap()
+            .copy_readings(vec![crate::ReadingCopy {
+                input: "doc".into(),
+                from: 2,
+                to: 1,
+                reading_version: "synthetic=1".into(),
+            }])
+            .unwrap();
+        assert!(
+            matches!(result.as_slice(), [Ok(copied)] if *copied != native),
+            "{result:?}"
+        );
+        let pool = ReadPool::open(&w.archive).unwrap();
+        let reader = pool.reader().unwrap();
+        let members = reader
+            .query(
+                "SELECT chain,source_input,source_chain,sequence FROM prefix_member ORDER BY chain",
+                &[],
+            )
+            .unwrap();
+        assert_eq!(members.len(), if native { 1 } else { 2 });
+        for member in members {
+            assert_eq!(
+                member["source_input"],
+                if native { "doc" } else { "original" }
+            );
+            assert_eq!(member["source_chain"], if native { 2 } else { 7 });
+            assert_eq!(member["sequence"], u64::MAX.to_string());
         }
     }
 }

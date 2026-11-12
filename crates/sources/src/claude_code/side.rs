@@ -6,7 +6,7 @@
 //! (a `plan` event from the transcript).
 
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 use super::{ROOT, session_id};
 use crate::lines::Record;
@@ -302,7 +302,9 @@ fn job_state(bytes: &[u8], len: usize, out: &mut Output) -> RecordOutcome {
         .and_then(session_id)
     {
         out.links.push(Link {
-            kind: LinkKind::Continuation,
+            kind: LinkKind::Resume,
+            copies_prefix: false,
+            how: None,
             parent,
             child: id,
             at: None,
@@ -331,6 +333,8 @@ fn spawn_link(stem: &str, session: Option<&str>, v: &Json, out: &mut Output) {
     }
     out.links.push(Link {
         kind: LinkKind::Spawn,
+        copies_prefix: false,
+        how: None,
         parent,
         child,
         at: None,

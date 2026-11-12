@@ -416,6 +416,14 @@ fn a_subagents_copied_history_is_stored_once_in_the_parent() {
     ];
     let mut parser_state = ParserState::default();
     let step = run(&rollout(), &mut parser_state, &jsonl(&records), 0).unwrap();
+    assert_eq!(
+        step.output.prefix_copies,
+        [polylogue_model::PrefixCopy {
+            parent: SessionId::parse(&format!("codex:{PARENT}")).unwrap(),
+            child: SessionId::parse(&format!("codex:{THREAD}")).unwrap(),
+            explicit_members: false,
+        }]
+    );
     let msgs = final_messages(std::slice::from_ref(&step));
     let placed: Vec<_> = msgs
         .iter()
@@ -700,6 +708,91 @@ fn native_background_modern_and_legacy_completion_keep_their_clock_evidence() {
         assert_eq!(
             update.result_at_evidence,
             TimeEvidence::intrinsic(Precision::Instant)
+        );
+    }
+}
+
+#[test]
+fn resumed_rollout_records_the_provider_session_relation() {
+    let records = [meta(json!({})), meta(json!({"id": PARENT}))];
+    let mut state = ParserState::default();
+    let out = run(&rollout(), &mut state, &jsonl(&records), 0)
+        .unwrap()
+        .output;
+    let [link] = out.links.as_slice() else {
+        panic!("{:?}", out.links)
+    };
+    assert_eq!(link.kind, LinkKind::Resume);
+    assert_eq!(link.parent.native().as_str(), PARENT);
+    assert_eq!(link.child.native().as_str(), THREAD);
+    assert!(!link.copies_prefix);
+}
+
+#[test]
+fn copied_history_anchor_survives_split_appends_without_claiming_other_parents() {
+    let fork = "fork-source";
+    let records = [
+        meta(json!({"thread_source":"subagent","parent_thread_id":PARENT,
+            "forked_from_id":fork,"subagent_history_start_ordinal":4})),
+        env(
+            2,
+            "response_item",
+            json!({"type":"message","id":"copied-first","role":"user",
+            "content":[{"type":"input_text","text":"first copied context"}]}),
+        ),
+        env(
+            3,
+            "response_item",
+            json!({"type":"message","id":"copied-last","role":"assistant",
+            "content":[{"type":"output_text","text":"last copied context"}]}),
+        ),
+        user(4, "own task"),
+    ];
+    let input = jsonl(&records);
+    for cut in [
+        0,
+        jsonl(&records[..1]).len(),
+        jsonl(&records[..2]).len(),
+        jsonl(&records[..3]).len(),
+    ] {
+        let mut state = ParserState::default();
+        let first = run(&rollout(), &mut state, &input[..cut], 0).unwrap();
+        assert!(!first.output.links.iter().any(|link| {
+            link.at
+                .as_ref()
+                .is_some_and(|id| id.native().as_str() == "copied-first")
+        }));
+        let mut state: ParserState =
+            serde_json::from_value(serde_json::to_value(state).unwrap()).unwrap();
+        let second = run(&rollout(), &mut state, &input[cut..], cut as u64).unwrap();
+        let links: Vec<_> = first
+            .output
+            .links
+            .iter()
+            .chain(&second.output.links)
+            .collect();
+        let anchored: Vec<_> = links.iter().filter(|link| link.at.is_some()).collect();
+        assert_eq!(anchored.len(), 1, "cut {cut}");
+        assert_eq!(anchored[0].kind, LinkKind::Fork);
+        assert_eq!(anchored[0].parent.native().as_str(), fork);
+        assert_eq!(
+            anchored[0].at.as_ref().unwrap().native().as_str(),
+            "copied-last"
+        );
+        assert!(anchored[0].copies_prefix);
+        assert!(
+            links
+                .iter()
+                .filter(|link| link.kind == LinkKind::Spawn)
+                .all(|link| link.at.is_none() && !link.copies_prefix)
+        );
+        assert_eq!(second.output.sessions[0].kind, SessionKind::Subagent);
+        assert!(
+            run(&rollout(), &mut state, b"", input.len() as u64)
+                .unwrap()
+                .output
+                .links
+                .is_empty()
         );
     }
 }

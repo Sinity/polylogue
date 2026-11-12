@@ -62,6 +62,8 @@ impl PreparedRows {
             (&output.session_receipts, output.sessions.len()),
             (&output.document_receipts, output.documents.len()),
             (&output.link_receipts, output.links.len()),
+            (&output.prefix_copy_receipts, output.prefix_copies.len()),
+            (&output.prefix_member_receipts, output.prefix_members.len()),
         ] {
             for (&index, &receipt) in receipts {
                 if index >= length || receipt == 0 || i64::try_from(receipt).is_err() {
@@ -69,6 +71,15 @@ impl PreparedRows {
                         "invalid canonical admission receipt".into(),
                     ));
                 }
+            }
+        }
+        for member in &output.prefix_members {
+            if member.source.as_ref().is_some_and(|source| {
+                source.input.is_empty() || source.chain < 1 || source.reading_version.is_empty()
+            }) {
+                return Err(StoreError::Invalid(
+                    "copied-prefix member has no exact source reading".into(),
+                ));
             }
         }
         for (&index, &receipt) in &output.event_receipts {

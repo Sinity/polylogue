@@ -166,20 +166,19 @@ fn copied_history_stays_in_its_original_session() {
     let out = &step.output;
     assert_eq!(out.messages[0].message.session.native().as_str(), "s1");
     assert_eq!(out.messages[1].message.session.native().as_str(), "s2");
-    assert_eq!(out.links.len(), 1);
-    let l = &out.links[0];
+    assert!(out.links.is_empty());
     assert_eq!(
-        (
-            l.kind,
-            l.parent.native().as_str(),
-            l.child.native().as_str()
-        ),
-        (LinkKind::Copy, "s1", "s2")
+        out.prefix_copies,
+        [polylogue_model::PrefixCopy {
+            explicit_members: false,
+            parent: session_id("s1").unwrap(),
+            child: session_id("s2").unwrap(),
+        }]
     );
 }
 
 #[test]
-fn subagent_and_sidechain_sessions_link_to_their_parent() {
+fn a_subagent_keeps_its_owner_and_only_a_native_sidechain_marker_links_its_carrier() {
     let sub = ClaudeCode {
         file: File::Subagent {
             stem: "agent-x1".into(),
@@ -198,9 +197,8 @@ fn subagent_and_sidechain_sessions_link_to_their_parent() {
         "agent-x1"
     );
     assert_eq!(out.sessions[0].kind, SessionKind::Subagent);
-    assert_eq!(out.links[0].kind, LinkKind::Spawn);
-    assert_eq!(out.links[0].parent.native().as_str(), "s1");
-    assert_eq!(out.links[0].evidence, "agentId");
+    assert!(out.links.is_empty());
+    assert_eq!(out.messages[0].message.prompt_kind, Some(PromptKind::Model));
 
     let records = vec![
         json!({"type":"user","uuid":"u","sessionId":"s1","isSidechain":true,
@@ -526,5 +524,158 @@ fn a_context_backend_error_rejects_the_entire_parse_before_rows_are_published() 
     )]);
     assert!(
         matches!(parser.step(None,&bytes,0,&context),Err(crate::ParseError::Context(error)) if error=="unavailable selected context")
+    );
+}
+
+#[test]
+fn explicit_resume_and_distinct_fork_points_survive_source_deduplication() {
+    let records = vec![
+        json!({"type":"user","uuid":"a","sessionId":"child","resumeSessionId":"prior",
+            "forkedFrom":{"sessionId":"parent","messageUuid":"first"},
+            "message":{"role":"user","content":"first branch observation"}}),
+        json!({"type":"user","uuid":"b","sessionId":"child",
+            "forkedFrom":{"sessionId":"parent","messageUuid":"second"},
+            "message":{"role":"user","content":"second branch observation"}}),
+    ];
+    let mut state = ParserState::default();
+    let out = run(&main_file("child"), &mut state, &jsonl(&records), 0)
+        .unwrap()
+        .output;
+    let resume = out
+        .links
+        .iter()
+        .find(|l| l.kind == LinkKind::Resume)
+        .unwrap();
+    assert_eq!(resume.parent.native().as_str(), "prior");
+    assert_eq!(resume.child.native().as_str(), "child");
+    assert!(!resume.copies_prefix);
+    let anchors: Vec<_> = out
+        .links
+        .iter()
+        .filter(|l| l.kind == LinkKind::Fork)
+        .map(|l| l.at.as_ref().unwrap().native().as_str())
+        .collect();
+    assert_eq!(anchors, ["first", "second"]);
+}
+
+#[test]
+fn inline_compaction_keeps_one_summary_message_and_normalized_kept_coordinates() {
+    let records = [
+        json!({"type":"user","uuid":"first","sessionId":"s1","message":{"content":"original"}}),
+        json!({"type":"system","subtype":"compact_boundary","uuid":"boundary","sessionId":"s1",
+            "logicalParentUuid":"first","compactMetadata":{"trigger":"auto","preTokens":182000,"postTokens":14500,
+            "preservedSegment":{"headUuid":"first","tailUuid":"first","anchorUuid":"summary"}}}),
+        json!({"type":"user","uuid":"summary","parentUuid":"boundary","sessionId":"s1","isCompactSummary":true,
+            "message":{"content":"Known compressed context."}}),
+    ];
+    let out = run(
+        &main_file("s1"),
+        &mut ParserState::default(),
+        &jsonl(&records),
+        0,
+    )
+    .unwrap()
+    .output;
+    assert_eq!(
+        out.messages
+            .iter()
+            .map(|row| row.message.id.to_string())
+            .collect::<Vec<_>>(),
+        ["claude-code:first", "claude-code:summary"]
+    );
+    let summary = &out.messages[1].message;
+    assert_eq!(summary.text(), "Known compressed context.");
+    assert_eq!(summary.prompt_kind, Some(PromptKind::CompactionSummary));
+    assert_eq!(
+        polylogue_model::WrittenBy::of(summary),
+        polylogue_model::WrittenBy::Harness
+    );
+    assert_eq!(
+        summary.parent.as_ref().unwrap().to_string(),
+        "claude-code:first"
+    );
+    let events: Vec<_> = out
+        .events
+        .iter()
+        .filter(|event| event.kind == "compaction")
+        .collect();
+    assert_eq!(events.len(), 1);
+    let boundary: polylogue_model::CompactionBoundary =
+        serde_json::from_value(events[0].data.clone()).unwrap();
+    assert_eq!(
+        (
+            boundary.pre_tokens,
+            boundary.post_tokens,
+            boundary.trigger.as_deref()
+        ),
+        (Some(182000), Some(14500), Some("auto"))
+    );
+    let kept = boundary.kept_range.unwrap();
+    assert_eq!(
+        (kept.first.to_string(), kept.last.to_string()),
+        ("claude-code:first".into(), "claude-code:first".into())
+    );
+    assert_eq!(
+        boundary.kept_after.unwrap().to_string(),
+        "claude-code:summary"
+    );
+}
+
+#[test]
+fn a_nested_agent_carrier_does_not_invent_an_immediate_parent() {
+    let parser = ClaudeCode {
+        file: File::Subagent {
+            stem: "agent-nested".into(),
+        },
+    };
+    let records = [
+        json!({"type":"user","uuid":"task","sessionId":"root-carrier","agentId":"nested",
+        "isSidechain":true,"message":{"content":"A delegated task"}}),
+    ];
+    let out = run(&parser, &mut ParserState::default(), &jsonl(&records), 0)
+        .unwrap()
+        .output;
+    assert!(out.links.is_empty());
+    assert_eq!(
+        out.messages[0].message.session.to_string(),
+        "claude-code:agent-nested"
+    );
+    assert_eq!(out.messages[0].message.prompt_kind, Some(PromptKind::Model));
+}
+
+#[test]
+fn rewritten_compactor_markers_report_unknown_work_ownership() {
+    let parser = ClaudeCode {
+        file: File::Subagent {
+            stem: "agent-acompact-one".into(),
+        },
+    };
+    let records = [
+        json!({"type":"user","uuid":"replayed","sessionId":"root-carrier",
+        "agentId":"acompact-one","isSidechain":true,"message":{"content":"retained context"}}),
+    ];
+    let out = run(&parser, &mut ParserState::default(), &jsonl(&records), 0)
+        .unwrap()
+        .output;
+    assert!(out.links.is_empty());
+    let issue = out
+        .events
+        .iter()
+        .find(|event| event.kind == "compaction_ownership_unknown")
+        .unwrap();
+    assert!(
+        issue.data["reason"]
+            .as_str()
+            .unwrap()
+            .contains("do not establish")
+    );
+    assert_eq!(
+        out.messages[0].message.session.to_string(),
+        "claude-code:agent-acompact-one"
+    );
+    assert_eq!(out.messages[0].message.prompt_kind, None);
+    assert_eq!(
+        polylogue_model::WrittenBy::of(&out.messages[0].message),
+        polylogue_model::WrittenBy::Unknown
     );
 }

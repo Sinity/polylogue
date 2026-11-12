@@ -52,7 +52,16 @@
         "after": "codex:msg-user-2",
         "at": "2025-01-15T12:05:00Z",
         "data": {
-          "message": "Conversation compacted",
+          "summary": "codex:interleaved-session-1~user-7979a364539472d8-0",
+          "pre_tokens": null,
+          "post_tokens": null,
+          "trigger": null,
+          "evicted": [],
+          "kept": [
+            "codex:summary-1"
+          ],
+          "kept_range": null,
+          "kept_after": null,
           "replacement_history": [
             {
               "id": "summary-1"
@@ -69,7 +78,7 @@
         "at_precision": "second"
       },
       {
-        "after": "codex:msg-user-2",
+        "after": "codex:interleaved-session-1~user-7979a364539472d8-0",
         "data": {
           "turn_context": {
             "cwd": "/repo/other"
@@ -280,6 +289,26 @@
           "at_precision": "second"
         },
         "offset": 1321
+      },
+      {
+        "offset": 1493,
+        "end": 1638,
+        "message": {
+          "id": "codex:interleaved-session-1~user-7979a364539472d8-0",
+          "session": "codex:interleaved-session-1",
+          "role": "user",
+          "prompt_kind": "compaction_summary",
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Conversation compacted"
+            }
+          ],
+          "at": "2025-01-15T12:05:00Z",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
+        },
+        "id_kind": "content"
       }
     ],
     "sessions": [

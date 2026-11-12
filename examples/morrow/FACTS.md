@@ -22,7 +22,7 @@ Times below are local. Working directory for agent sessions:
 | 1 | `claude-code:7f3a2c10-0001-4000-8000-000000000001` | claude-code | main | 2026-10-01 09:00–09:42 | "Project skeleton" (`ai-title`) | claude-fable-5-1 | 12 | 3 |
 | 2 | `claude-code:7f3a2c10-0002-4000-8000-000000000002` | claude-code | main | 2026-10-02 10:00–11:15 | "Date parsing" | claude-fable-5-1 | 18 | 3 |
 | 3 | `claude-code:agent-a7f3a2c1000000003` | claude-code | subagent of #2 | 2026-10-02 10:20–10:26 | — | claude-opus-5-5 | 6 | 0 |
-| 4 | `claude-code:7f3a2c10-0004-4000-8000-000000000004` | claude-code | main (continuation, resume, of #2) | 2026-10-03 14:00–15:10 | "Date parsing" | claude-fable-5-1 | 10 own + 18 inherited | 3 |
+| 4 | `claude-code:7f3a2c10-0004-4000-8000-000000000004` | claude-code | main (continuation, resume, of #2) | 2026-10-03 14:00–15:10 | "Date parsing" | claude-fable-5-1 | 11 own (including one harness summary) + 18 inherited | 3 |
 | 5 | `codex:01a20000-0005-7000-8000-000000000005` | codex | main | 2026-10-05 16:00–16:35 | "Review parser" (thread name, from `state_5.sqlite`) | gpt-6.1-sol | 13 | 2 |
 | 6 | `codex:01a20000-0006-7000-8000-000000000006` | codex | main (continuation, fork, of #5) | 2026-10-06 09:30–09:50 | "Review parser (try strict mode)" | gpt-6.1-sol | 10 | 1 |
 | 7 | `chatgpt:68f0a1b2-0007-8000-8000-000000000007` | chatgpt | chat | 2026-10-04 21:00–21:20 | "Date format edge cases" | gpt-6 | 6 on active path, 2 on an abandoned branch | 3 |
@@ -57,7 +57,7 @@ The testkit and query tests read these files through the real parsers.
   as Claude Code does; it is one message, and its usage counts once.
 - **#3** (subagent) reads docs with WebFetch ×2 and Read ×2, all `ok`,
   returns a summary.
-- **#4** resumes #2 the next day (its file starts with the 18 messages of #2,
+- **#4** starts with a copied prefix of #2 the next day (18 messages of #2,
   same IDs). Contains a **compaction** at 14:40 (manual, 182,000 → 14,500
   tokens). Adds `parse_absolute()`. One Bash `cargo clippy` with exit 1
   (`error`), then fixed (`ok`) by an edit to `src/parse.rs`; `src/lib.rs`
@@ -119,8 +119,9 @@ to the daemon in three stages, as a live session grows:
 | 15:12:00 | the last record, "Thanks, done for today." at 15:10:00 | a third piece; the whole file |
 
 So `evidence_until:2026-10-03T14:30` shows #4 with 3 own messages, and
-`evidence_until:2026-10-03T15:00` shows it with the compaction and 5 own messages
-(the boundary and summary are an event, not messages).
+`evidence_until:2026-10-03T15:00` shows it with the compaction and 6 own messages
+(the boundary is an event; its summary is one harness message, as in
+[sessions.md](../../docs/sessions.md#compaction-boundaries)).
 
 ## Tokens and cost
 
@@ -180,7 +181,7 @@ unchanged. Time: 2026-10-08, local. "L1" etc. are names used here only.
 
 | Name | Session ID | What it is | Own msgs | Copies counted elsewhere | Human | Own cost | Tree cost |
 |---|---|---|---|---|---|---|---|
-| L1 | `claude-code:7f3a2c10-0101-4000-8000-000000000101` | main, "Release checklist", 08:00–08:40; also present as a byte prefix under a second project folder, `-home-op-morrow-old` | 10 | 0 | 2 | 0.76 | 0.99 |
+| L1 | `claude-code:7f3a2c10-0101-4000-8000-000000000101` | main, "Release checklist", 08:00–08:40; also present as a byte prefix under a second project folder, `-home-op-morrow-old` | 10 | 0 | 2 | 0.76 | 0.94 |
 | L1-side | `claude-code:7f3a2c10-0101-4000-8000-000000000101~side-d1500000-0000-4000-8000-000000000001` | older-layout sidechain inside L1's file (no `agentId`), answering L1's `Task` call `toolu_1102` | 2 | 0 | 0 | 0.03 | 0.03 |
 | L2 | `claude-code:7f3a2c10-0101-4000-8000-000000000101/a7f3a2c1000000102` | subagent of L1, spawned by `toolu_1101` (meta `toolUseId`) | 6 | 0 | 0 | 0.10 | 0.15 |
 | L3 | `claude-code:7f3a2c10-0101-4000-8000-000000000101/a7f3a2c1000000103` | nested subagent of L2 (meta `parentAgentId`, `spawnDepth: 2`, `toolUseId: toolu_1201`) | 4 | 0 | 0 | 0.05 | 0.05 |
@@ -192,34 +193,36 @@ unchanged. Time: 2026-10-08, local. "L1" etc. are names used here only.
 
 "Own msgs" counts the messages counted in the session (`counted_as` null); "Copies counted elsewhere" counts its copies whose source is stored (`session_facts.inherited_messages`). L8's three copies carry `inherited_from` but count as its own, since their source is absent (`spec/model.md`).
 
-Links (kind, `how`, evidence):
+Provider links (`how` is absent for provider relationships):
 
-| Parent | Child | Kind | `how` | Evidence | Spawning call |
-|---|---|---|---|---|---|
-| #2 | #3 | subagent | fresh | `folder` | `toolu_0203` (from #2's `toolUseResult.agentId`; #3's meta has no `toolUseId`) |
-| #2 | #4 | continuation | resume | `copied-sessionId` | — |
-| #5 | #6 | continuation | fork | `forked_from_id` (Codex) | — |
-| L1 | L2 | subagent | fresh | `folder` | `toolu_1101` |
-| L2 | L3 | subagent | fresh | `meta.parentAgentId` | `toolu_1201` |
-| L1 | L4 | subagent | fresh | `folder` | none (stored without a block) |
-| L2 | L4 | continuation | resume | `copied-agentId` | — |
-| L1 | L1-side | subagent | fresh | `isSidechain` | `toolu_1102` |
-| L1 | L5 | continuation | fork | `forkedFrom` | — |
-| L5 | L6, L7 | subagent | fresh | `folder` | `toolu_1501`, `toolu_1502` |
-| `claude-code:7f3a2c10-0199-…` | L8 | continuation | resume (pending: parent not in the archive) | `copied-sessionId` | — |
+| Parent | Child | Kind | Evidence | Spawning call |
+|---|---|---|---|---|
+| #2 | #3 | spawn | `toolUseResult.agentId` | `toolu_0203` (from #2's `toolUseResult.agentId`; #3's meta has no `toolUseId`) |
+| #5 | #6 | fork | `forked_from_id` (Codex) | — |
+| L1 | L2 | spawn | `toolUseId` | `toolu_1101` |
+| L2 | L3 | spawn | `toolUseId` + `meta.parentAgentId` | `toolu_1201` |
+| L1 | L1-side | spawn | `isSidechain` | `toolu_1102` |
+| L1 | L5 | fork | `forkedFrom` (four distinct recorded message UUIDs) | — |
+| L5 | L6, L7 | spawn | `toolUseId` | `toolu_1501`, `toolu_1502` |
 
-The main archive also has one `reference` link, #2 → #4,
-`how: briefing`, from the delivery row below.
+#4 physically copies #2, L4 physically copies L2, and L8 physically copies
+`claude-code:7f3a2c10-0199-…`, whose source is absent. Their copied session or
+agent IDs establish copied history; they supply no continuation or resume
+marker and create no provider link. L4 has no spawning-call marker either;
+its file location alone establishes no spawn.
+
+The delivery row below addresses #4 from #2, evidence for a separate
+`reference` relationship with `how: briefing`.
 
 Things the examples rely on:
 
-- **Tree cost.** L1's tree is L1 + L1-side + L2 + L3 + L4 = 0.9852 → $0.99;
+- **Tree cost.** L1's tree is L1 + L1-side + L2 + L3 = 0.9364 → $0.94;
   L2's tree is L2 + L3 = $0.15; L5's tree is L5 + L6 + L7 = $0.66. The
   subagents are not counted again in L1's own cost.
 - **Copies.** L4's 4 copies of L2 and L5's 4 copies of L1 are inherited
   (their sources are in the archive) and add nothing to counts or cost.
-  L8's 3 copies count as its own, because their source is missing; the link
-  stays pending.
+  L8's 3 copies count as its own, because their source is missing; copied
+  source completeness stays pending.
 - **Two folders.** L1 is one session, equal to what the longer file alone
   gives.
 - **Known cost of the whole Claude-Code-only home:** **$7.87** (exact

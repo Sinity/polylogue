@@ -31,11 +31,10 @@ pub enum ClassKind {
     Attachment = 7,
     Other = 8,
     Compaction = 9,
-    CompactionSummary = 10,
-    Microcompaction = 11,
-    Event = 12,
+    Microcompaction = 10,
+    Event = 11,
 }
-const KINDS: [ClassKind; 13] = [
+const KINDS: [ClassKind; 12] = [
     ClassKind::Header,
     ClassKind::Text,
     ClassKind::Thinking,
@@ -46,7 +45,6 @@ const KINDS: [ClassKind; 13] = [
     ClassKind::Attachment,
     ClassKind::Other,
     ClassKind::Compaction,
-    ClassKind::CompactionSummary,
     ClassKind::Microcompaction,
     ClassKind::Event,
 ];
@@ -66,11 +64,12 @@ const BLOCK_KINDS: [ClassKind; 8] = [
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ClassAuthor {
-    /// The model, a tool, or a person writing anything but a prompt.
+    /// The model or a person writing anything but a prompt.
     Other = 0,
     Harness = 1,
     /// A person's prompt: what opens a turn.
     Prompt = 2,
+    Tool = 3,
 }
 
 fn class_kind(entry: &IndexEntry) -> ClassKind {
@@ -94,9 +93,8 @@ fn class_kind(entry: &IndexEntry) -> ClassKind {
         EntryKind::Other => ClassKind::Other,
         EntryKind::Event => match entry.boundary {
             Some(Boundary::Compaction) => ClassKind::Compaction,
-            Some(Boundary::CompactionSummary) => ClassKind::CompactionSummary,
             Some(Boundary::Microcompaction) => ClassKind::Microcompaction,
-            None => ClassKind::Event,
+            None | Some(Boundary::CompactionSummary) => ClassKind::Event,
         },
     }
 }
@@ -112,8 +110,7 @@ impl EntryClass {
     /// A stored class; `None` for bits no class has.
     pub fn from_bits(bits: u16) -> Option<Self> {
         let class = Self(bits);
-        ((bits & 0xF) < KINDS.len() as u16 && (bits >> 4) & 3 < 3 && bits >> 15 == 0)
-            .then_some(class)
+        ((bits & 0xF) < KINDS.len() as u16 && bits >> 15 == 0).then_some(class)
     }
     pub fn kind(self) -> ClassKind {
         KINDS[usize::from(self.0 & 0xF)]
@@ -122,6 +119,7 @@ impl EntryClass {
         match (self.0 >> 4) & 3 {
             1 => ClassAuthor::Harness,
             2 => ClassAuthor::Prompt,
+            3 => ClassAuthor::Tool,
             _ => ClassAuthor::Other,
         }
     }
@@ -156,11 +154,6 @@ impl EntryClass {
             ClassKind::Attachment => (EntryKind::Attachment, None, None),
             ClassKind::Other => (EntryKind::Other, None, None),
             ClassKind::Compaction => (EntryKind::Event, None, Some(super::Boundary::Compaction)),
-            ClassKind::CompactionSummary => (
-                EntryKind::Event,
-                None,
-                Some(super::Boundary::CompactionSummary),
-            ),
             ClassKind::Microcompaction => (
                 EntryKind::Event,
                 None,
@@ -174,6 +167,7 @@ impl EntryClass {
             ClassAuthor::Harness => (WrittenBy::Harness, Some(PromptKind::Harness)),
             ClassAuthor::Prompt => (WrittenBy::Human, Some(PromptKind::Prose)),
             ClassAuthor::Other => (WrittenBy::Model, None),
+            ClassAuthor::Tool => (WrittenBy::Tool, Some(PromptKind::Harness)),
         };
         let mut entry = super::event_entry("class", "class", None, 0, Vec::new());
         entry.kind = entry_kind;
@@ -196,6 +190,8 @@ pub fn entry_classes(entries: &[IndexEntry]) -> Vec<EntryClass> {
         let entry = &entries[at];
         let author = if entry.kind == EntryKind::Event {
             ClassAuthor::Other
+        } else if entry.written_by == WrittenBy::Tool {
+            ClassAuthor::Tool
         } else if entry.written_by == WrittenBy::Harness {
             ClassAuthor::Harness
         } else if entry.written_by == WrittenBy::Human

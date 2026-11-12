@@ -16,7 +16,7 @@
 //! separately are referred to by their asset pointer and file ID.
 
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 use crate::fields::ExpectedType as T;
 pub mod assets;
@@ -338,10 +338,29 @@ fn conversation_with_owners(
     // one is a branch of it. It keeps only its own tail and a fork link at
     // the last message they share.
     let mut branch: Option<(polylogue_model::SessionId, Message)> = None;
-    for (_, _, message) in rows {
+    for (position, (_, _, message)) in rows.into_iter().enumerate() {
         let native = message.id.native().as_str().to_owned();
         match owners.record_first_session(&native, &sid)? {
             Some(owner) if owner != sid => {
+                if !sink
+                    .out
+                    .prefix_copies
+                    .iter()
+                    .any(|copy| copy.parent == owner && copy.child == sid)
+                {
+                    sink.out.prefix_copies.push(polylogue_model::PrefixCopy {
+                        parent: owner.clone(),
+                        child: sid.clone(),
+                        explicit_members: true,
+                    });
+                }
+                sink.out.prefix_members.push(polylogue_model::PrefixMember {
+                    parent: owner.clone(),
+                    child: sid.clone(),
+                    message: message.id.clone(),
+                    source: None,
+                    position: [0, position as u64],
+                });
                 branch = Some((owner, message));
             }
             _ => {
@@ -359,6 +378,8 @@ fn conversation_with_owners(
     if let Some((parent, at)) = branch {
         sink.out.links.push(Link {
             kind: LinkKind::Fork,
+            copies_prefix: true,
+            how: None,
             parent,
             child: sid.clone(),
             at: Some(at.id),

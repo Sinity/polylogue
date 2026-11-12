@@ -114,7 +114,7 @@ fn usage_counts_each_response_once() {
         T0 + 1,
         &tokens(1, 2, Some(3), 4),
     );
-    f.link("claude-code:p", "claude-code:c", "continuation", "test")
+    f.link("claude-code:p", "claude-code:c", "continuation", None)
         .unwrap();
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();
@@ -436,7 +436,7 @@ fn a_fork_shows_its_parents_usage_at_the_logical_grain_only() {
         T0 + 2,
         &tokens(40, 0, None, 4),
     );
-    f.link("claude-code:p", "claude-code:c", "continuation", "fork")
+    f.link("claude-code:p", "claude-code:c", "fork", None)
         .unwrap();
     crate::archive::open_write(&f.archive.index_db(), crate::archive::cache::SETUP)
         .unwrap()

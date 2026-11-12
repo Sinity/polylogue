@@ -569,12 +569,12 @@ pub(crate) fn parent(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Q
     let v = x.value()?;
     if v.eq_ignore_ascii_case("missing") {
         return Ok(format!(
-            "EXISTS (SELECT 1 FROM link l WHERE l.child_pk = {s}.pk AND NOT EXISTS (SELECT 1 FROM session lp WHERE lp.id = l.parent_id))"
+            "EXISTS (SELECT 1 FROM session_link l WHERE l.child_pk = {s}.pk AND NOT EXISTS (SELECT 1 FROM session lp WHERE lp.id = l.parent_id))"
         ));
     }
     let reference = c.session_reference("l.parent_id", "id", &v);
     Ok(format!(
-        "EXISTS (SELECT 1 FROM link l WHERE l.child_pk = {s}.pk AND {reference})"
+        "EXISTS (SELECT 1 FROM session_link l WHERE l.child_pk = {s}.pk AND {reference})"
     ))
 }
 
@@ -582,8 +582,8 @@ pub(crate) fn root(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Que
     let reference = c.session_reference("rs.id", "id", &x.value()?);
     Ok(format!(
         "{}.pk IN (WITH RECURSIVE tr(pk) AS (SELECT rs.pk FROM session rs WHERE {reference} \
-         UNION SELECT l.child_pk FROM link l JOIN session lp ON lp.id = l.parent_id JOIN tr ON tr.pk = lp.pk \
-         WHERE l.kind = 'subagent' AND l.child_pk IS NOT NULL) SELECT pk FROM tr)",
+         UNION SELECT l.child_pk FROM session_link l JOIN session lp ON lp.id = l.parent_id JOIN tr ON tr.pk = lp.pk \
+         WHERE l.kind = 'spawn' AND l.child_pk IS NOT NULL) SELECT pk FROM tr)",
         x.s()
     ))
 }
@@ -591,7 +591,7 @@ pub(crate) fn root(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Que
 pub(crate) fn depth(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
     let expr = format!(
         "(WITH RECURSIVE up(pk, d) AS (SELECT {}.pk, 0 UNION SELECT lp.pk, up.d + 1 FROM up \
-         JOIN link l ON l.child_pk = up.pk AND l.kind = 'subagent' JOIN session lp ON lp.id = l.parent_id \
+         JOIN session_link l ON l.child_pk = up.pk AND l.kind = 'spawn' JOIN session lp ON lp.id = l.parent_id \
          WHERE up.d < 1000) SELECT max(d) FROM up)",
         x.s()
     );
@@ -623,7 +623,7 @@ pub(crate) fn link(_: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Que
             return Err(x.bad(v, message));
         };
         parts.push(format!(
-            "EXISTS (SELECT 1 FROM link l WHERE l.child_pk = {s}.pk AND l.{column} = '{v}')"
+            "EXISTS (SELECT 1 FROM session_link l WHERE l.child_pk = {s}.pk AND l.{column} = '{v}')"
         ));
     }
     any_of(x, parts)
@@ -632,7 +632,7 @@ pub(crate) fn link(_: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Que
 pub(crate) fn continues(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
     let reference = c.session_reference("l.parent_id", "id", &x.value()?);
     Ok(format!(
-        "EXISTS (SELECT 1 FROM link l WHERE l.child_pk = {}.pk AND l.kind = 'continuation' AND {reference})",
+        "EXISTS (SELECT 1 FROM session_link l WHERE l.child_pk = {}.pk AND l.kind IN ('fork','continuation','resume') AND {reference})",
         x.s()
     ))
 }
@@ -640,8 +640,8 @@ pub(crate) fn continues(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String
 pub(crate) fn continued_by(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
     let reference = c.session_reference("lc.id", "id", &x.value()?);
     Ok(format!(
-        "EXISTS (SELECT 1 FROM link l JOIN session lc ON lc.pk = l.child_pk WHERE l.parent_id = {}.id \
-         AND l.kind = 'continuation' AND {reference})",
+        "EXISTS (SELECT 1 FROM session_link l JOIN session lc ON lc.pk = l.child_pk WHERE l.parent_id = {}.id \
+         AND l.kind IN ('fork','continuation','resume') AND {reference})",
         x.s()
     ))
 }
@@ -651,7 +651,7 @@ pub(crate) fn connected(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String
     Ok(format!(
         "{}.id IN (WITH RECURSIVE comp(id) AS (SELECT rs.id FROM session rs WHERE {reference} \
          UNION SELECT CASE WHEN l.parent_id = comp.id THEN lc.id ELSE l.parent_id END \
-         FROM link l JOIN session lc ON lc.pk = l.child_pk JOIN comp ON comp.id = l.parent_id OR comp.id = lc.id) \
+         FROM session_link l JOIN session lc ON lc.pk = l.child_pk JOIN comp ON comp.id = l.parent_id OR comp.id = lc.id) \
          SELECT id FROM comp)",
         x.s()
     ))
@@ -738,7 +738,7 @@ pub(crate) fn spawned_child(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<St
     let reference = c.session_reference("lcs.id", "id", &x.value()?);
     let a = &x.scope.a;
     Ok(format!(
-        "EXISTS (SELECT 1 FROM link lc JOIN session lcs ON lcs.pk = lc.child_pk WHERE lc.kind = 'subagent' \
+        "EXISTS (SELECT 1 FROM session_link lc JOIN session lcs ON lcs.pk = lc.child_pk WHERE lc.kind = 'spawn' \
          AND lc.parent_id = {s}.id AND lc.spawning_call = {t}.call_id \
          AND {reference})",
         s = a.s,

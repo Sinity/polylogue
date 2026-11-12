@@ -109,7 +109,8 @@
         "child": "claude-code:s4",
         "evidence": "forkedFrom",
         "kind": "fork",
-        "parent": "claude-code:s0"
+        "parent": "claude-code:s0",
+        "copies_prefix": false
       }
     ],
     "messages": [

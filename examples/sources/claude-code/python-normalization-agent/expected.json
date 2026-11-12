@@ -13,14 +13,7 @@
     "background": [],
     "blobs": [],
     "events": [],
-    "links": [
-      {
-        "child": "claude-code:agent-norm",
-        "evidence": "agentId",
-        "kind": "spawn",
-        "parent": "claude-code:claude-lineage-parent"
-      }
-    ],
+    "links": [],
     "messages": [
       {
         "end": 202,

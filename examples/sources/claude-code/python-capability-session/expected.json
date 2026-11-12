@@ -13,14 +13,7 @@
     "background": [],
     "blobs": [],
     "events": [],
-    "links": [
-      {
-        "child": "claude-code:capability",
-        "evidence": "sessionId",
-        "kind": "copy",
-        "parent": "claude-code:origin-matrix-claude-code"
-      }
-    ],
+    "links": [],
     "messages": [
       {
         "end": 173,
@@ -68,6 +61,12 @@
         "started": "2026-08-01T10:00:00Z",
         "started_quality": "intrinsic",
         "started_precision": "second"
+      }
+    ],
+    "prefix_copies": [
+      {
+        "parent": "claude-code:origin-matrix-claude-code",
+        "child": "claude-code:capability"
       }
     ]
   }

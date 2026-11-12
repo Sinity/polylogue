@@ -47,7 +47,7 @@ fn array_order_and_parent_ownership_survive_newest_first_storage_and_rebuild() {
         assert_eq!(texts(&w, "chatgpt:parent"), ["First", "Second"]);
         assert_eq!(texts(&w, "chatgpt:child"), ["Third"]);
         assert_eq!(
-            w.count("SELECT COUNT(*) AS n FROM link WHERE kind='continuation' AND how='fork'"),
+            w.count("SELECT COUNT(*) AS n FROM link WHERE kind='fork'"),
             1
         );
         let reads = w.reads();

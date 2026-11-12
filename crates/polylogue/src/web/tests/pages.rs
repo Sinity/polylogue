@@ -212,8 +212,8 @@ fn every_relationship_is_reachable_and_search_pages_keep_the_query() {
                 } = card.as_ref()
             {
                 assert_eq!(from, "session:claude-code:s1");
-                assert_eq!(relation, "continuation");
-                assert_eq!(how.as_deref(), Some("fork"));
+                assert_eq!(relation, "fork");
+                assert_eq!(how.as_deref(), None);
                 assert!(seen.insert(to.clone()), "relationship repeated");
             }
         }

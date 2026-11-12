@@ -2193,6 +2193,8 @@ fn weight(b: &Batch) -> usize {
                 + p.output.documents.len()
                 + p.output.events.len()
                 + p.output.links.len()
+                + p.output.prefix_copies.len()
+                + p.output.prefix_members.len()
         })
         .sum::<usize>()
 }

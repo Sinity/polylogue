@@ -53,7 +53,7 @@ impl RowWriter<'_, '_> {
             self.tx.execute("DELETE FROM link WHERE pk=?1", [pk])?;
             return Ok(());
         };
-        self.tx.prepare_cached("UPDATE link SET branch_point=?2,spawning_call=?3,evidence=?4,input_pk=?5,source_chain=?6 WHERE pk=?1")?.execute(params![pk,choice.link.at.as_ref().map(ToString::to_string),choice.link.call_id,choice.link.evidence,choice.input,choice.chain])?;
+        self.tx.prepare_cached("UPDATE link SET branch_point=?2,spawning_call=?3,evidence=?4,input_pk=?5,source_chain=?6,copies_prefix=?7 WHERE pk=?1")?.execute(params![pk,choice.link.at.as_ref().map(ToString::to_string),choice.link.call_id,choice.link.evidence,choice.input,choice.chain,choice.link.copies_prefix])?;
         Ok(())
     }
     fn mark_link_sessions(&self, pk: i64) -> Result<()> {
@@ -74,13 +74,18 @@ impl RowWriter<'_, '_> {
             .keys
             .get(resolve::Kind::Session, link.child.to_string().as_bytes())?
             .pk;
-        let (kind, how) = link.kind.columns();
+        let kind = link.kind.as_str();
+        let how = link.how.map(|how| how.as_str());
         // A copy's session is named by the session its name is an alias of.
         let (parent, child_id) = (link.parent.to_string(), link.child.to_string());
         let ids = &self.keys.identities;
         let (parent, child_id) = (ids.shown_session(&parent), ids.shown_session(&child_id));
+        let at = link
+            .at
+            .as_ref()
+            .map(|at| ids.shown_message(&at.to_string()).into_owned());
         self.changes.link_child(child_id);
-        self.tx.prepare_cached("INSERT OR IGNORE INTO link(pk,parent_id,child_id,child_pk,kind,how,evidence,input_pk,source_chain) VALUES (?1,?2,?3,(SELECT pk FROM session WHERE pk=?4),?5,?6,?7,?8,?9)")?.execute(params![pk,parent,child_id,child,kind,how,link.evidence,self.input_pk,self.chain])?;
+        self.tx.prepare_cached("INSERT OR IGNORE INTO link(pk,parent_id,child_id,child_pk,kind,how,evidence,input_pk,source_chain,branch_point,spawning_call,copies_prefix) VALUES (?1,?2,?3,(SELECT pk FROM session WHERE pk=?4),?5,?6,?7,?8,?9,?10,?11,?12)")?.execute(params![pk,parent,child_id,child,kind,how,link.evidence,self.input_pk,self.chain,at,link.call_id,link.copies_prefix])?;
         let value = &self.choices.link_values[index];
         self.tx
             .prepare_cached("INSERT OR IGNORE INTO link_value(pk,hash,body) VALUES (?1,?2,?3)")?

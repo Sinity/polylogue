@@ -1470,6 +1470,8 @@ fn canonical_fold_receipts_survive_raw_mapping_absence_and_cache_rebuild() {
     });
     let link = Link {
         kind: LinkKind::Spawn,
+        copies_prefix: false,
+        how: None,
         parent: sid("receipt-session"),
         child: sid("receipt-child"),
         at: None,
@@ -1596,6 +1598,8 @@ fn record_visitors_stop_before_decoding_later_session_payloads() {
         });
         input.parse[0].output.links.push(Link {
             kind: LinkKind::Spawn,
+            copies_prefix: false,
+            how: None,
             parent: sid("visitor-session"),
             child: sid(&format!("child-{ordinal}")),
             at: None,
@@ -1693,6 +1697,8 @@ fn link_evidence_merges_across_sources_independently_of_the_source_winner() {
                 );
                 child.parse[0].output.links.push(Link {
                     kind: LinkKind::Spawn,
+                    copies_prefix: false,
+                    how: None,
                     parent: sid("parent"),
                     child: sid("child"),
                     at: None,
@@ -1841,4 +1847,466 @@ fn inputs_that_only_name_a_session_share_it_without_waiting_for_a_commit() {
         ),
         2
     );
+}
+
+#[test]
+fn copied_prefix_observations_enrich_only_an_explicit_relation_and_retract() {
+    for prefix_first in [false, true] {
+        let w = test_archive();
+        let parent = text_message(
+            "prefix-message",
+            "parent",
+            Role::User,
+            "copied parent",
+            None,
+        );
+        let child = text_message("own-message", "child", Role::User, "own child", None);
+        let mut own = batch("own-file", Route::Live, 0, vec![row(1, child)], &["child"]);
+        own.parse[0].prepare();
+        w.store_reading(own, Some(&SOURCE_RECORD)).unwrap();
+        let mut prefix = batch(
+            "prefix-file",
+            Route::Live,
+            0,
+            vec![row(1, parent)],
+            &["parent"],
+        );
+        prefix.parse[0]
+            .output
+            .prefix_copies
+            .push(polylogue_model::PrefixCopy {
+                explicit_members: false,
+                parent: sid("parent"),
+                child: sid("child"),
+            });
+        prefix.parse[0].prepare();
+        let mut marker = batch(
+            "marker-file",
+            Route::Live,
+            0,
+            Vec::new(),
+            &["parent", "child"],
+        );
+        marker.parse[0].output.links.push(Link {
+            kind: LinkKind::Continuation,
+            copies_prefix: false,
+            how: None,
+            parent: sid("parent"),
+            child: sid("child"),
+            at: None,
+            call_id: None,
+            evidence: "continuedInSessionId".into(),
+        });
+        marker.parse[0].prepare();
+        let mut replacement = prefix.clone();
+        let reads = ReadPool::open(&w.archive).unwrap();
+        let chain;
+        if prefix_first {
+            chain = w.store_reading(prefix, Some(&SOURCE_RECORD)).unwrap().chain;
+            assert!(
+                reads
+                    .reader()
+                    .unwrap()
+                    .links(&sid("child"))
+                    .unwrap()
+                    .is_empty()
+            );
+            w.store_reading(marker, Some(&SOURCE_RECORD)).unwrap();
+        } else {
+            w.store_reading(marker, Some(&SOURCE_RECORD)).unwrap();
+            assert!(!reads.reader().unwrap().links(&sid("child")).unwrap()[0].copies_prefix);
+            chain = w.store_reading(prefix, Some(&SOURCE_RECORD)).unwrap().chain;
+        }
+        let report = w.writer.flush().unwrap();
+        assert!(report.errors.is_empty(), "{report:?}");
+        let reader = reads.reader().unwrap();
+        let links = reader.links(&sid("child")).unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].kind, LinkKind::Continuation);
+        assert!(links[0].copies_prefix);
+        assert!(reader.link_commit(&links[0]).unwrap().is_some());
+        let selected = reader.select_messages(&sid("child"), true).unwrap();
+        let mut bodies = Vec::new();
+        selected
+            .visit(|message| {
+                bodies.push(message.text());
+                std::ops::ControlFlow::Continue(())
+            })
+            .unwrap();
+        assert_eq!(bodies, ["copied parent", "own child"]);
+        drop(reader);
+        replacement.change = Change::Reparse { chain };
+        replacement.observation = None;
+        replacement.parse[0].reset = true;
+        replacement.parse[0].reading_version = "synthetic-prefix=2".into();
+        replacement.parse[0].output.prefix_copies.clear();
+        replacement.parse[0].prepare();
+        w.store_reading(replacement, None).unwrap();
+        let report = w.writer.flush().unwrap();
+        assert!(report.errors.is_empty(), "{report:?}");
+        let links = reads.reader().unwrap().links(&sid("child")).unwrap();
+        assert_eq!(links.len(), 1);
+        assert!(!links[0].copies_prefix);
+    }
+}
+
+#[test]
+fn contradictory_anchors_survive_one_source_and_unrelated_edges_do_not_expand_the_lookup() {
+    let w = test_archive();
+    let mut reading = batch(
+        "fork-file",
+        Route::Live,
+        0,
+        vec![
+            row(
+                1,
+                text_message("first", "parent", Role::User, "first", None),
+            ),
+            row(
+                2,
+                text_message("second", "parent", Role::User, "second", None),
+            ),
+            row(3, text_message("own", "child", Role::User, "own", None)),
+        ],
+        &["parent", "child"],
+    );
+    let link = |anchor: &str| Link {
+        kind: LinkKind::Fork,
+        copies_prefix: false,
+        how: None,
+        parent: sid("parent"),
+        child: sid("child"),
+        at: Some(MessageId::parse(&format!("claude-code:{anchor}")).unwrap()),
+        call_id: None,
+        evidence: "forkedFrom".into(),
+    };
+    reading.parse[0].output.links = vec![link("first"), link("second")];
+    reading.parse[0].prepare();
+    w.store_reading(reading, Some(&SOURCE_RECORD)).unwrap();
+    let report = w.writer.flush().unwrap();
+    assert!(report.errors.is_empty(), "{report:?}");
+    let reads = ReadPool::open(&w.archive).unwrap();
+    let reader = reads.reader().unwrap();
+    let links = reader.links(&sid("child")).unwrap();
+    assert_eq!(
+        links
+            .iter()
+            .map(|link| link.at.as_ref().unwrap().native().as_str())
+            .collect::<Vec<_>>(),
+        ["first", "second"]
+    );
+    let portable = serde_json::to_vec(&links).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Vec<Link>>(&portable).unwrap(),
+        links
+    );
+    assert_ne!(links[0].selection_tag(), links[1].selection_tag());
+    let selected = reader.select_messages(&sid("child"), true).unwrap();
+    assert!(matches!(
+        selected.parents().issues.as_slice(),
+        [polylogue_model::read::ParentIssue::ConflictingParents { .. }]
+    ));
+    drop(reader);
+    let index = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
+    let lookup = || {
+        let mut statement = index
+            .prepare(
+                "SELECT branch_point FROM session_link WHERE child_id=?1 ORDER BY branch_point",
+            )
+            .unwrap();
+        let values = statement
+            .query_map([sid("child").to_string()], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        (
+            values,
+            statement.get_status(rusqlite::StatementStatus::VmStep),
+        )
+    };
+    let (before, before_steps) = lookup();
+    index.execute("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<10000) INSERT INTO link(parent_id,child_id,kind,evidence,input_pk) SELECT 'test:parent-'||x,'test:child-'||x,'spawn','synthetic',(SELECT min(pk) FROM input_ref) FROM n", []).unwrap();
+    let (after, after_steps) = lookup();
+    assert_eq!(before, after);
+    assert!(
+        after_steps <= before_steps + 250,
+        "edge lookup grew from {before_steps} to {after_steps} VM steps"
+    );
+}
+
+#[test]
+fn explicit_copied_members_preserve_large_coordinates_and_retract_without_expanding() {
+    let w = test_archive();
+    let first = text_message("copied", "parent", Role::User, "copied", None);
+    let mut reading = batch(
+        "copy-file",
+        Route::Live,
+        0,
+        vec![
+            row(1, first.clone()),
+            row(
+                2,
+                text_message("uncopied", "parent", Role::User, "uncopied", None),
+            ),
+            row(3, text_message("own", "child", Role::User, "own", None)),
+        ],
+        &["parent", "child"],
+    );
+    reading.parse[0]
+        .output
+        .prefix_copies
+        .push(polylogue_model::PrefixCopy {
+            parent: sid("parent"),
+            child: sid("child"),
+            explicit_members: true,
+        });
+    reading.parse[0]
+        .output
+        .prefix_members
+        .push(polylogue_model::PrefixMember {
+            parent: sid("parent"),
+            child: sid("child"),
+            message: first.id.clone(),
+            source: Some(polylogue_model::PrefixSource {
+                input: "original-copy".into(),
+                chain: 2,
+                reading_version: "original-reader=1".into(),
+            }),
+            position: [u64::MAX, u64::MAX - 1],
+        });
+    reading.parse[0].prepare();
+    let mut replacement = reading.clone();
+    let chain = w
+        .store_reading(reading, Some(&SOURCE_RECORD))
+        .unwrap()
+        .chain;
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    let reads = ReadPool::open(&w.archive).unwrap();
+    {
+        let reader = reads.reader().unwrap();
+        let selection = reader.select_messages(&sid("child"), true).unwrap();
+        selection.require_complete().unwrap();
+        let mut texts = Vec::new();
+        selection
+            .visit(|m| {
+                texts.push(m.text());
+                std::ops::ControlFlow::Continue(())
+            })
+            .unwrap();
+        assert_eq!(texts, ["copied", "own"]);
+        let copies = reader.copied_for(&first.id).unwrap();
+        assert_eq!(copies.len(), 1);
+        assert_eq!(copies[0].position, [u64::MAX, u64::MAX - 1]);
+        assert_eq!(copies[0].source.input, "original-copy");
+    }
+    let mut conflicting = batch(
+        "conflicting-markers",
+        Route::Live,
+        0,
+        Vec::new(),
+        &["parent", "child"],
+    );
+    conflicting.parse[0].output.links = ["copied", "uncopied"]
+        .into_iter()
+        .map(|anchor| Link {
+            kind: LinkKind::Fork,
+            copies_prefix: false,
+            how: None,
+            parent: sid("parent"),
+            child: sid("child"),
+            at: Some(MessageId::parse(&format!("claude-code:{anchor}")).unwrap()),
+            call_id: None,
+            evidence: "recorded conflicting fork".into(),
+        })
+        .collect();
+    conflicting.parse[0].prepare();
+    w.store_reading(conflicting, Some(&SOURCE_RECORD)).unwrap();
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    {
+        let reader = reads.reader().unwrap();
+        let selection = reader.select_messages(&sid("child"), true).unwrap();
+        assert!(matches!(
+            selection.parents().issues.first(),
+            Some(polylogue_model::read::ParentIssue::ConflictingParents { .. })
+        ));
+        let mut texts = Vec::new();
+        selection
+            .visit(|message| {
+                texts.push(message.text());
+                std::ops::ControlFlow::Continue(())
+            })
+            .unwrap();
+        assert_eq!(texts, ["copied", "own"]);
+    }
+    replacement.change = Change::Reparse { chain };
+    replacement.observation = None;
+    replacement.parse[0].reset = true;
+    replacement.parse[0].reading_version = "synthetic=2".into();
+    replacement.parse[0].output.prefix_members.clear();
+    replacement.parse[0].prepare();
+    w.store_reading(replacement, None).unwrap();
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    let reader = reads.reader().unwrap();
+    assert!(reader.copied_for(&first.id).unwrap().is_empty());
+    let mut texts = Vec::new();
+    reader
+        .select_messages(&sid("child"), true)
+        .unwrap()
+        .visit(|m| {
+            texts.push(m.text());
+            std::ops::ControlFlow::Continue(())
+        })
+        .unwrap();
+    assert_eq!(texts, ["own"]);
+}
+
+#[test]
+fn late_compaction_header_and_known_source_retraction_reselect_exact_native_claims() {
+    let w = test_archive();
+    let mut original = text_message(
+        "shared-native",
+        "agent-worker",
+        Role::User,
+        "known work body",
+        None,
+    );
+    original.prompt_kind = Some(PromptKind::Model);
+    let mut known = batch(
+        "known-native",
+        Route::Live,
+        0,
+        vec![row(0, original.clone())],
+        &["agent-worker"],
+    );
+    known.parse[0].output.sessions[0].kind = SessionKind::Subagent;
+    known.parse[0].prepare();
+    let mut retracted = batch("known-native", Route::Live, 0, Vec::new(), &[]);
+    let known_chain = w.store_reading(known, Some(&SOURCE_RECORD)).unwrap().chain;
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    let before = ReadPool::open(&w.archive)
+        .unwrap()
+        .reader()
+        .unwrap()
+        .message_admission(&original.id)
+        .unwrap()
+        .unwrap();
+    let mut annotation = batch(
+        "later-copy-annotation",
+        Route::Live,
+        0,
+        Vec::new(),
+        &["declared-copy"],
+    );
+    annotation.parse[0]
+        .output
+        .prefix_members
+        .push(polylogue_model::PrefixMember {
+            parent: original.session.clone(),
+            child: sid("declared-copy"),
+            message: original.id.clone(),
+            source: Some(polylogue_model::PrefixSource {
+                input: "original-work-reading".into(),
+                chain: known_chain,
+                reading_version: "synthetic=1".into(),
+            }),
+            position: [0, 0],
+        });
+    annotation.parse[0].prepare();
+    w.store_reading(annotation, Some(&SOURCE_RECORD)).unwrap();
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    {
+        let pool = ReadPool::open(&w.archive).unwrap();
+        let reader = pool.reader().unwrap();
+        assert_eq!(
+            reader.message_admission(&original.id).unwrap(),
+            Some(before)
+        );
+        assert!(
+            reader
+                .session_commit(&sid("declared-copy"))
+                .unwrap()
+                .unwrap()
+                > before
+        );
+        assert_eq!(reader.copied_for(&original.id).unwrap().len(), 1);
+    }
+    let mut copied = text_message(
+        "shared-native",
+        "agent-acompact-unknown",
+        Role::User,
+        "unknown carrier body",
+        None,
+    );
+    copied.prompt_kind = None;
+    let mut carrier = batch(
+        "unknown-carrier",
+        Route::Live,
+        0,
+        vec![row(0, copied.clone())],
+        &[],
+    );
+    carrier.parse[0].prepare();
+    w.store_reading(carrier, Some(&SOURCE_RECORD)).unwrap();
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    let reads = ReadPool::open(&w.archive).unwrap();
+    assert_eq!(
+        reads
+            .reader()
+            .unwrap()
+            .message_with_projection(&original.id)
+            .unwrap()
+            .unwrap()
+            .0
+            .session,
+        original.session
+    );
+    let mut header = batch(
+        "unknown-carrier",
+        Route::Live,
+        100,
+        Vec::new(),
+        &["agent-acompact-unknown"],
+    );
+    header.parse[0].output.sessions[0].kind = SessionKind::Compaction;
+    header.parse[0].prepare();
+    w.store_reading(header, Some(&SOURCE_RECORD)).unwrap();
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    {
+        let reader = reads.reader().unwrap();
+        assert_eq!(
+            reader
+                .message_with_projection(&original.id)
+                .unwrap()
+                .unwrap()
+                .0
+                .session,
+            original.session
+        );
+        assert_eq!(reader.query("SELECT main FROM message_source s JOIN input_ref i ON i.pk=s.input_pk WHERE i.id='unknown-carrier'",&[]).unwrap()[0]["main"],0);
+        assert_eq!(
+            reader
+                .query("SELECT count(*) AS n FROM message_source", &[])
+                .unwrap()[0]["n"],
+            2
+        );
+    }
+    retracted.change = Change::Reparse { chain: known_chain };
+    retracted.observation = None;
+    retracted.parse[0].reset = true;
+    retracted.parse[0].reading_version = "synthetic-owner=2".into();
+    retracted.parse[0].output.sessions =
+        vec![Session::new(sid("agent-worker"), SessionKind::Compaction)];
+    retracted.parse[0].output.messages.clear();
+    retracted.parse[0].prepare();
+    w.store_reading(retracted, None).unwrap();
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    let fallback = reads
+        .reader()
+        .unwrap()
+        .message_with_projection(&original.id)
+        .unwrap()
+        .unwrap()
+        .0;
+    assert_eq!(fallback.session, copied.session);
+    assert_eq!(fallback.text(), "unknown carrier body");
 }

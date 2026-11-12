@@ -12,6 +12,7 @@ pub static MESSAGE_FIELDS: Fields = Fields::new(
         ("uuid", Read(T::String)),
         ("parentUuid", Read(T::String)),
         ("sessionId", Read(T::String)),
+        ("resumeSessionId", Read(T::String)),
         ("agentId", Read(T::String)),
         ("timestamp", Read(T::StringOrNumber)),
         ("cwd", Read(T::String)),
@@ -366,6 +367,54 @@ pub static MESSAGE_FIELDS: Fields = Fields::new(
                 "document",
             ],
         },
+    ],
+);
+
+pub static COMPACTION_FIELDS: Fields = Fields::new(
+    "compaction",
+    &[
+        ("type", Read(T::String)),
+        ("subtype", Read(T::String)),
+        ("sessionId", Read(T::String)),
+        ("agentId", Read(T::String)),
+        ("uuid", Read(T::String)),
+        ("parentUuid", Read(T::String)),
+        ("logicalParentUuid", Read(T::String)),
+        ("isSidechain", Read(T::Boolean)),
+        ("timestamp", Read(T::StringOrNumber)),
+        (
+            "content",
+            Excluded("native boundary display text; the summary is a separate message"),
+        ),
+        ("level", Excluded("native display level")),
+        ("compactMetadata", Read(T::Object)),
+        ("compactMetadata.preTokens", Read(T::Number)),
+        ("compactMetadata.postTokens", Read(T::Number)),
+        ("compactMetadata.trigger", Read(T::String)),
+        ("compactMetadata.preservedMessages", Read(T::Object)),
+        ("compactMetadata.preservedMessages.uuids", Read(T::Array)),
+        (
+            "compactMetadata.preservedMessages.anchorUuid",
+            Read(T::String),
+        ),
+        (
+            "compactMetadata.preservedMessages.allUuids",
+            Excluded("includes non-message transcript records; ordered message UUIDs are read"),
+        ),
+        ("compactMetadata.preservedSegment", Read(T::Object)),
+        ("compactMetadata.preservedSegment.headUuid", Read(T::String)),
+        ("compactMetadata.preservedSegment.tailUuid", Read(T::String)),
+        (
+            "compactMetadata.preservedSegment.anchorUuid",
+            Read(T::String),
+        ),
+        ("microcompactMetadata", Read(T::Object)),
+        ("microcompactMetadata.tokensSaved", Read(T::Number)),
+        ("microcompactMetadata.compactedToolIds", Read(T::Array)),
+        (
+            "microcompactMetadata.clearedAttachmentUUIDs",
+            Read(T::Array),
+        ),
     ],
 );
 

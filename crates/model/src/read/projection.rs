@@ -39,8 +39,8 @@ pub fn project_record(
                     return Ok(None);
                 }
             }
-            let harness =
-                message.role == Role::System || message.prompt_kind == Some(PromptKind::Harness);
+            let harness = message.role == Role::System
+                || message.prompt_kind.is_some_and(PromptKind::is_harness);
             if options.harness() == Expansion::None && harness {
                 return Ok(None);
             }

@@ -126,7 +126,7 @@ fn a_job_names_its_session_and_the_one_it_resumed() {
         br#"{"sessionId":"s2","resumeSessionId":"s1","name":"Grok","nameSource":"user","cwd":"/r","cliVersion":"2.1"}"#,
     );
     assert_eq!(out.sessions[0].mode.as_deref(), Some("bg"));
-    assert_eq!(out.links[0].kind, LinkKind::Continuation);
+    assert_eq!(out.links[0].kind, LinkKind::Resume);
     assert_eq!(out.links[0].parent.to_string(), "claude-code:s1");
     assert_eq!(out.events[0].kind, "background_job");
 }

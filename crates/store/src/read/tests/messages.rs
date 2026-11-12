@@ -103,12 +103,7 @@ fn message_visits_include_the_same_logical_history() {
         )
         .unwrap();
     fixture
-        .link(
-            "claude-code:parent",
-            "claude-code:child",
-            "continuation",
-            "fork",
-        )
+        .link("claude-code:parent", "claude-code:child", "fork", None)
         .unwrap();
     crate::archive::open_write(&fixture.archive.index_db(), crate::archive::cache::SETUP)
         .unwrap()

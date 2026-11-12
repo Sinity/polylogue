@@ -42,7 +42,7 @@ fn previous_coordinates_invert_the_existing_session_family_order() {
     fixture.event(target, "notice", None).unwrap();
     fixture.event(target, "notice", None).unwrap();
     fixture
-        .link("test:target", "test:child", "continuation", "fork")
+        .link("test:target", "test:child", "fork", None)
         .unwrap();
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
@@ -154,7 +154,7 @@ fn lineage_issue_coordinates_resume_and_reverse_at_both_family_boundaries() {
         )
         .unwrap();
     fixture
-        .link("test:missing", "test:child", "continuation", "fork")
+        .link("test:missing", "test:child", "fork", None)
         .unwrap();
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();

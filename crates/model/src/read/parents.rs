@@ -11,6 +11,12 @@ pub enum ParentIssue {
     Cycle { session: SessionId },
     #[error("parent {parent} of {child} is not available")]
     MissingParent { child: SessionId, parent: SessionId },
+    #[error("copied message {message} from {parent} is not available for {child}")]
+    MissingCopiedMessage {
+        child: SessionId,
+        parent: SessionId,
+        message: MessageId,
+    },
     #[error("parent ID {parent:?} of {child} is invalid")]
     InvalidParent { child: SessionId, parent: String },
     #[error("fork from {parent} to {child} has no available branch anchor ({anchor:?})")]

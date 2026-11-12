@@ -673,7 +673,7 @@ fn session_parent_links_are_scoped_and_missing_parent_stays_incomplete() {
         let edges:Vec<_>=scoped.iter().filter_map(|item| match &item.kind {
             ItemKind::Card {card} => match card.as_ref() { Card::LinkEdge {from,to,relation,how,..} => Some((from.as_str(),to.as_str(),relation.as_str(),how.as_deref())), _=>None }, _=>None,
         }).collect();
-        assert_eq!(edges,[("session:claude-code:s1","session:claude-code:child","continuation",Some("fork"))]);
+        assert_eq!(edges,[("session:claude-code:s1","session:claude-code:child","fork",None)]);
         // Native marker and anchor are canonical Link facts, not invented HTML text.
         let path=read_url("session:claude-code:child",&[("view","links"),("delivery","stream")]);
         let (status,_,body)=send(&r,authed(get(&path)).body(Body::empty()).unwrap()).await;

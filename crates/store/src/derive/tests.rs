@@ -568,6 +568,8 @@ fn forked_subagent(w: &mut WriterArchive, description: Option<&str>) {
             .collect(),
         links: vec![polylogue_model::Link {
             kind: polylogue_model::LinkKind::Spawn,
+            copies_prefix: true,
+            how: None,
             parent: sid("parent"),
             child,
             at: Some(polylogue_model::MessageId::parse("claude-code:parent-p1").unwrap()),

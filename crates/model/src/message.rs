@@ -31,6 +31,10 @@ pub enum PromptKind {
     /// Text the harness wrote: tool results, interruption notices, local
     /// command output, injected reminders or assistant-shaped runtime notices.
     Harness,
+    /// Context supplied by a hook, skill or recorded delivery.
+    InjectedContext,
+    /// The harness's summary at a recorded context boundary.
+    CompactionSummary,
     /// Text another model wrote as this session's prompt: a subagent's
     /// task, a coordinator's follow-up, a peer agent's message.
     Model,
@@ -40,8 +44,19 @@ stored_names!(PromptKind {
     Prose => "prose",
     Command => "command",
     Harness => "harness",
+    InjectedContext => "injected_context",
+    CompactionSummary => "compaction_summary",
     Model => "model",
 });
+
+impl PromptKind {
+    pub fn is_harness(self) -> bool {
+        matches!(
+            self,
+            Self::Harness | Self::InjectedContext | Self::CompactionSummary
+        )
+    }
+}
 
 /// Who wrote a message's text, from its role and prompt kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -50,6 +65,7 @@ pub enum WrittenBy {
     Human,
     Model,
     Harness,
+    Tool,
     Unknown,
 }
 
@@ -57,13 +73,30 @@ stored_names!(WrittenBy {
     Human => "human",
     Model => "model",
     Harness => "harness",
+    Tool => "tool",
     Unknown => "unknown",
 });
 
 impl WrittenBy {
-    pub fn of(role: Role, prompt_kind: Option<PromptKind>) -> Self {
-        match (role, prompt_kind) {
-            (_, Some(PromptKind::Harness)) | (Role::System, _) => Self::Harness,
+    pub fn of(message: &Message) -> Self {
+        if !message.blocks.is_empty()
+            && message
+                .blocks
+                .iter()
+                .all(|block| matches!(block, Block::ToolResult { .. }))
+        {
+            return Self::Tool;
+        }
+        match (message.role, message.prompt_kind) {
+            (
+                _,
+                Some(
+                    PromptKind::Harness
+                    | PromptKind::InjectedContext
+                    | PromptKind::CompactionSummary,
+                ),
+            )
+            | (Role::System, _) => Self::Harness,
             (Role::Assistant, _) | (Role::User, Some(PromptKind::Model)) => Self::Model,
             (Role::User, Some(_)) => Self::Human,
             (Role::User, None) => Self::Unknown,
@@ -302,7 +335,16 @@ impl Message {
 
 /// A user message written by neither the harness nor another model.
 pub fn is_prompt(role: Role, kind: Option<PromptKind>) -> bool {
-    role == Role::User && !matches!(kind, Some(PromptKind::Harness | PromptKind::Model))
+    role == Role::User
+        && !matches!(
+            kind,
+            Some(
+                PromptKind::Harness
+                    | PromptKind::InjectedContext
+                    | PromptKind::CompactionSummary
+                    | PromptKind::Model
+            )
+        )
 }
 
 #[cfg(test)]

@@ -223,6 +223,7 @@ fn session(
         )?;
         if !visit(
             Record::Session(SessionRecord {
+                copied_prefixes: reader.copied_prefixes(id).map_err(Failure::from)?,
                 reference,
                 commit,
                 session,
@@ -482,6 +483,7 @@ pub(super) fn message_record(
         block_ordinals: projection.block_ordinals,
         injections,
         bindings,
+        copied_for: reader.copied_for(&message.id).map_err(Failure::from)?,
         message,
     })))
 }

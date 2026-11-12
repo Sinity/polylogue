@@ -115,7 +115,8 @@
         "child": "codex:019a0000-0000-7000-8000-000000000001",
         "evidence": "parent_thread_id",
         "kind": "spawn",
-        "parent": "codex:019a0000-0000-7000-8000-0000000000aa"
+        "parent": "codex:019a0000-0000-7000-8000-0000000000aa",
+        "copies_prefix": true
       }
     ],
     "messages": [
@@ -208,6 +209,12 @@
         "instructions": "You are a coding agent.",
         "started_quality": "intrinsic",
         "started_precision": "instant"
+      }
+    ],
+    "prefix_copies": [
+      {
+        "parent": "codex:019a0000-0000-7000-8000-0000000000aa",
+        "child": "codex:019a0000-0000-7000-8000-000000000001"
       }
     ]
   }

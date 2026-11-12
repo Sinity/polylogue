@@ -176,7 +176,11 @@ fn fold_after_append_equals_full_recompute() {
         at_until: None,
         after: after.map(|id| polylogue_model::MessageId::parse(id).unwrap()),
         range: None,
-        data: Json::Null,
+        data: if kind == "compaction" {
+            serde_json::to_value(polylogue_model::CompactionBoundary::default()).unwrap()
+        } else {
+            Json::Null
+        },
     };
     let offset = w.offset();
     w.write_output(

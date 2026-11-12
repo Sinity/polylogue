@@ -83,7 +83,7 @@ fn public_morrow_tour_matches_current_query_examples() {
         .map(short)
         .collect();
     children.sort();
-    assert_eq!(children, ["#3", "#4"]);
+    assert_eq!(children, ["#3"]);
     let unknown: Vec<_> = steps[5]["result"]["rows"]
         .as_array()
         .unwrap()

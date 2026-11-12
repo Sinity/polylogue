@@ -206,6 +206,8 @@ impl Sinex {
                             | "polylogue.fragment"
                             | "polylogue.event"
                             | "polylogue.link"
+                            | "polylogue.prefix_copy"
+                            | "polylogue.prefix_member"
                             | "polylogue.background"
                             | "polylogue.repository"
                             | "polylogue.parse_progress"

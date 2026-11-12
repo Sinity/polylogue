@@ -149,6 +149,14 @@ pub enum Product {
         reading: Reading,
         facts: Link,
     },
+    PrefixCopy {
+        reading: Reading,
+        facts: polylogue_model::PrefixCopy,
+    },
+    PrefixMember {
+        reading: Reading,
+        facts: polylogue_model::PrefixMember,
+    },
     Background {
         reading: Reading,
         facts: BackgroundUpdate,
@@ -200,6 +208,8 @@ impl Product {
             | Self::Fragment { reading, .. }
             | Self::Event { reading, .. }
             | Self::Link { reading, .. }
+            | Self::PrefixCopy { reading, .. }
+            | Self::PrefixMember { reading, .. }
             | Self::Background { reading, .. }
             | Self::Repository { reading, .. }
             | Self::ParseProgress { reading, .. } => Some(reading),
@@ -491,6 +501,24 @@ pub fn parse(
         reading: reading.clone(),
         facts,
     }));
+    products.extend(
+        output
+            .prefix_copies
+            .into_iter()
+            .map(|facts| Product::PrefixCopy {
+                reading: reading.clone(),
+                facts,
+            }),
+    );
+    products.extend(
+        output
+            .prefix_members
+            .into_iter()
+            .map(|facts| Product::PrefixMember {
+                reading: reading.clone(),
+                facts,
+            }),
+    );
     products.extend(
         output
             .background

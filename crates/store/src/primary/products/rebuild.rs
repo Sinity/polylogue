@@ -116,6 +116,22 @@ impl AssembledReading {
                 );
                 self.output.links.push(facts);
             }
+            Product::PrefixCopy { facts, .. } => {
+                save_receipt(
+                    &mut self.output.prefix_copy_receipts,
+                    self.output.prefix_copies.len(),
+                    admitted,
+                );
+                self.output.prefix_copies.push(facts);
+            }
+            Product::PrefixMember { facts, .. } => {
+                save_receipt(
+                    &mut self.output.prefix_member_receipts,
+                    self.output.prefix_members.len(),
+                    admitted,
+                );
+                self.output.prefix_members.push(facts);
+            }
             Product::Background { facts, .. } => self.output.background.push(facts),
             Product::Repository { facts, .. } => self.output.repo_lookups.push(facts),
             Product::ParseProgress {

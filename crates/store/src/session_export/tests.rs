@@ -19,7 +19,7 @@ fn export_over_a_corrupt_stored_link_kind_is_a_store_failure() {
             .unwrap();
     }
     fixture
-        .link("test:parent", "test:child", "continuation", "fork")
+        .link("test:parent", "test:child", "fork", None)
         .unwrap();
     let child = SessionId::parse("test:child").unwrap();
     let export = |fixture: &Fixture| {
@@ -28,7 +28,7 @@ fn export_over_a_corrupt_stored_link_kind_is_a_store_failure() {
     };
     assert_eq!(export(&fixture).unwrap().unwrap().links.len(), 1);
     fixture
-        .link("test:parent", "test:child", "unheard-of", "fork")
+        .link("test:parent", "test:child", "unheard-of", None)
         .unwrap();
     let error = export(&fixture).unwrap_err();
     assert!(

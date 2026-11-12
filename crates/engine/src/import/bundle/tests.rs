@@ -66,6 +66,7 @@ fn fragment_staging_conserves_versions_conflicting_claims_and_complete_canonical
         block_ordinals: vec![0],
         injections: vec![],
         bindings: vec![],
+        copied_for: Vec::new(),
         message,
     }));
     let declarations = vec![

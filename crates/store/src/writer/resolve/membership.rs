@@ -6,7 +6,7 @@
 use super::*;
 use crate::encoding::{PreparedDocument, PreparedMessage};
 use crate::writer::compose;
-use polylogue_model::{Completion, FieldGroup, IdKind, Route};
+use polylogue_model::{Completion, FieldGroup, IdKind, MessageId, Route};
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct MessageChoice {
@@ -199,6 +199,7 @@ struct MessageMember {
     end: i64,
     session: i64,
     main: bool,
+    explicit_owner: bool,
     route: Route,
     completion: Completion,
     seq: i64,
@@ -379,7 +380,7 @@ fn load_message(
         None => None,
     };
     let mut statement = index.prepare_cached(
-        "SELECT s.input_pk,s.chain,s.source_start,s.source_end,s.session_pk,s.main,s.completion,s.route,s.seq,s.record_position,s.version_hash,s.id_kind,p.layout,i.id,s.order_time,s.at
+        "SELECT s.input_pk,s.chain,s.source_start,s.source_end,s.session_pk,s.main,s.completion,s.route,s.seq,s.record_position,s.version_hash,s.id_kind,p.layout,i.id,s.order_time,s.at,coalesce((SELECT json_extract(facts,'$.kind')<>'compaction' FROM session_record f WHERE f.session_pk=s.session_pk AND f.input_pk=s.input_pk AND f.chain=s.chain),0)
          FROM message_source s JOIN input_ref i ON i.pk=s.input_pk
          LEFT JOIN message_projection p ON p.version_hash=s.version_hash WHERE message_pk=?1",
     )?;
@@ -394,6 +395,7 @@ fn load_message(
                     end: r.get(3)?,
                     session: r.get(4)?,
                     main: r.get(5)?,
+                    explicit_owner: r.get(16)?,
                     completion: named(r.get(6)?)?,
                     route: named(r.get(7)?)?,
                     seq: r.get(8)?,
@@ -862,15 +864,34 @@ impl<'a> Projection<'a> {
             merged.merge(session);
             choices.sessions.insert(pk, merged.clone());
             let main = merged.kind == polylogue_model::SessionKind::Main;
+            let explicit_owner = merged.kind != polylogue_model::SessionKind::Compaction;
+            // A portable header may arrive after its messages. Revisit only
+            // this exact source's indexed memberships, including unloaded rows.
+            let stored_kind:Option<String>=self.index.query_row("SELECT json_extract(facts,'$.kind') FROM session_record WHERE session_pk=?1 AND input_pk=?2 AND chain=?3",params![pk,input,chain],|r|r.get(0)).optional()?;
+            if !self.reset_inputs.contains(&(input, chain))
+                && stored_kind.as_deref() != Some(merged.kind.as_str())
+            {
+                let held=self.index.prepare_cached("SELECT s.message_pk FROM message_source s WHERE s.input_pk=?1 AND s.chain=?2 AND s.session_pk=?3 AND EXISTS(SELECT 1 FROM message_source other WHERE other.message_pk=s.message_pk AND other.input_pk<>s.input_pk)")?
+                .query_map(params![input,chain,pk],|r|r.get::<_,i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                for message_pk in held {
+                    if !self.messages.members.contains_key(&message_pk) {
+                        let (members, shown) =
+                            load_message(self.index, message_pk, &mut self.message_layouts)?;
+                        self.messages.members.insert(message_pk, members);
+                        self.shown_messages.insert(message_pk, shown);
+                    }
+                }
+            }
             for (message_pk, members) in &mut self.messages.members {
                 for member in members
                     .iter_mut()
                     .filter(|m| m.session == pk && m.input == input && m.chain == chain)
                 {
-                    if member.main != main {
+                    if member.main != main || member.explicit_owner != explicit_owner {
                         self.messages.touched.insert(*message_pk);
                     }
                     member.main = main;
+                    member.explicit_owner = explicit_owner;
                 }
             }
         }
@@ -986,11 +1007,14 @@ impl<'a> Projection<'a> {
             {
                 slot.insert(facts);
             }
-            let main=match self.session_facts.get(&(session,input,chain)) {
-                    Some(facts)=>facts.kind==polylogue_model::SessionKind::Main,
-                    None if self.reset_inputs.contains(&(input,chain))=>true,
-                    None=>self.index.query_row("SELECT coalesce((SELECT json_extract(facts,'$.kind') FROM session_record WHERE session_pk=?1 AND input_pk=?2 AND chain=?3),'main')",params![session,input,chain],|r|r.get::<_,String>(0))?=="main",
-                };
+            let source_kind=match self.session_facts.get(&(session,input,chain)) {
+                Some(facts)=>Some(facts.kind),
+                None if self.reset_inputs.contains(&(input,chain))=>None,
+                None=>self.index.query_row("SELECT json_extract(facts,'$.kind') FROM session_record WHERE session_pk=?1 AND input_pk=?2 AND chain=?3",params![session,input,chain],|r|named(r.get(0)?)).optional()?,
+            };
+            let main = source_kind.is_none_or(|kind| kind == polylogue_model::SessionKind::Main);
+            let explicit_owner =
+                source_kind.is_some_and(|kind| kind != polylogue_model::SessionKind::Compaction);
             choices.message_mains.push(main);
             let (seq, position) = match step.message_position(i)? {
                 Some(order) => (order, 0),
@@ -1012,6 +1036,7 @@ impl<'a> Projection<'a> {
                     end: row.end.max(row.offset) as i64,
                     session,
                     main,
+                    explicit_owner,
                     route,
                     completion: Completion::of(&row.message, route),
                     seq,
@@ -1482,14 +1507,14 @@ impl<'a> Projection<'a> {
     ) -> Result<()> {
         for link in &step.output.links {
             let pk = self.keys.get(Kind::Link, &link_key(link)?)?.pk;
-            let mut merged = link.clone();
+            let mut merged = named_link(link.clone(), &self.keys.identities)?;
             if let Some(previous) = self.links.find(pk, input, chain) {
                 let previous: Link = crate::encoding::unpack_json(&previous.body(
                     self.index,
                     Kind::LinkValue,
                     self.values,
                 )?)?;
-                merged = merge_link(merged, previous);
+                merged = merge_link(merged, named_link(previous, &self.keys.identities)?);
             }
             let value = self.resolver.value(self.index, Kind::LinkValue, &merged)?;
             self.links.put(
@@ -1546,6 +1571,7 @@ impl<'a> Projection<'a> {
                         input: &m.input_id,
                         route: m.route,
                         main: m.main,
+                        explicit_owner: m.explicit_owner,
                         completion: m.completion,
                         hash: &m.hash,
                         message: &message_values[&m.hash].0,
@@ -1785,12 +1811,14 @@ impl<'a> Projection<'a> {
                 .iter()
                 .find(|m| m.input == input && m.chain == chain)
                 .expect("link winner");
-            let mut link: Link =
-                crate::encoding::unpack_json(&winner.body(index, Kind::LinkValue, values)?)?;
+            let mut link = named_link(
+                crate::encoding::unpack_json(&winner.body(index, Kind::LinkValue, values)?)?,
+                &self.keys.identities,
+            )?;
             for member in members {
                 let other =
                     crate::encoding::unpack_json(&member.body(index, Kind::LinkValue, values)?)?;
-                link = merge_link(link, other);
+                link = merge_link(link, named_link(other, &self.keys.identities)?);
             }
             choices
                 .links
@@ -1900,11 +1928,26 @@ impl ValueMember {
     }
 }
 
-// A relation's optional coordinates and evidence merge independently of which
-// contributor supplies its source membership.
+fn named_link(mut link: Link, ids: &crate::session_alias::Identities) -> Result<Link> {
+    link.parent = SessionId::parse(ids.shown_session(&link.parent.to_string()))
+        .map_err(|e| StoreError::Invalid(e.to_string()))?;
+    link.child = SessionId::parse(ids.shown_session(&link.child.to_string()))
+        .map_err(|e| StoreError::Invalid(e.to_string()))?;
+    link.at = link
+        .at
+        .map(|at| {
+            MessageId::parse(ids.shown_message(&at.to_string()).as_ref())
+                .map_err(|e| StoreError::Invalid(e.to_string()))
+        })
+        .transpose()?;
+    Ok(link)
+}
+
+// Only observations of the same coordinates are combined; disagreements
+// have different statement keys and survive as separate memberships.
 fn merge_link(mut link: Link, other: Link) -> Link {
-    link.at = link.at.into_iter().chain(other.at).min();
-    link.call_id = link.call_id.into_iter().chain(other.call_id).min();
+    debug_assert_eq!(link.key(), other.key());
+    link.copies_prefix |= other.copies_prefix;
     link.evidence = link.evidence.min(other.evidence);
     link
 }

@@ -1,7 +1,7 @@
 //! Hermes state rows, read from one stored row dump. Session facts
 //! and record identities are metadata; message bodies are decoded one at a time.
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 use crate::fields::ExpectedType as T;
 mod identity;
@@ -602,6 +602,8 @@ impl ExportParser for Database {
                         });
                     sink.out.links.push(Link {
                         kind,
+                        copies_prefix: false,
+                        how: None,
                         parent: parent_id,
                         child: id.clone(),
                         at: anchor,

@@ -133,8 +133,8 @@ impl<'a> Compiler<'a> {
                     "tree_cost" => {
                         let tree = fields::subtree(s);
                         Some(format!(
-                            "({} OR EXISTS (SELECT 1 FROM link xl JOIN session xs ON xs.id = xl.parent_id \
-                         WHERE xl.kind = 'subagent' AND xl.child_pk IS NULL AND xs.pk IN ({tree})))",
+                            "({} OR EXISTS (SELECT 1 FROM session_link xl JOIN session xs ON xs.id = xl.parent_id \
+                         WHERE xl.kind = 'spawn' AND xl.child_pk IS NULL AND xs.pk IN ({tree})))",
                             unpriced(&tree)
                         ))
                     }

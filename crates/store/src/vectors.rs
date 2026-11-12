@@ -561,8 +561,8 @@ pub struct ProseText {
 }
 
 impl Reader<'_> {
-    /// Prose texts (text and thinking blocks of human and model messages)
-    /// with ids above `after`, in id order, at most `limit`. With
+    /// Indexed prose texts with current message membership, with IDs above
+    /// `after`, in ID order, at most `limit`. With
     /// `sessions`, only texts of those sessions' blocks.
     pub fn prose_texts(
         &self,

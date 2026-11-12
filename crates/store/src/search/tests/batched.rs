@@ -37,15 +37,10 @@ fn batched_hits_preserve_query_priority_scope_eligibility_and_cyclic_ancestry() 
     let inactive = message(leaf, "inactive", "cedar", "human", Some(false));
     let harness = message(root, "harness", "cedar", "harness", Some(true));
     fixture
-        .link(
-            "test:snippet-root",
-            "test:snippet-leaf",
-            "subagent",
-            "fresh",
-        )
+        .link("test:snippet-root", "test:snippet-leaf", "spawn", None)
         .unwrap();
     let write = crate::archive::open_write(&fixture.archive.index_db(), 1024).unwrap();
-    write.execute("INSERT INTO link(parent_id,child_id,child_pk,kind,how,evidence,input_pk) VALUES('test:snippet-leaf','test:snippet-root',?1,'subagent','fresh','fixture',(SELECT pk FROM input_ref LIMIT 1))",[root]).unwrap();
+    write.execute("INSERT INTO link(parent_id,child_id,child_pk,kind,how,evidence,input_pk) VALUES('test:snippet-leaf','test:snippet-root',?1,'spawn',NULL,'fixture',(SELECT pk FROM input_ref LIMIT 1))",[root]).unwrap();
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
     let terms = [

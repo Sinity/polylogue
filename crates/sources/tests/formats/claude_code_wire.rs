@@ -336,7 +336,7 @@ fn hook_summary_preserves_supplied_context_even_when_continuation_is_prevented()
     assert_eq!(hooks[0]["data"], native);
     let m = message(&p, ":sy1");
     assert_eq!(m["role"], "system");
-    assert_eq!(m["prompt_kind"], "harness");
+    assert_eq!(m["prompt_kind"], "injected_context");
     assert!(m.get("model").is_none());
     assert_eq!(
         m["blocks"],
@@ -470,7 +470,7 @@ fn hook_errors_and_prevented_continuation_are_one_harness_record_with_context() 
     assert_eq!(messages(&p).len(), 1);
     let m = message(&p, ":sy1");
     assert_eq!(m["role"], "system");
-    assert_eq!(m["prompt_kind"], "harness");
+    assert_eq!(m["prompt_kind"], "injected_context");
     assert!(m.get("model").is_none());
     assert_eq!(
         m["blocks"],

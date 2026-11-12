@@ -235,9 +235,24 @@ impl WriterArchive {
             })
             .collect();
         let records = rows.len() as u64;
+        // This fixture writes one native session file. Rows naming another
+        // session are physical copies, independent of any provider relation.
+        let prefix_copies = rows
+            .iter()
+            .filter(|row| row.message.session != s.id)
+            .map(|row| row.message.session.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .map(|parent| polylogue_model::PrefixCopy {
+                parent,
+                child: s.id.clone(),
+                explicit_members: false,
+            })
+            .collect();
         let output = Output {
             sessions: vec![s],
             messages: rows,
+            prefix_copies,
             links: std::mem::take(&mut self.links),
             repo_lookups: std::mem::take(&mut self.lookups),
             ..Output::default()

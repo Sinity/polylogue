@@ -505,6 +505,7 @@ pub fn rule(id: FieldId) -> Rule {
         EventsUntil => Rule::NONE.custom(custom::until),
         LinksKind => Rule::NONE.sql("{r}.kind"),
         LinksHow => Rule::NONE.sql("{r}.how"),
+        LinksCopiesPrefix => Rule::NONE.sql("{r}.copies_prefix"),
         LinksParent => Rule::NONE.custom(custom::link_parent).sql("{r}.parent_id"),
         LinksChild => Rule::NONE.custom(custom::link_child).sql("{r}.child_id"),
         LinksPending => Rule::NONE.sql("(NOT EXISTS (SELECT 1 FROM session lp WHERE lp.id = {r}.parent_id))"),
@@ -893,9 +894,9 @@ pub fn hidden(s: &str) -> String {
 /// The session and every session below it in its subagent tree.
 pub fn subtree(s: &str) -> String {
     format!(
-        "WITH RECURSIVE tr(pk) AS (SELECT {s}.pk UNION SELECT l.child_pk FROM link l \
+        "WITH RECURSIVE tr(pk) AS (SELECT {s}.pk UNION SELECT l.child_pk FROM session_link l \
          JOIN session lp ON lp.id = l.parent_id JOIN tr ON tr.pk = lp.pk \
-         WHERE l.kind = 'subagent' AND l.child_pk IS NOT NULL) SELECT pk FROM tr"
+         WHERE l.kind = 'spawn' AND l.child_pk IS NOT NULL) SELECT pk FROM tr"
     )
 }
 

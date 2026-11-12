@@ -96,11 +96,13 @@ impl Hits<'_> {
         format!("{b}.kind IN ({kinds})")
     }
 
-    /// For prose, the condition that message alias `m` was written by a
-    /// person or a model, after ` AND `; empty for the other indexes.
+    /// Prose excludes harness prompts except summaries. Unknown authorship
+    /// keeps its text searchable. Empty for the other indexes.
     pub fn writer(&self, m: &str) -> String {
         match self.index {
-            Index::Prose => format!(" AND {m}.written_by IN ('human', 'model')"),
+            Index::Prose => format!(
+                " AND ({m}.written_by IN ('human', 'model', 'unknown') OR {m}.prompt_kind='compaction_summary')"
+            ),
             _ => String::new(),
         }
     }
@@ -145,7 +147,7 @@ fn sessions_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
          ancestors(session_pk, rank) AS (\
            SELECT session_pk, rank FROM matched UNION \
            SELECT parent.pk, child.rank FROM ancestors child \
-           CROSS JOIN link l ON l.child_pk=child.session_pk AND l.kind='subagent' \
+           CROSS JOIN session_link l ON l.child_pk=child.session_pk AND l.kind='spawn' \
            CROSS JOIN session parent ON parent.id=l.parent_id) \
          SELECT session_pk, min(rank) AS rank FROM ancestors GROUP BY session_pk)",
         h.block_kind("xb"),
@@ -527,8 +529,8 @@ static TOOL_CALLS: UnitSpec = UnitSpec {
             "child",
             Unit::Sessions,
             Via::Exists {
-                cond: "EXISTS (SELECT 1 FROM link lc JOIN {from} ON {ns}.pk = lc.child_pk \
-                       WHERE lc.kind = 'subagent' AND lc.parent_id = {s}.id \
+                cond: "EXISTS (SELECT 1 FROM session_link lc JOIN {from} ON {ns}.pk = lc.child_pk \
+                       WHERE lc.kind = 'spawn' AND lc.parent_id = {s}.id \
                        AND lc.spawning_call = {t}.call_id AND {cond})",
                 value: None,
             },
@@ -662,15 +664,23 @@ static ASSERTIONS: UnitSpec = UnitSpec {
 
 static LINKS: UnitSpec = UnitSpec {
     from: Expr::Template(
-        "link {r} LEFT JOIN session {r}p ON {r}p.id = {r}.parent_id LEFT JOIN session {r}c ON {r}c.pk = {r}.child_pk",
+        "session_link {r} LEFT JOIN session {r}p ON {r}p.id = {r}.parent_id LEFT JOIN session {r}c ON {r}c.pk = {r}.child_pk",
     ),
     key: "{r}.pk",
-    identity: &["{r}.parent_id", "{r}.child_id", "{r}.kind", "{r}.how"],
+    identity: &[
+        "{r}.parent_id",
+        "{r}.child_id",
+        "{r}.kind",
+        "{r}.how",
+        "{r}.branch_point",
+        "{r}.spawning_call",
+    ],
     columns: &[
         ("parent", Expr::Template("{r}.parent_id"), Text),
         ("child", Expr::Template("{r}.child_id"), Text),
         ("kind", T("{r}.kind"), Text),
         ("how", T("{r}.how"), Text),
+        ("copies_prefix", T("{r}.copies_prefix"), Bool),
         ("evidence", T("{r}.evidence"), Text),
         ("pending", T("({r}p.pk IS NULL)"), Bool),
     ],

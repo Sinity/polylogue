@@ -222,7 +222,7 @@ fn compare(
         Value::Array(items) => {
             // Messages, tool calls and links: compared by the session (or
             // the link's parent and child) and, where given, the command
-            // and exit code or how; sorted, since a text search ranks.
+            // and exit code or kind; sorted, since a text search ranks.
             let mut got: Vec<String> = rows(v)
                 .iter()
                 .map(|r| match number {
@@ -236,7 +236,7 @@ fn compare(
                         "{} {} {}",
                         s(&r["parent"]),
                         s(&r["child"]),
-                        r["how"].as_str().unwrap_or("")
+                        r["kind"].as_str().unwrap_or("")
                     ),
                     _ => row_session(r),
                 })

@@ -119,7 +119,7 @@ pub(crate) fn project_fragment(
         }
     }
     let harness = origin.message.as_ref().is_some_and(|message| {
-        message.role == Role::System || message.prompt_kind == Some(PromptKind::Harness)
+        message.role == Role::System || message.prompt_kind.is_some_and(PromptKind::is_harness)
     });
     let missing = |evidence: &str| ReadError::MissingEvidence {
         view: options.view,

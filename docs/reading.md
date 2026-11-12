@@ -328,7 +328,7 @@ Writing out a selection is reading it to a directory; there is no separate expor
 
 `polylogue QUERY read --to DIR [--format json|jsonl|markdown|html] [--view …] [--with-blobs] [--hide inherited,assertions]` writes a bundle; `read --to FILE` writes one document. Authored state is written out the same way (`polylogue 'assertions' read --to DIR`).
 
-**The bundle** is a typed record stream, `polylogue-bundle` version 2:
+**The bundle** is a typed record stream, `polylogue-bundle` version 3:
 
 - the first record is the manifest: the query text and its `query:<hash>`, `ran_at`, the archive and index positions read, whether the index was caught up, counts, flags, enabled variants, and the computed author;
 - then one record per physical session (its messages, blocks, events, links and attachment descriptors inline), per document, per input event, per authored record (assertions, pages, kept results, deliveries) and per variant, in commit order;
@@ -341,6 +341,8 @@ Writing out a selection is reading it to a directory; there is no separate expor
 - Absent means unknown; no `null` is written for unknown. Times are RFC 3339 at the precision the source gave, each with its quality, precision and recorded upper bound; stored record times stay UTC. Encrypted reasoning is never written.
 - A JSON Schema generated from the Rust types is committed and tested current. A newer major version is refused by name, and so are Polylogue's own earlier export formats: Polylogue reads only its current bundle version.
 - Every object carries its stable reference.
+- A message's `commit` is the selected body's immutable admission. Snapshot freshness covers the copied-prefix and other metadata attached when the reading was made; session and link receipts fold their contributing facts.
+- Copied-prefix membership names its observed parent, child, original source reading and order beside the message. A conflicting current message owner leaves that original parent claim intact.
 - Sessions are written one at a time to a temporary directory that is renamed over the previous bundle only when complete; memory is bounded by the largest item, not the selection. Progress goes to stderr.
 - **Round trip:** importing a bundle into a fresh archive ([capture.md](capture.md#import)) gives the same session, message, document and event IDs and the same authored records and variants; importing it again changes nothing except recording the input. Raw provider bytes are not carried: a bundle is a reading. A whole-archive selection is an ordinary query.
 - OpenTelemetry GenAI traces are another writer of the same selection (`--format otel`), with paths replaced unless `--keep-paths` is given and message text only with `--with-text`.

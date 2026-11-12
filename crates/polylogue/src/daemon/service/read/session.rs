@@ -129,9 +129,7 @@ struct Composed {
 }
 /// A part that reads a spawned session inline.
 fn spawned(part: &Part) -> bool {
-    part.joined_by
-        .as_deref()
-        .is_some_and(|how| how.starts_with("subagent:"))
+    part.joined_by.as_deref().is_some_and(|how| how == "spawn")
 }
 
 impl Composed {
@@ -252,10 +250,9 @@ fn prefix(
     let mut on_path: HashSet<SessionId> = HashSet::from([session.clone()]);
     let mut current = session.clone();
     loop {
-        let links = reader.composing_links(&current)?;
+        let links = reader.inherited_prefixes(&current)?;
         let forks: std::collections::BTreeSet<(String, String)> = links
             .iter()
-            .filter(|link| link.how == "fork")
             .filter_map(|link| Some((link.parent.clone(), link.branch_point.clone()?)))
             .collect();
         if forks.len() > 1 {
@@ -311,7 +308,7 @@ fn prefix(
             composed.issues.push(ParentIssue::Cycle { session: parent });
             break;
         }
-        if link.how == "fork" && link.branch_point.is_none() {
+        if !link.copies_prefix && link.branch_point.is_none() {
             composed.issues.push(ParentIssue::MissingAnchor {
                 child: current.clone(),
                 parent,
@@ -488,7 +485,7 @@ fn children(
             let Ok(child) = SessionId::parse(&link.child) else {
                 continue;
             };
-            let joins = link.kind == "continuation" && link.how != "fork";
+            let joins = matches!(link.kind.as_str(), "continuation" | "resume");
             if joins && scope.logical {
                 if !visited.insert(child.clone()) {
                     composed.issues.push(ParentIssue::Cycle { session: child });
@@ -513,7 +510,7 @@ fn children(
                             source: Source::record(format!("session:{child}")),
                             kind: ItemKind::Indicator {
                                 indicator: IndicatorKind::Continues,
-                                text: format!("continues {session} ({})", link.how),
+                                text: format!("continues {session} ({})", link.kind),
                                 expand: None,
                             },
                         });
@@ -523,7 +520,7 @@ fn children(
                     start: 0,
                     end: child_index.entries as usize,
                     inherited: false,
-                    joined_by: Some(format!("{}:{}", link.kind, link.how)),
+                    joined_by: Some(link.kind.clone()),
                 });
                 composed.indexes.push(child_index);
                 continue;
@@ -533,7 +530,7 @@ fn children(
             }
             // A card at the branch point or the spawning call.
             let (anchor, call) = match link.kind.as_str() {
-                "subagent" => match link.spawning_call.as_deref() {
+                "spawn" => match link.spawning_call.as_deref() {
                     Some(call) => match spawning_call(reader, &index, call)? {
                         Some((seq, entry)) => (Some(seq), Some(entry)),
                         None => (None, None),
@@ -602,7 +599,7 @@ fn inline_spawns(
         let mut spawned = Vec::new();
         for link in reader.child_links(&part.session)? {
             still_wanted()?;
-            if link.kind != "subagent" {
+            if link.kind != "spawn" {
                 continue;
             }
             let Ok(child) = SessionId::parse(&link.child) else {
@@ -657,7 +654,7 @@ fn inline_spawns(
                     start: 0,
                     end,
                     inherited: false,
-                    joined_by: Some(format!("{}:{}", link.kind, link.how)),
+                    joined_by: Some(link.kind.clone()),
                 },
                 child_index,
                 level + 1,
@@ -760,7 +757,7 @@ fn card(
             format: Default::default(),
         })
         .map_err(Failure::from)?;
-    let kind = if link.kind == "subagent" {
+    let kind = if link.kind == "spawn" {
         let objective = call
             .and_then(|entry| entry.target.clone())
             .map_or(ValueState::NotRecorded, ValueState::known);
@@ -786,7 +783,7 @@ fn card(
                 open: Some(Box::new(open)),
             },
             None => Card::Fields {
-                title: format!("{} {reference} (not in the archive)", link.how),
+                title: format!("{} {reference} (not in the archive)", link.kind),
                 figures: Vec::new(),
             },
         }
