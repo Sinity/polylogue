@@ -89,6 +89,14 @@ fn written_tool_text_searches_output_and_snippets_and_retracts_without_losing_in
                 crate::ordered_blocks::one(r.conn().unwrap(), block[0]["pk"].as_i64().unwrap())
                     .unwrap();
             assert_eq!(decoded, call(Some("written needle Łódź")));
+            let original = message(Some("written needle Łódź"));
+            let version = original.content_hash().unwrap();
+            let (retained, projection) =
+                crate::versions::read_message(r.conn().unwrap(), &version.0)
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(retained, original);
+            assert_eq!(retained.content_hash().unwrap(), projection.source_version);
             let snippets = r
                 .snippets(
                     &[crate::search::SnippetQuery {
