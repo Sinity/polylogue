@@ -68,7 +68,12 @@ committing a lock file, as the shared
 [dependency guide](https://github.com/Sinity/polylogue-sinex-common#depending-on-this-repository)
 describes.
 
-A host may queue these commands through its own job runner.
+A host may queue these commands through its own job runner. AgentCTL routes
+`fast` and `focused` through the same one-slot `compile` queue. Selected tests
+therefore wait for source checks rather than long runtime proofs, and their
+builds do not overlap a metadata check. Full checks and Nix checks retain
+their `bulk` queue. The `package` operation runs all locked Nix checks;
+`nix build` builds the package alone.
 
 ## Published package
 

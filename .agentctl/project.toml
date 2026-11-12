@@ -47,10 +47,10 @@ cache = "none"
 unit_properties = ["MemoryHigh=8G"]
 
 [operations.focused]
-description = "Selected package or test checks with the normal development queue"
+description = "Selected tests in the shared source-check queue"
 exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "--quiet", "-p", "xtask", "--", "test"]
 arguments = "required"
-pool = "normal"
+pool = "compile"
 result = "exit"
 timeout_seconds = 3600
 scratch = "tmpfs"
@@ -58,7 +58,7 @@ cache = "none"
 unit_properties = ["MemoryHigh=8G"]
 
 [operations.package]
-description = "Clean Nix build of the polylogue package (nix flake check)"
+description = "Full locked Nix checks: package, source, modules and services"
 exec = ["nix", "flake", "check", "--print-build-logs"]
 pool = "bulk"
 result = "exit"
