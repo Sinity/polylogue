@@ -76,8 +76,7 @@ fn a_read_honours_its_view_format_and_budget() {
     );
     let first = typed(read(&w.daemon, "transcript", "json", Some(1), None));
     let call = first.document.footer.next.as_ref().expect("a second page");
-    let envelope: command_surface::RunnableRequest =
-        serde_json::from_value(call.http.arguments.clone()).unwrap();
+    let envelope: command_surface::RunnableRequest = call.request.clone();
     let cursor = envelope;
     let second = typed(read(
         &w.daemon,
@@ -118,7 +117,7 @@ fn reading_variants_setting_is_the_default_and_is_bound_in_the_cursor() {
     };
     let next = |page: &polylogue_model::read::ReadPage| -> command_surface::RunnableRequest {
         let call = page.document.footer.next.as_ref().expect("another page");
-        serde_json::from_value(call.http.arguments.clone()).unwrap()
+        call.request.clone()
     };
     let variants = |call: &command_surface::RunnableRequest| -> Vec<String> {
         serde_json::from_value::<crate::protocol::read::Arguments>(call.arguments.clone())

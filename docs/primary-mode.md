@@ -78,6 +78,12 @@ export events retain the identities assigned before publication, even when
 JSON object keys return in a different order. The original callback body and
 its seal remain unchanged.
 
+A reconnect supplies the actual native completion receipt saved atomically with
+the applied position. Sinex reoffers that marker, then later data; it does not
+redeliver the original history. The separate staged cursor permits broker ACKs
+for durable partial pages and never substitutes for completed local progress.
+A replayed old barrier cannot move the completed receipt beyond unapplied data.
+
 The stream follower alone reads and acknowledges confirmed pages. It sends each
 page to the writer and acknowledges it after durable application. It drains
 remaining stream or snapshot pages without an idle pause, checking stop and
@@ -222,7 +228,7 @@ Publication and read failures remain distinct observations in that status. A suc
 
 Each snapshot page is fetched under the owner's pinned cut, scope, catalog and stream incarnation. Every fetched event must match its reference's identity, admission position, kind, definition, projection and source authority. Archived readings retain their original admission and lifecycle order. A page and its next cursor commit together; interruption resumes that cursor. Invalidated owner context discards the partial snapshot, reports the owner's reason as a failed turn, and starts again. Unavailable owner evidence leaves the staged pages and cursor intact for retry. Partial pages are invisible and advance no applied position.
 
-The last page carries the owner's certificate for the complete indexed projection at position B, at or after the stream origin. The writer makes the entire staged snapshot visible and saves that certificate with applied position B in one transaction. Every later consumer, status and resume request supplies it. The origin itself never stands in for an applied client prefix or same-incarnation delivery evidence. A changed scope or stream incarnation replaces the older cache, including facts absent from the new snapshot. This rebuild path reads stored products; it does not read materials back to re-parse them.
+The last page carries the owner's certificate for the complete indexed projection at position B, at or after the stream origin. The writer makes the entire staged snapshot visible and saves that certificate with applied position B in one transaction. Every later consumer, status and resume request supplies it. Before opening the SQL cut B, Sinex captures a native prefix N and binds its exact message identity in that certificate. The snapshot covers every admitted fact published through N, so the first subscription starts at N+1 even when B lies between completion markers. N is projection coverage, not a delivered completion. An empty prefix skips nothing; a missing or changed boundary invalidates the certificate for restart and requests a new projection. The origin itself never stands in for an applied client prefix or same-incarnation delivery evidence. A changed scope or stream incarnation replaces the older cache, including facts absent from the new snapshot. This rebuild path reads stored products; it does not read materials back to re-parse them.
 
 **Parser upgrades.** A chain whose reading version changed is re-parsed from its materials, read through the producer client, and its facts are sent again under the same stable keys as a producer replay of those materials: the new readings become live and the previous ones are archived with their derived chains, which never include authored records about the session.
 

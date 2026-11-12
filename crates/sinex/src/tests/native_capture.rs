@@ -856,7 +856,10 @@ fn a_deferred_database_read_error_preserves_another_files_confirmation_wait() {
                         }),
                     })),
                 },
-                control(ReplayControl::Completion { position: 1 }),
+                control(ReplayControl::Completion {
+                    position: 1,
+                    delivery: None,
+                }),
             ])
             .unwrap();
         drop(writer);
@@ -1144,7 +1147,10 @@ fn a_gone_observation_waits_on_the_confirmed_input_through_the_capture_route() {
                     material: None,
                 })),
             },
-            control(ReplayControl::Completion { position: 1 }),
+            control(ReplayControl::Completion {
+                position: 1,
+                delivery: None,
+            }),
         ])
         .unwrap();
     drop(writer);

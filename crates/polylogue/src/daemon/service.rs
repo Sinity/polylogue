@@ -130,32 +130,14 @@ impl Daemon {
                 )
                 .map_err(|failure| failure.error)?;
         }
-        let mcp = command.tool.map_or(serde_json::Value::Null, |tool| {
-            let call = crate::mcp::ToolCall {
-                operation: Some(request.operation.clone()),
-                arguments: request.arguments.clone(),
-                request_id: request.request_id.clone(),
-                deadline: request.deadline,
-                cursor: request.cursor.clone(),
-                budget_tokens: request.budget_tokens,
-            };
-            serde_json::json!({"name": tool.name(), "arguments": call})
-        });
+        if description.spec.http_route.is_none() {
+            return Err(Failure::new(
+                FailureKind::BadRequest,
+                "operation has no HTTP route",
+            ));
+        }
         Ok(polylogue_model::read::ReadyCall {
-            cli: table.cli_command(request)?,
-            mcp,
-            http: polylogue_model::read::HttpCall {
-                method: if description.spec.access != command_surface::Access::Read {
-                    "POST"
-                } else {
-                    "GET"
-                }
-                .into(),
-                path: description.spec.http_route.clone().ok_or_else(|| {
-                    Failure::new(FailureKind::BadRequest, "operation has no HTTP route")
-                })?,
-                arguments: serde_json::to_value(request).expect("request serializes"),
-            },
+            request: request.clone(),
         })
     }
 

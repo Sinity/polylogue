@@ -25,6 +25,17 @@ scratch = "nvme"
 cache = "none"
 unit_properties = ["MemoryHigh=8G"]
 
+[operations.compile]
+description = "Type-check selected packages and targets; pass native Cargo check arguments"
+exec = ["nix", "develop", "--command", "cargo", "check", "--locked"]
+arguments = "required"
+pool = "compile"
+result = "exit"
+timeout_seconds = 1800
+scratch = "nvme"
+cache = "none"
+unit_properties = ["MemoryHigh=8G"]
+
 [operations.check]
 description = "Formatting, boundaries, both clippy configurations and all tests"
 exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "-p", "xtask", "--", "check"]

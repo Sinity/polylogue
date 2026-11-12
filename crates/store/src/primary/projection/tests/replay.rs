@@ -114,6 +114,18 @@ fn projection_pages_resume_hidden_and_install_the_certificate_with_the_complete_
     );
     assert_eq!(rows(&index, "SELECT count(*) FROM primary_pending"), 0);
     assert!(!has_fact(&index, &input(1, "obsolete").event).unwrap());
+    assert_eq!(
+        state.completed_delivery, None,
+        "a projection certificate is not a native delivery"
+    );
+    apply(&mut index, &resolver, &[completed(8, 20)]).unwrap();
+    let state = replay_state(&index).unwrap();
+    assert_eq!(state.applied_position, Some(8));
+    assert_eq!(
+        state.completed_delivery.unwrap().stream_sequence,
+        20,
+        "a real marker at the unchanged head supplies completion evidence"
+    );
 }
 
 #[test]
@@ -156,7 +168,7 @@ fn a_restarted_consumer_redelivers_applied_positions_without_changing_them() {
     )
     .unwrap();
     assert_eq!(checkpoint(&index).unwrap(), Some(2));
-    // Sinex provisioned the consumer again: it starts over from sequence 1.
+    // A native retry may repeat an already applied delivery.
     apply(
         &mut index,
         &resolver,
@@ -524,5 +536,144 @@ fn unreadable_input_blocks_absence_until_its_real_lifecycle_or_readable_replacem
             "SELECT count(*) FROM primary_fact WHERE event='erased-input' AND state='tombstoned' AND product IS NULL AND native_context IS NULL"
         ),
         1
+    );
+}
+
+fn completed(position: i64, sequence: u64) -> Confirmed {
+    control(ReplayControl::Completion {
+        position,
+        delivery: Some(CompletedDelivery {
+            stream_instance: "instance".into(),
+            stream_sequence: sequence,
+            fingerprint: "a".repeat(64),
+        }),
+    })
+}
+
+#[test]
+fn completed_receipt_survives_partial_pages_and_rolls_back_with_visible_progress() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("index.db");
+    let mut index = cache(&path);
+    let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    apply(
+        &mut index,
+        &resolver,
+        &[input(2, "first"), completed(2, 5), delivered(5)],
+    )
+    .unwrap();
+    apply(&mut index, &resolver, &[input(3, "later"), delivered(7)]).unwrap();
+    drop(index);
+    let mut index = Connection::open(&path).unwrap();
+    let state = replay_state(&index).unwrap();
+    assert_eq!(state.applied_position, Some(2));
+    assert_eq!(state.completed_delivery.unwrap().stream_sequence, 5);
+    assert_eq!(state.staged_delivery.unwrap().stream_sequence, 7);
+    assert_eq!(rows(&index, "SELECT count(*) FROM source_input"), 1);
+    // A repeated old barrier may appear after the newer partial data.
+    apply(&mut index, &resolver, &[completed(2, 8), delivered(8)]).unwrap();
+    assert_eq!(
+        replay_state(&index)
+            .unwrap()
+            .completed_delivery
+            .unwrap()
+            .stream_sequence,
+        5
+    );
+    index.execute_batch("CREATE TRIGGER stop_progress BEFORE UPDATE ON meta WHEN new.key='confirmed_replay' AND json_extract(new.value,'$.applied_position')=3 BEGIN SELECT raise(ABORT,'stop progress'); END").unwrap();
+    assert!(apply(&mut index, &resolver, &[completed(3, 9), delivered(9)]).is_err());
+    drop(index);
+    let mut index = Connection::open(&path).unwrap();
+    let state = replay_state(&index).unwrap();
+    assert_eq!(state.applied_position, Some(2));
+    assert_eq!(state.completed_delivery.unwrap().stream_sequence, 5);
+    assert_eq!(rows(&index, "SELECT count(*) FROM source_input"), 1);
+    index.execute_batch("DROP TRIGGER stop_progress").unwrap();
+    apply(&mut index, &resolver, &[]).unwrap();
+    let state = replay_state(&index).unwrap();
+    assert_eq!(state.applied_position, Some(3));
+    assert_eq!(state.completed_delivery.unwrap().stream_sequence, 9);
+    assert_eq!(rows(&index, "SELECT count(*) FROM source_input"), 2);
+}
+
+#[test]
+fn a_new_completion_after_higher_pending_data_cannot_become_a_restart_boundary() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut index = cache(&dir.path().join("index.db"));
+    let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    apply(
+        &mut index,
+        &resolver,
+        &[
+            input(2, "first"),
+            input(3, "later"),
+            completed(2, 8),
+            delivered(8),
+        ],
+    )
+    .unwrap();
+    let state = replay_state(&index).unwrap();
+    assert_eq!(state.applied_position, Some(2));
+    assert_eq!(state.completed_delivery, None);
+    assert_eq!(
+        rows(
+            &index,
+            "SELECT count(*) FROM primary_pending WHERE position=3"
+        ),
+        1
+    );
+    apply(&mut index, &resolver, &[completed(3, 9)]).unwrap();
+    assert_eq!(
+        replay_state(&index)
+            .unwrap()
+            .completed_delivery
+            .unwrap()
+            .stream_sequence,
+        9
+    );
+}
+
+#[test]
+fn malformed_and_wrong_kind_pending_evidence_refuse_visible_progress() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut index = cache(&dir.path().join("index.db"));
+    let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    apply(&mut index, &resolver, &[input(2, "first"), delivered(5)]).unwrap();
+    let projection =
+        serde_json::json!({"stamp":"certificate","position":2,"scope":"scope","catalog":"catalog"});
+    for evidence in [
+        serde_json::json!({"stream_instance":"instance","stream_sequence":5,"fingerprint":"bad"}),
+        serde_json::json!({"stream_instance":"instance","stream_sequence":0,"fingerprint":"a".repeat(64)}),
+        serde_json::json!({"stream_instance":"instance","stream_sequence":5,"fingerprint":"a".repeat(64),"stamp":"ambiguous","position":2,"scope":"scope","catalog":"catalog"}),
+        projection,
+    ] {
+        index
+            .execute(
+                "INSERT OR REPLACE INTO primary_complete(position,evidence) VALUES (2,?1)",
+                [packed(&evidence).unwrap()],
+            )
+            .unwrap();
+        assert!(
+            apply(&mut index, &resolver, &[]).is_err(),
+            "invalid evidence must refuse: {evidence}"
+        );
+        assert_eq!(checkpoint(&index).unwrap(), None);
+        assert_eq!(replay_state(&index).unwrap().completed_delivery, None);
+        assert_eq!(rows(&index, "SELECT count(*) FROM source_input"), 0);
+        assert_eq!(rows(&index, "SELECT count(*) FROM primary_pending"), 1);
+    }
+    index.execute("DELETE FROM primary_complete", []).unwrap();
+    apply(&mut index, &resolver, &[completed(2, 5)]).unwrap();
+    assert_eq!(checkpoint(&index).unwrap(), Some(2));
+    assert_eq!(
+        replay_state(&index)
+            .unwrap()
+            .completed_delivery
+            .unwrap()
+            .stream_sequence,
+        5
     );
 }

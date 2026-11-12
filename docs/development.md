@@ -94,6 +94,12 @@ committing a lock file, as the shared
 [dependency guide](https://github.com/Sinity/polylogue-sinex-common#depending-on-this-repository)
 describes.
 
+For an early type-check of one package, `cargo check --locked -p
+polylogue-sinex --tests` checks its native target without compiling a test
+executable. The declared AgentCTL `compile` operation accepts those Cargo check
+arguments in the same one-slot compile queue. `fast` and the required hosted
+checks retain their complete feature matrices.
+
 A host may queue these commands through its own job runner. AgentCTL routes
 `fast` and `focused` through the same one-slot `compile` queue. Selected tests
 therefore wait for source checks rather than long runtime proofs, and their
@@ -107,8 +113,13 @@ The `package` workflow builds `.#default` for every master commit and pushes
 its runtime closure and production compiler artifacts to `sinity.cachix.org`.
 The next source-only package build reuses those compiler artifacts. Sinnix deploys a revision only
 after fetching that package, so its switches never compile Polylogue. To
-deploy a revision master does not contain, such as a deployment branch's head, build
-it first with `gh workflow run package -f rev=<commit>`.
+deploy a revision master does not contain, such as a deployment branch's head,
+qualify that exact tree with `gh workflow run check -f rev=<full-commit-sha>`,
+then publish it with `gh workflow run package -f rev=<full-commit-sha>`. The manual
+check records and asserts its checked commit and runs the full check. Pull requests
+continue to check their merge with the default branch. Manual checks may reuse
+master's build cache but never replace it or its recorded source commit. The package
+log records the actual fetched flake source path, revision and NAR hash before building.
 
 ## Deployment modules
 

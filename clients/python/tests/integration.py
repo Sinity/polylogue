@@ -1,7 +1,7 @@
 """Public client contracts against a real synthetic daemon, started by e2e."""
 
+import base64
 import json
-import shlex
 import sys
 import tempfile
 import unittest
@@ -121,13 +121,16 @@ class ClientTests(unittest.TestCase):
             ready = page["document"]["footer"].get("next")
             if ready is None:
                 break
-            self.assertNotIn(ready["cli"], seen_calls)
-            seen_calls.add(ready["cli"])
-            words = shlex.split(ready["cli"], posix=True)
-            self.assertEqual(words[0], "polylogue")
-            answer = self.checked(lambda: self.client.call(*words[1:]))
-            # The subprocess receives the generated command intact as argv.
-            self.assertEqual(json.loads(self.arguments.read_text())[3:], words[1:])
+            self.assertNotIn(ready["cursor"], seen_calls)
+            seen_calls.add(ready["cursor"])
+            answer = self.checked(lambda: self.client.follow_read(ready))
+            arguments = json.loads(self.arguments.read_text())[3:]
+            self.assertEqual(arguments[0], "read")
+            self.assertEqual(json.loads(arguments[arguments.index("--request") + 1]), ready["arguments"])
+            self.assertEqual(arguments[arguments.index("--request-id") + 1], ready["request_id"])
+            self.assertEqual(arguments[arguments.index("--cursor") + 1], ready["cursor"])
+            self.assertNotIn("--deadline", arguments)
+            self.assertNotIn("--budget", arguments)
             count += 1
             self.assertLess(count, 100)
         self.assertGreater(count, 0)
@@ -135,6 +138,46 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(complete, whole)
         self.assertEqual([item["kind"]["text"] for item in complete if item["kind"]["kind"] == "text"],
                          ["Python λ🙂 continuation. " * 300])
+
+    def test_read_follow_ups_preserve_nulls_and_previous_pages(self):
+        first = self.direct.call("read", "session:claude-code:python-pages", "--page-tokens", "600",
+                                 "--deadline", "none").json()["value"]
+        next_request = first["document"]["footer"]["next"]
+        self.assertIsNone(next_request["deadline"])
+        second = self.checked(lambda: self.client.follow_read(next_request))["value"]
+        arguments = json.loads(self.arguments.read_text())
+        self.assertEqual(arguments[arguments.index("--deadline") + 1], "none")
+        previous = second["document"]["footer"]["previous"]
+        restored = self.checked(lambda: self.client.follow_read(previous))["value"]
+        self.assertEqual(restored["document"]["items"], first["document"]["items"])
+        # Read pages do not prepare global budgeted context. Explicit null and
+        # numeric budgets must reach that refusal, rather than become absence.
+        for budget in [None, 37]:
+            request = {**next_request, "budget_tokens": budget}
+            with self.assertRaises(Refused) as raised:
+                self.client.follow_read(request)
+            self.assertEqual(raised.exception.kind, "bad_request")
+            self.assertIn("does not prepare budgeted context", str(raised.exception))
+            arguments = json.loads(self.arguments.read_text())
+            self.assertEqual(arguments[arguments.index("--budget") + 1], "none" if budget is None else "37")
+
+    def test_generated_attachment_action_and_unsupported_operations(self):
+        page = self.direct.read("session:claude-code:python-image").json()["value"]
+        attachment = next(item["kind"] for item in page["document"]["items"]
+                          if item["kind"]["kind"] == "attachment")
+        request = attachment["open"]
+        self.assertEqual(request["operation"], "attachment")
+        answer = self.checked(lambda: self.client.follow_read(request))
+        self.assertEqual(base64.b64decode(answer["value"]["content_base64"]), b"synthetic Python attachment")
+        before = self.arguments.read_bytes()
+        for operation in ["query", "setting"]:
+            with self.assertRaises(ValueError):
+                self.client.follow_read({**request, "operation": operation})
+            self.assertEqual(self.arguments.read_bytes(), before)
+        for field, value in [("fresh", True), ("format", "json")]:
+            with self.assertRaises(ValueError):
+                self.client.follow_read({**request, field: value})
+            self.assertEqual(self.arguments.read_bytes(), before)
 
     def test_refusals_keep_the_whole_answer(self):
         with self.assertRaises(Refused) as raised:

@@ -39,7 +39,9 @@ jobs:
           skipPush: true
       - name: Build the package
         run: |
-          out=$(nix build --no-link --print-build-logs --print-out-paths "github:${GITHUB_REPOSITORY}/${REV}#default")
+          ref="github:${GITHUB_REPOSITORY}/${REV}"
+          nix flake metadata --json "$ref"
+          out=$(nix build --no-link --print-build-logs --print-out-paths "$ref#default")
           echo "built $out"
           echo "out=$out" >> "$GITHUB_ENV"
       - name: Publish the package and its compiler dependencies to sinity.cachix.org

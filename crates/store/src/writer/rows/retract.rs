@@ -26,7 +26,7 @@ impl RowWriter<'_, '_> {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         for child in prefix_children {
-            self.changes.link_child(&child);
+            self.changes.link_child(self.tx, &child)?;
         }
         crate::fragment::retract(self.tx, self.input_pk, self.chain)?;
         for kind in VersionKind::ALL {

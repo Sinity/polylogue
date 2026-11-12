@@ -141,8 +141,13 @@ struct ItemUniverse {
 }
 impl ItemUniverse {
     fn from_root(daemon: &test_daemon::TestDaemon, next: &ReadyCall) -> Self {
-        let child: crate::mcp::ToolCall =
-            serde_json::from_value(next.mcp["arguments"].clone()).unwrap();
+        let child: crate::mcp::ToolCall = serde_json::from_value(
+            crate::commands::declarations()
+                .mcp_call(&next.request)
+                .unwrap()["arguments"]
+                .clone(),
+        )
+        .unwrap();
         let arguments: crate::protocol::read::Arguments =
             serde_json::from_value(child.arguments).unwrap();
         let mut request =
@@ -291,7 +296,23 @@ pub(super) fn collect(
             "bounded layout must not duplicate canonical records"
         );
         let wire = serde_json::to_vec(&page).unwrap();
-        let footer_bytes = serde_json::to_vec(&page.document.footer).unwrap().len();
+        let footer_wire = serde_json::to_string(&page.document.footer).unwrap();
+        let footer_bytes = footer_wire.len();
+        for call in [&page.document.footer.next, &page.document.footer.previous]
+            .into_iter()
+            .flatten()
+        {
+            let cursor = call
+                .request
+                .cursor
+                .as_deref()
+                .expect("paged request has its cursor");
+            assert_eq!(
+                footer_wire.matches(cursor).count(),
+                1,
+                "one stored cursor per direction"
+            );
+        }
         let payload_tokens = page
             .document
             .items
@@ -345,7 +366,9 @@ pub(super) fn collect(
         let Some(mut ready) = page.document.footer.next.clone() else {
             break;
         };
-        let envelope = &ready.mcp["arguments"];
+        let envelope = &crate::commands::declarations()
+            .mcp_call(&ready.request)
+            .unwrap()["arguments"];
         let child: crate::mcp::ToolCall = serde_json::from_value(envelope.clone()).unwrap();
         assert_eq!(
             child.deadline, expected_deadline,
@@ -373,7 +396,7 @@ pub(super) fn collect(
             root = Some(identity);
         }
         if let Some(budget) = budget {
-            ready.mcp["arguments"]["arguments"]["page_tokens"] = json!(budget);
+            ready.request.arguments["page_tokens"] = json!(budget);
         }
         page = execute_ready(&archive, &ready).unwrap();
     }
@@ -405,6 +428,8 @@ pub(super) fn structured_read_without_deadline(
         operation: Some("read".into()),
         arguments,
         budget_tokens: Default::default(),
+        fresh: false,
+        format: Default::default(),
         cursor: None,
         request_id: uuid::Uuid::now_v7().to_string(),
         deadline: command_surface::Deadline::None,
@@ -432,8 +457,11 @@ fn decode_page(text: String, structured: Value, failed: bool) -> Result<ReadPage
 }
 
 pub(crate) fn execute_ready(archive: &Archive, ready: &ReadyCall) -> Result<ReadPage, String> {
-    let name = ready.mcp["name"].as_str().expect("generated MCP tool name");
-    let arguments = ready.mcp["arguments"]
+    let projected = crate::commands::declarations()
+        .mcp_call(&ready.request)
+        .unwrap();
+    let name = projected["name"].as_str().expect("generated MCP tool name");
+    let arguments = projected["arguments"]
         .as_object()
         .expect("generated complete envelope")
         .clone();
@@ -466,7 +494,7 @@ fn mcp_read_pages_execute_the_generated_continuation_without_losing_unicode() {
         .clone()
         .expect("bounded first page has continuation");
     let mut invalid = first_next.clone();
-    invalid.mcp["arguments"]["arguments"]["view"] = json!("dialogue");
+    invalid.request.arguments["view"] = json!("dialogue");
     let error = execute_ready(&archive, &invalid).unwrap_err();
     // docs/query.md: "a cursor from another question is `invalid_query`";
     // a read continuation with other arguments is refused the same way.
@@ -531,7 +559,9 @@ fn an_omitted_read_deadline_stays_default_in_the_next_call() {
         .footer
         .next
         .expect("small bounded root has a next call");
-    let envelope = &next.mcp["arguments"];
+    let envelope = &crate::commands::declarations()
+        .mcp_call(&next.request)
+        .unwrap()["arguments"];
     assert!(
         envelope.get("deadline").is_none(),
         "default is represented by omission"

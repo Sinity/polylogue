@@ -20,7 +20,7 @@ fn page_navigation_and_message_routes_use_the_shared_selection() {
             .next
             .as_ref()
             .expect("small budget continues");
-        assert_eq!(next.http.path, "/api/v1/read");
+        assert_eq!(next.request.operation, "read");
         let (_, headers, _) = send(
             &r,
             authed(get("/m/claude-code:u1"))
@@ -35,7 +35,8 @@ fn page_navigation_and_message_routes_use_the_shared_selection() {
         let (status, _, body) = send_html(&r, "/m/claude-code:u1").await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert!(body.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
-        let path = polylogue_render::web::http_url(&next.http).unwrap();
+        let path = polylogue_render::web::http_url(crate::commands::declarations(), &next.request)
+            .unwrap();
         let (status, _, body) = send_html(&r, &path).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert!(!body.contains("history.back"));
@@ -126,8 +127,11 @@ fn changed_generation_refuses_content_continuation_and_replaces_change_populatio
     let r = reader();
     rt().block_on(async {
         let first = read_page(&r, "session:claude-code:s1", &[("page_tokens", "2")]).await;
-        let next =
-            polylogue_render::web::http_url(&first.document.footer.next.unwrap().http).unwrap();
+        let next = polylogue_render::web::http_url(
+            crate::commands::declarations(),
+            &first.document.footer.next.unwrap().request,
+        )
+        .unwrap();
         let (_, _, body) = send(
             &r,
             authed(get("/api/v1/changes")).body(Body::empty()).unwrap(),
@@ -157,12 +161,16 @@ fn changed_generation_refuses_content_continuation_and_replaces_change_populatio
 }
 
 #[test]
-fn live_client_recovery_and_visibility_contract() {
+fn web_client_authentication_recovery_and_visibility_contract() {
     let output = std::process::Command::new("node")
         .arg("--test")
         .arg(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/src/web/assets/tests/live.test.mjs"
+        ))
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/web/assets/tests/auth.test.mjs"
         ))
         .output()
         .expect("Node from the development shell");
@@ -362,7 +370,9 @@ fn previous_links_reopen_exact_unicode_fragments_without_browser_history() {
             .expect("previous is supplied by service");
         let restored = follow_read(&r, previous).await;
         assert_eq!(restored.document.items, first.document.items);
-        let path = polylogue_render::web::http_url(&previous.http).unwrap();
+        let path =
+            polylogue_render::web::http_url(crate::commands::declarations(), &previous.request)
+                .unwrap();
         let (status, _, html) = send_html(&r, &path).await;
         assert_eq!(status, StatusCode::OK, "{html}");
         assert!(!html.contains("history.back"));

@@ -1,10 +1,38 @@
 use super::*;
+use command_surface::{OperationDeclarations, OperationSpec, RunnableRequest, ToolFamily};
 use polylogue_model::{
     Block, Message, MessageId, Role, SessionId, TimeQuality, Usage,
     bundle::{MessageRecord, Record},
     read::*,
 };
 use serde_json::json;
+use std::sync::{Arc, LazyLock};
+pub(crate) fn read_commands() -> &'static OperationDeclarations {
+    static TABLE: LazyLock<Arc<OperationDeclarations>> = LazyLock::new(|| {
+        let mut builder = OperationDeclarations::builder("polylogue", Default::default());
+        builder
+            .declare_tool(ToolFamily {
+                name: "read".into(),
+                description: "Read a synthetic record".into(),
+                open_world: false,
+                idempotent: true,
+            })
+            .unwrap();
+        let mut spec =
+            OperationSpec::request("read", &["read"], "read", "Read", "Read a synthetic record");
+        spec.http_route = Some("/api/v1/read".into());
+        builder
+            .declare::<serde_json::Value, serde_json::Value>(spec, |answer, _| answer.to_string())
+            .unwrap();
+        builder.finish()
+    });
+    &TABLE
+}
+fn ready(arguments: serde_json::Value) -> ReadyCall {
+    ReadyCall {
+        request: RunnableRequest::new("read", arguments, "synthetic"),
+    }
+}
 use std::{
     io::{self, Write},
     num::{NonZeroU64, NonZeroUsize},
@@ -69,7 +97,16 @@ fn text(text: &str) -> ReadItem {
 }
 fn encode(doc: &ReadDocument, format: Format) -> String {
     let mut out = vec![];
-    encode_document(doc, format, EncodeOptions::default(), &mut out).unwrap();
+    encode_document(
+        doc,
+        format,
+        EncodeOptions {
+            commands: Some(read_commands()),
+            ..Default::default()
+        },
+        &mut out,
+    )
+    .unwrap();
     String::from_utf8(out).unwrap()
 }
 fn layout(record: Record, options: &ReadOptions, evidence: &ProjectionEvidence) -> Vec<ReadItem> {
@@ -382,7 +419,9 @@ fn archived_html_and_dangerous_urls_stay_inert() {
     let item = text(
         "[bad](javascript:alert%281%29) [encoded](java&#x73;cript:foo) ![pic](https://example.test/a.png) <img src=x onerror=alert(1)>\n<script>bad()</script>",
     );
-    let output = html::item(&item, 0, &jiff::tz::TimeZone::UTC).into_string();
+    let output = html::item(&item, 0, &jiff::tz::TimeZone::UTC, Some(read_commands()))
+        .unwrap()
+        .into_string();
     assert!(!output.contains("href=\"javascript:"));
     assert!(!output.contains("<img"));
     assert!(!output.contains("<script"));
@@ -430,20 +469,17 @@ fn standalone_html_uses_shared_tokens_and_no_scripts() {
 #[test]
 fn footer_is_outside_prose_content_but_present_in_json() {
     let mut doc = document(vec![text("content")]);
-    doc.footer.next = Some(ReadyCall {
-        cli: "polylogue next-sealed".into(),
-        mcp: json!({"cursor":"sealed"}),
-        http: HttpCall {
-            method: "GET".into(),
-            path: "/read".into(),
-            arguments: json!({"cursor":"sealed"}),
-        },
-    });
+    doc.footer.next = Some(ready(json!({"target":"next-sealed"})));
     for format in [Format::Terminal, Format::Markdown, Format::Html] {
         assert!(!encode(&doc, format).contains("next-sealed"));
     }
     assert!(encode(&doc, Format::Json).contains("next-sealed"));
-    assert!(html::document(&doc).into_string().contains("next-sealed"));
+    assert!(
+        html::document(&doc, Some(read_commands()))
+            .unwrap()
+            .into_string()
+            .contains("next-sealed")
+    );
 }
 #[test]
 fn model_notice_precedes_every_prose_record() {
@@ -862,38 +898,74 @@ fn inline_images_need_exact_hash_safe_raster_type_and_size() {
         },
     };
     assert!(
-        html::item(&make(attachment.clone()), 100, &jiff::tz::TimeZone::UTC)
-            .into_string()
-            .contains("data:image/png;base64,")
+        html::item(
+            &make(attachment.clone()),
+            100,
+            &jiff::tz::TimeZone::UTC,
+            Some(read_commands())
+        )
+        .unwrap()
+        .into_string()
+        .contains("data:image/png;base64,")
     );
     assert!(
-        !html::item(&make(attachment.clone()), 3, &jiff::tz::TimeZone::UTC)
-            .into_string()
-            .contains("<img")
+        !html::item(
+            &make(attachment.clone()),
+            3,
+            &jiff::tz::TimeZone::UTC,
+            Some(read_commands())
+        )
+        .unwrap()
+        .into_string()
+        .contains("<img")
     );
     assert!(
-        !html::item(&make(attachment.clone()), 0, &jiff::tz::TimeZone::UTC)
-            .into_string()
-            .contains("<img")
+        !html::item(
+            &make(attachment.clone()),
+            0,
+            &jiff::tz::TimeZone::UTC,
+            Some(read_commands())
+        )
+        .unwrap()
+        .into_string()
+        .contains("<img")
     );
     attachment.media_type = Some("image/svg+xml".into());
     assert!(
-        !html::item(&make(attachment.clone()), 100, &jiff::tz::TimeZone::UTC)
-            .into_string()
-            .contains("<img")
+        !html::item(
+            &make(attachment.clone()),
+            100,
+            &jiff::tz::TimeZone::UTC,
+            Some(read_commands())
+        )
+        .unwrap()
+        .into_string()
+        .contains("<img")
     );
     attachment.media_type = Some("text/html".into());
     assert!(
-        !html::item(&make(attachment.clone()), 100, &jiff::tz::TimeZone::UTC)
-            .into_string()
-            .contains("<img")
+        !html::item(
+            &make(attachment.clone()),
+            100,
+            &jiff::tz::TimeZone::UTC,
+            Some(read_commands())
+        )
+        .unwrap()
+        .into_string()
+        .contains("<img")
     );
     attachment.media_type = Some("image/png".into());
     attachment.blob = Some(polylogue_model::BlobHash::of(b"different"));
     assert!(
-        !html::item(&make(attachment), 100, &jiff::tz::TimeZone::UTC)
-            .into_string()
-            .contains("<img")
+        !html::item(
+            &make(attachment),
+            100,
+            &jiff::tz::TimeZone::UTC,
+            Some(read_commands())
+        )
+        .unwrap()
+        .into_string()
+        .contains("<img")
     );
 }
 
@@ -1346,18 +1418,7 @@ fn large_footer(position: Option<&ItemPlace>) -> Result<ReadFooter, pager::PageE
         }],
         ..Default::default()
     };
-    footer.next = position.map(|position| ReadyCall {
-        cli: format!(
-            "read {} {} {}",
-            position.selection.row, position.item, position.character
-        ),
-        mcp: json!({"position":position}),
-        http: HttpCall {
-            method: "GET".into(),
-            path: "/api/v1/read".into(),
-            arguments: json!({"position":position}),
-        },
-    });
+    footer.next = position.map(|position| ready(json!({"position":position})));
     Ok(footer)
 }
 #[test]
@@ -1392,7 +1453,7 @@ fn final_footer_size_can_trim_items_and_regenerate_the_exact_boundary() {
     let position = last.as_ref().unwrap();
     assert_eq!(position.item, doc.items.len() as u64);
     assert_eq!(
-        doc.footer.next.as_ref().unwrap().mcp["position"],
+        doc.footer.next.as_ref().unwrap().request.arguments["position"],
         json!(position)
     );
     assert!(encode(&doc, Format::Json).len() <= limits.bytes.get());
@@ -1620,15 +1681,7 @@ fn supplied_attachment_action_survives_layout_and_all_encoders() {
         9,
         false,
     );
-    let action = ReadyCall {
-        cli: "polylogue read --request '{\"target\":\"attachment:synthetic\"}'".into(),
-        mcp: json!({"target":"attachment:synthetic"}),
-        http: HttpCall {
-            method: "GET".into(),
-            path: "/api/v1/read".into(),
-            arguments: json!({"operation":"read","arguments":{"target":"attachment:synthetic"},"request_id":"same","deadline":"default"}),
-        },
-    };
+    let action = ready(json!({"target":"attachment:synthetic"}));
     let mut evidence = ProjectionEvidence::default();
     evidence
         .attachments
@@ -1923,9 +1976,15 @@ fn verified_bound_rasters_inline_without_overriding_canonical_attachment_hashes(
         matches!(&items[0].kind,ItemKind::Attachment{attachment,verified_hash:Some(value),..} if attachment.blob.is_none() && *value==hash)
     );
     assert!(
-        html::item(&items[0], 100, &jiff::tz::TimeZone::UTC)
-            .into_string()
-            .contains("data:image/png;base64,")
+        html::item(
+            &items[0],
+            100,
+            &jiff::tz::TimeZone::UTC,
+            Some(read_commands())
+        )
+        .unwrap()
+        .into_string()
+        .contains("data:image/png;base64,")
     );
     assert_eq!(block.block, Block::Image(attachment));
     let mut svg = items[0].clone();
@@ -1933,7 +1992,8 @@ fn verified_bound_rasters_inline_without_overriding_canonical_attachment_hashes(
         attachment.media_type = Some("image/svg+xml".into());
     }
     assert!(
-        !html::item(&svg, 100, &jiff::tz::TimeZone::UTC)
+        !html::item(&svg, 100, &jiff::tz::TimeZone::UTC, Some(read_commands()))
+            .unwrap()
             .into_string()
             .contains("data:image/svg")
     );
@@ -2652,7 +2712,7 @@ fn before_footer_trim_evicts_earliest_output_and_regenerates_its_lower_anchor() 
     };
     assert!(last.starts_with('2'));
     assert_eq!(
-        doc.footer.next.as_ref().unwrap().mcp["position"],
+        doc.footer.next.as_ref().unwrap().request.arguments["position"],
         json!(lower)
     );
     assert!(encode(&doc, Format::Json).len() <= limits.bytes.get());
@@ -2858,6 +2918,9 @@ fn html_relationship_links_encode_only_exact_recorded_session_references() {
                         from: from.into(),
                         to: to.into(),
                         relation: "continuation".into(),
+                        branch_point: Some("message:claude-code:<anchor>".into()),
+                        spawning_call: Some("call <marker>".into()),
+                        copies_prefix: true,
                         how: Some("fork <marker>".into()),
                         cross_link: false,
                     }),
@@ -2865,13 +2928,19 @@ fn html_relationship_links_encode_only_exact_recorded_session_references() {
             },
             1000,
             &jiff::tz::TimeZone::UTC,
+            Some(read_commands()),
         )
+        .unwrap()
         .into_string()
     };
     let html = render(
         "session:claude-code:parent",
         "session:claude-code:child\"<&",
     );
+    assert!(html.contains("copied prefix"));
+    assert!(html.contains("message:claude-code:&lt;anchor&gt;"));
+    assert!(html.contains("call &lt;marker&gt;"));
+    assert!(!html.contains("<anchor>"));
     assert!(html.contains("href=\"/s/claude-code%3Aparent\""), "{html}");
     assert!(
         html.contains("href=\"/s/claude-code%3Achild%22%3C%26\""),

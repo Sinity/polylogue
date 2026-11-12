@@ -5,7 +5,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from .models import Answer
+from .models import Answer, _copy
 
 __all__ = ["Client", "Refused"]
 
@@ -75,6 +75,36 @@ class Client:
         arguments = ["read", identity, "--view", view]
         if page_tokens is not None:
             arguments.extend(["--page-tokens", str(page_tokens)])
+        return self.call(*arguments)
+
+    def follow_read(self, request):
+        """Execute a generated read/attachment action, including a previous page.
+
+        The request is passed as structured arguments; displayed commands are
+        never parsed. Omitted and explicit null deadlines/budgets stay distinct.
+        """
+        request = _copy(request)
+        operation = request["operation"]
+        if operation not in {"read", "attachment"}:
+            raise ValueError(f"unsupported read follow-up operation: {operation}")
+        unknown = request.keys() - {
+            "operation", "arguments", "request_id", "deadline", "budget_tokens",
+            "cursor", "fresh", "format",
+        }
+        if unknown:
+            raise ValueError(f"unknown read follow-up fields: {sorted(unknown)}")
+        # These shared-envelope options are not offered by this product. They
+        # must not be discarded or reinterpreted as CLI output switches.
+        if request.get("fresh", False) or request.get("format", "text") != "text":
+            raise ValueError("unsupported read follow-up freshness or envelope format")
+        arguments = [operation, "--request", json.dumps(request["arguments"], ensure_ascii=False),
+                     "--request-id", request["request_id"]]
+        for field, flag in [("deadline", "--deadline"), ("budget_tokens", "--budget")]:
+            if field in request:
+                value = request[field]
+                arguments.extend([flag, "none" if value is None else str(value)])
+        if request.get("cursor") is not None:
+            arguments.extend(["--cursor", request["cursor"]])
         return self.call(*arguments)
 
     def changes(self, since=None):

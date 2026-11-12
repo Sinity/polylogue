@@ -633,7 +633,7 @@ fn generated_ready_mcp_call_executes_its_exact_typed_envelope() {
         ..Default::default()
     };
     let reply = session
-        .prepare(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":ready.mcp}))
+        .prepare(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":crate::commands::declarations().mcp_call(&ready.request).unwrap()}))
         .answer(&daemon.daemon.archive)
         .unwrap();
     assert_eq!(reply["result"]["isError"], false, "{reply}");
@@ -641,8 +641,43 @@ fn generated_ready_mcp_call_executes_its_exact_typed_envelope() {
         reply["result"]["structuredContent"]["value"]["count"], 1,
         "{reply}"
     );
-    assert_eq!(ready.mcp["name"], "polylogue_read");
-    assert_eq!(ready.mcp["arguments"]["operation"], "query");
+    assert_eq!(
+        crate::commands::declarations()
+            .mcp_call(&ready.request)
+            .unwrap()["name"],
+        "polylogue_read"
+    );
+    assert_eq!(
+        crate::commands::declarations()
+            .mcp_call(&ready.request)
+            .unwrap()["arguments"]["operation"],
+        "query"
+    );
+    // Preserve shared metadata through the transport, then let the product's
+    // declarations reject options it does not offer, as every other surface does.
+    for option in ["fresh", "format"] {
+        let mut request = ready.request.clone();
+        request.request_id = format!("unsupported-{option}");
+        if option == "fresh" {
+            request.fresh = true;
+        } else {
+            request.format = command_surface::Format::Json;
+        }
+        let params = crate::commands::declarations().mcp_call(&request).unwrap();
+        let refusal = session
+            .prepare(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":params}))
+            .answer(&daemon.daemon.archive)
+            .unwrap();
+        assert_eq!(refusal["result"]["isError"], true, "{refusal}");
+        assert_eq!(
+            refusal["result"]["structuredContent"]["error"]["kind"],
+            "bad_request"
+        );
+        assert_eq!(
+            refusal["result"]["structuredContent"]["error"]["message"],
+            format!("polylogue does not take {option}")
+        );
+    }
     // Every declared request retains an executable MCP form.
     let sql = daemon
         .daemon
@@ -657,14 +692,28 @@ fn generated_ready_mcp_call_executes_its_exact_typed_envelope() {
             format: Default::default(),
         })
         .unwrap();
-    assert_eq!(sql.mcp["name"], "polylogue_read");
-    assert_eq!(sql.mcp["arguments"]["operation"], "sql");
+    assert_eq!(
+        crate::commands::declarations()
+            .mcp_call(&sql.request)
+            .unwrap()["name"],
+        "polylogue_read"
+    );
+    assert_eq!(
+        crate::commands::declarations()
+            .mcp_call(&sql.request)
+            .unwrap()["arguments"]["operation"],
+        "sql"
+    );
     let reply = session
-        .prepare(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":sql.mcp}))
+        .prepare(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":crate::commands::declarations().mcp_call(&sql.request).unwrap()}))
         .answer(&daemon.daemon.archive)
         .unwrap();
     assert_eq!(reply["result"]["isError"], false, "{reply}");
-    assert_eq!(sql.http.path, "/api/v1/sql");
+    assert!(
+        polylogue_render::web::http_url(crate::commands::declarations(), &sql.request)
+            .unwrap()
+            .starts_with("/api/v1/sql?")
+    );
     let legacy = call_with_limit(
         &daemon.daemon.archive,
         "polylogue_read",
@@ -747,4 +796,55 @@ fn tool_schema_from_operation_table() {
             assert_eq!(family[*row], description.input_schema, "{row}");
         }
     }
+}
+
+#[test]
+fn generated_mcp_follow_up_preserves_the_accepted_request() {
+    use std::io::{BufRead, BufReader, Write};
+    let directory = tempfile::tempdir().unwrap();
+    let archive = Archive::at(directory.path());
+    let request = command_surface::RunnableRequest {
+        deadline: command_surface::Deadline::None,
+        budget_tokens: command_surface::TokenBudget::Unlimited,
+        cursor: Some("opaque-follow-up".into()),
+        fresh: true,
+        format: command_surface::Format::Json,
+        ..command_surface::RunnableRequest::new(
+            "read",
+            json!({"target":"session:claude-code:synthetic"}),
+            "accepted-child",
+        )
+    };
+    let projected = crate::commands::declarations().mcp_call(&request).unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(archive.socket()).unwrap();
+    let peer = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+            .unwrap();
+        let mut line = String::new();
+        BufReader::new(&stream).read_line(&mut line).unwrap();
+        let accepted = crate::protocol::wire::incoming(&line)
+            .unwrap()
+            .unwrap()
+            .request;
+        assert_eq!(accepted, request);
+        let refusal = command_surface::Answer::<Value>::error(command_surface::Failure::new(
+            command_surface::FailureKind::Refused,
+            "synthetic refusal",
+        ));
+        writeln!(stream, "{}", serde_json::to_string(&refusal).unwrap()).unwrap();
+    });
+    let (text, _, failed) = call_with_limit(
+        &archive,
+        projected["name"].as_str().unwrap(),
+        projected["arguments"].as_object().unwrap().clone(),
+        None,
+        &tokio_util::sync::CancellationToken::new(),
+        None,
+    )
+    .unwrap();
+    assert!(failed, "{text}");
+    assert!(text.contains("synthetic refusal"), "{text}");
+    peer.join().unwrap();
 }
