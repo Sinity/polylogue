@@ -79,9 +79,9 @@ fn structural_parents(reader: &Reader<'_>, session: &str) -> Result<Vec<SessionL
 }
 
 impl<'r, 'a> Walk<'r, 'a> {
-    fn start(reader: &'r Reader<'a>, starts: Vec<String>) -> Self {
-        let starts = starts.iter().cloned().collect();
-        let links = starts
+    fn start(reader: &'r Reader<'a>, entries: Vec<String>) -> Self {
+        let starts = entries.iter().cloned().collect();
+        let links = entries
             .into_iter()
             .map(|child| SessionLink {
                 parent: String::new(),
