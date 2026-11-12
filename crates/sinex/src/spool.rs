@@ -458,6 +458,7 @@ impl Spool {
             remove_dot_entries(&entry.path())?;
             let members = entry.path().join("operations");
             if entry.path().join("acquisition.json").try_exists()? && members.is_dir() {
+                remove_staging_database(&entry.path())?;
                 remove_dot_entries(&members)?;
                 for member in fs::read_dir(&members)? {
                     let member = member?;
@@ -820,6 +821,9 @@ impl Spool {
             disposition,
         };
         write_checked(&staged.temporary.path().join("acquisition.json"), &header)?;
+        // Close the private database at its original path before moving its
+        // directory, so SQLite finishes its checkpoint at the same location.
+        drop(staged.queue);
         sync(staged.temporary.path())?;
         boundary("acquisition_synced");
         let directory = format!("operations/{}", hash(staged.identity.as_bytes()));
@@ -838,9 +842,11 @@ impl Spool {
         );
         operation.unresolved =
             disposition == polylogue_store::primary::CaptureDisposition::UnresolvedBasisConflict;
-        self.queue
-            .publish_acquisition(&staged.queue.queue, &operation)?;
+        let staged_queue = Queue::open(&destination.join("queue.db"))?;
+        self.queue.publish_acquisition(&staged_queue, &operation)?;
+        drop(staged_queue);
         boundary("acquisition_published");
+        remove_staging_database(&destination)?;
         self.wake();
         Ok(())
     }
@@ -1470,6 +1476,19 @@ impl Spool {
 }
 
 /// Removes the `.preparing-*` and `.ack-preparing-*` directories in `directory`.
+fn remove_staging_database(directory: &Path) -> Result<()> {
+    // Every accepted member is already in the main queue transaction. The
+    // closed private database is temporary metadata, not another authority.
+    for name in ["queue.db", "queue.db-wal", "queue.db-shm"] {
+        match fs::remove_file(directory.join(name)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    sync(directory)
+}
+
 fn remove_dot_entries(directory: &Path) -> Result<()> {
     let mut removed = false;
     for entry in fs::read_dir(directory)? {
