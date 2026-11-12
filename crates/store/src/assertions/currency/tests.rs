@@ -400,7 +400,7 @@ fn reading_current_assertions_about_a_target_uses_indexes_only() {
 }
 
 fn fact(header: &Header) -> AssertionFact {
-    let withdrawal = header.kind == authored::generator::WITHDRAWAL;
+    let withdrawal = header.kind == authored_generator::WITHDRAWAL;
     let mut links = Vec::new();
     if withdrawal {
         for target in &header.withdraws {
@@ -487,7 +487,7 @@ proptest! {
 
     #[test]
     fn the_stored_index_equals_the_rule_after_every_write(
-        generated in authored::generator::history(24),
+        generated in authored_generator::history(24),
     ) {
         let conn = archive();
         let mut prefix = History::new();
@@ -500,7 +500,7 @@ proptest! {
 
     #[test]
     fn stored_currency_ignores_arrival_order_counters_and_clocks(
-        generated in authored::generator::history(24),
+        generated in authored_generator::history(24),
         order in proptest::collection::vec(any::<u32>(), 24),
         clocks in proptest::collection::vec(0i64..4_000_000_000_000, 24),
     ) {

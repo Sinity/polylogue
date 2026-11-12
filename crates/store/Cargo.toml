@@ -29,7 +29,7 @@ tempfile.workspace = true
 authored.workspace = true
 
 [dev-dependencies]
-authored = { workspace = true, features = ["generator"] }
+authored-generator.workspace = true
 proptest.workspace = true
 shared-signals.workspace = true
 
