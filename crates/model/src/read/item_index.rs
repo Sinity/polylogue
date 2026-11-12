@@ -63,8 +63,7 @@ impl EntryKind {
 pub enum Boundary {
     /// Everything before is replaced by the summary that follows.
     Compaction,
-    /// The summary text of the newest compaction, when the source records it
-    /// as an event rather than a message.
+    /// The header of the newest compaction's harness summary message.
     CompactionSummary,
     /// Named tool results are removed from the context.
     Microcompaction,
@@ -73,7 +72,6 @@ impl Boundary {
     pub fn of_event(kind: &str) -> Option<Self> {
         match kind {
             "compaction" => Some(Self::Compaction),
-            "compaction_summary" => Some(Self::CompactionSummary),
             "microcompaction" => Some(Self::Microcompaction),
             _ => None,
         }
@@ -119,6 +117,8 @@ pub struct IndexEntry {
     pub event_kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub boundary: Option<Boundary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<crate::CompactionBoundary>,
     /// The provider-reported input of the response that produced a model
     /// message: plain input plus cache reads plus cache writes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -150,7 +150,7 @@ pub fn message_entries(
     ordinals: &[u64],
     place: MessagePlace,
 ) -> Vec<IndexEntry> {
-    let written_by = WrittenBy::of(message.role, message.prompt_kind);
+    let written_by = WrittenBy::of(message);
     let at = message.at.map(|at| at.unix_ms());
     let base = |key: EntryKey, kind: EntryKind| IndexEntry {
         key,
@@ -169,6 +169,7 @@ pub fn message_entries(
         call_id: None,
         event_kind: None,
         boundary: None,
+        compaction: None,
         context_tokens: None,
         cleared: Vec::new(),
     };
@@ -176,6 +177,9 @@ pub fn message_entries(
     let mut header = base(EntryKey::header(&message.id), EntryKind::Header);
     header.tokens_line = header_line;
     header.tokens_full = header_line;
+    if message.prompt_kind == Some(crate::PromptKind::CompactionSummary) {
+        header.boundary = Some(Boundary::CompactionSummary);
+    }
     if written_by == WrittenBy::Model {
         let usage = &message.usage;
         if usage.input.is_some() || usage.cached_input.is_some() || usage.cache_write.is_some() {
@@ -270,22 +274,8 @@ pub fn message_entries(
     entries
 }
 
-/// The call IDs a microcompaction event names as cleared. Claude Code
-/// records them as `microcompactMetadata.compactedToolIds`.
-pub fn microcompacted_calls(data: &serde_json::Value) -> Vec<String> {
-    data.pointer("/microcompactMetadata/compactedToolIds")
-        .and_then(serde_json::Value::as_array)
-        .map(|ids| {
-            ids.iter()
-                .filter_map(serde_json::Value::as_str)
-                .map(str::to_owned)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 /// The entry of one in-place event. `cleared` is what a microcompaction
-/// removed ([`microcompacted_calls`]); empty for any other event.
+/// removed; empty for any other event.
 pub fn event_entry(
     id: &str,
     kind: &str,
@@ -317,6 +307,7 @@ pub fn event_entry(
         call_id: None,
         event_kind: Some(kind.into()),
         boundary,
+        compaction: None,
         context_tokens: None,
         cleared,
     }
@@ -374,7 +365,9 @@ impl FoldProfile {
         let harness = entry.written_by == WrittenBy::Harness;
         let kept = match self.view {
             View::Transcript | View::Context | View::Raw | View::Changes => true,
-            View::Dialogue => !harness && entry.kind != EntryKind::Event,
+            View::Dialogue => {
+                !harness && entry.written_by != WrittenBy::Tool && entry.kind != EntryKind::Event
+            }
             View::Summary | View::Links | View::Live => false,
         };
         if !kept || (entry.kind == EntryKind::Event && self.view == View::Changes) {

@@ -84,11 +84,29 @@ fn complete_callback_product_roundtrip_preserves_all_semantic_maps_and_generated
         events: vec![event.clone(), event],
         links: vec![Link {
             kind: LinkKind::Spawn,
+            copies_prefix: false,
+            how: None,
             parent: message.session.clone(),
             child: polylogue_model::SessionId::parse("claude-code:export-child").unwrap(),
             at: None,
             call_id: None,
             evidence: "original marker".into(),
+        }],
+        prefix_copies: vec![polylogue_model::PrefixCopy {
+            explicit_members: false,
+            parent: message.session.clone(),
+            child: polylogue_model::SessionId::parse("claude-code:export-child").unwrap(),
+        }],
+        prefix_members: vec![polylogue_model::PrefixMember {
+            parent: message.session.clone(),
+            child: polylogue_model::SessionId::parse("claude-code:export-child").unwrap(),
+            message: message.id.clone(),
+            source: Some(polylogue_model::PrefixSource {
+                input: "original-copy".into(),
+                chain: 4,
+                reading_version: "provider-reading".into(),
+            }),
+            position: [u64::MAX, 2],
         }],
         repo_lookups: vec![RepoLookup {
             path: "/synthetic/project".into(),
@@ -129,6 +147,8 @@ fn complete_callback_product_roundtrip_preserves_all_semantic_maps_and_generated
     output.fragment_receipts.insert(0, 13);
     output.event_receipts.insert(0, 14);
     output.link_receipts.insert(0, 15);
+    output.prefix_copy_receipts.insert(0, 16);
+    output.prefix_member_receipts.insert(0, 17);
     let mut counts = RecordCounts {
         records: 1,
         ..Default::default()
@@ -168,6 +188,8 @@ fn complete_callback_product_roundtrip_preserves_all_semantic_maps_and_generated
     expected.fragment_receipts.clear();
     expected.event_receipts.clear();
     expected.link_receipts.clear();
+    expected.prefix_copy_receipts.clear();
+    expected.prefix_member_receipts.clear();
     assert_eq!(restored.output, expected);
     assert_eq!(restored.delivery, captured.delivery);
     assert_eq!(restored.counts, captured.counts);

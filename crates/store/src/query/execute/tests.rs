@@ -154,12 +154,7 @@ fn native_time_missing_related_metadata_keeps_unknown_truth() {
         })
         .unwrap();
     fixture
-        .link(
-            "test:parent",
-            "test:missing-child",
-            "spawn",
-            "native-marker",
-        )
+        .link("test:parent", "test:missing-child", "spawn", None)
         .unwrap();
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();

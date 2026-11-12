@@ -114,9 +114,18 @@ pub struct Output {
     /// Immutable admission of each confirmed message fact, indexed by message.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub message_receipts: BTreeMap<usize, u64>,
-    /// Upserted by [`Link::key`]; parts one file lacks are filled from
-    /// another ([`Link::merge`]).
+    /// Exact statements of provider relationships or references.
     pub links: Vec<Link>,
+    /// Copied-prefix evidence is independent of provider relationship markers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prefix_copies: Vec<crate::PrefixCopy>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub prefix_copy_receipts: BTreeMap<usize, u64>,
+    /// Exact copied members for exports containing more than one conversation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prefix_members: Vec<crate::PrefixMember>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub prefix_member_receipts: BTreeMap<usize, u64>,
     /// Outcomes learned after the result was written, for tool calls that
     /// ran in the background.
     pub background: Vec<BackgroundUpdate>,

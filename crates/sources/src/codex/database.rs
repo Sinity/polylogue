@@ -267,6 +267,8 @@ impl Parser for Database {
                 };
                 out.links.push(Link {
                     kind: LinkKind::Spawn,
+                    copies_prefix: false,
+                    how: None,
                     parent,
                     child,
                     at: None,

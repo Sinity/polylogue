@@ -100,13 +100,15 @@
         "child": "claude-code:agent-w1",
         "evidence": "workflow journal",
         "kind": "spawn",
-        "parent": "claude-code:s1"
+        "parent": "claude-code:s1",
+        "copies_prefix": false
       },
       {
         "child": "claude-code:agent-w2",
         "evidence": "workflow journal",
         "kind": "spawn",
-        "parent": "claude-code:s1"
+        "parent": "claude-code:s1",
+        "copies_prefix": false
       }
     ],
     "messages": [],

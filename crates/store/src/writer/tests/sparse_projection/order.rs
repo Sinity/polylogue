@@ -116,6 +116,8 @@ fn fork_prefixes_keep_parent_ordinals_and_the_childs_own_order() {
     );
     child.parse[0].output.links.push(polylogue_model::Link {
         kind: LinkKind::Fork,
+        copies_prefix: false,
+        how: None,
         parent: sid("s"),
         child: sid("child"),
         at: Some(message("p1", "s").id),
@@ -168,7 +170,9 @@ fn copied_parent_subsets_do_not_renumber_their_original_own_session() {
         &["s", "child"],
     );
     child.parse[0].output.links.push(polylogue_model::Link {
-        kind: LinkKind::Copy,
+        kind: LinkKind::Resume,
+        copies_prefix: true,
+        how: None,
         parent: sid("s"),
         child: sid("child"),
         at: None,

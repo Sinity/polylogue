@@ -17,6 +17,7 @@ fn message_record(id: &str, order: u64) -> MessageRecord {
         block_count: 1,
         block_ordinals: vec![0],
         bindings: vec![],
+        copied_for: Vec::new(),
         injections: vec![InjectionEvidence {
             message: message.id.clone(),
             source_version,
@@ -128,4 +129,37 @@ fn imported_text_fragment_keeps_foreign_claims_and_exact_receiving_record_range(
     assert!(step.output.documents.is_empty());
     assert!(step.output.fragment_receipts.is_empty());
     assert!(step.output.native_hook_fields.is_empty());
+}
+
+#[test]
+fn imported_copy_members_keep_original_order_and_do_not_claim_other_parent_messages() {
+    let mut copied = message_record("copied", 1);
+    copied.copied_for.push(CopiedFor {
+        child: polylogue_model::SessionId::parse("codex:child").unwrap(),
+        source: polylogue_model::PrefixSource {
+            input: "original-child-input".into(),
+            chain: 4,
+            reading_version: "original-reading".into(),
+        },
+        position: [u64::MAX, u64::MAX - 1],
+    });
+    let later = message_record("later", 2);
+    let mut bytes = serde_json::to_vec(&Record::Message(Box::new(copied))).unwrap();
+    bytes.push(b'\n');
+    bytes.extend(serde_json::to_vec(&Record::Message(Box::new(later))).unwrap());
+    let mut parser = open(Path::new("bundle.jsonl")).unwrap();
+    let step = crate::export::fixture::parse(&mut parser, &bytes).unwrap();
+    assert_eq!(step.output.messages.len(), 2);
+    let [member] = &step.output.prefix_members[..] else {
+        panic!("only the observed copy")
+    };
+    assert_eq!(member.parent.to_string(), "codex:session");
+    assert_eq!(member.child.to_string(), "codex:child");
+    assert_eq!(member.message.to_string(), "codex:copied");
+    assert_eq!(member.position, [u64::MAX, u64::MAX - 1]);
+    let source = member.source.as_ref().unwrap();
+    assert_eq!(
+        (&*source.input, source.chain, &*source.reading_version),
+        ("original-child-input", 4, "original-reading")
+    );
 }

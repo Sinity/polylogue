@@ -29,7 +29,7 @@ fn session(f: &mut Fixture, name: &str, texts: &[&str]) {
 fn fork(f: &mut Fixture, parent: &str, child: &str, anchor: Option<&str>) {
     let parent = format!("claude-code:{parent}");
     let child = format!("claude-code:{child}");
-    f.link(&parent, &child, "continuation", "fork").unwrap();
+    f.link(&parent, &child, "fork", None).unwrap();
     crate::archive::open_write(&f.archive.index_db(), crate::archive::cache::SETUP)
         .unwrap()
         .execute(
@@ -71,6 +71,8 @@ fn recorded_link(
 ) -> polylogue_model::Link {
     polylogue_model::Link {
         kind,
+        copies_prefix: kind == polylogue_model::LinkKind::Resume,
+        how: None,
         parent: crate::fixture::writer::sid(parent),
         child: crate::fixture::writer::sid(child),
         at: None,
@@ -88,7 +90,7 @@ fn copied_source(
     writer.links.extend(
         parents
             .iter()
-            .map(|parent| recorded_link(polylogue_model::LinkKind::Copy, parent, child)),
+            .map(|parent| recorded_link(polylogue_model::LinkKind::Resume, parent, child)),
     );
     writer.write_from(
         &format!("copied-{child}"),
@@ -222,11 +224,11 @@ fn a_shared_ancestor_is_deduplicated_without_becoming_a_session_cycle() {
     let p = recorded_messages(&mut writer, "p", &["p"], &[]);
     writer
         .links
-        .push(recorded_link(polylogue_model::LinkKind::Copy, "p", "a"));
+        .push(recorded_link(polylogue_model::LinkKind::Resume, "p", "a"));
     let a = recorded_messages(&mut writer, "a", &["a"], &p);
     writer
         .links
-        .push(recorded_link(polylogue_model::LinkKind::Copy, "p", "b"));
+        .push(recorded_link(polylogue_model::LinkKind::Resume, "p", "b"));
     let b = recorded_messages(&mut writer, "b", &["b"], &p);
     let child = crate::fixture::writer::message(
         "0",

@@ -314,6 +314,46 @@ fn apply_rows(
         }
         rows.write_event(i)?;
     }
+    for (index, prefix) in p.output.prefix_copies.iter().enumerate() {
+        let parent = prefix.parent.to_string();
+        let child = prefix.child.to_string();
+        let ids = &rows.keys.identities;
+        let (parent, child) = (ids.shown_session(&parent), ids.shown_session(&child));
+        let admitted = p
+            .output
+            .prefix_copy_receipts
+            .get(&index)
+            .copied()
+            .map(|n| n as i64)
+            .or(rows.source_admitted);
+        rows.write_prefix_copy(parent, child, prefix.explicit_members, admitted)?;
+    }
+    for (index, member) in p.output.prefix_members.iter().enumerate() {
+        let parent = member.parent.to_string();
+        let child = member.child.to_string();
+        let message = member.message.to_string();
+        let ids = &rows.keys.identities;
+        let (parent, child) = (ids.shown_session(&parent), ids.shown_session(&child));
+        let message = ids.shown_message(&message);
+        let source = member
+            .source
+            .clone()
+            .unwrap_or_else(|| polylogue_model::PrefixSource {
+                input: b.input.id.clone(),
+                chain,
+                reading_version: p.reading_version.clone(),
+            });
+        let admitted = p
+            .output
+            .prefix_member_receipts
+            .get(&index)
+            .copied()
+            .map(|n| n as i64)
+            .or(rows.source_admitted);
+        tx.prepare_cached("INSERT INTO prefix_member(input_pk,chain,parent_id,child_id,message_id,source_input,source_chain,source_version,sequence,position,admitted) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT DO UPDATE SET admitted=coalesce(max(prefix_member.admitted,excluded.admitted),prefix_member.admitted,excluded.admitted)")?
+            .execute(params![input_pk,chain,parent,child,message,source.input,source.chain,source.reading_version,member.position[0].to_string(),member.position[1].to_string(),admitted])?;
+        rows.write_prefix_copy(parent, child, true, admitted)?;
+    }
     for (i, l) in p.output.links.iter().enumerate() {
         let admitted = p
             .output
@@ -628,6 +668,24 @@ pub(super) fn name<T: serde::Serialize>(v: &T) -> String {
 }
 
 impl RowWriter<'_, '_> {
+    fn write_prefix_copy(
+        &self,
+        parent: &str,
+        child: &str,
+        explicit: bool,
+        admitted: Option<i64>,
+    ) -> Result<()> {
+        self.changes.link_child(child);
+        self.tx.prepare_cached("INSERT INTO prefix_copy(input_pk,chain,parent_id,child_id,admitted,explicit_members) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(input_pk,chain,parent_id,child_id) DO UPDATE SET admitted=coalesce(max(prefix_copy.admitted,excluded.admitted),prefix_copy.admitted,excluded.admitted),explicit_members=max(prefix_copy.explicit_members,excluded.explicit_members)")?
+            .execute(params![self.input_pk,self.chain,parent,child,admitted,explicit])?;
+        self.tx
+            .prepare_cached(
+                "UPDATE session SET changed=?3 WHERE id IN (?1,?2) AND changed IS NOT ?3",
+            )?
+            .execute(params![parent, child, self.counter])?;
+        Ok(())
+    }
+
     /// The message with natural ID `id`.
     /// Moves what a copy's session holds to the session its name is an alias
     /// of (docs/capture.md, AI Studio through Drive): each reading's
@@ -657,7 +715,7 @@ impl RowWriter<'_, '_> {
         let links = self
             .tx
             .prepare_cached(
-                "SELECT pk,parent_id,child_id,kind,how FROM link WHERE parent_id=?1 OR child_id=?1",
+                "SELECT pk,parent_id,child_id,kind,how,branch_point,spawning_call FROM link WHERE parent_id=?1 OR child_id=?1",
             )?
             .query_map([&copy], |r| {
                 Ok((
@@ -665,19 +723,21 @@ impl RowWriter<'_, '_> {
                     r.get::<_, String>(1)?,
                     r.get::<_, String>(2)?,
                     r.get::<_, String>(3)?,
-                    r.get::<_, String>(4)?,
+                    r.get::<_, Option<String>>(4)?,
+                    r.get::<_, Option<String>>(5)?,
+                    r.get::<_, Option<String>>(6)?,
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        for (pk, parent, child, kind, how) in links {
+        for (pk, parent, child, kind, how, at, call) in links {
             let name = |id: String| if id == copy { session.clone() } else { id };
             let (parent, child) = (name(parent), name(child));
             self.changes.link(self.tx, pk)?;
             let existing: Option<i64> = self
                 .tx
                 .query_row(
-                    "SELECT pk FROM link WHERE parent_id=?1 AND child_id=?2 AND kind=?3 AND how=?4",
-                    params![parent, child, kind, how],
+                    "SELECT pk FROM link WHERE parent_id=?1 AND child_id=?2 AND kind=?3 AND how IS ?4 AND branch_point IS ?5 AND spawning_call IS ?6",
+                    params![parent, child, kind, how, at, call],
                     |r| r.get(0),
                 )
                 .optional()?;
@@ -1015,7 +1075,7 @@ impl RowWriter<'_, '_> {
         v: &Version,
         order: &str,
     ) -> Result<i64> {
-        let written_by = polylogue_model::WrittenBy::of(m.role, m.prompt_kind).as_str();
+        let written_by = polylogue_model::WrittenBy::of(m).as_str();
         // A copy's message is written with its ID in the session.
         let id = self
             .keys

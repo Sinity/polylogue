@@ -66,6 +66,8 @@ fn append_output(output: &mut polylogue_sources::Output, next: polylogue_sources
     let fragment_base = output.fragments.len();
     let event_base = output.events.len();
     let link_base = output.links.len();
+    let prefix_copy_base = output.prefix_copies.len();
+    let prefix_member_base = output.prefix_members.len();
     let polylogue_sources::Output {
         mut sessions,
         mut messages,
@@ -86,6 +88,10 @@ fn append_output(output: &mut polylogue_sources::Output, next: polylogue_sources
         message_projections,
         message_receipts,
         mut links,
+        mut prefix_copies,
+        prefix_copy_receipts,
+        mut prefix_members,
+        prefix_member_receipts,
         mut background,
         mut blobs,
         mut repo_lookups,
@@ -109,6 +115,8 @@ fn append_output(output: &mut polylogue_sources::Output, next: polylogue_sources
         fragments,
         events,
         links,
+        prefix_copies,
+        prefix_members,
         background,
         blobs,
         repo_lookups
@@ -126,6 +134,8 @@ fn append_output(output: &mut polylogue_sources::Output, next: polylogue_sources
     shift!(event_ids, event_base);
     shift!(event_receipts, event_base);
     shift!(link_receipts, link_base);
+    shift!(prefix_copy_receipts, prefix_copy_base);
+    shift!(prefix_member_receipts, prefix_member_base);
 }
 
 type Row = (std::ops::Range<u64>, Vec<u8>, Vec<u8>);

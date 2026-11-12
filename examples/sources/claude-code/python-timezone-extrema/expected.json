@@ -13,14 +13,7 @@
     "background": [],
     "blobs": [],
     "events": [],
-    "links": [
-      {
-        "child": "claude-code:timezone-extrema",
-        "evidence": "sessionId",
-        "kind": "copy",
-        "parent": "claude-code:neutral-timezone"
-      }
-    ],
+    "links": [],
     "messages": [
       {
         "end": 162,
@@ -67,6 +60,12 @@
         "started": "2026-01-01T08:00:00Z",
         "started_quality": "intrinsic",
         "started_precision": "second"
+      }
+    ],
+    "prefix_copies": [
+      {
+        "parent": "claude-code:neutral-timezone",
+        "child": "claude-code:timezone-extrema"
       }
     ]
   }

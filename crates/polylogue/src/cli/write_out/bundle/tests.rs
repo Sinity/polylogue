@@ -40,6 +40,7 @@ fn session(native: &str) -> ReadRecord {
             .unwrap();
     ReadRecord::Canonical {
         record: Box::new(Record::Session(SessionRecord {
+            copied_prefixes: Vec::new(),
             reference: format!("session:codex:{native}"),
             commit: 1,
             session,
@@ -257,6 +258,7 @@ fn sparse_records_union_and_later_partial_does_not_downgrade_content() {
     let full = MessageRecord {
         injections: Vec::new(),
         bindings: Vec::new(),
+        copied_for: Vec::new(),
         reference: "message:codex:message".into(),
         commit: 2,
         order: 0,

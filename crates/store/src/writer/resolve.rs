@@ -106,8 +106,14 @@ pub(super) fn canonical(identities: &crate::session_alias::Identities, key: Key)
             std::borrow::Cow::Owned(id) => Key::new(Kind::Message, id),
         },
         Kind::Link => {
-            let (parent, child, kind, how): (String, String, String, String) =
-                serde_json::from_slice(&key.bytes)?;
+            let (parent, child, kind, how, at, call): (
+                String,
+                String,
+                String,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+            ) = serde_json::from_slice(&key.bytes)?;
             Key::new(
                 Kind::Link,
                 serde_json::to_vec(&(
@@ -115,6 +121,8 @@ pub(super) fn canonical(identities: &crate::session_alias::Identities, key: Key)
                     identities.session(&child),
                     kind,
                     how,
+                    at.map(|id| identities.message(&id).into_owned()),
+                    call,
                 ))?,
             )
         }
@@ -296,9 +304,15 @@ impl Resolver {
                 .expect("first build")
                 .text(index, key.bytes.as_slice().try_into().expect("text hash")),
             Kind::Link => {
-                let (parent, child, kind, how): (String, String, String, String) =
-                    serde_json::from_slice(&key.bytes)?;
-                Ok(index.query_row("SELECT pk FROM link WHERE parent_id=?1 AND child_id=?2 AND kind=?3 AND how=?4",params![parent,child,kind,how],|r|r.get(0)).optional()?)
+                let (parent, child, kind, how, at, call): (
+                    String,
+                    String,
+                    String,
+                    Option<String>,
+                    Option<String>,
+                    Option<String>,
+                ) = serde_json::from_slice(&key.bytes)?;
+                Ok(index.query_row("SELECT pk FROM link WHERE parent_id=?1 AND child_id=?2 AND kind=?3 AND how IS ?4 AND branch_point IS ?5 AND spawning_call IS ?6",params![parent,child,kind,how,at,call],|r|r.get(0)).optional()?)
             }
             kind => {
                 let column = if kind == Kind::Text { "hash" } else { "id" };
@@ -377,12 +391,14 @@ fn sessions_only_named(batches: &[&mut Batch]) -> BTreeSet<Key> {
 }
 
 pub(super) fn link_key(link: &Link) -> Result<Vec<u8>> {
-    let (kind, how) = link.kind.columns();
+    link.validate().map_err(|e| StoreError::Invalid(e.into()))?;
     Ok(serde_json::to_vec(&(
         link.parent.to_string(),
         link.child.to_string(),
-        kind,
-        how,
+        link.kind.as_str(),
+        link.how.map(|how| how.as_str()),
+        link.at.as_ref().map(ToString::to_string),
+        link.call_id.as_deref(),
     ))?)
 }
 
@@ -473,11 +489,24 @@ impl Resolver {
                             keys.insert(Key::new(kind, row.get::<_, String>(0)?.into_bytes()));
                         }
                     }
-                    let mut stmt=index.prepare("SELECT l.parent_id,l.child_id,l.kind,l.how FROM link l JOIN link_source s ON s.link_pk=l.pk JOIN input_ref i ON i.pk=s.input_pk WHERE i.id=?1 AND s.chain=?2")?;
+                    let mut stmt=index.prepare("SELECT l.parent_id,l.child_id,l.kind,l.how,l.branch_point,l.spawning_call FROM link l JOIN link_source s ON s.link_pk=l.pk JOIN input_ref i ON i.pk=s.input_pk WHERE i.id=?1 AND s.chain=?2")?;
                     let mut rows = stmt.query(params![b.input.id, chain])?;
                     while let Some(row) = rows.next()? {
-                        let values: (String, String, String, String) =
-                            (row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?);
+                        let values: (
+                            String,
+                            String,
+                            String,
+                            Option<String>,
+                            Option<String>,
+                            Option<String>,
+                        ) = (
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                        );
                         keys.insert(Key::new(Kind::Link, serde_json::to_vec(&values)?));
                     }
                     let mut stmt=index.prepare("SELECT s.id FROM session s JOIN parsed p ON p.session_pk=s.pk JOIN input_ref i ON i.pk=p.input_pk WHERE i.id=?1 AND p.chain=?2")?;

@@ -516,6 +516,8 @@ fn session_facts_merge_and_a_pending_link_finds_its_child() {
     p.output.sessions = vec![s.clone()];
     p.output.links = vec![Link {
         kind: LinkKind::Spawn,
+        copies_prefix: false,
+        how: None,
         parent: sid("parent"),
         child: sid("agent-1"),
         at: None,
@@ -530,6 +532,8 @@ fn session_facts_merge_and_a_pending_link_finds_its_child() {
     p.output.sessions = vec![s, Session::new(sid("agent-1"), SessionKind::Subagent)];
     p.output.links = vec![Link {
         kind: LinkKind::Spawn,
+        copies_prefix: false,
+        how: None,
         parent: sid("parent"),
         child: sid("agent-1"),
         at: None,
@@ -545,7 +549,7 @@ fn session_facts_merge_and_a_pending_link_finds_its_child() {
     assert_eq!(parent.title.unwrap().text, "named");
     let link = r
         .query(
-            "SELECT child_pk IS NOT NULL AS resolved, spawning_call FROM link",
+            "SELECT child_pk IS NOT NULL AS resolved, spawning_call FROM session_link",
             &[],
         )
         .unwrap();
@@ -581,7 +585,9 @@ fn copied_messages_are_stored_once_and_read_logically() {
         &["parent", "child"],
     );
     child.parse.first_mut().unwrap().output.links = vec![Link {
-        kind: LinkKind::Copy,
+        kind: LinkKind::Resume,
+        copies_prefix: true,
+        how: None,
         parent: sid("parent"),
         child: sid("child"),
         at: None,

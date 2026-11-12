@@ -51,6 +51,7 @@ fn record(message: Message) -> Record {
         block_ordinals: (0..message.blocks.len() as u64).collect(),
         injections: Vec::new(),
         bindings: Vec::new(),
+        copied_for: Vec::new(),
         message,
     }))
 }
@@ -488,4 +489,28 @@ fn spawn_levels_and_the_help_come_from_the_fold_table() {
         inline_context.validate(),
         Err(ReadError::UnsupportedOption { .. })
     ));
+}
+
+#[test]
+fn injected_and_summary_messages_are_harness_and_tool_only_rows_are_tools() {
+    for kind in [PromptKind::InjectedContext, PromptKind::CompactionSummary] {
+        let message = message(Role::User, Some(kind));
+        assert_eq!(crate::WrittenBy::of(&message), crate::WrittenBy::Harness);
+        assert!(!View::Dialogue.keeps_message(&message));
+        assert!(!crate::is_prompt(message.role, message.prompt_kind));
+    }
+    let mut tool = message(Role::User, Some(PromptKind::Harness));
+    tool.blocks = vec![Block::ToolResult {
+        reported_duration_ms: None,
+        call_id: Some("call".into()),
+        outcome: crate::ToolOutcome::Ok,
+        output: Some("result".into()),
+        data: None,
+        attachments: vec![],
+    }];
+    assert_eq!(crate::WrittenBy::of(&tool), crate::WrittenBy::Tool);
+    tool.blocks.push(Block::Text {
+        text: "runtime feedback".into(),
+    });
+    assert_eq!(crate::WrittenBy::of(&tool), crate::WrittenBy::Harness);
 }

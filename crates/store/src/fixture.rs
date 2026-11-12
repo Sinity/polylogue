@@ -524,7 +524,7 @@ impl Fixture {
         Ok(pks)
     }
 
-    pub fn link(&mut self, parent: &str, child: &str, kind: &str, how: &str) -> Result<()> {
+    pub fn link(&mut self, parent: &str, child: &str, kind: &str, how: Option<&str>) -> Result<()> {
         self.index.execute(
             "INSERT INTO link(parent_id, child_id, child_pk, kind, how, evidence, input_pk)
              VALUES (?1, ?2, (SELECT pk FROM session WHERE id = ?2), ?3, ?4, 'fixture', ?5)",

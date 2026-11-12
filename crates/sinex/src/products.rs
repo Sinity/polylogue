@@ -93,6 +93,8 @@ pub(crate) fn kind(product: &Product) -> &'static str {
         Product::Fragment { .. } => "polylogue.fragment",
         Product::Event { .. } => "polylogue.event",
         Product::Link { .. } => "polylogue.link",
+        Product::PrefixCopy { .. } => "polylogue.prefix_copy",
+        Product::PrefixMember { .. } => "polylogue.prefix_member",
         Product::Background { .. } => "polylogue.background",
         Product::Repository { .. } => "polylogue.repository",
         Product::ParseProgress { .. } => "polylogue.parse_progress",
@@ -138,6 +140,8 @@ pub(crate) fn key(product: &Product, _occurrence: u64) -> Result<String> {
         // point which an earlier record supplied. Keep both contributions for
         // the canonical relation merger rather than replacing one with the other.
         Product::Link { facts, .. } => json!([facts]),
+        Product::PrefixCopy { facts, .. } => json!([facts]),
+        Product::PrefixMember { facts, .. } => json!([facts]),
         Product::Background { facts, .. } => json!([facts.session, facts.task_id]),
         Product::Repository { facts, .. } => json!([facts.path]),
         Product::ParseProgress { reading, .. } => json!([reading.start]),
@@ -194,7 +198,7 @@ pub(crate) fn payload(product: &Product, occurrence: u64) -> Result<Value> {
                 .collect();
             json!({
                 "message": message.id, "session": message.session, "parent": message.parent,
-                "role": message.role, "written_by": WrittenBy::of(message.role, message.prompt_kind),
+                "role": message.role, "written_by": WrittenBy::of(message),
                 "prompt_kind": message.prompt_kind, "at": message.at, "model": message.model,
                 "text": text.join("\n\n"), "usage": message.usage,
                 "stop_reason": message.stop_reason, "duration_ms": message.duration_ms,
@@ -208,6 +212,12 @@ pub(crate) fn payload(product: &Product, occurrence: u64) -> Result<Value> {
             json!({"session": facts.session, "event": facts.kind, "at": facts.at})
         }
         Product::Link { facts, .. } => json!({"session": facts.child, "parent": facts.parent}),
+        Product::PrefixCopy { facts, .. } => {
+            json!({"session": facts.child, "parent": facts.parent})
+        }
+        Product::PrefixMember { facts, .. } => {
+            json!({"session":facts.child,"parent":facts.parent,"message":facts.message})
+        }
         Product::Background { facts, .. } => {
             json!({"session": facts.session, "task": facts.task_id})
         }
@@ -390,6 +400,8 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
         ("polylogue.fragment", "fragment"),
         ("polylogue.event", "event"),
         ("polylogue.link", "link"),
+        ("polylogue.prefix_copy", "prefix_copy"),
+        ("polylogue.prefix_member", "prefix_member"),
         ("polylogue.background", "background"),
         ("polylogue.repository", "repository"),
         ("polylogue.parse_progress", "parse_progress"),
@@ -454,7 +466,7 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                             "fragment" => 3,
                             "query_run" => 4,
                             "restored_history" | "restored_assertion" | "attachment_binding"
-                            | "query_run_outcome" => 1,
+                            | "query_run_outcome" | "prefix_copy" | "prefix_member" => 1,
                             "query" => 2,
                             _ => 3,
                         }

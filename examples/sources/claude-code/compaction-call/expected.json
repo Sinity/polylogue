@@ -12,15 +12,23 @@
   "output": {
     "background": [],
     "blobs": [],
-    "events": [],
-    "links": [
+    "events": [
       {
-        "child": "claude-code:agent-acompact-5e",
-        "evidence": "agentId acompact",
-        "kind": "spawn",
-        "parent": "claude-code:s3"
+        "session": "claude-code:agent-acompact-5e",
+        "kind": "compaction_ownership_unknown",
+        "at": "2026-04-01T10:00:00Z",
+        "at_quality": "intrinsic",
+        "at_precision": "second",
+        "range": [
+          0,
+          177
+        ],
+        "data": {
+          "reason": "compactor identity and root carrier do not establish which work session owns the replay"
+        }
       }
     ],
+    "links": [],
     "messages": [
       {
         "end": 177,

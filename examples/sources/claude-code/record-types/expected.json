@@ -76,41 +76,20 @@
       {
         "at": "2026-03-01T12:00:00Z",
         "data": {
-          "compactMetadata": {
-            "preTokens": 160000,
-            "trigger": "auto"
-          },
-          "sessionId": "s1",
-          "subtype": "compact_boundary",
-          "timestamp": "2026-03-01T12:00:00Z",
-          "type": "system"
+          "summary": null,
+          "pre_tokens": 160000,
+          "post_tokens": null,
+          "trigger": "auto",
+          "evicted": [],
+          "kept": [],
+          "kept_range": null,
+          "kept_after": null,
+          "replacement_history": null
         },
         "kind": "compaction",
         "range": [
           208,
           362
-        ],
-        "session": "claude-code:s1",
-        "at_quality": "intrinsic",
-        "at_precision": "second"
-      },
-      {
-        "at": "2026-03-01T12:00:01Z",
-        "data": {
-          "isCompactSummary": true,
-          "message": {
-            "content": "Summary of the earlier conversation.",
-            "role": "user"
-          },
-          "sessionId": "s1",
-          "timestamp": "2026-03-01T12:00:01Z",
-          "type": "user",
-          "uuid": "cs"
-        },
-        "kind": "compaction_summary",
-        "range": [
-          363,
-          541
         ],
         "session": "claude-code:s1",
         "at_quality": "intrinsic",
@@ -129,7 +108,8 @@
           620
         ],
         "session": "claude-code:s1",
-        "at_quality": "unknown"
+        "at_quality": "unknown",
+        "after": "claude-code:cs"
       },
       {
         "data": {
@@ -143,7 +123,8 @@
           720
         ],
         "session": "claude-code:s1",
-        "at_quality": "unknown"
+        "at_quality": "unknown",
+        "after": "claude-code:cs"
       },
       {
         "session": "claude-code:s1",
@@ -161,7 +142,8 @@
             "agentId": "ab12"
           }
         },
-        "at_quality": "unknown"
+        "at_quality": "unknown",
+        "after": "claude-code:cs"
       },
       {
         "data": {
@@ -178,7 +160,8 @@
           1012
         ],
         "session": "claude-code:s1",
-        "at_quality": "unknown"
+        "at_quality": "unknown",
+        "after": "claude-code:cs"
       },
       {
         "data": {
@@ -193,7 +176,8 @@
           1178
         ],
         "session": "claude-code:s1",
-        "at_quality": "unknown"
+        "at_quality": "unknown",
+        "after": "claude-code:cs"
       }
     ],
     "links": [
@@ -202,10 +186,31 @@
         "child": "claude-code:agent-ab12",
         "evidence": "agent_progress",
         "kind": "spawn",
-        "parent": "claude-code:s1"
+        "parent": "claude-code:s1",
+        "copies_prefix": false
       }
     ],
-    "messages": [],
+    "messages": [
+      {
+        "offset": 363,
+        "end": 541,
+        "message": {
+          "id": "claude-code:cs",
+          "session": "claude-code:s1",
+          "role": "user",
+          "prompt_kind": "compaction_summary",
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Summary of the earlier conversation."
+            }
+          ],
+          "at": "2026-03-01T12:00:01Z",
+          "at_quality": "intrinsic",
+          "at_precision": "second"
+        }
+      }
+    ],
     "sessions": [
       {
         "cwd": [

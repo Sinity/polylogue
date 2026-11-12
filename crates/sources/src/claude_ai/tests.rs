@@ -238,10 +238,25 @@ fn a_compaction_summary_marks_the_discontinuity_before_its_message() {
         .find(|e| e.kind == "compaction")
         .unwrap();
     assert_eq!(event.after.as_ref().unwrap().native().as_str(), "a1");
+    let boundary: polylogue_model::CompactionBoundary =
+        serde_json::from_value(event.data.clone()).unwrap();
+    let summary = step
+        .output
+        .messages
+        .iter()
+        .find(|row| Some(&row.message.id) == boundary.summary.as_ref())
+        .unwrap();
+    assert_eq!(summary.message.text(), "Summary of earlier turns.");
     assert_eq!(
-        event.data.pointer("/summary/0/text").and_then(Json::as_str),
-        Some("Summary of earlier turns.")
+        summary.message.prompt_kind,
+        Some(PromptKind::CompactionSummary)
     );
+    assert_eq!(
+        polylogue_model::WrittenBy::of(&summary.message),
+        polylogue_model::WrittenBy::Harness
+    );
+    assert_eq!(step.output.messages.len(), 4);
+    assert_eq!(step.output.messages[2].message.id, summary.message.id);
     assert!(
         !step
             .counts
@@ -251,4 +266,27 @@ fn a_compaction_summary_marks_the_discontinuity_before_its_message() {
         "{:?}",
         step.counts.unread_fields
     );
+}
+
+#[test]
+fn unknown_summary_parts_leave_an_explicit_boundary_without_an_empty_message() {
+    let mut next = m(
+        "next",
+        "human",
+        ROOT_PARENT,
+        "2026-01-01T00:05:00Z",
+        json!([{"type":"text","text":"continue"}]),
+    );
+    next["compaction_summary"] =
+        json!([{"type":"future_summary","payload":"retained in original input"}]);
+    let step = run(vec![conv(vec![next])]);
+    assert_eq!(step.output.messages.len(), 1);
+    assert_eq!(step.output.messages[0].message.text(), "continue");
+    let boundary = step
+        .output
+        .events
+        .iter()
+        .find(|event| event.kind == "compaction")
+        .unwrap();
+    assert!(boundary.data["summary"].is_null());
 }

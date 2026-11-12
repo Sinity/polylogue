@@ -29,72 +29,88 @@ pub struct Event {
     pub data: Json,
 }
 
+/// Provider context metadata normalized once, while reading the source.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CompactionBoundary {
+    pub summary: Option<MessageId>,
+    pub pre_tokens: Option<u64>,
+    pub post_tokens: Option<u64>,
+    pub trigger: Option<String>,
+    #[serde(default)]
+    pub evicted: Vec<MessageId>,
+    #[serde(default)]
+    pub kept: Vec<MessageId>,
+    pub kept_range: Option<KeptRange>,
+    /// The recorded attachment point, separate from the retained segment.
+    pub kept_after: Option<MessageId>,
+    /// Native replacement records describe kept context, never new messages.
+    #[serde(default)]
+    pub replacement_history: Json,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct KeptRange {
+    pub first: MessageId,
+    pub last: MessageId,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MicrocompactionBoundary {
+    pub tokens_saved: Option<u64>,
+    #[serde(default)]
+    pub removed_calls: Vec<String>,
+    #[serde(default)]
+    pub removed_attachments: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum LinkKind {
-    /// A fork: the child shares the parent's messages up to `at`, then
-    /// diverges. The child stores only its own tail.
-    Fork,
-    /// A session spawned by a tool call in the parent (a subagent).
     Spawn,
-    /// The same work continued in a new session (after compaction or a
-    /// resume).
+    Fork,
     Continuation,
-    /// The child's file repeats messages the parent originated; they are
-    /// stored once, in the parent.
-    Copy,
+    Resume,
+    Reference,
 }
 
-impl LinkKind {
-    pub const ALL: &'static [LinkKind] = &[Self::Fork, Self::Spawn, Self::Continuation, Self::Copy];
+stored_names!(LinkKind {
+    Spawn => "spawn",
+    Fork => "fork",
+    Continuation => "continuation",
+    Resume => "resume",
+    Reference => "reference",
+});
 
-    /// The stored `(kind, how)` pair: the link table and the query language
-    /// name a link's family (`subagent`, `continuation`) and how it was made.
-    pub const fn columns(self) -> (&'static str, &'static str) {
-        match self {
-            Self::Spawn => ("subagent", "fresh"),
-            Self::Fork => ("continuation", "fork"),
-            Self::Copy => ("continuation", "resume"),
-            Self::Continuation => ("continuation", "after_compaction"),
-        }
-    }
-
-    /// The kind a stored `(kind, how)` pair names, if this version knows it.
-    pub fn from_columns(kind: &str, how: &str) -> Option<Self> {
-        Self::ALL.iter().copied().find(|&k| {
-            let (family, made) = k.columns();
-            // Any subagent link is a spawn, however it was made.
-            family == kind && (made == how || k == Self::Spawn)
-        })
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReferenceReason {
+    Briefing,
+    Ping,
+    Mention,
 }
 
-const LINK_COUNT: usize = LinkKind::ALL.len();
+stored_names!(ReferenceReason {
+    Briefing => "briefing",
+    Ping => "ping",
+    Mention => "mention",
+});
 
-const fn link_column(second: bool) -> ([&'static str; LINK_COUNT], usize) {
-    let mut out = [""; LINK_COUNT];
-    let mut i = 0;
-    while i < LINK_COUNT {
-        let (kind, how) = LinkKind::ALL[i].columns();
-        out[i] = if second { how } else { kind };
-        i += 1;
-    }
-    crate::stored_names::distinct(out)
-}
-
-static LINK_KINDS: ([&str; LINK_COUNT], usize) = link_column(false);
-static LINK_HOWS: ([&str; LINK_COUNT], usize) = link_column(true);
-
-/// Every stored link `kind` (the first of [`LinkKind::columns`]).
-pub static LINK_KIND_NAMES: &[&str] = LINK_KINDS.0.split_at(LINK_KINDS.1).0;
-/// Every stored link `how` (the second of [`LinkKind::columns`]).
-pub static LINK_HOW_NAMES: &[&str] = LINK_HOWS.0.split_at(LINK_HOWS.1).0;
+pub static LINK_KIND_NAMES: &[&str] = LinkKind::NAMES;
+pub static LINK_HOW_NAMES: &[&str] = ReferenceReason::NAMES;
 
 /// A relationship between two sessions, from an explicit marker in the
 /// source, never from guessing.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Link {
     pub kind: LinkKind,
+    /// A recorded copied prefix is independent of the provider's relation kind.
+    #[serde(default)]
+    pub copies_prefix: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub how: Option<ReferenceReason>,
     pub parent: SessionId,
     pub child: SessionId,
     /// The parent's message the child branched from or was spawned by.
@@ -107,33 +123,80 @@ pub struct Link {
     pub evidence: String,
 }
 
+/// One input holds messages from the parent in the child's prefix. This
+/// observation supplies no provider relationship between the sessions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PrefixCopy {
+    pub parent: SessionId,
+    pub child: SessionId,
+    /// Explicit members replace inference from this input's message rows.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub explicit_members: bool,
+}
+
+/// Original reading coordinates keep independently observed copy orders separate.
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, schemars::JsonSchema,
+)]
+pub struct PrefixSource {
+    pub input: String,
+    pub chain: i64,
+    pub reading_version: String,
+}
+
+/// One copied message, independent of any provider relationship.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PrefixMember {
+    pub parent: SessionId,
+    pub child: SessionId,
+    pub message: MessageId,
+    /// Native parsers leave this absent; admission supplies their own reading.
+    pub source: Option<PrefixSource>,
+    /// Source record coordinate and position within that record. Export
+    /// framing supplies the first coordinate for native parser observations.
+    pub position: [u64; 2],
+}
+
 impl Link {
-    /// One link per kind, parent and child, whichever files state it.
-    pub fn key(&self) -> (LinkKind, &SessionId, &SessionId) {
-        (self.kind, &self.parent, &self.child)
+    /// Coordinates distinguish conflicting statements of the same relationship.
+    /// Source paths and copied-prefix observations remain metadata of a statement.
+    pub fn key(
+        &self,
+    ) -> (
+        LinkKind,
+        &SessionId,
+        &SessionId,
+        Option<&MessageId>,
+        Option<&str>,
+        Option<ReferenceReason>,
+    ) {
+        (
+            self.kind,
+            &self.parent,
+            &self.child,
+            self.at.as_ref(),
+            self.call_id.as_deref(),
+            self.how,
+        )
     }
 
-    /// Internal selection tag for locating all canonical copies of this link.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        match (self.kind, self.how) {
+            (LinkKind::Reference, None) => Err("a reference link requires its reason"),
+            (LinkKind::Reference, Some(_)) => Ok(()),
+            (_, Some(_)) => Err("a provider link has no reference reason"),
+            (_, None) => Ok(()),
+        }
+    }
+
+    /// The portable identity of this recorded statement, including its coordinates.
     pub fn selection_tag(&self) -> String {
         blake3::hash(
-            &serde_json::to_vec(&("polylogue.link.selection.v1", self.key()))
+            &serde_json::to_vec(&("polylogue.link.selection.v2", self.key()))
                 .expect("typed link identity"),
         )
         .to_hex()
         .to_string()
-    }
-
-    /// Fills the parts this statement of the link lacks from another
-    /// statement of the same link: a subagent's own file
-    /// names its parent, the parent's progress record names the tool call.
-    pub fn merge(&mut self, other: &Link) {
-        debug_assert_eq!(self.key(), other.key());
-        if self.at.is_none() {
-            self.at.clone_from(&other.at);
-        }
-        if self.call_id.is_none() {
-            self.call_id.clone_from(&other.call_id);
-        }
     }
 }
 

@@ -12,7 +12,7 @@
 //! text; joined, they equal the chunk's `text`.
 
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
@@ -475,6 +475,8 @@ impl ExportParser for AiStudio {
         {
             sink.out.links.push(Link {
                 kind: LinkKind::Fork,
+                copies_prefix: false,
+                how: None,
                 parent,
                 child: sid,
                 at: None,

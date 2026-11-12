@@ -16,6 +16,18 @@ impl RowWriter<'_, '_> {
         for session in sessions {
             self.changes.whole_session(session);
         }
+        self.tx.prepare_cached("UPDATE session SET changed=?3 WHERE id IN (SELECT parent_id FROM prefix_copy WHERE input_pk=?1 AND chain=?2 UNION SELECT child_id FROM prefix_copy WHERE input_pk=?1 AND chain=?2) AND changed IS NOT ?3")?
+            .execute(params![self.input_pk,self.chain,self.counter])?;
+        let prefix_children = self
+            .tx
+            .prepare_cached("SELECT child_id FROM prefix_copy WHERE input_pk=?1 AND chain=?2")?
+            .query_map(params![self.input_pk, self.chain], |row| {
+                row.get::<_, String>(0)
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for child in prefix_children {
+            self.changes.link_child(&child);
+        }
         crate::fragment::retract(self.tx, self.input_pk, self.chain)?;
         for kind in VersionKind::ALL {
             kind.retract(self.tx, self.input_pk, self.chain)?;
@@ -24,6 +36,8 @@ impl RowWriter<'_, '_> {
         for table in [
             "session_record",
             "session_alias",
+            "prefix_member",
+            "prefix_copy",
             "parsed",
             "parse_state",
             "parser_context",

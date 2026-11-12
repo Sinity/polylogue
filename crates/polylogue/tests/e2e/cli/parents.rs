@@ -13,6 +13,7 @@ fn exported(name: &str, text: &str, parent: Option<(&str, Option<&str>)>) -> Vec
     .unwrap();
     let mut records = vec![
         Record::Session(bundle::SessionRecord {
+            copied_prefixes: Vec::new(),
             reference: format!("session:{}", session.id),
             commit: 1,
             session,
@@ -26,6 +27,7 @@ fn exported(name: &str, text: &str, parent: Option<(&str, Option<&str>)>) -> Vec
             block_ordinals: vec![0],
             injections: vec![],
             bindings: vec![],
+            copied_for: Vec::new(),
             message,
         })),
     ];

@@ -2,7 +2,9 @@ use super::*;
 
 fn copy(parent: &str) -> Link {
     Link {
-        kind: LinkKind::Copy,
+        kind: LinkKind::Resume,
+        copies_prefix: true,
+        how: None,
         parent: sid(parent),
         child: sid("c1"),
         at: None,

@@ -195,6 +195,8 @@ fn a_newly_stored_parent_link_moves_the_child_rewrite_version() {
         parent: sid("parent"),
         child: sid("child"),
         kind: polylogue_model::LinkKind::Fork,
+        copies_prefix: false,
+        how: None,
         at: Some(MessageId::parse("claude-code:p1").unwrap()),
         call_id: None,
         evidence: "fixture".into(),
@@ -366,18 +368,12 @@ fn lineage_walks_links_transitively_and_skips_references() {
             })
             .unwrap();
     }
+    fixture.link("test:a", "test:b", "spawn", None).unwrap();
+    fixture.link("test:b", "test:c", "resume", None).unwrap();
     fixture
-        .link("test:a", "test:b", "subagent", "fresh")
+        .link("test:a", "test:d", "reference", Some("mention"))
         .unwrap();
-    fixture
-        .link("test:b", "test:c", "continuation", "resume")
-        .unwrap();
-    fixture
-        .link("test:a", "test:d", "reference", "mention")
-        .unwrap();
-    fixture
-        .link("test:c", "test:a", "continuation", "fork")
-        .unwrap();
+    fixture.link("test:c", "test:a", "fork", None).unwrap();
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
     let a = SessionId::parse("test:a").unwrap();

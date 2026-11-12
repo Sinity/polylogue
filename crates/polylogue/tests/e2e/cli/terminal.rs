@@ -93,6 +93,7 @@ fn archived_controls_are_data_in_pipes_and_terminals() {
     let records = [
         Record::Manifest(Box::new(manifest)),
         Record::Session(bundle::SessionRecord {
+            copied_prefixes: Vec::new(),
             reference: "session:claude-code:hostile".into(),
             commit: 1,
             session,
@@ -106,6 +107,7 @@ fn archived_controls_are_data_in_pipes_and_terminals() {
             block_ordinals: vec![0],
             injections: vec![],
             bindings: vec![],
+            copied_for: Vec::new(),
             message,
         })),
     ];

@@ -55,13 +55,9 @@ fn whole(session: &str, entries: &[IndexEntry]) -> Part {
 fn compacted() -> Vec<IndexEntry> {
     let mut out = entries("one", 3);
     out.push(event_entry("boundary", "compaction", None, 10, Vec::new()));
-    out.push(event_entry(
-        "summary",
-        "compaction_summary",
-        None,
-        10,
-        Vec::new(),
-    ));
+    let mut summary = message("one", 99, Role::User);
+    summary.prompt_kind = Some(PromptKind::CompactionSummary);
+    out.extend(message_entries(&summary, &[0], MessagePlace::default()));
     out.extend((3..6).flat_map(|n| {
         message_entries(
             &message("one", n, Role::User),
@@ -181,10 +177,10 @@ fn result(n: u32, call: &str) -> Vec<IndexEntry> {
 
 #[test]
 fn a_microcompaction_removes_the_results_it_names_before_it() {
-    let data = serde_json::json!({
-        "microcompactMetadata": {"compactedToolIds": ["first"], "clearedAttachmentUUIDs": []}
-    });
-    assert_eq!(crate::read::microcompacted_calls(&data), ["first"]);
+    let boundary = crate::MicrocompactionBoundary {
+        removed_calls: vec!["first".into()],
+        ..Default::default()
+    };
     let mut entries = result(0, "first");
     entries.extend(result(1, "second"));
     entries.push(event_entry(
@@ -192,7 +188,7 @@ fn a_microcompaction_removes_the_results_it_names_before_it() {
         "microcompaction",
         None,
         10,
-        crate::read::microcompacted_calls(&data),
+        boundary.removed_calls,
     ));
     // A later result with a cleared ID is not removed by an earlier event.
     entries.extend(result(2, "first"));
@@ -209,4 +205,78 @@ fn a_microcompaction_removes_the_results_it_names_before_it() {
     // Before the event, the result is still in context.
     let before = context_at(&parts, |_| &entries, at(3));
     assert!(before.members.contains(&at(1)));
+}
+
+#[test]
+fn a_compaction_keeps_recorded_messages_after_its_summary_in_recorded_order() {
+    let mut source = entries("kept", 3);
+    let mut boundary = event_entry("boundary", "compaction", None, 10, Vec::new());
+    boundary.compaction = Some(crate::CompactionBoundary {
+        kept: vec![
+            message("kept", 2, Role::User).id,
+            message("kept", 0, Role::User).id,
+        ],
+        ..Default::default()
+    });
+    source.push(boundary);
+    let mut summary = message("kept", 3, Role::User);
+    summary.prompt_kind = Some(PromptKind::CompactionSummary);
+    source.extend(message_entries(&summary, &[0], MessagePlace::default()));
+    source.extend(message_entries(
+        &message("kept", 4, Role::User),
+        &[0],
+        MessagePlace::default(),
+    ));
+    let parts = [whole("kept", &source)];
+    let context = context_at(
+        &parts,
+        |_| &source,
+        Place {
+            part: 0,
+            entry: source.len() - 1,
+        },
+    );
+    let headers: Vec<_> = context
+        .members
+        .iter()
+        .filter_map(|place| {
+            let entry = &source[place.entry];
+            (entry.kind == EntryKind::Header).then(|| entry.key.message().unwrap().to_string())
+        })
+        .collect();
+    assert_eq!(
+        headers,
+        [
+            "test:kept:m3",
+            "test:kept:m2",
+            "test:kept:m0",
+            "test:kept:m4"
+        ]
+    );
+    assert!(context.complete, "{:?}", context.reason);
+    assert_eq!(context.evicted, [Place { part: 0, entry: 2 }]);
+}
+
+#[test]
+fn a_compaction_reports_missing_kept_context_instead_of_using_an_older_prefix() {
+    let mut source = compacted();
+    source[6].compaction = Some(crate::CompactionBoundary {
+        kept: vec![MessageId::parse("test:missing").unwrap()],
+        ..Default::default()
+    });
+    let parts = [whole("one", &source)];
+    let context = context_at(
+        &parts,
+        |_| &source,
+        Place {
+            part: 0,
+            entry: source.len() - 1,
+        },
+    );
+    assert!(!context.complete);
+    assert_eq!(
+        context.reason.as_deref(),
+        Some("kept context message test:missing is not available")
+    );
+    assert_eq!(context.evicted.len(), 3);
 }

@@ -55,16 +55,11 @@
     ],
     "links": [
       {
-        "child": "claude-code:claude-normalization-main",
-        "evidence": "sessionId",
-        "kind": "copy",
-        "parent": "claude-code:claude-normalization-other"
-      },
-      {
         "child": "claude-code:claude-normalization-main/sidechain",
         "evidence": "isSidechain",
         "kind": "spawn",
-        "parent": "claude-code:claude-normalization-main"
+        "parent": "claude-code:claude-normalization-main",
+        "copies_prefix": false
       }
     ],
     "messages": [
@@ -399,6 +394,12 @@
         "started": "2026-07-01T10:00:03.5Z",
         "started_quality": "intrinsic",
         "started_precision": "instant"
+      }
+    ],
+    "prefix_copies": [
+      {
+        "parent": "claude-code:claude-normalization-other",
+        "child": "claude-code:claude-normalization-main"
       }
     ]
   }

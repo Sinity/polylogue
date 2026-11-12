@@ -1,5 +1,5 @@
 //! Current canonical bundle records, framed one record at a time.
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 pub const ORIGIN: &str = "polylogue-bundle";
 use crate::RecordOutcome;
 use crate::document::Sink;
@@ -157,10 +157,30 @@ impl ExportParser for Bundle {
         let kind = match record {
             Record::Manifest(_) => "manifest",
             Record::Session(record) => {
+                sink.out
+                    .prefix_copies
+                    .extend(record.copied_prefixes.into_iter().map(|parent| {
+                        polylogue_model::PrefixCopy {
+                            explicit_members: true,
+                            parent,
+                            child: record.session.id.clone(),
+                        }
+                    }));
                 sink.out.sessions.push(record.session);
                 "session"
             }
             Record::Message(record) => {
+                sink.out
+                    .prefix_members
+                    .extend(record.copied_for.into_iter().map(|copy| {
+                        polylogue_model::PrefixMember {
+                            parent: record.message.session.clone(),
+                            child: copy.child,
+                            message: record.message.id.clone(),
+                            source: Some(copy.source),
+                            position: copy.position,
+                        }
+                    }));
                 let index = sink.out.messages.len();
                 if !record.bindings.is_empty() {
                     sink.out

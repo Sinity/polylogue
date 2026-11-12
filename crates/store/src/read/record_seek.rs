@@ -21,7 +21,7 @@ impl Reader<'_> {
             .conn()?
             .query_row(
                 "SELECT (SELECT count(*) FROM event e WHERE e.session_pk=s.pk),
-                    (SELECT count(*) FROM link l WHERE l.parent_id=s.id OR l.child_id=s.id)
+                    (SELECT count(*) FROM session_link l WHERE l.parent_id=s.id OR l.child_id=s.id)
              FROM session s WHERE s.id=?1",
                 [session.to_string()],
                 |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),

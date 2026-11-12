@@ -122,9 +122,9 @@ impl Selection {
             clauses.push(if self.subagents {
                 format!(
                     "{column} IN (WITH RECURSIVE logical(pk) AS (SELECT value FROM json_each(?{n}) \
-                     UNION SELECT l.child_pk FROM link l JOIN session lp ON lp.id = l.parent_id \
+                     UNION SELECT l.child_pk FROM session_link l JOIN session lp ON lp.id = l.parent_id \
                      JOIN logical ON logical.pk = lp.pk \
-                     WHERE l.kind = 'subagent' AND l.child_pk IS NOT NULL) SELECT pk FROM logical)"
+                     WHERE l.kind = 'spawn' AND l.child_pk IS NOT NULL) SELECT pk FROM logical)"
                 )
             } else {
                 format!("{column} IN (SELECT value FROM json_each(?{n}))")

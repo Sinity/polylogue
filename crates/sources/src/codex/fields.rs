@@ -302,3 +302,15 @@ pub static USER_MESSAGE: Fields = Fields::new(
         ("images[]", Read(T::String)),
     ],
 );
+
+/// Native replacement context stays whole beside normalized message identities.
+pub static COMPACTED: Fields = Fields::new(
+    "compacted",
+    &[
+        ("message", Read(T::String)),
+        (
+            "replacement_history",
+            Kept("native replacement context retained in the boundary"),
+        ),
+    ],
+);

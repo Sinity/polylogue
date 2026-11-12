@@ -3,12 +3,11 @@
     "records": 3,
     "used": {
       "assistant": 1,
-      "user": 1
+      "user": 1,
+      "summary": 1
     },
     "unreadable": {},
-    "skipped": {
-      "summary: no summary": 1
-    },
+    "skipped": {},
     "unread_fields": {
       "summary.isSidechain": 1,
       "summary.message.content": 1,
@@ -22,15 +21,32 @@
   "output": {
     "background": [],
     "blobs": [],
-    "events": [],
-    "links": [
+    "events": [
       {
-        "child": "claude-code:agent-task-agent-12-change-check",
-        "evidence": "agentId",
-        "kind": "spawn",
-        "parent": "claude-code:claude-lineage-parent"
+        "session": "claude-code:agent-task-agent-12-change-check",
+        "kind": "compaction",
+        "after": "claude-code:task-compact-a",
+        "at": "2026-07-01T12:10:02Z",
+        "at_quality": "intrinsic",
+        "at_precision": "second",
+        "range": [
+          703,
+          994
+        ],
+        "data": {
+          "summary": "claude-code:task-compact-summary",
+          "pre_tokens": null,
+          "post_tokens": null,
+          "trigger": null,
+          "evicted": [],
+          "kept": [],
+          "kept_range": null,
+          "kept_after": null,
+          "replacement_history": null
+        }
       }
     ],
+    "links": [],
     "messages": [
       {
         "end": 370,
@@ -43,7 +59,7 @@
             }
           ],
           "id": "claude-code:task-compact-u",
-          "prompt_kind": "harness",
+          "prompt_kind": "model",
           "role": "user",
           "session": "claude-code:agent-task-agent-12-change-check",
           "at_quality": "intrinsic",
@@ -70,6 +86,26 @@
           "at_precision": "second"
         },
         "offset": 371
+      },
+      {
+        "offset": 703,
+        "end": 994,
+        "message": {
+          "id": "claude-code:task-compact-summary",
+          "session": "claude-code:agent-task-agent-12-change-check",
+          "role": "user",
+          "prompt_kind": "compaction_summary",
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Compressed task-local verification context."
+            }
+          ],
+          "at": "2026-07-01T12:10:02Z",
+          "at_quality": "intrinsic",
+          "at_precision": "second",
+          "parent": "claude-code:task-compact-a"
+        }
       }
     ],
     "sessions": [

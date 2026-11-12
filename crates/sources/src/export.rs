@@ -421,6 +421,11 @@ pub fn parse_item(
         row.offset = source.start;
         row.end = source.end;
     }
+    for member in &mut output.prefix_members {
+        if member.source.is_none() {
+            member.position[0] = range.start;
+        }
+    }
     for row in &mut output.documents {
         row.offset = range.start;
         row.end = range.end;

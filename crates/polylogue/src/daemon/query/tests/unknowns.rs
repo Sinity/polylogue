@@ -75,8 +75,8 @@ fn a_missing_child_makes_the_tree_cost_partial() {
     w.fx.link(
         "claude-code:7f3a2c10-0001-4000-8000-000000000001",
         "claude-code:not-stored",
-        "subagent",
-        "fresh",
+        "spawn",
+        None,
     )
     .unwrap();
     let total = |text: &str| q(&w, text)["rows"][0].clone();

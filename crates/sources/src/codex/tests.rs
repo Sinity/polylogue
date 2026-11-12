@@ -703,3 +703,19 @@ fn native_background_modern_and_legacy_completion_keep_their_clock_evidence() {
         );
     }
 }
+
+#[test]
+fn resumed_rollout_records_the_provider_session_relation() {
+    let records = [meta(json!({})), meta(json!({"id": PARENT}))];
+    let mut state = ParserState::default();
+    let out = run(&rollout(), &mut state, &jsonl(&records), 0)
+        .unwrap()
+        .output;
+    let [link] = out.links.as_slice() else {
+        panic!("{:?}", out.links)
+    };
+    assert_eq!(link.kind, LinkKind::Resume);
+    assert_eq!(link.parent.native().as_str(), PARENT);
+    assert_eq!(link.child.native().as_str(), THREAD);
+    assert!(!link.copies_prefix);
+}

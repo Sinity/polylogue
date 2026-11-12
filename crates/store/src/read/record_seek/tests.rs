@@ -37,13 +37,13 @@ fn physical_family_counts_match_membership_without_reading_payload_columns() {
     fixture.event(target, "notice", None).unwrap();
     fixture.event(other, "notice", None).unwrap();
     fixture
-        .link("test:target", "test:child", "continuation", "fork")
+        .link("test:target", "test:child", "fork", None)
         .unwrap();
     fixture
-        .link("test:other", "test:target", "continuation", "fork")
+        .link("test:other", "test:target", "fork", None)
         .unwrap();
     fixture
-        .link("test:other", "test:child", "continuation", "fork")
+        .link("test:other", "test:child", "fork", None)
         .unwrap();
     let pool = ReadPool::open(&fixture.archive).unwrap();
     let reader = pool.reader().unwrap();

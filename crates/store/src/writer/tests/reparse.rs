@@ -95,6 +95,8 @@ fn fixture(changed: bool) -> Vec<Batch> {
             parent: sid("main"),
             child: sid("child"),
             kind: LinkKind::Spawn,
+            copies_prefix: false,
+            how: None,
             at: None,
             call_id: None,
             evidence: b.input.id.clone(),

@@ -14,33 +14,25 @@ struct Key {
     order: i64,
 }
 
-/// The links whose child carries its parent's messages before it: a fork or
-/// resume, and a subagent forked with its parent's context (Claude Code's
-/// `fork-context-ref`, recorded as a `fork_context` event in the child, with
-/// the branch point on the spawn link).
-const INHERITS: &str = "((kind = 'continuation' AND how IN ('fork', 'resume')) \
-     OR (kind = 'subagent' AND branch_point IS NOT NULL AND EXISTS ( \
-       SELECT 1 FROM event fe JOIN session fs ON fs.pk = fe.session_pk \
-       WHERE fs.id = link.child_id AND fe.kind = 'fork_context')))";
-
-struct Link {
+struct Prefix {
     parent: String,
-    how: String,
+    copies_prefix: bool,
     anchor: Option<String>,
 }
 
 struct CopiedKey {
     source: String,
     chain: i64,
-    sequence: i64,
-    position: i64,
+    version: String,
+    sequence: u64,
+    position: u64,
     key: Key,
 }
 
 struct Frame {
     pk: i64,
     session: SessionId,
-    links: VecDeque<Link>,
+    prefixes: VecDeque<Prefix>,
     keys: Vec<Key>,
     copied: Vec<CopiedKey>,
     issues: Vec<ParentIssue>,
@@ -83,7 +75,7 @@ impl<'a> Reader<'a> {
         let own = self.session_pk(id)?.map(|pk| (pk, id.clone()));
         let has_parents = with_parents
             && self.conn()?.query_row(
-                &format!("SELECT EXISTS(SELECT 1 FROM link WHERE child_id=?1 AND {INHERITS})"),
+                "SELECT EXISTS(SELECT 1 FROM session_prefix WHERE child_id=?1)",
                 [id.to_string()],
                 |r| r.get::<_, bool>(0),
             )?;
@@ -110,26 +102,14 @@ impl<'a> Reader<'a> {
         session: SessionId,
         via: Option<(SessionId, Option<String>)>,
     ) -> Result<Frame> {
-        let mut links: VecDeque<Link> = self
-            .conn()?
-            .prepare_cached(&format!(
-                "SELECT parent_id, CASE WHEN kind = 'subagent' THEN 'fork' ELSE how END, branch_point
-                 FROM link WHERE child_id = ?1 AND {INHERITS} ORDER BY pk"
-            ))?
-            .query_map([session.to_string()], |r| {
-                Ok(Link {
-                    parent: r.get(0)?,
-                    how: r.get(1)?,
-                    anchor: r.get(2)?,
-                })
-            })?
-            .collect::<rusqlite::Result<_>>()?;
-        let forks: std::collections::BTreeSet<_> = links
+        let mut prefixes: VecDeque<Prefix> = self.conn()?
+            .prepare_cached("SELECT parent_id,branch_point,copies_prefix FROM session_prefix WHERE child_id=?1 ORDER BY parent_id,branch_point")?
+            .query_map([session.to_string()], |r| Ok(Prefix {
+                parent: r.get(0)?, anchor: r.get(1)?, copies_prefix: r.get(2)?,
+            }))?.collect::<rusqlite::Result<_>>()?;
+        let forks: std::collections::BTreeSet<_> = prefixes
             .iter()
             .filter_map(|link| {
-                if link.how != "fork" {
-                    return None;
-                }
                 Some((
                     SessionId::parse(&link.parent).ok()?,
                     link.anchor.as_ref()?.clone(),
@@ -150,16 +130,30 @@ impl<'a> Reader<'a> {
                 });
             }
             // No branch is selected from incompatible recorded fork points.
-            links.retain(|link| {
-                link.how != "fork"
-                    || link.anchor.is_none()
-                    || SessionId::parse(&link.parent).is_err()
+            prefixes.retain(|prefix| {
+                prefix.anchor.is_none() || SessionId::parse(&prefix.parent).is_err()
             });
+            // Conflicting provider anchors do not erase independently recorded
+            // physical copies. Their exact members choose no provider anchor.
+            let copies=self.conn()?.prepare_cached("SELECT DISTINCT parent_id FROM prefix_copy WHERE child_id=?1 AND explicit_members=1 ORDER BY parent_id")?
+                .query_map([session.to_string()], |r| r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            for parent in copies {
+                if !prefixes
+                    .iter()
+                    .any(|prefix| prefix.parent == parent && prefix.anchor.is_none())
+                {
+                    prefixes.push_back(Prefix {
+                        parent,
+                        copies_prefix: true,
+                        anchor: None,
+                    });
+                }
+            }
         }
         Ok(Frame {
             pk,
             session,
-            links,
+            prefixes,
             keys: Vec::new(),
             copied: Vec::new(),
             issues,
@@ -174,7 +168,7 @@ impl<'a> Reader<'a> {
             let frame = frames
                 .last_mut()
                 .expect("the root frame remains until return");
-            if let Some(link) = frame.links.pop_front() {
+            if let Some(link) = frame.prefixes.pop_front() {
                 let parent = match SessionId::parse(&link.parent) {
                     Ok(parent) => parent,
                     Err(_) => {
@@ -201,7 +195,8 @@ impl<'a> Reader<'a> {
                     frame.issues.push(ParentIssue::Cycle { session: parent });
                     continue;
                 }
-                if link.how == "resume" {
+                let explicit: bool = self.conn()?.query_row("SELECT EXISTS(SELECT 1 FROM prefix_copy WHERE parent_id=?1 AND child_id=?2 AND explicit_members=1)",params![parent.to_string(),frame.session.to_string()],|r|r.get(0))?;
+                if explicit || link.copies_prefix && link.anchor.is_none() {
                     let copied = self
                         .conn()?
                         .prepare_cached(&format!(
@@ -209,13 +204,17 @@ impl<'a> Reader<'a> {
                              JOIN canonical_order c ON c.pk=m.pk
                              JOIN message_source s ON s.message_pk = m.pk
                              JOIN input_ref ir ON ir.pk=s.input_pk
-                             JOIN parsed p ON p.input_pk = s.input_pk AND p.session_pk = ?2
-                             WHERE m.session_pk = ?1 AND m.duplicate_of IS NULL ORDER BY m.session_order, m.id",
+                             WHERE m.session_pk = ?1 AND m.duplicate_of IS NULL
+                               AND (EXISTS(SELECT 1 FROM parsed p WHERE p.input_pk=s.input_pk AND p.chain=s.chain AND p.session_pk=?2)
+                                 OR EXISTS(SELECT 1 FROM prefix_copy p WHERE p.input_pk=s.input_pk AND p.chain=s.chain AND p.child_id=?3 AND p.parent_id=?4 AND p.explicit_members=0))
+                               AND NOT EXISTS(SELECT 1 FROM prefix_copy p WHERE p.input_pk=s.input_pk AND p.chain=s.chain AND p.child_id=?3 AND p.parent_id=?4 AND p.explicit_members=1)
+                             ORDER BY m.session_order, m.id",
                              order::canonical_rows("?1")))?
-                        .query_map(params![parent_pk, frame.pk], |r| {
+                        .query_map(params![parent_pk, frame.pk, frame.session.to_string(), parent.to_string()], |r| {
                             Ok(CopiedKey {
                                 source: r.get(3)?,
                                 chain: r.get(4)?,
+                                version: String::new(),
                                 sequence: r.get(5)?,
                                 position: r.get(6)?,
                                 key: Key {
@@ -229,6 +228,25 @@ impl<'a> Reader<'a> {
                         })?
                         .collect::<rusqlite::Result<Vec<_>>>()?;
                     frame.copied.extend(copied);
+                    let missing = self.conn()?.prepare_cached("SELECT DISTINCT p.message_id FROM prefix_member p WHERE p.child_id=?1 AND p.parent_id=?2 AND NOT EXISTS(SELECT 1 FROM message m WHERE m.id=p.message_id AND m.session_pk=?3 AND m.duplicate_of IS NULL) ORDER BY p.message_id")?
+                        .query_map(params![frame.session.to_string(),parent.to_string(),parent_pk], |r| r.id::<MessageId>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                    frame.issues.extend(missing.into_iter().map(|message| {
+                        ParentIssue::MissingCopiedMessage {
+                            child: frame.session.clone(),
+                            parent: parent.clone(),
+                            message,
+                        }
+                    }));
+                    let explicit = self.conn()?.prepare_cached(&format!(
+                        "WITH canonical_order AS ({}) SELECT DISTINCT m.pk,m.id,c.record_order,p.source_input,p.source_chain,p.source_version,p.sequence,p.position FROM prefix_member p JOIN message m ON m.id=p.message_id JOIN canonical_order c ON c.pk=m.pk WHERE p.child_id=?2 AND p.parent_id=?3 AND m.session_pk=?1 AND m.duplicate_of IS NULL", order::canonical_rows("?1")))?
+                        .query_map(params![parent_pk,frame.session.to_string(),parent.to_string()], |r| {
+                            let coordinate = |index| -> rusqlite::Result<u64> {
+                                let value: String = r.get(index)?;
+                                value.parse().map_err(|error| rusqlite::Error::FromSqlConversionFailure(index, rusqlite::types::Type::Text, Box::new(error)))
+                            };
+                            Ok(CopiedKey { source:r.get(3)?,chain:r.get(4)?,version:r.get(5)?,sequence:coordinate(6)?,position:coordinate(7)?,key:Key {session_pk:parent_pk,session:parent.clone(),message_pk:r.get(0)?,id:r.get(1)?,order:r.get(2)?} })
+                        })?.collect::<rusqlite::Result<Vec<_>>>()?;
+                    frame.copied.extend(explicit);
                 } else if link.anchor.is_none() {
                     frame.issues.push(ParentIssue::MissingAnchor {
                         child: frame.session.clone(),
@@ -299,14 +317,14 @@ fn copied_order(
     child: &SessionId,
     copies: Vec<CopiedKey>,
 ) -> Result<(Vec<Key>, Option<ParentIssue>)> {
-    let mut sources = std::collections::BTreeMap::<(String, i64), Vec<(i64, i64, i64)>>::new();
+    let mut sources =
+        std::collections::BTreeMap::<(String, i64, String), Vec<(u64, u64, i64)>>::new();
     let mut keys = std::collections::BTreeMap::new();
     for copy in copies {
-        sources.entry((copy.source, copy.chain)).or_default().push((
-            copy.sequence,
-            copy.position,
-            copy.key.message_pk,
-        ));
+        sources
+            .entry((copy.source, copy.chain, copy.version))
+            .or_default()
+            .push((copy.sequence, copy.position, copy.key.message_pk));
         keys.entry(copy.key.message_pk).or_insert(copy.key);
     }
     let mut edges = std::collections::BTreeMap::<i64, std::collections::BTreeSet<i64>>::new();

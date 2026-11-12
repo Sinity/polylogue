@@ -130,10 +130,12 @@ fn export_file(w: &ClaudeHome, sessions: &[&str]) -> std::path::PathBuf {
     let reader = pool.reader().unwrap();
     let mut records = Vec::new();
     let mut counts = Counts::default();
+    let mut seen_links = std::collections::BTreeSet::new();
     for id in sessions {
         let id = SessionId::parse(id).unwrap();
         let session = reader.session(&id).unwrap().unwrap();
         records.push(Record::Session(SessionRecord {
+            copied_prefixes: reader.copied_prefixes(&id).unwrap(),
             reference: format!("session:{id}"),
             commit: reader.session_commit(&id).unwrap().unwrap(),
             session,
@@ -153,6 +155,7 @@ fn export_file(w: &ClaudeHome, sessions: &[&str]) -> std::path::PathBuf {
                 block_ordinals: projection.block_ordinals,
                 injections: Vec::new(),
                 bindings: Vec::new(),
+                copied_for: reader.copied_for(&message.id).unwrap(),
                 message,
             })));
             counts.messages += 1;
@@ -162,12 +165,15 @@ fn export_file(w: &ClaudeHome, sessions: &[&str]) -> std::path::PathBuf {
             counts.events += 1;
         }
         for link in reader.session_export(&id).unwrap().unwrap().links {
-            records.push(Record::Link(LinkRecord {
-                reference: LinkRecord::reference(&link),
-                commit: reader.link_commit(&link).unwrap().unwrap(),
-                link,
-            }));
-            counts.links += 1;
+            let reference = LinkRecord::reference(&link);
+            if seen_links.insert(reference.clone()) {
+                records.push(Record::Link(LinkRecord {
+                    reference,
+                    commit: reader.link_commit(&link).unwrap().unwrap(),
+                    link,
+                }));
+                counts.links += 1;
+            }
         }
     }
     let commits: std::collections::BTreeMap<_, _> = reader
@@ -216,8 +222,13 @@ fn export_file(w: &ClaudeHome, sessions: &[&str]) -> std::path::PathBuf {
         },
         None,
     );
-    let path = w.dir.path().join("records.jsonl");
-    let mut file = fs::File::create(&path).unwrap();
+    let (mut file, path) = tempfile::Builder::new()
+        .prefix("records-")
+        .suffix(".jsonl")
+        .tempfile_in(&w.dir)
+        .unwrap()
+        .keep()
+        .unwrap();
     for record in std::iter::once(Record::Manifest(Box::new(manifest))).chain(records) {
         record.validate().unwrap();
         serde_json::to_writer(&mut file, &record).unwrap();
@@ -393,4 +404,158 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
     assert_eq!(again.user_state.present, report.user_state.applied);
     assert_eq!(frozen_authored(&fresh), source_authored);
     assert_eq!(user_state(&fresh), source_state);
+}
+
+#[test]
+fn conflicting_fork_statements_survive_canonical_bundle_export_and_import() {
+    let original = ClaudeHome::new();
+    original.append(
+        "parent.jsonl",
+        &(user("first", "parent", "first") + &user("second", "parent", "second")),
+    );
+    for (message, anchor) in [("child-first", "first"), ("child-second", "second")] {
+        let mut record: serde_json::Value =
+            serde_json::from_str(&user(message, "child", "own child")).unwrap();
+        record["forkedFrom"] = serde_json::json!({"sessionId":"parent","messageUuid":anchor});
+        original.append("child.jsonl", &format!("{record}\n"));
+    }
+    let (mut source, _lock) = original.engine(64 << 20);
+    let pass = source.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    let child = SessionId::parse("claude-code:child").unwrap();
+    let expected = original.reads().reader().unwrap().links(&child).unwrap();
+    assert_eq!(expected.len(), 2);
+    assert_ne!(
+        LinkRecord::reference(&expected[0]),
+        LinkRecord::reference(&expected[1])
+    );
+    let path = export_file(&original, &["claude-code:child"]);
+    let receiving = ClaudeHome::new();
+    let (mut target, _target_lock) = receiving.engine(64 << 20);
+    let report = target.import(&[path]).unwrap();
+    assert!(report.refused.is_empty(), "{report:?}");
+    assert!(report.pass.errors.is_empty(), "{report:?}");
+    let actual = receiving.reads().reader().unwrap().links(&child).unwrap();
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn copied_subset_survives_whole_parent_bundle_and_later_parent_import() {
+    fn conversation(id: &str, time: u64, messages: &[(&str, &str)]) -> serde_json::Value {
+        let mapping: serde_json::Map<String, serde_json::Value> = messages.iter().enumerate().map(|(i,(id,text))| {
+            (id.to_string(), serde_json::json!({"id":id,"parent":if i==0 {None}else{Some(messages[i-1].0)},"children":[],"message":{"id":id,"author":{"role":"user"},"content":{"content_type":"text","parts":[text]},"create_time":i+1}}))
+        }).collect();
+        serde_json::json!({"id":id,"create_time":time,"current_node":messages.last().map(|(id,_)|*id),"mapping":mapping})
+    }
+    fn inherited(home: &ClaudeHome) -> Vec<String> {
+        let pool = home.reads();
+        let reader = pool.reader().unwrap();
+        let selection = reader
+            .select_messages(&SessionId::parse("chatgpt:child").unwrap(), true)
+            .unwrap();
+        selection.require_complete().unwrap();
+        let mut texts = Vec::new();
+        selection
+            .visit(|message| {
+                texts.push(message.text());
+                std::ops::ControlFlow::Continue(())
+            })
+            .unwrap();
+        texts
+    }
+    let original = ClaudeHome::new();
+    let path = original.dir.path().join("conversations.json");
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&vec![
+            conversation(
+                "parent",
+                1,
+                &[
+                    ("first", "first"),
+                    ("uncopied", "uncopied parent middle"),
+                    ("third", "third"),
+                    ("later", "later parent tail"),
+                ],
+            ),
+            conversation(
+                "child",
+                2,
+                &[("first", "first"), ("third", "third"), ("own", "own child")],
+            ),
+        ])
+        .unwrap(),
+    )
+    .unwrap();
+    let (mut source, _source_lock) = original.engine(64 << 20);
+    let report = source.import(&[path]).unwrap();
+    assert!(report.refused.is_empty(), "{report:?}");
+    assert!(report.pass.errors.is_empty(), "{report:?}");
+    assert_eq!(inherited(&original), ["first", "third", "own child"]);
+    let whole = export_file(&original, &["chatgpt:parent", "chatgpt:child"]);
+    let later = export_file(&original, &["chatgpt:parent"]);
+    let receiving = ClaudeHome::new();
+    let (mut target, _target_lock) = receiving.engine(64 << 20);
+    for file in [whole, later] {
+        let report = target.import(&[file]).unwrap();
+        assert!(report.refused.is_empty(), "{report:?}");
+        assert!(report.pass.errors.is_empty(), "{report:?}");
+        assert_eq!(inherited(&receiving), ["first", "third", "own child"]);
+    }
+    assert_eq!(
+        receiving
+            .reads()
+            .reader()
+            .unwrap()
+            .messages(&SessionId::parse("chatgpt:parent").unwrap(), false)
+            .unwrap()
+            .len(),
+        4
+    );
+    let pool = receiving.reads();
+    let reader = pool.reader().unwrap();
+    let id = polylogue_model::MessageId::parse("chatgpt:first").unwrap();
+    assert_eq!(
+        reader.copied_for(&id).unwrap(),
+        original.reads().reader().unwrap().copied_for(&id).unwrap()
+    );
+}
+
+#[test]
+fn native_copied_file_subset_survives_export_with_whole_parent() {
+    let original = ClaudeHome::new();
+    original.append(
+        "parent.jsonl",
+        &(user("first", "parent", "copied first") + &user("later", "parent", "uncopied later")),
+    );
+    original.append(
+        "child.jsonl",
+        &(user("first", "parent", "copied first") + &user("own", "child", "own child")),
+    );
+    let (mut source, _source_lock) = original.engine(64 << 20);
+    let pass = source.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    let child = SessionId::parse("claude-code:child").unwrap();
+    let bodies = |home: &ClaudeHome| {
+        let pool = home.reads();
+        let reader = pool.reader().unwrap();
+        let selected = reader.select_messages(&child, true).unwrap();
+        selected.require_complete().unwrap();
+        let mut texts = Vec::new();
+        selected
+            .visit(|m| {
+                texts.push(m.text());
+                std::ops::ControlFlow::Continue(())
+            })
+            .unwrap();
+        texts
+    };
+    assert_eq!(bodies(&original), ["copied first", "own child"]);
+    let file = export_file(&original, &["claude-code:parent", "claude-code:child"]);
+    let target = ClaudeHome::new();
+    let (mut engine, _target_lock) = target.engine(64 << 20);
+    let report = engine.import(&[file]).unwrap();
+    assert!(report.refused.is_empty(), "{report:?}");
+    assert!(report.pass.errors.is_empty(), "{report:?}");
+    assert_eq!(bodies(&target), ["copied first", "own child"]);
 }

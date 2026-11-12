@@ -21,11 +21,11 @@ use std::sync::Arc;
 struct TreeLink {
     child: String,
     kind: String,
-    how: String,
+    how: Option<String>,
 }
 
 /// A `reference` link from a node: the session it names and how.
-type ReferenceLink = (String, String);
+type ReferenceLink = (String, Option<String>);
 
 struct Frame {
     session: Option<String>,
@@ -38,7 +38,7 @@ enum Step {
     Node {
         session: String,
         /// The node whose link reached it, with that link's kind and how.
-        joined: Option<(String, String, String)>,
+        joined: Option<(String, String, Option<String>)>,
         references: Vec<ReferenceLink>,
     },
     /// A tree link to a node already shown.
@@ -115,7 +115,7 @@ impl<'r, 'a> Walk<'r, 'a> {
             .map(|child| TreeLink {
                 child,
                 kind: String::new(),
-                how: String::new(),
+                how: None,
             })
             .collect();
         Self {
@@ -377,14 +377,7 @@ fn items(reader: &Reader<'_>, seed: &SessionId, step: &Step) -> Result<Vec<ReadI
     }];
     // The tree link that reached the node, then its `reference` links.
     if let Some((parent, kind, how)) = joined {
-        out.push(edge(
-            &reference,
-            parent,
-            session,
-            kind,
-            Some(how.clone()),
-            false,
-        ));
+        out.push(edge(&reference, parent, session, kind, how.clone(), false));
     }
     for (to, how) in references {
         out.push(edge(
@@ -392,7 +385,7 @@ fn items(reader: &Reader<'_>, seed: &SessionId, step: &Step) -> Result<Vec<ReadI
             session,
             to,
             "reference",
-            Some(how.clone()),
+            how.clone(),
             true,
         ));
     }

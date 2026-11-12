@@ -198,7 +198,7 @@ pub fn visit_record(
         }
         View::Links => {
             if let Record::Link(row) = record {
-                let (relation, how) = row.link.kind.columns();
+                let relation = row.link.kind.as_str();
                 visit(ReadItem {
                     source,
                     kind: ItemKind::Card {
@@ -206,7 +206,7 @@ pub fn visit_record(
                             from: format!("session:{}", row.link.parent),
                             to: format!("session:{}", row.link.child),
                             relation: relation.into(),
-                            how: Some(how.into()),
+                            how: row.link.how.map(|how| how.as_str().into()),
                             cross_link: false,
                         }),
                     },
@@ -221,17 +221,28 @@ pub fn visit_record(
             row.validate()
                 .map_err(|e| ReadError::InvalidEvidence(e.to_string()))?;
             let message = &row.message;
-            let by = WrittenBy::of(message.role, message.prompt_kind);
-            let author = match by {
-                WrittenBy::Human => {
-                    ValueState::known(if options.for_others { "user" } else { "you" }.into())
-                }
-                WrittenBy::Model => ValueState::known("model".into()),
-                WrittenBy::Harness => ValueState::known("[harness]".into()),
-                WrittenBy::Unknown => ValueState::Unknown {
-                    reason: Some("author not established by source".into()),
-                },
-            };
+            let by = WrittenBy::of(message);
+            let author =
+                match by {
+                    WrittenBy::Human => {
+                        ValueState::known(if options.for_others { "user" } else { "you" }.into())
+                    }
+                    WrittenBy::Model => ValueState::known("model".into()),
+                    WrittenBy::Harness => ValueState::known(
+                        if message.prompt_kind
+                            == Some(polylogue_model::PromptKind::CompactionSummary)
+                        {
+                            "[harness] compaction summary"
+                        } else {
+                            "[harness]"
+                        }
+                        .into(),
+                    ),
+                    WrittenBy::Tool => ValueState::known("[tool]".into()),
+                    WrittenBy::Unknown => ValueState::Unknown {
+                        reason: Some("author not established by source".into()),
+                    },
+                };
             let mark = row
                 .block_ordinals
                 .iter()
@@ -1031,17 +1042,6 @@ fn root_text(
 /// Context boundaries and other in-place events read as one line at their
 /// position; figures the source did not record say so.
 fn event_indicator(event: &polylogue_model::Event) -> Option<(IndicatorKind, String)> {
-    let number = |pointers: &[&str]| {
-        pointers
-            .iter()
-            .find_map(|pointer| event.data.pointer(pointer).and_then(Value::as_u64))
-    };
-    let text_of = |pointers: &[&str]| {
-        pointers
-            .iter()
-            .find_map(|pointer| event.data.pointer(pointer).and_then(Value::as_str))
-            .map(str::to_owned)
-    };
     let tokens = |n: u64| {
         if n >= 1000 {
             format!("{:.1}k", n as f64 / 1000.0)
@@ -1051,9 +1051,11 @@ fn event_indicator(event: &polylogue_model::Event) -> Option<(IndicatorKind, Str
     };
     match event.kind.as_str() {
         "compaction" => {
-            let before = number(&["/compactMetadata/preTokens", "/pre_tokens"]);
-            let after = number(&["/compactMetadata/postTokens", "/post_tokens"]);
-            let trigger = text_of(&["/compactMetadata/trigger", "/trigger"]);
+            let boundary: polylogue_model::CompactionBoundary =
+                serde_json::from_value(event.data.clone()).ok()?;
+            let before = boundary.pre_tokens;
+            let after = boundary.post_tokens;
+            let trigger = boundary.trigger;
             let figures = match (before, after) {
                 (Some(before), Some(after)) => {
                     format!("{} → {} tokens", tokens(before), tokens(after))
@@ -1070,7 +1072,9 @@ fn event_indicator(event: &polylogue_model::Event) -> Option<(IndicatorKind, Str
             Some((IndicatorKind::Compacted, text))
         }
         "microcompaction" => {
-            let saved = number(&["/microcompactMetadata/tokensSaved", "/tokens_saved"]);
+            let boundary: polylogue_model::MicrocompactionBoundary =
+                serde_json::from_value(event.data.clone()).ok()?;
+            let saved = boundary.tokens_saved;
             Some((
                 IndicatorKind::Microcompacted,
                 match saved {
@@ -1079,35 +1083,6 @@ fn event_indicator(event: &polylogue_model::Event) -> Option<(IndicatorKind, Str
                         tokens(saved)
                     ),
                     None => "tool results removed from context".into(),
-                },
-            ))
-        }
-        "compaction_summary" => {
-            let summary = text_of(&["/message/content", "/content", "/summary"]).or_else(|| {
-                event
-                    .data
-                    .pointer("/message/content")
-                    .and_then(Value::as_array)
-                    .and_then(|parts| {
-                        parts
-                            .iter()
-                            .find_map(|part| part.get("text").and_then(Value::as_str))
-                    })
-                    .map(str::to_owned)
-            });
-            Some((
-                IndicatorKind::Harness,
-                match summary {
-                    Some(text) => format!(
-                        "compaction summary: {}",
-                        text.lines()
-                            .next()
-                            .unwrap_or_default()
-                            .chars()
-                            .take(80)
-                            .collect::<String>()
-                    ),
-                    None => "compaction summary not recorded".into(),
                 },
             ))
         }

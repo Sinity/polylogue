@@ -13,14 +13,7 @@
     "background": [],
     "blobs": [],
     "events": [],
-    "links": [
-      {
-        "child": "claude-code:strict-reset",
-        "evidence": "sessionId",
-        "kind": "copy",
-        "parent": "claude-code:strict-replay"
-      }
-    ],
+    "links": [],
     "messages": [
       {
         "end": 155,
@@ -68,6 +61,12 @@
         "started": "2025-01-01T00:00:00Z",
         "started_quality": "intrinsic",
         "started_precision": "second"
+      }
+    ],
+    "prefix_copies": [
+      {
+        "parent": "claude-code:strict-replay",
+        "child": "claude-code:strict-reset"
       }
     ]
   }

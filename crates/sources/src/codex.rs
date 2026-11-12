@@ -16,7 +16,7 @@
 //! and their parent session, and the rest is accounted as copied.
 
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 5;
+pub const VERSION: u32 = 6;
 
 pub mod database;
 mod fields;
@@ -317,8 +317,22 @@ impl Rollout {
             return RecordOutcome::unreadable("thread ID is empty");
         };
         if parser_state.session.as_ref().is_some_and(|s| s.id != id) {
-            // A resumed rollout names the thread it came from; this file's
-            // thread was already set by an earlier header.
+            let child = parser_state
+                .session
+                .as_ref()
+                .expect("current thread")
+                .id
+                .clone();
+            link(
+                parser_state,
+                out,
+                LinkKind::Resume,
+                id,
+                child,
+                None,
+                None,
+                "session_meta.id",
+            );
             return self.event(parser_state, p, "session_meta", at, out);
         }
         let subagent = str_field(p, "thread_source") == Some("subagent")
@@ -571,6 +585,13 @@ impl Rollout {
                 .map(str::to_owned)
         };
         Some(match ty {
+            "compaction_summary" => (
+                Role::User,
+                Some(PromptKind::CompactionSummary),
+                vec![Block::Text {
+                    text: str_field(item, "message")?.to_owned(),
+                }],
+            ),
             "message" => {
                 let content = item.get("content").unwrap_or(&Json::Null);
                 let blocks = items::message_blocks(content, &mut out.blobs);
@@ -1064,13 +1085,12 @@ fn link(
     if parent == child {
         return;
     }
-    let key = format!(
-        "{kind:?} {parent} {child} {}",
-        call_id.as_deref().unwrap_or("")
-    );
+    let key = format!("{kind:?} {parent} {child} {at:?} {call_id:?}");
     if parser_state.links.insert(key) {
         out.links.push(Link {
             kind,
+            copies_prefix: false,
+            how: None,
             parent,
             child,
             at,
@@ -1232,6 +1252,7 @@ impl Parser for Rollout {
                 self.unanchored_event(parser_state, p, "token_usage_record", rec.at, out)
             }
             "compacted" => {
+                records.fields("compacted", p, &fields::COMPACTED);
                 // A fork starts from its parent's history: the last
                 // identified item is where it branched. Keep that history
                 // as native evidence, without creating authored messages.
@@ -1241,7 +1262,34 @@ impl Parser for Rollout {
                 {
                     parser_state.branch_point = message_id(at);
                 }
-                self.event(parser_state, p, "compaction", rec.at, out)
+                let outcome = self.event(parser_state, &Json::Null, "compaction", rec.at, out);
+                let mut boundary = polylogue_model::CompactionBoundary {
+                    kept: p
+                        .get("replacement_history")
+                        .and_then(Json::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|item| str_field(item, "id"))
+                        .filter_map(message_id)
+                        .collect(),
+                    replacement_history: p
+                        .get("replacement_history")
+                        .cloned()
+                        .unwrap_or(Json::Null),
+                    ..Default::default()
+                };
+                if let Some(summary) = str_field(p, "message") {
+                    let item = serde_json::json!({"type":"compaction_summary", "message":summary});
+                    if self.response_item(parser_state, record, &item, rec.at, None, out)
+                        == RecordOutcome::Used
+                    {
+                        boundary.summary = parser_state.last.clone();
+                    }
+                }
+                if let Some(event) = out.events.last_mut() {
+                    event.data = serde_json::to_value(boundary).expect("boundary is JSON");
+                }
+                outcome
             }
             "world_state" | "inter_agent_communication_metadata" => {
                 self.event(parser_state, p, rec.ty, rec.at, out)
@@ -1260,8 +1308,9 @@ impl Parser for Rollout {
         // The branch point is known once the copied history has been read.
         if let (Some(at), Some(s)) = (&parser_state.branch_point, &parser_state.session) {
             for l in &mut out.links {
-                if l.child == s.id && l.at.is_none() && l.kind != LinkKind::Copy {
+                if l.child == s.id && l.at.is_none() {
                     l.at = Some(at.clone());
+                    l.copies_prefix = true;
                 }
             }
         }

@@ -18,7 +18,7 @@ impl Reader<'_> {
     /// Greatest admission needed by the retained session fact fold.
     pub fn session_commit(&self, id: &SessionId) -> Result<Option<u64>> {
         positive(self.conn()?.query_row(
-            "SELECT CASE WHEN count(*)=count(r.admitted) THEN max(r.admitted) END FROM session_record r JOIN session s ON s.pk=r.session_pk WHERE s.id=?1",
+            "WITH contributors(admitted) AS (SELECT r.admitted FROM session_record r JOIN session s ON s.pk=r.session_pk WHERE s.id=?1 UNION ALL SELECT admitted FROM prefix_copy WHERE child_id=?1) SELECT CASE WHEN count(*)=count(admitted) THEN max(admitted) END FROM contributors",
             [id.to_string()], |row| row.get(0))?)
     }
 
@@ -45,9 +45,10 @@ impl Reader<'_> {
 
     /// Greatest admission needed by the retained link fact fold.
     pub fn link_commit(&self, link: &Link) -> Result<Option<u64>> {
-        let (kind, how) = link.kind.columns();
+        let kind = link.kind.as_str();
+        let how = link.how.map(|how| how.as_str());
         positive(self.conn()?.query_row(
-            "SELECT CASE WHEN count(*)=count(s.admitted) THEN max(s.admitted) END FROM link_source s JOIN link l ON l.pk=s.link_pk WHERE l.parent_id=?1 AND l.child_id=?2 AND l.kind=?3 AND l.how=?4",
+            "WITH contributors(admitted) AS (SELECT s.admitted FROM link_source s JOIN link l ON l.pk=s.link_pk WHERE l.parent_id=?1 AND l.child_id=?2 AND l.kind=?3 AND l.how IS ?4 UNION ALL SELECT admitted FROM prefix_copy WHERE parent_id=?1 AND child_id=?2) SELECT CASE WHEN count(*)=count(admitted) THEN max(admitted) END FROM contributors",
             params![link.parent.to_string(),link.child.to_string(),kind,how], |row|row.get(0))?)
     }
 }

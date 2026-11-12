@@ -6,7 +6,7 @@
 use super::*;
 use crate::encoding::{PreparedDocument, PreparedMessage};
 use crate::writer::compose;
-use polylogue_model::{Completion, FieldGroup, IdKind, Route};
+use polylogue_model::{Completion, FieldGroup, IdKind, MessageId, Route};
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct MessageChoice {
@@ -1482,14 +1482,14 @@ impl<'a> Projection<'a> {
     ) -> Result<()> {
         for link in &step.output.links {
             let pk = self.keys.get(Kind::Link, &link_key(link)?)?.pk;
-            let mut merged = link.clone();
+            let mut merged = named_link(link.clone(), &self.keys.identities)?;
             if let Some(previous) = self.links.find(pk, input, chain) {
                 let previous: Link = crate::encoding::unpack_json(&previous.body(
                     self.index,
                     Kind::LinkValue,
                     self.values,
                 )?)?;
-                merged = merge_link(merged, previous);
+                merged = merge_link(merged, named_link(previous, &self.keys.identities)?);
             }
             let value = self.resolver.value(self.index, Kind::LinkValue, &merged)?;
             self.links.put(
@@ -1785,12 +1785,14 @@ impl<'a> Projection<'a> {
                 .iter()
                 .find(|m| m.input == input && m.chain == chain)
                 .expect("link winner");
-            let mut link: Link =
-                crate::encoding::unpack_json(&winner.body(index, Kind::LinkValue, values)?)?;
+            let mut link = named_link(
+                crate::encoding::unpack_json(&winner.body(index, Kind::LinkValue, values)?)?,
+                &self.keys.identities,
+            )?;
             for member in members {
                 let other =
                     crate::encoding::unpack_json(&member.body(index, Kind::LinkValue, values)?)?;
-                link = merge_link(link, other);
+                link = merge_link(link, named_link(other, &self.keys.identities)?);
             }
             choices
                 .links
@@ -1900,11 +1902,26 @@ impl ValueMember {
     }
 }
 
-// A relation's optional coordinates and evidence merge independently of which
-// contributor supplies its source membership.
+fn named_link(mut link: Link, ids: &crate::session_alias::Identities) -> Result<Link> {
+    link.parent = SessionId::parse(ids.shown_session(&link.parent.to_string()))
+        .map_err(|e| StoreError::Invalid(e.to_string()))?;
+    link.child = SessionId::parse(ids.shown_session(&link.child.to_string()))
+        .map_err(|e| StoreError::Invalid(e.to_string()))?;
+    link.at = link
+        .at
+        .map(|at| {
+            MessageId::parse(ids.shown_message(&at.to_string()).as_ref())
+                .map_err(|e| StoreError::Invalid(e.to_string()))
+        })
+        .transpose()?;
+    Ok(link)
+}
+
+// Only observations of the same coordinates are combined; disagreements
+// have different statement keys and survive as separate memberships.
 fn merge_link(mut link: Link, other: Link) -> Link {
-    link.at = link.at.into_iter().chain(other.at).min();
-    link.call_id = link.call_id.into_iter().chain(other.call_id).min();
+    debug_assert_eq!(link.key(), other.key());
+    link.copies_prefix |= other.copies_prefix;
     link.evidence = link.evidence.min(other.evidence);
     link
 }

@@ -150,7 +150,9 @@ fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
                 "polylogue.assertion_restore"
                 | "polylogue.historical_restore"
                 | "polylogue.attachment_binding"
-                | "polylogue.query_run_outcome" => 1,
+                | "polylogue.query_run_outcome"
+                | "polylogue.prefix_copy"
+                | "polylogue.prefix_member" => 1,
                 other => panic!("undeclared successor kind/version expectation: {other}"),
             }
         );

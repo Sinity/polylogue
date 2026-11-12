@@ -25,7 +25,7 @@ use polylogue_model::{
     Message, MessageId, PromptKind, Role, SessionId, Usage,
     read::{
         EntryClass, IndexEntry, ItemCounts, MessagePlace, entry_classes, event_entry,
-        message_entries, microcompacted_calls,
+        message_entries,
     },
 };
 use rusqlite::{Connection, OptionalExtension, params};
@@ -867,23 +867,36 @@ fn unit_entries(conn: &Connection, unit: &Unit) -> Result<Vec<IndexEntry>> {
             at,
             data_bytes,
         } => {
-            // Only a microcompaction's data is read: it names the results it
-            // removed from the context.
-            let cleared = if kind == "microcompaction" {
-                let data: Option<Vec<u8>> = conn
-                    .prepare_cached("SELECT data FROM event WHERE pk = ?1")?
+            // Context boundaries carry normalized retained/removed references.
+            let data: Option<Vec<u8>> = if matches!(kind.as_str(), "compaction" | "microcompaction")
+            {
+                conn.prepare_cached("SELECT data FROM event WHERE pk=?1")?
                     .query_row([pk], |row| row.get(0))
-                    .optional()?;
-                match data {
-                    Some(packed) => microcompacted_calls(&crate::encoding::unpack_json::<
-                        serde_json::Value,
-                    >(&packed)?),
-                    None => Vec::new(),
-                }
+                    .optional()?
+            } else {
+                None
+            };
+            let cleared = if kind == "microcompaction" {
+                data.as_deref()
+                    .map(|packed| {
+                        crate::encoding::unpack_json::<polylogue_model::MicrocompactionBoundary>(
+                            packed,
+                        )
+                        .map(|boundary| boundary.removed_calls)
+                    })
+                    .transpose()?
+                    .unwrap_or_default()
             } else {
                 Vec::new()
             };
-            Ok(vec![event_entry(id, kind, *at, *data_bytes, cleared)])
+            let mut entry = event_entry(id, kind, *at, *data_bytes, cleared);
+            if kind == "compaction" {
+                entry.compaction = data
+                    .as_deref()
+                    .map(crate::encoding::unpack_json::<polylogue_model::CompactionBoundary>)
+                    .transpose()?;
+            }
+            Ok(vec![entry])
         }
     }
 }
@@ -960,16 +973,27 @@ fn message_body(conn: &Connection, pk: i64) -> Result<(Message, Vec<u64>)> {
 fn links_identity(conn: &Connection, session_pk: i64) -> Result<Vec<u8>> {
     let mut digest = blake3::Hasher::new();
     let mut statement = conn.prepare_cached(
-        "SELECT l.parent_id, l.kind, l.how, coalesce(l.branch_point, ''), coalesce(l.spawning_call, '')
-         FROM link l JOIN session s ON s.id = l.child_id
-         WHERE s.pk = ?1 ORDER BY l.pk",
+        "SELECT l.parent_id, l.kind, l.how, coalesce(l.branch_point, ''), coalesce(l.spawning_call, ''), CAST(l.copies_prefix AS TEXT)
+         FROM session_link l JOIN session s ON s.id = l.child_id
+         WHERE s.pk = ?1 ORDER BY l.parent_id,l.kind,l.how,l.branch_point,l.spawning_call",
     )?;
     let mut rows = statement.query([session_pk])?;
     while let Some(row) = rows.next()? {
-        for column in 0..5 {
-            digest.update(row.get::<_, String>(column)?.as_bytes());
+        for column in 0..6 {
+            let value = row.get::<_, Option<String>>(column)?;
+            digest.update(&[u8::from(value.is_some())]);
+            if let Some(value) = value {
+                digest.update(value.as_bytes());
+            }
             digest.update(b"\0");
         }
+    }
+    let mut copies = conn.prepare_cached("SELECT DISTINCT p.parent_id FROM prefix_copy p JOIN session s ON s.id=p.child_id WHERE s.pk=?1 ORDER BY p.parent_id")?;
+    let parents = copies.query_map([session_pk], |row| row.get::<_, String>(0))?;
+    for parent in parents {
+        digest.update(b"copied-prefix\0");
+        digest.update(parent?.as_bytes());
+        digest.update(b"\0");
     }
     Ok(digest.finalize().as_bytes().to_vec())
 }
@@ -1076,7 +1100,7 @@ fn lookup_filter(kind: ItemLookup) -> &'static str {
         ItemLookup::Prompt => "INDEXED BY session_item_prompt WHERE class & 63 = 32",
         ItemLookup::Compaction => "INDEXED BY session_item_compaction WHERE class & 15 = 9",
         ItemLookup::Microcompaction => {
-            "INDEXED BY session_item_microcompaction WHERE class & 15 = 11"
+            "INDEXED BY session_item_microcompaction WHERE class & 15 = 10"
         }
     }
 }
@@ -1096,12 +1120,12 @@ fn counter(value: i64) -> Result<u64> {
     u64::try_from(value).map_err(|_| StoreError::Invalid("negative item index counter".into()))
 }
 
-/// A link that puts a parent's messages before a session's own: a fork or
-/// a resume, with the parent message the child continues from.
+/// Recorded parent history: an anchored branch or messages copied into the
+/// child's input. Physical copying does not create a provider relationship.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ComposingLink {
+pub struct InheritedPrefix {
     pub parent: String,
-    pub how: String,
+    pub copies_prefix: bool,
     pub branch_point: Option<String>,
 }
 
@@ -1125,9 +1149,10 @@ impl RecordTable {
 pub struct SessionLink {
     pub parent: String,
     pub child: String,
-    /// `subagent`, `continuation` or `reference`.
+    /// A documented provider relationship, or `reference`.
     pub kind: String,
-    pub how: String,
+    pub how: Option<String>,
+    pub copies_prefix: bool,
     pub branch_point: Option<String>,
     pub spawning_call: Option<String>,
 }
@@ -1147,13 +1172,25 @@ pub struct StoredRecord {
 }
 
 impl Reader<'_> {
+    /// Source-declared copied prefixes of this physical session, independent
+    /// of whether a provider relationship is recorded.
+    pub fn copied_prefixes(&self, id: &SessionId) -> Result<Vec<SessionId>> {
+        Ok(self
+            .conn()?
+            .prepare_cached(
+                "SELECT parent_id FROM prefix_copy WHERE child_id=?1 UNION SELECT parent_id FROM session_prefix WHERE child_id=?1 AND copies_prefix=1 AND branch_point IS NULL ORDER BY parent_id",
+            )?
+            .query_map([id.to_string()], |row| row.id::<SessionId>(0))?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
     fn links_where(&self, column: &str, session: &str) -> Result<Vec<SessionLink>> {
         #[cfg(any(test, feature = "fixture"))]
         LINK_READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(self
             .conn()?
             .prepare_cached(&format!(
-                "SELECT parent_id, child_id, kind, how, branch_point, spawning_call FROM link
+                "SELECT parent_id, child_id, kind, how, branch_point, spawning_call, copies_prefix FROM session_link
                  WHERE {column} = ?1 ORDER BY pk"
             ))?
             .query_map([session], |row| {
@@ -1162,6 +1199,7 @@ impl Reader<'_> {
                     child: row.get(1)?,
                     kind: row.get(2)?,
                     how: row.get(3)?,
+                    copies_prefix: row.get(6)?,
                     branch_point: row.get(4)?,
                     spawning_call: row.get(5)?,
                 })
@@ -1269,20 +1307,19 @@ impl Reader<'_> {
         Ok(Some(StoredRecord { input, bytes }))
     }
 
-    /// The links that compose `id` from a parent, in the order they were stored.
-    pub fn composing_links(&self, id: &SessionId) -> Result<Vec<ComposingLink>> {
+    /// The recorded prefixes that a physical reading of `id` inherits.
+    pub fn inherited_prefixes(&self, id: &SessionId) -> Result<Vec<InheritedPrefix>> {
         Ok(self
             .conn()?
             .prepare_cached(
-                "SELECT parent_id, how, branch_point FROM link
-                 WHERE child_id = ?1 AND kind = 'continuation' AND how IN ('fork', 'resume')
-                 ORDER BY pk",
+                "SELECT parent_id,branch_point,copies_prefix FROM session_prefix
+                 WHERE child_id=?1 ORDER BY parent_id,branch_point",
             )?
             .query_map([id.to_string()], |row| {
-                Ok(ComposingLink {
+                Ok(InheritedPrefix {
                     parent: row.get(0)?,
-                    how: row.get(1)?,
-                    branch_point: row.get(2)?,
+                    copies_prefix: row.get(2)?,
+                    branch_point: row.get(1)?,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?)

@@ -330,6 +330,28 @@ pub fn exit_code(text: &str) -> Option<i64> {
 }
 
 pub fn prompt_kind(record: &Json, content: &Json) -> PromptKind {
+    let text = match content {
+        Json::String(s) => s.as_str(),
+        Json::Array(items) => {
+            if !items.is_empty() && items.iter().all(|i| ty(i) == "tool_result") {
+                return PromptKind::Harness;
+            }
+            items
+                .iter()
+                .find_map(|i| i.get("text").and_then(Json::as_str))
+                .unwrap_or("")
+        }
+        _ => "",
+    };
+    let t = text.trim_start();
+    if t.starts_with(
+        "This session is being continued from a previous session that ran out of context.",
+    ) {
+        return PromptKind::CompactionSummary;
+    }
+    if t.starts_with("Base directory for this skill:") || t.starts_with("<system-reminder>") {
+        return PromptKind::InjectedContext;
+    }
     if record.get("isMeta").and_then(Json::as_bool) == Some(true) {
         return PromptKind::Harness;
     }
@@ -346,20 +368,6 @@ pub fn prompt_kind(record: &Json, content: &Json) -> PromptKind {
             PromptKind::Harness
         };
     }
-    let text = match content {
-        Json::String(s) => s.as_str(),
-        Json::Array(items) => {
-            if !items.is_empty() && items.iter().all(|i| ty(i) == "tool_result") {
-                return PromptKind::Harness;
-            }
-            items
-                .iter()
-                .find_map(|i| i.get("text").and_then(Json::as_str))
-                .unwrap_or("")
-        }
-        _ => "",
-    };
-    let t = text.trim_start();
     if crate::origin::by_name("claude-code")
         .unwrap()
         .harness_prefixes

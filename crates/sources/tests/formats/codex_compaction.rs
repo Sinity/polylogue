@@ -33,7 +33,7 @@ fn run(records: &[Value]) -> Value {
 }
 
 #[test]
-fn compaction_keeps_large_native_history_without_creating_messages() {
+fn compaction_keeps_large_native_history_and_materializes_only_the_summary() {
     let payload = json!({
         "message": "compaction summary",
         "replacement_history": [{"id": "replacement-only", "type": "message", "role": "user",
@@ -54,7 +54,16 @@ fn compaction_keeps_large_native_history_without_creating_messages() {
     let compacted = events(&parsed, "compaction");
     assert_eq!(compacted.len(), 1);
     let event = compacted[0];
-    assert_eq!(event["data"], payload);
+    assert_eq!(
+        event["data"]["replacement_history"],
+        payload["replacement_history"]
+    );
+    let summary = messages(&parsed)
+        .into_iter()
+        .find(|message| message["prompt_kind"] == "compaction_summary")
+        .unwrap();
+    assert_eq!(summary["blocks"][0]["text"], "compaction summary");
+    assert_eq!(event["data"]["summary"], summary["id"]);
     assert_eq!(event["session"], format!("codex:{SID}"));
     assert_eq!(event["after"], "codex:before");
     assert_eq!(event["at"], "2026-03-01T10:00:01Z");
@@ -67,9 +76,10 @@ fn compaction_keeps_large_native_history_without_creating_messages() {
         ])
     );
     let authored = messages(&parsed);
-    assert_eq!(authored.len(), 2);
+    assert_eq!(authored.len(), 3);
     assert_eq!(authored[0]["id"], "codex:before");
-    assert_eq!(authored[1]["id"], "codex:after");
+    assert_eq!(authored[1]["prompt_kind"], "compaction_summary");
+    assert_eq!(authored[2]["id"], "codex:after");
     for message in authored {
         assert_eq!(message["session"], format!("codex:{SID}"));
         assert!(message.get("model").is_none());
@@ -90,9 +100,23 @@ fn compaction_preserves_supplied_unknown_history_shapes() {
         let parsed = run(&[meta(json!({})), record("compacted", payload.clone())]);
         let compacted = events(&parsed, "compaction");
         assert_eq!(compacted.len(), 1);
-        assert_eq!(compacted[0]["data"], payload);
+        assert_eq!(
+            compacted[0]["data"]["replacement_history"],
+            payload
+                .get("replacement_history")
+                .cloned()
+                .unwrap_or(Value::Null)
+        );
         assert!(compacted[0].get("after").is_none());
-        assert!(messages(&parsed).is_empty());
+        let summaries = messages(&parsed);
+        assert_eq!(
+            summaries.len(),
+            usize::from(payload.get("message").is_some())
+        );
+        for summary in summaries {
+            assert_eq!(summary["prompt_kind"], "compaction_summary");
+            assert_eq!(summary["blocks"][0]["text"], payload["message"]);
+        }
     }
 }
 
@@ -106,7 +130,12 @@ fn compaction_keeps_parent_history_and_the_existing_fork_anchor() {
         record("compacted", payload.clone()),
         message("child-message", "user", "child tail"),
     ]);
-    assert_eq!(events(&parsed, "compaction")[0]["data"], payload);
+    let boundary = events(&parsed, "compaction")[0];
+    assert_eq!(
+        boundary["data"]["replacement_history"],
+        payload["replacement_history"]
+    );
+    assert_eq!(boundary["data"]["kept"], json!(["codex:parent-message"]));
     let authored = messages(&parsed);
     assert_eq!(authored.len(), 1);
     assert_eq!(authored[0]["session"], format!("codex:{SID}"));

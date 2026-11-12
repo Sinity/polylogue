@@ -13,14 +13,7 @@
     "background": [],
     "blobs": [],
     "events": [],
-    "links": [
-      {
-        "child": "claude-code:agent-c7",
-        "evidence": "agentId",
-        "kind": "spawn",
-        "parent": "claude-code:s2"
-      }
-    ],
+    "links": [],
     "messages": [
       {
         "end": 171,

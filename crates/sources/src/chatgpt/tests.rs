@@ -268,6 +268,43 @@ fn a_chat_branched_into_a_new_conversation_keeps_only_its_tail() {
     assert_eq!(link.at.as_ref().unwrap().native().as_str(), "a");
     let tail = &step.output.messages[2].message;
     assert_eq!(tail.parent.as_ref().unwrap().native().as_str(), "a");
+    let [copy] = &step.output.prefix_copies[..] else {
+        panic!("one copied prefix")
+    };
+    assert!(copy.explicit_members);
+    let members: Vec<_> = step
+        .output
+        .prefix_members
+        .iter()
+        .map(|member| {
+            (
+                member.parent.to_string(),
+                member.child.to_string(),
+                member.message.to_string(),
+                member.source.is_none(),
+                member.position,
+            )
+        })
+        .collect();
+    assert_eq!(
+        members,
+        [
+            (
+                "chatgpt:orig".into(),
+                "chatgpt:fork".into(),
+                "chatgpt:q".into(),
+                true,
+                [1, 0]
+            ),
+            (
+                "chatgpt:orig".into(),
+                "chatgpt:fork".into(),
+                "chatgpt:a".into(),
+                true,
+                [1, 1]
+            ),
+        ]
+    );
 }
 
 #[test]

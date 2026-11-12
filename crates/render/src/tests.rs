@@ -38,6 +38,7 @@ fn message(blocks: Vec<Block>) -> Record {
         block_ordinals: (0..message.blocks.len() as u64).collect(),
         injections: Vec::new(),
         bindings: Vec::new(),
+        copied_for: Vec::new(),
         message,
     }))
 }
@@ -648,6 +649,7 @@ fn summary_cards_show_header_facts_without_source_instructions() {
     );
     session.instructions = Some("HARNESS_INSTRUCTIONS_NOT_SUMMARY".into());
     let record = Record::Session(polylogue_model::bundle::SessionRecord {
+        copied_prefixes: Vec::new(),
         reference: "session:test:session".into(),
         commit: 1,
         session,

@@ -70,7 +70,9 @@ impl View {
     }
     pub fn keeps_message_metadata(self, role: Role, prompt_kind: Option<PromptKind>) -> bool {
         match self {
-            Self::Dialogue => role != Role::System && prompt_kind != Some(PromptKind::Harness),
+            Self::Dialogue => {
+                role != Role::System && !prompt_kind.is_some_and(PromptKind::is_harness)
+            }
             Self::Transcript | Self::Context | Self::Changes | Self::Raw => true,
             Self::Summary | Self::Links | Self::Live => false,
         }

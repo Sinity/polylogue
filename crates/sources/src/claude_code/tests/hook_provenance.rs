@@ -45,7 +45,7 @@ fn native_hook_fields_cite_only_context_blocks_without_changing_the_message() {
     let expected: Message = serde_json::from_value(json!({
         "id":"claude-code:hook1", "session":"claude-code:s1", "role":"system",
         "at":"2026-01-01T00:00:00Z", "at_quality":"intrinsic", "at_precision":"second",
-        "prompt_kind":"harness", "blocks":[
+        "prompt_kind":"injected_context", "blocks":[
             {"type":"text","text":"Stop hook error:\ndiagnostic"},
             {"type":"text","text":"Stop hook prevented continuation."},
             {"type":"text","text":"Stop hook reason:\nreason"},

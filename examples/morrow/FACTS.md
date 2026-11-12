@@ -22,7 +22,7 @@ Times below are local. Working directory for agent sessions:
 | 1 | `claude-code:7f3a2c10-0001-4000-8000-000000000001` | claude-code | main | 2026-10-01 09:00–09:42 | "Project skeleton" (`ai-title`) | claude-fable-5-1 | 12 | 3 |
 | 2 | `claude-code:7f3a2c10-0002-4000-8000-000000000002` | claude-code | main | 2026-10-02 10:00–11:15 | "Date parsing" | claude-fable-5-1 | 18 | 3 |
 | 3 | `claude-code:agent-a7f3a2c1000000003` | claude-code | subagent of #2 | 2026-10-02 10:20–10:26 | — | claude-opus-5-5 | 6 | 0 |
-| 4 | `claude-code:7f3a2c10-0004-4000-8000-000000000004` | claude-code | main (continuation, resume, of #2) | 2026-10-03 14:00–15:10 | "Date parsing" | claude-fable-5-1 | 10 own + 18 inherited | 3 |
+| 4 | `claude-code:7f3a2c10-0004-4000-8000-000000000004` | claude-code | main (continuation, resume, of #2) | 2026-10-03 14:00–15:10 | "Date parsing" | claude-fable-5-1 | 11 own (including one harness summary) + 18 inherited | 3 |
 | 5 | `codex:01a20000-0005-7000-8000-000000000005` | codex | main | 2026-10-05 16:00–16:35 | "Review parser" (thread name, from `state_5.sqlite`) | gpt-6.1-sol | 13 | 2 |
 | 6 | `codex:01a20000-0006-7000-8000-000000000006` | codex | main (continuation, fork, of #5) | 2026-10-06 09:30–09:50 | "Review parser (try strict mode)" | gpt-6.1-sol | 10 | 1 |
 | 7 | `chatgpt:68f0a1b2-0007-8000-8000-000000000007` | chatgpt | chat | 2026-10-04 21:00–21:20 | "Date format edge cases" | gpt-6 | 6 on active path, 2 on an abandoned branch | 3 |
@@ -119,8 +119,9 @@ to the daemon in three stages, as a live session grows:
 | 15:12:00 | the last record, "Thanks, done for today." at 15:10:00 | a third piece; the whole file |
 
 So `evidence_until:2026-10-03T14:30` shows #4 with 3 own messages, and
-`evidence_until:2026-10-03T15:00` shows it with the compaction and 5 own messages
-(the boundary and summary are an event, not messages).
+`evidence_until:2026-10-03T15:00` shows it with the compaction and 6 own messages
+(the boundary is an event; its summary is one harness message, as in
+[sessions.md](../../docs/sessions.md#compaction-boundaries)).
 
 ## Tokens and cost
 

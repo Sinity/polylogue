@@ -17,10 +17,12 @@ fn unknown_event_time_has_unknown_evidence_and_unbound_facts_have_no_session() {
 }
 
 #[test]
-fn link_parts_merge_from_either_side() {
+fn link_statement_identity_preserves_recorded_coordinates() {
     let s = |n: &str| SessionId::parse(n).unwrap();
-    let mut from_child = Link {
+    let from_child = Link {
         kind: LinkKind::Spawn,
+        copies_prefix: false,
+        how: None,
         parent: s("claude-code:p"),
         child: s("claude-code:agent-1"),
         at: None,
@@ -32,10 +34,11 @@ fn link_parts_merge_from_either_side() {
         evidence: "agent_progress".into(),
         ..from_child.clone()
     };
-    from_child.merge(&from_parent);
-    assert_eq!(from_child.call_id.as_deref(), Some("toolu_1"));
-    assert_eq!(from_child.evidence, "agentId");
-    assert_eq!(from_child.selection_tag(), from_parent.selection_tag());
+    assert_ne!(from_child.selection_tag(), from_parent.selection_tag());
+    let mut same_statement = from_parent.clone();
+    same_statement.evidence = "another field".into();
+    same_statement.copies_prefix = true;
+    assert_eq!(same_statement.selection_tag(), from_parent.selection_tag());
     let mut different = from_parent.clone();
     different.kind = LinkKind::Continuation;
     assert_ne!(from_child.selection_tag(), different.selection_tag());

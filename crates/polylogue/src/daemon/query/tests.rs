@@ -240,7 +240,7 @@ fn morrow() -> TestArchive {
         },
     )
     .unwrap();
-    fx.link(&ids[1], &ids[2], "subagent", "fresh").unwrap();
+    fx.link(&ids[1], &ids[2], "spawn", None).unwrap();
     // #4 claude-code, Oct 3, continues #2, cost 1.59.
     let s4 = fx
         .session(SessionFacts {
@@ -294,7 +294,7 @@ fn morrow() -> TestArchive {
         },
     )
     .unwrap();
-    fx.link(&ids[1], &ids[3], "continuation", "resume").unwrap();
+    fx.link(&ids[1], &ids[3], "resume", None).unwrap();
     fx.event(s4, "compaction", at(3, 11)).unwrap();
     // #5, #6 codex in morrow; #6 forks #5.
     let s5 = fx
@@ -343,8 +343,8 @@ fn morrow() -> TestArchive {
     fx.link(
         "codex:01a20000-0005-7000-8000-000000000005",
         "codex:01a20000-0006-7000-8000-000000000006",
-        "continuation",
         "fork",
+        None,
     )
     .unwrap();
     // #7 chatgpt with an abandoned branch; #8 claude-ai, no model.
@@ -932,8 +932,8 @@ fn links_and_parents() {
         ["#6", "#5"]
     );
     // 36.
-    let v = q(&w, "links where kind:continuation");
-    assert_eq!(v["count"], 2);
+    assert_eq!(q(&w, "links where kind:fork")["count"], 1);
+    assert_eq!(q(&w, "links where kind:resume")["count"], 1);
     // 37.
     assert_eq!(ids(&q(&w, "link:fork")), ["#6"]);
     // 38: tree cost includes the subagent.

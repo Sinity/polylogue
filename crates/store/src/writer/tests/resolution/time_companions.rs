@@ -182,6 +182,8 @@ fn native_time_companions_use_evidence_and_keep_missing_relations_distinct() {
     for child in ["missing-child", "child-unknown"] {
         input.parse[0].output.links.push(Link {
             kind: LinkKind::Spawn,
+            copies_prefix: false,
+            how: None,
             parent: sid("metadata"),
             child: sid(child),
             at: None,
