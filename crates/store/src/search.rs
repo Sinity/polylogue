@@ -109,6 +109,10 @@ impl Reader<'_> {
                     polylogue_model::Block::ToolResult {
                         output: Some(text), ..
                     } => text.as_str(),
+                    polylogue_model::Block::ToolCall {
+                        written_text: Some(text),
+                        ..
+                    } => text.as_str(),
                     _ => {
                         return Err(StoreError::Invalid(
                             "selected snippet block has no matching source text".into(),
@@ -145,17 +149,17 @@ impl Reader<'_> {
             Within::Message(pk) => ("m.pk = ?2", pk),
         };
         for (query, SnippetQuery { index, fts, .. }) in queries.iter().enumerate() {
-            let (table, block, writer) = match index {
+            let (table, kinds, writer) = match index {
                 SnippetIndex::Prose => (
                     "text_fts",
-                    "text",
+                    "'text'",
                     " AND m.written_by IN ('human', 'model')",
                 ),
-                SnippetIndex::Output => ("output_fts", "tool_result", ""),
+                SnippetIndex::Output => ("output_fts", "'tool_result','tool_call'", ""),
             };
             let sql = format!(
                 "SELECT b.pk, s.pk, s.id, m.id FROM {table} JOIN text tx ON tx.id = {table}.rowid \
-                 JOIN block b ON b.text_id = tx.id AND b.kind = '{block}' \
+                 JOIN block b ON b.text_id = tx.id AND b.kind IN ({kinds}) \
                  JOIN message m ON m.pk = b.message_pk JOIN session s ON s.pk = m.session_pk \
                  WHERE {table} MATCH ?1 AND {scope}{writer} \
                  ORDER BY bm25({table}), m.at DESC LIMIT 1"

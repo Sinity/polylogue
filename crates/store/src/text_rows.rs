@@ -244,8 +244,8 @@ fn insert_entry(conn: &Connection, id: i64, bit: i64, folded: &str) -> Result<()
 /// documents to full-text ranking or embedding.
 pub(crate) fn unindex_unused(i: &Connection, id: i64, bulk: bool) -> Result<()> {
     for (bit, kind, table) in [
-        (1, "b.kind<>'tool_result'", "text_fts"),
-        (2, "b.kind='tool_result'", "output_fts"),
+        (1, "b.kind NOT IN ('tool_result','tool_call')", "text_fts"),
+        (2, "b.kind IN ('tool_result','tool_call')", "output_fts"),
     ] {
         let used:bool=i.query_row(&format!("SELECT EXISTS(SELECT 1 FROM block b JOIN message m ON m.pk=b.message_pk WHERE b.text_id=?1 AND {kind}) OR (?2=1 AND EXISTS(SELECT 1 FROM document_block b JOIN document d ON d.pk=b.document_pk WHERE b.text_id=?1))"),params![id,bit],|r|r.get(0))?;
         if !used {

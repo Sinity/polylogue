@@ -19,6 +19,7 @@ mod scoped;
 mod session_order;
 mod sparse_projection;
 mod tool_durations;
+mod written_text;
 
 fn write_test_rows(
     tx: &Transaction<'_>,

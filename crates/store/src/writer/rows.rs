@@ -1273,7 +1273,7 @@ impl RowWriter<'_, '_> {
         at: Option<i64>,
     ) -> Result<()> {
         let (idx, ordinal) = position;
-        let bit = if matches!(block, Block::ToolResult { .. }) {
+        let bit = if matches!(block, Block::ToolResult { .. } | Block::ToolCall { .. }) {
             2
         } else {
             1

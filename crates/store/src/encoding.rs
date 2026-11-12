@@ -380,10 +380,10 @@ impl RowPacker {
             .zip(blocks)
         {
             if block_text(block).is_some() {
-                let field = if matches!(block, Block::ToolResult { .. }) {
-                    "output"
-                } else {
-                    "text"
+                let field = match block {
+                    Block::ToolResult { .. } => "output",
+                    Block::ToolCall { .. } => "written_text",
+                    _ => "text",
                 };
                 stored[field] = serde_json::Value::String(String::new());
             }
@@ -452,6 +452,16 @@ fn block_bytes(block: &Block) -> Result<Vec<u8>> {
             data: None,
             attachments: attachments.clone(),
         },
+        Block::ToolCall {
+            written_text: Some(_),
+            ..
+        } => {
+            let mut body = block.clone();
+            if let Block::ToolCall { written_text, .. } = &mut body {
+                *written_text = Some(String::new());
+            }
+            body
+        }
         // These values are stored whole, so serialization can borrow them.
         _ => return Ok(serde_json::to_vec(block)?),
     };
@@ -531,6 +541,10 @@ pub(crate) fn block_text(block: &Block) -> Option<&str> {
     match block {
         Block::Text { text } if !text.is_empty() => Some(text),
         Block::Thinking { text: Some(t), .. } if !t.is_empty() => Some(t),
+        Block::ToolCall {
+            written_text: Some(t),
+            ..
+        } if !t.is_empty() => Some(t),
         Block::ToolResult {
             output: Some(o), ..
         } if !o.is_empty() => Some(o),
@@ -564,6 +578,7 @@ pub(crate) fn restore_text(block: &mut Block, text: String) {
         Block::Text { text: t } => *t = text,
         Block::Thinking { text: t, .. } => *t = Some(text),
         Block::ToolResult { output, .. } => *output = Some(text),
+        Block::ToolCall { written_text, .. } => *written_text = Some(text),
         _ => {}
     }
 }
