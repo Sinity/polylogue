@@ -158,13 +158,19 @@ fn a_large_scope_uses_index_hits_and_preserves_unicode_prefixes_and_nested_index
         index: SnippetIndex::Prose,
         terms: &terms,
     }];
-    for analyzed in [false, true] {
+    for (analyzed, deferred) in [(false, false), (true, false), (true, true)] {
+        let write = crate::archive::open_write(&fixture.archive.index_db(), 1024).unwrap();
         if analyzed {
-            crate::archive::open_write(&fixture.archive.index_db(), 1024)
-                .unwrap()
-                .execute_batch("ANALYZE")
-                .unwrap();
+            write.execute_batch("ANALYZE").unwrap();
         }
+        if deferred {
+            for index in crate::writer::deferred_index_names() {
+                write
+                    .execute_batch(&format!("DROP INDEX IF EXISTS {index}"))
+                    .unwrap();
+            }
+        }
+        drop(write);
         let pool = fixture.reads().unwrap();
         let reader = pool.reader().unwrap();
         let result = reader
