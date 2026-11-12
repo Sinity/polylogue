@@ -695,7 +695,7 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
                 let source_applied = match observed_length {
                     None => true,
                     Some(length) => reader.query(
-                        "SELECT EXISTS(SELECT 1 FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk JOIN source_revision r ON r.input=i.id AND r.chain=p.chain WHERE i.format='claude-code' AND r.length=?1 AND (p.parsed_upto>=r.length OR (p.status IN ('waiting','refused','failed') AND p.at_length=r.length))) AS ready", &[serde_json::json!(length)],
+                        "SELECT EXISTS(SELECT 1 FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk JOIN source_revision r ON r.input=i.id AND r.chain=p.chain WHERE i.format='claude-code' AND r.length=?1 AND (p.parsed_upto>=r.length OR (p.status IN ('waiting','refused','failed') AND p.at_length=r.length))) AS ready", &[polylogue_store::SqlValue::Int(length.try_into().unwrap())],
                     )?[0]["ready"] == 1,
                 };
                 Ok(!pass.capture_pending
