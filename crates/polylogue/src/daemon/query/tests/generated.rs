@@ -455,6 +455,46 @@ fn every_row(rows: &Rows, unit: Unit) -> Vec<(String, Row)> {
         .collect()
 }
 
+#[test]
+fn harness_without_prompt_kind_is_false_for_prose_beside_unknown_fields() {
+    let rows = Rows {
+        sessions: vec![SessionRow {
+            origin: "claude-code",
+            subagent: false,
+            repo: None,
+            messages: vec![MessageRow {
+                speaker: ("user", "harness"),
+                model: None,
+                cost: None,
+                at: None,
+                text: Some("walrus".into()),
+                path: None,
+                calls: vec![],
+            }],
+        }],
+    };
+    let w = build(&rows);
+    for condition in [
+        "walrus",
+        "(model:model-a AND walrus) OR parser",
+        "model:model-a AND ((model:model-a AND walrus) OR parser)",
+    ] {
+        assert!(key_set(Unit::Messages, &all(&w, &over(Unit::Messages, condition))).is_empty());
+        assert_eq!(
+            key_set(
+                Unit::Messages,
+                &all(&w, &over(Unit::Messages, &format!("NOT ({condition})")))
+            ),
+            BTreeSet::from(["g00m00".into()]),
+            "{condition} is false for this harness message"
+        );
+    }
+    // A missing model still has ordinary three-valued field semantics.
+    for condition in ["model:model-a", "NOT model:model-a"] {
+        assert!(key_set(Unit::Messages, &all(&w, &over(Unit::Messages, condition))).is_empty());
+    }
+}
+
 proptest! {
     #![proptest_config(config(48))]
 

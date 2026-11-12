@@ -102,7 +102,7 @@ impl Hits<'_> {
     pub fn writer(&self, m: &str) -> String {
         match self.index {
             Index::Prose => format!(
-                " AND ({m}.written_by IN ('human', 'model', 'unknown') OR {m}.prompt_kind='compaction_summary')"
+                " AND ({m}.written_by IN ('human', 'model', 'unknown') OR {m}.prompt_kind IS 'compaction_summary')"
             ),
             _ => String::new(),
         }

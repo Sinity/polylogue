@@ -114,7 +114,7 @@ fn parts(index: SnippetIndex) -> (&'static str, &'static str, &'static str) {
         SnippetIndex::Prose => (
             "text_fts",
             "'text'",
-            " AND (m.written_by IN ('human','model','unknown') OR m.prompt_kind='compaction_summary')",
+            " AND (m.written_by IN ('human','model','unknown') OR m.prompt_kind IS 'compaction_summary')",
         ),
         SnippetIndex::Output => ("output_fts", "'tool_result','tool_call'", ""),
     }
