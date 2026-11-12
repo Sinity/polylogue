@@ -224,3 +224,18 @@ fn rare_word_steps_stay_flat_as_unrelated_history_grows_with_or_without_statisti
         "2000 unrelated: {plain_large} -> {analyzed_large} after ANALYZE"
     );
 }
+
+#[test]
+fn session_text_search_remains_readable_with_first_build_indexes_deferred() {
+    let (_dir, fixture) = archive(20, true);
+    let write = crate::archive::open_write(&fixture.archive.index_db(), 1024).unwrap();
+    for index in crate::writer::deferred_index_names() {
+        write
+            .execute_batch(&format!("DROP INDEX IF EXISTS {index}"))
+            .unwrap();
+    }
+    drop(write);
+    // The same independent membership/rank oracle remains exact while a
+    // first build has deferred its natural-key and secondary read indexes.
+    read(&fixture, false);
+}
