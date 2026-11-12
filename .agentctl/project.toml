@@ -109,7 +109,7 @@ cache = "none"
 
 [operations.fmt]
 description = "Format the workspace"
-exec = ["nix", "develop", "--command", "cargo", "fmt", "--all"]
+exec = ["env", "CARGO_TARGET_DIR=target", "nix", "develop", "--command", "cargo", "fmt", "--all"]
 pool = "interactive"
 result = "exit"
 timeout_seconds = 300
