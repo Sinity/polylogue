@@ -537,10 +537,14 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
         &running.socket,
         "read",
         serde_json::json!({
-            "method":"query", "query":"events where event_type = polylogue.message AND payload.message = 'claude-code:assistant-1' | fields id"
+            "method":"query", "query":"events where event_type = polylogue.message AND payload.role = assistant"
         }),
     );
-    let id = selected["result"]["rows"][0]["id"].as_str().unwrap();
+    assert_eq!(selected["outcome"], "ok", "{selected}");
+    let rows = selected["result"]["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{selected}");
+    assert_eq!(rows[0]["payload"]["message"], "claude-code:assistant-1");
+    let id = rows[0]["id"].as_str().unwrap();
     let target = format!("sinex:ev/{id}");
     let archived = native::request(
         &running.socket,
