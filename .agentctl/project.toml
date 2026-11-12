@@ -12,8 +12,7 @@ unset = ["CARGO_TARGET_DIR", "PYTHONPATH", "PYTHONHOME"]
 [environment.values]
 # Share CPU and memory with other builds.
 CARGO_BUILD_JOBS = "2"
-# Incremental state is half of each target directory and the drive is write-bound;
-# agent builds rarely reuse it across commits.
+# Avoid extra incremental-cache reads and writes on the shared drive.
 CARGO_INCREMENTAL = "0"
 
 [operations.fast]
@@ -47,7 +46,7 @@ cache = "none"
 unit_properties = ["MemoryHigh=8G"]
 
 [operations.focused]
-description = "Selected tests in the shared source-check queue"
+description = "Build selected packages with all their features and run selected tests; native target flags are supported"
 exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "--quiet", "-p", "xtask", "--", "test"]
 arguments = "required"
 pool = "compile"

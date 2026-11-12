@@ -20,13 +20,10 @@ const FORMATTED: &[&str] = &[
     "xtask",
 ];
 
-/// The one feature list every build uses: Clippy, each test build, warm
-/// and focused runs. Cargo builds a crate again for each distinct feature
-/// set and resolution, and everything above it with it, so every command
-/// selects the whole workspace with these features and narrows only what it
-/// runs, through nextest filters. Tests therefore run in primary mode's build;
-/// code under `cfg(not(feature = "sinex"))` is compiled by the standalone
-/// Clippy pass.
+/// Full checks and warm builds use the primary workspace graph. Explicit
+/// package checks build those packages with all their features instead of
+/// compiling unrelated workspace test targets. The standalone Clippy pass
+/// also covers code under `cfg(not(feature = "sinex"))`.
 const FEATURES: &str =
     "polylogue/sinex,polylogue-engine/faults,polylogue-store/faults,polylogue-store/fixture";
 /// The standalone Clippy pass: the same features without the Sinex client.
@@ -61,11 +58,11 @@ enum Cli {
         /// environment's warm build); selection does not apply.
         #[arg(long, conflicts_with = "args")]
         no_run: bool,
-        /// Further `cargo nextest run` arguments: `-p` packages, `--exclude`
-        /// and `-E` filtersets select which tests run (the whole workspace is
-        /// always built); devkit's `--changed` and `--changed-base=REF` select
-        /// the tests changes since the merge base can affect; names and runner
-        /// flags pass through.
+        /// Further `cargo nextest run` arguments. `-p` selects packages to
+        /// build with all their features; `--workspace` retains the full
+        /// workspace graph. Native target flags such as `--lib` bound build
+        /// targets. Exclusions, filtersets and changed-package filters select
+        /// which tests run; names and runner flags pass through.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -250,18 +247,15 @@ fn selects_test_targets(arg: &str) -> bool {
         })
 }
 
-/// The workspace build with the one feature list, and nextest filters for
-/// what runs: `-p` and `--exclude` become package filters, intersected with
-/// `-E` filtersets and with `required` (a changed-package selection, or the
-/// scenarios' own). Feature flags are refused: a second feature set would
-/// build the graph again.
+/// Explicit packages use Cargo's package scope and all their own features.
+/// Default/full checks retain the primary workspace graph. Runtime package,
+/// exclusion and filterset predicates still intersect with `required`.
 fn test_arguments(args: &[String], required: Option<String>) -> Result<Vec<String>, String> {
     let explicit_targets = args
         .iter()
         .take_while(|arg| arg.as_str() != "--")
         .any(|arg| selects_test_targets(arg));
     let package = |name: String| {
-        let name = name.strip_prefix('=').unwrap_or(&name).to_owned();
         if name.contains(['*', '?', '[']) {
             format!("package({name})")
         } else {
@@ -272,6 +266,7 @@ fn test_arguments(args: &[String], required: Option<String>) -> Result<Vec<Strin
     let mut excluded = Vec::new();
     let mut filtersets = Vec::new();
     let mut rest = Vec::new();
+    let mut workspace = false;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         if arg == "--" {
@@ -285,21 +280,21 @@ fn test_arguments(args: &[String], required: Option<String>) -> Result<Vec<Strin
                 .ok_or_else(|| format!("{flag} needs a value"))
         };
         let refused = || {
-            format!("{arg}: tests always build with {FEATURES}; select tests with -p, -E or names")
+            format!("{arg}: full checks use {FEATURES}; package checks enable all package features")
         };
         match arg.as_str() {
-            "-p" | "--package" => packages.push(package(value(arg)?)),
-            "--exclude" => excluded.push(package(value(arg)?)),
+            "-p" | "--package" => packages.push(value(arg)?),
+            "--exclude" => excluded.push(value(arg)?),
             "-E" | "--filterset" | "--filter-expr" => filtersets.push(value(arg)?),
-            "--workspace" | "--all" => {}
+            "--workspace" | "--all" => workspace = true,
             "-F" | "--features" | "--all-features" | "--no-default-features" => {
                 return Err(refused());
             }
             _ => {
                 if let Some(name) = arg.strip_prefix("--package=").or(arg.strip_prefix("-p")) {
-                    packages.push(package(name.to_owned()));
+                    packages.push(name.to_owned());
                 } else if let Some(name) = arg.strip_prefix("--exclude=") {
-                    excluded.push(package(name.to_owned()));
+                    excluded.push(name.to_owned());
                 } else if let Some(filterset) = arg
                     .strip_prefix("--filterset=")
                     .or(arg.strip_prefix("--filter-expr="))
@@ -314,6 +309,11 @@ fn test_arguments(args: &[String], required: Option<String>) -> Result<Vec<Strin
             }
         }
     }
+    for name in packages.iter_mut().chain(excluded.iter_mut()) {
+        if let Some(spec) = name.strip_prefix('=') {
+            *name = spec.to_owned();
+        }
+    }
     let either = |sets: Vec<String>| {
         sets.into_iter()
             .map(|set| format!("({set})"))
@@ -322,16 +322,27 @@ fn test_arguments(args: &[String], required: Option<String>) -> Result<Vec<Strin
     };
     let terms: Vec<String> = [
         required,
-        (!packages.is_empty()).then(|| either(packages)),
-        (!excluded.is_empty()).then(|| format!("not ({})", either(excluded))),
+        (!packages.is_empty()).then(|| either(packages.iter().cloned().map(package).collect())),
+        (!excluded.is_empty()).then(|| {
+            format!(
+                "not ({})",
+                either(excluded.into_iter().map(package).collect())
+            )
+        }),
         (!filtersets.is_empty()).then(|| either(filtersets)),
     ]
     .into_iter()
     .flatten()
     .collect();
-    let mut arguments: Vec<String> = ["--locked", "--workspace", "--features", FEATURES]
-        .map(String::from)
-        .to_vec();
+    let mut arguments = vec!["--locked".to_owned()];
+    if packages.is_empty() || workspace {
+        arguments.extend(["--workspace", "--features", FEATURES].map(String::from));
+    } else {
+        arguments.push("--all-features".into());
+        for name in packages {
+            arguments.extend(["--package".to_owned(), name]);
+        }
+    }
     if !terms.is_empty() {
         arguments.push("-E".to_owned());
         arguments.push(
