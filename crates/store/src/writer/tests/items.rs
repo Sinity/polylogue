@@ -117,6 +117,60 @@ fn identical_lower_priority_event_claims_leave_selected_events_and_items_untouch
         (0, 0),
         "unchanged selected event updates and session item reads"
     );
+    // Exercise the production validity lookup, with unrelated cached entries
+    // before the selected header so a missing reverse index cannot pass early.
+    let (pk, session, kind, at, data_bytes): (i64, i64, String, Option<i64>, u64) = conn
+        .query_row(
+            "SELECT pk,session_pk,kind,at,length(data) FROM event WHERE id=?1",
+            [&id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .unwrap();
+    let work = || {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicU64, Ordering},
+        };
+        let steps = Arc::new(AtomicU64::new(0));
+        let counter = Arc::clone(&steps);
+        conn.flush_prepared_statement_cache();
+        conn.progress_handler(
+            1,
+            Some(move || {
+                counter.fetch_add(1, Ordering::Relaxed);
+                false
+            }),
+        )
+        .unwrap();
+        assert!(
+            crate::items::event_is_current(&conn, pk, session, &id, &kind, at, data_bytes).unwrap()
+        );
+        conn.progress_handler(0, None::<fn() -> bool>).unwrap();
+        steps.load(Ordering::Relaxed)
+    };
+    let small = work();
+    conn.execute_batch(
+        "SAVEPOINT unrelated_headers;
+        WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<8192)
+        INSERT INTO session_item
+        SELECT s.session_pk,-100000+n.x,s.unit,NULL,100000+n.x,s.time_bound,
+               s.entry,s.class,s.call_id,s.counts
+        FROM n,session_item s WHERE s.event_pk=(SELECT min(pk) FROM event);",
+    )
+    .unwrap();
+    let large = work();
+    assert!(
+        large <= small + 4,
+        "keyed header work grew: {small} -> {large}"
+    );
+    conn.execute_batch("DROP INDEX session_item_event").unwrap();
+    let unindexed = work();
+    assert!(
+        unindexed > 8192,
+        "positive control did not scan unrelated headers: {unindexed}"
+    );
+    conn.execute_batch("ROLLBACK TO unrelated_headers; RELEASE unrelated_headers")
+        .unwrap();
 }
 
 #[test]
