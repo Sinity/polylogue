@@ -329,7 +329,7 @@ async fn transport(
     authentication: &Authentication,
 ) -> Result<(async_nats::Client, Subjects, Option<String>)> {
     let subjects = Subjects::new(config.subject_root.clone());
-    let options = match authentication {
+    let mut options = match authentication {
         Authentication::Password(password) => async_nats::ConnectOptions::with_user_and_password(
             config.producer.clone(),
             password.clone(),
@@ -341,6 +341,23 @@ async fn transport(
             )));
         }
     };
+    let address: async_nats::ServerAddr = config
+        .nats
+        .parse()
+        .map_err(|error| Error::Invalid(format!("invalid NATS endpoint: {error}")))?;
+    let loopback = address.host().eq_ignore_ascii_case("localhost")
+        || address
+            .host()
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback());
+    if loopback {
+        // A local forwarder owns its upstream. Broker discovery must not move
+        // the plaintext loopback exception onto another host.
+        options = options.ignore_discovered_servers();
+    } else {
+        // The native handshake establishes and verifies TLS before sending AUTH.
+        options = options.require_tls(true);
+    }
     let client = options
         .custom_inbox_prefix(subjects.inbox_prefix(&config.producer))
         .connect(config.nats.as_str())

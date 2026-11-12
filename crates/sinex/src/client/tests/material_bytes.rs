@@ -251,3 +251,56 @@ fn fetch_material_returns_bytes_and_ranges_without_a_shared_store() {
         assert!(!config.store.exists());
     });
 }
+
+#[test]
+fn non_loopback_plaintext_nats_is_refused_before_producer_hello() {
+    let server = server();
+    let root = tempfile::tempdir().unwrap();
+    let mut config = config(&server, root.path(), None);
+    let address: async_nats::ServerAddr = server.url().parse().unwrap();
+    // Linux routes an unspecified destination to the local listener. It is
+    // intentionally outside the client's loopback exception, without DNS.
+    config.nats = format!("nats://0.0.0.0:{}", address.port());
+    config.upload_root = Some(root.path().join("upload"));
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let plain =
+            async_nats::ConnectOptions::with_user_and_password("polylogue".into(), PASSWORD.into())
+                .connect(config.nats.as_str())
+                .await
+                .unwrap();
+        plain.flush().await.unwrap();
+        drop(plain);
+        let mut owner = ProducerOwner::start(&server, "TLS_INGRESS").await;
+        // Without the TLS requirement this responder completes the same
+        // production connect immediately, making the refusal assertion fail.
+        let welcome = tokio::spawn(async move {
+            owner.welcome().await;
+        });
+        let spool = Arc::new(Mutex::new(
+            crate::spool::Spool::open(root.path(), "polylogue").unwrap(),
+        ));
+        let result = super::super::Client::connect_shared(
+            &config,
+            &Authentication::Password(PASSWORD.into()),
+            spool,
+            Default::default(),
+            Default::default(),
+            false,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(Error::Unreachable(_))),
+            "plaintext route must not establish the producer client"
+        );
+        assert!(
+            !welcome.is_finished(),
+            "no producer hello reaches the plaintext broker"
+        );
+        welcome.abort();
+        let _ = welcome.await;
+    });
+}
