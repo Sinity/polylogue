@@ -33,6 +33,10 @@ pub struct ToolCall {
         skip_serializing_if = "command_surface::TokenBudget::is_default"
     )]
     pub budget_tokens: command_surface::TokenBudget,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fresh: bool,
+    #[serde(default, skip_serializing_if = "command_surface::Format::is_text")]
+    pub format: command_surface::Format,
 }
 
 fn default_deadline(deadline: &Deadline) -> bool {
@@ -212,8 +216,8 @@ fn run(
         deadline: call.deadline,
         budget_tokens: call.budget_tokens,
         cursor: call.cursor,
-        fresh: false,
-        format: Default::default(),
+        fresh: call.fresh,
+        format: call.format,
     };
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

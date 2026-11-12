@@ -2,14 +2,6 @@ use super::read_current::Items;
 use super::*;
 use polylogue_model::read::ReadPage;
 
-fn next_arguments(call: &polylogue_model::read::ReadyCall) -> Vec<String> {
-    let stages = polylogue_model::command::effective_stages(&call.cli);
-    assert_eq!(stages.len(), 1);
-    assert_eq!(stages[0].program, "polylogue");
-    let mut args = vec!["--json".to_owned()];
-    args.extend(stages[0].args.clone());
-    args
-}
 #[test]
 fn cli_read_pages_cover_utf8_once_and_refuse_malformed_and_revoked_cursors() {
     let dir = tempfile::tempdir().unwrap();
@@ -67,14 +59,17 @@ fn cli_read_pages_cover_utf8_once_and_refuse_malformed_and_revoked_cursors() {
             complete = true;
             break;
         };
-        assert!(seen.insert(next.cli.clone()), "repeated continuation");
+        assert!(
+            seen.insert(serde_json::to_string(&next.request).unwrap()),
+            "repeated continuation"
+        );
         first_next.get_or_insert_with(|| next.clone());
-        args = next_arguments(&next);
+        args = continuation_arguments(&next);
     }
     assert!(complete, "finite source delivery did not terminate");
     assert_eq!(joined.text(), expected);
     let next = first_next.expect("one-token page must continue");
-    let mut invalid = next_arguments(&next);
+    let mut invalid = continuation_arguments(&next);
     let cursor = invalid.iter().position(|word| word == "--cursor").unwrap() + 1;
     assert!(!invalid[cursor].is_empty());
     invalid[cursor] = "broken".into();
@@ -92,7 +87,7 @@ fn cli_read_pages_cover_utf8_once_and_refuse_malformed_and_revoked_cursors() {
     });
     // A cursor from an earlier index generation is `stale_cursor`, never
     // restarted and never confused with a broken one (docs/query.md, Paging).
-    let args = next_arguments(&next);
+    let args = continuation_arguments(&next);
     let stale = cli(&env, &args.iter().map(String::as_str).collect::<Vec<_>>());
     assert!(!stale.status.success());
     assert_eq!(json(&stale)["error"]["kind"], "stale_cursor");

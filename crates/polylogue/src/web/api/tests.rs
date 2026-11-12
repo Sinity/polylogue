@@ -171,27 +171,9 @@ fn generated_http_ready_call_executes_without_translating_its_arguments() {
         format: Default::default(),
     };
     let ready = daemon.daemon.ready_call(&call).unwrap();
-    let encode = |text: &str| {
-        text.as_bytes()
-            .iter()
-            .map(|byte| format!("%{byte:02X}"))
-            .collect::<String>()
-    };
-    let pairs = ready
-        .http
-        .arguments
-        .as_object()
-        .unwrap()
-        .iter()
-        .map(|(key, value)| {
-            let text = value
-                .as_str()
-                .map(str::to_owned)
-                .unwrap_or_else(|| value.to_string());
-            format!("{}={}", encode(key), encode(&text))
-        })
-        .collect::<Vec<_>>()
-        .join("&");
+    let url =
+        polylogue_render::web::http_url(crate::commands::declarations(), &ready.request).unwrap();
+    let pairs = url.split_once('?').unwrap().1.to_owned();
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -200,8 +182,8 @@ fn generated_http_ready_call_executes_without_translating_its_arguments() {
             let response = super::super::router(web(&daemon))
                 .oneshot(
                     axum::http::Request::builder()
-                        .method(ready.http.method.as_str())
-                        .uri(format!("{}?{pairs}", ready.http.path))
+                        .method("GET")
+                        .uri(url)
                         .header(header::HOST, "127.0.0.1:8765")
                         .header(header::AUTHORIZATION, "Bearer synthetic")
                         .body(axum::body::Body::empty())
@@ -626,11 +608,9 @@ fn actual_ready_http_calls_preserve_absent_null_and_finite_deadlines() {
             format: Default::default(),
         };
         let ready = daemon.daemon.ready_call(&request).unwrap();
-        assert_eq!(
-            ready.http.arguments,
-            serde_json::to_value(&request).unwrap()
-        );
-        let url = polylogue_render::web::http_url(&ready.http).unwrap();
+        assert_eq!(ready.request, request);
+        let url = polylogue_render::web::http_url(crate::commands::declarations(), &ready.request)
+            .unwrap();
         let uri: axum::http::Uri = url.parse().unwrap();
         let Query(pairs) = Query::<Vec<(String, String)>>::try_from_uri(&uri).unwrap();
         let has_deadline = pairs.iter().any(|(key, _)| key == "deadline");

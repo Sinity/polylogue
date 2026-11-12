@@ -92,7 +92,10 @@ fn encode_page(
     polylogue_render::encode_document(
         &page.document,
         format,
-        polylogue_render::EncodeOptions::default(),
+        polylogue_render::EncodeOptions {
+            commands: Some(crate::commands::declarations()),
+            ..Default::default()
+        },
         &mut encoded,
     )
     .map_err(|e| e.to_string())?;
@@ -133,7 +136,11 @@ fn one_page(
     if let Some(next) = next {
         eprintln!(
             "continue: {}",
-            polylogue_render::terminal::escape(&next.cli)
+            polylogue_render::terminal::escape(
+                &crate::commands::declarations()
+                    .cli_command(&next.request)
+                    .map_err(|e| e.to_string())?
+            )
         );
     }
     Ok(answer.exit_code())
@@ -178,7 +185,10 @@ fn through_pager(
         let mut encoder = match polylogue_render::Encoder::new(
             &first.document.header,
             format,
-            polylogue_render::EncodeOptions::default(),
+            polylogue_render::EncodeOptions {
+                commands: Some(crate::commands::declarations()),
+                ..Default::default()
+            },
             &mut input,
         ) {
             Ok(encoder) => encoder,
@@ -201,8 +211,7 @@ fn through_pager(
                     Err(error) => Err(error.to_string().into()),
                 };
             };
-            let call: command_surface::RunnableRequest =
-                serde_json::from_value(next.http.arguments.clone()).map_err(|e| e.to_string())?;
+            let call = next.request;
             answer = crate::client::call_ready(archive, &call).map_err(|e| e.to_string())?;
             code = code.max(answer.exit_code());
             page_notes(startup, &answer);
@@ -606,7 +615,10 @@ fn encode(
     let mut encoder = polylogue_render::Encoder::new(
         &begin.header,
         format,
-        polylogue_render::EncodeOptions::default(),
+        polylogue_render::EncodeOptions {
+            commands: Some(crate::commands::declarations()),
+            ..Default::default()
+        },
         output,
     )?;
     while let Some(mut item) = items.next_item().map_err(invalid)? {

@@ -69,24 +69,11 @@ pub struct Figure {
     pub unit: Option<String>,
 }
 
-/// Built by the operation table from one typed invocation, not assembled by an
-/// encoder. Every presentation receives the same runnable forms.
+/// One admitted invocation. Transports derive their forms when presenting it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
+#[serde(transparent)]
 pub struct ReadyCall {
-    pub cli: String,
-    /// The MCP `tools/call` parameters; null for an operation MCP does not
-    /// offer.
-    pub mcp: serde_json::Value,
-    pub http: HttpCall,
-}
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct HttpCall {
-    pub method: String,
-    pub path: String,
-    /// The operation table supplies the complete request envelope, including identity and deadline.
-    pub arguments: serde_json::Value,
+    pub request: command_surface::RunnableRequest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

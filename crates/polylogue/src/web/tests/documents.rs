@@ -212,7 +212,8 @@ fn document_previous_pages_restore_exact_unicode_body_fragments() {
         assert_eq!(restored.document.items, first.document.items);
         let (status, _, html) = send_html(
             &r,
-            &polylogue_render::web::http_url(&previous.http).unwrap(),
+            &polylogue_render::web::http_url(crate::commands::declarations(), &previous.request)
+                .unwrap(),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{html}");

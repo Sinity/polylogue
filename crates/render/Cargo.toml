@@ -8,7 +8,7 @@ publish.workspace = true
 
 [dependencies]
 
-command-surface.workspace = true
+command-surface = { workspace = true, features = ["runtime"] }
 
 schemars.workspace = true
 polylogue-model.workspace = true

@@ -78,8 +78,9 @@ copy.
 | `crates/render` | text, markdown and HTML over typed answers |
 | `crates/engine` | discovery, the overlapped ingest pipeline, tool-database capture, recognition, derivations |
 | `crates/sinex` | primary mode: Sinex's producer client wiring, the confirmed-stream consumer, Polylogue's kind declarations (behind the `sinex` feature) |
-| `crates/polylogue` | the daemon library and thin CLI, MCP, web and browser-host front ends generated from the command table; the pack builder |
+| `crates/polylogue` | daemon, CLI, MCP, web, browser host and pack builder |
 | `crates/testkit` | test archives built through the real loop: the synthetic Morrow archive (`examples/morrow/`), independent goldens |
+| `clients/python/` | standard-library Python client and real-daemon contract tests |
 | `extension/` | the browser extension |
 | `xtask/` | developer commands, built on `devkit` from polylogue-sinex-common |
 | `nix/` | the NixOS and Home Manager modules and their shared settings library |
@@ -131,7 +132,7 @@ configuration.
 **Design first.** Before writing code, read the page in `docs/` that owns the
 area, its relevant linked pages, the current code of the area, and the
 predecessor's implementation and tests for what you are building (Polylogue's
-earlier Python implementation is in this repository's Git history). Implement
+earlier Python backend is in this repository's Git history). Implement
 the selected behaviour completely on the architecture's abstractions, with
 the predecessor's behaviour and test cases ported.
 

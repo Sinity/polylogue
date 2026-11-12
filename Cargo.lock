@@ -2084,6 +2084,7 @@ dependencies = [
  "authored",
  "blake3",
  "canonical-json",
+ "command-surface",
  "jiff",
  "query-language",
  "schemars",

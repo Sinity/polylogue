@@ -75,6 +75,8 @@ pub fn read(data: &Value, _color: bool) -> String {
         &page.document,
         polylogue_render::Format::Markdown,
         polylogue_render::EncodeOptions {
+            commands: Some(crate::commands::declarations()),
+            via: command_surface::Via::Mcp,
             model_facing: true,
             ..Default::default()
         },

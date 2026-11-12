@@ -162,8 +162,7 @@ fn native_hook_failures_reach_ordinary_mcp_reads_and_budgeted_pages() {
         let Some(next) = page.document.footer.next else {
             break;
         };
-        let envelope: command_surface::RunnableRequest =
-            serde_json::from_value(next.http.arguments.clone()).unwrap();
+        let envelope: command_surface::RunnableRequest = next.request.clone();
         assert_eq!(envelope.operation, "read");
         let arguments: crate::protocol::read::Arguments =
             serde_json::from_value(envelope.arguments.clone()).unwrap();

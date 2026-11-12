@@ -2,7 +2,7 @@ use super::*;
 use serde_json::json;
 
 use polylogue_model::bundle::Record;
-use polylogue_model::read::{ReadPage, ReadyCall};
+use polylogue_model::read::ReadPage;
 
 pub(super) fn import_report(out: &Output) -> polylogue_engine::ImportReport {
     assert!(out.status.success(), "{out:?}");
@@ -49,14 +49,6 @@ pub(super) fn reading(env: &crate::Fixture, reference: &str, options: &[&str]) -
         }
         std::thread::sleep(Duration::from_millis(25));
     }
-}
-pub(super) fn next_args(call: &ReadyCall) -> Vec<String> {
-    let stages = polylogue_model::command::effective_stages(&call.cli);
-    assert_eq!(stages.len(), 1);
-    assert_eq!(stages[0].program, "polylogue");
-    let mut args = vec!["--json".into()];
-    args.extend(stages[0].args.clone());
-    args
 }
 pub(super) fn portable(env: &crate::Fixture, reference: &str, path: &Path) -> Vec<Record> {
     std::fs::create_dir_all(path).unwrap();
@@ -147,8 +139,11 @@ pub(super) fn joined_items_with_options(
         let Some(next) = page.document.footer.next else {
             return items.into_values();
         };
-        assert!(seen.insert(next.cli.clone()), "repeated continuation");
-        let args = next_args(&next);
+        assert!(
+            seen.insert(serde_json::to_string(&next.request).unwrap()),
+            "repeated continuation"
+        );
+        let args = continuation_arguments(&next);
         let out = cli(env, &args.iter().map(String::as_str).collect::<Vec<_>>());
         assert!(out.status.success(), "{out:?}");
         page = serde_json::from_value(json(&out)).unwrap();

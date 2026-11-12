@@ -872,7 +872,8 @@ async fn follow_read(
     r: &Reader,
     call: &polylogue_model::read::ReadyCall,
 ) -> polylogue_model::read::ReadPage {
-    let path = polylogue_render::web::http_url(&call.http).unwrap();
+    let path =
+        polylogue_render::web::http_url(crate::commands::declarations(), &call.request).unwrap();
     let (status, _, body) = send(r, authed(get(&path)).body(Body::empty()).unwrap()).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     serde_json::from_str(&body).unwrap()
@@ -927,7 +928,10 @@ async fn read_items(
         let Some(next) = page.document.footer.next.as_ref() else {
             break;
         };
-        assert!(calls.insert(next.cli.clone()), "repeated continuation");
+        assert!(
+            calls.insert(serde_json::to_string(&next.request).unwrap()),
+            "repeated continuation"
+        );
         assert!(
             !page.document.items.is_empty(),
             "continuation without item progress"

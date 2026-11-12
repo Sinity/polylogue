@@ -6,7 +6,6 @@ CLI JSON with an argument list and uses the same daemon as other clients.
 
 ```python
 from polylogue.client import Client, Refused
-import shlex
 
 client = Client()  # Or Client("/path/to/archive", executable="/path/to/polylogue")
 page = client.query("messages where parser", page_size=100)
@@ -18,10 +17,7 @@ try:
     session = client.read("session:claude-code:example")
     ready = session.json()["value"]["document"]["footer"].get("next")
     if ready is not None:
-        words = shlex.split(ready["cli"], posix=True)
-        if not words or words[0] != "polylogue":
-            raise ValueError("unexpected ReadyCall product")
-        following = client.call(*words[1:])
+        following = client.follow_read(ready)
 except Refused as error:
     print(error.kind, error.answer.json())
 ```
@@ -31,9 +27,11 @@ except Refused as error:
 integer precision and complete refusals survive. Ordinary calls retain the whole
 shared `outcome`/`value` envelope. Empty and degraded answers retain their payloads;
 refusals expose the complete error answer. Query cursors belong to query pages.
-Read continuations execute the complete generated request, including its original
-arguments, cursor and deadline. Use `client.read(identity, page_tokens=600)` to
-choose the number of tokens transferred in one page.
+Read continuations use `client.follow_read(request)` for generated `read` and
+`attachment` actions, including previous pages. It preserves the original
+arguments, request ID, cursor and omitted-versus-null deadline/budget fields,
+and rejects unsupported operation kinds and envelope options explicitly.
+Use `client.read(identity, page_tokens=600)` to choose the number of tokens transferred in one page.
 
 `client.call(*arguments)` takes the same words as a CLI command, without
 `polylogue --json`. It covers the other declared operations. A write is sent
