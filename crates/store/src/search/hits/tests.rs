@@ -1,5 +1,87 @@
 use super::*;
 use crate::fixture::{Fixture, ManySessions, MessageFacts, SessionFacts};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
+
+#[test]
+fn scoped_snippets_read_the_eligible_blocks_once() {
+    let mut work = Vec::new();
+    for count in [64, 256] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut fixture = Fixture::new(dir.path()).unwrap();
+        let session = fixture
+            .session(SessionFacts {
+                id: "test:scoped-bodies",
+                kind: "main",
+                ..Default::default()
+            })
+            .unwrap();
+        for i in 0..count {
+            fixture
+                .message(
+                    session,
+                    MessageFacts {
+                        id: &format!("body-{i:04}"),
+                        role: "user",
+                        written_by: "human",
+                        at: Some(i),
+                        text: Some(&format!("needle body {i:04}")),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+        }
+        let terms = [polylogue_query::search::SnippetTerms::Word {
+            text: "needle".into(),
+            index: SnippetIndex::Prose,
+        }];
+        let mut measured = Vec::new();
+        for analyzed in [false, true] {
+            if analyzed {
+                crate::archive::open_write(&fixture.archive.index_db(), 1024)
+                    .unwrap()
+                    .execute_batch("ANALYZE")
+                    .unwrap();
+            }
+            let pool = fixture.reads().unwrap();
+            let reader = pool.reader().unwrap();
+            let conn = reader.conn().unwrap();
+            let steps = Arc::new(AtomicU64::new(0));
+            let counter = Arc::clone(&steps);
+            conn.progress_handler(
+                1,
+                Some(move || {
+                    counter.fetch_add(1, Ordering::Relaxed);
+                    false
+                }),
+            )
+            .unwrap();
+            let snippets = reader
+                .snippets(
+                    &[SnippetQuery {
+                        index: SnippetIndex::Prose,
+                        terms: &terms,
+                    }],
+                    &[Within::Session(session)],
+                )
+                .unwrap();
+            conn.progress_handler(0, None::<fn() -> bool>).unwrap();
+            measured.push(steps.load(Ordering::Relaxed));
+            let snippet = snippets[0].as_ref().unwrap();
+            assert_eq!(snippet.message, format!("body-{:04}", count - 1));
+            assert_eq!(snippet.text, format!("needle body {:04}", count - 1));
+        }
+        work.push(measured);
+    }
+    for analyzed in 0..2 {
+        assert!(
+            work[1][analyzed] < work[0][analyzed] * 7,
+            "four times the scoped blocks should not repeat the scope for each matching text: {work:?}"
+        );
+    }
+}
 
 #[test]
 fn shared_text_reference_fanout_and_actually_rare_text_choose_different_plans() {
@@ -68,7 +150,7 @@ fn shared_text_reference_fanout_and_actually_rare_text_choose_different_plans() 
         assert!(
             !reader
                 .snippet_scope_drives(
-                    &scope_ctes(SnippetIndex::Prose),
+                    &scope_ctes(SnippetIndex::Prose, false),
                     SnippetIndex::Prose,
                     "needle",
                     &wanted
@@ -99,7 +181,7 @@ fn shared_text_reference_fanout_and_actually_rare_text_choose_different_plans() 
                 .unwrap(),
             20_301
         );
-        let scope = scope_ctes(SnippetIndex::Prose);
+        let scope = scope_ctes(SnippetIndex::Prose, false);
         assert!(
             reader
                 .snippet_scope_drives(&scope, SnippetIndex::Prose, "needle", &wanted)
