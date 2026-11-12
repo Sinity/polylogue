@@ -11,7 +11,7 @@
 //! behind its bytes; the loop parses them again, and every write here is an
 //! upsert, so that changes nothing.
 
-use crate::archive::{Archive, bump_counter, open_write};
+use crate::archive::{Archive, bump_counter, open_runtime_writer};
 use crate::blobs::{Change, FileFacts, NewBlob};
 use crate::{Result, StoreError};
 use polylogue_model::{
@@ -405,7 +405,7 @@ impl Writer {
                 "the writer mode must match its archive".into(),
             ));
         }
-        let index = open_write(&archive.index_db(), crate::archive::cache::INDEX_WRITER)?;
+        let index = open_runtime_writer(&archive.index_db(), crate::archive::cache::INDEX_WRITER)?;
         if !archive.is_primary() {
             let uri = format!("file:{}?mode=ro", archive.archive_db().display());
             index.execute("ATTACH DATABASE ?1 AS a", [uri])?;
@@ -1655,11 +1655,14 @@ impl Inner {
     /// checkpoint size ([`crate::archive::restart_full_log`]). A log still in
     /// use by a reader is tried again after the next transaction.
     fn restart_full_logs(&mut self) {
+        if self.stop.requested() {
+            return;
+        }
         let wait = std::time::Duration::from_millis(100);
         let limit = crate::archive::WAL_AUTOCHECKPOINT;
         let index =
             crate::archive::restart_full_log(&self.index, &self.location.index_db(), limit, wait);
-        let archive = if self.sinex.is_none() {
+        let archive = if self.sinex.is_none() && !self.stop.requested() {
             crate::archive::restart_full_log(
                 &self.archive,
                 &self.location.archive_db(),
@@ -1893,7 +1896,8 @@ impl Inner {
     /// Writes a group in one transaction per database. If it fails, each
     /// batch is retried alone, so one bad batch costs only itself.
     fn write_group(&mut self, group: &[Box<Batch>]) {
-        let replay = group.iter().all(|batch| replay_only(batch));
+        let replay = group.iter().all(|batch| replayed_input(batch))
+            && group.iter().any(|batch| cancellable_replay(batch));
         if group.len() > 1 && self.write(group.iter().map(|b| &**b), replay).is_ok() {
             return;
         }
@@ -1901,7 +1905,7 @@ impl Inner {
             return;
         }
         for b in group {
-            if let Err(e) = self.write(std::iter::once(&**b), replay_only(b)) {
+            if let Err(e) = self.write(std::iter::once(&**b), cancellable_replay(b)) {
                 if matches!(e, StoreError::WriteCancelled) {
                     continue;
                 }
@@ -2233,13 +2237,17 @@ fn weight(b: &Batch) -> usize {
 #[cfg(test)]
 mod tests;
 
-/// Replaying retained bytes can leave its last committed cursor for restart.
-/// Failure records still commit so a stop never erases their diagnosis.
-fn replay_only(batch: &Batch) -> bool {
+/// Decoded blobs are outputs of retained input, not a new input acquisition.
+/// Their custody can finish before the unfinished index reading is cancelled.
+fn replayed_input(batch: &Batch) -> bool {
     matches!(batch.change, Change::Reparse { .. })
         && batch.new_blob.is_none()
-        && batch.blobs.is_empty()
         && batch.observation.is_none()
+}
+
+/// Failure records still commit so a stop never erases their diagnosis.
+fn cancellable_replay(batch: &Batch) -> bool {
+    replayed_input(batch)
         && batch.parse.iter().all(|step| {
             !matches!(
                 step.progress,

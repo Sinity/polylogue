@@ -531,12 +531,24 @@ pub fn open_write(path: &Path, cache_mib: i64) -> Result<Connection> {
     Ok(conn)
 }
 
+/// Pipeline writers checkpoint between turns. Closing them must not start a
+/// potentially large WAL copy during shutdown; committed frames remain readable.
+/// Setup connections keep their usual checkpoint-on-close behavior.
+pub(crate) fn open_runtime_writer(path: &Path, cache_mib: i64) -> Result<Connection> {
+    let conn = open_write(path, cache_mib)?;
+    conn.set_db_config(
+        rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,
+        true,
+    )?;
+    Ok(conn)
+}
+
 /// The writer's `archive.db` connection; its temporary tables spill to disk.
 /// Its commits do not sync: every one goes through
 /// [`crate::write_lock::commit`], which syncs the log after the commit is
 /// visible, outside the readers' lock.
 pub(crate) fn open_archive_writer(archive: &Archive) -> Result<Connection> {
-    let conn = open_write(&archive.archive_db(), cache::ARCHIVE_WRITER)?;
+    let conn = open_runtime_writer(&archive.archive_db(), cache::ARCHIVE_WRITER)?;
     conn.pragma_update(None, "temp_store", "file")?;
     conn.pragma_update(Some("temp"), "cache_size", -1024)?;
     Ok(conn)
@@ -549,6 +561,10 @@ pub fn open_read(path: &Path) -> Result<Connection> {
         OpenFlags::SQLITE_OPEN_READ_ONLY
             | OpenFlags::SQLITE_OPEN_NO_MUTEX
             | OpenFlags::SQLITE_OPEN_URI,
+    )?;
+    conn.set_db_config(
+        rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,
+        true,
     )?;
     conn.busy_timeout(std::time::Duration::from_secs(30))?;
     if let Some(limit) = crate::read::limit::ReadLimit::current() {

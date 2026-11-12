@@ -77,7 +77,7 @@ pub(super) fn search_thread(
             continue;
         }
         if conn.is_none() {
-            match open_write(index_db, crate::archive::cache::SEARCH) {
+            match open_runtime_writer(index_db, crate::archive::cache::SEARCH) {
                 Ok(c) => conn = Some(c),
                 Err(e) => {
                     eprintln!("polylogue: search thread: open the index: {e}");

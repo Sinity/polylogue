@@ -200,7 +200,7 @@ replacement is the exception: it commits once, because readers must see
 either the old reading or the new one. Between transactions the writer starts
 a write-ahead log over once it passes its checkpoint size (about 1 GB),
 waiting briefly for readers still reading it, so the log stays bounded while
-readers follow every commit.
+readers follow every commit. The pipeline's database connections do not checkpoint on close. A requested stop skips optional checkpoint work and leaves committed WAL frames beside their databases; normal commit syncing is unchanged, and the next open reads those frames.
 
 **Targets**, on the full corpus of an active user (about 40 GB): at least
 40 MB/s; searchable in about 25 minutes; at most 0.6 bytes written per input
