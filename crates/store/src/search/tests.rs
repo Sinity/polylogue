@@ -48,3 +48,5 @@ fn cut_marks_a_prefix_term_by_its_marker() {
 }
 
 mod source_text;
+
+mod batched;

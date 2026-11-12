@@ -384,28 +384,19 @@ pub fn snippets(
     program: &Program,
     rows: &mut [Value],
 ) -> Result<(), SelectionError> {
-    let queries: Vec<SnippetQuery<'_>> = [SnippetIndex::Prose, SnippetIndex::Output]
+    let queries = [SnippetIndex::Prose, SnippetIndex::Output]
         .into_iter()
-        .filter_map(|index| {
-            let fts: Vec<String> = program
+        .filter(|&index| {
+            program
                 .snippet_terms
                 .iter()
-                .filter_map(|terms| terms.fts(index))
-                .collect();
-            if fts.is_empty() {
-                return None;
-            }
-            let mut words = vec![];
-            for terms in &program.snippet_terms {
-                terms.words(index, &mut words);
-            }
-            Some(SnippetQuery {
-                index,
-                fts: fts.join(" AND "),
-                words,
-            })
+                .any(|terms| terms.fts(index).is_some())
         })
-        .collect();
+        .map(|index| SnippetQuery {
+            index,
+            terms: &program.snippet_terms,
+        })
+        .collect::<Vec<_>>();
     if queries.is_empty() {
         return Ok(());
     }

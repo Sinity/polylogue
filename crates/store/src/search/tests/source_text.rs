@@ -1,5 +1,6 @@
 use super::*;
 use crate::fixture::{Fixture, MessageFacts, SessionFacts};
+use rusqlite::params;
 
 #[test]
 fn chosen_hit_batches_preserve_source_text_and_ignore_unselected_corruption() {
@@ -73,10 +74,13 @@ fn chosen_hit_batches_preserve_source_text_and_ignore_unselected_corruption() {
         Within::Message(message),
         Within::Session(session),
     ];
+    let terms = [polylogue_query::search::SnippetTerms::Word {
+        text: "needleprivate".into(),
+        index: SnippetIndex::Prose,
+    }];
     let queries = [SnippetQuery {
         index: SnippetIndex::Prose,
-        fts: "needleprivate".into(),
-        words: vec!["needleprivate"],
+        terms: &terms,
     }];
     let snippets = reader.snippets(&queries, &scopes).unwrap();
     assert_eq!(snippets.len(), 3);
@@ -159,10 +163,13 @@ fn credential_shaped_hits_keep_their_text_even_after_an_open_key_header() {
         .unwrap();
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
+    let terms = [polylogue_query::search::SnippetTerms::Word {
+        text: "wombat".into(),
+        index: SnippetIndex::Prose,
+    }];
     let queries = [SnippetQuery {
         index: SnippetIndex::Prose,
-        fts: "wombat".into(),
-        words: vec!["wombat"],
+        terms: &terms,
     }];
     let snippets = reader
         .snippets(&queries, &[Within::Message(first), Within::Message(after)])
