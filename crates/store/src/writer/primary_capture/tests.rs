@@ -74,6 +74,141 @@ fn a_new_reading_and_a_new_source_range_are_new_capture_intents() {
 struct OfflineProducer {
     root: std::path::PathBuf,
 }
+
+#[test]
+fn projection_start_replaces_an_equal_scope_and_preserves_original_and_paid_stores() {
+    use crate::primary::{Confirmed, ConfirmedChange, ProjectionBasis, ReplayControl};
+    let directory = tempfile::tempdir().unwrap();
+    let producer_root = directory.path().join("producer");
+    std::fs::create_dir(&producer_root).unwrap();
+    std::fs::write(producer_root.join("pending"), b"original queued bytes").unwrap();
+    let (archive, _lock) = Archive::open_primary(
+        &directory.path().join("cache"),
+        &directory.path().join("bytes"),
+    )
+    .unwrap();
+    Connection::open(archive.embeddings_db())
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE paid_fixture(bytes BLOB); INSERT INTO paid_fixture VALUES (X'01020304')",
+        )
+        .unwrap();
+    let writer = Writer::start_on_sinex(
+        &archive,
+        Arc::new(OfflineProducer {
+            root: producer_root.clone(),
+        }),
+    )
+    .unwrap();
+    let control = |control| Confirmed {
+        position: 0,
+        event: String::new(),
+        output_index: 0,
+        native: None,
+        change: ConfirmedChange::Control(Box::new(control)),
+    };
+    writer
+        .apply_confirmed(vec![control(ReplayControl::Reset {
+            scope: "scope".into(),
+        })])
+        .unwrap();
+    writer
+        .apply_confirmed(vec![control(ReplayControl::Completion { position: 4 })])
+        .unwrap();
+    let read_state = || {
+        let pool = crate::ReadPool::open(&archive).unwrap();
+        pool.reader().unwrap().confirmed_replay_state().unwrap()
+    };
+    assert_eq!(read_state().applied_position, Some(4));
+    writer
+        .apply_confirmed(vec![control(ReplayControl::ProjectionStart {
+            scope: "scope".into(),
+            origin: 10,
+            stream_instance: "new-stream".into(),
+            reason: None,
+        })])
+        .unwrap();
+    let state = read_state();
+    assert_eq!(state.applied_position, None);
+    assert_eq!(state.projection.as_ref().unwrap().origin, 10);
+    assert_eq!(state.projection.unwrap().stream_instance, "new-stream");
+    writer
+        .apply_confirmed(vec![
+            Confirmed {
+                position: 11,
+                event: "pending-projection-fact".into(),
+                output_index: 0,
+                native: None,
+                change: ConfirmedChange::Refused {
+                    kind: "synthetic".into(),
+                    reason: "retained pending fact".into(),
+                    unreadable_input: true,
+                },
+            },
+            control(ReplayControl::ProjectionPage {
+                position: 12,
+                cursor: "unfinished".into(),
+            }),
+        ])
+        .unwrap();
+    let staged = read_state();
+    let pending_bytes = || {
+        Connection::open(archive.index_db())
+            .unwrap()
+            .query_row(
+                "SELECT product FROM primary_pending WHERE event='pending-projection-fact'",
+                [],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .unwrap()
+    };
+    let bytes = pending_bytes();
+    assert!(
+        writer
+            .synchronize_primary()
+            .unwrap_err()
+            .to_string()
+            .contains("synthetic offline transport")
+    );
+    assert_eq!(read_state(), staged);
+    assert_eq!(pending_bytes(), bytes);
+    let error = writer
+        .apply_confirmed(vec![control(ReplayControl::ProjectionStart {
+            scope: "scope".into(),
+            origin: 10,
+            stream_instance: "new-stream".into(),
+            reason: Some("owner snapshot invalidated".into()),
+        })])
+        .unwrap_err();
+    assert!(error.to_string().contains("owner snapshot invalidated"));
+    assert_eq!(read_state().projection.unwrap().cursor, None);
+    assert_eq!(read_state().applied_position, None);
+    assert_eq!(
+        std::fs::read(producer_root.join("pending")).unwrap(),
+        b"original queued bytes"
+    );
+    let paid: Vec<u8> = Connection::open(archive.embeddings_db())
+        .unwrap()
+        .query_row("SELECT bytes FROM paid_fixture", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(paid, [1, 2, 3, 4]);
+    let basis = ProjectionBasis {
+        stamp: "owner-signature".into(),
+        position: 12,
+        scope: "scope".into(),
+        catalog: "catalog".into(),
+    };
+    writer
+        .apply_confirmed(vec![control(ReplayControl::ProjectionComplete {
+            basis: basis.clone(),
+        })])
+        .unwrap();
+    let state = read_state();
+    assert_eq!(state.applied_position, Some(12));
+    assert_eq!(state.basis, Some(basis));
+    assert_eq!(state.projection, None);
+}
+
 impl OfflineProducer {
     fn unavailable<T>() -> Result<T> {
         Err(StoreError::Sinex("synthetic offline transport".into()))

@@ -24,7 +24,7 @@ fn reading(progress: StepProgress) -> Reading {
     }
 }
 
-fn document(progress: StepProgress) -> Product {
+pub(super) fn document(progress: StepProgress) -> Product {
     Product::Document {
         reading: reading(progress),
         facts: serde_json::from_value(json!({"offset":0,"end":8,"document":{"id":"codex:earlier-document","purpose":"context","blocks":[{"type":"text","text":"synthetic"}]}})).unwrap(),
@@ -113,7 +113,7 @@ fn event(name: &str, version: u64, hash: String, payload: Value) -> ConfirmedEve
     }
 }
 
-fn current_event(product: &Product) -> ConfirmedEvent {
+pub(super) fn current_event(product: &Product) -> ConfirmedEvent {
     let name = crate::products::kind(product);
     let declaration = crate::kinds::declarations("polylogue")
         .into_iter()

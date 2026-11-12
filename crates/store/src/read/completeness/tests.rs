@@ -145,6 +145,8 @@ fn primary_projection_is_complete_only_when_caught_up_to_the_sinex_head() {
                 scope: Some("scope".into()),
                 head,
                 staged_delivery: None,
+                basis: None,
+                projection: None,
             },
         )
         .unwrap();

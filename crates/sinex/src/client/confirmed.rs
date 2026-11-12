@@ -12,6 +12,7 @@ use sinex_protocol::{
     FetchMaterialReply,
 };
 use std::time::Duration;
+mod projection;
 
 /// An event Polylogue cannot read (an unknown kind, a refused or
 /// inconsistent fetch) is refused at its position so the stream continues;
@@ -215,7 +216,14 @@ impl Client {
             .request(
                 self.subjects.confirmed_consumer(&self.producer),
                 ConfirmedConsumer {
-                    basis: None,
+                    basis: state.basis.as_ref().map(|basis| {
+                        sinex_protocol::FullProjectionComplete {
+                            stamp: basis.stamp.clone(),
+                            position: basis.position,
+                            scope: basis.scope.clone(),
+                            catalog: basis.catalog.clone(),
+                        }
+                    }),
                     after,
                     cache: cache.into(),
                     status_only: provisioned,
@@ -223,6 +231,16 @@ impl Client {
             )
             .await?;
         let (position, stream, stream_instance, consumer, scope) = match reply {
+            ConfirmedConsumerReply::ProjectionRequired {
+                origin,
+                position,
+                scope,
+                stream_instance,
+            } => {
+                return self
+                    .projection_page(state, cache, origin, position, scope, stream_instance)
+                    .await;
+            }
             ConfirmedConsumerReply::Refused { reason }
             | ConfirmedConsumerReply::Gap { reason, .. } => {
                 return Err(Error::Refused {
@@ -242,6 +260,12 @@ impl Client {
             return Err(Error::Invalid(
                 "the confirmed consumer reply has no stream, consumer or scope".into(),
             ));
+        }
+        if state.projection.is_some() {
+            self.consumer = None;
+            self.consumer_cache = None;
+            self.consumer_instance = None;
+            return Ok(vec![control_fact(ReplayControl::Reset { scope })]);
         }
         if let Ok(mut health) = self.health.lock() {
             health.owner_position = Some(position);

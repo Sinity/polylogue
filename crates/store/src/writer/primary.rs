@@ -39,23 +39,41 @@ impl Inner {
                 "confirmed facts require a primary cache".into(),
             ));
         }
-        if let Some(scope) = events.iter().find_map(|event| match &event.change {
-            crate::primary::ConfirmedChange::Control(control) => match control.as_ref() {
-                crate::primary::ReplayControl::Reset { scope } => Some(scope),
+        if let Some((scope, projection, reason)) =
+            events.iter().find_map(|event| match &event.change {
+                crate::primary::ConfirmedChange::Control(control) => match control.as_ref() {
+                    crate::primary::ReplayControl::Reset { scope } => Some((scope, None, None)),
+                    crate::primary::ReplayControl::ProjectionStart {
+                        scope,
+                        origin,
+                        stream_instance,
+                        reason,
+                    } => Some((scope, Some((*origin, stream_instance)), reason.as_deref())),
+                    _ => None,
+                },
                 _ => None,
-            },
-            _ => None,
-        }) {
+            })
+        {
             if events.len() != 1 {
                 return Err(StoreError::Invalid(
                     "a scope reset must be a separate control page".into(),
                 ));
             }
+            if projection.is_some_and(|(origin, instance)| origin < 0 || instance.is_empty()) {
+                return Err(StoreError::Invalid(
+                    "a projection needs its native origin and incarnation".into(),
+                ));
+            }
+            let replacing = projection.is_some()
+                || crate::primary::projection::replay_state(&self.index)?
+                    .projection
+                    .is_some();
             let changed = match crate::primary::scope::reset(
                 &mut self.index,
                 &self.location,
                 &self.resolver,
                 scope,
+                replacing,
             ) {
                 Ok(changed) => changed,
                 Err(error) => {
@@ -65,9 +83,24 @@ impl Inner {
                     return Err(error);
                 }
             };
+            if let Some((origin, stream_instance)) = projection {
+                let mut state = crate::primary::projection::replay_state(&self.index)?;
+                state.projection = Some(crate::primary::ProjectionReplay {
+                    origin,
+                    stream_instance: stream_instance.clone(),
+                    position: None,
+                    cursor: None,
+                });
+                crate::primary::projection::save_replay(&self.index, &state)?;
+            }
             if changed {
                 self.commits.committed(crate::completion::Committed::EVERY);
                 self.report.transactions += 1;
+            }
+            if let Some(reason) = reason {
+                let error = StoreError::Sinex(reason.into());
+                self.stream_followed(Some(error.to_string()));
+                return Err(error);
             }
             return Ok(0);
         }

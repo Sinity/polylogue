@@ -32,7 +32,7 @@ fn native_authored_replacement_and_query_recovery_use_only_completed_owner_posit
         .unwrap();
     crate::schema::ensure_primary_index(&index).unwrap();
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
-    crate::primary::scope::reset(&mut index, &archive, &resolver, "scope-a").unwrap();
+    crate::primary::scope::reset(&mut index, &archive, &resolver, "scope-a", false).unwrap();
     let a = setting(&index, "request-a", "drive.ai-studio");
     apply(
         &mut index,
@@ -242,7 +242,7 @@ fn native_authored_replacement_and_query_recovery_use_only_completed_owner_posit
         "restoration does not replace original admission"
     );
     let before = reads.reader().unwrap().change_position().unwrap();
-    crate::primary::scope::reset(&mut index, &archive, &resolver, "scope-b").unwrap();
+    crate::primary::scope::reset(&mut index, &archive, &resolver, "scope-b", false).unwrap();
     let reader = reads.reader().unwrap();
     assert_ne!(
         reader.change_position().unwrap().generation,

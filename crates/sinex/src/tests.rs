@@ -41,6 +41,8 @@ pub(crate) fn applied(position: i64) -> polylogue_store::primary::ReplayState {
         head: Some(position),
         scope: Some("fixture-scope".into()),
         staged_delivery: None,
+        basis: None,
+        projection: None,
     }
 }
 

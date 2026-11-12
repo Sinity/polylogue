@@ -33,7 +33,6 @@ CREATE INDEX source_material_place ON source_material(input,chain,offset);
 use super::{Confirmed, ConfirmedChange, Material, Product};
 mod replay;
 use crate::{Result, StoreError};
-#[cfg(test)]
 pub(crate) use replay::save as save_replay;
 pub(crate) use replay::{has_fact, native_context, replay_state};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
