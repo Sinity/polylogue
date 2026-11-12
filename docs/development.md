@@ -113,8 +113,12 @@ The `package` workflow builds `.#default` for every master commit and pushes
 its runtime closure and production compiler artifacts to `sinity.cachix.org`.
 The next source-only package build reuses those compiler artifacts. Sinnix deploys a revision only
 after fetching that package, so its switches never compile Polylogue. To
-deploy a revision master does not contain, such as a deployment branch's head, build
-it first with `gh workflow run package -f rev=<commit>`.
+deploy a revision master does not contain, such as a deployment branch's head,
+qualify that exact tree with `gh workflow run check -f rev=<full-commit-sha>`,
+then publish it with `gh workflow run package -f rev=<full-commit-sha>`. The manual
+check records and asserts its checked commit and runs the full check. Pull requests
+continue to check their merge with the default branch. Manual checks may reuse
+master's build cache but never replace it or its recorded source commit.
 
 ## Deployment modules
 

@@ -4,6 +4,11 @@ on:
   pull_request:
   push:
     branches: [master]
+  workflow_dispatch:
+    inputs:
+      rev:
+        description: Exact full commit SHA to check
+        required: true
 
 # Test logs list failures as they happen; after the summary they list slow
 # tests and repeat each failure's full output.
@@ -14,7 +19,7 @@ env:
   NEXTEST_FAILURE_OUTPUT: immediate-final
 
 concurrency:
-  group: check-${{ github.ref }}
+  group: check-${{ inputs.rev || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -24,9 +29,19 @@ jobs:
     steps:
       # A pull request's checkout is its merge commit; the first parent is the
       # base branch's tip, the base `xtask check` selects tests against.
+      # A manual run instead checks exactly the requested source commit.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.rev || '' }}
+      - name: Verify the selected source commit
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          EXPECTED_REV: ${{ inputs.rev }}
+        run: |
+          actual=$(git rev-parse HEAD)
+          printf 'requested commit: %s\nchecked commit: %s\n' "$EXPECTED_REV" "$actual"
+          test "$actual" = "$EXPECTED_REV"
       - name: Free disk space for the test build
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc
@@ -46,7 +61,7 @@ jobs:
       # now: Cargo rebuilds the packages those files belong to and the ones
       # depending on them, and reuses the rest.
       - name: Restore master's build
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
         uses: actions/cache/restore@v4
         with:
           path: |
@@ -56,21 +71,21 @@ jobs:
           key: check-${{ hashFiles('rust-toolchain.toml') }}-${{ github.sha }}
           restore-keys: check-${{ hashFiles('rust-toolchain.toml') }}-
       - name: Date sources against the restored build
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
         run: |
           built=$(cat target/source-commit 2>/dev/null) || exit 0
           git fetch --no-tags --depth=1 origin "$built" || exit 0
           git ls-files -z | xargs -0 touch -h -d '2000-01-01 00:00:00 UTC'
           git diff --no-renames --name-only -z "$built" HEAD | xargs -0 -r touch -h -c
           echo "restored build of $built; $(git diff --no-renames --name-only "$built" HEAD | wc -l) files differ"
-      # Pull requests run the tests their changes can affect; master runs all.
+      # Pull requests check their merge tree; pushes and exact-revision dispatches run all tests.
       - name: cargo xtask check
         run: cargo xtask check ${{ github.event_name == 'pull_request' && '--changed-base HEAD^1' || '' }}
       # A failed test leaves a valid build, so it is saved too.
       - name: Save master's build
-        if: ${{ !cancelled() && github.ref == 'refs/heads/master' }}
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/master' }}
         run: git rev-parse HEAD > target/source-commit
-      - if: ${{ !cancelled() && github.ref == 'refs/heads/master' }}
+      - if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/master' }}
         uses: actions/cache/save@v4
         with:
           path: |
