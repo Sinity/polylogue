@@ -168,7 +168,7 @@ fn a_restarted_consumer_redelivers_applied_positions_without_changing_them() {
     )
     .unwrap();
     assert_eq!(checkpoint(&index).unwrap(), Some(2));
-    // Sinex provisioned the consumer again: it starts over from sequence 1.
+    // A native retry may repeat an already applied delivery.
     apply(
         &mut index,
         &resolver,
@@ -583,6 +583,8 @@ fn completed_receipt_survives_partial_pages_and_rolls_back_with_visible_progress
     );
     index.execute_batch("CREATE TRIGGER stop_progress BEFORE UPDATE ON meta WHEN new.key='confirmed_replay' AND json_extract(new.value,'$.applied_position')=3 BEGIN SELECT raise(ABORT,'stop progress'); END").unwrap();
     assert!(apply(&mut index, &resolver, &[completed(3, 9), delivered(9)]).is_err());
+    drop(index);
+    let mut index = Connection::open(&path).unwrap();
     let state = replay_state(&index).unwrap();
     assert_eq!(state.applied_position, Some(2));
     assert_eq!(state.completed_delivery.unwrap().stream_sequence, 5);
