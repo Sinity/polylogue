@@ -49,6 +49,15 @@ pub(crate) const QUERY_OBJECTS: &str = concat!(
     include_str!("schema/query_runs.sql")
 );
 pub(crate) const READ_INDEXES: &str = include_str!("schema/index_reads.sql");
+#[cfg(test)]
+pub(crate) const INDEX_SCHEMA: &[&str] = &[
+    INDEX,
+    crate::coverage::SCHEMA,
+    crate::variants::SCHEMA,
+    crate::parser_context::SCHEMA,
+    crate::parser_context::VERSION_INDEX,
+    READ_INDEXES,
+];
 /// The vectors and failures tables of `embeddings.db`, as the first build at
 /// the baseline created them.
 const EMBEDDINGS_BASE: &str = include_str!("schema/embeddings.sql");
