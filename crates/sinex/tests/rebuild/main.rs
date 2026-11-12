@@ -503,7 +503,7 @@ fn native_rows(running: &Running, query: &str) -> Vec<serde_json::Value> {
         "read",
         serde_json::json!({"method":"query","query":query}),
     );
-    assert_eq!(answer["outcome"], "ok", "{answer}");
+    assert_eq!(answer["outcome"], "ok", "{query}: {answer}");
     answer["result"]["rows"].as_array().unwrap().clone()
 }
 

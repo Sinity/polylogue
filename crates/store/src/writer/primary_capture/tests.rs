@@ -57,14 +57,14 @@ fn capture_intent_survives_observer_retry_and_preserves_source_order() {
 }
 
 #[test]
-fn a_new_reading_and_a_new_source_range_are_new_capture_intents() {
+fn raw_capture_identity_is_independent_of_reading_and_tracks_new_source_ranges() {
     let mut group = vec![source("session", b"source")];
     let mut step = ParseStep::new(Default::default(), Default::default(), 0..6, true);
     step.reading_version = "codex:1".into();
     group[0].batch.parse.push(step);
     let original = capture_group_identity(&group, false).unwrap();
     group[0].batch.parse[0].reading_version = "codex:2".into();
-    assert_ne!(capture_group_identity(&group, false).unwrap(), original);
+    assert_eq!(capture_group_identity(&group, false).unwrap(), original);
     group[0].batch.parse[0].reading_version = "codex:1".into();
     group[0].batch.change = Change::Appended { from: 6 };
     group[0].batch.length = 12;
