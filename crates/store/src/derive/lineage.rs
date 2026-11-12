@@ -18,9 +18,9 @@ pub(super) const DERIVATION: Derivation = Derivation {
 };
 
 pub(super) fn apply(tx: &Transaction<'_>, pk: i64, value: &SessionLineage) -> Result<()> {
-    tx.prepare_cached("INSERT INTO session_lineage(session_pk,root,depth,root_pending,detail)
+    tx.prepare_cached("INSERT INTO session_lineage(session_pk,root,depth,root_pending,issue)
       VALUES(?1,?2,?3,?4,?5) ON CONFLICT(session_pk) DO UPDATE SET
-      root=excluded.root,depth=excluded.depth,root_pending=excluded.root_pending,detail=excluded.detail")?
-      .execute(params![pk,value.root.as_ref().map(ToString::to_string),value.depth,value.root_pending,serde_json::to_string(value)?])?;
+      root=excluded.root,depth=excluded.depth,root_pending=excluded.root_pending,issue=excluded.detail")?
+      .execute(params![pk,value.root.as_ref().map(ToString::to_string),value.depth,value.root_pending,value.issue.as_ref().map(serde_json::to_string).transpose()?])?;
     Ok(())
 }

@@ -4,7 +4,7 @@ CREATE TABLE session_lineage (
   root TEXT,
   depth INTEGER,
   root_pending INTEGER NOT NULL CHECK(root_pending IN (0,1)),
-  detail TEXT NOT NULL
+  issue TEXT
 ) STRICT;
 CREATE INDEX session_lineage_root ON session_lineage(root,session_pk);
 CREATE TRIGGER link_insert_lineage AFTER INSERT ON link WHEN NEW.kind IN ('spawn','fork','continuation','resume') BEGIN

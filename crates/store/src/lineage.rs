@@ -103,12 +103,19 @@ impl crate::read::Reader<'_> {
         let Some(pk) = self.session_pk(session)? else {
             return Ok(None);
         };
-        let cached=self.conn()?.prepare_cached("SELECT v.detail FROM session_lineage v
+        let cached = self.conn()?.prepare_cached("SELECT v.root,v.depth,v.root_pending,v.issue FROM session_lineage v
           JOIN derive_state ds ON ds.session_pk=v.session_pk AND ds.name='lineage' AND pl_derived_current(ds.name,ds.version)
           WHERE v.session_pk=?1 AND NOT EXISTS(SELECT 1 FROM derive_due dd WHERE dd.session_pk=v.session_pk AND dd.lineage=1)")?
-          .query_row([pk],|r|r.get::<_,String>(0)).optional()?;
+          .query_row([pk], |r| Ok((r.get::<_,Option<String>>(0)?,r.get::<_,Option<u64>>(1)?,r.get::<_,bool>(2)?,r.get::<_,Option<String>>(3)?))).optional()?;
         match cached {
-            Some(value) => Ok(Some(serde_json::from_str(&value)?)),
+            Some((root, depth, root_pending, issue)) => Ok(Some(SessionLineage {
+                root: root
+                    .map(|id| SessionId::parse(&id).map_err(|e| StoreError::Invalid(e.to_string())))
+                    .transpose()?,
+                depth,
+                root_pending,
+                issue: issue.map(|s| serde_json::from_str(&s)).transpose()?,
+            })),
             None => compute(self.conn()?, pk),
         }
     }

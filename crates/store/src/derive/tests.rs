@@ -496,7 +496,7 @@ fn stored_products_declare_validity_and_executable_evidence() {
     let products = super::products();
     assert_eq!(
         products.iter().map(|p| p.catalog).collect::<Vec<_>>(),
-        ["K23", "K15", "K16"]
+        ["K6", "K23", "K15", "K16"]
     );
     for p in products {
         assert!(!p.reads.is_empty());

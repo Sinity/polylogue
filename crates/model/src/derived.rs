@@ -226,6 +226,7 @@ pub fn markdown(products: &[Construct]) -> String {
 
 pub fn all() -> Vec<Construct> {
     vec![
+        SESSION_LINEAGE,
         SESSION_COUNTS,
         SESSION_SPAN,
         SESSION_TIME,
