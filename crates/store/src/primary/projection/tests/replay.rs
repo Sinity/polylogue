@@ -526,3 +526,97 @@ fn unreadable_input_blocks_absence_until_its_real_lifecycle_or_readable_replacem
         1
     );
 }
+
+fn completed(position: i64, sequence: u64) -> Confirmed {
+    control(ReplayControl::Completion {
+        position,
+        delivery: Some(CompletedDelivery {
+            stream_instance: "instance".into(),
+            stream_sequence: sequence,
+            fingerprint: "a".repeat(64),
+        }),
+    })
+}
+
+#[test]
+fn completed_receipt_survives_partial_pages_and_rolls_back_with_visible_progress() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("index.db");
+    let mut index = cache(&path);
+    let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    apply(
+        &mut index,
+        &resolver,
+        &[input(2, "first"), completed(2, 5), delivered(5)],
+    )
+    .unwrap();
+    apply(&mut index, &resolver, &[input(3, "later"), delivered(7)]).unwrap();
+    drop(index);
+    let mut index = Connection::open(&path).unwrap();
+    let state = replay_state(&index).unwrap();
+    assert_eq!(state.applied_position, Some(2));
+    assert_eq!(state.completed_delivery.unwrap().stream_sequence, 5);
+    assert_eq!(state.staged_delivery.unwrap().stream_sequence, 7);
+    assert_eq!(rows(&index, "SELECT count(*) FROM source_input"), 1);
+    // A repeated old barrier may appear after the newer partial data.
+    apply(&mut index, &resolver, &[completed(2, 8), delivered(8)]).unwrap();
+    assert_eq!(
+        replay_state(&index)
+            .unwrap()
+            .completed_delivery
+            .unwrap()
+            .stream_sequence,
+        5
+    );
+    index.execute_batch("CREATE TRIGGER stop_progress BEFORE UPDATE ON meta WHEN new.key='confirmed_replay' AND json_extract(new.value,'$.applied_position')=3 BEGIN SELECT raise(ABORT,'stop progress'); END").unwrap();
+    assert!(apply(&mut index, &resolver, &[completed(3, 9), delivered(9)]).is_err());
+    let state = replay_state(&index).unwrap();
+    assert_eq!(state.applied_position, Some(2));
+    assert_eq!(state.completed_delivery.unwrap().stream_sequence, 5);
+    assert_eq!(rows(&index, "SELECT count(*) FROM source_input"), 1);
+    index.execute_batch("DROP TRIGGER stop_progress").unwrap();
+    apply(&mut index, &resolver, &[]).unwrap();
+    let state = replay_state(&index).unwrap();
+    assert_eq!(state.applied_position, Some(3));
+    assert_eq!(state.completed_delivery.unwrap().stream_sequence, 9);
+    assert_eq!(rows(&index, "SELECT count(*) FROM source_input"), 2);
+}
+
+#[test]
+fn a_new_completion_after_higher_pending_data_cannot_become_a_restart_boundary() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut index = cache(&dir.path().join("index.db"));
+    let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    apply(
+        &mut index,
+        &resolver,
+        &[
+            input(2, "first"),
+            input(3, "later"),
+            completed(2, 8),
+            delivered(8),
+        ],
+    )
+    .unwrap();
+    let state = replay_state(&index).unwrap();
+    assert_eq!(state.applied_position, Some(2));
+    assert_eq!(state.completed_delivery, None);
+    assert_eq!(
+        rows(
+            &index,
+            "SELECT count(*) FROM primary_pending WHERE position=3"
+        ),
+        1
+    );
+    apply(&mut index, &resolver, &[completed(3, 9)]).unwrap();
+    assert_eq!(
+        replay_state(&index)
+            .unwrap()
+            .completed_delivery
+            .unwrap()
+            .stream_sequence,
+        9
+    );
+}

@@ -17,6 +17,7 @@ pub(crate) fn replay_state(conn: &Connection) -> Result<ReplayState> {
             scope: super::super::scope::current(conn)?,
             head: None,
             staged_delivery: None,
+            completed_delivery: None,
             basis: None,
             projection: None,
         },
@@ -143,11 +144,11 @@ pub(super) fn stage_control(
             if delivery.stream_instance.is_empty() || delivery.stream_sequence == 0 {
                 return Err(invalid("a staged delivery needs its stream receipt"));
             }
-            // A consumer Sinex provisions again starts over from the stream's
-            // beginning; its redeliveries at applied positions are skipped.
+            // A partially staged page may be newer than the last completion;
+            // it permits ACKs, but cannot choose the restart boundary.
             state.staged_delivery = Some(delivery.clone());
         }
-        ReplayControl::Completion { position } => {
+        ReplayControl::Completion { position, delivery } => {
             if state.projection.is_some() {
                 return Err(invalid(
                     "a projection needs its owner certificate before completion",
@@ -162,9 +163,27 @@ pub(super) fn stage_control(
             {
                 return Err(invalid("a completion moved behind the applied position"));
             }
-            conn.execute(
-                "INSERT OR IGNORE INTO primary_complete(position) VALUES (?1)",
+            if delivery.as_ref().is_some_and(|receipt| {
+                receipt.stream_instance.is_empty()
+                    || receipt.stream_sequence == 0
+                    || !hash(&receipt.fingerprint)
+            }) {
+                return Err(invalid(
+                    "a completed delivery needs its native record identity",
+                ));
+            }
+            // An old cumulative barrier can be appended after newer facts.
+            // Its physical sequence cannot be a new restart boundary past
+            // those facts, even while they are durably staged but unapplied.
+            let newer: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM primary_pending WHERE position>?1)",
                 [position],
+                |row| row.get(0),
+            )?;
+            let receipt = delivery.as_ref().filter(|_| !newer);
+            conn.execute(
+                "INSERT OR IGNORE INTO primary_complete(position,delivery) VALUES (?1,?2)",
+                params![position, receipt.map(packed).transpose()?],
             )?;
         }
     }
@@ -173,15 +192,20 @@ pub(super) fn stage_control(
 
 pub(super) fn complete(conn: &Connection, position: i64) -> Result<()> {
     let mut state = replay_state(conn)?;
-    let evidence: Option<Vec<u8>> = conn.query_row(
-        "SELECT evidence FROM primary_complete WHERE position=?1",
+    let (evidence, delivery): (Option<Vec<u8>>, Option<Vec<u8>>) = conn.query_row(
+        "SELECT evidence,delivery FROM primary_complete WHERE position=?1",
         [position],
-        |row| row.get(0),
+        |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     if let Some(evidence) = evidence {
         state.basis = Some(unpacked(&evidence)?);
         state.projection = None;
         state.staged_delivery = None;
+        state.completed_delivery = None;
+    } else if state.applied_position.is_none_or(|old| position > old)
+        || (state.applied_position == Some(position) && state.completed_delivery.is_none())
+    {
+        state.completed_delivery = delivery.as_deref().map(unpacked).transpose()?;
     }
     state.applied_position = Some(position);
     save(conn, &state)

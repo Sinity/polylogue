@@ -226,6 +226,7 @@ fn authenticated_private_reply_and_complete_registration_acknowledgment_establis
         scope: Some("old-scope".into()),
         head: None,
         staged_delivery: None,
+        completed_delivery: None,
         basis: None,
         projection: None,
     };
@@ -278,6 +279,7 @@ fn authenticated_private_reply_and_complete_registration_acknowledgment_establis
         scope: Some("test-scope".into()),
         head: None,
         staged_delivery: None,
+        completed_delivery: None,
         basis: None,
         projection: None,
     };

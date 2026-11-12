@@ -19,7 +19,7 @@ CREATE TABLE primary_pending (
  UNIQUE(position,event,change)
 ) STRICT;
 CREATE INDEX primary_pending_position ON primary_pending(position,n);
-CREATE TABLE primary_complete(position INTEGER PRIMARY KEY, evidence BLOB) STRICT;
+CREATE TABLE primary_complete(position INTEGER PRIMARY KEY, evidence BLOB, delivery BLOB) STRICT;
 ", include_str!("../schema/primary_refused.sql"), "
 CREATE TABLE source_material (
  id TEXT NOT NULL, event TEXT NOT NULL, input TEXT, chain INTEGER, offset INTEGER,

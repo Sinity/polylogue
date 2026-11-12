@@ -12,6 +12,14 @@ pub struct NativeDeliveryCursor {
     pub stream_sequence: u64,
 }
 
+/// The actual completion marker saved with its fully applied local position.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct CompletedDelivery {
+    pub stream_instance: String,
+    pub stream_sequence: u64,
+    pub fingerprint: String,
+}
+
 /// Saved in the index in the same transaction as the facts it describes.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ReplayState {
@@ -23,6 +31,9 @@ pub struct ReplayState {
     #[serde(default)]
     pub head: Option<i64>,
     pub staged_delivery: Option<NativeDeliveryCursor>,
+    /// A completed prefix, distinct from a newer partially staged page.
+    #[serde(default)]
+    pub completed_delivery: Option<CompletedDelivery>,
     /// A signed current projection, saved only with its visible application.
     #[serde(default)]
     pub basis: Option<ProjectionBasis>,
@@ -67,7 +78,10 @@ pub enum ReplayControl {
     /// Sinex's commit position when this page was read.
     Head { position: i64 },
     /// Every change committed at `position` has been delivered.
-    Completion { position: i64 },
+    Completion {
+        position: i64,
+        delivery: Option<CompletedDelivery>,
+    },
     /// The stream messages up to this cursor are staged in the index.
     Delivered { delivery: NativeDeliveryCursor },
 }
