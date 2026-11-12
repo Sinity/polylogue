@@ -3,7 +3,6 @@ use super::*;
 
 impl RowWriter<'_, '_> {
     pub(super) fn refresh_event(&self, pk: i64) -> Result<()> {
-        self.changes.event(self.tx, pk)?;
         self.tx.prepare_cached("UPDATE session SET changed=?2 WHERE pk=(SELECT session_pk FROM event WHERE pk=?1) AND changed IS NOT ?2")?.execute(params![pk,self.counter])?;
         let choice = self
             .choices
@@ -11,6 +10,7 @@ impl RowWriter<'_, '_> {
             .get(&pk)
             .ok_or_else(|| StoreError::Invalid("unresolved event version".into()))?;
         let Some(choice) = choice else {
+            self.changes.event(self.tx, pk)?;
             self.tx.execute("DELETE FROM event WHERE pk=?1", [pk])?;
             return Ok(());
         };
@@ -38,6 +38,50 @@ impl RowWriter<'_, '_> {
                 .transpose()?
                 .unwrap_or(0),
         };
+        let (unchanged, id) = self
+            .tx
+            .prepare_cached(
+                "SELECT session_pk IS ?2 AND seq IS ?3 AND after_message_pk IS ?4 AND at IS ?5
+             AND input_pk IS ?6 AND source_chain IS ?7 AND source_start IS ?8 AND source_end IS ?9
+             AND after_message_id IS ?11 AND seq_from_message IS ?12 AND kind IS ?13
+             AND fields IS ?14 AND data IS ?10, id FROM event WHERE pk=?1",
+            )?
+            .query_row(
+                params![
+                    pk,
+                    choice.session,
+                    seq,
+                    after,
+                    choice.at,
+                    choice.input,
+                    choice.chain,
+                    choice.start,
+                    choice.end,
+                    choice.body,
+                    choice.after,
+                    choice.seq.is_none(),
+                    choice.kind,
+                    choice.fields
+                ],
+                |row| Ok((row.get::<_, bool>(0)?, row.get::<_, String>(1)?)),
+            )?;
+        if unchanged {
+            if let Some(session) = choice.session
+                && !crate::items::event_is_current(
+                    self.tx,
+                    pk,
+                    session,
+                    &id,
+                    &choice.kind,
+                    choice.at,
+                    &choice.body,
+                )?
+            {
+                self.changes.event(self.tx, pk)?;
+            }
+            return Ok(());
+        }
+        self.changes.event(self.tx, pk)?;
         self.tx.prepare_cached("UPDATE event SET session_pk=?2,seq=?3,after_message_pk=?4,at=?5,input_pk=?6,source_chain=?7,source_start=?8,source_end=?9,data=?10,after_message_id=?11,seq_from_message=?12,kind=?13,fields=?14 WHERE pk=?1")?.execute(params![pk,choice.session,seq,after,choice.at,choice.input,choice.chain,choice.start,choice.end,choice.body,choice.after,choice.seq.is_none(),choice.kind,choice.fields])?;
         Ok(())
     }
@@ -84,7 +128,7 @@ impl RowWriter<'_, '_> {
             .at
             .as_ref()
             .map(|at| ids.shown_message(&at.to_string()).into_owned());
-        self.changes.link_child(child_id);
+        self.changes.link_child(self.tx, child_id)?;
         self.tx.prepare_cached("INSERT OR IGNORE INTO link(pk,parent_id,child_id,child_pk,kind,how,evidence,input_pk,source_chain,branch_point,spawning_call,copies_prefix) VALUES (?1,?2,?3,(SELECT pk FROM session WHERE pk=?4),?5,?6,?7,?8,?9,?10,?11,?12)")?.execute(params![pk,parent,child_id,child,kind,how,link.evidence,self.input_pk,self.chain,at,link.call_id,link.copies_prefix])?;
         let value = &self.choices.link_values[index];
         self.tx

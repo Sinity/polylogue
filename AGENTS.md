@@ -78,8 +78,9 @@ copy.
 | `crates/render` | text, markdown and HTML over typed answers |
 | `crates/engine` | discovery, the overlapped ingest pipeline, tool-database capture, recognition, derivations |
 | `crates/sinex` | primary mode: Sinex's producer client wiring, the confirmed-stream consumer, Polylogue's kind declarations (behind the `sinex` feature) |
-| `crates/polylogue` | the daemon library and thin CLI, MCP, web and browser-host front ends generated from the command table; the pack builder |
+| `crates/polylogue` | daemon, CLI, MCP, web, browser host and pack builder |
 | `crates/testkit` | test archives built through the real loop: the synthetic Morrow archive (`examples/morrow/`), independent goldens |
+| `clients/python/` | standard-library Python client and real-daemon contract tests |
 | `extension/` | the browser extension |
 | `xtask/` | developer commands, built on `devkit` from polylogue-sinex-common |
 | `nix/` | the NixOS and Home Manager modules and their shared settings library |
@@ -131,7 +132,7 @@ configuration.
 **Design first.** Before writing code, read the page in `docs/` that owns the
 area, its relevant linked pages, the current code of the area, and the
 predecessor's implementation and tests for what you are building (Polylogue's
-earlier Python implementation is in this repository's Git history). Implement
+earlier Python backend is in this repository's Git history). Implement
 the selected behaviour completely on the architecture's abstractions, with
 the predecessor's behaviour and test cases ported.
 
@@ -196,8 +197,9 @@ The operator decides product scope and intent, privacy, money (paid APIs,
 purchased vectors) and anything published outward. Deploying, activating,
 restarting, rebuilding an archive and the release cutover are yours: original
 inputs stay where their sources keep them and an old archive is set aside, not
-deleted. No stored format or archive is deployed in a sense that needs
-compatibility or migration; target one current format. When an operator
+deleted. Target one current stored format. The supported transactional
+archive transitions in `docs/archive.md` preserve durable rows and compatible
+derived progress; they do not retain a second reader. When an operator
 question is open, take the conservative option, keep
 working on the rest, and put the question in the report and on the Bead.
 
@@ -315,7 +317,9 @@ and cleanup before raising timeouts or cutting coverage.
 - Each stored format has one current version (`docs/archive.md`). A format
   change rewrites the format, its writers and its readers together and
   regenerates test data; no reader for an earlier version of Polylogue's own
-  formats is kept, and what is derived is re-parsed from the original inputs.
+  formats is kept. A compatible index keeps its progress through a durable
+  constraint relaxation; changed derived formats are re-parsed from the
+  original inputs.
   Inputs are read where the outside tools write them and recognised by
   declared structure (`docs/capture.md`).
 

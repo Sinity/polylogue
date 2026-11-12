@@ -1,7 +1,7 @@
 //! Stored attachment metadata and checked byte pages through the real CLI.
 use super::read_current::Items;
 use super::*;
-use polylogue_model::read::{ItemKind, ReadItem, ReadPage, ReadyCall};
+use polylogue_model::read::{ItemKind, ReadItem, ReadPage};
 use serde_json::{Value, json};
 
 const MESSAGE: &str = "chatgpt:asset-message";
@@ -93,14 +93,6 @@ fn typed_page(output: &Output) -> ReadPage {
     assert!(output.status.success(), "{output:?}");
     serde_json::from_value(json(output)).unwrap()
 }
-fn ready_arguments(call: &ReadyCall) -> Vec<String> {
-    let stages = polylogue_model::command::effective_stages(&call.cli);
-    assert_eq!(stages.len(), 1);
-    assert_eq!(stages[0].program, "polylogue");
-    let mut args = vec!["--json".into()];
-    args.extend(stages[0].args.clone());
-    args
-}
 fn one_attachment(items: &[ReadItem]) -> &ReadItem {
     let attachments: Vec<_> = items
         .iter()
@@ -127,7 +119,7 @@ fn assert_available(env: &crate::Fixture, item: &ReadItem, descriptor: &Value) {
     );
     assert_eq!(attachment.source_id.as_deref(), Some("file-Native"));
     assert_eq!(availability.value().map(String::as_str), Some("present"));
-    let args = ready_arguments(
+    let args = continuation_arguments(
         open.as_deref()
             .expect("available stored attachment needs its typed open action"),
     );
@@ -228,15 +220,9 @@ fn directory_and_zip_imports_describe_exact_stored_attachment_bytes() {
             assert_eq!(binding.candidates[0].size, SECRET.len() as u64);
             binding.validate().unwrap();
         }
-        let mut shown = Vec::new();
-        polylogue_render::encode_document(
-            &page.document,
-            polylogue_render::Format::Markdown,
-            Default::default(),
-            &mut shown,
-        )
-        .unwrap();
-        let shown = String::from_utf8(shown).unwrap();
+        let shown = cli(&fixture.env(), &["read", SESSION, "--format", "markdown"]);
+        assert!(shown.status.success(), "{shown:?}");
+        let shown = String::from_utf8(shown.stdout).unwrap();
         assert!(!shown.contains("synthetic-private-file-value"));
     }
 }
@@ -425,9 +411,12 @@ fn unicode_attachment_pages_check_the_descriptor_and_refuse_a_changed_file() {
             complete = true;
             break;
         };
-        assert!(seen.insert(next.cli.clone()), "repeated continuation");
+        assert!(
+            seen.insert(serde_json::to_string(&next.request).unwrap()),
+            "repeated continuation"
+        );
         original_next.get_or_insert_with(|| next.clone());
-        args = ready_arguments(&next);
+        args = continuation_arguments(&next);
     }
     assert!(complete, "finite attachment reading did not finish");
     let joined = reconstructed.into_values();
@@ -477,7 +466,7 @@ fn unicode_attachment_pages_check_the_descriptor_and_refuse_a_changed_file() {
         .success()
     );
     let next = original_next.expect("small page must continue");
-    let args = ready_arguments(&next);
+    let args = continuation_arguments(&next);
     let refused = cli(
         &fixture.env(),
         &args.iter().map(String::as_str).collect::<Vec<_>>(),

@@ -135,7 +135,7 @@ pub fn note(note: &Note, roots: &BTreeMap<String, String>) -> Mapped<AssertionFa
         author: author(&note.author)?,
         via: Channel::Import,
         machine: note.machine.clone(),
-        created_at: time(note.created_at)?,
+        created_at: Some(time(note.created_at)?),
         valid_until: note.valid_until.map(time).transpose()?,
         links,
     };
@@ -207,7 +207,7 @@ pub fn settings(rows: &[Setting], machines: &[Machine]) -> Vec<(String, Mapped<A
                 author: author(&row.author)?,
                 via: Channel::Import,
                 machine: written_on,
-                created_at: time(row.set_at)?,
+                created_at: Some(time(row.set_at)?),
                 valid_until: None,
                 links,
             };

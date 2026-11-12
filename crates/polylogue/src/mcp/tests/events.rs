@@ -57,10 +57,10 @@ fn mcp_reads_input_events_through_the_same_typed_reader_and_budget_cursor() {
         .next
         .clone()
         .expect("structured event is paged");
-    let token = next.mcp["arguments"]["cursor"].as_str().unwrap();
+    let token = next.request.cursor.as_deref().unwrap();
     assert!(!token.contains("synthetic-later-value"));
     let mut wrong = next.clone();
-    wrong.mcp["arguments"]["arguments"]["view"] = json!("dialogue");
+    wrong.request.arguments["view"] = json!("dialogue");
     let error = super::read_pages::execute_ready(&archive, &wrong).unwrap_err();
     // docs/query.md: "a cursor from another question is `invalid_query`";
     // a read continuation with other arguments is refused the same way.

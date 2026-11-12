@@ -95,44 +95,34 @@ fn typed_page_uses_one_common_frame_and_keeps_read_currency_visible() {
 }
 #[test]
 fn continuation_encodes_the_complete_ready_call_without_decoding_its_cursor() {
-    let call = HttpCall {
-        method: "GET".into(),
-        path: "/api/v1/read".into(),
-        arguments: json!({"target":"session:test:session","cursor":"sealed +λ&?","variant":["en","de"],"flag":false}),
+    let call = RunnableRequest {
+        cursor: Some("sealed +λ&?".into()),
+        ..RunnableRequest::new(
+            "read",
+            json!({"target":"session:test:session","variant":["en","de"],"flag":false}),
+            "synthetic",
+        )
     };
-    let url = http_url(&call).unwrap();
-    assert!(url.contains("cursor=sealed%20%2B%CE%BB%26%3F"));
-    assert!(url.contains("variant=en&variant=de"));
-    assert!(url.contains("flag=false"));
-    assert!(url.contains("target=session%3Atest%3Asession"));
-    for path in [
-        "https://example.test/read",
-        "//example.test/read",
-        "javascript:run",
-        "/read?target=other",
-    ] {
-        assert!(
-            http_url(&HttpCall {
-                path: path.into(),
-                ..call.clone()
-            })
-            .is_err()
-        );
-    }
+    let url = http_url(&read_table(), &call).unwrap();
+    let fields = url_parameters(&url);
+    assert_eq!(fields["cursor"], "sealed +λ&?");
+    let args: Value = serde_json::from_str(&fields["arguments"]).unwrap();
+    assert_eq!(args, call.arguments);
 }
 #[test]
 fn continuation_links_use_service_calls_instead_of_template_cursor_state() {
     let mut page = page();
     page.document.footer.next = Some(ReadyCall {
-        cli: "polylogue read --request synthetic".into(),
-        mcp: json!({"target":"session:test:session"}),
-        http: HttpCall {
-            method: "GET".into(),
-            path: "/api/v1/read".into(),
-            arguments: json!({"target":"session:test:session","cursor":"sealed"}),
+        request: RunnableRequest {
+            cursor: Some("sealed".into()),
+            ..RunnableRequest::new(
+                "read",
+                json!({"target":"session:test:session"}),
+                "synthetic",
+            )
         },
     });
-    let output = navigation(&page).into_string();
+    let output = navigation(&page, &read_table()).unwrap().into_string();
     assert!(output.contains("data-next"));
     assert!(output.contains("cursor=sealed"));
     assert!(!output.contains("with_parents"));
@@ -141,7 +131,8 @@ fn continuation_links_use_service_calls_instead_of_template_cursor_state() {
 #[test]
 fn typed_lineage_issues_keep_unknowns_and_exact_evidence_in_every_encoder() {
     let mut page = page();
-    page.document.items = vec![
+    page.document.items =
+        vec![
         ReadItem {
             source: Source::record("session:codex:c"),
             kind: ItemKind::Indicator {
@@ -157,6 +148,13 @@ fn typed_lineage_issues_keep_unknowns_and_exact_evidence_in_every_encoder() {
             kind: ItemKind::Card {
                 card: Box::new(Card::LinkNode {
                     reference: "session:codex:p".into(),
+                    lineage: Some(Box::new(polylogue_model::read::SessionLineage {
+                        root:None,depth:None,root_pending:true,
+                        issue:Some(polylogue_model::read::LineageIssue::MissingParent {
+                            child:polylogue_model::SessionId::parse("codex:p").unwrap(),
+                            parent:polylogue_model::SessionId::parse("codex:<missing>").unwrap(),
+                        }),
+                    })),
                     title: ValueState::Unknown {
                         reason: Some("not stored".into()),
                     },
@@ -181,7 +179,21 @@ fn typed_lineage_issues_keep_unknowns_and_exact_evidence_in_every_encoder() {
         &mut output,
     )
     .unwrap();
+    let mut text = Vec::new();
+    crate::encode_document(
+        &page.document,
+        crate::Format::Terminal,
+        crate::EncodeOptions::default(),
+        &mut text,
+    )
+    .unwrap();
+    let text = String::from_utf8(text).unwrap();
+    assert!(text.contains("root pending"));
+    assert!(text.contains("parent codex:<missing> of codex:p is not available"));
     let html = String::from_utf8(output).unwrap();
+    assert!(html.contains("root pending"));
+    assert!(html.contains("codex:&lt;missing&gt;"));
+    assert!(!html.contains("codex:<missing>"));
     assert!(html.contains("missing_anchor"));
     assert!(html.contains("native.&lt;field&gt;"));
     assert!(!html.contains("native.<field>"));
@@ -218,13 +230,14 @@ fn url_parameters(url: &str) -> std::collections::BTreeMap<String, String> {
 fn view_switches_use_model_option_acceptance_and_preserve_request_metadata() {
     let request = RunnableRequest {
         deadline: Deadline::Milliseconds(1234),
+        cursor: Some("envelope-old-cursor".into()),
         ..RunnableRequest::new(
             "read",
             json!({"target":"session:test:session","view":"transcript","tools":"headers","harness":"headers","thinking":"full","inherited":true,"branches":true,"cursor":"sealed-old"}),
             "synthetic",
         )
     };
-    let fields = url_parameters(&view_url(&request, "/api/v1/read", View::Dialogue).unwrap());
+    let fields = url_parameters(&view_url(&read_table(), &request, View::Dialogue).unwrap());
     let args: Value = serde_json::from_str(&fields["arguments"]).unwrap();
     assert_eq!(args["view"], "dialogue");
     assert_eq!(args["inherited"], true);
@@ -233,10 +246,11 @@ fn view_switches_use_model_option_acceptance_and_preserve_request_metadata() {
         assert!(args.get(key).is_none());
     }
     assert_eq!(fields["request_id"], "synthetic");
+    assert!(!fields.contains_key("cursor"));
     assert_eq!(fields["operation"], "read");
     let deadline: Value = serde_json::from_str(&fields["deadline"]).unwrap();
     assert_eq!(deadline, serde_json::to_value(request.deadline).unwrap());
-    let fields = url_parameters(&view_url(&request, "/api/v1/read", View::Summary).unwrap());
+    let fields = url_parameters(&view_url(&read_table(), &request, View::Summary).unwrap());
     let args: Value = serde_json::from_str(&fields["arguments"]).unwrap();
     assert!(args.get("inherited").is_none());
     assert!(args.get("branches").is_none());

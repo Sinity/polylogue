@@ -77,16 +77,6 @@ pub fn entries_decoded() -> u64 {
     ENTRIES_DECODED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// How many sessions' links reads have looked up, for tests of how much of
-/// a links tree a page reads.
-#[cfg(any(test, feature = "fixture"))]
-static LINK_READS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-#[cfg(any(test, feature = "fixture"))]
-pub fn link_reads() -> u64 {
-    LINK_READS.load(std::sync::atomic::Ordering::Relaxed)
-}
-
 /// The counters alone, read in O(1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ItemVersions {
@@ -107,11 +97,12 @@ enum Unit {
         kind: String,
         at: Option<i64>,
         data_bytes: u64,
+        data: Option<Vec<u8>>,
     },
 }
 impl Unit {
-    /// What makes this unit's entries what they are, without its body.
-    fn identity(&self) -> Vec<u8> {
+    /// The identity of the entries this unit stores.
+    fn identity(&self) -> Result<Vec<u8>> {
         let mut digest = blake3::Hasher::new();
         match self {
             Self::Message {
@@ -129,13 +120,21 @@ impl Unit {
                     u8::from(place.branch_point),
                 ]);
             }
-            Self::Event { pk, kind, .. } => {
-                digest.update(b"event\0");
-                digest.update(&pk.to_le_bytes());
-                digest.update(kind.as_bytes());
+            Self::Event {
+                pk,
+                id,
+                kind,
+                at,
+                data_bytes,
+                data,
+            } => {
+                return event_identity(
+                    *pk,
+                    &event_item(id, kind, *at, *data_bytes, data.as_deref())?,
+                );
             }
         }
-        digest.finalize().as_bytes().to_vec()
+        Ok(digest.finalize().as_bytes().to_vec())
     }
 
     /// The columns of the unit's first entry that locate it.
@@ -145,6 +144,28 @@ impl Unit {
             Self::Event { pk, .. } => (None, Some(*pk), None),
         }
     }
+}
+
+/// Whether an event's stored item already describes its current metadata.
+/// Older item fingerprints are repaired by the ordinary session rewrite.
+pub(crate) fn event_is_current(
+    conn: &Connection,
+    pk: i64,
+    session: i64,
+    id: &str,
+    kind: &str,
+    at: Option<i64>,
+    data: &[u8],
+) -> Result<bool> {
+    let expected = event_identity(
+        pk,
+        &event_item(id, kind, at, data.len() as u64, Some(data))?,
+    )?;
+    let stored: Option<Vec<u8>> = conn
+        .prepare_cached("SELECT unit FROM session_item WHERE event_pk=?1 AND session_pk=?2")?
+        .query_row(params![pk, session], |row| row.get(0))
+        .optional()?;
+    Ok(stored.as_ref() == Some(&expected))
 }
 
 /// An indexed message entry the rebuild starts from: entries before it stay.
@@ -174,6 +195,7 @@ struct EventRow {
     data_bytes: u64,
     after: Option<i64>,
     seq: i64,
+    data: Option<Vec<u8>>,
 }
 
 impl EventRow {
@@ -184,6 +206,7 @@ impl EventRow {
             kind: self.kind,
             at: self.at,
             data_bytes: self.data_bytes,
+            data: self.data,
         }
     }
 }
@@ -194,7 +217,8 @@ const MESSAGE_COLUMNS: &str = "m.pk, m.id,
     m.on_active_path, m.at,
     EXISTS(SELECT 1 FROM message c WHERE c.session_pk = m.session_pk AND c.parent_id = m.id
            AND c.duplicate_of IS NULL LIMIT 1 OFFSET 1)";
-const EVENT_COLUMNS: &str = "e.pk, e.id, e.kind, e.at, length(e.data), e.after_message_pk, e.seq";
+const EVENT_COLUMNS: &str = "e.pk, e.id, e.kind, e.at, length(e.data), e.after_message_pk, e.seq,
+    CASE WHEN e.kind IN ('compaction','microcompaction') THEN e.data END";
 
 fn message_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageRow> {
     Ok(MessageRow {
@@ -216,6 +240,7 @@ fn event_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EventRow> {
         data_bytes: row.get::<_, i64>(4)?.max(0) as u64,
         after: row.get(5)?,
         seq: row.get(6)?,
+        data: row.get(7)?,
     })
 }
 
@@ -704,7 +729,7 @@ fn rebuild(
         .query_row([session_pk], |row| row.get(0))?;
     let first_seq = anchor.map_or(0, |anchor| anchor.seq);
     let units = units_from(conn, session_pk, anchor, changed_events)?;
-    let identities: Vec<Vec<u8>> = units.iter().map(Unit::identity).collect();
+    let identities: Vec<Vec<u8>> = units.iter().map(Unit::identity).collect::<Result<_>>()?;
     let indexed: Vec<(i64, Vec<u8>)> = conn
         .prepare_cached(
             "SELECT seq, unit FROM session_item
@@ -870,44 +895,53 @@ fn unit_entries(conn: &Connection, unit: &Unit) -> Result<Vec<IndexEntry>> {
             Ok(message_entries(&message, &ordinals, *place))
         }
         Unit::Event {
-            pk,
             id,
             kind,
             at,
             data_bytes,
-        } => {
-            // Context boundaries carry normalized retained/removed references.
-            let data: Option<Vec<u8>> = if matches!(kind.as_str(), "compaction" | "microcompaction")
-            {
-                conn.prepare_cached("SELECT data FROM event WHERE pk=?1")?
-                    .query_row([pk], |row| row.get(0))
-                    .optional()?
-            } else {
-                None
-            };
-            let cleared = if kind == "microcompaction" {
-                data.as_deref()
-                    .map(|packed| {
-                        crate::encoding::unpack_json::<polylogue_model::MicrocompactionBoundary>(
-                            packed,
-                        )
-                        .map(|boundary| boundary.removed_calls)
-                    })
-                    .transpose()?
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
-            let mut entry = event_entry(id, kind, *at, *data_bytes, cleared);
-            if kind == "compaction" {
-                entry.compaction = data
-                    .as_deref()
-                    .map(crate::encoding::unpack_json::<polylogue_model::CompactionBoundary>)
-                    .transpose()?;
-            }
-            Ok(vec![entry])
-        }
+            data,
+            ..
+        } => Ok(vec![event_item(
+            id,
+            kind,
+            *at,
+            *data_bytes,
+            data.as_deref(),
+        )?]),
     }
+}
+
+/// The event entry is the authority for both stored items and their fingerprint.
+fn event_item(
+    id: &str,
+    kind: &str,
+    at: Option<i64>,
+    data_bytes: u64,
+    data: Option<&[u8]>,
+) -> Result<IndexEntry> {
+    let cleared = if kind == "microcompaction" {
+        data.map(crate::encoding::unpack_json::<polylogue_model::MicrocompactionBoundary>)
+            .transpose()?
+            .map(|boundary| boundary.removed_calls)
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let mut entry = event_entry(id, kind, at, data_bytes, cleared);
+    if kind == "compaction" {
+        entry.compaction = data
+            .map(crate::encoding::unpack_json::<polylogue_model::CompactionBoundary>)
+            .transpose()?;
+    }
+    Ok(entry)
+}
+
+fn event_identity(pk: i64, entry: &IndexEntry) -> Result<Vec<u8>> {
+    let mut digest = blake3::Hasher::new();
+    digest.update(b"event\0");
+    digest.update(&pk.to_le_bytes());
+    digest.update(&serde_json::to_vec(entry)?);
+    Ok(digest.finalize().as_bytes().to_vec())
 }
 
 /// A message's row and its blocks with their original ordinals: the fields
@@ -1153,26 +1187,6 @@ impl RecordTable {
     }
 }
 
-/// One stored link between two sessions, as the reading needs it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SessionLink {
-    pub parent: String,
-    pub child: String,
-    /// A documented provider relationship, or `reference`.
-    pub kind: String,
-    pub how: Option<String>,
-    pub copies_prefix: bool,
-    pub branch_point: Option<String>,
-    pub spawning_call: Option<String>,
-}
-
-/// Which way a lineage walk goes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Lineage {
-    Ancestors,
-    Descendants,
-}
-
 /// A record's stored bytes, as the source wrote them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredRecord {
@@ -1193,29 +1207,6 @@ impl Reader<'_> {
             .collect::<rusqlite::Result<_>>()?)
     }
 
-    fn links_where(&self, column: &str, session: &str) -> Result<Vec<SessionLink>> {
-        #[cfg(any(test, feature = "fixture"))]
-        LINK_READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Ok(self
-            .conn()?
-            .prepare_cached(&format!(
-                "SELECT parent_id, child_id, kind, how, branch_point, spawning_call, copies_prefix FROM session_link
-                 WHERE {column} = ?1 ORDER BY pk"
-            ))?
-            .query_map([session], |row| {
-                Ok(SessionLink {
-                    parent: row.get(0)?,
-                    child: row.get(1)?,
-                    kind: row.get(2)?,
-                    how: row.get(3)?,
-                    copies_prefix: row.get(6)?,
-                    branch_point: row.get(4)?,
-                    spawning_call: row.get(5)?,
-                })
-            })?
-            .collect::<rusqlite::Result<_>>()?)
-    }
-
     /// A session's own message count, as derived, when it is stored and
     /// counted.
     pub fn own_message_count(&self, id: &SessionId) -> Result<Option<u64>> {
@@ -1226,42 +1217,6 @@ impl Reader<'_> {
             .optional()?
             .flatten()
             .and_then(|count| u64::try_from(count).ok()))
-    }
-
-    /// Links from `id` to its children, in the order they were stored.
-    pub fn child_links(&self, id: &SessionId) -> Result<Vec<SessionLink>> {
-        self.links_where("parent_id", &id.to_string())
-    }
-
-    /// Links from `id`'s parents to it, in the order they were stored.
-    pub fn parent_links(&self, id: &SessionId) -> Result<Vec<SessionLink>> {
-        self.links_where("child_id", &id.to_string())
-    }
-
-    /// Every session reached from `id` through links other than
-    /// `reference`, transitively, each once; a cycle ends where it closes.
-    pub fn lineage(&self, id: &SessionId, direction: Lineage) -> Result<Vec<String>> {
-        let mut seen = std::collections::HashSet::from([id.to_string()]);
-        let mut queue = std::collections::VecDeque::from([id.to_string()]);
-        let mut out = Vec::new();
-        while let Some(current) = queue.pop_front() {
-            self.check()?;
-            let links = match direction {
-                Lineage::Ancestors => self.links_where("child_id", &current)?,
-                Lineage::Descendants => self.links_where("parent_id", &current)?,
-            };
-            for link in links.into_iter().filter(|link| link.kind != "reference") {
-                let next = match direction {
-                    Lineage::Ancestors => link.parent,
-                    Lineage::Descendants => link.child,
-                };
-                if seen.insert(next.clone()) {
-                    out.push(next.clone());
-                    queue.push_back(next);
-                }
-            }
-        }
-        Ok(out)
     }
 
     /// The stored bytes of one message's or event's source record. When a

@@ -53,6 +53,7 @@ fn callback(
         .into_iter()
         .enumerate()
         .map(|(index, product)| ProductWrite {
+            publish: true,
             product,
             location: None,
             parents: Vec::new(),

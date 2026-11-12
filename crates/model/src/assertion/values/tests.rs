@@ -541,7 +541,7 @@ fn canonical_predecessor_text_preserves_content_and_detaches_predecessor_claims(
         author: crate::Author::Unattributed,
         via: crate::authorship::Channel::Import,
         machine: "importing-host".into(),
-        created_at: crate::Timestamp::from_unix_ms(0).unwrap(),
+        created_at: Some(crate::Timestamp::from_unix_ms(0).unwrap()),
         valid_until: None,
         links: Vec::new(),
     };

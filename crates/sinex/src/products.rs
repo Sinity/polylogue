@@ -156,7 +156,10 @@ pub(crate) fn key(product: &Product, _occurrence: u64) -> Result<String> {
         Product::ParseProgress { reading, .. } => json!([reading.start]),
         Product::Request(request) => json!([request.request.id]),
         Product::RestoredRequest { prepared } => json!([prepared.request.id]),
-        Product::RestoredAssertion { fact } => json!([fact.root, fact.id]),
+        Product::RestoredAssertion { fact, import } => match import {
+            None => json!([fact.root, fact.id]),
+            Some(i) => json!([fact.root, fact.id, i.input, i.chain, i.machine, i.actor]),
+        },
         Product::Query { object } => json!([object.id]),
         Product::QueryRun { run } => json!([run.id]),
         Product::QueryRunOutcome { outcome } => json!([outcome.run]),
@@ -224,7 +227,7 @@ pub(crate) fn payload(product: &Product, occurrence: u64) -> Result<Value> {
             "at": prepared.request.at,
             "machine": prepared.request.machine
         }),
-        Product::RestoredAssertion { fact } => json!({
+        Product::RestoredAssertion { fact, .. } => json!({
             "assertion": format!("assertion:{}@{}", fact.root, fact.id),
             "at": fact.created_at,
             "machine": fact.machine
@@ -513,13 +516,13 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                 kind: KindRef {
                     name: (*name).into(),
                     version: if *name == "polylogue.assertion" {
-                        2
+                        3
                     } else {
                         match *product {
                             // A product holding a parser reading moved to one
                             // progress value in place of two flags.
                             "message" => 7,
-                            "request" | "restored_request" => 6,
+                            "request" | "restored_request" => 7,
                             "session" => 6,
                             "document" | "event" | "link" | "background" | "repository" => 5,
                             "parse_progress" => 6,
@@ -528,9 +531,9 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                             "input" => 6,
                             "fragment" => 3,
                             "query_run" => 4,
-                            "tool_call" | "restored_history" | "restored_assertion"
-                            | "attachment_binding" | "query_run_outcome" | "prefix_copy"
-                            | "prefix_member" => 1,
+                            "restored_assertion" => 2,
+                            "tool_call" | "restored_history" | "attachment_binding"
+                            | "query_run_outcome" | "prefix_copy" | "prefix_member" => 1,
                             "query" => 2,
                             _ => 3,
                         }
@@ -702,3 +705,6 @@ pub(crate) fn events(
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests;

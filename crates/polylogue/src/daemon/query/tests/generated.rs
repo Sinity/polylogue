@@ -1003,6 +1003,39 @@ pub(super) fn vectors_for(
 }
 
 #[test]
+fn repeated_or_does_not_lift_the_active_path_default() {
+    let rows = Rows {
+        sessions: vec![SessionRow {
+            origin: "claude-code",
+            subagent: false,
+            repo: None,
+            messages: vec![MessageRow {
+                speaker: ("user", "human"),
+                model: None,
+                cost: None,
+                at: None,
+                text: None,
+                path: Some(false),
+                calls: vec![],
+            }],
+        }],
+    };
+    let archive = build(&rows);
+    for (query, count) in [
+        ("messages", 0),
+        ("messages where active:false", 1),
+        ("messages where (active:false OR active:true)", 0),
+        ("messages where (active:false OR active:false)", 0),
+        (
+            "messages where (active:false OR (active:false OR active:false))",
+            0,
+        ),
+    ] {
+        assert_eq!(all(&archive, query)["count"], count, "{query}");
+    }
+}
+
+#[test]
 fn an_error_only_on_an_abandoned_branch_does_not_satisfy_session_has() {
     let rows = Rows {
         sessions: vec![SessionRow {

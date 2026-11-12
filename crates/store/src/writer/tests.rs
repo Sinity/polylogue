@@ -8,11 +8,13 @@ use polylogue_model::{
 mod append_cost;
 mod assertions;
 mod empty_source;
+mod event_fk;
 mod extent_checkpoint;
 mod input_events;
 mod items;
 mod parent_order;
 mod publications;
+mod relationships;
 mod resolution;
 mod routes;
 mod saved;

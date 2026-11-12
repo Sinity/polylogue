@@ -346,7 +346,7 @@ fn narrow_canonical_schema_uses_the_existing_sqlite_namespace_rewriter() {
             |row| row.get::<_, i64>(0)
         )
         .unwrap(),
-        4
+        5
     );
     conn.execute("INSERT INTO source_assertion(id,root,kind,author,via,machine,created_at,commit_seq) VALUES('fact','fact','note','operator','cli','host',1,1)",[]).unwrap();
     conn.execute(
@@ -361,6 +361,8 @@ fn narrow_canonical_schema_uses_the_existing_sqlite_namespace_rewriter() {
         )
         .is_err()
     );
+    conn.execute("INSERT INTO source_assertion_import(assertion,input,chain,machine,actor,at,commit_seq) VALUES('fact','input',1,'host','operator','2026-01-01T00:00:00Z',1)", []).unwrap();
+    assert!(conn.execute("INSERT INTO source_assertion_import(assertion,input,chain,machine,actor,at,commit_seq) VALUES('absent','input',1,'host','operator','2026-01-01T00:00:00Z',1)", []).is_err());
     assert_eq!(
         conn.query_row("SELECT record FROM source_link", [], |row| row
             .get::<_, String>(0))

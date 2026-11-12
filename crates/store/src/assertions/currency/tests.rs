@@ -352,7 +352,7 @@ fn a_relation_also_points_about_the_same_revision() {
 }
 
 #[test]
-fn every_stored_assertion_has_author_channel_machine_and_time() {
+fn every_stored_assertion_has_author_channel_and_machine() {
     let mut world = World::new();
     world.note("noted");
     let db = world.archive_db();
@@ -360,7 +360,6 @@ fn every_stored_assertion_has_author_channel_machine_and_time() {
         ("author", "NULL,'cli','host',1"),
         ("via", "'operator',NULL,'host',1"),
         ("machine", "'operator','cli',NULL,1"),
-        ("created_at", "'operator','cli','host',NULL"),
     ] {
         let refused = db.execute(
             &format!(
@@ -445,7 +444,7 @@ fn fact(header: &Header) -> AssertionFact {
         author: Author::Operator,
         via: Channel::Cli,
         machine: "synthetic".into(),
-        created_at: Timestamp::from_unix_ms(header.at).unwrap(),
+        created_at: header.at.and_then(Timestamp::from_unix_ms),
         valid_until: None,
         links,
     }
@@ -511,7 +510,7 @@ proptest! {
             .cloned()
             .enumerate()
             .map(|(index, mut header)| {
-                header.at = clocks[index % clocks.len()];
+                header.at = Some(clocks[index % clocks.len()]);
                 (order[index % order.len()], header)
             })
             .collect();

@@ -42,6 +42,8 @@ pub(super) fn answer(
         operation: None,
         arguments: serde_json::to_value(&arguments).expect("completion arguments serialize"),
         budget_tokens: Default::default(),
+        fresh: false,
+        format: Default::default(),
         cursor: None,
         request_id: uuid::Uuid::now_v7().to_string(),
         deadline,

@@ -275,6 +275,7 @@ pub enum Product {
     },
     RestoredAssertion {
         fact: polylogue_model::assertion::AssertionFact,
+        import: Option<polylogue_model::authored::ImportAttribution>,
     },
     Coverage(polylogue_model::capture::Coverage),
 }

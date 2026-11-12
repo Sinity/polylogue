@@ -20,7 +20,7 @@ fn fact(id: &str, name: &str, hash: u8, base: Option<&str>) -> AssertionFact {
         author: Author::Unattributed,
         via: polylogue_model::authorship::Channel::Import,
         machine: "synthetic-host".into(),
-        created_at: polylogue_model::Timestamp::from_unix_ms(1).unwrap(),
+        created_at: Some(polylogue_model::Timestamp::from_unix_ms(1).unwrap()),
         valid_until: None,
         links: base
             .into_iter()

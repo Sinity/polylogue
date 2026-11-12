@@ -211,7 +211,7 @@ pub struct Authored {
     pub machine: String,
     pub author: crate::Author,
     pub via: crate::authorship::Channel,
-    pub at: crate::Timestamp,
+    pub at: Option<crate::Timestamp>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum Error {

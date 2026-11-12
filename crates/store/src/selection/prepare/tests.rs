@@ -22,7 +22,7 @@ fn definition(id: &str, name: &str, text: &str, hash: QuestionId) -> AssertionFa
         author: Author::Unattributed,
         via: polylogue_model::authorship::Channel::Import,
         machine: "synthetic-host".into(),
-        created_at: polylogue_model::Timestamp::from_unix_ms(1).unwrap(),
+        created_at: Some(polylogue_model::Timestamp::from_unix_ms(1).unwrap()),
         valid_until: None,
         links: vec![],
     }

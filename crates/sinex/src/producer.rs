@@ -484,7 +484,8 @@ impl Sinex {
                 ));
             };
             if source.as_ref().is_none_or(|source| {
-                source.name != "polylogue" || !matches!(source.version, 5 | 6 | 7)
+                source.name != "polylogue"
+                    || !matches!(source.version, 5 | 6 | 7 | crate::SOURCE_VERSION)
             }) {
                 return Err(Error::Invalid(
                     "named product intent has an unsupported source".into(),
@@ -565,7 +566,7 @@ impl Sinex {
                     return Err(Error::Invalid("observation has no material".into()));
                 };
                 if material.source.name != "polylogue"
-                    || !matches!(material.source.version, 5 | 6 | 7)
+                    || !matches!(material.source.version, 5 | 6 | 7 | crate::SOURCE_VERSION)
                 {
                     return Err(Error::Invalid(
                         "observation has an unsupported source".into(),
@@ -838,7 +839,8 @@ impl Sinex {
             let Ingress::Material { material, .. } = queue.decode_frame(&identity)? else {
                 return Err(Error::Invalid("authored intent has no material".into()));
             };
-            if material.source.name != "polylogue" || !matches!(material.source.version, 5 | 6 | 7)
+            if material.source.name != "polylogue"
+                || !matches!(material.source.version, 5 | 6 | 7 | crate::SOURCE_VERSION)
             {
                 return Err(Error::Invalid(
                     "authored intent belongs to an unsupported adapter source".into(),
@@ -1006,7 +1008,8 @@ impl Sinex {
             let Ingress::Material { material, .. } = queue.decode_frame(identity)? else {
                 return Err(Error::Invalid("authored intent has no material".into()));
             };
-            if material.source.name != "polylogue" || !matches!(material.source.version, 5 | 6 | 7)
+            if material.source.name != "polylogue"
+                || !matches!(material.source.version, 5 | 6 | 7 | crate::SOURCE_VERSION)
             {
                 return Err(Error::Invalid(
                     "authored intent belongs to an unsupported adapter source".into(),
@@ -1026,7 +1029,7 @@ impl Sinex {
             self.visit_matching(Lookup::Blobs(Some(&attachment.blob.to_string())), |queue,entry|{
                     if matches!(entry.capture(),Some(Capture::Blob{hash,..}) if *hash==attachment.blob) {
                         if let Some(material)=Self::capture_material(queue,&entry)? {
-                            writes.push(ProductWrite{location:Some(SourceLocation{material:material.id.clone(),anchor:0}),product:Product::Blob(material),parents:Vec::new(),machine:Some(request.request.machine.clone()),output_index:writes.len() as u64});
+                            writes.push(ProductWrite{publish:true,location:Some(SourceLocation{material:material.id.clone(),anchor:0}),product:Product::Blob(material),parents:Vec::new(),machine:Some(request.request.machine.clone()),output_index:writes.len() as u64});
                             if queue.capture_group(&entry.identity)?.is_none() {dependencies.push(entry.record.identity);}
                         } else {waiting=true;}
                     }

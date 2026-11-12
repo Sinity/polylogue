@@ -130,11 +130,8 @@ fn typed_read_real_cli_pages_unicode_once_and_publishes_a_canonical_bundle() {
             break;
         };
         assert!(page_number < 999, "continuation failed to reach the end");
-        let stages = polylogue_model::command::effective_stages(&next.cli);
-        assert_eq!(stages.len(), 1);
-        assert_eq!(stages[0].program, "polylogue");
-        let mut arguments = vec!["--json"];
-        arguments.extend(stages[0].args.iter().map(String::as_str));
+        let continuation = continuation_arguments(&next);
+        let arguments = continuation.iter().map(String::as_str).collect::<Vec<_>>();
         output = cli(&fixture, &arguments);
     }
     assert_eq!(reconstructed.text(), expected);
