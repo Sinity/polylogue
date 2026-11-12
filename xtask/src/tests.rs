@@ -63,8 +63,17 @@ fn built_with(tail: &[&str]) -> Vec<String> {
         .collect()
 }
 
+fn package_build(packages: &[&str], tail: &[&str]) -> Vec<String> {
+    let mut args = vec!["--locked".into(), "--all-features".into()];
+    for package in packages {
+        args.extend(["--package".into(), (*package).into()]);
+    }
+    args.extend(tail.iter().map(|arg| (*arg).into()));
+    args
+}
+
 #[test]
-fn every_selection_builds_the_whole_workspace_with_the_one_feature_list() {
+fn package_checks_build_selected_packages_and_full_checks_keep_the_workspace_graph() {
     assert_eq!(arguments(&[], None).unwrap(), built_with(&["--tests"]));
     for flag in [
         &["-p", "polylogue-store"][..],
@@ -75,7 +84,10 @@ fn every_selection_builds_the_whole_workspace_with_the_one_feature_list() {
     ] {
         assert_eq!(
             arguments(flag, None).unwrap(),
-            built_with(&["-E", "((package(=polylogue-store)))", "--tests"]),
+            package_build(
+                &["polylogue-store"],
+                &["-E", "((package(=polylogue-store)))", "--tests"]
+            ),
             "{flag:?}"
         );
     }
@@ -112,13 +124,16 @@ fn packages_exclusions_filtersets_and_a_required_selection_intersect() {
             Some("rdeps(=polylogue-model)"),
         )
         .unwrap(),
-        built_with(&[
-            "-E",
-            "(rdeps(=polylogue-model)) & ((package(=polylogue-store)) | (package(=polylogue-engine))) \
+        package_build(
+            &["polylogue-store", "polylogue-engine"],
+            &[
+                "-E",
+                "(rdeps(=polylogue-model)) & ((package(=polylogue-store)) | (package(=polylogue-engine))) \
              & (not ((package(=polylogue-sinex)))) & ((test(a)) | (test(b)))",
-            "--tests",
-            "--no-capture",
-        ])
+                "--tests",
+                "--no-capture",
+            ]
+        )
     );
     assert_eq!(
         arguments(&["-E=test(rows)", "--", "-p", "--features"], None).unwrap(),
@@ -174,7 +189,7 @@ fn explicit_target_selection_is_preserved_without_adding_the_default_tests() {
 }
 
 #[test]
-fn selections_run_through_the_real_runner_in_the_one_build() {
+fn selections_run_through_the_real_runner_with_native_package_scope() {
     let fixture = tempfile::tempdir().unwrap();
     let root = fixture.path();
     fs::write(root.join("Cargo.toml"), "[workspace]\nmembers=['polylogue-store','polylogue-engine','polylogue-sinex','polylogue','helper']\nresolver='3'\n").unwrap();
@@ -291,6 +306,20 @@ fn selections_run_through_the_real_runner_in_the_one_build() {
     result.unwrap();
     assert_eq!(ran(&run), expected(&store));
 
+    let (run, result) = execute(&["-p", "polylogue"], None);
+    result.unwrap();
+    assert_eq!(
+        ran(&run),
+        expected(&[("application_runs_in_primary_mode", "passed")])
+    );
+
+    let (run, result) = execute(&["-p", "polylogue-store", "-p", "polylogue-engine"], None);
+    result.unwrap();
+    let mut selected = expected(&store);
+    selected.extend(expected(&[("engine_test", "passed")]));
+    selected.sort();
+    assert_eq!(ran(&run), selected);
+
     let (run, result) = execute(&["-p", "polylogue-store", "--example", "unselected"], None);
     assert!(result.is_err());
     assert!(run.diagnostics.iter().any(|diagnostic| {
@@ -329,6 +358,31 @@ fn selections_run_through_the_real_runner_in_the_one_build() {
         ran(&run),
         expected(&[("selected_ignored", "ignored"), ("selected_read", "passed")])
     );
+
+    // An unrelated test target must not be compiled merely to filter its
+    // tests out later. The full workspace check above still exercised it.
+    fs::write(
+        root.join("polylogue/src/lib.rs"),
+        "#[cfg(test)] compile_error!(\"unrelated application test target\");\n",
+    )
+    .unwrap();
+    let (run, result) = execute(&["-p", "polylogue-store", "--lib"], None);
+    result.unwrap();
+    assert_eq!(
+        ran(&run),
+        expected(&[
+            ("selected_ignored", "ignored"),
+            ("selected_read", "passed"),
+            ("selected_write", "passed"),
+        ])
+    );
+    let (run, result) = execute(&["--workspace", "-p", "polylogue-store", "--lib"], None);
+    assert!(result.is_err());
+    assert!(run.diagnostics.iter().any(|diagnostic| {
+        diagnostic
+            .text
+            .contains("unrelated application test target")
+    }));
 }
 
 #[test]

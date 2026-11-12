@@ -26,7 +26,19 @@ provides an unpacked Chrome extension; the overlay adds both packages. Package
 builds set `POLYLOGUE_REVISION` at compile time, and `--version` shows it.
 `--version` and `--help` load no deployment file.
 
-Native test commands select targets marked `test = true` by default, so examples without tests do not add links. An example with unit tests opts in through its Cargo manifest. Explicit Cargo target flags such as `--lib` or `--example NAME` retain their native selection. Every test command builds the whole workspace with the one feature list in `xtask/src/main.rs` (the Sinex client and the fault features), so a focused run reuses the landing check's units; selectors choose which tests run. Clippy compiles every target in that configuration and again without the Sinex client.
+An explicit `-p PACKAGE` limits Cargo builds to the selected packages with all
+of their own features. Native target flags further limit what builds: use
+`--lib` for library unit tests, `--test NAME` for an integration target, or
+`--bin NAME` for a binary's unit tests. Without a target flag, targets marked
+`test = true` are selected, including opted-in examples. Package, exclusion,
+filterset and changed-package predicates still intersect when selecting which
+tests run.
+
+Without `-p`, or with explicit `--workspace`, tests retain the primary workspace
+feature list in `xtask/src/main.rs`. Package checks can have narrower transitive
+features than that full graph. The required check and warm command keep the
+full graph; Clippy covers all targets both with and without the Sinex client.
+Use `--workspace -p PACKAGE` to retain that graph while filtering execution.
 
 Shared dependency features are declared once in the root manifest's
 `[workspace.dependencies]`; workspace crates add no further features, except

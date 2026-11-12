@@ -8,13 +8,10 @@ edition = "2024"
 license = "MIT"
 publish = false
 
-# Every feature a shared dependency needs anywhere is declared here, once.
-# Cargo builds a crate again for each distinct feature set, and everything
-# above it with it; with one declaration, every build (Clippy, tests, both
-# modes, a focused run) resolves the same graph and reuses the same units.
-# Crates name these with `workspace = true` and add no features of their own;
-# only dev-dependencies add test-only features, and every test build selects
-# the whole workspace, so those too are the same in every test build.
+# Shared dependencies declare their required features here; crates inherit them
+# with `workspace = true`. Dev-dependencies add test-only features. Full checks
+# resolve the primary workspace graph; explicit package checks enable all of
+# the selected packages' features and can resolve a smaller dependency graph.
 [workspace.dependencies]
 web-shell = { git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master" }
 command-surface = { git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master" }
