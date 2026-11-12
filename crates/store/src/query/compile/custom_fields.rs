@@ -66,9 +66,9 @@ impl Call<'_, '_> {
         }
     }
 
-    /// The shared language's explicit unknown value.
+    /// The shared language's bound unknown predicate.
     fn unknown(&self) -> bool {
-        matches!(self.comparison(), Some(Comparison::Match(Value::Unknown)))
+        matches!(self.test, Test::Unknown)
     }
 
     fn bad(&self, value: String, message: String) -> QueryError {
@@ -582,6 +582,9 @@ pub(crate) fn root(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Que
     let root = crate::lineage::value_sql(&format!("{}.pk", x.s()), "root");
     if x.unknown() {
         return Ok(format!("{root} IS NULL"));
+    }
+    if matches!(x.test, Test::Known) {
+        return Ok(format!("{root} IS NOT NULL"));
     }
     Ok(c.session_reference(&root, "id", &x.value()?))
 }
