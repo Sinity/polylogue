@@ -778,3 +778,54 @@ fn tool_schema_from_operation_table() {
         }
     }
 }
+
+#[test]
+fn generated_mcp_follow_up_preserves_the_accepted_request() {
+    use std::io::{BufRead, BufReader, Write};
+    let directory = tempfile::tempdir().unwrap();
+    let archive = Archive::at(directory.path());
+    let request = command_surface::RunnableRequest {
+        deadline: command_surface::Deadline::None,
+        budget_tokens: command_surface::TokenBudget::Unlimited,
+        cursor: Some("opaque-follow-up".into()),
+        fresh: true,
+        format: command_surface::Format::Json,
+        ..command_surface::RunnableRequest::new(
+            "read",
+            json!({"target":"session:claude-code:synthetic"}),
+            "accepted-child",
+        )
+    };
+    let projected = crate::commands::declarations().mcp_call(&request).unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(archive.socket()).unwrap();
+    let peer = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+            .unwrap();
+        let mut line = String::new();
+        BufReader::new(&stream).read_line(&mut line).unwrap();
+        let accepted = crate::protocol::wire::incoming(&line)
+            .unwrap()
+            .unwrap()
+            .request;
+        assert_eq!(accepted, request);
+        let refusal = command_surface::Answer::<Value>::error(command_surface::Failure::new(
+            command_surface::FailureKind::Refused,
+            "synthetic refusal",
+        ));
+        writeln!(stream, "{}", serde_json::to_string(&refusal).unwrap()).unwrap();
+    });
+    let (text, _, failed) = call_with_limit(
+        &archive,
+        projected["name"].as_str().unwrap(),
+        projected["arguments"].as_object().unwrap().clone(),
+        None,
+        &tokio_util::sync::CancellationToken::new(),
+        None,
+    )
+    .unwrap();
+    assert!(failed, "{text}");
+    assert!(text.contains("synthetic refusal"), "{text}");
+    peer.join().unwrap();
+}
