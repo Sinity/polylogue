@@ -183,7 +183,6 @@ pub struct Writer {
     /// The index was empty when the writer started: its first pass is a
     /// first build.
     started_empty: bool,
-    resolver: Arc<resolve::Resolver>,
     /// In primary mode, the thread that reads the confirmed stream.
     follower: Option<follow::Follower>,
 }
@@ -529,7 +528,6 @@ impl Writer {
             stop,
             handle: Some(handle),
             started_empty: empty,
-            resolver,
             follower,
         })
     }
@@ -2129,11 +2127,21 @@ impl Inner {
         &mut self,
         batches: impl Iterator<Item = &'a Batch> + Clone,
     ) -> Result<()> {
-        let publications = if self.sinex.is_some() {
-            Some(self.published_receipts(batches.clone())?)
-        } else {
-            None
-        };
+        let primary = self.sinex.is_some();
+        if primary {
+            for batch in batches.clone() {
+                self.validate_primary_reading(batch)?;
+                if batch
+                    .parse
+                    .iter()
+                    .any(|step| step.publication.is_none() || step.source_eligibility.is_none())
+                {
+                    return Err(StoreError::Invalid(
+                        "a primary batch has no admitted original interpretation".into(),
+                    ));
+                }
+            }
+        }
         for b in batches.clone() {
             if crate::container_members::container_of(b).is_some() {
                 return Err(StoreError::Invalid(
@@ -2154,7 +2162,7 @@ impl Inner {
                 parsed_only = false;
                 break;
             }
-            for blob in batch.blobs.iter().filter(|_| publications.is_none()) {
+            for blob in batch.blobs.iter().filter(|_| !primary) {
                 let size = i64::try_from(blob.size).map_err(|_| {
                     StoreError::Invalid("decoded body exceeds the source catalog range".into())
                 })?;
@@ -2225,9 +2233,9 @@ impl Inner {
         let counter = bump_counter(&itx)?;
         let changes = crate::change_summary::ChangeSummary::start(&itx)?;
         let mut stats = (0u64, 0u64);
-        for (batch_index, (b, chain)) in indexed.iter().zip(chains).enumerate() {
+        for (b, chain) in indexed.iter().zip(chains) {
             if let Some(chain) = chain {
-                for (step_index, p) in b.parse.iter().enumerate() {
+                for p in &b.parse {
                     let resolution = p
                         .resolution
                         .as_ref()
@@ -2243,7 +2251,7 @@ impl Inner {
                         chain,
                         p.parsed_upto,
                     )?;
-                    stats.1 += if let Some(publications) = &publications {
+                    stats.1 += if primary {
                         rows::write_published_rows(
                             &itx,
                             b,
@@ -2252,7 +2260,7 @@ impl Inner {
                             counter,
                             self.first_build.as_deref(),
                             &receipt,
-                            &publications[batch_index][step_index],
+                            p.publication.as_ref().expect("validated native admission"),
                             false,
                             &changes,
                         )?

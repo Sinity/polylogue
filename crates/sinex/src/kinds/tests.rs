@@ -149,7 +149,7 @@ fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
                 "polylogue.query_run" => 4,
                 "polylogue.blob" | "polylogue.coverage" | "polylogue.fragment" => 3,
                 "polylogue.assertion" => 3,
-                "polylogue.query" | "polylogue.assertion_restore" => 2,
+                "polylogue.query" => 2,
                 "polylogue.tool_call"
                 | "polylogue.historical_restore"
                 | "polylogue.attachment_binding"

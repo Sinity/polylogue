@@ -138,28 +138,6 @@ impl Inner {
         validate_primary_reading(&self.index, batch)
     }
 
-    pub(super) fn published_receipts<'a>(
-        &self,
-        batches: impl Iterator<Item = &'a Batch>,
-    ) -> Result<Vec<Vec<crate::primary::PublicationReceipt>>> {
-        batches
-            .map(|batch| {
-                self.validate_primary_reading(batch)?;
-                batch
-                    .parse
-                    .iter()
-                    .map(|step| {
-                        step.publication.clone().ok_or_else(|| {
-                            StoreError::Invalid(
-                                "a primary batch has no admitted interpretation".into(),
-                            )
-                        })
-                    })
-                    .collect()
-            })
-            .collect()
-    }
-
     pub(super) fn primary_request(
         &mut self,
         request: &polylogue_model::user::UserRequest,

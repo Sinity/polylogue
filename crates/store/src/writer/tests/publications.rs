@@ -36,6 +36,13 @@ fn interpretation(text: &str, version: &str) -> Batch {
 }
 
 fn apply(index: &mut Connection, mut batch: Batch, publication: &PublicationReceipt) -> Result<()> {
+    super::super::source_eligibility::retain_source_records(
+        index,
+        &batch.input,
+        1,
+        batch.length,
+        &mut batch.parse[0],
+    )?;
     resolve::prepare_index(index, &mut batch, 1, false)?;
     let tx = index.transaction()?;
     let counter = bump_counter(&tx)?;

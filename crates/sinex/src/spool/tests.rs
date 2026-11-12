@@ -1081,9 +1081,14 @@ fn corrupted_encoded_capture_is_rejected_before_publication() {
     corrupt.rewind().unwrap();
     corrupt.write_all(&[0]).unwrap();
     let spool = Spool::open(directory.path(), "host").unwrap();
+    let capture = Capture::Input(Box::new(crate::tests::capture(bytes, Vec::new())));
     assert!(
         spool
-            .prepare_encoded_material(material("invalid", bytes), prepared_body(encoded, None))
+            .prepare_encoded_capture(
+                capture_frame("invalid", bytes, &capture),
+                vec![prepared_body(encoded, None)],
+                &capture
+            )
             .is_err()
     );
     assert!(spool.get("invalid").unwrap().is_none());
@@ -1113,10 +1118,12 @@ fn prepared_path_links_only_the_pinned_inode_and_survives_original_path_drop() {
         .unwrap();
     let inode = source.as_file().metadata().unwrap().ino();
     let spool = Spool::open(directory.path(), "host").unwrap();
+    let capture = Capture::Input(Box::new(crate::tests::capture(bytes, Vec::new())));
     spool
-        .prepare_encoded_material(
-            material("linked", bytes),
-            prepared_body(encoded, Some(source.path().into())),
+        .prepare_encoded_capture(
+            capture_frame("linked", bytes, &capture),
+            vec![prepared_body(encoded, Some(source.path().into()))],
+            &capture,
         )
         .unwrap();
     let (path, _) = spool.encoded_body("linked").unwrap().remove(0);
@@ -1146,10 +1153,12 @@ fn changed_or_symlinked_prepared_path_falls_back_to_the_verified_pinned_file() {
             .unwrap()
             .plain(bytes.as_slice(), 3)
             .unwrap();
+        let capture = Capture::Input(Box::new(crate::tests::capture(bytes, Vec::new())));
         spool
-            .prepare_encoded_material(
-                material(identity, bytes),
-                prepared_body(encoded, Some(path)),
+            .prepare_encoded_capture(
+                capture_frame(identity, bytes, &capture),
+                vec![prepared_body(encoded, Some(path))],
+                &capture,
             )
             .unwrap();
         let (path, _) = spool.encoded_body(identity).unwrap().remove(0);
