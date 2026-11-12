@@ -607,23 +607,7 @@ impl Inner {
                     basis: Some(bases[&self.capture_source_selector(batch, &pending)?].clone()),
                     input: name,
                     route: batch.input.route,
-                    parsed: batch
-                        .parse
-                        .iter()
-                        .enumerate()
-                        .filter(|(step_index, _)| export_apply[ordinal][*step_index])
-                        .map(|(_, step)| {
-                            CapturedReading::from_step(
-                                step,
-                                step.delivery.map(|_| crate::primary::ExportReadingKey {
-                                    input: batch.input.clone(),
-                                    chain,
-                                    reading_version: step.reading_version.clone(),
-                                    length: batch.length,
-                                }),
-                            )
-                        })
-                        .collect::<Result<_>>()?,
+                    parsed: Vec::new(),
                     rows,
                     index,
                     previous: previous_material,
