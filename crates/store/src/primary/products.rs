@@ -9,7 +9,7 @@ use polylogue_model::{
 use serde::{Deserialize, Serialize};
 mod eligibility;
 pub use eligibility::SourceRecord;
-pub(crate) use eligibility::allowed;
+pub(crate) use eligibility::{allowed, scope_hash};
 mod export;
 mod rebuild;
 pub use export::ExportReadingKey;
@@ -66,11 +66,15 @@ pub struct PublicationReceipt {
     pub producer: String,
     pub frame: String,
     pub number: i64,
+    /// Native event position when this frame changed readings; absent for a no-op.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_seq: Option<i64>,
     pub root_material: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParsedPublication {
+    Following(super::ReadingScope),
     Pending { identity: String },
     Admitted(PublicationReceipt),
 }

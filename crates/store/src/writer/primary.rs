@@ -278,6 +278,11 @@ impl Inner {
                     step,
                 )?)?;
                 match sinex.prepare_parsed(&source, &writes)? {
+                    crate::primary::ParsedPublication::Following(_) => {
+                        return Err(StoreError::PrimaryPending {
+                            identity: root.clone(),
+                        });
+                    }
                     crate::primary::ParsedPublication::Pending { identity } => {
                         return Err(StoreError::PrimaryPending { identity });
                     }
@@ -332,20 +337,33 @@ impl Inner {
             "SELECT id FROM source_material WHERE input=?1 AND chain=?2 AND offset=0 ORDER BY rowid LIMIT 1",
             params![input.id,chain], |row| row.get(0),
         )?;
-        let publication = sinex.prepare_reading(&root, &key, &mut |emit| {
+        let publication = sinex.prepare_reading(&root, &key, &mut |scope, emit| {
+            let live_hash = crate::primary::products::scope_hash(&self.index, scope)?;
+            if live_hash != scope.expected_live_hash {
+                return Ok(live_hash);
+            }
             source.visit_source(|step| {
-                for product in self.product_writes(crate::primary::products::parse(
+                for mut product in self.product_writes(crate::primary::products::parse(
                     &input,
                     chain,
                     Some(length),
                     step,
                 )?)? {
+                    let reading = product.product.reading().expect("source interpretation");
+                    let record =
+                        crate::primary::SourceRecord::of(&product.product)?.expect("source record");
+                    product.publish =
+                        crate::primary::products::allowed(&self.index, reading, &record)?;
                     emit(product)?;
                 }
                 Ok(())
-            })
+            })?;
+            Ok(live_hash)
         })?;
         match publication {
+            crate::primary::ParsedPublication::Following(_) => {
+                Err(StoreError::PrimaryPending { identity: root })
+            }
             crate::primary::ParsedPublication::Pending { identity } => {
                 Err(StoreError::PrimaryPending { identity })
             }

@@ -76,7 +76,7 @@ pub(super) fn retain_source_records(
     reindex(&mut output.document_receipts, documents);
     let fragments = mask("fragment");
     retain(&mut output.fragments, fragments);
-    retain(&mut step.prepared.fragments, fragments);
+    step.prepared.fragments.retain(fragments)?;
     reindex(&mut output.fragment_receipts, fragments);
     let events = mask("event");
     retain(&mut output.events, events);

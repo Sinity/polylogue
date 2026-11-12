@@ -790,7 +790,7 @@ impl Spool {
             Phase::Pending => Ok(ParsedPublication::Pending {
                 identity: identity.into(),
             }),
-            Phase::Acknowledged { .. } => {
+            Phase::Acknowledged { commit_seq } => {
                 let summary = self.stored_acknowledgment(identity)?.ok_or_else(|| {
                     Error::Invalid("publication has no durable acknowledgment".into())
                 })?;
@@ -801,6 +801,7 @@ impl Spool {
                     producer: producer.into(),
                     frame: identity.into(),
                     number,
+                    commit_seq,
                     root_material: entry
                         .parsed()
                         .expect("checked parsed source")

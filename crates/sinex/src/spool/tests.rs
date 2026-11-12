@@ -1863,6 +1863,7 @@ fn admitted_source_publication_survives_until_its_local_interpretation_commits()
         producer: "producer".into(),
         frame: frame.frame().into(),
         number: 1,
+        commit_seq: None,
         root_material: source.root_material.clone(),
     };
     assert_eq!(

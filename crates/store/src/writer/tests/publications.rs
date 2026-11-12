@@ -6,6 +6,7 @@ fn publication(frame: &str, number: i64) -> PublicationReceipt {
         producer: "fixture-producer".into(),
         frame: frame.into(),
         number,
+        commit_seq: Some(number + 100),
         root_material: "00000000-0000-0000-0000-000000000001".into(),
     }
 }

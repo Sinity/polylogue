@@ -34,6 +34,21 @@ pub(crate) fn receipt(value: u64) -> Result<i64> {
 }
 
 impl PreparedFragments {
+    pub(crate) fn retain(&mut self, mask: &[bool]) -> Result<()> {
+        if self.0.len() != mask.len() {
+            return Err(StoreError::Invalid(
+                "fragment eligibility differs from its prepared rows".into(),
+            ));
+        }
+        let mut index = 0;
+        self.0.retain(|_| {
+            let keep = mask[index];
+            index += 1;
+            keep
+        });
+        Ok(())
+    }
+
     /// Hashing, validation and compression happen before the serial writer.
     pub(crate) fn prepare(output: &Output) -> Result<Self> {
         for (&index, &admitted) in &output.fragment_receipts {

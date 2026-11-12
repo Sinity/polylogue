@@ -162,3 +162,53 @@ pub(crate) fn allowed(
         params![reading.input.id,reading.chain,reading.reading_version,record.start,record.end], |row| row.get::<_,bool>(0),
     )?)
 }
+
+/// Match the owner's existing replay precondition, using only verified native
+/// identities. Candidate material lookups precede the UUID sort.
+pub(crate) fn scope_hash(
+    index: &Connection,
+    scope: &crate::primary::ReadingScope,
+) -> Result<String> {
+    let materials = serde_json::to_string(&scope.materials)?;
+    let kinds = scope
+        .event_types
+        .iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut query = index.prepare_cached(
+        "SELECT f.event,f.record_hash,f.native_kind,f.native_context FROM json_each(?1) m CROSS JOIN primary_fact f ON f.material=m.value AND f.state='live' ORDER BY f.event",
+    )?;
+    let mut rows = query.query([materials])?;
+    let mut hash = blake3::Hasher::new();
+    while let Some(row) = rows.next()? {
+        let kind: Option<String> = row.get(2)?;
+        if kind.as_ref().is_none_or(|kind| !kinds.contains(kind)) {
+            continue;
+        }
+        let native: Option<Vec<u8>> = row.get(3)?;
+        let native = native
+            .as_deref()
+            .map(crate::encoding::unpack_json::<crate::primary::NativeFactContext>)
+            .transpose()?;
+        if native
+            .as_ref()
+            .and_then(|native| native.origin.producer_family.as_deref())
+            != Some(scope.family.as_str())
+        {
+            continue;
+        }
+        let id: String = row.get(0)?;
+        let record: Option<String> = row.get(1)?;
+        let id = uuid::Uuid::parse_str(&id).map_err(|error| {
+            crate::StoreError::Invalid(format!("native replay event identity: {error}"))
+        })?;
+        let record = record.ok_or_else(|| {
+            crate::StoreError::Invalid("native replay reading has no owner record hash".into())
+        })?;
+        let record = blake3::Hash::from_hex(record).map_err(|error| {
+            crate::StoreError::Invalid(format!("native replay record identity: {error}"))
+        })?;
+        hash.update(id.as_bytes());
+        hash.update(record.as_bytes());
+    }
+    Ok(hash.finalize().to_hex().to_string())
+}

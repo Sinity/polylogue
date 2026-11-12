@@ -37,7 +37,17 @@ use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 pub type ProductEmitter<'a> = dyn FnMut(ProductWrite) -> Result<()> + 'a;
-pub type ReadingProducts<'a> = dyn FnMut(&mut ProductEmitter<'_>) -> Result<()> + 'a;
+/// The existing native replay selection whose live set the caller interpreted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadingScope {
+    pub family: String,
+    pub materials: Vec<String>,
+    pub event_types: Vec<String>,
+    pub expected_live_hash: String,
+}
+
+pub type ReadingProducts<'a> =
+    dyn FnMut(&ReadingScope, &mut ProductEmitter<'_>) -> Result<String> + 'a;
 
 /// Logical names of immutable intents in the existing producer custody store.
 #[derive(Debug, Clone, PartialEq, Eq)]
