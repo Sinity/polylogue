@@ -509,10 +509,9 @@ impl Queue {
         let dependents = {
             let mut query = transaction.prepare_cached("SELECT confirmed_group FROM operation WHERE identity=?1 AND confirmed_group IS NOT NULL
           UNION SELECT child.identity FROM operation AS child JOIN operation AS parent ON parent.material=child.previous_material WHERE parent.identity=?1")?;
-            let result = query
+            query
                 .query_map([identity], |row| row.get::<_, String>(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            result
+                .collect::<rusqlite::Result<Vec<_>>>()?
         };
         for dependent in dependents {
             refresh_ready(&transaction, &dependent)?;
