@@ -396,6 +396,10 @@ fn acknowledge_groups(pending: Receiver<PendingGroup>, done: Sender<Done>) {
                                 result.checkpoint = None;
                                 result.parser_state = None;
                             }
+                            Some(Err(polylogue_store::StoreError::WriteCancelled)) => {
+                                result.write_failed = true;
+                                result.stored = 0;
+                            }
                             Some(Err(error)) => {
                                 result.error = Some(error.to_string());
                                 result.write_failed = true;

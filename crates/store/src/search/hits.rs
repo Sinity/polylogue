@@ -29,9 +29,10 @@ impl Reader<'_> {
             }
             let (table, _, _) = parts(terms.index);
             let wanted = serde_json::to_string(&pending).expect("snippet scope serializes");
-            let scope = scope_ctes(terms.index);
+            let scope = scope_ctes(terms.index, false);
             let scope_drives = self.snippet_scope_drives(&scope, terms.index, &fts, &wanted)?;
             let sql = if scope_drives {
+                let scope = scope_ctes(terms.index, true);
                 format!(
                     "WITH RECURSIVE {scope}, \
                     texts AS MATERIALIZED (SELECT DISTINCT text_id FROM eligible), \
@@ -113,7 +114,7 @@ fn parts(index: SnippetIndex) -> (&'static str, &'static str, &'static str) {
         SnippetIndex::Prose => (
             "text_fts",
             "'text'",
-            " AND (m.written_by IN ('human','model','unknown') OR m.prompt_kind='compaction_summary')",
+            " AND (m.written_by IN ('human','model','unknown') OR m.prompt_kind IS 'compaction_summary')",
         ),
         SnippetIndex::Output => ("output_fts", "'tool_result','tool_call'", ""),
     }
@@ -121,14 +122,15 @@ fn parts(index: SnippetIndex) -> (&'static str, &'static str, &'static str) {
 
 const WANTED: &str = "wanted AS MATERIALIZED (SELECT json_extract(value,'$[0]') AS ordinal,json_extract(value,'$[1]') AS pk,json_extract(value,'$[2]') AS is_session FROM json_each(?2))";
 
-fn scope_ctes(index: SnippetIndex) -> String {
+fn scope_ctes(index: SnippetIndex, materialize: bool) -> String {
     let (_, kinds, writer) = parts(index);
+    let storage = if materialize { "" } else { "NOT " };
     format!(
         "{WANTED}, \
       tree(ordinal,pk) AS (SELECT ordinal,pk FROM wanted WHERE is_session=1 \
         UNION SELECT t.ordinal,l.child_pk FROM tree t CROSS JOIN session p ON p.pk=t.pk \
         CROSS JOIN session_link l ON l.parent_id=p.id AND l.kind='spawn' WHERE l.child_pk IS NOT NULL), \
-      eligible AS NOT MATERIALIZED (\
+      eligible AS {storage}MATERIALIZED (\
         SELECT w.ordinal,b.pk AS block,b.text_id,m.session_pk,s.id AS session,m.id AS message,m.at \
         FROM wanted w CROSS JOIN message m ON m.pk=w.pk CROSS JOIN block b ON b.message_pk=m.pk \
         CROSS JOIN session s ON s.pk=m.session_pk WHERE w.is_session=0 AND b.text_id IS NOT NULL AND b.kind IN ({kinds}){writer} \
