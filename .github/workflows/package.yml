@@ -42,5 +42,7 @@ jobs:
           out=$(nix build --no-link --print-build-logs --print-out-paths "github:${GITHUB_REPOSITORY}/${REV}#default")
           echo "built $out"
           echo "out=$out" >> "$GITHUB_ENV"
-      - name: Publish its closure to sinity.cachix.org
-        run: cachix push sinity "$out"
+      - name: Publish the package and its compiler dependencies to sinity.cachix.org
+        run: |
+          dependencies=$(nix build --no-link --print-out-paths "github:${GITHUB_REPOSITORY}/${REV}#polylogue-dependencies")
+          cachix push sinity "$out" "$dependencies"

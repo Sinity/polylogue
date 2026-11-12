@@ -22,7 +22,10 @@ builds set `POLYLOGUE_REVISION` at compile time, and `--version` shows it.
 
 Native test commands select targets marked `test = true` by default, so examples without tests do not add links. An example with unit tests opts in through its Cargo manifest. Explicit Cargo target flags such as `--lib` or `--example NAME` retain their native selection. Every test command builds the whole workspace with the one feature list in `xtask/src/main.rs` (the Sinex client and the fault features), so a focused run reuses the landing check's units; selectors choose which tests run. Clippy compiles every target in that configuration and again without the Sinex client.
 
-The package, Clippy and nextest outputs share one Crane dependency build.
+The package uses a Crane dependency build with the package's exact feature
+and package selection and without test compilation. Clippy and nextest share
+a separate workspace dependency build. The `polylogue-dependencies` package
+exposes the production compiler artifacts for the package cache.
 Clippy checks the primary and standalone configurations separately. The
 nextest check runs the standalone workspace with the same engine and store
 fault features as `cargo xtask test`, without the real-process
@@ -70,7 +73,8 @@ A host may queue these commands through its own job runner.
 ## Published package
 
 The `package` workflow builds `.#default` for every master commit and pushes
-its runtime closure to `sinity.cachix.org`. Sinnix deploys a revision only
+its runtime closure and production compiler artifacts to `sinity.cachix.org`.
+The next source-only package build reuses those compiler artifacts. Sinnix deploys a revision only
 after fetching that package, so its switches never compile Polylogue. To
 deploy a revision master does not contain, such as a deployment branch's head, build
 it first with `gh workflow run package -f rev=<commit>`.
