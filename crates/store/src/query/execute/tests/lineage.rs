@@ -31,6 +31,7 @@ fn root_and_depth_queries_use_current_explicit_lineage_before_and_after_derivati
         ] {
             let mut opts = options();
             opts.page_size = Some(20);
+            opts.fields = vec!["id".into()];
             let program = crate::query::compile(query, &opts).unwrap();
             let page = reader.query_page(&program, None).unwrap();
             let ids: Vec<_> = page
@@ -48,6 +49,7 @@ fn root_and_depth_queries_use_current_explicit_lineage_before_and_after_derivati
     let reader = pool.reader().unwrap();
     let mut opts = options();
     opts.page_size = Some(20);
+    opts.fields = vec!["id".into()];
     let program = crate::query::compile("sessions where root:test:root", &opts).unwrap();
     let page = reader.query_page(&program, None).unwrap();
     assert_eq!(page.rows.len(), 1);
