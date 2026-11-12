@@ -1649,9 +1649,7 @@ impl Inner {
         bump_counter(&tx)?;
         crate::chain_progress::refresh(&tx, &source_changed)?;
         tx.commit()?;
-        if let Some(changed) = source_changed {
-            crate::chain_progress::forget(&self.archive, &changed)?;
-        }
+        crate::chain_progress::forget(&self.archive, &source_changed)?;
         self.commits
             .committed(crate::completion::Committed::CONTENT);
         self.report.transactions += 1;
@@ -2225,7 +2223,9 @@ impl Inner {
         };
         crate::fault::check("write.index_commit", "")?;
         itx.commit()?;
-        crate::chain_progress::forget(&self.archive, &source_changed)?;
+        if let Some(changed) = source_changed {
+            crate::chain_progress::forget(&self.archive, &changed)?;
+        }
         self.commits
             .committed(crate::completion::Committed::CONTENT);
         self.search.wake();
