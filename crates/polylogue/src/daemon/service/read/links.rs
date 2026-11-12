@@ -79,9 +79,9 @@ fn structural_parents(reader: &Reader<'_>, session: &str) -> Result<Vec<SessionL
 }
 
 impl<'r, 'a> Walk<'r, 'a> {
-    fn start(reader: &'r Reader<'a>, roots: Vec<String>) -> Self {
-        let starts = roots.iter().cloned().collect();
-        let links = roots
+    fn start(reader: &'r Reader<'a>, starts: Vec<String>) -> Self {
+        let starts = starts.iter().cloned().collect();
+        let links = starts
             .into_iter()
             .map(|child| SessionLink {
                 parent: String::new(),
@@ -110,7 +110,7 @@ impl<'r, 'a> Walk<'r, 'a> {
     /// whose links changed since it was issued is stale.
     fn resume(
         reader: &'r Reader<'a>,
-        roots: Vec<String>,
+        starts: Vec<String>,
         place: &LinksPlace,
     ) -> Result<Self, Failure> {
         let stale = || {
@@ -119,7 +119,7 @@ impl<'r, 'a> Walk<'r, 'a> {
                 "the links changed since the cursor was issued",
             )
         };
-        let mut walk = Self::start(reader, roots);
+        let mut walk = Self::start(reader, starts);
         let mut frames = place.frames.iter();
         let top = frames
             .next()
@@ -212,7 +212,7 @@ impl<'r, 'a> Walk<'r, 'a> {
                 return Ok(Some(Step::Cross { link }));
             }
             let (links, references) = links_of(self.reader, &link.child)?;
-            // A root counts as reached once by the walk itself.
+            // A starting position is a virtual incoming link for deduplication.
             let parents = structural_parents(self.reader, &link.child)?;
             let reaching = parents.len() + usize::from(self.starts.contains(&link.child));
             if reaching > 1 {
@@ -347,7 +347,8 @@ fn items(reader: &Reader<'_>, seed: &SessionId, step: &Step) -> Result<Vec<ReadI
                     .as_ref()
                     .map(|id| reader.lineage_root(id))
                     .transpose()?
-                    .flatten(),
+                    .flatten()
+                    .map(Box::new),
                 parents: parents
                     .iter()
                     .map(|link| format!("session:{}", link.parent))
@@ -409,13 +410,13 @@ pub(super) fn page(
     let digest = options_digest(&(options, format));
     let key = super::cursor_seal(reader)?;
     let seed = &scope.session;
-    let roots = reader
+    let starts = reader
         .lineage_starting_sessions(seed)?
         .into_iter()
         .map(|id| id.to_string())
         .collect();
     let (mut walk, direction) = match cursor.as_deref() {
-        None => (Walk::start(reader, roots), ReadDirection::After),
+        None => (Walk::start(reader, starts), ReadDirection::After),
         Some(text) => {
             let opened = PageCursor::open(text, &key).map_err(super::cursor_failure)?;
             opened
@@ -433,7 +434,7 @@ pub(super) fn page(
                     "a links reading continues forward or backward only",
                 ));
             }
-            (Walk::resume(reader, roots, place)?, opened.direction)
+            (Walk::resume(reader, starts, place)?, opened.direction)
         }
     };
     let header = super::session::header(reader, seed, target, options)?;
@@ -457,11 +458,10 @@ pub(super) fn page(
         let node = matches!(step, Step::Node { .. });
         let step_items = items(reader, seed, &step)?;
         let (size, cost) = encoded_size(&step_items);
-        if node
-            && nodes > 0
+        if !steps.is_empty()
             && (used + size > limits.bytes.get()
                 || tokens + cost > limits.tokens.get()
-                || nodes >= limits.items.get())
+                || (node && nodes >= limits.items.get()))
         {
             break;
         }

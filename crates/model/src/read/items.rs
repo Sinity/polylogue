@@ -440,7 +440,7 @@ pub enum Card {
     },
     LinkNode {
         reference: String,
-        lineage: Option<super::SessionLineage>,
+        lineage: Option<Box<super::SessionLineage>>,
         title: ValueState<String>,
         parents: Vec<String>,
         own_messages: ValueState<u64>,
