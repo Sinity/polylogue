@@ -3,7 +3,6 @@ use super::*;
 
 impl RowWriter<'_, '_> {
     pub(super) fn refresh_event(&self, pk: i64) -> Result<()> {
-        self.changes.event(self.tx, pk)?;
         self.tx.prepare_cached("UPDATE session SET changed=?2 WHERE pk=(SELECT session_pk FROM event WHERE pk=?1) AND changed IS NOT ?2")?.execute(params![pk,self.counter])?;
         let choice = self
             .choices
@@ -11,6 +10,7 @@ impl RowWriter<'_, '_> {
             .get(&pk)
             .ok_or_else(|| StoreError::Invalid("unresolved event version".into()))?;
         let Some(choice) = choice else {
+            self.changes.event(self.tx, pk)?;
             self.tx.execute("DELETE FROM event WHERE pk=?1", [pk])?;
             return Ok(());
         };
@@ -38,6 +38,37 @@ impl RowWriter<'_, '_> {
                 .transpose()?
                 .unwrap_or(0),
         };
+        let unchanged = self
+            .tx
+            .prepare_cached(
+                "SELECT session_pk IS ?2 AND seq IS ?3 AND after_message_pk IS ?4 AND at IS ?5
+             AND input_pk IS ?6 AND source_chain IS ?7 AND source_start IS ?8 AND source_end IS ?9
+             AND after_message_id IS ?11 AND seq_from_message IS ?12 AND kind IS ?13
+             AND fields IS ?14 AND data IS ?10 FROM event WHERE pk=?1",
+            )?
+            .query_row(
+                params![
+                    pk,
+                    choice.session,
+                    seq,
+                    after,
+                    choice.at,
+                    choice.input,
+                    choice.chain,
+                    choice.start,
+                    choice.end,
+                    choice.body,
+                    choice.after,
+                    choice.seq.is_none(),
+                    choice.kind,
+                    choice.fields
+                ],
+                |row| row.get::<_, bool>(0),
+            )?;
+        if unchanged {
+            return Ok(());
+        }
+        self.changes.event(self.tx, pk)?;
         self.tx.prepare_cached("UPDATE event SET session_pk=?2,seq=?3,after_message_pk=?4,at=?5,input_pk=?6,source_chain=?7,source_start=?8,source_end=?9,data=?10,after_message_id=?11,seq_from_message=?12,kind=?13,fields=?14 WHERE pk=?1")?.execute(params![pk,choice.session,seq,after,choice.at,choice.input,choice.chain,choice.start,choice.end,choice.body,choice.after,choice.seq.is_none(),choice.kind,choice.fields])?;
         Ok(())
     }

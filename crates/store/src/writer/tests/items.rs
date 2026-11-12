@@ -100,6 +100,14 @@ fn identical_lower_priority_event_claims_leave_selected_events_and_items_untouch
             .unwrap(),
         392
     );
+    let pool = ReadPool::open(&w.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let record = reader.event_record("synthetic-event-0").unwrap().unwrap();
+    assert_eq!(
+        record.identity.sources.len(),
+        2,
+        "both retained source claims are exported"
+    );
     assert_eq!(stored(&w, "s"), before);
     assert_matches_rows(&w, "s");
     let updates: i64 = conn
@@ -110,6 +118,80 @@ fn identical_lower_priority_event_claims_leave_selected_events_and_items_untouch
         (0, 0),
         "unchanged selected event updates and session item reads"
     );
+}
+
+#[test]
+fn selected_event_changes_keep_their_payload_fields_and_placement() {
+    for change in 0..6 {
+        let w = test_archive();
+        let mut input = batch(
+            "events",
+            Route::Live,
+            0,
+            vec![
+                row(0, message("anchor", Role::User, "first")),
+                row(1, message("next", Role::User, "second")),
+            ],
+            &["s"],
+        );
+        let event = Event {
+            at_quality: polylogue_model::TimeQuality::Unknown,
+            at_precision: None,
+            at_until: None,
+            session: Some(sid("s")),
+            kind: "synthetic.observation".into(),
+            at: None,
+            after: Some(MessageId::parse("claude-code:anchor").unwrap()),
+            range: Some((0, 1)),
+            data: serde_json::json!({"value": 1}),
+        };
+        input.parse[0].output.events.push(event);
+        input.parse[0]
+            .output
+            .event_ids
+            .insert(0, "synthetic-event".into());
+        w.store_reading(input.clone(), Some(&SOURCE_RECORD))
+            .unwrap();
+        assert!(w.writer.flush().unwrap().errors.is_empty());
+        let event = &mut input.parse[0].output.events[0];
+        match change {
+            0 => event.data = serde_json::json!({"value": 2}),
+            1 => event.kind = "synthetic.revised".into(),
+            2 => event.at = Timestamp::from_unix_ms(1000),
+            3 => event.after = Some(MessageId::parse("claude-code:next").unwrap()),
+            4 => event.range = Some((1, 2)),
+            5 => input.parse[0].order_from = Some(9),
+            _ => unreachable!(),
+        }
+        input.parse[0].reading_version = "synthetic=2".into();
+        let expected = input.parse[0].output.events[0].clone();
+        let mut reading = ChainReading::new().unwrap();
+        reading.push(&mut input.parse[0]).unwrap();
+        w.writer
+            .sender()
+            .unwrap()
+            .replace_chain(input.input, 1, 100, reading)
+            .unwrap();
+        w.writer.derive().unwrap();
+        let pool = ReadPool::open(&w.archive).unwrap();
+        let reader = pool.reader().unwrap();
+        assert_eq!(
+            reader
+                .event_record("synthetic-event")
+                .unwrap()
+                .unwrap()
+                .event,
+            expected,
+            "changed event field {change}"
+        );
+        if change == 5 {
+            assert_eq!(
+                reader.query("SELECT seq FROM event", &[]).unwrap()[0]["seq"],
+                9
+            );
+        }
+        assert_matches_rows(&w, "s");
+    }
 }
 
 #[test]
