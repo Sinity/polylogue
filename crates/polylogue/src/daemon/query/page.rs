@@ -10,7 +10,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-const COMPILER_VERSION: &str = "shared-query-v2";
+const COMPILER_VERSION: &str = "shared-query-v3";
 
 fn invalid(message: &str) -> Failure {
     Failure::from(Error::new(ErrorKind::InvalidQuery, message, 0))

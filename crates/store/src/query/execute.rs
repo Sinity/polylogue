@@ -1,7 +1,7 @@
 //! Executing the one compiled query and shaping declared public values.
 use super::compile::PageColumns;
 use super::{ColKind, Program};
-use crate::search::{SnippetIndex, SnippetQuery, Within};
+use crate::search::{SearchDriver, SnippetIndex, SnippetQuery, Within};
 use crate::selection::{sql_value, values};
 use crate::{Reader, SqlValue, selection::SelectionError};
 use serde_json::Value;
@@ -238,39 +238,52 @@ impl Reader<'_> {
                     super::compile::Statements::Keyed(rows) => rows.search.as_ref(),
                     _ => None,
                 };
-                let scoped = if limit != 0
+                let driver = if limit != 0
                     && let Some(search) = search
                     && let Some(scope) = &search.scope
-                    && self
-                        .search_scope_drives(
-                            &scope.blocks,
-                            &params,
-                            search.index,
-                            &search.expression,
-                        )
-                        .map_err(SelectionError::from)
-                        .map_err(E::from)?
                 {
-                    params[scope.mode - 1] = SqlValue::Int(1);
-                    true
+                    self.search_driver(
+                        &scope.blocks,
+                        &params,
+                        search.index,
+                        &search.expression,
+                        scope.recent.is_some() && !reverse && limit > 0,
+                    )
+                    .map_err(SelectionError::from)
+                    .map_err(E::from)?
                 } else {
-                    false
+                    SearchDriver::Index
                 };
-                let ranked = search.filter(|_| !scoped && !reverse && limit >= 0);
-                if let Some(search) = ranked {
-                    self.ranked_keys(&page, params, search, limit)
-                        .map_err(StreamError::Selection)
-                        .and_then(|keys| {
-                            let mut keys = keys.into_iter();
-                            loop {
-                                let chunk = keys.by_ref().take(HYDRATE_BATCH).collect::<Vec<_>>();
-                                if chunk.is_empty() {
-                                    break;
-                                }
-                                self.visit_hydrated(program, &hydrate, chunk, &mut visit)?;
+                if driver == SearchDriver::Scope {
+                    params[search.unwrap().scope.as_ref().unwrap().mode - 1] = SqlValue::Int(1);
+                }
+                let selected = search.filter(|search| {
+                    driver == SearchDriver::Recency
+                        || (driver == SearchDriver::Index
+                            && !reverse
+                            && limit >= 0
+                            && search
+                                .scope
+                                .as_ref()
+                                .is_none_or(|scope| scope.recent.is_none()))
+                });
+                if let Some(search) = selected {
+                    let keys = if driver == SearchDriver::Recency {
+                        self.recent_keys(program, &page, params, search, after, limit)
+                    } else {
+                        self.ranked_keys(&page, params, search, limit)
+                    };
+                    keys.map_err(StreamError::Selection).and_then(|keys| {
+                        let mut keys = keys.into_iter();
+                        loop {
+                            let chunk = keys.by_ref().take(HYDRATE_BATCH).collect::<Vec<_>>();
+                            if chunk.is_empty() {
+                                break;
                             }
-                            Ok(())
-                        })
+                            self.visit_hydrated(program, &hydrate, chunk, &mut visit)?;
+                        }
+                        Ok(())
+                    })
                 } else {
                     let mut keys = Vec::new();
                     self.query_each(&page, &params, |key| {
@@ -315,6 +328,83 @@ impl Reader<'_> {
         }
     }
 
+    /// One candidate cursor stays open while bounded owner batches are tested.
+    /// Only the requested page and the current batch live in Rust memory.
+    fn recent_keys(
+        &self,
+        program: &Program,
+        page: &str,
+        mut params: Vec<SqlValue>,
+        search: &super::compile::TextSearch,
+        after: Option<&[Value]>,
+        limit: i64,
+    ) -> Result<Vec<Value>, SelectionError> {
+        use super::compile::{DerivedRows, Statements};
+        let scope = search.scope.as_ref().expect("recency scope");
+        let recent = scope.recent.as_ref().expect("recency candidate keys");
+        let candidates = Statements::Derived(DerivedRows {
+            rows: recent.keys.clone(),
+            count: None,
+            members: None,
+        })
+        .page(
+            &program.order,
+            program.params.len(),
+            after.is_some(),
+            false,
+            PageColumns::All,
+        );
+        let mut candidate_params = params.clone();
+        *candidate_params.last_mut().expect("candidate page limit") = SqlValue::Int(-1);
+        let conn = self.conn()?;
+        let mut statement = conn
+            .prepare_cached(&candidates)
+            .map_err(crate::StoreError::from)?;
+        for (i, value) in candidate_params
+            .iter()
+            .take(statement.parameter_count())
+            .enumerate()
+        {
+            statement
+                .raw_bind_parameter(i + 1, value)
+                .map_err(crate::StoreError::from)?;
+        }
+        let mut candidates = statement.raw_query();
+        let mut rows = Vec::new();
+        let mut batch_size = limit.clamp(1, 256) as usize;
+        loop {
+            let mut owners = Vec::new();
+            let mut exhausted = false;
+            for _ in 0..batch_size {
+                let Some(row) = candidates.next().map_err(crate::StoreError::from)? else {
+                    exhausted = true;
+                    break;
+                };
+                owners.push(row.get::<_, i64>("_pk").map_err(crate::StoreError::from)?);
+            }
+            if owners.is_empty() {
+                break;
+            }
+            params[scope.mode - 1] = SqlValue::Int(2);
+            params[recent.owners - 1] =
+                SqlValue::Text(serde_json::to_string(&owners).expect("owner keys serialize"));
+            let remaining = limit - rows.len() as i64;
+            *params.last_mut().expect("result page limit") = SqlValue::Int(remaining);
+            let matched = self.query(page, &params)?;
+            let found = !matched.is_empty();
+            rows.extend(matched);
+            if rows.len() as i64 >= limit || exhausted {
+                break;
+            }
+            batch_size = if found {
+                (limit - rows.len() as i64).clamp(1, 256) as usize
+            } else {
+                (batch_size * 2).min(256)
+            };
+        }
+        Ok(rows)
+    }
+
     /// Enlarge the ranked text prefix until no unseen score can enter this
     /// page. Owner best scores are folded by SQL before the cursor applies,
     /// so weaker duplicate hits never reintroduce an earlier owner.
@@ -322,7 +412,7 @@ impl Reader<'_> {
         &self,
         page: &str,
         mut params: Vec<SqlValue>,
-        search: &super::compile::RankedSearch,
+        search: &super::compile::TextSearch,
         limit: i64,
     ) -> Result<Vec<Value>, SelectionError> {
         if limit == 0 {

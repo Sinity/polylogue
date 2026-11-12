@@ -31,7 +31,7 @@ impl Reader<'_> {
             let wanted = serde_json::to_string(&pending).expect("snippet scope serializes");
             let scope = scope_ctes(terms.index, false);
             let probe = format!("WITH RECURSIVE {scope} SELECT DISTINCT block FROM eligible");
-            let scope_drives = self.search_scope_drives(
+            let driver = self.search_driver(
                 &probe,
                 &[
                     crate::SqlValue::Text(fts.clone()),
@@ -39,8 +39,9 @@ impl Reader<'_> {
                 ],
                 terms.index,
                 &fts,
+                false,
             )?;
-            let sql = if scope_drives {
+            let sql = if driver == SearchDriver::Scope {
                 let scope = scope_ctes(terms.index, true);
                 format!(
                     "WITH RECURSIVE {scope}, \
@@ -75,13 +76,14 @@ impl Reader<'_> {
         Ok(hits)
     }
 
-    pub(crate) fn search_scope_drives(
+    pub(crate) fn search_driver(
         &self,
         scope: &str,
         params: &[crate::SqlValue],
         index: SnippetIndex,
         fts: &str,
-    ) -> Result<bool> {
+        recent: bool,
+    ) -> Result<SearchDriver> {
         let conn = self.conn()?;
         let (table, kinds, writer) = parts(index);
         let mut indexed = conn.prepare_cached(&format!(
@@ -94,9 +96,12 @@ impl Reader<'_> {
         // scope's size, especially across owners with no eligible blocks.
         while occurrences <= SMALL_SCOPE {
             if index_rows.next()?.is_none() {
-                return Ok(false);
+                return Ok(SearchDriver::Index);
             }
             occurrences += 1;
+        }
+        if recent {
+            return Ok(SearchDriver::Recency);
         }
         let mut scoped = conn.prepare_cached(scope)?;
         for (i, value) in params.iter().take(scoped.parameter_count()).enumerate() {
@@ -106,7 +111,7 @@ impl Reader<'_> {
         let mut blocks = 0u64;
         while blocks <= SMALL_SCOPE {
             if scope_rows.next()?.is_none() {
-                return Ok(true);
+                return Ok(SearchDriver::Scope);
             }
             blocks += 1;
         }
@@ -115,12 +120,12 @@ impl Reader<'_> {
         loop {
             while occurrences <= blocks.saturating_mul(SCOPE_ADVANTAGE) {
                 if index_rows.next()?.is_none() {
-                    return Ok(false);
+                    return Ok(SearchDriver::Index);
                 }
                 occurrences += 1;
             }
             if scope_rows.next()?.is_none() {
-                return Ok(true);
+                return Ok(SearchDriver::Scope);
             }
             blocks += 1;
         }

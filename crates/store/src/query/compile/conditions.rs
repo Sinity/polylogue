@@ -298,7 +298,7 @@ impl<'a> Compiler<'a> {
             && self.answer
             && !self.measuring
             && self.near_request.is_none()
-            && self.ranked_search.is_none()
+            && self.text_search.is_none()
             && self.input_rows.is_none()
             && matches!(scope.unit, Unit::Sessions | Unit::Messages);
         let mode = scoped.then(|| {
@@ -331,11 +331,11 @@ impl<'a> Compiler<'a> {
             if self.answer
                 && !self.measuring
                 && self.near_request.is_none()
-                && self.ranked_search.is_none()
+                && self.text_search.is_none()
             {
                 let limit = self.params.len() + 1;
                 let bound = self.bind(Param::Int(-1));
-                self.ranked_search = Some(RankedSearch {
+                self.text_search = Some(TextSearch {
                     index: rank_index,
                     expression: match_text,
                     limit,

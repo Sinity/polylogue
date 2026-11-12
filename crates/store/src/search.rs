@@ -19,6 +19,13 @@ use polylogue_model::text::{key, tokens};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SearchDriver {
+    Index,
+    Scope,
+    Recency,
+}
+
 /// The words of `text` as the index splits them: runs of letters and
 /// digits, lowercased, letters with a stroke folded as the index folds
 /// them. Punctuation in pasted paths and identifiers splits words instead

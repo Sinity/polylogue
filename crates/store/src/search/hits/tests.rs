@@ -8,7 +8,7 @@ use std::sync::{
 fn scope_drives(reader: &Reader<'_>, fts: &str, wanted: &str) -> bool {
     let scope = scope_ctes(SnippetIndex::Prose, false);
     reader
-        .search_scope_drives(
+        .search_driver(
             &format!("WITH RECURSIVE {scope} SELECT DISTINCT block FROM eligible"),
             &[
                 crate::SqlValue::Text(fts.into()),
@@ -16,8 +16,10 @@ fn scope_drives(reader: &Reader<'_>, fts: &str, wanted: &str) -> bool {
             ],
             SnippetIndex::Prose,
             fts,
+            false,
         )
         .unwrap()
+        == SearchDriver::Scope
 }
 
 #[test]

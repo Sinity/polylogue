@@ -36,6 +36,8 @@ For this cost decision, the word's frequency counts eligible block occurrences b
 
 When scope drives a batch of snippets, eligible block identities are materialized once for the text probes and source selection. The planning probe streams those identities so deciding the plan does not first read the whole scope.
 
+For a frequent word in a direct newest-first session or message sort, candidate owners stream in the requested time order. Bounded current batches use the same scoped best-source selection. Reading continues until the page fills or the candidates end; a batch size never limits the answer. Shared descendants cannot return an owner outside the current batch or repeat an owner from an earlier batch. Only the returned order values enter the continuation.
+
 ## Counts
 
 `count` is the exact number of matching rows, computed after the page, snippets, attachments and requested explanations by a separate count plan in the same read transaction, and cached by the bound question and read position. Continuations reuse a count from that position. A cache miss or a changed read position runs the exact count again within the remaining deadline. If that deadline stops the count, `count` is `null` and `notes` give a runnable query with the deadline lifted; the prepared answer is unaffected. A count is never estimated.
