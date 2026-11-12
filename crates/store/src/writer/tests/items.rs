@@ -1155,17 +1155,29 @@ fn reply_batches_keep_changed_and_unchanged_parent_branch_points_current() {
     let mut reply = message("last-reply", Role::Assistant, "another root reply");
     reply.parent = Some(root.id.clone());
     reply.at = Timestamp::from_unix_ms(6000);
+    let mut corrected = row(0, root.clone());
+    corrected.end = 211;
     w.store_reading(
         batch(
             "replies",
             Route::Live,
             200,
-            vec![row(210, root), row(211, reply)],
+            vec![corrected, row(211, reply)],
             &["s"],
         ),
         Some(&SOURCE_RECORD),
     )
     .unwrap();
     assert!(w.writer.flush().unwrap().errors.is_empty());
+    let pool = ReadPool::open(&w.archive).unwrap();
+    let selected = pool
+        .reader()
+        .unwrap()
+        .message_with_projection(&root.id)
+        .unwrap()
+        .unwrap()
+        .0;
+    assert_eq!(selected.blocks, root.blocks);
+    assert_eq!(selected.at, Timestamp::from_unix_ms(1000));
     assert_matches_rows(&w, "s");
 }

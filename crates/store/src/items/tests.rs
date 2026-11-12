@@ -158,6 +158,7 @@ fn reply_parent_boundary_work_follows_the_changed_batch() {
     };
     let small = work(64);
     let large = work(1024);
+    eprintln!("reply-parent VM steps: 64={small}, 1024={large}");
     assert!(
         large <= small * 24,
         "16 times the changed reply rows took {small} -> {large} VM steps"
