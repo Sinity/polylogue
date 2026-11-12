@@ -650,6 +650,11 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
     let running = sinex(home.dir.path());
     let sdk = connect(&running.config);
     let build = |source_home: &Path, wanted: &[polylogue_model::Message]| {
+        let observed_length = (source_home == home.home).then(|| {
+            fs::metadata(home.file("original-session.jsonl"))
+                .unwrap()
+                .len()
+        });
         let (archive, lock) = Archive::open_primary(&home.root, &running.config.store).unwrap();
         let mut config = home.config(1 << 20);
         config.home = source_home.into();
@@ -684,13 +689,18 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
             &commits,
             Instant::now(),
             (&archive, &sdk, &running),
-            |_| {
+            |pass| {
                 let pool = ReadPool::open(&archive)?;
                 let reader = pool.reader()?;
-                let status = sdk.status().unwrap();
-                Ok(reader.messages(&session, false)? == wanted
-                    && status.prepared_materials == 0
-                    && status.prepared_writes == 0)
+                let source_applied = match observed_length {
+                    None => true,
+                    Some(length) => reader.query(
+                        "SELECT EXISTS(SELECT 1 FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk JOIN source_revision r ON r.input=i.id AND r.chain=p.chain WHERE i.format='claude-code' AND r.length=?1 AND (p.parsed_upto>=r.length OR (p.status IN ('waiting','refused','failed') AND p.at_length=r.length))) AS ready", &[serde_json::json!(length)],
+                    )?[0]["ready"] == 1,
+                };
+                Ok(!pass.capture_pending
+                    && source_applied
+                    && reader.messages(&session, false)? == wanted)
             },
             || {
                 let actual = ReadPool::open(&archive)
