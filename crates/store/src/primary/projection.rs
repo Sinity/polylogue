@@ -558,9 +558,7 @@ fn plan(index: &Connection) -> Result<Plan> {
     let mut rows = query.query([])?;
     while let Some(row) = rows.next()? {
         let fact = Fact::read(row)?;
-        if matches!(fact.kind.as_str(), "reading" | "reading_progress")
-            && fact.changed != fact.admitted
-        {
+        if fact.kind == "reading" && fact.changed != fact.admitted {
             if let (Some(input), Some(chain), Some(version)) =
                 (&fact.input, fact.chain, &fact.version)
             {

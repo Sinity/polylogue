@@ -83,8 +83,9 @@ pub(super) fn retain_source_records(
     if all {
         return Ok(());
     }
-    step.source_prefix_missing = true;
-    // A hidden value cannot supply the parser's resume context on this receiver.
+    // Intentional native suppression changes visible contributions, not the
+    // bytes the original parser processed. Its missing values cannot supply
+    // this receiver's resume context.
     step.checkpoint = None;
     let event_ids = step.event_identities(&input.id, chain)?;
     let output = &mut step.output;

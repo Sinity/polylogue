@@ -131,3 +131,140 @@ fn native_ack_does_not_cover_a_rolled_back_interpretation_at_an_old_cursor() {
     wrong.producer = "another-producer".into();
     assert!(!processed(&index, &replacement, &wrong));
 }
+
+#[test]
+fn native_parser_diagnostic_lifecycle_preserves_the_local_model_and_processed_source() {
+    use crate::primary::{Confirmed, ConfirmedChange, Product, ReplayControl};
+    let directory = tempfile::tempdir().unwrap();
+    let mut index = Connection::open(directory.path().join("index.db")).unwrap();
+    crate::schema::ensure_primary_index(&index).unwrap();
+    let original = interpretation("locally parsed original", "synthetic=1");
+    let receipt = publication("original-frame", 11);
+    apply(&mut index, original.clone(), &receipt).unwrap();
+    let archive = Archive::on_sinex(directory.path(), &directory.path().join("bytes"));
+    let resolver = resolve::Resolver::new(&archive, &index, None).unwrap();
+    let diagnostic = Product::ParseProgress {
+        reading: source(&original).reading,
+        counts: Default::default(),
+        reset: true,
+        comparison: None,
+        checkpoint: None,
+        stopped_attempt: None,
+        semantic_event_ids: None,
+    };
+    for (position, change) in [
+        (1, ConfirmedChange::Live(Box::new(diagnostic))),
+        (2, ConfirmedChange::Archived),
+        (3, ConfirmedChange::Restored),
+        (4, ConfirmedChange::Tombstoned),
+    ] {
+        crate::primary::projection::apply(
+            &mut index,
+            &resolver,
+            &[
+                Confirmed {
+                    native: None,
+                    position,
+                    output_index: 0,
+                    event: "diagnostic".into(),
+                    change,
+                },
+                Confirmed {
+                    native: None,
+                    position: 0,
+                    output_index: 0,
+                    event: String::new(),
+                    change: ConfirmedChange::Control(Box::new(ReplayControl::Completion {
+                        position,
+                        delivery: None,
+                    })),
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(text(&index), "locally parsed original");
+        assert!(
+            crate::primary::projection::processed_source(&index, &source(&original), &receipt)
+                .unwrap()
+        );
+    }
+}
+
+#[test]
+fn an_archived_value_does_not_turn_a_processed_incomplete_tail_into_an_unknown_prefix() {
+    use crate::primary::{Confirmed, ConfirmedChange, ReplayControl};
+    let directory = tempfile::tempdir().unwrap();
+    let mut index = Connection::open(directory.path().join("index.db")).unwrap();
+    crate::schema::ensure_primary_index(&index).unwrap();
+    let mut original = interpretation("archived original", "synthetic=1");
+    original.parse[0].parsed_upto = 90;
+    let message = crate::primary::products::parse(
+        &original.input,
+        1,
+        Some(original.length),
+        &original.parse[0],
+    )
+    .unwrap()
+    .into_iter()
+    .find(|product| matches!(product, crate::primary::Product::Message { .. }))
+    .unwrap();
+    let archive = Archive::on_sinex(directory.path(), &directory.path().join("bytes"));
+    let resolver = resolve::Resolver::new(&archive, &index, None).unwrap();
+    for (position, change) in [
+        (1, ConfirmedChange::Live(Box::new(message))),
+        (2, ConfirmedChange::Archived),
+    ] {
+        crate::primary::projection::apply(
+            &mut index,
+            &resolver,
+            &[
+                Confirmed {
+                    native: None,
+                    position,
+                    output_index: 0,
+                    event: "hidden-message".into(),
+                    change,
+                },
+                Confirmed {
+                    native: None,
+                    position: 0,
+                    output_index: 0,
+                    event: String::new(),
+                    change: ConfirmedChange::Control(Box::new(ReplayControl::Completion {
+                        position,
+                        delivery: None,
+                    })),
+                },
+            ],
+        )
+        .unwrap();
+    }
+    let receipt = publication("processed-hidden-source", 12);
+    apply(&mut index, original.clone(), &receipt).unwrap();
+    assert_eq!(
+        index
+            .query_row("SELECT count(*) FROM message", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        index
+            .query_row(
+                "SELECT status,parsed_upto,at_length FROM parse_state",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                }
+            )
+            .unwrap(),
+        ("waiting".into(), 90, 100)
+    );
+    assert!(
+        crate::primary::projection::processed_source(&index, &source(&original), &receipt).unwrap()
+    );
+}

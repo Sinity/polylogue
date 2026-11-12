@@ -72,13 +72,13 @@ pub trait Sinex: Send + Sync {
         length: u64,
         body: PreparedBody,
     ) -> Result<PreparedWrite>;
-    /// Stages all member bodies and private facts before one durable group publication.
+    /// Stages member bodies and acquisition metadata before one durable group publication.
     fn prepare_input_group(
         &self,
         plan: &CapturePlan,
         members: &mut CaptureMembers<'_>,
     ) -> Result<CaptureReceipt>;
-    /// Reads only local durable source headers and one verified selected control.
+    /// Reads local durable acquisition headers.
     fn pending_source(
         &self,
         source: &SourceSelector,
@@ -102,7 +102,7 @@ pub trait Sinex: Send + Sync {
     /// network I/O: its one encoding, or its chunks' in order.
     fn capture_body(&self, identity: &str) -> Result<Vec<PreparedBody>>;
     fn pending_captures(&self) -> Result<Vec<PendingCapture>>;
-    /// Loads complete private facts for one ready capture, never the whole queue.
+    /// Loads immutable acquisition metadata for one capture.
     fn capture(&self, identity: &str) -> Result<Capture>;
     fn complete_captures(
         &self,

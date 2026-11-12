@@ -1,4 +1,4 @@
-//! Full product facts exchanged with the confirmed-stream adapter.
+//! Original interpretations, native eligibility and durable authored facts.
 use crate::input_rows::InputRows;
 use crate::writer::InputKey;
 use polylogue_model::authored::PreparedRequest;
@@ -9,7 +9,7 @@ use polylogue_model::{
 use serde::{Deserialize, Serialize};
 mod eligibility;
 pub use eligibility::SourceRecord;
-pub(crate) use eligibility::{allowed, scope_hash};
+pub(crate) use eligibility::{allowed, needs_publication, scope_hash};
 mod export;
 pub use export::ExportReadingKey;
 
@@ -174,7 +174,7 @@ impl Material {
     }
 }
 
-/// Complete parser and authored facts; rebuilding the cache requires no parsing.
+/// Interpretation writes and confirmed source or authored records.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "product", rename_all = "snake_case")]
 pub enum Product {

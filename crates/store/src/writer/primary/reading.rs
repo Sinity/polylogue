@@ -89,8 +89,11 @@ impl WriterSender {
                 for write in &mut writes {
                     let record =
                         crate::primary::SourceRecord::of(&write.product)?.expect("source identity");
-                    write.publish =
-                        crate::primary::products::allowed(&snapshot, &source.reading, &record)?;
+                    write.publish = crate::primary::products::needs_publication(
+                        &snapshot,
+                        &source.reading,
+                        &record,
+                    )?;
                 }
                 writes
             };
@@ -254,10 +257,14 @@ impl WriterSender {
                 params![input.id,chain], |row| row.get(0),
             )?
         };
-        if partial {
-            // A read through an unfinished record observes a prefix, not a
-            // replacement output set. Use the ordinary bounded publisher;
-            // the local partial reading still commits atomically below.
+        let supersedes_live_version: bool = open()?.query_row(
+            "SELECT EXISTS(SELECT 1 FROM primary_fact WHERE input=?1 AND chain=?2 AND state='live' AND kind='reading' AND reading_version!=?3)",
+            params![input.id,chain,key.reading_version], |row| row.get(0),
+        )?;
+        if partial || !supersedes_live_version {
+            // Reconstruction and unfinished reads observe values; only a
+            // complete new parser version replaces the native output set.
+            // Local reconstruction still commits atomically below.
             let mut publication = None;
             source.visit_source(|step| {
                 open()?;
@@ -280,7 +287,7 @@ impl WriterSender {
                 Ok(())
             })?;
             let publication = publication.ok_or_else(|| {
-                StoreError::Invalid("a partial reading has no admitted interpretation".into())
+                StoreError::Invalid("a reconstruction has no admitted interpretation".into())
             })?;
             let mut index = open()?;
             let snapshot = index.transaction()?;

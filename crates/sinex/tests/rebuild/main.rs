@@ -784,6 +784,16 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
         ),
         1
     );
+    let native_tool_ids = || {
+        native_rows(
+            &running,
+            "events where event_type = polylogue.tool_call | fields id",
+        )
+        .into_iter()
+        .map(|row| row["id"].as_str().unwrap().to_owned())
+        .collect::<std::collections::BTreeSet<_>>()
+    };
+    let original_tool_ids = native_tool_ids();
     let before = reader.session_export(&session).unwrap().unwrap();
     drop(reader);
     drop(pool);
@@ -801,6 +811,7 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
         .unwrap()
         .unwrap();
     assert_eq!(after, before);
+    assert_eq!(native_tool_ids(), original_tool_ids);
 
     let selected = native::request(
         &running.socket,

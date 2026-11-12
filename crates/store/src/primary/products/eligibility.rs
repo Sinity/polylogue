@@ -143,6 +143,20 @@ impl SourceRecord {
     }
 }
 
+fn known(index: &Connection, reading: &Reading, record: &SourceRecord) -> Result<Option<bool>> {
+    Ok(index.query_row(
+        "SELECT max(state='live') FROM primary_fact WHERE input=?1 AND chain=?2 AND reading_version=?3 AND reference=?4 AND value_hash=?5",
+        params![reading.input.id,reading.chain,reading.reading_version,record.reference,record.value_hash.0.as_slice()], |row| row.get(0),
+    )?)
+}
+
+fn uncovered(index: &Connection, reading: &Reading, record: &SourceRecord) -> Result<bool> {
+    Ok(!index.query_row(
+        "SELECT EXISTS(SELECT 1 FROM primary_fact WHERE kind='reading_progress' AND input=?1 AND chain=?2 AND reading_version=?3 AND step_start<=?4 AND step_end>=?5)",
+        params![reading.input.id,reading.chain,reading.reading_version,record.start,record.end], |row| row.get::<_,bool>(0),
+    )?)
+}
+
 /// A covered interpretation's absent outputs stay absent. Otherwise a cold
 /// reconstruction would republish a reading explicitly archived or erased.
 pub(crate) fn allowed(
@@ -150,17 +164,20 @@ pub(crate) fn allowed(
     reading: &Reading,
     record: &SourceRecord,
 ) -> Result<bool> {
-    let (known, live): (bool,bool) = index.query_row(
-        "SELECT count(*)>0,coalesce(max(state='live'),0) FROM primary_fact WHERE input=?1 AND chain=?2 AND reading_version=?3 AND reference=?4 AND value_hash=?5",
-        params![reading.input.id,reading.chain,reading.reading_version,record.reference,record.value_hash.0.as_slice()], |row| Ok((row.get(0)?,row.get(1)?)),
-    )?;
-    if known {
-        return Ok(live);
+    match known(index, reading, record)? {
+        Some(live) => Ok(live),
+        None => uncovered(index, reading, record),
     }
-    Ok(!index.query_row(
-        "SELECT EXISTS(SELECT 1 FROM primary_fact WHERE kind='reading_progress' AND input=?1 AND chain=?2 AND reading_version=?3 AND step_start<=?4 AND step_end>=?5)",
-        params![reading.input.id,reading.chain,reading.reading_version,record.start,record.end], |row| row.get::<_,bool>(0),
-    )?)
+}
+
+/// Confirmed values already have native custody. Reconstructing the local
+/// index must not replace them merely because the parser's batch changed.
+pub(crate) fn needs_publication(
+    index: &Connection,
+    reading: &Reading,
+    record: &SourceRecord,
+) -> Result<bool> {
+    Ok(known(index, reading, record)?.is_none() && uncovered(index, reading, record)?)
 }
 
 /// Match the owner's existing replay precondition, using only verified native

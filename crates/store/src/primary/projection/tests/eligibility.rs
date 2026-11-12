@@ -1,5 +1,5 @@
 use super::*;
-use crate::primary::products::{SourceRecord, allowed};
+use crate::primary::products::{SourceRecord, allowed, needs_publication};
 
 fn message(input: &str, offset: u64) -> Product {
     let mut step = crate::ParseStep::new(Default::default(), Default::default(), 0..100, true);
@@ -64,6 +64,14 @@ fn native_lifecycle_selects_exact_original_values_and_preserves_independent_sour
         )
         .unwrap()
     };
+    assert!(
+        needs_publication(
+            &index,
+            first.reading().unwrap(),
+            &SourceRecord::of(&first).unwrap().unwrap()
+        )
+        .unwrap()
+    );
     apply(
         &mut index,
         &resolver,
@@ -97,6 +105,14 @@ fn native_lifecycle_selects_exact_original_values_and_preserves_independent_sour
         )
         .unwrap();
         assert_eq!(visible(&index, &first), kept);
+        assert!(
+            !needs_publication(
+                &index,
+                first.reading().unwrap(),
+                &SourceRecord::of(&first).unwrap().unwrap()
+            )
+            .unwrap()
+        );
         assert!(visible(&index, &independent));
     }
     drop(index);
