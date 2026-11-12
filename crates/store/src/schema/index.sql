@@ -311,7 +311,6 @@ CREATE TABLE link (
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk)  -- the input holding that field
 ) STRICT;
 CREATE UNIQUE INDEX link_statement ON link(parent_id, child_id, kind, how IS NULL, coalesce(how,''), branch_point IS NULL, coalesce(branch_point,''), spawning_call IS NULL, coalesce(spawning_call,''));
-CREATE INDEX link_child  ON link(child_pk);                    -- parents
 CREATE INDEX link_child_id ON link(child_id);   -- parents by id; late children
 CREATE INDEX link_branch_point ON link(branch_point) WHERE branch_point IS NOT NULL;
 CREATE INDEX link_parent ON link(parent_id, kind);             -- children; late parents
@@ -438,7 +437,6 @@ CREATE TABLE event (
 CREATE UNIQUE INDEX event_id ON event(id);
 CREATE INDEX event_session ON event(session_pk, seq);
 CREATE INDEX event_input   ON event(input_pk, source_chain, source_start);
-CREATE INDEX event_after   ON event(after_message_pk) WHERE after_message_pk IS NOT NULL;
 CREATE INDEX event_after_id ON event(after_message_id) WHERE after_message_id IS NOT NULL;
 CREATE INDEX event_unanchored ON event(session_pk, at) WHERE after_message_pk IS NULL;   -- events placed by time
 CREATE INDEX event_kind    ON event(kind, at);

@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn existing_indexes_gain_context_reverse_lookup_without_reparse() {
+fn existing_indexes_gain_writer_reverse_lookups_without_reparse() {
     assert!(!crate::writer::deferred_index_names().any(|name| name == "parser_context_version"));
     for primary in [false, true] {
         for building in [false, true] {
@@ -21,9 +21,23 @@ fn existing_indexes_gain_context_reverse_lookup_without_reparse() {
                  INSERT INTO parser_context VALUES(1,17,'synthetic',4,'independent',x'6f74686572',NULL);
                  INSERT INTO parse_state(input_pk,chain,status,parsed_upto,reading_version,checkpoint)
                      VALUES(1,17,'partial',4,'synthetic',x'636865636b706f696e74');
-                 DROP INDEX parser_context_version;"
+                 INSERT INTO session(pk,id,origin,native_id,kind,changed)
+                     VALUES(1,'claude-code:context','claude-code','context','main',1);
+                 INSERT INTO message(pk,id,session_pk,session_order,role,written_by,input_pk)
+                     VALUES(1,'claude-code:anchor',1,'0','user','human',1);
+                 INSERT INTO event(pk,id,session_pk,seq,after_message_pk,kind,input_pk,fields,data)
+                     VALUES(1,'synthetic-event',1,0,1,'synthetic',1,x'6669656c6473',x'64617461');
+                 INSERT INTO link(pk,parent_id,child_id,child_pk,kind,evidence,input_pk)
+                     VALUES(1,'claude-code:parent','claude-code:context',1,'fork','synthetic',1);
+                 DROP INDEX parser_context_version;
+                 DROP INDEX event_after;
+                 CREATE INDEX event_after   ON event(after_message_pk) WHERE after_message_pk IS NOT NULL;
+                 DROP INDEX link_child;
+                 CREATE INDEX link_child  ON link(child_pk);"
             ).unwrap();
             if building {
+                conn.execute_batch("DROP INDEX event_after; DROP INDEX link_child")
+                    .unwrap();
                 conn.execute(
                     "INSERT OR REPLACE INTO meta(key,value) VALUES('building','1')",
                     [],
@@ -39,10 +53,33 @@ fn existing_indexes_gain_context_reverse_lookup_without_reparse() {
             }
             let retained = snapshot(&conn);
             let identity = index_identity(&conn).unwrap();
+            let roots = || {
+                conn.prepare(
+                    "SELECT name,rootpage FROM sqlite_schema WHERE type='table' ORDER BY name",
+                )
+                .unwrap()
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+            };
+            let table_roots = roots();
             for _ in 0..2 {
                 ensure(&conn).unwrap();
                 assert_eq!(snapshot(&conn), retained);
                 assert_eq!(index_identity(&conn).unwrap(), identity);
+                assert_eq!(roots(), table_roots, "table storage must stay in place");
+                assert_eq!(conn.query_row("SELECT hex(fields)||':'||hex(data)||':'||after_message_pk FROM event WHERE pk=1",[],|r|r.get::<_,String>(0)).unwrap(),"6669656C6473:64617461:1");
+                assert_eq!(
+                    conn.query_row(
+                        "SELECT parent_id||':'||child_id||':'||child_pk FROM link WHERE pk=1",
+                        [],
+                        |r| r.get::<_, String>(0)
+                    )
+                    .unwrap(),
+                    "claude-code:parent:claude-code:context:1"
+                );
+                assert_eq!(conn.query_row("SELECT count(*) FROM sqlite_schema WHERE name IN('event_after','link_child')",[],|r|r.get::<_,i64>(0)).unwrap(),2);
                 assert_eq!(version(&conn).unwrap(), INDEX_VERSION);
                 assert_eq!(crate::schema::building(&conn).unwrap(), building);
                 assert_eq!(conn.query_row("SELECT count(*) FROM sqlite_master WHERE type='index' AND name='parser_context_version'",[],|r|r.get::<_,i64>(0)).unwrap(),1);
