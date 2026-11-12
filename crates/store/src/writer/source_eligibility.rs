@@ -70,13 +70,10 @@ pub(super) fn retain_source_records(
         let reading = product.reading().expect("parser fact has source");
         let record = SourceRecord::of(&product)?.expect("parser fact has identity");
         let keep = allowed(index, reading, &record)?;
-        // Native tool facts expose the call separately; its local blocks belong
-        // to the complete message reading, as they do in standalone mode.
-        if record.family == "tool_call" {
+        // The message owns its local tool blocks. Native parser diagnostics
+        // do not own the original parser's local checkpoint or completeness.
+        if matches!(record.family.as_str(), "tool_call" | "parse_progress") {
             continue;
-        }
-        if record.family == "parse_progress" {
-            step.source_prefix_missing |= !keep;
         }
         masks.entry(record.family.clone()).or_default().push(keep);
         records.push((record, keep));

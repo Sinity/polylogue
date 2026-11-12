@@ -705,7 +705,10 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
             || {
                 let actual = ReadPool::open(&archive)
                     .and_then(|pool| pool.reader()?.messages(&session, false));
-                format!("expected {wanted:?}; actual {actual:?}")
+                let progress = ReadPool::open(&archive).and_then(|pool| pool.reader()?.query(
+                    "SELECT i.id,p.chain,p.status,p.parsed_upto,p.at_length,p.reading_version FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk", &[],
+                ));
+                format!("expected {wanted:?}; actual {actual:?}; parser progress {progress:?}")
             },
         );
         engine.writer().unwrap().derive().unwrap();
@@ -714,6 +717,7 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
         archive
     };
     build(&home.home, &expected_messages);
+    exact_crossdomain_evidence(&running);
     let tails = [
         claude_user("user-2", "original-session", "The draft is available."),
         claude_assistant("assistant-2", "original-session", "Inspection finished."),
@@ -780,7 +784,6 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
         ),
         1
     );
-    exact_crossdomain_evidence(&running);
     let before = reader.session_export(&session).unwrap().unwrap();
     drop(reader);
     drop(pool);
