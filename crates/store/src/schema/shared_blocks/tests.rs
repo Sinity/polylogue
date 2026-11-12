@@ -210,12 +210,11 @@ fn shared_block_conversion_keeps_inline_selected_text() {
         )
         .unwrap();
     assert_eq!(encoding::unpack_block(&packed).unwrap(), block);
-    assert_eq!(
+    assert!(
         conn.query_row("SELECT text_id IS NULL FROM block WHERE pk=23", [], |row| {
             row.get::<_, bool>(0)
         })
-        .unwrap(),
-        true
+        .unwrap()
     );
     assert_eq!(
         conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
