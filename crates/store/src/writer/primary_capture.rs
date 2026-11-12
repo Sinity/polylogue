@@ -1007,6 +1007,7 @@ impl Inner {
                                 machine: machine.clone(),
                                 parents: Vec::new(),
                                 output_index: writes.len() as u64,
+                                publish: true,
                             });
                         }
                     }

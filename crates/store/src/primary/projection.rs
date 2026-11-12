@@ -103,7 +103,7 @@ fn stage(index: &mut Connection, events: &[Confirmed]) -> Result<()> {
             ConfirmedChange::Refused { .. } => "refused",
             ConfirmedChange::Control(_) => unreachable!(),
         };
-        let change = match &event.change {
+        let interpreted_change = match &event.change {
             ConfirmedChange::Live(product) if product.reading().is_some() => {
                 ConfirmedChange::Live(Box::new(Product::Interpreted {
                     reading: product.reading().expect("matched source reading").clone(),
@@ -112,7 +112,7 @@ fn stage(index: &mut Connection, events: &[Confirmed]) -> Result<()> {
             }
             change => change.clone(),
         };
-        let bytes = packed(&change)?;
+        let bytes = packed(&interpreted_change)?;
         let native = event.native.as_ref().map(packed).transpose()?;
         let source_order = i64::try_from(event.output_index).map_err(|_| {
             StoreError::Invalid(

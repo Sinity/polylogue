@@ -27,6 +27,7 @@ use std::thread::JoinHandle;
 mod assertions;
 mod assets;
 mod dispatch;
+mod source_eligibility;
 pub use dispatch::ParentLifetime;
 #[cfg(any(test, feature = "fixture"))]
 pub use dispatch::{DispatchBarrier, DispatchPhase};
