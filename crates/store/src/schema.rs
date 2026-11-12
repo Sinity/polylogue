@@ -311,23 +311,11 @@ pub fn ensure_archive(conn: &Connection) -> Result<()> {
 }
 
 fn relax_assertion_time(tx: &rusqlite::Transaction<'_>) -> Result<()> {
-    // Parent rows are reinserted after the replacement exists, so deferred
-    // checks see the same keys again. Foreign-key enforcement stays enabled;
-    // this transaction never exposes a missing parent to another connection.
-    tx.pragma_update(None, "defer_foreign_keys", true)?;
-    tx.execute_batch(
-        "CREATE TEMP TABLE assertion_transition AS SELECT rowid AS original_rowid,* FROM assertion;
-        DROP TABLE assertion;",
-    )?;
+    // Relax the constraint without rewriting assertion rows or their inbound
+    // references. The register remains under the same immediate transaction.
+    tx.execute_batch("ALTER TABLE assertion ALTER COLUMN created_at DROP NOT NULL")?;
     let current = Connection::open_in_memory()?;
     current.execute_batch(ARCHIVE)?;
-    let declarations: Vec<String> = current.prepare("SELECT sql FROM sqlite_schema WHERE tbl_name='assertion' AND sql IS NOT NULL ORDER BY CASE type WHEN 'table' THEN 0 ELSE 1 END,name")?
-        .query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
-    for declaration in declarations {
-        tx.execute_batch(&declaration)?;
-    }
-    tx.execute_batch(&format!("INSERT INTO assertion(rowid,{}) SELECT original_rowid,{} FROM temp.assertion_transition; DROP TABLE temp.assertion_transition;",
-        crate::assertions::COLUMNS, crate::assertions::COLUMNS))?;
     let provenance: String = current.query_row(
         "SELECT sql FROM sqlite_schema WHERE type='table' AND name='assertion_import'",
         [],
@@ -340,11 +328,6 @@ fn relax_assertion_time(tx: &rusqlite::Transaction<'_>) -> Result<()> {
         |r| r.get(0),
     )?;
     crate::fault::check("archive.authored_time_transition", &file)?;
-    if tx.prepare("PRAGMA foreign_key_check")?.exists([])? {
-        return Err(StoreError::Invalid(
-            "authored-time transition found a foreign-key violation".into(),
-        ));
-    }
     if shape(tx)? != shape(&current)? {
         return Err(StoreError::Invalid(
             "authored-time transition did not produce the current register".into(),

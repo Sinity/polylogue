@@ -27,8 +27,7 @@ mod write;
 pub(crate) use write::{WriteContext, revise_preparing, write_preparing};
 
 pub const SCHEMA: &str = include_str!("schema/assertions.sql");
-pub(crate) const COLUMNS: &str =
-    "id,root,kind,key,value,author,via,machine,created_at,valid_until,commit_seq";
+const COLUMNS: &str = "id,root,kind,key,value,author,via,machine,created_at,valid_until,commit_seq";
 
 fn invalid(message: &str) -> StoreError {
     StoreError::Invalid(message.into())

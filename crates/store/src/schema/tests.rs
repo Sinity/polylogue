@@ -387,8 +387,10 @@ fn register_transition_preserves_all_durable_rows_and_known_times_and_repeats() 
     conn.pragma_update(None, "foreign_keys", true).unwrap();
     archive_before_unknown_time(&conn);
     let before = durable_rows(&conn);
+    let changes = conn.total_changes();
     ensure_archive(&conn).unwrap();
     assert_eq!(version(&conn).unwrap(), 2);
+    assert_eq!(conn.total_changes(), changes);
     assert_eq!(durable_rows(&conn), before);
     assert_eq!(
         conn.query_row(
@@ -412,6 +414,7 @@ fn register_transition_preserves_all_durable_rows_and_known_times_and_repeats() 
     );
     ensure_archive(&conn).unwrap();
     assert_eq!(durable_rows(&conn), before);
+    assert_eq!(conn.total_changes(), changes);
     conn.execute("INSERT INTO assertion(id,root,kind,value,author,via,machine,created_at,commit_seq) VALUES ('undated','undated','rubric','{}','unattributed','import','host',NULL,20)",[]).unwrap();
     assert_eq!(
         conn.query_row(
