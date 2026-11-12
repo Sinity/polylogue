@@ -35,7 +35,7 @@ struct Changed {
     /// Events whose row changed, with the session each had before.
     events: BTreeMap<i64, Option<i64>>,
     /// Sessions whose links as a child changed, by session ID.
-    link_children: BTreeSet<String>,
+    link_children: BTreeMap<String, String>,
     /// Sessions to bring up to date from their first unit: a change the
     /// writer does not describe row by row.
     whole: BTreeSet<i64>,
@@ -111,11 +111,33 @@ impl ChangeSummary {
     }
 
     /// Records the child of a link before the link changes or is inserted.
-    pub(crate) fn link_child(&self, child: &str) {
-        self.changed
-            .borrow_mut()
-            .link_children
-            .insert(child.to_owned());
+    pub(crate) fn link_child(&self, conn: &Connection, child: &str) -> Result<()> {
+        if !self.changed.borrow().link_children.contains_key(child) {
+            let before = crate::lineage::relation_identity(conn, child)?;
+            self.changed
+                .borrow_mut()
+                .link_children
+                .insert(child.to_owned(), before);
+        }
+        Ok(())
+    }
+
+    /// Advance once per transaction only when its visible relations or their
+    /// stored order changed. Exact re-reading of the same facts is a no-op.
+    pub(crate) fn finish_links(&self, conn: &Connection) -> Result<()> {
+        for (child, before) in &self.changed.borrow().link_children {
+            if *before != crate::lineage::relation_identity(conn, child)? {
+                let previous: i64 = conn.prepare_cached(
+                    "SELECT coalesce((SELECT CAST(value AS INTEGER) FROM meta WHERE key='relationship_revision'),0)",
+                )?.query_row([], |row| row.get(0))?;
+                let next = previous.checked_add(1).ok_or_else(|| {
+                    crate::StoreError::Invalid("relationship revision exhausted".into())
+                })?;
+                conn.prepare_cached("INSERT INTO meta(key,value) VALUES ('relationship_revision',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value")?.execute([next.to_string()])?;
+                break;
+            }
+        }
+        Ok(())
     }
 
     /// Records a link by its row before it changes or is deleted.
@@ -125,7 +147,7 @@ impl ChangeSummary {
             .query_row([pk], |row| row.get(0))
             .optional()?;
         if let Some(child) = child {
-            self.link_child(&child);
+            self.link_child(conn, &child)?;
         }
         Ok(())
     }
@@ -208,7 +230,7 @@ impl ChangeSummary {
             }
         }
         let mut child = conn.prepare_cached("SELECT pk FROM session WHERE id = ?1")?;
-        for id in &changed.link_children {
+        for id in changed.link_children.keys() {
             if let Some(pk) = child.query_row([id], |row| row.get(0)).optional()? {
                 out.entry(pk).or_default().links = true;
             }

@@ -572,6 +572,7 @@ pub(crate) fn finish(
     changes: &ChangeSummary,
     first_build: bool,
 ) -> Result<u64> {
+    changes.finish_links(tx)?;
     let read = crate::items::refresh(tx, changes)?;
     crate::session_values::refresh(tx, changes)?;
     // A first build derives every session once, when it ends.
@@ -675,7 +676,7 @@ impl RowWriter<'_, '_> {
         explicit: bool,
         admitted: Option<i64>,
     ) -> Result<()> {
-        self.changes.link_child(child);
+        self.changes.link_child(self.tx, child)?;
         self.tx.prepare_cached("INSERT INTO prefix_copy(input_pk,chain,parent_id,child_id,admitted,explicit_members) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(input_pk,chain,parent_id,child_id) DO UPDATE SET admitted=coalesce(max(prefix_copy.admitted,excluded.admitted),prefix_copy.admitted,excluded.admitted),explicit_members=max(prefix_copy.explicit_members,excluded.explicit_members)")?
             .execute(params![self.input_pk,self.chain,parent,child,admitted,explicit])?;
         self.tx

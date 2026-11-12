@@ -6,6 +6,15 @@ use polylogue_model::{
 };
 use rusqlite::{Connection, OptionalExtension};
 
+/// The visible incoming relations, including their stored presentation order.
+/// Only the affected child's indexed edge set is read while writing.
+pub(crate) fn relation_identity(conn: &Connection, child: &str) -> Result<String> {
+    Ok(conn.prepare_cached(
+        "SELECT json_group_array(json_array(pk,parent_id,child_id,kind,how,branch_point,spawning_call,copies_prefix))
+         FROM (SELECT * FROM session_link_identity WHERE child_id=?1 ORDER BY pk)",
+    )?.query_row([child], |row| row.get(0))?)
+}
+
 /// How many sessions' links reads have looked up, for tests of how much of
 /// a links tree a page reads.
 #[cfg(any(test, feature = "fixture"))]
@@ -127,6 +136,19 @@ pub(crate) fn compute(conn: &Connection, session: i64) -> Result<Option<SessionL
 }
 
 impl crate::read::Reader<'_> {
+    /// Links cursors bind the relationship graph, independently of body appends.
+    pub fn lineage_version(&self) -> Result<polylogue_model::BlobHash> {
+        let revision: String = self
+            .conn()?
+            .prepare_cached(
+                "SELECT coalesce((SELECT value FROM meta WHERE key='relationship_revision'),'0')",
+            )?
+            .query_row([], |row| row.get(0))?;
+        Ok(polylogue_model::BlobHash::of(
+            format!("relationships:{revision}").as_bytes(),
+        ))
+    }
+
     fn links_where(&self, column: &str, session: &str) -> Result<Vec<SessionLink>> {
         #[cfg(any(test, feature = "fixture"))]
         LINK_READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

@@ -409,6 +409,7 @@ pub(super) fn page(
     }
     let digest = options_digest(&(options, format));
     let key = super::cursor_seal(reader)?;
+    let graph_version = reader.lineage_version()?;
     let seed = &scope.session;
     let starts = reader
         .lineage_starting_sessions(seed)?
@@ -422,6 +423,12 @@ pub(super) fn page(
             opened
                 .check(target, &digest)
                 .map_err(super::cursor_failure)?;
+            if opened.rewritten(&graph_version) {
+                return Err(Failure::new(
+                    "stale_cursor",
+                    "the relationships changed since the cursor was issued",
+                ));
+            }
             let PagePosition::Links { place } = &opened.position else {
                 return Err(Failure::new(
                     "invalid_query",
@@ -484,7 +491,7 @@ pub(super) fn page(
             target: target.clone(),
             options: digest.clone(),
             variants: request.options.variants.clone(),
-            versions: PageCursor::version(&[]),
+            versions: graph_version,
             position: PagePosition::Links {
                 place: place.clone(),
             },

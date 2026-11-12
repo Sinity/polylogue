@@ -417,3 +417,113 @@ fn alternative_native_anchors_and_spawning_calls_keep_their_exact_edge_facts() {
     assert_eq!(cross, 1);
     assert_eq!(calls, vec![Some("spawn-call".into())]);
 }
+
+#[test]
+fn adding_a_parent_outside_the_cursor_frames_stales_the_links_walk() {
+    use std::io::Write;
+    let d = test_daemon::start("placeholder");
+    let dir = d.home.join(".claude/projects/-p");
+    for id in ["root", "a", "a-leaf", "z", "z-leaf"] {
+        let mut source = polylogue_testkit::claude_user(&format!("question-{id}"), id, id);
+        let children: &[&str] = match id {
+            "root" => &["a", "z"],
+            "a" => &["a-leaf"],
+            "z" => &["z-leaf"],
+            _ => &[],
+        };
+        for child in children {
+            source.push_str(&continued(id, child));
+        }
+        std::fs::write(dir.join(format!("{id}.jsonl")), source).unwrap();
+    }
+    d.wait_for(|status| status["store"]["messages"] == 6);
+    let root = read(&d, 60, None);
+    assert_eq!(nodes(&root.document.items), ["session:claude-code:root"]);
+    let next = resume(root.document.footer.next.as_ref()).unwrap();
+    let branch = read(&d, 60, Some(&next));
+    let (leaf, unvisited) = match nodes(&branch.document.items).as_slice() {
+        [first] if first == "session:claude-code:a" => ("a-leaf", "z"),
+        [first] if first == "session:claude-code:z" => ("z-leaf", "a"),
+        other => panic!("expected the first recorded branch, got {other:?}"),
+    };
+    let next = resume(branch.document.footer.next.as_ref()).unwrap();
+    let shown = read(&d, 60, Some(&next));
+    assert_eq!(
+        nodes(&shown.document.items),
+        [format!("session:claude-code:{leaf}")]
+    );
+    let cursor =
+        resume(shown.document.footer.next.as_ref()).expect("the other branch is unvisited");
+    let status = test_daemon::Call::new("status", serde_json::json!({})).answer(&d.daemon);
+    let before = status.value().unwrap()["store"]["revisions"]
+        .as_u64()
+        .unwrap();
+    let mut source = std::fs::OpenOptions::new()
+        .append(true)
+        .open(dir.join(format!("{unvisited}.jsonl")))
+        .unwrap();
+    source
+        .write_all(continued(unvisited, leaf).as_bytes())
+        .unwrap();
+    drop(source);
+    d.wait_for(|status| status["store"]["revisions"].as_u64().unwrap() > before);
+    let current = read(&d, 1_000_000, None);
+    assert!(current.document.items.iter().any(|item|matches!(&item.kind,
+        ItemKind::Card {card} if matches!(card.as_ref(),Card::LinkEdge {from,to,relation,..}
+            if from==&format!("session:claude-code:{unvisited}") && to==&format!("session:claude-code:{leaf}") && relation=="continuation"))));
+    let response = test_daemon::Call::from_request(&cursor).answer(&d.daemon);
+    assert!(
+        matches!(&response,command_surface::Answer {outcome:command_surface::Outcome::Error(error),..}
+        if error.code.as_deref()==Some("stale_cursor")),
+        "the rewritten family must not continue the old walk"
+    );
+}
+
+#[test]
+fn links_cursor_survives_body_append_but_not_an_unrelated_relationship_edit() {
+    use std::io::Write;
+    let d = test_daemon::start("placeholder");
+    family(&d);
+    let page = read(&d, 60, None);
+    let cursor = resume(page.document.footer.next.as_ref()).unwrap();
+    let expected = read(&d, 60, Some(&cursor)).document.items;
+    let dir = d.home.join(".claude/projects/-p");
+    let mut source = std::fs::OpenOptions::new()
+        .append(true)
+        .open(dir.join("root.jsonl"))
+        .unwrap();
+    source
+        .write_all(polylogue_testkit::claude_user("r2", "root", "a later question").as_bytes())
+        .unwrap();
+    drop(source);
+    d.wait_for(|status| status["store"]["messages"] == 4);
+    assert_eq!(read(&d, 60, Some(&cursor)).document.items, expected);
+    let reader = d.daemon.reads.reader().unwrap();
+    let seal = super::super::cursor_seal(&reader).unwrap();
+    let mut old =
+        polylogue_model::read::PageCursor::open(cursor.cursor.as_deref().unwrap(), &seal).unwrap();
+    old.versions = polylogue_model::read::PageCursor::version(&[]);
+    let mut old_request = cursor.clone();
+    old_request.cursor = Some(old.seal(&seal));
+    drop(reader);
+    assert_stale(&d, &old_request);
+    std::fs::write(
+        dir.join("other.jsonl"),
+        format!(
+            "{}{}",
+            polylogue_testkit::claude_user("o1", "other", "another family"),
+            continued("other", "another-child")
+        ),
+    )
+    .unwrap();
+    d.wait_for(|status| status["store"]["messages"] == 5);
+    assert_stale(&d, &cursor);
+}
+
+fn assert_stale(d: &test_daemon::TestDaemon, cursor: &RunnableRequest) {
+    let answer = test_daemon::Call::from_request(cursor).answer(&d.daemon);
+    assert!(
+        matches!(&answer,command_surface::Answer {outcome:command_surface::Outcome::Error(error),..}
+        if error.code.as_deref()==Some("stale_cursor"))
+    );
+}

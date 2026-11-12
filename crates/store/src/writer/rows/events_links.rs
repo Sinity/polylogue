@@ -128,7 +128,7 @@ impl RowWriter<'_, '_> {
             .at
             .as_ref()
             .map(|at| ids.shown_message(&at.to_string()).into_owned());
-        self.changes.link_child(child_id);
+        self.changes.link_child(self.tx, child_id)?;
         self.tx.prepare_cached("INSERT OR IGNORE INTO link(pk,parent_id,child_id,child_pk,kind,how,evidence,input_pk,source_chain,branch_point,spawning_call,copies_prefix) VALUES (?1,?2,?3,(SELECT pk FROM session WHERE pk=?4),?5,?6,?7,?8,?9,?10,?11,?12)")?.execute(params![pk,parent,child_id,child,kind,how,link.evidence,self.input_pk,self.chain,at,link.call_id,link.copies_prefix])?;
         let value = &self.choices.link_values[index];
         self.tx
