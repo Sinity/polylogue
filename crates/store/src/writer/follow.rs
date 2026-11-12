@@ -101,8 +101,6 @@ fn follow_once(
     let state = crate::primary::projection::replay_state(index)?;
     let cache = crate::primary::cache_identity(index)?;
     let page = sinex.confirmed(&state, &cache)?;
-    // New commits can arrive after the owner sampled the head for this page.
-    let delivered_position = page.iter().map(|event| event.position).max().unwrap_or(0);
     let (reply, wait) = sync_channel(1);
     queue
         .send(Msg::Confirmed(page, reply))
@@ -112,16 +110,11 @@ fn follow_once(
     sinex.acknowledge(&applied, &|event| {
         crate::primary::projection::has_fact(index, event)
     })?;
-    let progressed = applied.applied_position != state.applied_position
-        || applied.staged_delivery != state.staged_delivery
+    // A reprovisioned consumer also replays deliveries at applied positions.
+    // Drain receipt progress, then wait only once a probe no longer advances.
+    let backlog = applied.staged_delivery != state.staged_delivery
         || applied.scope != state.scope
         || applied.projection != state.projection;
-    let backlog = progressed
-        && (applied.projection.is_some()
-            || state.projection.is_some()
-            || applied.scope != state.scope
-            || applied.head.unwrap_or(0).max(delivered_position)
-                > applied.applied_position.unwrap_or(0));
     Ok(Followed {
         position: applied.applied_position.unwrap_or(0),
         backlog,

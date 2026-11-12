@@ -146,6 +146,7 @@ fn background_follow_drains_split_position_after_durable_staging_then_waits_when
         daemon.flush().await.unwrap();
         (daemon, consumers)
     });
+    let admin = daemon.clone();
     let owner = sinex.runtime.spawn(async move {
         let mut number = 0;
         while let Some(request) = consumers.next().await {
@@ -196,6 +197,11 @@ fn background_follow_drains_split_position_after_durable_staging_then_waits_when
         "a split commit is staged before it becomes visible"
     );
     assert!(third.1.duration_since(second.1) < Duration::from_secs(1));
+    let empty = observations.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert_eq!(
+        empty.0, 4,
+        "a final empty probe observes that delivery has drained"
+    );
     let pool = polylogue_store::ReadPool::open(&archive).unwrap();
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while pool.reader().unwrap().confirmed_checkpoint().unwrap() != Some(17) {
@@ -218,6 +224,64 @@ fn background_follow_drains_split_position_after_durable_staging_then_waits_when
     let stopped = std::time::Instant::now();
     writer.stop();
     assert!(stopped.elapsed() < Duration::from_secs(1));
+    // Reprovision the native consumer from its beginning while retaining the
+    // applied cache. Old deliveries still need draining and durable ACKs.
+    sinex.runtime.block_on(async {
+        let subjects = Subjects::new("auth");
+        let stream = jetstream::new(admin)
+            .get_stream(subjects.confirmed_stream())
+            .await
+            .unwrap();
+        stream
+            .delete_consumer(&subjects.consumer_name("test-scope"))
+            .await
+            .unwrap();
+        stream
+            .create_consumer(jetstream::consumer::pull::Config {
+                durable_name: Some(subjects.consumer_name("test-scope")),
+                ack_policy: jetstream::consumer::AckPolicy::Explicit,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let mut connection = sinex.client.lock().unwrap();
+        let client = connection.as_mut().unwrap();
+        assert!(client.pending.is_empty());
+        client.consumer = None;
+        client.consumer_cache = None;
+        client.consumer_instance = None;
+    });
+    let mut resumed = polylogue_store::Writer::start_on_sinex(&archive, sinex.clone()).unwrap();
+    assert_eq!(
+        observations.recv_timeout(Duration::from_secs(5)).unwrap().0,
+        5
+    );
+    assert_eq!(
+        observations.recv_timeout(Duration::from_secs(1)).unwrap().0,
+        6
+    );
+    assert_eq!(
+        observations.recv_timeout(Duration::from_secs(1)).unwrap().0,
+        7
+    );
+    assert_eq!(
+        pool.reader().unwrap().confirmed_checkpoint().unwrap(),
+        Some(17)
+    );
+    assert_eq!(
+        pool.reader()
+            .unwrap()
+            .query("SELECT count(*) AS n FROM primary_fact", &[])
+            .unwrap(),
+        [json!({"n":300})]
+    );
+    assert!(
+        observations
+            .recv_timeout(Duration::from_millis(150))
+            .is_err(),
+        "an exhausted replay must idle"
+    );
+    resumed.stop();
     owner.abort();
 }
 
