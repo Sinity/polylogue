@@ -444,6 +444,13 @@ impl polylogue_store::primary::Sinex for Sinex {
     ) -> polylogue_store::Result<polylogue_store::primary::PreparedWrite> {
         Ok(self.prepare_products(products)?)
     }
+    fn prepare_parsed(
+        &self,
+        source: &polylogue_store::primary::ParsedSource,
+        products: &[polylogue_store::primary::ProductWrite],
+    ) -> polylogue_store::Result<polylogue_store::primary::ParsedPublication> {
+        Ok(self.prepare_parsed(source, products)?)
+    }
     fn prepare_export_products(
         &self,
         key: &polylogue_store::primary::ExportReadingKey,
@@ -499,7 +506,7 @@ impl polylogue_store::primary::Sinex for Sinex {
         root: &str,
         key: &polylogue_store::primary::ExportReadingKey,
         visit: &mut polylogue_store::primary::ReadingProducts<'_>,
-    ) -> polylogue_store::Result<polylogue_store::primary::PreparedWrite> {
+    ) -> polylogue_store::Result<polylogue_store::primary::ParsedPublication> {
         self.prepare_reading(root, key, visit)
     }
     fn confirmed(
@@ -515,9 +522,18 @@ impl polylogue_store::primary::Sinex for Sinex {
         &self,
         state: &polylogue_store::primary::ReplayState,
         applied: &dyn Fn(&str) -> polylogue_store::Result<bool>,
+        processed: &dyn Fn(
+            &polylogue_store::primary::ParsedSource,
+            &polylogue_store::primary::PublicationReceipt,
+        ) -> polylogue_store::Result<bool>,
     ) -> polylogue_store::Result<()> {
+        let processed =
+            |source: &polylogue_store::primary::ParsedSource,
+             receipt: &polylogue_store::primary::PublicationReceipt| {
+                Ok(processed(source, receipt)?)
+            };
         let applied = |event: &str| Ok(applied(event)?);
-        Ok(self.read_client(async |client| client.acknowledge(state, &applied).await)?)
+        Ok(self.read_client(async |client| client.acknowledge(state, &applied, &processed).await)?)
     }
 }
 

@@ -33,8 +33,50 @@ pub(super) fn write_rows(
             counter,
             first_build,
             confirmed: false,
+            publication: None,
             replacement: false,
             receipt,
+            changes,
+        },
+    )
+}
+
+/// An original-source interpretation whose native fact frame was admitted.
+/// Its receipt and ordinary parser progress commit with the same model rows.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn write_published_rows(
+    tx: &Transaction<'_>,
+    b: &Batch,
+    p: &ParseStep,
+    resolution: &resolve::Resolution,
+    counter: i64,
+    first_build: Option<&FirstBuild>,
+    receipt: &crate::wire_shapes::ReadingReceipt,
+    publication: &crate::primary::PublicationReceipt,
+    replacement: bool,
+    changes: &ChangeSummary,
+) -> Result<u64> {
+    if publication.number <= 0
+        || publication.producer.is_empty()
+        || publication.frame.is_empty()
+        || publication.root_material.is_empty()
+    {
+        return Err(StoreError::Invalid(
+            "native publication receipt is incomplete".into(),
+        ));
+    }
+    apply_rows(
+        tx,
+        b,
+        p,
+        ReadingWrite {
+            resolution,
+            counter,
+            first_build,
+            confirmed: false,
+            replacement,
+            receipt: Some(receipt),
+            publication: Some(publication),
             changes,
         },
     )
@@ -62,6 +104,7 @@ pub(super) fn write_replacement_rows(
             counter,
             first_build,
             confirmed: false,
+            publication: None,
             replacement: true,
             receipt,
             changes,
@@ -91,6 +134,7 @@ pub(super) fn write_confirmed_rows(
             counter,
             first_build,
             confirmed: true,
+            publication: None,
             replacement: false,
             receipt,
             changes,
@@ -103,6 +147,7 @@ struct ReadingWrite<'a> {
     counter: i64,
     first_build: Option<&'a FirstBuild>,
     confirmed: bool,
+    publication: Option<&'a crate::primary::PublicationReceipt>,
     replacement: bool,
     receipt: Option<&'a crate::wire_shapes::ReadingReceipt>,
     changes: &'a ChangeSummary,
@@ -119,6 +164,7 @@ fn apply_rows(
         counter,
         first_build,
         confirmed,
+        publication,
         replacement,
         receipt,
         changes,
@@ -133,7 +179,8 @@ fn apply_rows(
     if !crate::wire_shapes::admit_export(tx, &b.input.id, chain, b.length, p)? {
         return Ok(0);
     }
-    let previous_checkpoint = checkpoint::read(tx, input_pk, chain)?;
+    let previous_checkpoint =
+        checkpoint::read(tx, input_pk, chain, confirmed || publication.is_some())?;
     if p.delivery.is_none() && !confirmed && !admit_step(previous_checkpoint.as_ref(), p)? {
         return Ok(0);
     }
@@ -150,6 +197,7 @@ fn apply_rows(
             counter,
             confirmed,
             receipt,
+            publication,
         )?,
         source_admitted: if confirmed {
             None

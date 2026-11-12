@@ -247,49 +247,45 @@ impl Inner {
         Ok(chain)
     }
 
-    pub(super) fn primary_products<'a>(
-        &mut self,
+    pub(super) fn prepare_primary_parsed<'a>(
+        &self,
         batches: impl Iterator<Item = &'a Batch>,
-    ) -> Result<()> {
-        let sinex = Arc::clone(self.sinex.as_ref().expect("primary writer"));
+    ) -> Result<Vec<Vec<crate::primary::PublicationReceipt>>> {
+        let sinex = self.sinex.as_ref().expect("primary writer");
+        let mut publications = Vec::new();
         for batch in batches {
             let chain = self.validate_primary_reading(batch)?;
+            let root: String = self.index.query_row(
+                "SELECT id FROM source_material WHERE input=?1 AND chain=?2 AND offset=0 ORDER BY rowid LIMIT 1",
+                params![batch.input.id,chain], |row| row.get(0),
+            )?;
+            let mut admitted = Vec::new();
             for step in &batch.parse {
-                let key = step.delivery.map(|_| crate::primary::ExportReadingKey {
-                    input: batch.input.clone(),
-                    chain,
-                    reading_version: step.reading_version.clone(),
-                    length: batch.length,
-                });
-                if let Some(key) = &key
-                    && !self.admit_primary_export(key, step)?
-                {
-                    continue;
-                }
+                let source = crate::primary::ParsedSource {
+                    root_material: root.clone(),
+                    reading: crate::primary::Reading::from_step(
+                        &batch.input,
+                        chain,
+                        Some(batch.length),
+                        step,
+                    ),
+                };
                 let writes = self.product_writes(crate::primary::products::parse(
                     &batch.input,
                     chain,
                     Some(batch.length),
                     step,
                 )?)?;
-                if writes
-                    .iter()
-                    .any(|write| write.product.reading().is_some() && write.location.is_none())
-                {
-                    return Err(StoreError::Invalid(
-                        "stored reading has no confirmed source material anchor".into(),
-                    ));
-                }
-                if let Some(key) = &key {
-                    sinex.prepare_export_products(key, &writes)?;
-                } else {
-                    sinex.prepare_products(&writes)?;
+                match sinex.prepare_parsed(&source, &writes)? {
+                    crate::primary::ParsedPublication::Pending { identity } => {
+                        return Err(StoreError::PrimaryPending { identity });
+                    }
+                    crate::primary::ParsedPublication::Admitted(receipt) => admitted.push(receipt),
                 }
             }
+            publications.push(admitted);
         }
-        // This fire-and-forget batch acknowledges durable preparation. The
-        // follower independently makes its records visible after confirmation.
-        Ok(())
+        Ok(publications)
     }
 
     pub(super) fn primary_reading(
@@ -302,7 +298,6 @@ impl Inner {
         let mut version = None;
         let mut complete = false;
         let mut refusal = false;
-        let mut has_export = false;
         source.visit_source(|step| {
             if version
                 .as_ref()
@@ -315,7 +310,6 @@ impl Inner {
             version.get_or_insert_with(|| step.reading_version.clone());
             complete = step.progress.reached_end() && step.parsed_upto <= length;
             refusal = crate::wire_shapes::is_refusal(step);
-            has_export |= step.delivery.is_some();
             Ok(())
         })?;
         if !complete && !refusal {
@@ -331,49 +325,13 @@ impl Inner {
             reading_version: version,
             length,
         };
-        let mut has_apply = false;
-        let mut has_replay = false;
-        if has_export {
-            let mut prefix = self.pending_export_prefix(&key)?;
-            source.visit_source(|step| {
-                let apply = crate::wire_shapes::advance_prefix(&mut prefix, length, step)?;
-                has_apply |= apply;
-                has_replay |= !apply;
-                Ok(())
-            })?;
-            if !has_apply {
-                return Ok(0);
-            }
-        }
         self.primary_cache_ready()?;
         let sinex = Arc::clone(self.sinex.as_ref().expect("primary writer"));
-        if has_export && (has_replay || refusal) {
-            let mut prefix = self.pending_export_prefix(&key)?;
-            let mut messages = 0;
-            let mut pending = None;
-            source.visit_source(|step| {
-                if crate::wire_shapes::advance_prefix(&mut prefix, length, step)? {
-                    let writes = self.product_writes(crate::primary::products::parse(
-                        &input,
-                        chain,
-                        Some(length),
-                        step,
-                    )?)?;
-                    pending = Some(sinex.prepare_export_products(&key, &writes)?.identity);
-                    messages += step.output.messages.len() as u64;
-                }
-                Ok(())
-            })?;
-            return match pending {
-                Some(identity) => Err(StoreError::PrimaryPending { identity }),
-                None => Ok(messages),
-            };
-        }
-        let root:Option<String>=self.index.query_row("SELECT id FROM source_material WHERE input=?1 AND chain=?2 AND offset=0 ORDER BY rowid LIMIT 1",params![input.id,chain],|row|row.get(0)).optional()?;
-        let root = root.ok_or_else(|| {
-            StoreError::Invalid("the confirmed source chain has no root material".into())
-        })?;
-        let prepared = sinex.prepare_reading(&root, &key, &mut |emit| {
+        let root: String = self.index.query_row(
+            "SELECT id FROM source_material WHERE input=?1 AND chain=?2 AND offset=0 ORDER BY rowid LIMIT 1",
+            params![input.id,chain], |row| row.get(0),
+        )?;
+        let publication = sinex.prepare_reading(&root, &key, &mut |emit| {
             source.visit_source(|step| {
                 for product in self.product_writes(crate::primary::products::parse(
                     &input,
@@ -386,9 +344,14 @@ impl Inner {
                 Ok(())
             })
         })?;
-        Err(StoreError::PrimaryPending {
-            identity: prepared.identity,
-        })
+        match publication {
+            crate::primary::ParsedPublication::Pending { identity } => {
+                Err(StoreError::PrimaryPending { identity })
+            }
+            crate::primary::ParsedPublication::Admitted(receipt) => {
+                self.replace_index(input, chain, length, source, Some(&receipt))
+            }
+        }
     }
 
     pub(super) fn primary_request(

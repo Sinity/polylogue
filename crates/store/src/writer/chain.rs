@@ -650,19 +650,20 @@ impl Inner {
             ));
         }
         if diagnosed {
-            self.replace_index(input, chain, length, reading)
+            self.replace_index(input, chain, length, reading, None)
         } else {
-            self.until_stopped(|inner| inner.replace_index(input, chain, length, reading))?
+            self.until_stopped(|inner| inner.replace_index(input, chain, length, reading, None))?
                 .ok_or(StoreError::WriteCancelled)
         }
     }
 
-    fn replace_index(
+    pub(super) fn replace_index(
         &mut self,
         input: InputKey,
         chain: i64,
         length: u64,
         reading: ChainReading,
+        publication: Option<&crate::primary::PublicationReceipt>,
     ) -> Result<u64> {
         let file = std::fs::File::open(&reading.path)?;
         let mut reader = BufReader::new(file);
@@ -723,21 +724,36 @@ impl Inner {
                 chain,
                 step.parsed_upto,
             )?;
-            let write = if replace_wire {
-                rows::write_replacement_rows
+            written += if let Some(publication) = publication {
+                rows::write_published_rows(
+                    &tx,
+                    &batch,
+                    &step,
+                    &resolution,
+                    counter,
+                    self.first_build.as_deref(),
+                    &receipt,
+                    publication,
+                    replace_wire,
+                    &changes,
+                )?
             } else {
-                write_rows
+                let write = if replace_wire {
+                    rows::write_replacement_rows
+                } else {
+                    write_rows
+                };
+                write(
+                    &tx,
+                    &batch,
+                    &step,
+                    &resolution,
+                    counter,
+                    self.first_build.as_deref(),
+                    Some(&receipt),
+                    &changes,
+                )?
             };
-            written += write(
-                &tx,
-                &batch,
-                &step,
-                &resolution,
-                counter,
-                self.first_build.as_deref(),
-                Some(&receipt),
-                &changes,
-            )?;
         }
         if first {
             return Err(StoreError::Invalid(

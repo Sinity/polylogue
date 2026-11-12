@@ -25,8 +25,8 @@ pub(crate) mod projection;
 pub(crate) mod scope;
 pub use products::{
     Capture, CaptureGroup, CapturedInput, CapturedReading, Confirmed, ConfirmedChange,
-    ExportReadingKey, Material, PendingCapture, PreparedInput, PreparedWrite, Product,
-    ProductWrite, Reading, SourceLocation,
+    ExportReadingKey, Material, ParsedPublication, ParsedSource, PendingCapture, PreparedInput,
+    PreparedWrite, Product, ProductWrite, PublicationReceipt, Reading, SourceLocation,
 };
 
 use crate::{Result, StoreError};
@@ -100,6 +100,13 @@ pub trait Sinex: Send + Sync {
         products: &[ProductWrite],
     ) -> Result<PreparedWrite>;
     fn prepare_products(&self, products: &[ProductWrite]) -> Result<PreparedWrite>;
+    /// Publishes interpreted facts before local rows. An admitted receipt is
+    /// durable Sinex custody, not a claim that the local parser committed.
+    fn prepare_parsed(
+        &self,
+        source: &ParsedSource,
+        products: &[ProductWrite],
+    ) -> Result<ParsedPublication>;
     fn prepare_export_products(
         &self,
         key: &ExportReadingKey,
@@ -135,7 +142,7 @@ pub trait Sinex: Send + Sync {
         root: &str,
         key: &ExportReadingKey,
         visit: &mut ReadingProducts<'_>,
-    ) -> Result<PreparedWrite>;
+    ) -> Result<ParsedPublication>;
     /// Products under a caller-chosen write identity, so a retry reuses it.
     fn prepare_named_products(
         &self,
@@ -150,6 +157,7 @@ pub trait Sinex: Send + Sync {
         &self,
         state: &ReplayState,
         applied: &dyn Fn(&str) -> Result<bool>,
+        processed: &dyn Fn(&ParsedSource, &PublicationReceipt) -> Result<bool>,
     ) -> Result<()>;
 }
 

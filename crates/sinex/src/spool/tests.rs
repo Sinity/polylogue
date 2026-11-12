@@ -60,6 +60,8 @@ fn producer_backup_cut_keeps_original_frames_after_live_confirmed_removal() {
         .remove_confirmed(
             &crate::tests::applied(10),
             &crate::tests::every_event_applied,
+            "fixture-producer",
+            &|_, _| Ok(false),
         )
         .unwrap();
     assert!(spool.get(&first.identity).unwrap().is_none());
@@ -107,6 +109,8 @@ fn producer_backup_keeps_group_material_encoding_after_confirmed_removal() {
         .remove_confirmed(
             &crate::tests::applied(10),
             &crate::tests::every_event_applied,
+            "fixture-producer",
+            &|_, _| Ok(false),
         )
         .unwrap();
     assert!(spool.get("raw").unwrap().is_none());
@@ -210,6 +214,8 @@ fn a_late_acknowledgment_removes_at_the_already_applied_barrier() {
         .remove_confirmed(
             &crate::tests::applied(10),
             &crate::tests::every_event_applied,
+            "fixture-producer",
+            &|_, _| Ok(false),
         )
         .unwrap();
     assert!(spool.get("late").unwrap().is_some());
@@ -218,6 +224,8 @@ fn a_late_acknowledgment_removes_at_the_already_applied_barrier() {
         .remove_confirmed(
             &crate::tests::applied(10),
             &crate::tests::every_event_applied,
+            "fixture-producer",
+            &|_, _| Ok(false),
         )
         .unwrap();
     assert!(spool.get("late").unwrap().is_none());
@@ -329,6 +337,8 @@ fn acknowledgment_is_not_the_confirmed_application_barrier() {
         .remove_confirmed(
             &crate::tests::applied(17),
             &crate::tests::every_event_applied,
+            "fixture-producer",
+            &|_, _| Ok(false),
         )
         .unwrap();
     assert!(spool.get("write").unwrap().is_some());
@@ -337,6 +347,8 @@ fn acknowledgment_is_not_the_confirmed_application_barrier() {
         .remove_confirmed(
             &crate::tests::applied(18),
             &crate::tests::every_event_applied,
+            "fixture-producer",
+            &|_, _| Ok(false),
         )
         .unwrap();
     assert!(spool.get("write").unwrap().is_none());
@@ -380,6 +392,8 @@ fn one_group_owns_every_capture_until_its_confirmed_position_is_applied() {
         .remove_confirmed(
             &crate::tests::applied(999),
             &crate::tests::every_event_applied,
+            "fixture-producer",
+            &|_, _| Ok(false),
         )
         .unwrap();
     assert!(spool.get("zip").unwrap().is_some());
@@ -390,6 +404,8 @@ fn one_group_owns_every_capture_until_its_confirmed_position_is_applied() {
         .remove_confirmed(
             &crate::tests::applied(20),
             &crate::tests::every_event_applied,
+            "fixture-producer",
+            &|_, _| Ok(false),
         )
         .unwrap();
     assert_eq!(spool.counts().unwrap().0, 2);
@@ -397,6 +413,8 @@ fn one_group_owns_every_capture_until_its_confirmed_position_is_applied() {
         .remove_confirmed(
             &crate::tests::applied(21),
             &crate::tests::every_event_applied,
+            "fixture-producer",
+            &|_, _| Ok(false),
         )
         .unwrap();
     assert!(all(&spool, 2).is_empty());
@@ -430,6 +448,8 @@ fn malformed_acknowledgments_do_not_advance_validated_queue_position() {
         .remove_confirmed(
             &crate::tests::applied(1),
             &crate::tests::every_event_applied,
+            "fixture-producer",
+            &|_, _| Ok(false),
         )
         .unwrap();
     assert!(spool.get("raw").unwrap().is_some());
@@ -445,6 +465,8 @@ fn malformed_acknowledgments_do_not_advance_validated_queue_position() {
         .remove_confirmed(
             &crate::tests::applied(12),
             &crate::tests::every_event_applied,
+            "fixture-producer",
+            &|_, _| Ok(false),
         )
         .unwrap();
     assert!(spool.get("raw").unwrap().is_none());
@@ -572,6 +594,8 @@ fn crash_worker() {
             .remove_confirmed(
                 &crate::tests::applied(9),
                 &crate::tests::every_event_applied,
+                "fixture-producer",
+                &|_, _| Ok(false),
             )
             .unwrap();
     } else if stage == "ack_synced"
@@ -585,6 +609,8 @@ fn crash_worker() {
             .remove_confirmed(
                 &crate::tests::applied(9),
                 &crate::tests::every_event_applied,
+                "fixture-producer",
+                &|_, _| Ok(false),
             )
             .unwrap();
     } else {
@@ -676,6 +702,8 @@ fn process_death_at_durability_boundaries_exposes_only_complete_operations() {
                     .remove_confirmed(
                         &crate::tests::applied(8),
                         &crate::tests::every_event_applied,
+                        "fixture-producer",
+                        &|_, _| Ok(false),
                     )
                     .unwrap();
                 assert!(spool.get("write").unwrap().is_some());
@@ -727,6 +755,8 @@ fn process_death_never_exposes_a_partial_capture_group() {
                 .remove_confirmed(
                     &crate::tests::applied(9),
                     &crate::tests::every_event_applied,
+                    "fixture-producer",
+                    &|_, _| Ok(false),
                 )
                 .unwrap();
             assert!(all(&spool, 1).is_empty());
@@ -775,6 +805,8 @@ fn request_and_blob_visitors_can_use_small_metadata_until_application() {
         .remove_confirmed(
             &crate::tests::applied(999),
             &crate::tests::every_event_applied,
+            "fixture-producer",
+            &|_, _| Ok(false),
         )
         .unwrap();
     assert_eq!(spool.pending_after(None, 10).unwrap().len(), 2);
@@ -830,6 +862,8 @@ fn replay_capture_group_retains_its_material_until_applied() {
         .remove_confirmed(
             &crate::tests::applied(20),
             &crate::tests::every_event_applied,
+            "fixture-producer",
+            &|_, _| Ok(false),
         )
         .unwrap();
     assert!(spool.get("raw").unwrap().is_some());
@@ -837,6 +871,8 @@ fn replay_capture_group_retains_its_material_until_applied() {
         .remove_confirmed(
             &crate::tests::applied(21),
             &crate::tests::every_event_applied,
+            "fixture-producer",
+            &|_, _| Ok(false),
         )
         .unwrap();
     assert!(all(&spool, 1).is_empty());
@@ -1215,6 +1251,8 @@ fn acknowledgment_body_conflict_is_terminal_evidence_and_keeps_offered_bytes_aft
         .remove_confirmed(
             &crate::tests::applied(i64::MAX),
             &crate::tests::every_event_applied,
+            "fixture-producer",
+            &|_, _| Ok(false),
         )
         .unwrap();
     let retained = spool.get("same-frame").unwrap().unwrap();
@@ -1314,7 +1352,12 @@ fn complete_no_position_outcomes_preserve_acknowledgment_and_application_identit
     // An accepted metadata operation can settle without claiming any index
     // position. Raw materials remain governed by the group barrier below.
     spool
-        .remove_confirmed(&ReplayState::default(), &crate::tests::every_event_applied)
+        .remove_confirmed(
+            &ReplayState::default(),
+            &crate::tests::every_event_applied,
+            "fixture-producer",
+            &|_, _| Ok(false),
+        )
         .unwrap();
     assert!(spool.get(repeat.frame()).unwrap().is_none());
 
@@ -1327,7 +1370,12 @@ fn complete_no_position_outcomes_preserve_acknowledgment_and_application_identit
         .acknowledge(crate::tests::no_event_acknowledgment(&empty))
         .unwrap();
     spool
-        .remove_confirmed(&ReplayState::default(), &crate::tests::every_event_applied)
+        .remove_confirmed(
+            &ReplayState::default(),
+            &crate::tests::every_event_applied,
+            "fixture-producer",
+            &|_, _| Ok(false),
+        )
         .unwrap();
     assert!(spool.get(empty.frame()).unwrap().is_none());
 }
@@ -1369,6 +1417,8 @@ fn incomplete_or_new_admission_without_position_cannot_settle_or_remove_raw_grou
         .remove_confirmed(
             &crate::tests::applied(42),
             &crate::tests::every_event_applied,
+            "fixture-producer",
+            &|_, _| Ok(false),
         )
         .unwrap();
     assert!(spool.get("raw").unwrap().is_some());
@@ -1388,7 +1438,12 @@ fn new_no_position_group_at_same_completed_head_is_removed() {
     let spool = Spool::open(directory.path(), "host").unwrap();
     let state = crate::tests::applied(42);
     spool
-        .remove_confirmed(&state, &crate::tests::every_event_applied)
+        .remove_confirmed(
+            &state,
+            &crate::tests::every_event_applied,
+            "fixture-producer",
+            &|_, _| Ok(false),
+        )
         .unwrap();
     spool
         .prepare_material(material("raw", b"bytes"), b"bytes".as_slice())
@@ -1400,7 +1455,12 @@ fn new_no_position_group_at_same_completed_head_is_removed() {
     counts(&mut acknowledgment).repeats = 1;
     spool.acknowledge(acknowledgment).unwrap();
     spool
-        .remove_confirmed(&state, &crate::tests::every_event_applied)
+        .remove_confirmed(
+            &state,
+            &crate::tests::every_event_applied,
+            "fixture-producer",
+            &|_, _| Ok(false),
+        )
         .unwrap();
     assert!(
         spool.get("raw").unwrap().is_none(),
@@ -1421,18 +1481,33 @@ fn new_no_position_group_at_same_completed_head_is_removed() {
     let mut behind = state.clone();
     behind.applied_position = Some(41);
     spool
-        .remove_confirmed(&behind, &crate::tests::every_event_applied)
+        .remove_confirmed(
+            &behind,
+            &crate::tests::every_event_applied,
+            "fixture-producer",
+            &|_, _| Ok(false),
+        )
         .unwrap();
     assert!(spool.get("raw-next").unwrap().is_some());
     let mut stale = state.clone();
     stale.head = None;
     spool
-        .remove_confirmed(&stale, &crate::tests::every_event_applied)
+        .remove_confirmed(
+            &stale,
+            &crate::tests::every_event_applied,
+            "fixture-producer",
+            &|_, _| Ok(false),
+        )
         .unwrap();
     assert!(spool.get("raw-next").unwrap().is_some());
     // A fresh verified post-ACK head can have the same numeric position.
     spool
-        .remove_confirmed(&state, &crate::tests::every_event_applied)
+        .remove_confirmed(
+            &state,
+            &crate::tests::every_event_applied,
+            "fixture-producer",
+            &|_, _| Ok(false),
+        )
         .unwrap();
     assert!(spool.get("raw-next").unwrap().is_none());
     assert!(spool.get(frame.frame()).unwrap().is_none());
@@ -1476,7 +1551,12 @@ fn archive_only_replay_without_admitted_event_position_waits_for_completed_prefi
     let mut state = crate::tests::applied(42);
     state.head = Some(43); // lifecycle commit belongs to the stream, not the event ACK
     spool
-        .remove_confirmed(&state, &crate::tests::every_event_applied)
+        .remove_confirmed(
+            &state,
+            &crate::tests::every_event_applied,
+            "fixture-producer",
+            &|_, _| Ok(false),
+        )
         .unwrap();
     assert!(spool.get("raw").unwrap().is_some());
     assert_eq!(
@@ -1490,7 +1570,12 @@ fn archive_only_replay_without_admitted_event_position_waits_for_completed_prefi
         .unwrap();
     state.applied_position = Some(43);
     spool
-        .remove_confirmed(&state, &crate::tests::every_event_applied)
+        .remove_confirmed(
+            &state,
+            &crate::tests::every_event_applied,
+            "fixture-producer",
+            &|_, _| Ok(false),
+        )
         .unwrap();
     assert!(spool.get("raw").unwrap().is_none());
     let restored = Spool::open(pinned.path(), "host").unwrap();
@@ -1622,12 +1707,22 @@ fn an_operation_whose_events_the_index_lacks_is_not_removed() {
     // The applied position passed 10, but index.db never received the event:
     // the confirmed stream lost that position.
     spool
-        .remove_confirmed(&crate::tests::applied(20), &|_| Ok(false))
+        .remove_confirmed(
+            &crate::tests::applied(20),
+            &|_| Ok(false),
+            "fixture-producer",
+            &|_, _| Ok(false),
+        )
         .unwrap();
     assert!(spool.get("lost-in-stream").unwrap().is_some());
 
     spool
-        .remove_confirmed(&crate::tests::applied(21), &|applied| Ok(applied == event))
+        .remove_confirmed(
+            &crate::tests::applied(21),
+            &|applied| Ok(applied == event),
+            "fixture-producer",
+            &|_, _| Ok(false),
+        )
         .unwrap();
     assert!(spool.get("lost-in-stream").unwrap().is_none());
 }
@@ -1651,6 +1746,8 @@ fn last_acknowledgement_time_read_from_spool_after_restart() {
         .remove_confirmed(
             &crate::tests::applied(10),
             &crate::tests::every_event_applied,
+            "fixture-producer",
+            &|_, _| Ok(false),
         )
         .unwrap();
     assert!(spool.get("acknowledged").unwrap().is_none());
@@ -1695,11 +1792,16 @@ fn confirmed_removal_does_not_read_unrelated_pending_metadata_or_acknowledgments
     .unwrap();
     let checked = std::cell::Cell::new(0);
     spool
-        .remove_confirmed(&crate::tests::applied(10), &|identity| {
-            assert_eq!(identity, uuid::Uuid::nil().to_string());
-            checked.set(checked.get() + 1);
-            Ok(true)
-        })
+        .remove_confirmed(
+            &crate::tests::applied(10),
+            &|identity| {
+                assert_eq!(identity, uuid::Uuid::nil().to_string());
+                checked.set(checked.get() + 1);
+                Ok(true)
+            },
+            "fixture-producer",
+            &|_, _| Ok(false),
+        )
         .unwrap();
     assert_eq!(checked.get(), 1);
     assert!(spool.get("confirmed").unwrap().is_none());

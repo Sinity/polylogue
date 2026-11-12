@@ -1,5 +1,6 @@
 //! The primary cache applies complete confirmed positions, never producer acknowledgments.
 pub(crate) const SCHEMA: &str = concat!("
+ALTER TABLE parse_state ADD COLUMN native_publication BLOB;
 CREATE TABLE primary_fact (
  event TEXT PRIMARY KEY, admitted INTEGER NOT NULL, changed INTEGER NOT NULL, source_order INTEGER NOT NULL,
  state TEXT NOT NULL CHECK(state IN ('live','archived','tombstoned')),
@@ -34,7 +35,7 @@ use super::{Confirmed, ConfirmedChange, Material, Product};
 mod replay;
 use crate::{Result, StoreError};
 pub(crate) use replay::save as save_replay;
-pub(crate) use replay::{has_fact, native_context, replay_state};
+pub(crate) use replay::{has_fact, native_context, processed_source, replay_state};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Serialize, de::DeserializeOwned};
 use std::collections::{BTreeMap, BTreeSet, HashMap};

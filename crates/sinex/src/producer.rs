@@ -34,11 +34,7 @@ impl Sinex {
     pub(crate) fn drain_pending(&self) -> Result<()> {
         let mut result = self.client_operation(async |client| client.retry_prepared().await);
         if result.is_ok() || matches!(result, Err(Error::Refused { .. })) {
-            for complete in [
-                Self::drain_requests,
-                Self::drain_observations,
-                Self::drain_readings,
-            ] {
+            for complete in [Self::drain_requests, Self::drain_observations] {
                 match complete(self) {
                     Ok(()) => {}
                     Err(error @ Error::Refused { .. }) => {
@@ -377,6 +373,85 @@ impl Sinex {
             None => format!("{prefix}{digest}:{}", uuid::Uuid::now_v7()),
         };
         self.prepare_named_products(&identity, writes)
+    }
+
+    /// Serialize interpretations of one immutable original chain. A pending
+    /// older interpretation must settle before a newer frame can be prepared.
+    pub(crate) fn prepare_parsed(
+        &self,
+        source: &polylogue_store::primary::ParsedSource,
+        writes: &[ProductWrite],
+    ) -> Result<polylogue_store::primary::ParsedPublication> {
+        use polylogue_store::primary::ParsedPublication;
+        let reading = &source.reading;
+        if source.root_material.parse::<uuid::Uuid>().is_err()
+            || reading.start > reading.parsed_upto
+            || reading
+                .source_length
+                .is_none_or(|length| reading.parsed_upto > length)
+            || reading.reading_version.is_empty()
+        {
+            return Err(Error::Invalid(
+                "interpreted source identity or range is invalid".into(),
+            ));
+        }
+        for write in writes {
+            crate::products::require_source(&write.product)?;
+            if write.product.reading() != Some(reading) || write.location.is_none() {
+                return Err(Error::Invalid(
+                    "native fact differs from its original reading".into(),
+                ));
+            }
+        }
+        let scope = (&source.root_material, &reading.input.id, reading.chain);
+        let prefix = format!(
+            "parsed:{}:",
+            blake3::hash(&serde_json::to_vec(&scope)?).to_hex()
+        );
+        let desired = format!(
+            "{prefix}{}:",
+            blake3::hash(&serde_json::to_vec(&(
+                source,
+                writes,
+                crate::source_reference()
+            ))?)
+            .to_hex()
+        );
+        let queue = self.queue()?;
+        if let Some(entry) = queue
+            .lookup(
+                Lookup::IdentityPrefix(&prefix),
+                None,
+                None,
+                Order::NewestFirst,
+                1,
+            )?
+            .into_iter()
+            .next()
+        {
+            if entry.identity.starts_with(&desired) {
+                return queue.publication(&entry.identity, &self.config.producer);
+            }
+            if matches!(entry.phase, polylogue_store::primary::queue::Phase::Pending) {
+                return Ok(ParsedPublication::Pending {
+                    identity: entry.identity,
+                });
+            }
+        }
+        let identity = format!("{desired}{}", uuid::Uuid::now_v7());
+        queue.prepare_parsed(
+            Ingress::Events {
+                source: Some(crate::source_reference()),
+                coverage: None,
+                frame: identity.clone(),
+                events: crate::products::events(writes)?,
+                failures: Vec::new(),
+            },
+            source,
+        )?;
+        drop(queue);
+        self.send_pending();
+        Ok(ParsedPublication::Pending { identity })
     }
 
     pub(crate) fn prepare_named_products(

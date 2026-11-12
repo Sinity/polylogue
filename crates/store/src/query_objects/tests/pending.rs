@@ -155,6 +155,15 @@ impl Sinex for PendingProducer {
     ) -> Result<()> {
         Ok(())
     }
+    fn prepare_parsed(
+        &self,
+        _: &crate::primary::ParsedSource,
+        _: &[crate::primary::ProductWrite],
+    ) -> Result<crate::primary::ParsedPublication> {
+        Err(StoreError::Invalid(
+            "this synthetic adapter does not admit source interpretations".into(),
+        ))
+    }
     fn prepare_products(&self, _: &[ProductWrite]) -> Result<PreparedWrite> {
         Self::unavailable()
     }
@@ -178,7 +187,7 @@ impl Sinex for PendingProducer {
         _: &str,
         _: &crate::primary::ExportReadingKey,
         _: &mut ReadingProducts<'_>,
-    ) -> Result<PreparedWrite> {
+    ) -> Result<crate::primary::ParsedPublication> {
         Self::unavailable()
     }
     fn visit_named_products(
@@ -228,6 +237,10 @@ impl Sinex for PendingProducer {
         &self,
         _: &crate::primary::ReplayState,
         _: &dyn Fn(&str) -> Result<bool>,
+        _: &dyn Fn(
+            &crate::primary::ParsedSource,
+            &crate::primary::PublicationReceipt,
+        ) -> Result<bool>,
     ) -> Result<()> {
         Self::unavailable()
     }

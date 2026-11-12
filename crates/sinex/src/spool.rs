@@ -4,7 +4,9 @@ use crate::{Error, Result};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use hashed_blobs::{BlobReader, EncodedBlob, Preparation, ReadLimits};
 use polylogue_store::primary::queue::{self, Lookup, Order, Queue};
-use polylogue_store::primary::{Capture, ReplayState};
+use polylogue_store::primary::{
+    Capture, ParsedPublication, ParsedSource, PublicationReceipt, ReplayState,
+};
 use serde::{Deserialize, Serialize};
 use sinex_protocol::{Acknowledgment, FrameResult, Ingress};
 use std::cell::RefCell;
@@ -113,8 +115,16 @@ pub(crate) struct Material {
 #[serde(tag = "kind", content = "fields", rename_all = "snake_case")]
 pub(crate) enum Payload {
     Material(Box<Material>),
-    Events { group: Option<Group> },
-    ReplaySequence { group: Option<Group> },
+    Events {
+        group: Option<Group>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parsed: Option<ParsedSource>,
+    },
+    ReplaySequence {
+        group: Option<Group>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parsed: Option<ParsedSource>,
+    },
     Signals,
     RegisterKinds,
     Chunk,
@@ -166,12 +176,20 @@ impl Record {
     }
     pub(crate) fn group(&self) -> Option<&Group> {
         match &self.payload {
-            Payload::Events { group, .. } | Payload::ReplaySequence { group } => group.as_ref(),
+            Payload::Events { group, .. } | Payload::ReplaySequence { group, .. } => group.as_ref(),
             _ => None,
         }
     }
     pub(crate) fn is_request(&self) -> bool {
         self.material().is_some_and(|material| material.request)
+    }
+    pub(crate) fn parsed(&self) -> Option<&ParsedSource> {
+        match &self.payload {
+            Payload::Events { parsed, .. } | Payload::ReplaySequence { parsed, .. } => {
+                parsed.as_ref()
+            }
+            _ => None,
+        }
     }
     pub(crate) fn is_named(&self) -> bool {
         match &self.payload {
@@ -235,6 +253,8 @@ struct Checked<T> {
 struct StoredAcknowledgment {
     payload: Bytes,
     phase: Phase,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    number: Option<i64>,
 }
 
 /// The file whose modification time records the last acknowledgement.
@@ -695,14 +715,14 @@ impl Spool {
         if matches!(&frame, Ingress::Material { .. }) {
             return invalid("material must have its immutable body prepared before sending");
         }
-        self.prepare_operation(frame, None::<std::io::Empty>, None, None, None)
+        self.prepare_operation(frame, None::<std::io::Empty>, None, None, None, None)
     }
 
     pub fn prepare_material(&self, frame: Ingress, bytes: impl Read) -> Result<Prepared> {
         if !matches!(&frame, Ingress::Material { .. }) {
             return invalid("only a material frame has captured bytes");
         }
-        self.prepare_operation(frame, Some(bytes), None, None, None)
+        self.prepare_operation(frame, Some(bytes), None, None, None, None)
     }
 
     pub fn prepare_encoded_material(
@@ -713,7 +733,14 @@ impl Spool {
         if !matches!(&frame, Ingress::Material { .. }) {
             return invalid("only a material frame can own encoded bytes");
         }
-        self.prepare_operation(frame, None::<std::io::Empty>, None, None, Some(vec![bytes]))
+        self.prepare_operation(
+            frame,
+            None::<std::io::Empty>,
+            None,
+            None,
+            Some(vec![bytes]),
+            None,
+        )
     }
 
     /// `bytes` are the body's encodings in order: one, or one per chunk the
@@ -733,7 +760,67 @@ impl Spool {
             None,
             Some(capture),
             Some(bytes),
+            None,
         )
+    }
+
+    pub fn prepare_parsed(&self, frame: Ingress, source: &ParsedSource) -> Result<Prepared> {
+        if !matches!(
+            frame,
+            Ingress::Events { .. } | Ingress::ReplaySequence { .. }
+        ) {
+            return invalid("a parsed publication must contain admitted facts");
+        }
+        self.prepare_operation(
+            frame,
+            None::<std::io::Empty>,
+            None,
+            None,
+            None,
+            Some(source.clone()),
+        )
+    }
+
+    pub fn publication(&self, identity: &str, producer: &str) -> Result<ParsedPublication> {
+        let entry = self.required(identity)?;
+        if entry.parsed().is_none() {
+            return invalid("publication has no original source range");
+        }
+        match entry.phase {
+            Phase::Pending => Ok(ParsedPublication::Pending {
+                identity: identity.into(),
+            }),
+            Phase::Acknowledged { .. } => {
+                let summary = self.stored_acknowledgment(identity)?.ok_or_else(|| {
+                    Error::Invalid("publication has no durable acknowledgment".into())
+                })?;
+                let number = summary.number.filter(|number| *number > 0).ok_or_else(|| {
+                    Error::Invalid("publication acknowledgment has no native number".into())
+                })?;
+                Ok(ParsedPublication::Admitted(PublicationReceipt {
+                    producer: producer.into(),
+                    frame: identity.into(),
+                    number,
+                    root_material: entry
+                        .parsed()
+                        .expect("checked parsed source")
+                        .root_material
+                        .clone(),
+                }))
+            }
+            Phase::Refused | Phase::Conflicted { .. } => {
+                let acknowledgment = self.acknowledgment(identity)?;
+                let reason = acknowledgment
+                    .as_ref()
+                    .and_then(|ack| ack.refusal())
+                    .map(|(_, reason)| reason)
+                    .unwrap_or("the publication conflicts with its immutable contents");
+                Err(Error::Refused {
+                    name: identity.into(),
+                    reason: reason.into(),
+                })
+            }
+        }
     }
 
     pub fn stage_acquisition(
@@ -952,6 +1039,7 @@ impl Spool {
             Some((&captures, group_hash)),
             None,
             None,
+            None,
         )
     }
 
@@ -1092,6 +1180,7 @@ impl Spool {
             &StoredAcknowledgment {
                 payload,
                 phase: phase.clone(),
+                number: Some(acknowledgment.number),
             },
         )?;
         sync(temporary.path())?;
@@ -1159,6 +1248,7 @@ impl Spool {
             &StoredAcknowledgment {
                 payload,
                 phase: phase.clone(),
+                number: Some(acknowledgment.number),
             },
         )?;
         sync(temporary.path())?;
@@ -1220,6 +1310,8 @@ impl Spool {
         &self,
         state: &ReplayState,
         applied: &dyn Fn(&str) -> Result<bool>,
+        producer: &str,
+        processed: &dyn Fn(&ParsedSource, &PublicationReceipt) -> Result<bool>,
     ) -> Result<()> {
         if state.applied_position.is_some_and(|position| position < 0)
             || state.head.is_some_and(|position| position < 0)
@@ -1246,6 +1338,17 @@ impl Spool {
             for candidate in candidates {
                 if candidate.material {
                     continue;
+                }
+                let record: Record = serde_json::from_slice(&candidate.entry.metadata)?;
+                if let Some(source) = record.parsed() {
+                    let ParsedPublication::Admitted(receipt) =
+                        self.publication(&record.identity, producer)?
+                    else {
+                        continue;
+                    };
+                    if !processed(source, &receipt)? {
+                        continue;
+                    }
                 }
                 if candidate
                     .admitted
@@ -1279,9 +1382,13 @@ impl Spool {
         captures: Option<(&[&str], String)>,
         full_capture: Option<&Capture>,
         encoded_body: Option<Vec<polylogue_store::primary::PreparedBody>>,
+        parsed: Option<ParsedSource>,
     ) -> Result<Prepared> {
         let identity = frame.frame().to_owned();
         if let Some(previous) = self.get(&identity)? {
+            if previous.parsed() != parsed.as_ref() {
+                return invalid("prepared identity changed its interpreted source range");
+            }
             let desired = encoded_hash(&frame)?;
             if previous.frame.identity() != (desired.0.as_str(), desired.1) {
                 return invalid("prepared identity changed immutable frame contents");
@@ -1430,8 +1537,8 @@ impl Spool {
                 named: facts.named,
                 request: facts.request,
             })),
-            (Ingress::Events { .. }, _) => Payload::Events { group },
-            (Ingress::ReplaySequence { .. }, _) => Payload::ReplaySequence { group },
+            (Ingress::Events { .. }, _) => Payload::Events { group, parsed },
+            (Ingress::ReplaySequence { .. }, _) => Payload::ReplaySequence { group, parsed },
             (Ingress::Signals { .. }, _) => Payload::Signals,
             (Ingress::RegisterKinds { .. }, _) => Payload::RegisterKinds,
             (Ingress::Chunk { .. }, _) => Payload::Chunk,

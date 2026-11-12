@@ -215,6 +215,8 @@ fn named_query_phases_survive_restart_and_publication_until_confirmed_applicatio
         .remove_confirmed(
             &crate::tests::applied(9),
             &crate::tests::every_event_applied,
+            "fixture-producer",
+            &|_, _| Ok(false),
         )
         .unwrap();
     drop(sinex);
@@ -231,6 +233,8 @@ fn named_query_phases_survive_restart_and_publication_until_confirmed_applicatio
         .remove_confirmed(
             &crate::tests::applied(10),
             &crate::tests::every_event_applied,
+            "fixture-producer",
+            &|_, _| Ok(false),
         )
         .unwrap();
     for (name, _) in expected {

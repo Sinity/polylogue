@@ -10,6 +10,7 @@ struct State {
     counts: [i64; 4],
     checkpoint: Option<Vec<u8>>,
     stopped_attempt: Option<polylogue_model::batch::StoppedAttempt>,
+    publication: Option<crate::primary::PublicationReceipt>,
 }
 
 pub(super) struct Stored {
@@ -25,13 +26,30 @@ impl Stored {
     }
 }
 
-pub(super) fn read(tx: &Transaction<'_>, input: i64, chain: i64) -> Result<Option<Stored>> {
+pub(super) fn read(
+    tx: &Transaction<'_>,
+    input: i64,
+    chain: i64,
+    native: bool,
+) -> Result<Option<Stored>> {
     let row = tx.query_row("SELECT parsed_upto,reading_version,status,at_length,records,used,skipped,unreadable,commit_seq,checkpoint,reason,stopped_attempt FROM parse_state WHERE input_pk=?1 AND chain=?2",
         params![input,chain],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,Option<i64>>(3)?,[r.get::<_,i64>(4)?,r.get(5)?,r.get(6)?,r.get(7)?],r.get::<_,Option<i64>>(8)?,r.get::<_,Option<Vec<u8>>>(9)?,r.get::<_,Option<String>>(10)?,r.get::<_,Option<Vec<u8>>>(11)?))).optional()?;
     let Some((cursor, version, status, at_length, counts, commit, checkpoint, reason, attempt)) =
         row
     else {
         return Ok(None);
+    };
+    let publication = if native {
+        tx.query_row(
+            "SELECT native_publication FROM parse_state WHERE input_pk=?1 AND chain=?2",
+            params![input, chain],
+            |row| row.get::<_, Option<Vec<u8>>>(0),
+        )?
+        .as_deref()
+        .map(crate::encoding::unpack_json)
+        .transpose()?
+    } else {
+        None
     };
     Ok(Some(Stored {
         state: State {
@@ -41,6 +59,7 @@ pub(super) fn read(tx: &Transaction<'_>, input: i64, chain: i64) -> Result<Optio
             progress: crate::read::stored_parse_progress(&status, at_length, reason)?,
             counts,
             checkpoint,
+            publication,
             stopped_attempt: attempt
                 .as_deref()
                 .map(crate::encoding::unpack_json)
@@ -52,6 +71,7 @@ pub(super) fn read(tx: &Transaction<'_>, input: i64, chain: i64) -> Result<Optio
 
 pub(super) struct Update {
     state: State,
+    native: bool,
     commit: Option<i64>,
 }
 impl Update {
@@ -62,6 +82,7 @@ impl Update {
         counter: i64,
         confirmed: bool,
         receipt: Option<&crate::wire_shapes::ReadingReceipt>,
+        publication: Option<&crate::primary::PublicationReceipt>,
     ) -> Result<Self> {
         let counts = [
             step.counts.records,
@@ -120,6 +141,7 @@ impl Update {
             ));
         }
         let state = State {
+            publication: publication.cloned(),
             cursor: step.parsed_upto,
             stopped_attempt: if progress.stopped() {
                 step.stopped_attempt
@@ -152,7 +174,11 @@ impl Update {
         } else {
             Some(counter).filter(|n| *n > 0)
         };
-        Ok(Self { state, commit })
+        Ok(Self {
+            state,
+            commit,
+            native: confirmed || publication.is_some(),
+        })
     }
 
     pub(super) fn write(&self, tx: &Transaction<'_>, input: i64, chain: i64) -> Result<()> {
@@ -174,6 +200,20 @@ impl Update {
             records=excluded.records,used=excluded.used,skipped=excluded.skipped,unreadable=excluded.unreadable,
             at_length=excluded.at_length,reading_version=excluded.reading_version,commit_seq=excluded.commit_seq,checkpoint=excluded.checkpoint,reason=excluded.reason,stopped_attempt=excluded.stopped_attempt")?
             .execute(params![input,chain,self.state.progress.status(),cursor,self.state.counts[0],self.state.counts[1],self.state.counts[2],self.state.counts[3],at_length,self.state.version,self.commit,self.state.checkpoint,self.state.progress.reason(),self.state.stopped_attempt.as_ref().map(crate::encoding::pack_json).transpose()?])?;
+        if self.native {
+            tx.execute(
+                "UPDATE parse_state SET native_publication=?3 WHERE input_pk=?1 AND chain=?2",
+                params![
+                    input,
+                    chain,
+                    self.state
+                        .publication
+                        .as_ref()
+                        .map(crate::encoding::pack_json)
+                        .transpose()?
+                ],
+            )?;
+        }
         Ok(())
     }
 }

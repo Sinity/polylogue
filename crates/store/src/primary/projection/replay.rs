@@ -261,3 +261,31 @@ pub(super) fn complete(conn: &Connection, position: i64) -> Result<()> {
     state.applied_position = Some(position);
     save(conn, &state)
 }
+
+/// Native admission alone does not establish that its interpretation committed
+/// locally. Later admissions of this same original chain can cover an older
+/// queued reading; a cursor from another interpretation cannot do so by itself.
+pub(crate) fn processed_source(
+    index: &Connection,
+    source: &super::super::ParsedSource,
+    receipt: &super::super::PublicationReceipt,
+) -> Result<bool> {
+    let row: Option<(i64,String,Option<Vec<u8>>)> = index.query_row(
+        "SELECT p.parsed_upto,p.reading_version,p.native_publication FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id=?1 AND p.chain=?2",
+        params![source.reading.input.id,source.reading.chain], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
+    ).optional()?;
+    let Some((cursor, version, Some(bytes))) = row else {
+        return Ok(false);
+    };
+    let committed: super::super::PublicationReceipt = crate::encoding::unpack_json(&bytes)?;
+    Ok(
+        u64::try_from(cursor).is_ok_and(|cursor| cursor >= source.reading.parsed_upto)
+            && committed.producer == receipt.producer
+            && committed.root_material == source.root_material
+            && receipt.root_material == source.root_material
+            && (committed.number > receipt.number
+                || (committed.number == receipt.number
+                    && committed.frame == receipt.frame
+                    && version == source.reading.reading_version)),
+    )
+}

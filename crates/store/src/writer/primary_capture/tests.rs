@@ -413,7 +413,7 @@ impl crate::primary::Sinex for OfflineProducer {
         _: &str,
         _: &crate::primary::ExportReadingKey,
         _: &mut crate::primary::ReadingProducts<'_>,
-    ) -> Result<crate::primary::PreparedWrite> {
+    ) -> Result<crate::primary::ParsedPublication> {
         Self::unavailable()
     }
     fn prepare_named_products(
@@ -487,6 +487,15 @@ impl crate::primary::Sinex for OfflineProducer {
     /// Spooled products are kept, so a test can read what was sent. Like the
     /// real producer's spool, a write becomes visible whole: a publication
     /// pass may rewrite the file while the test reads it.
+    fn prepare_parsed(
+        &self,
+        _: &crate::primary::ParsedSource,
+        _: &[crate::primary::ProductWrite],
+    ) -> Result<crate::primary::ParsedPublication> {
+        Err(StoreError::Invalid(
+            "this synthetic adapter does not admit source interpretations".into(),
+        ))
+    }
     fn prepare_products(&self, writes: &[ProductWrite]) -> Result<crate::primary::PreparedWrite> {
         std::fs::create_dir_all(&self.root)?;
         let preparing = self.root.join("products.json.preparing");
@@ -536,6 +545,10 @@ impl crate::primary::Sinex for OfflineProducer {
         &self,
         _: &crate::primary::ReplayState,
         _: &dyn Fn(&str) -> Result<bool>,
+        _: &dyn Fn(
+            &crate::primary::ParsedSource,
+            &crate::primary::PublicationReceipt,
+        ) -> Result<bool>,
     ) -> Result<()> {
         if self.root.join("ready").exists() {
             Ok(())

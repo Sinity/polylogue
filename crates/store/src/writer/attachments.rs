@@ -55,7 +55,7 @@ pub(super) fn remember(
 fn size(archive: &Connection, hash: BlobHash) -> Result<Option<u64>> {
     archive
         .query_row(
-            "SELECT size FROM blob WHERE hash=?1",
+            &crate::source::Source::of(archive)?.sql("SELECT size FROM @source.blob WHERE hash=?1"),
             [hash.0.as_slice()],
             |row| row.get::<_, i64>(0),
         )

@@ -29,6 +29,50 @@ pub struct Reading {
     pub progress: polylogue_model::batch::StepProgress,
 }
 
+impl Reading {
+    pub(crate) fn from_step(
+        input: &InputKey,
+        chain: i64,
+        source_length: Option<u64>,
+        step: &crate::ParseStep,
+    ) -> Self {
+        Self {
+            source_length,
+            delivery: step.delivery,
+            input: input.clone(),
+            chain,
+            reading_version: step.reading_version.clone(),
+            order_from: step.order_from,
+            repeats_whole_conversations: step.repeats_whole_conversations,
+            start: step.start,
+            parsed_upto: step.parsed_upto,
+            progress: step.progress.clone(),
+        }
+    }
+}
+
+/// The immutable original chain and parser range a publication interprets.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ParsedSource {
+    pub root_material: String,
+    pub reading: Reading,
+}
+
+/// Sinex's receipt for a fact frame, saved with the local parser checkpoint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublicationReceipt {
+    pub producer: String,
+    pub frame: String,
+    pub number: i64,
+    pub root_material: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParsedPublication {
+    Pending { identity: String },
+    Admitted(PublicationReceipt),
+}
+
 /// A tool invocation as its source stated it, independent of local block rows.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ToolCall {
@@ -463,18 +507,7 @@ pub fn parse(
         ));
     }
     step.validate_export()?;
-    let reading = Reading {
-        source_length,
-        delivery: step.delivery,
-        input: input.clone(),
-        chain,
-        reading_version: step.reading_version.clone(),
-        order_from: step.order_from,
-        repeats_whole_conversations: step.repeats_whole_conversations,
-        start: step.start,
-        parsed_upto: step.parsed_upto,
-        progress: step.progress.clone(),
-    };
+    let reading = Reading::from_step(input, chain, source_length, step);
     let mut products = Vec::new();
     products.extend(output.sessions.into_iter().map(|facts| Product::Session {
         reading: reading.clone(),

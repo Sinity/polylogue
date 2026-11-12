@@ -333,7 +333,7 @@ impl Inner {
                                 Some(file),
                             )?;
                         }
-                        self.primary_products(std::iter::once(&item.batch))?;
+                        self.write_uninterrupted(std::iter::once(&item.batch))?;
                         Ok(StoredInput {
                             input: item.batch.input.id.clone(),
                             chain,

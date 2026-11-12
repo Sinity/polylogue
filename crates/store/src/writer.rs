@@ -567,7 +567,8 @@ impl Writer {
     /// Queues one batch. Blocks while the writer is busy and its queue is
     /// full, which is what holds the parse pool back.
     pub fn send(&self, mut batch: Batch) -> Result<()> {
-        if !self.resolver.location().is_primary() {
+        if !self.resolver.location().is_primary() || matches!(batch.change, Change::Reparse { .. })
+        {
             self.resolver.batches(&mut [&mut batch])?;
         }
         self.tx
@@ -861,7 +862,11 @@ impl WriterSender {
         store: std::sync::Arc<crate::blobs::Blobs>,
     ) -> Result<Receiver<Vec<Result<crate::staging::StoredInput>>>> {
         let mut batches: Vec<_> = group.iter_mut().map(|item| &mut item.batch).collect();
-        if !self.0.resolver.location().is_primary() {
+        if !self.0.resolver.location().is_primary()
+            || batches
+                .iter()
+                .all(|batch| matches!(batch.change, Change::Reparse { .. }))
+        {
             self.0.resolver.batches(&mut batches)?;
         }
         let (reply, wait) = sync_channel(1);
@@ -872,7 +877,9 @@ impl WriterSender {
     }
 
     pub fn send(&self, mut batch: Batch) -> Result<()> {
-        if !self.0.resolver.location().is_primary() {
+        if !self.0.resolver.location().is_primary()
+            || matches!(batch.change, Change::Reparse { .. })
+        {
             self.0.resolver.batches(&mut [&mut batch])?;
         }
         self.0
@@ -902,9 +909,7 @@ impl WriterSender {
         mut reading: ChainReading,
     ) -> Result<Receiver<Result<u64>>> {
         reading.finish()?;
-        if !self.0.resolver.location().is_primary() {
-            reading.resolve(&self.0.resolver, &input, chain, length)?;
-        }
+        reading.resolve(&self.0.resolver, &input, chain, length)?;
         let (reply, wait) = sync_channel(1);
         crate::timing::reading_commit_queue(1);
         if self
@@ -1644,7 +1649,9 @@ impl Inner {
         bump_counter(&tx)?;
         crate::chain_progress::refresh(&tx, &source_changed)?;
         tx.commit()?;
-        crate::chain_progress::forget(&self.archive, &source_changed)?;
+        if let Some(changed) = source_changed {
+            crate::chain_progress::forget(&self.archive, &changed)?;
+        }
         self.commits
             .committed(crate::completion::Committed::CONTENT);
         self.report.transactions += 1;
@@ -2062,9 +2069,11 @@ impl Inner {
         &mut self,
         batches: impl Iterator<Item = &'a Batch> + Clone,
     ) -> Result<()> {
-        if self.sinex.is_some() {
-            return self.primary_products(batches);
-        }
+        let publications = if self.sinex.is_some() {
+            Some(self.prepare_primary_parsed(batches.clone())?)
+        } else {
+            None
+        };
         for b in batches.clone() {
             if crate::container_members::container_of(b).is_some() {
                 return Err(StoreError::Invalid(
@@ -2085,7 +2094,7 @@ impl Inner {
                 parsed_only = false;
                 break;
             }
-            for blob in &batch.blobs {
+            for blob in batch.blobs.iter().filter(|_| publications.is_none()) {
                 let size = i64::try_from(blob.size).map_err(|_| {
                     StoreError::Invalid("decoded body exceeds the source catalog range".into())
                 })?;
@@ -2156,9 +2165,9 @@ impl Inner {
         let counter = bump_counter(&itx)?;
         let changes = crate::change_summary::ChangeSummary::start(&itx)?;
         let mut stats = (0u64, 0u64);
-        for (b, chain) in indexed.iter().zip(chains) {
+        for (batch_index, (b, chain)) in indexed.iter().zip(chains).enumerate() {
             if let Some(chain) = chain {
-                for p in &b.parse {
+                for (step_index, p) in b.parse.iter().enumerate() {
                     let resolution = p
                         .resolution
                         .as_ref()
@@ -2174,16 +2183,31 @@ impl Inner {
                         chain,
                         p.parsed_upto,
                     )?;
-                    stats.1 += write_rows(
-                        &itx,
-                        b,
-                        p,
-                        resolution,
-                        counter,
-                        self.first_build.as_deref(),
-                        Some(&receipt),
-                        &changes,
-                    )?;
+                    stats.1 += if let Some(publications) = &publications {
+                        rows::write_published_rows(
+                            &itx,
+                            b,
+                            p,
+                            resolution,
+                            counter,
+                            self.first_build.as_deref(),
+                            &receipt,
+                            &publications[batch_index][step_index],
+                            false,
+                            &changes,
+                        )?
+                    } else {
+                        write_rows(
+                            &itx,
+                            b,
+                            p,
+                            resolution,
+                            counter,
+                            self.first_build.as_deref(),
+                            Some(&receipt),
+                            &changes,
+                        )?
+                    };
                 }
                 if b.parse.iter().any(|p| p.progress.reached_end()) {
                     rows::prune_sessions(&itx, &b.input.id, chain, counter)?;
@@ -2192,8 +2216,13 @@ impl Inner {
             stats.0 += 1;
         }
         self.report.item_units_read += rows::finish(&itx, &changes, self.first_build.is_some())?;
-        let source_changed = crate::chain_progress::recorded(&self.archive)?;
-        crate::chain_progress::refresh(&itx, &source_changed)?;
+        let source_changed = if publications.is_none() {
+            let changed = crate::chain_progress::recorded(&self.archive)?;
+            crate::chain_progress::refresh(&itx, &changed)?;
+            Some(changed)
+        } else {
+            None
+        };
         crate::fault::check("write.index_commit", "")?;
         itx.commit()?;
         crate::chain_progress::forget(&self.archive, &source_changed)?;
