@@ -587,7 +587,7 @@ fn exact_crossdomain_evidence(running: &Running) {
     captured_evidence(running, "explicit-associations", &acts);
     let linked = native_rows(
         running,
-        "events where event_type = polylogue.tool_call AND payload.call_id = call-read-draft | join (events where event_type = work.act) on id = payload.label_source.event | fields payload.call_id as call_id, match.payload.evidence.event as evidence | join (events where event_type = terminal.reported OR event_type = file.changed) on evidence = id | fields call_id, evidence, match.id as id, match.event_type as event_type",
+        "events where event_type = polylogue.tool_call AND payload.call_id = call-read-draft | fields text(id) as event_id, payload.call_id as call_id | join (events where event_type = work.act) on event_id = payload.label_source.event | fields call_id, match.payload.evidence.event as evidence | join (events where event_type = terminal.reported OR event_type = file.changed | fields id, text(id) as event_id, event_type) on evidence = event_id | fields call_id, evidence, match.id as id, match.event_type as event_type",
     );
     assert_eq!(linked.len(), 2, "{linked:?}");
     let actual: std::collections::BTreeSet<_> = linked
@@ -612,7 +612,7 @@ fn exact_crossdomain_evidence(running: &Running) {
 #[ignore = "needs the matching Sinex daemon; set SINEXD"]
 fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
     use polylogue_model::SessionId;
-    use polylogue_testkit::{ClaudeHome, claude_user};
+    use polylogue_testkit::{ClaudeHome, claude_assistant, claude_user};
     let home = ClaudeHome::new();
     let user = claude_user("user-1", "original-session", "Inspect the draft");
     let action = format!(
@@ -639,7 +639,7 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
     drop(ordinary);
     drop(lock);
     let session = SessionId::parse("claude-code:original-session").unwrap();
-    let expected_messages = standalone
+    let mut expected_messages = standalone
         .reads()
         .reader()
         .unwrap()
@@ -687,7 +687,10 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
             |_| {
                 let pool = ReadPool::open(&archive)?;
                 let reader = pool.reader()?;
-                Ok(reader.messages(&session, false)? == wanted)
+                let status = sdk.status().unwrap();
+                Ok(reader.messages(&session, false)? == wanted
+                    && status.prepared_materials == 0
+                    && status.prepared_writes == 0)
             },
             || {
                 let actual = ReadPool::open(&archive)
@@ -700,9 +703,42 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
         drop(lock);
         archive
     };
+    build(&home.home, &expected_messages);
+    let tails = [
+        claude_user("user-2", "original-session", "The draft is available."),
+        claude_assistant("assistant-2", "original-session", "Inspection finished."),
+    ];
+    for tail in &tails {
+        home.append("original-session.jsonl", tail);
+        standalone.append("original-session.jsonl", tail);
+        let (mut ordinary, lock) = standalone.engine(1 << 20);
+        assert!(ordinary.run_pass().unwrap().errors.is_empty());
+        drop(ordinary);
+        drop(lock);
+        expected_messages = standalone
+            .reads()
+            .reader()
+            .unwrap()
+            .messages(&session, false)
+            .unwrap();
+        build(&home.home, &expected_messages);
+    }
+    assert_eq!(expected_messages.len(), 4);
+    // The original incomplete record remains available; no message or false
+    // end-of-input conclusion can be manufactured from its missing bytes.
+    home.append("original-session.jsonl", "{\"type\":\"assistant\"");
     let archive = build(&home.home, &expected_messages);
     let pool = ReadPool::open(&archive).unwrap();
     let reader = pool.reader().unwrap();
+    let partial = reader.query(
+        "SELECT p.status,p.parsed_upto FROM parse_state p JOIN message m ON m.input_pk=p.input_pk AND m.source_chain=p.chain WHERE m.id='claude-code:assistant-1'", &[],
+    ).unwrap();
+    assert_eq!(partial.len(), 1);
+    assert_eq!(partial[0]["status"], "waiting");
+    assert_eq!(
+        partial[0]["parsed_upto"].as_u64(),
+        Some((original.len() + tails.iter().map(String::len).sum::<usize>()) as u64)
+    );
     let coordinates = reader.query(
         "SELECT m.source_start AS start,m.source_end AS end,s.id AS material FROM message m JOIN source_material s ON s.input=(SELECT id FROM input_ref WHERE pk=m.input_pk) AND s.chain=m.source_chain AND s.offset=0 WHERE m.id='claude-code:assistant-1'",
         &[],
@@ -762,9 +798,11 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
     );
     assert_eq!(selected["outcome"], "ok", "{selected}");
     let rows = selected["result"]["rows"].as_array().unwrap();
-    assert_eq!(rows.len(), 1, "{selected}");
-    assert_eq!(rows[0]["payload"]["message"], "claude-code:assistant-1");
-    let id = rows[0]["id"].as_str().unwrap();
+    let selected = rows
+        .iter()
+        .find(|row| row["payload"]["message"] == "claude-code:assistant-1")
+        .unwrap();
+    let id = selected["id"].as_str().unwrap();
     let target = format!("sinex:ev/{id}");
     let archived = native::request(
         &running.socket,
@@ -772,7 +810,12 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
         serde_json::json!({"method":"archive", "target":target}),
     );
     assert_eq!(archived["outcome"], "ok", "{archived}");
-    let hidden = build(&empty, &expected_messages[..1]);
+    let remaining: Vec<_> = expected_messages
+        .iter()
+        .filter(|message| message.id.to_string() != "claude-code:assistant-1")
+        .cloned()
+        .collect();
+    let hidden = build(&empty, &remaining);
     assert_eq!(
         ReadPool::open(&hidden)
             .unwrap()
@@ -780,7 +823,7 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
             .unwrap()
             .messages(&session, false)
             .unwrap(),
-        expected_messages[..1]
+        remaining
     );
     let restored = native::request(
         &running.socket,
@@ -799,6 +842,37 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
             .unwrap(),
         before
     );
+    let rewritten = format!(
+        "{}{}",
+        original.replace(
+            "I will inspect the draft.",
+            "I inspected the revised draft."
+        ),
+        tails.join("")
+    );
+    fs::write(home.file("original-session.jsonl"), &rewritten).unwrap();
+    fs::write(standalone.file("original-session.jsonl"), &rewritten).unwrap();
+    let (mut ordinary, lock) = standalone.engine(1 << 20);
+    assert!(ordinary.run_pass().unwrap().errors.is_empty());
+    drop(ordinary);
+    drop(lock);
+    expected_messages = standalone
+        .reads()
+        .reader()
+        .unwrap()
+        .messages(&session, false)
+        .unwrap();
+    let rewritten = build(&home.home, &expected_messages);
+    let pool = ReadPool::open(&rewritten).unwrap();
+    let reader = pool.reader().unwrap();
+    assert_eq!(reader.messages(&session, false).unwrap(), expected_messages);
+    let chain = reader
+        .query(
+            "SELECT source_chain FROM message WHERE id='claude-code:assistant-1'",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(chain[0]["source_chain"], 2);
 }
 
 #[test]

@@ -448,11 +448,18 @@ impl crate::primary::Sinex for OfflineProducer {
     /// pass may rewrite the file while the test reads it.
     fn prepare_parsed(
         &self,
-        _: &crate::primary::ParsedSource,
-        _: &[crate::primary::ProductWrite],
+        source: &crate::primary::ParsedSource,
+        writes: &[crate::primary::ProductWrite],
     ) -> Result<crate::primary::ParsedPublication> {
-        Err(StoreError::Invalid(
-            "this synthetic adapter does not admit source interpretations".into(),
+        let prepared = self.prepare_products(writes)?;
+        Ok(crate::primary::ParsedPublication::Admitted(
+            crate::primary::PublicationReceipt {
+                producer: "fixture-producer".into(),
+                frame: prepared.identity,
+                number: 1,
+                commit_seq: None,
+                root_material: source.root_material.clone(),
+            },
         ))
     }
     fn prepare_products(&self, writes: &[ProductWrite]) -> Result<crate::primary::PreparedWrite> {
@@ -1235,14 +1242,16 @@ fn stored_readings_use_their_exact_confirmed_chain_instead_of_a_database_path_he
             !producer_root.join("capture.json").exists(),
             "stored parsing must not prepare another acquisition"
         );
-        assert!(
+        assert_eq!(
             crate::ReadPool::open(&archive)
                 .unwrap()
                 .reader()
                 .unwrap()
                 .parser_checkpoint("first-session", 1, "database-reading")
                 .unwrap()
-                .is_none()
+                .unwrap()
+                .parsed_upto,
+            4
         );
     }
     let writes: Vec<ProductWrite> =
@@ -1265,33 +1274,6 @@ fn stored_readings_use_their_exact_confirmed_chain_instead_of_a_database_path_he
             .as_ref()
             .is_some_and(|location| location.material == "material-first-session")
     }));
-    let mut confirmed: Vec<_> = writes
-        .into_iter()
-        .enumerate()
-        .map(|(index, write)| Confirmed {
-            position: 3,
-            output_index: index as u64,
-            event: format!("reading-{index}"),
-            native: None,
-            change: ConfirmedChange::Live(Box::new(write.product)),
-        })
-        .collect();
-    confirmed.push(control(ReplayControl::Completion {
-        position: 3,
-        delivery: None,
-    }));
-    writer.apply_confirmed(confirmed).unwrap();
-    assert_eq!(
-        crate::ReadPool::open(&archive)
-            .unwrap()
-            .reader()
-            .unwrap()
-            .parser_checkpoint("first-session", 1, "database-reading")
-            .unwrap()
-            .unwrap()
-            .parsed_upto,
-        4
-    );
     for invalid in ["format", "chain", "range"] {
         let mut batch = reading.batch.clone();
         match invalid {
@@ -1299,7 +1281,7 @@ fn stored_readings_use_their_exact_confirmed_chain_instead_of_a_database_path_he
             "chain" => batch.change = Change::Reparse { chain: 2 },
             _ => batch.length = 5,
         }
-        let results = writer
+        let error = writer
             .sender()
             .unwrap()
             .store_group(
@@ -1309,11 +1291,19 @@ fn stored_readings_use_their_exact_confirmed_chain_instead_of_a_database_path_he
                 }],
                 Arc::clone(&store),
             )
-            .unwrap();
-        assert!(
-            results[0].is_err(),
-            "invalid {invalid} was accepted: {results:?}"
-        );
+            .unwrap_err();
+        match (invalid, error) {
+            ("format", StoreError::Invalid(reason)) => {
+                assert_eq!(reason, "stored reading input identity differs")
+            }
+            ("chain", StoreError::NotFound(reason)) => {
+                assert_eq!(reason, "stored input first-session chain 2 range 0..4")
+            }
+            ("range", StoreError::NotFound(reason)) => {
+                assert_eq!(reason, "stored input first-session chain 1 range 0..5")
+            }
+            (invalid, error) => panic!("unexpected {invalid} refusal: {error}"),
+        }
     }
     assert!(!producer_root.join("capture.json").exists());
     let mut fresh = source("fresh-provider", b"new source");

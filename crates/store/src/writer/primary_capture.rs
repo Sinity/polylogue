@@ -118,8 +118,6 @@ impl AcquiredBody<'_> {
     }
 }
 
-// The acquired body keeps its own coordinates after logical extents are trimmed.
-
 // The acquired body may be retained without creating a logical source extent.
 // A receipt identifies the physical preparation, never a whole-chain blob guess.
 fn acquired_body(item: &PreparedBatch) -> Result<Option<AcquiredBody<'_>>> {
