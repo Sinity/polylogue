@@ -470,7 +470,8 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
             Instant::now(),
             (&archive, &sdk, &running),
             |_| {
-                let reader = ReadPool::open(&archive)?.reader()?;
+                let pool = ReadPool::open(&archive)?;
+                let reader = pool.reader()?;
                 Ok(reader.messages(&session, false)? == expected_messages)
             },
             String::new,
@@ -480,7 +481,8 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
         archive
     };
     let archive = build(&home.home);
-    let reader = ReadPool::open(&archive).unwrap().reader().unwrap();
+    let pool = ReadPool::open(&archive).unwrap();
+    let reader = pool.reader().unwrap();
     let coordinates = reader.query(
         "SELECT m.source_start AS start,m.source_end AS end,s.id AS material FROM message m JOIN source_material s ON s.input=(SELECT id FROM input_ref WHERE pk=m.input_pk) AND s.chain=m.source_chain AND s.offset=0 WHERE m.id='claude-code:msg_action'",
         &[],
@@ -512,6 +514,7 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
     );
     let before = reader.session_export(&session).unwrap().unwrap();
     drop(reader);
+    drop(pool);
     // Every removed path belongs to this fixture; the native originals remain.
     fs::remove_dir_all(&home.root).unwrap();
     let empty = home.dir.path().join("empty-home");
