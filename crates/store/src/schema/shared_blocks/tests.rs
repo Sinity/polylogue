@@ -8,7 +8,7 @@ fn old_index(
     building: bool,
     sparse: bool,
 ) -> (Connection, Message, MessageProjection) {
-    let conn = predecessor(primary, lineage).unwrap();
+    let conn = predecessor(primary, lineage, false).unwrap();
     conn.pragma_update(None, "foreign_keys", true).unwrap();
     conn.pragma_update(None, "application_id", FORMAT_ID)
         .unwrap();
@@ -38,6 +38,13 @@ fn old_index(
             vec![0, 1, 2]
         },
     };
+    if primary {
+        conn.execute_batch("INSERT INTO source_assertion(id,root,kind,author,via,machine,created_at,commit_seq)
+             VALUES('retained-note','retained-note','note','human','cli','synthetic',123456,9);
+             INSERT INTO source_link(record,role,ref) VALUES('retained-note','target','session:claude-code:session');
+             INSERT INTO source_revision_state VALUES('retained-note','retained-note',1,0);
+             INSERT INTO source_assertion_slot VALUES(zeroblob(32),'retained-note');").unwrap();
+    }
     let mut packer = RowPacker::new().unwrap();
     let body = packer.pack_version(&message, &message.blocks).unwrap();
     conn.execute(
@@ -129,6 +136,33 @@ fn retained(conn: &Connection) -> Vec<(String, String)> {
         ),
     ] {
         rows.push((name.into(), conn.query_row(sql, [], |r| r.get(0)).unwrap()));
+    }
+    if conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='source_assertion')",
+            [],
+            |r| r.get::<_, bool>(0),
+        )
+        .unwrap()
+    {
+        for (table, columns) in [
+            (
+                "source_assertion",
+                "rowid,id,root,kind,key,value,author,via,machine,created_at,valid_until,commit_seq",
+            ),
+            ("source_link", "record,role,ref,hex(seen_hash),quote"),
+            ("source_revision_state", "id,root,current,withdrawn"),
+            ("source_assertion_slot", "hex(slot),id"),
+        ] {
+            let values: String = conn
+                .query_row(
+                    &format!("SELECT json_group_array(json_array({columns})) FROM {table}"),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            rows.push((table.into(), values));
+        }
     }
     rows
 }
@@ -228,42 +262,80 @@ fn shared_block_conversion_keeps_inline_selected_text() {
 #[test]
 #[cfg(feature = "faults")]
 fn shared_block_conversion_rolls_back_before_format_commit() {
-    let (conn, message, projection) = old_index(false, false, true, false);
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("shared-block-transition.db");
-    conn.execute("VACUUM INTO ?1", [path.to_str().unwrap()])
-        .unwrap();
-    drop(conn);
-    let conn = Connection::open(&path).unwrap();
-    conn.pragma_update(None, "foreign_keys", true).unwrap();
+    for primary in [false, true] {
+        let (conn, message, projection) = old_index(primary, false, true, false);
+        let ensure = if primary {
+            ensure_primary_index
+        } else {
+            ensure_index
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shared-block-transition.db");
+        conn.execute("VACUUM INTO ?1", [path.to_str().unwrap()])
+            .unwrap();
+        drop(conn);
+        let conn = Connection::open(&path).unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+        let before = retained(&conn);
+        let shape_before = shape(&conn).unwrap();
+        let body: Vec<u8> = conn
+            .query_row("SELECT body FROM message_version", [], |r| r.get(0))
+            .unwrap();
+        crate::fault::arm(
+            "index.shared_blocks.converted",
+            conn.path().unwrap(),
+            crate::fault::Action::Fail,
+            0,
+            1,
+        );
+        assert!(ensure(&conn).is_err());
+        assert_eq!(version(&conn).unwrap(), 1);
+        assert_eq!(shape(&conn).unwrap(), shape_before);
+        assert_eq!(retained(&conn), before);
+        assert_eq!(
+            conn.query_row("SELECT body FROM message_version", [], |r| r
+                .get::<_, Vec<u8>>(0))
+                .unwrap(),
+            body
+        );
+        ensure(&conn).unwrap();
+        assert_eq!(
+            crate::versions::read_message(&conn, projection.source_version.0.as_slice())
+                .unwrap()
+                .unwrap()
+                .0,
+            message
+        );
+    }
+}
+
+#[test]
+fn shared_block_conversion_accepts_the_current_primary_authored_namespace() {
+    let (conn, message, projection) = old_index(true, true, true, false);
+    convert_primary_authored(&conn).unwrap();
     let before = retained(&conn);
-    let shape_before = shape(&conn).unwrap();
-    let body: Vec<u8> = conn
-        .query_row("SELECT body FROM message_version", [], |r| r.get(0))
-        .unwrap();
-    crate::fault::arm(
-        "index.shared_blocks.converted",
-        conn.path().unwrap(),
-        crate::fault::Action::Fail,
-        0,
-        1,
-    );
-    assert!(ensure_index(&conn).is_err());
-    assert_eq!(version(&conn).unwrap(), 1);
-    assert_eq!(shape(&conn).unwrap(), shape_before);
+    ensure_primary_index(&conn).unwrap();
     assert_eq!(retained(&conn), before);
-    assert_eq!(
-        conn.query_row("SELECT body FROM message_version", [], |r| r
-            .get::<_, Vec<u8>>(0))
-            .unwrap(),
-        body
-    );
-    ensure_index(&conn).unwrap();
     assert_eq!(
         crate::versions::read_message(&conn, projection.source_version.0.as_slice())
             .unwrap()
             .unwrap()
             .0,
         message
+    );
+    conn.execute("INSERT INTO source_assertion(id,root,kind,author,via,machine,created_at,commit_seq) VALUES('unknown-time','unknown-time','note','human','cli','synthetic',NULL,10)",[]).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM source_assertion_import", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        0
     );
 }

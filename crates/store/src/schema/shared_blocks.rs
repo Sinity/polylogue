@@ -11,7 +11,7 @@ const LINEAGE: &str = include_str!("lineage.sql");
 
 /// Builds the two exact predecessor shapes: before and after lineage shipped.
 /// This is a schema comparison, never an old-format reader used after conversion.
-fn predecessor(primary: bool, lineage: bool) -> Result<Connection> {
+fn predecessor(primary: bool, lineage: bool, current_authored: bool) -> Result<Connection> {
     let expected = Connection::open_in_memory()?;
     crate::sql_functions::register(&expected)?;
     let mut index = INDEX.replacen(BLOCKS, BEFORE, 1).replacen(VALUES, "", 1);
@@ -29,7 +29,17 @@ fn predecessor(primary: bool, lineage: bool) -> Result<Connection> {
     expected.execute_batch(crate::parser_context::VERSION_INDEX)?;
     expected.execute_batch(OPEN_INDEXES)?;
     if primary {
-        add_primary(&expected)?;
+        let archive = if current_authored {
+            ARCHIVE.to_owned()
+        } else {
+            ARCHIVE.replacen(
+                crate::assertions::SCHEMA,
+                include_str!("assertions_before_unknown_time.sql"),
+                1,
+            )
+        };
+        expected.execute_batch(&crate::source::from_archive(&archive)?.ddl)?;
+        expected.execute_batch(crate::primary::projection::SCHEMA)?;
     }
     Ok(expected)
 }
@@ -65,10 +75,14 @@ pub(super) fn convert(conn: &Connection, primary: bool) -> Result<()> {
         [],
         |row| row.get(0),
     )?;
-    if !matches(conn, &predecessor(primary, lineage)?)? {
+    let old_authored = matches(conn, &predecessor(primary, lineage, false)?)?;
+    if !old_authored && !(primary && matches(conn, &predecessor(primary, lineage, true)?)?) {
         return Err(StoreError::Invalid(
             "Index1 does not match the shared-block conversion's declared predecessor; the index is unchanged".into(),
         ));
+    }
+    if primary && old_authored {
+        convert_primary_authored(conn)?;
     }
     conn.execute_batch(VALUES)?;
     let mut packer = RowPacker::new()?;
@@ -157,10 +171,23 @@ pub(super) fn convert(conn: &Connection, primary: bool) -> Result<()> {
     Ok(())
 }
 
+fn convert_primary_authored(conn: &Connection) -> Result<()> {
+    conn.execute_batch("ALTER TABLE source_assertion ALTER COLUMN created_at DROP NOT NULL")?;
+    let current = Connection::open_in_memory()?;
+    current.execute_batch(&crate::source::schema()?.ddl)?;
+    let imports: String = current.query_row(
+        "SELECT sql FROM sqlite_schema WHERE type='table' AND name='source_assertion_import'",
+        [],
+        |row| row.get(0),
+    )?;
+    conn.execute_batch(&imports)?;
+    Ok(())
+}
+
 fn add_lineage(conn: &Connection) -> Result<()> {
     // derive_due has no inbound references. Its existing key and flags survive;
     // rebuilding only this small queue places the new column in the current format.
-    let expected = predecessor(false, true)?;
+    let expected = predecessor(false, true, false)?;
     let ddl: String = expected.query_row(
         "SELECT sql FROM sqlite_schema WHERE type='table' AND name='derive_due'",
         [],
