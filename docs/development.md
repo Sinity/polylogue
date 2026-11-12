@@ -28,6 +28,11 @@ builds set `POLYLOGUE_REVISION` at compile time, and `--version` shows it.
 
 Native test commands select targets marked `test = true` by default, so examples without tests do not add links. An example with unit tests opts in through its Cargo manifest. Explicit Cargo target flags such as `--lib` or `--example NAME` retain their native selection. Every test command builds the whole workspace with the one feature list in `xtask/src/main.rs` (the Sinex client and the fault features), so a focused run reuses the landing check's units; selectors choose which tests run. Clippy compiles every target in that configuration and again without the Sinex client.
 
+Shared dependency features are declared once in the root manifest's
+`[workspace.dependencies]`; workspace crates add no further features, except
+test-only dev-dependencies. Focused runs, checks and warm-up use that same
+graph so they can reuse compiler units.
+
 The package uses a Crane dependency build with the package's exact feature
 and package selection and without test compilation. Clippy and nextest share
 a separate workspace dependency build. The `polylogue-dependencies` package
