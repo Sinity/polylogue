@@ -2,6 +2,18 @@
 
 Generated from the product declarations. Session products read parsed rows; read-time products may read settings, notes and the query clock.
 
+## logical session (K6)
+
+The root and depth of explicit provider ancestry
+
+Kind: Exact. Unit: session; parent steps. Denominator: one physical session.
+
+Unknown: Missing parents, conflicting parents and cycles have no root or depth; missing parents set root_pending.
+
+Reads: session.id, session.stub, link.parent_id, link.child_id, link.kind.
+
+Tests: arrival_order_permutation_oracle, depth_cycle_reported.
+
 ## session counts (K23)
 
 Counts and prose words over a session's shown active-path rows

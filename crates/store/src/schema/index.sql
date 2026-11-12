@@ -594,6 +594,7 @@ CREATE TABLE derive_due (
   session_pk        INTEGER PRIMARY KEY REFERENCES session(pk) ON DELETE CASCADE,
   rows_changed      INTEGER NOT NULL,
   repo_lookup       INTEGER NOT NULL DEFAULT 0,
+  lineage           INTEGER NOT NULL DEFAULT 0,
   rewritten         INTEGER NOT NULL DEFAULT 0,
   marked            INTEGER NOT NULL DEFAULT 0
 ) STRICT;

@@ -66,7 +66,7 @@ impl Call<'_, '_> {
         }
     }
 
-    /// The shared language's explicit unknown value.
+    /// Special fields retain their written comparisons at the binding boundary.
     fn unknown(&self) -> bool {
         matches!(self.comparison(), Some(Comparison::Match(Value::Unknown)))
     }
@@ -579,30 +579,14 @@ pub(crate) fn parent(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Q
 }
 
 pub(crate) fn root(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
-    let reference = c.session_reference("rs.id", "id", &x.value()?);
-    Ok(format!(
-        "{}.pk IN (WITH RECURSIVE tr(pk) AS (SELECT rs.pk FROM session rs WHERE {reference} \
-         UNION SELECT l.child_pk FROM session_link l JOIN session lp ON lp.id = l.parent_id JOIN tr ON tr.pk = lp.pk \
-         WHERE l.kind = 'spawn' AND l.child_pk IS NOT NULL) SELECT pk FROM tr)",
-        x.s()
-    ))
-}
-
-pub(crate) fn depth(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
-    let expr = format!(
-        "(WITH RECURSIVE up(pk, d) AS (SELECT {}.pk, 0 UNION SELECT lp.pk, up.d + 1 FROM up \
-         JOIN session_link l ON l.child_pk = up.pk AND l.kind = 'spawn' JOIN session lp ON lp.id = l.parent_id \
-         WHERE up.d < 1000) SELECT max(d) FROM up)",
-        x.s()
-    );
-    let def = fields::FieldId::SessionsDepth.declaration();
-    if x.top {
-        c.show("depth", &expr, ColKind::Number, None);
+    let root = crate::lineage::value_sql(&format!("{}.pk", x.s()), "root");
+    if x.unknown() {
+        return Ok(format!("{root} IS NULL"));
     }
-    let Some(comparison) = x.comparison() else {
-        return Err(x.need_value());
-    };
-    c.compare_as(def, Kind::Number, &expr, comparison, x.span)
+    if matches!(x.comparison(), Some(Comparison::Match(Value::Known))) {
+        return Ok(format!("{root} IS NOT NULL"));
+    }
+    Ok(c.session_reference(&root, "id", &x.value()?))
 }
 
 pub(crate) fn link(_: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
