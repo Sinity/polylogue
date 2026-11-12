@@ -61,4 +61,17 @@ fn root_and_depth_queries_use_current_explicit_lineage_before_and_after_derivati
     let page = reader.query_page(&program, None).unwrap();
     assert_eq!(page.rows.len(), 1);
     assert_eq!(page.rows[0]["id"], "test:root");
+    let program = crate::query::compile("sessions where root:? | sort by id", &opts).unwrap();
+    let page = reader.query_page(&program, None).unwrap();
+    assert_eq!(
+        page.rows
+            .iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["test:fork", "test:resume"]
+    );
+    for row in page.rows {
+        assert!(row["root"].is_null());
+        assert!(row["depth"].is_null());
+    }
 }

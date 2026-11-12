@@ -592,10 +592,9 @@ fields! {
         "the session has thinking, tool calls, errors, …",
     ),
     SessionsParent = sp(Sessions, "parent", "sessions linked from the given session"),
-    SessionsRoot = f(
+    SessionsRoot = sp(
         Sessions,
         "root",
-        Match,
         "sessions whose explicit ancestry has the given root",
     ).reference(Sessions),
     SessionsDepth = f(Sessions, "depth", Number, "depth in the explicit provider lineage"),
