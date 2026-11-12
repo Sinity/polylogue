@@ -990,12 +990,13 @@ impl RowWriter<'_, '_> {
         let choice = choice.as_ref().expect("selected message");
         let order = &choice.order;
         if !choice.changed {
-            let unchanged = self
+            let (unchanged, items_unchanged) = self
                 .tx
                 .prepare_cached(
-                    "SELECT EXISTS(SELECT 1 FROM message WHERE pk=?1
-                 AND input_pk IS ?2 AND source_chain IS ?3 AND source_start IS ?4
-                 AND source_end IS ?5 AND session_order IS ?6 AND in_progress IS ?7)",
+                    "SELECT input_pk IS ?2 AND source_chain IS ?3 AND source_start IS ?4
+                 AND source_end IS ?5 AND session_order IS ?6 AND in_progress IS ?7,
+                 session_order IS ?6 AND in_progress IS ?7
+                 FROM message WHERE pk=?1",
                 )?
                 .query_row(
                     params![
@@ -1007,10 +1008,14 @@ impl RowWriter<'_, '_> {
                         order,
                         v.in_progress
                     ],
-                    |row| row.get::<_, bool>(0),
+                    |row| Ok((row.get::<_, bool>(0)?, row.get::<_, bool>(1)?)),
                 )?;
             if !unchanged {
-                self.changes.message(self.tx, pk)?;
+                // Items and completion use the selected body and placement;
+                // record citations are read from the current message row.
+                if !items_unchanged {
+                    self.changes.message(self.tx, pk)?;
+                }
                 self.tx.execute(
                     "UPDATE message SET input_pk=?2,source_chain=?3,source_start=?4,source_end=?5,
                      session_order=?6,in_progress=?7 WHERE pk=?1",
