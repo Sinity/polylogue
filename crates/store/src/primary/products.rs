@@ -29,6 +29,26 @@ pub struct Reading {
     pub progress: polylogue_model::batch::StepProgress,
 }
 
+/// A tool invocation as its source stated it, independent of local block rows.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ToolCall {
+    pub session: polylogue_model::SessionId,
+    pub message: polylogue_model::MessageId,
+    pub block: u64,
+    pub source_start: u64,
+    pub source_end: u64,
+    pub at: Option<polylogue_model::Timestamp>,
+    pub at_evidence: polylogue_model::TimeEvidence,
+    pub call_id: Option<String>,
+    pub tool: Option<String>,
+    pub action: polylogue_model::ToolAction,
+    pub input: serde_json::Value,
+    pub written_text: Option<String>,
+    pub command: Option<String>,
+    pub path: Option<String>,
+    pub run_by_script: bool,
+}
+
 /// Authoritative material descriptors supplied by Sinex, never hash lookups.
 /// `extents` is the material's one committed blob, or the committed blobs of
 /// its content-defined chunks in order.
@@ -131,6 +151,10 @@ pub enum Product {
         declared_attachment_bindings:
             Option<Vec<polylogue_model::attachment_binding::AttachmentBinding>>,
     },
+    ToolCall {
+        reading: Reading,
+        facts: Box<ToolCall>,
+    },
     Document {
         reading: Reading,
         facts: DocumentRow,
@@ -204,6 +228,7 @@ impl Product {
         match self {
             Self::Session { reading, .. }
             | Self::Message { reading, .. }
+            | Self::ToolCall { reading, .. }
             | Self::Document { reading, .. }
             | Self::Fragment { reading, .. }
             | Self::Event { reading, .. }
@@ -460,6 +485,42 @@ pub fn parse(
     let mut native_fields = output.native_hook_fields;
     let mut declared_injections = output.declared_injections;
     let mut declared_attachment_bindings = output.declared_attachment_bindings;
+    for row in &output.messages {
+        for (block, value) in row.message.blocks.iter().enumerate() {
+            if let polylogue_model::Block::ToolCall {
+                call_id,
+                tool,
+                action,
+                input,
+                written_text,
+                command,
+                path,
+                run_by_script,
+            } = value
+            {
+                products.push(Product::ToolCall {
+                    reading: reading.clone(),
+                    facts: Box::new(ToolCall {
+                        session: row.message.session.clone(),
+                        message: row.message.id.clone(),
+                        block: block as u64,
+                        source_start: row.offset,
+                        source_end: row.end,
+                        at: row.message.at,
+                        at_evidence: row.message.time_evidence(),
+                        call_id: call_id.clone(),
+                        tool: tool.clone(),
+                        action: *action,
+                        input: input.clone(),
+                        written_text: written_text.clone(),
+                        command: command.clone(),
+                        path: path.clone(),
+                        run_by_script: *run_by_script,
+                    }),
+                });
+            }
+        }
+    }
     products.extend(
         output
             .messages

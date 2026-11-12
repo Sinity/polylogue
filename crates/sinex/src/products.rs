@@ -89,6 +89,7 @@ pub(crate) fn kind(product: &Product) -> &'static str {
         Product::Blob(_) => "polylogue.blob",
         Product::Session { .. } => "polylogue.session",
         Product::Message { .. } => "polylogue.message",
+        Product::ToolCall { .. } => "polylogue.tool_call",
         Product::Document { .. } => "polylogue.document",
         Product::Fragment { .. } => "polylogue.fragment",
         Product::Event { .. } => "polylogue.event",
@@ -133,6 +134,7 @@ pub(crate) fn key(product: &Product, _occurrence: u64) -> Result<String> {
         Product::Blob(material) => json!(material.hash),
         Product::Session { facts, .. } => json!([facts.id]),
         Product::Message { facts, .. } => json!([facts.message.id, facts.offset]),
+        Product::ToolCall { facts, .. } => json!([facts.message, facts.block]),
         Product::Document { facts, .. } => json!([facts.document.id, facts.offset]),
         Product::Fragment { facts, .. } => json!([facts.record.reference, facts.offset]),
         Product::Event { id, .. } => json!([id]),
@@ -177,7 +179,16 @@ pub(crate) fn key(product: &Product, _occurrence: u64) -> Result<String> {
 /// The full fact is authoritative; the common fields let Sinex join AI work
 /// to its other domains without understanding Polylogue's internal model.
 pub(crate) fn payload(product: &Product, occurrence: u64) -> Result<Value> {
+    if let Product::ToolCall { reading, facts } = product {
+        return Ok(serde_json::to_value(ai::ToolFields {
+            record_key: key(product, occurrence)?,
+            source: reading,
+            call: facts,
+            context: Default::default(),
+        })?);
+    }
     let mut payload = match product {
+        Product::ToolCall { .. } => unreachable!("handled as a native fact"),
         Product::Session { facts, .. } => serde_json::to_value(ai::SessionFields::from(facts))?,
         Product::Message { facts, .. } => {
             serde_json::to_value(ai::MessageFields::from(&facts.message))?
@@ -293,6 +304,11 @@ pub(crate) fn decode(event_kind: &sinex_model::KindRef, payload: Value) -> Resul
         )));
     }
     let event_type = event_kind.name.as_str();
+    if event_type == "polylogue.tool_call" {
+        let reading = serde_json::from_value(payload["source"].clone())?;
+        let facts = Box::new(serde_json::from_value(payload)?);
+        return Ok(Product::ToolCall { reading, facts });
+    }
     let product: Product =
         serde_json::from_value(payload.get("record").cloned().ok_or_else(|| {
             Error::Invalid(format!("confirmed {event_type} has no complete facts"))
@@ -374,6 +390,7 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
         ("polylogue.blob", "blob"),
         ("polylogue.session", "session"),
         ("polylogue.message", "message"),
+        ("polylogue.tool_call", "tool_call"),
         ("polylogue.document", "document"),
         ("polylogue.fragment", "fragment"),
         ("polylogue.event", "event"),
@@ -412,19 +429,25 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
             variants.retain(|variant| variant["properties"]["product"]["const"] == *product);
             assert_eq!(variants.len(), 1, "one complete product schema per kind");
             let definitions = reachable_definitions(&facts, &definitions);
-            let mut schema = json!({
-                "$schema": "https://json-schema.org/draft/2020-12/schema",
-                "type": "object", "properties": {
-                    "record_key": {"type":"string", "minLength":1}, "record":facts,
-                    "text": {"type":"string"},
-                    "query": {"type":"string"}, "rows": {},
-                    "refs": {"type":"array", "items":{"type":"string"}},
-                    "at": {"type":["string","null"]},
-                    "started": {"type":["string","null"]},
-                },
-                "required":["record_key","record"], "$defs":definitions,
-            });
-            if let Some(fields) = ai::schema(product) {
+            let mut schema = if *product == "tool_call" {
+                ai::schema(product).expect("tool fact schema")
+            } else {
+                json!({
+                    "$schema": "https://json-schema.org/draft/2020-12/schema",
+                    "type": "object", "properties": {
+                        "record_key": {"type":"string", "minLength":1}, "record":facts,
+                        "text": {"type":"string"},
+                        "query": {"type":"string"}, "rows": {},
+                        "refs": {"type":"array", "items":{"type":"string"}},
+                        "at": {"type":["string","null"]},
+                        "started": {"type":["string","null"]},
+                    },
+                    "required":["record_key","record"], "$defs":definitions,
+                })
+            };
+            if *product != "tool_call"
+                && let Some(fields) = ai::schema(product)
+            {
                 schema["properties"]
                     .as_object_mut()
                     .expect("object properties")
@@ -464,6 +487,12 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                 "production",
                 "attrs",
                 "instructions",
+                "source",
+                "input",
+                "written_text",
+                "command",
+                "path",
+                "context",
             ]
             .into_iter()
             .filter(|field| schema["properties"].get(*field).is_some())
@@ -491,8 +520,9 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                             "input" => 6,
                             "fragment" => 3,
                             "query_run" => 4,
-                            "restored_history" | "restored_assertion" | "attachment_binding"
-                            | "query_run_outcome" | "prefix_copy" | "prefix_member" => 1,
+                            "tool_call" | "restored_history" | "restored_assertion"
+                            | "attachment_binding" | "query_run_outcome" | "prefix_copy"
+                            | "prefix_member" => 1,
                             "query" => 2,
                             _ => 3,
                         }
@@ -521,15 +551,15 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                         ReplaceRule::ReplaceWhenNewer
                     },
                 ),
-                time_rule: Some(if matches!(*product, "message" | "session") {
+                time_rule: Some(if matches!(*product, "message" | "session" | "tool_call") {
                     TimeRule::InstantEvidence {
-                        field: if *product == "message" {
+                        field: if *product != "session" {
                             "at"
                         } else {
                             "started"
                         }
                         .into(),
-                        evidence_field: if *product == "message" {
+                        evidence_field: if *product != "session" {
                             "at_evidence"
                         } else {
                             "started_evidence"
@@ -548,7 +578,7 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                 removed_rule: Some(RemovedRule::Never),
                 keep_known: Vec::new(),
                 owned_blobs: Vec::new(),
-                search: if matches!(*product, "message" | "session") {
+                search: if matches!(*product, "message" | "session" | "tool_call") {
                     Search::Words
                 } else {
                     Search::None
@@ -562,53 +592,74 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
 pub(crate) fn events(
     writes: &[polylogue_store::primary::products::ProductWrite],
 ) -> Result<Vec<sinex_protocol::ProducerEvent>> {
-    use polylogue_store::primary::products::ProductWrite;
     use sinex_model::{Class, MaterialId, RecordLocation};
+    let mut observations = std::collections::BTreeMap::<String, crate::native::Native>::new();
+    for write in writes {
+        match &write.product {
+            Product::Session { facts, .. } => {
+                let context = observations
+                    .entry(facts.id.to_string())
+                    .or_insert_with(|| crate::native::Native::new(facts.repo.clone()));
+                if let Some(repository) = &facts.repo {
+                    context.repository(repository);
+                }
+            }
+            Product::Event { facts, .. } => {
+                if let (Some(session), Some(source)) = (&facts.session, &write.location) {
+                    observations
+                        .entry(session.to_string())
+                        .or_default()
+                        .observe(
+                            &facts.data,
+                            crate::kinds::RecordRef {
+                                material: MaterialId(source.material.parse().map_err(|error| {
+                                    Error::Invalid(format!("source material: {error}"))
+                                })?),
+                                anchor: source.anchor,
+                            },
+                        );
+                }
+            }
+            _ => {}
+        }
+    }
+    let contexts = observations
+        .into_iter()
+        .map(|(session, context)| (session, context.finish()))
+        .collect::<std::collections::BTreeMap<_, _>>();
     writes
         .iter()
         .map(|write| {
             let mut payload = payload(&write.product, write.output_index)?;
             let mut source = write.location.clone();
             let session = match &write.product {
-                Product::Session { facts, .. } => Some((&facts.id, facts.repo.clone())),
+                Product::Session { facts, .. } => Some((&facts.id, true)),
+                Product::ToolCall { facts, .. } => Some((&facts.session, false)),
                 _ => None,
             };
-            if let Some((session, repo)) = session {
-                let mut native = crate::native::Native::new(repo);
-                for ProductWrite {
-                    product, location, ..
-                } in writes
-                {
-                    if let Product::Event { facts: event, .. } = product
-                        && event.session.as_ref() == Some(session)
-                        && let Some(location) = location
-                    {
-                        native.observe(
-                            &event.data,
-                            crate::kinds::RecordRef {
-                                material: MaterialId(location.material.parse().map_err(
-                                    |error| Error::Invalid(format!("source material: {error}")),
-                                )?),
-                                anchor: location.anchor,
-                            },
-                        );
-                    }
-                }
-                let native = native.finish();
-                if let Some(first) = native.sources.first() {
+            if let Some((session, session_record)) = session {
+                let native = contexts
+                    .get(&session.to_string())
+                    .cloned()
+                    .unwrap_or_default();
+                if session_record && let Some(first) = native.sources.first() {
                     source = Some(polylogue_store::primary::products::SourceLocation {
                         material: first.material.to_string(),
                         anchor: first.anchor,
                     });
                 }
-                payload["repo"] = serde_json::to_value(native.repo)?;
-                payload["objectives"] = serde_json::to_value(native.objectives)?;
-                payload["git_identity"] = serde_json::to_value(native.git_identity)?;
-                payload["terminal"] = serde_json::to_value(native.terminal)?;
-                payload["boot_id"] = serde_json::to_value(native.boot_id)?;
-                payload["native_sources"] = serde_json::to_value(native.sources)?;
-                payload["native_unavailable"] = serde_json::to_value(native.unavailable)?;
-                payload["machine"] = serde_json::to_value(&write.machine)?;
+                if session_record {
+                    payload["repo"] = serde_json::to_value(native.repo)?;
+                    payload["objectives"] = serde_json::to_value(native.objectives)?;
+                    payload["git_identity"] = serde_json::to_value(native.git_identity)?;
+                    payload["terminal"] = serde_json::to_value(native.terminal)?;
+                    payload["boot_id"] = serde_json::to_value(native.boot_id)?;
+                    payload["native_sources"] = serde_json::to_value(native.sources)?;
+                    payload["native_unavailable"] = serde_json::to_value(native.unavailable)?;
+                    payload["machine"] = serde_json::to_value(&write.machine)?;
+                } else {
+                    payload["context"] = serde_json::to_value(native)?;
+                }
             }
             let location = source
                 .map(|source| -> Result<_> {

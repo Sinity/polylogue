@@ -134,6 +134,7 @@ impl Inner {
             let (location, machine) = if let Some(reading) = product.reading() {
                 let start = match &product {
                     Product::Message { facts, .. } => facts.offset,
+                    Product::ToolCall { facts, .. } => facts.source_start,
                     Product::Document { facts, .. } => facts.offset,
                     Product::Fragment { facts, .. } => facts.offset,
                     Product::Event { facts, .. } => {

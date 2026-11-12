@@ -149,6 +149,7 @@ fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
                 "polylogue.blob" | "polylogue.coverage" | "polylogue.fragment" => 3,
                 "polylogue.assertion" | "polylogue.query" => 2,
                 "polylogue.assertion_restore"
+                | "polylogue.tool_call"
                 | "polylogue.historical_restore"
                 | "polylogue.attachment_binding"
                 | "polylogue.query_run_outcome"
@@ -157,17 +158,22 @@ fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
                 other => panic!("undeclared successor kind/version expectation: {other}"),
             }
         );
+        let guarded = if declaration.kind.name == "polylogue.tool_call" {
+            "/input"
+        } else {
+            "/record"
+        };
         assert!(
             declaration
                 .field_hints
                 .iter()
-                .any(|hint| hint.field == "/record" && hint.class == sinex_model::Class::Guarded)
+                .any(|hint| hint.field == guarded && hint.class == sinex_model::Class::Guarded)
         );
         assert_eq!(
             declaration.search,
             if matches!(
                 declaration.kind.name.as_str(),
-                "polylogue.message" | "polylogue.session"
+                "polylogue.message" | "polylogue.session" | "polylogue.tool_call"
             ) {
                 sinex_model::kinds::Search::Words
             } else {

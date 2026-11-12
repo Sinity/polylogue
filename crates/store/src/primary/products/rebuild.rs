@@ -23,6 +23,9 @@ impl AssembledReading {
         receipt: Option<crate::wire_shapes::ReadingReceipt>,
     ) -> crate::Result<()> {
         match product {
+            // The invocation is already in its message. Its separate native
+            // fact is for Sinex queries, not another local block or event.
+            Product::ToolCall { .. } => {}
             Product::Session { facts, .. } => {
                 save_receipt(
                     &mut self.output.session_receipts,

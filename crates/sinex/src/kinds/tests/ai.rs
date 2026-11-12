@@ -149,3 +149,122 @@ fn session_identity_and_clock_evidence_are_declared_native_fields() {
         sinex_model::TsOrig::unknown()
     );
 }
+
+#[test]
+fn tool_facts_keep_original_coordinates_and_only_their_sessions_observed_context() {
+    use polylogue_store::primary::{ProductWrite, SourceLocation};
+    let mut output = polylogue_model::Output::default();
+    output.messages.push(serde_json::from_value(json!({
+        "offset":50,"end":150,
+        "message": {
+            "id":"codex:action","session":"codex:s","role":"assistant",
+            "at":"2026-01-02T03:04:05Z","at_quality":"intrinsic","at_precision":"instant",
+            "blocks":[
+                {"type":"tool_call","call_id":"call-1","tool":"write_file","action":"file_write","path":"/synthetic/project/src/example.rs","input":{"path":"/synthetic/project/src/example.rs","content":"one exact change"},"written_text":"one exact change"},
+                {"type":"tool_result","call_id":"call-1","outcome":{"kind":"ok"},"output":"written"}
+            ]
+        }
+    })).unwrap());
+    let step = polylogue_store::ParseStep::new(output, Default::default(), 0..150, true);
+    let input = reading("input-a", 0).input;
+    let mut products =
+        polylogue_store::primary::products::parse(&input, 1, Some(150), &step).unwrap();
+    let context = |session, process, window| {
+        Product::Event {
+        id: format!("context-{process}"),
+        reading: reading("input-a", 0),
+        imported: None,
+        facts: serde_json::from_value(json!({
+            "session":session,"kind":"native_context","range":[0,40],
+            "data":{
+                "repository":"https://example.test/project",
+                "terminal_identity":{"host":"fixture-host","boot_id":"boot-a","adapter":"kitty","process_id":process,"window_id":window,"parent_process_id":null}
+            }
+        })).unwrap(),
+    }
+    };
+    products.extend([
+        context("codex:s", 100, "related-window"),
+        context("codex:other", 200, "unrelated-window"),
+    ]);
+    let writes = products
+        .into_iter()
+        .enumerate()
+        .map(|(index, product)| {
+            let anchor = match &product {
+                Product::ToolCall { facts, .. } => facts.source_start,
+                Product::Message { facts, .. } => facts.offset,
+                _ => 0,
+            };
+            ProductWrite {
+                product,
+                location: Some(SourceLocation {
+                    material: "00000000-0000-0000-0000-000000000001".into(),
+                    anchor,
+                }),
+                parents: vec![],
+                machine: Some("fixture-host".into()),
+                output_index: index as u64,
+            }
+        })
+        .collect::<Vec<_>>();
+    let events = products::events(&writes).unwrap();
+    let calls = events
+        .iter()
+        .filter(|event| event.kind.name == "polylogue.tool_call")
+        .collect::<Vec<_>>();
+    assert_eq!(calls.len(), 1);
+    let call = calls[0];
+    assert_eq!(call.location.as_ref().unwrap().anchor, 50);
+    assert_eq!(call.payload["message"], "codex:action");
+    assert_eq!(call.payload["call_id"], "call-1");
+    assert_eq!(call.payload["action"], "file_write");
+    assert_eq!(call.payload["source_start"], 50);
+    assert_eq!(call.payload["source_end"], 150);
+    assert_eq!(call.payload["source"]["input"]["id"], "input-a");
+    assert_eq!(call.payload["input"]["content"], "one exact change");
+    assert_eq!(
+        call.payload["context"]["terminal"]["window_id"],
+        "related-window"
+    );
+    assert_eq!(call.payload["context"]["terminal"]["process_id"], 100);
+    assert_eq!(
+        call.payload["context"]["sources"],
+        json!([{"material":"00000000-0000-0000-0000-000000000001","anchor":0}])
+    );
+    let declaration = declaration("polylogue.tool_call");
+    jsonschema::validator_for(declaration.payload_schema.as_ref().unwrap())
+        .unwrap()
+        .validate(&call.payload)
+        .unwrap();
+    let catalog = sinex_model::query::catalog::QueryCatalog::new([declaration.clone()]);
+    for path in [
+        vec!["action"],
+        vec!["path"],
+        vec!["context", "terminal", "process_id"],
+        vec!["context", "terminal", "boot_id"],
+    ] {
+        assert!(
+            catalog
+                .field(&path.into_iter().map(str::to_string).collect::<Vec<_>>())
+                .is_some()
+        );
+    }
+    assert_eq!(
+        declaration
+            .evaluate(&call.payload, sinex_model::Class::Open)
+            .unwrap()
+            .ts_orig
+            .quality,
+        sinex_model::TimeQuality::Intrinsic
+    );
+    let decoded = products::decode(&call.kind, call.payload.clone()).unwrap();
+    assert_eq!(
+        decoded,
+        writes
+            .iter()
+            .find(|write| matches!(write.product, Product::ToolCall { .. }))
+            .unwrap()
+            .product
+    );
+}

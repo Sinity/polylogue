@@ -4,7 +4,9 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::collections::BTreeSet;
 
-#[derive(Default)]
+#[derive(
+    Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub(crate) struct Facts {
     pub repo: Option<String>,
     pub objectives: Vec<Objective>,
@@ -56,6 +58,10 @@ impl Native {
             repositories: record_repo.into_iter().collect(),
             ..Self::default()
         }
+    }
+
+    pub fn repository(&mut self, repository: &str) {
+        self.repositories.insert(repository.into());
     }
 
     pub fn observe(&mut self, body: &Value, source: RecordRef) {

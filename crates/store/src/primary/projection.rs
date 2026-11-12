@@ -199,6 +199,14 @@ impl Fact {
 }
 
 fn metadata(product: &Product) -> (Option<String>, Option<i64>, Option<String>, &'static str) {
+    if let Product::ToolCall { reading, facts } = product {
+        return (
+            Some(reading.input.id.clone()),
+            Some(reading.chain),
+            Some(format!("call:{}:{}", facts.message, facts.block)),
+            "tool_call",
+        );
+    }
     let reference = match product {
         Product::AttachmentBinding { record } => {
             Some(format!("attachment-binding:{}", record.context().message))
@@ -579,7 +587,9 @@ fn plan(index: &Connection) -> Result<Plan> {
     while let Some(row) = rows.next()? {
         let fact = Fact::read(row)?;
         if let Some(product) = fact.product()? {
-            if let Some(reading) = product.reading() {
+            if fact.kind == "parsed"
+                && let Some(reading) = product.reading()
+            {
                 chains.insert(
                     (reading.input.id.clone(), reading.chain),
                     reading.input.clone(),

@@ -117,6 +117,16 @@ pub(super) fn schema(product: &str) -> Option<serde_json::Value> {
     match product {
         "message" => Some(serde_json::to_value(schemars::schema_for!(MessageFields)).unwrap()),
         "session" => Some(serde_json::to_value(schemars::schema_for!(SessionFields)).unwrap()),
+        "tool_call" => Some(serde_json::to_value(schemars::schema_for!(ToolFields)).unwrap()),
         _ => None,
     }
+}
+
+#[derive(Serialize, JsonSchema)]
+pub(super) struct ToolFields<'a> {
+    pub record_key: String,
+    pub source: &'a polylogue_store::primary::Reading,
+    #[serde(flatten)]
+    pub call: &'a polylogue_store::primary::products::ToolCall,
+    pub context: crate::native::Facts,
 }
