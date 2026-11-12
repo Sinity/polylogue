@@ -597,7 +597,7 @@ fields! {
         "root",
         Match,
         "sessions whose explicit ancestry has the given root",
-    ),
+    ).reference(Sessions),
     SessionsDepth = f(Sessions, "depth", Number, "depth in the explicit provider lineage"),
     SessionsLink = sp(
         Sessions,
@@ -1324,6 +1324,7 @@ pub fn construct(field: &Field) -> Option<polylogue_model::derived::Construct> {
         return Some(derived::SESSION_COUNTS);
     }
     match field.name {
+        "root" | "depth" => Some(derived::SESSION_LINEAGE),
         "wall_span" | "clustered_time" | "tool_time" | "tool_time_union" | "tool_untimed"
         | "ends_with" | "last_stop_reason" | "time_source" => Some(derived::SESSION_SPAN),
         "waiting_model" | "waiting_human" => Some(derived::SESSION_TIME),
