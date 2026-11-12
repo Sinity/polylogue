@@ -36,7 +36,14 @@ fn selected_passage_notes_survive_restart_and_identical_retries() {
     let mut runtime =
         crate::test_daemon::start_runtime(&root, config.clone(), service::ArchiveMode::Standalone)
             .unwrap();
-    let host = Arc::new(BrowserHost::at(&config, &runtime.daemon.archive).unwrap());
+    let host = Arc::new(
+        BrowserHost::at(
+            &config,
+            &runtime.daemon.archive,
+            &runtime.daemon.config.paths,
+        )
+        .unwrap(),
+    );
     let mut socket =
         server::Server::start(Arc::clone(&runtime.daemon), Arc::clone(&runtime.operations))
             .unwrap();

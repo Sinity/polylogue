@@ -676,7 +676,12 @@ pub fn run(harness: Harness, event: &str, startup: &Startup) -> ExitCode {
     let mail = session
         .as_ref()
         .filter(|_| accepts_mail(harness, event))
-        .filter(|s| crate::mailbox::raised(&crate::mailbox::dir(&startup.config.archive), s))
+        .filter(|s| {
+            crate::mailbox::raised(
+                &crate::mailbox::dir(&startup.config.paths, &startup.config.archive),
+                s,
+            )
+        })
         .and_then(|s| claim(startup, s, event));
     let responded = respond(harness, event, &payload, startup);
     let mut ids: Vec<String> = Vec::new();

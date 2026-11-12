@@ -151,6 +151,10 @@ fn main() -> ExitCode {
             .iter()
             .any(|value| value.to_str().is_some_and(|value| value.contains('@')))
     {
+        let paths = match config::Paths::resolve(&process.environment) {
+            Ok(paths) => paths,
+            Err(error) => return startup_error(hook, error, process.output),
+        };
         let archive = match config::archive_location(&process, &overrides) {
             Ok(archive) => archive,
             Err(error) => return startup_error(hook, error, process.output),
@@ -160,7 +164,7 @@ fn main() -> ExitCode {
             .map(|value| value.to_str().map(str::to_owned))
             .collect::<Option<Vec<_>>>();
         if let Some(text) = text {
-            matches = match row_numbers::rewrite_args(text, &archive) {
+            matches = match row_numbers::rewrite_args(&paths, text, &archive) {
                 Ok(arguments) => match cli::command().try_get_matches_from(arguments) {
                     Ok(matches) => matches,
                     Err(error) if hook => return hook_startup_error(error),
@@ -179,6 +183,7 @@ fn main() -> ExitCode {
         return browser::native::run(
             &startup.engine,
             &polylogue_store::Archive::at(&startup.config.archive),
+            &startup.config.paths,
         );
     }
     let Some(cwd) = process.cwd.as_deref() else {

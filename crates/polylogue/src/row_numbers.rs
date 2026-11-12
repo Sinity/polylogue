@@ -3,7 +3,6 @@
 //! archive's runtime directory, and `@N` in a later command is replaced by
 //! the ID before the command runs. Output for programs (`--json`) is never remembered.
 
-use crate::runtime_dir::{archive_key, runtime_dir};
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
@@ -26,15 +25,15 @@ fn terminal() -> Option<String> {
     None
 }
 
-fn rows_file(root: &Path) -> Option<PathBuf> {
+fn rows_file(paths: &crate::config::Paths, root: &Path) -> Option<PathBuf> {
     let tty = terminal()?;
-    Some(runtime_dir(&archive_key(root)).join(format!("rows-{tty}")))
+    Some(paths.runtime_dir(root).join(format!("rows-{tty}")))
 }
 
 /// Keeps the IDs of a list just printed in this terminal. Failing to
 /// write only means `@N` will not resolve, so errors are ignored.
-pub fn remember(root: &Path, ids: &[String]) {
-    let Some(path) = rows_file(root) else {
+pub fn remember(paths: &crate::config::Paths, root: &Path, ids: &[String]) {
+    let Some(path) = rows_file(paths, root) else {
         return;
     };
     if let Some(dir) = path.parent() {
@@ -113,8 +112,8 @@ pub fn resolve(
 }
 
 /// The IDs of the last list printed in this terminal.
-pub fn last_rows(root: &Path) -> Result<Vec<String>, String> {
-    let path = rows_file(root)
+pub fn last_rows(paths: &crate::config::Paths, root: &Path) -> Result<Vec<String>, String> {
+    let path = rows_file(paths, root)
         .ok_or("`@N` refers to a list printed in a terminal, and this is not one")?;
     let text = fs::read_to_string(&path)
         .map_err(|_| "no list has been printed in this terminal yet".to_owned())?;
@@ -124,8 +123,12 @@ pub fn last_rows(root: &Path) -> Result<Vec<String>, String> {
 /// The command line with `@N` replaced in every argument. `polylogue @2
 /// read` is also accepted for `polylogue read @2`, and the same for the
 /// other commands that take one session.
-pub fn rewrite_args(args: Vec<String>, root: &Path) -> Result<Vec<String>, String> {
-    let rows = || last_rows(root);
+pub fn rewrite_args(
+    paths: &crate::config::Paths,
+    args: Vec<String>,
+    root: &Path,
+) -> Result<Vec<String>, String> {
+    let rows = || last_rows(paths, root);
     let mut args = args;
     const VERBS: [&str; 4] = ["read", "export", "takeover", "continue"];
     if args.len() > 2 && is_position(&args[1]) && VERBS.contains(&args[2].as_str()) {

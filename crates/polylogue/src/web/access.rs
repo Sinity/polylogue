@@ -7,7 +7,6 @@
 //! - every route but sign-in and the assets needs the archive's access
 //!   token, as the cookie named after the archive key or a bearer header.
 
-use crate::runtime_dir::{archive_key, runtime_dir};
 use std::fs;
 use std::io::{self, Read};
 use std::net::SocketAddr;
@@ -37,8 +36,8 @@ fn write_private(path: &Path, text: &str) -> io::Result<()> {
 
 /// The running reader's authenticated entry point, as written by that
 /// archive's daemon. Verify the listener before disclosing its token.
-pub fn reader_url(root: &Path) -> io::Result<String> {
-    let dir = runtime_dir(&archive_key(root));
+pub fn reader_url(paths: &crate::config::Paths, root: &Path) -> io::Result<String> {
+    let dir = paths.runtime_dir(root);
     reader_url_in(&dir)
 }
 

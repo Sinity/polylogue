@@ -178,19 +178,6 @@ impl Archive {
         }
     }
 
-    /// The archive location: `POLYLOGUE_ARCHIVE` when set (tests and
-    /// measurements), otherwise `$XDG_DATA_HOME/polylogue`.
-    pub fn default_root() -> PathBuf {
-        if let Some(dir) = std::env::var_os("POLYLOGUE_ARCHIVE") {
-            return PathBuf::from(dir);
-        }
-        let data = std::env::var_os("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
-            .unwrap_or_else(|| PathBuf::from("."));
-        data.join("polylogue")
-    }
-
     /// Whether a daemon holds this archive's writer lock. A daemon takes
     /// the lock before it opens the archive and binds its socket, so a held
     /// lock with no socket answering means a daemon is still starting.

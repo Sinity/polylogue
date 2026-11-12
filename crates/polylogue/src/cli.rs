@@ -472,7 +472,11 @@ pub fn run(
     }
     let data = answer.value().expect("a non-error answer has a value");
     if !json && matches!(data["shape"].as_str(), Some("rows" | "matches")) {
-        crate::row_numbers::remember(&root, &crate::row_numbers::row_ids(&data["rows"]));
+        crate::row_numbers::remember(
+            &startup.config.paths,
+            &root,
+            &crate::row_numbers::row_ids(&data["rows"]),
+        );
     }
     match cmd.output {
         Some(output) => output(&values, &answer, startup, json),

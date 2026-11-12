@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 mod tests;
 
 /// The mailbox directory of the archive at `root`.
-pub fn dir(root: &Path) -> PathBuf {
-    crate::runtime_dir::runtime_dir(&crate::runtime_dir::archive_key(root)).join("mail")
+pub fn dir(paths: &crate::config::Paths, root: &Path) -> PathBuf {
+    paths.runtime_dir(root).join("mail")
 }
 
 /// The flag file of `session`.

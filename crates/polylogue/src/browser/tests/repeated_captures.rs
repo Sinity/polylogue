@@ -16,7 +16,8 @@ fn rapid_captures_show_the_latest_and_keep_retry_identity() {
     let config = config_at(dir.path());
     std::fs::create_dir_all(&config.home).unwrap();
     let (archive, _lock) = Archive::open_or_create(&dir.path().join("archive")).unwrap();
-    let host = Arc::new(BrowserHost::at(&config, &archive).unwrap());
+    let deployment = crate::config::Config::for_test(&config, &archive.root);
+    let host = Arc::new(BrowserHost::at(&config, &archive, &deployment.paths).unwrap());
     let first = capture("rapid", "first earlier version");
     let second = capture("rapid", "second current version");
     let ack = exchange(&host, "POST", "/v1/captures", &first);

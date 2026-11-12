@@ -12,7 +12,7 @@ use std::time::Duration;
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
 fn host(w: &TestDaemon) -> Arc<BrowserHost> {
-    Arc::new(BrowserHost::at(&w.config, &w.daemon.archive).unwrap())
+    Arc::new(BrowserHost::at(&w.config, &w.daemon.archive, &w.daemon.config.paths).unwrap())
 }
 
 struct Answer {
@@ -166,7 +166,9 @@ fn config_at(dir: &std::path::Path) -> polylogue_engine::Config {
 
 fn host_without_daemon(dir: &std::path::Path) -> Arc<BrowserHost> {
     let archive = polylogue_store::Archive::at(&dir.join("archive"));
-    Arc::new(BrowserHost::at(&config_at(dir), &archive).unwrap())
+    let config = config_at(dir);
+    let deployment = crate::config::Config::for_test(&config, &archive.root);
+    Arc::new(BrowserHost::at(&config, &archive, &deployment.paths).unwrap())
 }
 
 #[test]
@@ -656,12 +658,22 @@ fn a_file_the_archive_holds_is_named_by_its_hash_instead_of_sent_again() {
 }
 
 #[test]
-fn the_reader_address_is_unavailable_when_no_reader_is_running() {
+fn the_reader_address_uses_the_daemon_runtime_directory_and_listener() {
     let dir = tempfile::tempdir().unwrap();
     let host = host_without_daemon(dir.path());
     let response = exchange(&host, "GET", "/v1/reader", b"");
     assert_eq!(response.status, 503);
     assert_eq!(response.json()["error"], "reader_unavailable");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    crate::web::access::write_access_files(&host.runtime_dir, "synthetic-browser-token", port)
+        .unwrap();
+    let response = exchange(&host, "GET", "/v1/reader", b"");
+    assert_eq!(response.status, 200);
+    assert_eq!(
+        response.json()["url"],
+        format!("http://127.0.0.1:{port}/auth#synthetic-browser-token")
+    );
 }
 
 #[test]
