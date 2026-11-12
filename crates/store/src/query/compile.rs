@@ -30,7 +30,9 @@ mod stages;
 mod statements;
 use conditions::unknown_field;
 use polylogue_query::filter::{alternatives, bind_unit, value_text};
-pub use statements::{DerivedRows, KeyedRows, PageColumns, RankedSearch, ScopedSearch, Statements};
+pub use statements::{
+    DerivedRows, KeyedRows, PageColumns, RecentSearch, ScopedSearch, Statements, TextSearch,
+};
 
 /// Reciprocal rank fusion gives a row `1 / (RANK_FUSION_OFFSET + place)` in
 /// each ranked list it is in; the offset keeps one list's first places
@@ -346,7 +348,7 @@ pub(crate) struct Compiler<'a> {
     /// the rows.
     rank: Option<String>,
     rank_source: Option<units::HitSource>,
-    ranked_search: Option<RankedSearch>,
+    text_search: Option<TextSearch>,
     /// The semantic ranking expression of a `similar:` term, and the join
     /// that brings its similarities to the unit's rows.
     near_rank: Option<String>,
@@ -410,7 +412,7 @@ impl<'a> Compiler<'a> {
             saved_relations: vec![],
             rank: None,
             rank_source: None,
-            ranked_search: None,
+            text_search: None,
             near_rank: None,
             near_join: None,
             fusion: None,

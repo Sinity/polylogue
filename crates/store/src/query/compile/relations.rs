@@ -202,6 +202,13 @@ impl<'a> Compiler<'a> {
             let stages = &query.transforms[selection.stages_from..];
             return self.native_program_with(&selection, stages, preset);
         };
+        if self.answer
+            && selection.stages_from == first
+            && !selection.written.iter().any(contains_order)
+            && super::search::recent_sort(selection.unit, &query.transforms[first..])
+        {
+            return self.native_program_with(&selection, &query.transforms[first..], preset);
+        }
         let source_order = match &query.source {
             Source::Unit {
                 condition: Some(c), ..

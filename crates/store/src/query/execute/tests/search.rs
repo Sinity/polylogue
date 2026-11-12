@@ -408,6 +408,311 @@ fn shared_body_outside_scope(fixture: &mut Fixture, message: &str, owners: usize
         .unwrap();
 }
 
+fn search_message(
+    fixture: &mut Fixture,
+    owner: i64,
+    id: &str,
+    at: Option<i64>,
+    text: &str,
+    output: bool,
+) {
+    let message = fixture
+        .message(
+            owner,
+            MessageFacts {
+                id,
+                at,
+                role: "assistant",
+                written_by: "model",
+                text: (!output).then_some(text),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    if output {
+        fixture
+            .tool_call(
+                owner,
+                message,
+                crate::fixture::CallFacts {
+                    tool: "Bash",
+                    action: "shell",
+                    outcome: "ok",
+                    at,
+                    output: Some(text),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+}
+
+#[test]
+fn recency_scope_and_index_agree_across_batches_shared_children_and_unknown_times() {
+    use crate::query::compile::{Param, Statements};
+    for output in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut fixture = Fixture::new(dir.path()).unwrap();
+        let mut owners = std::collections::BTreeMap::new();
+        for (id, kind, last) in [
+            ("a", "main", Some(5000)),
+            ("b", "main", Some(4000)),
+            ("c", "main", Some(3000)),
+            ("d", "main", Some(2000)),
+            ("e", "main", Some(2000)),
+            ("f", "main", Some(500)),
+            ("g", "main", None),
+            ("child", "subagent", Some(1000)),
+        ] {
+            owners.insert(
+                id,
+                fixture
+                    .session(SessionFacts {
+                        id: &format!("test:{id}"),
+                        kind,
+                        last,
+                        ..Default::default()
+                    })
+                    .unwrap(),
+            );
+        }
+        for parent in ["a", "d", "e"] {
+            fixture
+                .link(&format!("test:{parent}"), "test:child", "spawn", None)
+                .unwrap();
+        }
+        // Retained cycles do not change best-source membership or batches.
+        fixture.link("test:child", "test:a", "spawn", None).unwrap();
+        search_message(
+            &mut fixture,
+            owners["child"],
+            "shared-hit",
+            Some(1000),
+            "needle",
+            output,
+        );
+        search_message(
+            &mut fixture,
+            owners["b"],
+            "miss-b",
+            Some(4000),
+            "other",
+            output,
+        );
+        search_message(
+            &mut fixture,
+            owners["c"],
+            "miss-c",
+            Some(3000),
+            "other",
+            output,
+        );
+        search_message(
+            &mut fixture,
+            owners["f"],
+            "own-f",
+            Some(500),
+            "needle own",
+            output,
+        );
+        search_message(
+            &mut fixture,
+            owners["g"],
+            "own-g",
+            None,
+            "needle own",
+            output,
+        );
+        shared_body_outside_scope(&mut fixture, "shared-hit", 512);
+        let identities = ["a", "b", "c", "d", "e", "f", "g"]
+            .map(|id| format!("id:test:{id}"))
+            .join(" OR ");
+        let term = if output { "output:needle" } else { "needle" };
+        for (query, page_size, expected_ids) in [
+            (
+                format!(
+                    "sessions where kind:main ({identities}) {term} | sort by last_active desc"
+                ),
+                3,
+                vec!["test:a", "test:d", "test:e", "test:f", "test:g"],
+            ),
+            (
+                format!(
+                    "messages where (id:shared-hit OR id:miss-b OR id:miss-c OR id:own-f OR id:own-g) {term} | sort by at desc"
+                ),
+                2,
+                vec!["shared-hit", "own-f", "own-g"],
+            ),
+        ] {
+            let mut program = crate::query::compile(&query, &options_for_search()).unwrap();
+            program.page_size = page_size;
+            let scope = match &program.statements {
+                Statements::Keyed(rows) => rows
+                    .search
+                    .as_ref()
+                    .unwrap()
+                    .scope
+                    .as_ref()
+                    .unwrap()
+                    .clone(),
+                _ => panic!("direct recency sort stays keyed"),
+            };
+            assert!(scope.recent.is_some());
+            let mut indexed = program.clone();
+            if let Statements::Keyed(rows) = &mut indexed.statements {
+                rows.search = None;
+            }
+            let mut scoped = indexed.clone();
+            scoped.params[scope.mode - 1] = Param::Int(1);
+            for analyzed in [false, true] {
+                if analyzed {
+                    crate::archive::open_write(&fixture.archive.index_db(), 1024)
+                        .unwrap()
+                        .execute_batch("ANALYZE")
+                        .unwrap();
+                }
+                let pool = fixture.reads().unwrap();
+                let reader = pool.reader().unwrap();
+                assert_eq!(
+                    reader
+                        .search_driver(
+                            &scope.blocks,
+                            &crate::selection::values(&program.params),
+                            if output {
+                                SnippetIndex::Output
+                            } else {
+                                SnippetIndex::Prose
+                            },
+                            "needle",
+                            true
+                        )
+                        .unwrap(),
+                    SearchDriver::Recency
+                );
+                let expected = reader.query_rows(&indexed).unwrap();
+                assert_eq!(
+                    expected
+                        .iter()
+                        .map(|row| row["id"].as_str().unwrap())
+                        .collect::<Vec<_>>(),
+                    expected_ids
+                );
+                for candidate in [&program, &scoped] {
+                    let mut actual = pages(&reader, candidate);
+                    assert_eq!(result(&actual), result(&expected));
+                    assert_eq!(
+                        reader.query_count(candidate).unwrap(),
+                        Some((expected_ids.len() as u64, 0))
+                    );
+                    let mut expected = expected.clone();
+                    crate::query::execute::snippets(&reader, candidate, &mut actual).unwrap();
+                    crate::query::execute::snippets(&reader, &program, &mut expected).unwrap();
+                    assert_eq!(
+                        actual.iter().map(|row| &row["snippet"]).collect::<Vec<_>>(),
+                        expected
+                            .iter()
+                            .map(|row| &row["snippet"])
+                            .collect::<Vec<_>>()
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_recent_page_does_not_expand_older_matching_owners() {
+    use crate::query::compile::Statements;
+    let mut work = Vec::new();
+    for outside in [512, 4096] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut fixture = Fixture::new(dir.path()).unwrap();
+        for (id, at, text) in [
+            ("newest", 5000, "needle"),
+            ("runner-up", 4000, "needle second"),
+        ] {
+            let owner = fixture
+                .session(SessionFacts {
+                    id: &format!("test:{id}"),
+                    kind: "main",
+                    last: Some(at),
+                    ..Default::default()
+                })
+                .unwrap();
+            search_message(
+                &mut fixture,
+                owner,
+                &format!("test:{id}-message"),
+                Some(at),
+                text,
+                false,
+            );
+        }
+        shared_body_outside_scope(&mut fixture, "test:newest-message", outside);
+        for unit in ["sessions", "messages"] {
+            let time = if unit == "sessions" {
+                "last_active"
+            } else {
+                "at"
+            };
+            let mut program = crate::query::compile(
+                &format!("{unit} where needle | sort by {time} desc"),
+                &options_for_search(),
+            )
+            .unwrap();
+            program.page_size = 1;
+            let mut indexed = program.clone();
+            if let Statements::Keyed(rows) = &mut indexed.statements {
+                rows.search = None;
+            }
+            for analyzed in [false, true] {
+                if analyzed {
+                    crate::archive::open_write(&fixture.archive.index_db(), 1024)
+                        .unwrap()
+                        .execute_batch("ANALYZE")
+                        .unwrap();
+                }
+                let pool = fixture.reads().unwrap();
+                let reader = pool.reader().unwrap();
+                let (actual, steps) =
+                    counted(&reader, || reader.query_page(&program, None).unwrap().rows);
+                let (expected, old_steps) =
+                    counted(&reader, || reader.query_page(&indexed, None).unwrap().rows);
+                assert_eq!(result(&actual), result(&expected));
+                assert_eq!(
+                    actual[0]["id"],
+                    if unit == "sessions" {
+                        "test:newest"
+                    } else {
+                        "test:newest-message"
+                    }
+                );
+                work.push((outside, unit, analyzed, steps, old_steps));
+            }
+        }
+    }
+    for unit in ["sessions", "messages"] {
+        for analyzed in [false, true] {
+            let small = work
+                .iter()
+                .find(|row| row.0 == 512 && row.1 == unit && row.2 == analyzed)
+                .unwrap();
+            let large = work
+                .iter()
+                .find(|row| row.0 == 4096 && row.1 == unit && row.2 == analyzed)
+                .unwrap();
+            assert!(
+                large.3 <= small.3 + small.3 / 5,
+                "recency work: {small:?} -> {large:?}"
+            );
+            assert!(
+                large.4 > small.4 * 4,
+                "full-index control: {small:?} -> {large:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn scope_and_index_plans_agree_on_rows_sources_counts_and_continuations() {
     for output in [false, true] {
@@ -886,4 +1191,65 @@ fn snippet_reuse_does_not_rescan_many_hit_owners() {
         work[1].0 <= work[0].0 + work[0].0 / 5,
         "selected-source work: {work:?}"
     );
+}
+
+#[test]
+fn ranking_uses_one_physical_score_and_preserves_the_public_rank_field() {
+    let (_dir, fixture) = many_hits(32, false);
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let program = crate::query::compile("needle", &options_for_search()).unwrap();
+    let keys = match &program.statements {
+        crate::query::compile::Statements::Keyed(rows) => &rows.keys,
+        _ => panic!("ranked native keys"),
+    };
+    for row in reader
+        .query(keys, &crate::selection::values(&program.params))
+        .unwrap()
+    {
+        let score = &row["_rank"];
+        assert!(score.as_f64().is_some_and(|score| score < 0.0));
+        assert_eq!(
+            row.as_object()
+                .unwrap()
+                .values()
+                .filter(|value| *value == score)
+                .count(),
+            1,
+            "the score is one physical value, reused by ordering and presentation: {row}"
+        );
+    }
+    let expected = reader.query_rows(&program).unwrap();
+    for query in [
+        "needle",
+        "needle | sort by id",
+        "needle | sort by last_active desc",
+    ] {
+        let projected = crate::query::compile(query, &options_for_search()).unwrap();
+        let mut actual = reader.query_rows(&projected).unwrap();
+        for row in &mut actual {
+            present(&projected, row).unwrap();
+        }
+        assert_eq!(result(&actual), result(&expected), "{query}");
+    }
+}
+
+#[test]
+fn a_recency_sort_keeps_a_source_order_witness_condition() {
+    let (_dir, fixture) = many_hits(32, false);
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let condition = "messages where before(messages where id:test:hit-000032) within 2s";
+    for query in [
+        condition.to_owned(),
+        format!("{condition} | sort by at desc"),
+    ] {
+        let program = crate::query::compile(&query, &options_for_search()).unwrap();
+        let rows = reader.query_rows(&program).unwrap();
+        assert_eq!(rows.len(), 32, "{query}");
+        assert!(
+            rows.iter().all(|row| row["id"] != "test:hit-000032"),
+            "{query}"
+        );
+    }
 }

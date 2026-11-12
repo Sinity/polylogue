@@ -116,7 +116,7 @@ impl Hits<'_> {
              SELECT b.pk AS block,h.rank FROM {} h \
              CROSS JOIN block b ON b.text_id=h.text_id WHERE {mode}=0 UNION ALL \
              SELECT b.pk,h.rank FROM {scope} e CROSS JOIN block b ON b.pk=e.block \
-             CROSS JOIN {} h ON h.text_id=b.text_id WHERE {mode}=1)",
+             CROSS JOIN {} h ON h.text_id=b.text_id WHERE {mode}<>0)",
             self.cte, self.cte
         );
         (

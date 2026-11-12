@@ -84,8 +84,20 @@ impl<'a> Compiler<'a> {
         }
         let mut matched = preset;
         let mut measure: Option<Measure> = None;
+        let mut explicit_order = None;
         for stage in stages {
             match &stage.kind {
+                TransformKind::Sort { .. } => {
+                    debug_assert!(super::search::recent_sort(
+                        scope.unit,
+                        std::slice::from_ref(stage)
+                    ));
+                    let spec = units::spec(scope.unit);
+                    let time = scope.a.expand(spec.time);
+                    let mut order = vec![format!("{time} IS NULL"), format!("{time} DESC")];
+                    order.extend(spec.identity.iter().map(|term| scope.a.expand(term)));
+                    explicit_order = Some(order);
+                }
                 TransformKind::Scope {
                     unit,
                     condition: cond,
@@ -105,7 +117,7 @@ impl<'a> Compiler<'a> {
                     self.near_request = None;
                     self.rank = None;
                     self.rank_source = None;
-                    self.ranked_search = None;
+                    self.text_search = None;
                     self.rank_index = None;
                     self.near_rank = None;
                     self.near_join = None;
@@ -226,7 +238,20 @@ impl<'a> Compiler<'a> {
             None
         };
         self.fuse_text_and_near(&scope, &mut where_sql)?;
-        self.search_scope(selection, &scope, &defaults_only)?;
+        self.search_scope(selection, &scope, &defaults_only, explicit_order.as_deref())?;
+        if let Some(search) = &self.text_search
+            && let Some(scoped) = &search.scope
+            && let Some(recent) = &scoped.recent
+        {
+            // A shared descendant can make other owners match. A recency
+            // batch must still return only its own candidate owners.
+            where_sql.push(format!(
+                "(?{}<>2 OR {} IN (SELECT value FROM json_each(?{})))",
+                scoped.mode,
+                scope.a.expand(units::spec(scope.unit).key),
+                recent.owners
+            ));
+        }
         let recursive = matched.as_ref().is_some_and(|m| m.recursive);
         let ctes = if self.ctes.is_empty() {
             String::new()
@@ -253,7 +278,7 @@ impl<'a> Compiler<'a> {
                     rel.order,
                 )
             } else {
-                let order = self.default_order(&scope);
+                let order = explicit_order.unwrap_or_else(|| self.default_order(&scope));
                 let (pk, mut cols) =
                     row_columns(unit, &scope.a, self.opts.clock.now.as_millisecond());
                 if let Projection::Fields(fields) = &selection.projection {
@@ -304,8 +329,7 @@ impl<'a> Compiler<'a> {
                         },
                     ))
                     .collect();
-                if let Some(rank) = self.ranking() {
-                    cols.push(("rank".into(), rank, ColKind::Number, None));
+                if self.ranking().is_some() {
                     columns.push(Column {
                         name: "rank".into(),
                         kind: ColKind::Number,
@@ -347,7 +371,20 @@ impl<'a> Compiler<'a> {
                     "{ctes}SELECT {pk} AS _pk,{} AS _near FROM {count_from} WHERE {count_where}",
                     self.near_rank.as_deref().unwrap_or("1")
                 ));
-                let (hidden, keys) = hidden_order(&order, "_o");
+                let (hidden, mut keys) = hidden_order(&order, "_o");
+                let rank = self.ranking();
+                let hidden = hidden
+                    .into_iter()
+                    .enumerate()
+                    .filter_map(|(index, column)| {
+                        if rank.as_deref() == Some(order_term(&order[index]).0) {
+                            keys[index].column = "_rank".into();
+                            None
+                        } else {
+                            Some(column)
+                        }
+                    })
+                    .collect::<Vec<_>>();
                 if measure.is_none() {
                     let mut key_select = vec![format!("{pk} AS _pk")];
                     if let Some(rank) = self.ranking() {
@@ -489,7 +526,7 @@ impl<'a> Compiler<'a> {
                 rows,
                 count,
                 search: if self.fusion.is_none() && self.near_rank.is_none() {
-                    self.ranked_search
+                    self.text_search
                 } else {
                     None
                 },
@@ -508,7 +545,11 @@ impl<'a> Compiler<'a> {
             statements,
             params: self.params,
             columns,
-            column_slots: Default::default(),
+            column_slots: if ranked && shape == Shape::Rows {
+                std::collections::BTreeMap::from([("rank".into(), "_rank".into())])
+            } else {
+                Default::default()
+            },
             native_sources: None,
             time_text_columns: Default::default(),
             ranked,

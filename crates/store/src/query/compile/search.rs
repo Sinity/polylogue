@@ -3,6 +3,32 @@
 use super::*;
 use polylogue_query::filter::Filter;
 
+/// A direct native-time sort keeps key-first selection. Other relation sorts
+/// retain their existing expression and projection rules.
+pub(super) fn recent_sort(unit: Unit, transforms: &[Transform]) -> bool {
+    let [
+        Transform {
+            kind: TransformKind::Sort { keys },
+            ..
+        },
+    ] = transforms
+    else {
+        return false;
+    };
+    let [key] = keys.as_slice() else { return false };
+    let Expression::Field { name } = &key.expression else {
+        return false;
+    };
+    let field = fields::lookup(unit, &name.to_ascii_lowercase());
+    use polylogue_query::fields::FieldId;
+    key.descending
+        && matches!(
+            (unit, field),
+            (Unit::Sessions, Some(FieldId::SessionsLastActive))
+                | (Unit::Messages, Some(FieldId::MessagesAt))
+        )
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct ScopeBuild {
     pub cte: usize,
@@ -37,9 +63,10 @@ impl Compiler<'_> {
         selection: &Selection,
         scope: &RowContext,
         defaults: &[String],
+        recent_order: Option<&[String]>,
     ) -> Result<(), QueryError> {
         let Some(build) = self
-            .ranked_search
+            .text_search
             .as_mut()
             .and_then(|search| search.scope_build.take())
         else {
@@ -50,7 +77,7 @@ impl Compiler<'_> {
             .as_ref()
             .filter(|_| selection.unit == scope.unit)
             .and_then(|filter| without_terms(filter, &build.spans));
-        let Some(filter) = filter else {
+        if filter.is_none() && recent_order.is_none() {
             // With only the native defaults there is no narrower scope to
             // drive this search. Keep the ranked index-prefix path.
             self.ctes.push(format!(
@@ -58,10 +85,17 @@ impl Compiler<'_> {
                 build.name
             ));
             return Ok(());
-        };
+        }
         let mut conditions = defaults.to_vec();
-        conditions.push(self.lower(&filter, scope, false)?);
-        let search = self.ranked_search.as_ref().expect("selected search");
+        if let Some(filter) = filter {
+            conditions.push(self.lower(&filter, scope, false)?);
+        }
+        let recent_owners = recent_order.map(|_| {
+            let parameter = self.params.len() + 1;
+            self.bind(Param::Text("[]".into()));
+            parameter
+        });
+        let search = self.text_search.as_ref().expect("selected search");
         let (table, index) = match search.index {
             polylogue_query::search::SnippetIndex::Prose => ("text_fts", Index::Prose),
             polylogue_query::search::SnippetIndex::Output => ("output_fts", Index::Output),
@@ -79,16 +113,23 @@ impl Compiler<'_> {
         };
         let kind = hits.block_kind("b");
         let writer = hits.writer("m");
-        self.ctes.push(format!(
-            "{owners} AS NOT MATERIALIZED (SELECT {} AS pk FROM {} WHERE {})",
-            scope.a.expand(units::spec(scope.unit).key),
-            self.from(scope)?,
-            and_all(&conditions)
-        ));
+        let pk = scope.a.expand(units::spec(scope.unit).key);
+        let from = self.from(scope)?;
+        let condition = and_all(&conditions);
+        let owner_rows = match recent_owners {
+            Some(parameter) => format!(
+                "SELECT {pk} AS pk FROM {from} WHERE {mode}<>2 AND {condition} UNION ALL \
+                 SELECT {pk} FROM json_each(?{parameter}) chosen CROSS JOIN {from} \
+                 WHERE {mode}=2 AND {pk}=chosen.value AND {condition}"
+            ),
+            None => format!("SELECT {pk} AS pk FROM {from} WHERE {condition}"),
+        };
+        self.ctes
+            .push(format!("{owners} AS NOT MATERIALIZED ({owner_rows})"));
         let eligible = match scope.unit {
             Unit::Sessions => format!(
                 "WITH RECURSIVE tree(pk) AS (\
-                 SELECT pk FROM {owners} WHERE {mode}=1 UNION \
+                 SELECT pk FROM {owners} WHERE {mode}<>0 UNION \
                  SELECT min(pk) FROM {owners} WHERE {mode}=0 UNION \
                  SELECT l.child_pk FROM tree t CROSS JOIN session p ON p.pk=t.pk \
                  CROSS JOIN session_link l ON l.parent_id=p.id AND l.kind='spawn' \
@@ -116,7 +157,7 @@ impl Compiler<'_> {
         self.ctes
             .push(format!("{blocks} AS NOT MATERIALIZED ({eligible})"));
         self.ctes.push(format!(
-            "{candidates} AS MATERIALIZED (SELECT * FROM {blocks} WHERE {mode}=1)"
+            "{candidates} AS MATERIALIZED (SELECT * FROM {blocks} WHERE {mode}<>0)"
         ));
         self.ctes[build.cte] = format!(
             "{name} AS MATERIALIZED (WITH index_prefix AS MATERIALIZED (\
@@ -127,14 +168,26 @@ impl Compiler<'_> {
              SELECT text_id,rank FROM index_prefix UNION ALL \
              SELECT t.text_id,bm25({table}) AS rank FROM scoped_texts t \
              CROSS JOIN {table} ON {table}.rowid=t.text_id \
-             WHERE {mode}=1 AND {table} MATCH {expression})",
+             WHERE {mode}<>0 AND {table} MATCH {expression})",
             expression = build.expression,
             limit = search.limit,
         );
         let blocks = format!("WITH {} SELECT block FROM {blocks}", self.ctes.join(", "));
-        self.ranked_search.as_mut().expect("selected search").scope = Some(ScopedSearch {
+        let recent = recent_order.zip(recent_owners).map(|(order, owners)| {
+            let (hidden, _) = hidden_order(order, "_o");
+            RecentSearch {
+                keys: format!(
+                    "WITH {} SELECT {pk} AS _pk,{} FROM {from} WHERE {condition}",
+                    self.ctes.join(", "),
+                    hidden.join(", ")
+                ),
+                owners,
+            }
+        });
+        self.text_search.as_mut().expect("selected search").scope = Some(ScopedSearch {
             blocks,
             mode: build.mode,
+            recent,
         });
         Ok(())
     }

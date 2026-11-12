@@ -27,13 +27,13 @@ pub struct KeyedRows {
     pub rows: String,
     /// The count of selected rows and of those without a similarity.
     pub count: String,
-    /// The ranked text prefix that can fill a page before row hydration.
+    /// Physical text-selection alternatives before row hydration.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub search: Option<RankedSearch>,
+    pub search: Option<TextSearch>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct RankedSearch {
+pub struct TextSearch {
     pub index: polylogue_query::search::SnippetIndex,
     pub expression: String,
     /// One-based parameter holding the number of ranked indexed texts.
@@ -50,8 +50,19 @@ pub struct RankedSearch {
 pub struct ScopedSearch {
     /// Streams eligible block occurrences for the bounded planning probe.
     pub blocks: String,
-    /// One-based parameter: zero reads the index, one reads scoped texts.
+    /// One-based parameter: zero reads the index, one reads the full scope,
+    /// two reads the current recency batch.
     pub mode: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recent: Option<RecentSearch>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RecentSearch {
+    /// Non-text owner keys and their final order values, read newest first.
+    pub keys: String,
+    /// One-based JSON parameter containing the current batch of owner keys.
+    pub owners: usize,
 }
 
 /// A derived relation's rows.
