@@ -5,6 +5,9 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
 
+#[cfg(test)]
+mod tests;
+
 /// Each kind declares its source key, stored payload and shown-version order.
 #[derive(Clone, Copy)]
 pub(crate) enum VersionKind {
@@ -416,9 +419,11 @@ pub(crate) fn remove_unreferenced(conn: &Connection, bulk: bool) -> Result<()> {
         .execute([])?;
     conn.prepare_cached("DELETE FROM temp.unreferenced_value")?
         .execute([])?;
+    // Candidates drive the lookup. An ordinary JOIN can scan every retained
+    // text and its references before checking even an empty candidate table.
     let texts = conn
         .prepare_cached(
-            "SELECT t.id,t.indexed FROM temp.unreferenced_text u JOIN text t ON t.id=u.text_id
+            "SELECT t.id,t.indexed FROM temp.unreferenced_text u CROSS JOIN text t ON t.id=u.text_id
              WHERE NOT EXISTS(SELECT 1 FROM block b WHERE b.text_id=t.id)
              AND NOT EXISTS(SELECT 1 FROM document_block b WHERE b.text_id=t.id)
              AND NOT EXISTS(SELECT 1 FROM message_version_text v WHERE v.text_id=t.id)
