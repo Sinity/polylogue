@@ -1024,11 +1024,13 @@ impl RowWriter<'_, '_> {
                         v.in_progress
                     ],
                 )?;
-                self.tx.execute(
-                    "UPDATE session SET changed=?2 WHERE pk=?1",
-                    params![session_pk, self.counter],
-                )?;
             }
+            // Adding or removing a source claim can change session
+            // derivations even when the displayed message stays equal.
+            self.tx.execute(
+                "UPDATE session SET changed=?2 WHERE pk=?1 AND changed IS NOT ?2",
+                params![session_pk, self.counter],
+            )?;
             // The main reading's sequence can move anchored events even
             // when every displayed message column stays the same.
             self.update_event_anchors(pk, true)?;

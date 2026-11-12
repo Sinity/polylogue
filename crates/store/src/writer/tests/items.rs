@@ -158,6 +158,72 @@ fn unchanged_shown_message_still_moves_events_to_its_new_source_sequence() {
 }
 
 #[test]
+fn removing_a_redundant_content_claim_still_invalidates_session_derivations() {
+    let w = test_archive();
+    let reading = MessageRow {
+        id_kind: polylogue_model::IdKind::Content,
+        ..row(10, message("shared", Role::User, "same prompt"))
+    };
+    for (input, route, sessions) in [
+        ("a-main", Route::Live, &["s"][..]),
+        ("z-copy", Route::Capture, &[][..]),
+    ] {
+        w.store_reading(
+            batch(input, route, 0, vec![reading.clone()], sessions),
+            Some(&SOURCE_RECORD),
+        )
+        .unwrap();
+        assert!(w.writer.flush().unwrap().errors.is_empty());
+    }
+    w.writer.derive().unwrap();
+    let before = stored(&w, "s").entries;
+    let conn = rusqlite::Connection::open(w.archive.index_db()).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM derive_due", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    conn.execute_batch(
+        "CREATE TABLE test_message_updates(n INTEGER NOT NULL);
+         INSERT INTO test_message_updates VALUES(0);
+         CREATE TRIGGER test_message_updates AFTER UPDATE OF
+         input_pk,source_chain,source_start,source_end,session_order,in_progress ON message
+         BEGIN UPDATE test_message_updates SET n=n+1; END;",
+    )
+    .unwrap();
+    let mut empty = batch("z-copy", Route::Capture, 0, vec![], &[]);
+    empty.change = Change::Rewritten;
+    w.store_reading(empty, Some(&[b'x'; 100])).unwrap();
+    let report = w.writer.flush_rows().unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM message_source", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.query_row("SELECT n FROM test_message_updates", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(report.item_units_read, 0);
+    assert_eq!(stored(&w, "s").entries, before);
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM derive_due WHERE rows_changed=1",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1,
+        "source membership remains an input to session derivations"
+    );
+}
+
+#[test]
 fn every_committed_batch_leaves_the_index_equal_to_the_rows() {
     let w = test_archive();
     w.store_reading(
