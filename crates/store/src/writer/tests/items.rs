@@ -51,6 +51,113 @@ fn message(id: &str, role: Role, text: &str) -> Message {
 }
 
 #[test]
+fn identical_lower_priority_claims_leave_shown_messages_and_items_untouched() {
+    let w = test_archive();
+    let messages: Vec<_> = (0..256)
+        .map(|n| {
+            let mut m = message(&format!("m{n}"), Role::Assistant, "same answer");
+            m.at = Timestamp::from_unix_ms(1000 + n * 10);
+            row(n as u64 / 3, m)
+        })
+        .collect();
+    w.store_reading(
+        batch("a-main", Route::Live, 0, messages.clone(), &["s"]),
+        Some(&SOURCE_RECORD),
+    )
+    .unwrap();
+    w.writer.flush().unwrap();
+    let before = stored(&w, "s");
+    let conn = rusqlite::Connection::open(w.archive.index_db()).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE test_message_updates(n INTEGER NOT NULL);
+         INSERT INTO test_message_updates VALUES(0);
+         CREATE TRIGGER test_message_updates AFTER UPDATE OF
+         input_pk,source_chain,source_start,source_end,session_order,in_progress ON message
+         BEGIN UPDATE test_message_updates SET n=n+1; END;",
+    )
+    .unwrap();
+    w.store_reading(
+        batch("z-extra", Route::Capture, 0, messages, &[]),
+        Some(&SOURCE_RECORD),
+    )
+    .unwrap();
+    let report = w.writer.flush().unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let claims: i64 = conn
+        .query_row("SELECT count(*) FROM message_source", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(claims, 512);
+    assert_eq!(stored(&w, "s").entries, before.entries);
+    assert_matches_rows(&w, "s");
+    let updates: i64 = conn
+        .query_row("SELECT n FROM test_message_updates", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        (updates, report.item_units_read),
+        (0, 0),
+        "unchanged displayed message updates and session item reads"
+    );
+}
+
+#[test]
+fn unchanged_shown_message_still_moves_events_to_its_new_source_sequence() {
+    let w = test_archive();
+    let rows = vec![row(10, message("anchor", Role::User, "anchor"))];
+    w.store_reading(
+        batch("a-order", Route::Capture, 0, rows.clone(), &["s"]),
+        Some(&SOURCE_RECORD),
+    )
+    .unwrap();
+    let mut main = batch("z-main", Route::Live, 0, rows, &["s"]);
+    main.parse[0].order_from = Some(9);
+    w.store_reading(main.clone(), Some(&SOURCE_RECORD)).unwrap();
+    let mut events = batch("events", Route::Live, 0, vec![], &[]);
+    events.parse[0].output.events.push(Event {
+        at_quality: polylogue_model::TimeQuality::Unknown,
+        at_precision: None,
+        at_until: None,
+        session: Some(sid("s")),
+        kind: "message_position".into(),
+        at: None,
+        after: Some(MessageId::parse("claude-code:anchor").unwrap()),
+        range: None,
+        data: serde_json::json!({}),
+    });
+    w.store_reading(events, Some(&SOURCE_RECORD)).unwrap();
+    w.writer.flush().unwrap();
+    let pool = ReadPool::open(&w.archive).unwrap();
+    let shown = || {
+        pool.reader().unwrap().query("SELECT input_pk,source_chain,source_start,source_end,session_order,in_progress FROM message", &[]).unwrap()
+    };
+    let before = shown();
+    assert_eq!(
+        pool.reader()
+            .unwrap()
+            .query("SELECT seq FROM event", &[])
+            .unwrap()[0]["seq"],
+        9
+    );
+    main.parse[0].order_from = Some(1);
+    let mut reading = ChainReading::new().unwrap();
+    reading.push(&mut main.parse[0]).unwrap();
+    w.writer
+        .sender()
+        .unwrap()
+        .replace_chain(main.input, 1, 100, reading)
+        .unwrap();
+    w.writer.derive().unwrap();
+    assert_eq!(shown(), before);
+    assert_eq!(
+        pool.reader()
+            .unwrap()
+            .query("SELECT seq FROM event", &[])
+            .unwrap()[0]["seq"],
+        1
+    );
+    assert_matches_rows(&w, "s");
+}
+
+#[test]
 fn every_committed_batch_leaves_the_index_equal_to_the_rows() {
     let w = test_archive();
     w.store_reading(
