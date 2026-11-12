@@ -3,16 +3,17 @@
 use crate::{Error, Result};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use hashed_blobs::{BlobReader, EncodedBlob, Preparation, ReadLimits};
+use polylogue_store::primary::queue::{self, Lookup, Order, Queue};
 use polylogue_store::primary::{Capture, ReplayState};
 use serde::{Deserialize, Serialize};
 use sinex_protocol::{Acknowledgment, FrameResult, Ingress};
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, Read, Seek, Write};
+use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 mod exports;
-mod names;
 mod raw_ranges;
 mod sources;
 
@@ -88,11 +89,9 @@ impl Body {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct Group {
     pub captures_hash: String,
-    pub captures_count: u64,
-    encoding: Encoding,
 }
 
-/// A captured material and the facts the queue keeps about its custody.
+/// A captured material and the facts the queue keeps about its capture.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct Material {
     pub id: String,
@@ -122,72 +121,21 @@ pub(crate) enum Payload {
     LargeFrame,
 }
 
-/// Where an operation stands with its receipt. The only legal transition is
-/// from pending to one settled phase; a settled phase never changes.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "phase", rename_all = "snake_case")]
-pub(crate) enum Phase {
-    /// No receipt yet.
-    Pending,
-    /// The owner accepted the operation. Only newly admitted events carry
-    /// an event commit position; complete no-admission outcomes retain None.
-    Acknowledged { commit_seq: Option<i64> },
-    /// The owner refused the operation.
-    Refused,
-    /// The owner already holds different contents under this identity; the
-    /// offered frame hash is kept as evidence.
-    Conflicted { offered: String },
-}
+pub(crate) use polylogue_store::primary::queue::Phase;
 
-impl Phase {
-    /// The phase an acknowledgment from the owner settles.
-    fn settled_by(acknowledgment: &Acknowledgment) -> Self {
-        if acknowledgment.refusal().is_some() {
-            Self::Refused
-        } else {
-            Self::Acknowledged {
-                commit_seq: acknowledgment.commit_seq(),
-            }
+fn acknowledgment_phase(acknowledgment: &Acknowledgment) -> Phase {
+    if acknowledgment.refusal().is_some() {
+        Phase::Refused
+    } else {
+        Phase::Acknowledged {
+            commit_seq: acknowledgment.commit_seq(),
         }
-    }
-
-    /// The one place that decides which phase changes are legal.
-    pub(crate) fn advance(&self, next: Self) -> Result<Self> {
-        match (self, &next) {
-            (Self::Pending, Self::Pending) => invalid("pending is not a settled outcome"),
-            (Self::Pending, _) => Ok(next),
-            _ => invalid("a settled operation cannot change its outcome"),
-        }
-    }
-
-    pub(crate) fn is_pending(&self) -> bool {
-        matches!(self, Self::Pending)
-    }
-    pub(crate) fn is_acknowledged(&self) -> bool {
-        matches!(self, Self::Acknowledged { .. })
-    }
-    /// Refused by the owner, or conflicting with what the owner holds.
-    pub(crate) fn is_refused(&self) -> bool {
-        matches!(self, Self::Refused | Self::Conflicted { .. })
-    }
-    pub(crate) fn commit_seq(&self) -> Option<i64> {
-        match self {
-            Self::Acknowledged { commit_seq } => *commit_seq,
-            _ => None,
-        }
-    }
-    fn confirmed_through(&self, applied: i64) -> bool {
-        self.commit_seq()
-            .is_some_and(|position| position <= applied)
     }
 }
 
-/// The immutable queue record, written once as `metadata.json`. Receipts,
-/// revocation and acquisition standing live in their own files.
+/// The immutable operation descriptor stored in the durable queue.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct Record {
-    /// Relative to its acquisition for an acquisition member until loaded.
-    pub order: u64,
     pub identity: String,
     pub frame: Bytes,
     pub payload: Payload,
@@ -222,13 +170,6 @@ impl Record {
             _ => None,
         }
     }
-    /// An operation that can admit events with a confirmed position.
-    pub(crate) fn is_write(&self) -> bool {
-        matches!(
-            self.payload,
-            Payload::Events { .. } | Payload::ReplaySequence { .. }
-        )
-    }
     pub(crate) fn is_request(&self) -> bool {
         self.material().is_some_and(|material| material.request)
     }
@@ -256,6 +197,7 @@ impl Record {
 /// files decide. Never serialized.
 #[derive(Clone, Debug)]
 pub(crate) struct Prepared {
+    pub order: u64,
     pub record: Record,
     pub phase: Phase,
     /// Its acquisition was accepted with an unresolved basis conflict.
@@ -279,7 +221,6 @@ struct Acquisition {
     identity: String,
     intent: String,
     count: u64,
-    order_base: Option<u64>,
     disposition: polylogue_store::primary::CaptureDisposition,
 }
 
@@ -289,29 +230,24 @@ struct Checked<T> {
     digest: String,
 }
 
-/// The settled outcome and the acknowledgment bytes that proved it.
+/// The finished outcome and the acknowledgment bytes that proved it.
 #[derive(Serialize, Deserialize)]
-struct Receipt {
+struct StoredAcknowledgment {
     payload: Bytes,
     phase: Phase,
 }
 
-/// Only pending operations live here. Ordered and capture-membership indexes
-/// are rebuildable from operation directories, never source progress.
 /// The file whose modification time records the last acknowledgement.
 const ACKNOWLEDGED: &str = "last-acknowledged";
 
 pub(crate) struct Spool {
     root: PathBuf,
-    first: Cell<u64>,
-    next: Cell<u64>,
-    index_dirty: Cell<bool>,
-    last_retired: RefCell<Option<ReplayState>>,
-    retirement_dirty: Cell<bool>,
+    queue: Queue,
+    waker: RefCell<Option<Arc<dyn Fn() + Send + Sync>>>,
     _lock: File,
 }
 
-/// Encoded custody is verified and synced privately before publication takes
+/// Encoded capture is verified and synced privately before publication takes
 /// the shared queue lock. Relative member order grants no source authority.
 pub(crate) struct StagedAcquisition {
     temporary: tempfile::TempDir,
@@ -325,7 +261,7 @@ impl StagedAcquisition {
         &self.queue
     }
     pub fn finish(&self) -> Result<()> {
-        if self.queue.next.get().checked_sub(1) != Some(self.count) {
+        if self.queue.queue.len()? != self.count {
             return invalid("acquisition member count differs from its complete plan");
         }
         sync(self.temporary.path())?;
@@ -344,7 +280,7 @@ impl PinnedCapture {
     pub fn decode(self) -> Result<Capture> {
         let Some((file, descriptor)) = self.bytes else {
             if !self.exports.is_empty() {
-                return invalid("export custody has no captured body");
+                return invalid("export capture has no captured body");
             }
             return Ok(self.header);
         };
@@ -389,6 +325,13 @@ fn pin_backup_tree(source: &Path, destination: &Path, cancelled: &AtomicBool) ->
             {
                 continue;
             }
+            if entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with("queue.db") || name == "lock")
+            {
+                continue;
+            }
             pin_backup_tree(
                 &entry.path(),
                 &destination.join(entry.file_name()),
@@ -402,15 +345,26 @@ fn pin_backup_tree(source: &Path, destination: &Path, cancelled: &AtomicBool) ->
     Ok(())
 }
 
+pub(crate) struct PinnedBackup {
+    directory: tempfile::TempDir,
+    database: queue::Snapshot,
+    target: PathBuf,
+}
+impl PinnedBackup {
+    pub fn finish(self, cancelled: &AtomicBool) -> Result<tempfile::TempDir> {
+        self.database
+            .write_to(&self.target.join("queue.db"), cancelled)?;
+        sync(&self.target)?;
+        Ok(self.directory)
+    }
+}
+
 impl Spool {
-    /// Pin the complete accepted queue while its mutex is held. Payloads and
-    /// receipts are immutable files, so links retain their original encoded
-    /// bytes after ordinary retirement unlinks the live operations. Acquisitions
-    /// published after this cut are absent; partially staged acquisitions are
-    /// never included. The caller hashes/copies the pinned files outside the
-    /// queue mutex, allowing acquisition to continue.
-    pub(crate) fn pin_backup(&self, cancelled: &AtomicBool) -> Result<tempfile::TempDir> {
+    /// The read snapshot and immutable hard links hold the same queue cut.
+    /// Database copying and payload hashing happen after releasing the mutex.
+    pub(crate) fn pin_backup(&self, cancelled: &AtomicBool) -> Result<PinnedBackup> {
         check_backup_cancelled(cancelled)?;
+        let database = self.queue.snapshot()?;
         let pinned = tempfile::Builder::new()
             .prefix(".backup-cut-")
             .tempdir_in(self.root.parent().expect("producer spool parent"))?;
@@ -431,16 +385,16 @@ impl Spool {
             )?;
         }
         sync(&target.join("operations"))?;
-        sync(&target)?;
-        sync(target.parent().expect("snapshot spool parent"))?;
-        sync(pinned.path())?;
-        Ok(pinned)
+        Ok(PinnedBackup {
+            directory: pinned,
+            database,
+            target,
+        })
     }
 
     pub fn open(store: &Path, producer: &str) -> Result<Self> {
         let root = store.join("producer-spool").join(hash(producer.as_bytes()));
         fs::create_dir_all(root.join("operations"))?;
-        fs::create_dir_all(root.join("retired"))?;
         sync(&root)?;
         sync(store)?;
         sync(root.parent().expect("spool parent"))?;
@@ -462,28 +416,25 @@ impl Spool {
                 );
             }
         }
+        if !root.join("queue.db").exists()
+            && fs::read_dir(root.join("operations"))?.next().is_some()
+        {
+            return invalid(
+                "producer spool has an earlier queue format; preserve it before an explicit transition",
+            );
+        }
+        let queue = Queue::open(&root.join("queue.db"))?;
         let spool = Self {
             root,
-            first: Cell::new(1),
-            next: Cell::new(1),
-            index_dirty: Cell::new(true),
-            last_retired: RefCell::new(None),
-            retirement_dirty: Cell::new(true),
+            queue,
+            waker: RefCell::new(None),
             _lock: lock,
         };
         spool.remove_unpublished()?;
-        spool.rebuild_indexes()?;
-        for entry in fs::read_dir(spool.root.join("retired"))? {
-            let path = entry?.path();
-            if fs::symlink_metadata(&path)?.is_dir() {
-                fs::remove_dir_all(path)?;
-            }
-        }
-        sync(&spool.root.join("retired"))?;
         Ok(spool)
     }
 
-    /// Operations, acquisitions and receipts are prepared in dot-named
+    /// Operations, acquisitions and acknowledgments are prepared in dot-named
     /// directories and published by rename, so a dot-named directory left at
     /// open belongs to a preparation that crashed before publication. The
     /// spool lock means no other writer is preparing now. Some hold hard links
@@ -496,6 +447,14 @@ impl Spool {
             if !entry.file_name().to_str().is_some_and(hex_name) || !entry.file_type()?.is_dir() {
                 continue;
             }
+            let relative = format!(
+                "operations/{}",
+                entry.file_name().to_str().expect("hex name checked")
+            );
+            if !self.queue.references_directory(&relative)? {
+                fs::remove_dir_all(entry.path())?;
+                continue;
+            }
             remove_dot_entries(&entry.path())?;
             let members = entry.path().join("operations");
             if entry.path().join("acquisition.json").try_exists()? && members.is_dir() {
@@ -505,7 +464,15 @@ impl Spool {
                     if member.file_name().to_str().is_some_and(hex_name)
                         && member.file_type()?.is_dir()
                     {
-                        remove_dot_entries(&member.path())?;
+                        let relative = format!(
+                            "{relative}/operations/{}",
+                            member.file_name().to_str().expect("hex name checked")
+                        );
+                        if self.queue.references_directory(&relative)? {
+                            remove_dot_entries(&member.path())?;
+                        } else {
+                            fs::remove_dir_all(member.path())?;
+                        }
                     }
                 }
             }
@@ -514,88 +481,63 @@ impl Spool {
     }
 
     fn operation(&self, identity: &str) -> Result<PathBuf> {
-        let name = hash(identity.as_bytes());
-        let direct = self.root.join("operations").join(&name);
-        if direct.try_exists()? {
-            return Ok(direct);
-        }
-        let Some(batch) = read_json::<String>(&self.index("locations", &name))? else {
-            return Ok(direct);
-        };
-        if !hex_name(&batch) {
-            return invalid("invalid acquisition location index");
-        }
-        Ok(self
-            .root
-            .join("operations")
-            .join(batch)
-            .join("operations")
-            .join(name))
+        Ok(match self.queue.get(identity)? {
+            Some(entry) => self.root.join(entry.directory),
+            None => self.root.join("operations").join(hash(identity.as_bytes())),
+        })
     }
-    fn index(&self, kind: &str, key: &str) -> PathBuf {
-        self.root.join("index").join(kind).join(key)
+
+    fn prepared(&self, entry: queue::Entry) -> Result<Prepared> {
+        let record: Record = serde_json::from_slice(&entry.metadata)?;
+        if record.identity != entry.identity {
+            return invalid("queue record has another identity");
+        }
+        Ok(Prepared {
+            order: entry.order,
+            record,
+            phase: entry.phase,
+            unresolved: entry.unresolved,
+        })
     }
 
     pub fn get(&self, identity: &str) -> Result<Option<Prepared>> {
-        let Some(mut record) =
-            read_checked::<Record>(&self.operation(identity)?.join("metadata.json"))?
-        else {
-            return Ok(None);
-        };
-        let mut unresolved = false;
-        if record.identity != identity {
-            return invalid("spool operation identity differs from its directory");
+        self.queue
+            .get(identity)?
+            .map(|entry| self.prepared(entry))
+            .transpose()
+    }
+
+    pub fn lookup(
+        &self,
+        lookup: Lookup<'_>,
+        after: Option<u64>,
+        through: Option<u64>,
+        order: Order,
+        limit: usize,
+    ) -> Result<Vec<Prepared>> {
+        self.queue
+            .lookup(lookup, after, through, order, limit)?
+            .into_iter()
+            .map(|entry| self.prepared(entry))
+            .collect()
+    }
+
+    pub fn ready(&self, in_flight: &[String], limit: usize) -> Result<Vec<Prepared>> {
+        self.queue
+            .ready(in_flight, limit)?
+            .into_iter()
+            .map(|entry| self.prepared(entry))
+            .collect()
+    }
+
+    pub fn set_waker(&self, waker: Arc<dyn Fn() + Send + Sync>) {
+        *self.waker.borrow_mut() = Some(waker);
+    }
+
+    fn wake(&self) {
+        if let Some(waker) = self.waker.borrow().as_ref() {
+            waker();
         }
-        let directory = self.operation(identity)?;
-        let operations = directory.parent().expect("operation parent");
-        if operations != self.root.join("operations") {
-            let acquisition: Acquisition = read_checked(
-                &operations
-                    .parent()
-                    .expect("acquisition parent")
-                    .join("acquisition.json"),
-            )?
-            .ok_or_else(|| {
-                Error::Invalid("acquisition member has no accepted publication".into())
-            })?;
-            let base = acquisition
-                .order_base
-                .ok_or_else(|| Error::Invalid("acquisition has no accepted queue order".into()))?;
-            if record.order == 0 || record.order > acquisition.count {
-                return invalid("acquisition member has an invalid relative order");
-            }
-            unresolved = acquisition.disposition
-                == polylogue_store::primary::CaptureDisposition::UnresolvedBasisConflict;
-            record.order = base
-                .checked_add(record.order)
-                .ok_or_else(|| Error::Invalid("acquisition queue order exhausted".into()))?;
-        }
-        check_length(
-            &directory.join("frame.zst"),
-            record.frame.descriptor()?.stored_len,
-        )?;
-        if let Some(body) = record.body() {
-            for (index, part) in body.parts().iter().enumerate() {
-                check_length(
-                    &directory.join(body.file_name(index)),
-                    part.descriptor()?.stored_len,
-                )?;
-            }
-        }
-        if let Some(captured) = record.captured() {
-            check_length(
-                &directory.join("captured.zst"),
-                captured.descriptor()?.stored_len,
-            )?;
-        }
-        let phase = self
-            .receipt(identity)?
-            .map_or(Phase::Pending, |receipt| receipt.phase);
-        Ok(Some(Prepared {
-            record,
-            phase,
-            unresolved,
-        }))
     }
 
     /// Decode the original immutable common encoding without collecting the frame.
@@ -603,6 +545,23 @@ impl Spool {
         Ok(self
             .prepared_frame(identity)?
             .reader(None, ReadLimits::default())?)
+    }
+
+    /// Open immutable files under the queue lock; codec verification belongs
+    /// to the sender after that lock is released.
+    pub fn pin_frame(&self, identity: &str) -> Result<(File, EncodedBlob)> {
+        let descriptor = self.required(identity)?.frame.descriptor()?;
+        Ok((
+            regular(&self.operation(identity)?.join("frame.zst"))?,
+            descriptor,
+        ))
+    }
+
+    pub fn pin_body(&self, identity: &str) -> Result<Vec<(File, EncodedBlob)>> {
+        self.encoded_body(identity)?
+            .into_iter()
+            .map(|(path, descriptor)| Ok((regular(&path)?, descriptor)))
+            .collect()
     }
 
     pub fn prepared_frame(&self, identity: &str) -> Result<hashed_blobs::Prepared> {
@@ -663,42 +622,43 @@ impl Spool {
             .collect()
     }
 
-    fn receipt(&self, identity: &str) -> Result<Option<Receipt>> {
+    fn stored_acknowledgment(&self, identity: &str) -> Result<Option<StoredAcknowledgment>> {
         let directory = self.operation(identity)?.join("ack");
         if directory.try_exists()? && !fs::symlink_metadata(&directory)?.file_type().is_dir() {
             return invalid("published acknowledgment is not a directory");
         }
-        let receipt = read_checked::<Receipt>(&directory.join("receipt.json"))?;
-        if let Some(receipt) = &receipt {
-            if receipt.phase.is_pending() {
-                return invalid("published acknowledgment has no settled outcome");
+        let acknowledgment =
+            read_checked::<StoredAcknowledgment>(&directory.join("acknowledgment.json"))?;
+        if let Some(acknowledgment) = &acknowledgment {
+            if acknowledgment.phase.is_pending() {
+                return invalid("published acknowledgment has no finished outcome");
             }
             check_length(
                 &directory.join("payload.zst"),
-                receipt.payload.descriptor()?.stored_len,
+                acknowledgment.payload.descriptor()?.stored_len,
             )?;
         } else if directory.try_exists()? {
-            return invalid("published acknowledgment has no receipt");
+            return invalid("published acknowledgment has no acknowledgment");
         }
-        Ok(receipt)
+        Ok(acknowledgment)
     }
 
     pub fn acknowledgment(&self, identity: &str) -> Result<Option<Acknowledgment>> {
-        let Some(receipt) = self.receipt(identity)? else {
+        let Some(summary) = self.stored_acknowledgment(identity)? else {
             return Ok(None);
         };
-        if matches!(receipt.phase, Phase::Conflicted { .. }) {
-            self.conflict_receipt(identity)?;
+        if matches!(summary.phase, Phase::Conflicted { .. }) {
+            self.conflict_acknowledgment(identity)?;
             return Ok(None);
         }
         let acknowledgment: Acknowledgment = decode_json(verified_encoded(
             &self.operation(identity)?.join("ack/payload.zst"),
-            receipt.payload.descriptor()?,
+            summary.payload.descriptor()?,
         )?)?;
         let prepared = self.required(identity)?;
         validate_ack(&prepared, &acknowledgment)?;
-        if receipt.phase != Phase::settled_by(&acknowledgment) {
-            return invalid("acknowledgment summary differs from its immutable receipt");
+        if summary.phase != acknowledgment_phase(&acknowledgment) {
+            return invalid("acknowledgment summary differs from its immutable acknowledgment");
         }
         Ok(Some(acknowledgment))
     }
@@ -765,17 +725,12 @@ impl Spool {
             .prefix(&format!(".preparing-{}-", hash(identity.as_bytes())))
             .tempdir_in(self.root.join("operations"))?;
         fs::create_dir(temporary.path().join("operations"))?;
-        fs::create_dir(temporary.path().join("retired"))?;
         let queue = Spool {
             root: temporary.path().into(),
-            first: Cell::new(1),
-            next: Cell::new(1),
-            index_dirty: Cell::new(true),
-            last_retired: RefCell::new(None),
-            retirement_dirty: Cell::new(true),
+            queue: Queue::open(&temporary.path().join("queue.db"))?,
+            waker: RefCell::new(None),
             _lock: self._lock.try_clone()?,
         };
-        queue.rebuild_indexes()?;
         Ok(StagedAcquisition {
             temporary,
             queue,
@@ -789,17 +744,16 @@ impl Spool {
         &self,
         identity: &str,
     ) -> Result<Option<polylogue_store::primary::CaptureDisposition>> {
-        let path = self
-            .root
-            .join("operations")
-            .join(hash(identity.as_bytes()))
-            .join("acquisition.json");
-        let header = read_checked::<Acquisition>(&path)?;
+        let header = self
+            .queue
+            .get(identity)?
+            .map(|entry| serde_json::from_slice::<Acquisition>(&entry.metadata))
+            .transpose()?;
         if header
             .as_ref()
             .is_some_and(|header| header.identity != identity)
         {
-            return invalid("acquisition receipt has another identity");
+            return invalid("acquisition acknowledgment has another identity");
         }
         Ok(header.map(|header| header.disposition))
     }
@@ -819,24 +773,28 @@ impl Spool {
             .join(hash(staged.identity.as_bytes()))
             .join("acquisition.json");
         let acquisition =
-            read_checked::<Acquisition>(&path)?.expect("read above under custody lock");
+            read_checked::<Acquisition>(&path)?.expect("read above under capture lock");
         if acquisition.intent != staged.intent || acquisition.count != staged.count {
             return Ok(None);
         }
-        for member in fs::read_dir(staged.temporary.path().join("operations"))? {
-            let desired = read_checked::<Record>(&member?.path().join("metadata.json"))?
-                .ok_or_else(|| {
-                    Error::Invalid("staged acquisition member has no metadata".into())
-                })?;
-            let Some(original) = self.get(&desired.identity)? else {
-                return Ok(None);
-            };
-            if original.frame.identity() != desired.frame.identity()
-                || original.body().map(Body::identity) != desired.body().map(Body::identity)
-                || original.captured().map(Bytes::identity)
-                    != desired.captured().map(Bytes::identity)
-            {
-                return Ok(None);
+        let mut after = None;
+        loop {
+            let entries = staged.queue.pending_after(after, 128)?;
+            if entries.is_empty() {
+                break;
+            }
+            after = entries.last().map(|entry| entry.order);
+            for desired in entries {
+                let Some(original) = self.get(&desired.identity)? else {
+                    return Ok(None);
+                };
+                if original.frame.identity() != desired.frame.identity()
+                    || original.body().map(Body::identity) != desired.body().map(Body::identity)
+                    || original.captured().map(Bytes::identity)
+                        != desired.captured().map(Bytes::identity)
+                {
+                    return Ok(None);
+                }
             }
         }
         Ok(Some(disposition))
@@ -848,66 +806,42 @@ impl Spool {
         staged: StagedAcquisition,
         disposition: polylogue_store::primary::CaptureDisposition,
     ) -> Result<()> {
-        self.ensure_indexes()?;
-        let destination = self
-            .root
-            .join("operations")
-            .join(hash(staged.identity.as_bytes()));
-        if destination.try_exists()? {
+        if self.queue.get(&staged.identity)?.is_some() {
             if self.matching_acquisition(&staged)? != Some(disposition) {
-                return invalid("acquisition identity changed its frozen custody or disposition");
+                return invalid("acquisition identity changed its frozen capture or disposition");
             }
             return Ok(());
         }
-        if staged.queue.next.get().checked_sub(1) != Some(staged.count) {
-            return invalid("acquisition member count differs from its complete plan");
-        }
-        let base = self
-            .next
-            .get()
-            .checked_sub(1)
-            .ok_or_else(|| Error::Invalid("invalid acquisition queue start".into()))?;
-        let next = self
-            .next
-            .get()
-            .checked_add(staged.count)
-            .ok_or_else(|| Error::Invalid("producer queue order exhausted".into()))?;
-        write_checked(
-            &staged.temporary.path().join("acquisition.json"),
-            &Acquisition {
-                identity: staged.identity.clone(),
-                intent: staged.intent.clone(),
-                count: staged.count,
-                order_base: Some(base),
-                disposition,
-            },
-        )?;
+        staged.finish()?;
+        let header = Acquisition {
+            identity: staged.identity.clone(),
+            intent: staged.intent.clone(),
+            count: staged.count,
+            disposition,
+        };
+        write_checked(&staged.temporary.path().join("acquisition.json"), &header)?;
         sync(staged.temporary.path())?;
         boundary("acquisition_synced");
-        self.index_dirty.set(true);
+        let directory = format!("operations/{}", hash(staged.identity.as_bytes()));
+        let destination = self.root.join(&directory);
+        // No database publication means the immutable directory is still private.
+        if destination.exists() {
+            fs::remove_dir_all(&destination)?;
+        }
         fs::rename(staged.temporary.path(), &destination)?;
         sync(&self.root.join("operations"))?;
+        let mut operation = empty_operation(
+            staged.identity.clone(),
+            directory,
+            serde_json::to_vec(&header)?,
+            queue::Kind::Acquisition,
+        );
+        operation.unresolved =
+            disposition == polylogue_store::primary::CaptureDisposition::UnresolvedBasisConflict;
+        self.queue
+            .publish_acquisition(&staged.queue.queue, &operation)?;
         boundary("acquisition_published");
-        let operations = destination.join("operations");
-        let batch = hash(staged.identity.as_bytes());
-        for entry in fs::read_dir(&operations)? {
-            let entry = entry?;
-            let name = entry.file_name();
-            let name = name
-                .to_str()
-                .filter(|name| hex_name(name))
-                .ok_or_else(|| Error::Invalid("invalid acquisition member".into()))?;
-            write_index(&self.index("locations", name), &batch)?;
-        }
-        for entry in fs::read_dir(operations)? {
-            let metadata = read_checked::<Record>(&entry?.path().join("metadata.json"))?
-                .ok_or_else(|| {
-                    Error::Invalid("published acquisition member has no metadata".into())
-                })?;
-            self.index_entry(&self.required(&metadata.identity)?)?;
-        }
-        self.next.set(next);
-        self.index_dirty.set(false);
+        self.wake();
         Ok(())
     }
 
@@ -957,7 +891,7 @@ impl Spool {
     }
 
     /// One publication owns the complete immutable capture set. Per-capture
-    /// indexes merely accelerate lookups and can be rebuilt after a crash.
+    /// Queue publication commits its complete membership with the frame.
     pub fn prepare_group(&self, frame: Ingress, captures: &[String]) -> Result<Prepared> {
         if !matches!(
             &frame,
@@ -968,7 +902,6 @@ impl Spool {
         if captures.is_empty() {
             return invalid("capture group is empty");
         }
-        self.ensure_indexes()?;
         let captures = sorted_members(captures)?;
         let group_hash = captures_hash(&captures)?;
         if let Some(existing) = self.group_for_sorted(&group_hash)?
@@ -997,87 +930,66 @@ impl Spool {
     }
 
     pub fn group_for(&self, captures: &[String]) -> Result<Option<Prepared>> {
-        self.ensure_indexes()?;
         self.group_for_sorted(&captures_hash(&sorted_members(captures)?)?)
     }
 
     fn group_for_sorted(&self, captures_hash: &str) -> Result<Option<Prepared>> {
-        let Some(identity) = read_json::<String>(&self.index("groups", captures_hash))? else {
-            return Ok(None);
-        };
-        let prepared = self.get(&identity)?.ok_or_else(|| {
-            Error::Invalid("capture group index names a missing operation".into())
-        })?;
-        if prepared.group().map(|group| group.captures_hash.as_str()) != Some(captures_hash) {
-            return invalid("capture group index differs from its authoritative group");
-        }
-        Ok(Some(prepared))
+        self.queue
+            .lookup(
+                Lookup::GroupHash(captures_hash),
+                None,
+                None,
+                Order::OldestFirst,
+                1,
+            )?
+            .into_iter()
+            .next()
+            .map(|entry| self.prepared(entry))
+            .transpose()
     }
 
     pub fn capture_group(&self, identity: &str) -> Result<Option<Prepared>> {
-        self.ensure_indexes()?;
-        let Some(group) = read_json::<String>(&self.index("members", &hash(identity.as_bytes())))?
-        else {
-            return Ok(None);
-        };
-        self.get(&group)?
-            .ok_or_else(|| Error::Invalid("capture membership names a missing group".into()))
-            .map(Some)
+        self.queue
+            .group_for_member(identity)?
+            .map(|entry| self.prepared(entry))
+            .transpose()
     }
 
-    /// Conservative readiness from already loaded ownership metadata. Never
-    /// rebuilds indexes or reads files on an optional caller's budget.
     pub(crate) fn is_known_empty(&self) -> bool {
-        !self.index_dirty.get() && self.first.get() == self.next.get()
+        self.queue.is_empty().unwrap_or(false)
     }
 
-    /// Page size bounds returned metadata only. It never bounds the source,
-    /// frame size, or number of operations that may be queued.
     pub fn pending_after(&self, after: Option<u64>, limit: usize) -> Result<Vec<Prepared>> {
-        self.ensure_indexes()?;
-        let mut entries = Vec::new();
-        if limit == 0 {
-            return Ok(entries);
-        }
-        let start = after.map_or(self.first.get(), |order| {
-            order.saturating_add(1).max(self.first.get())
-        });
-        for order in start..self.next.get() {
-            let Some(identity) =
-                read_json::<String>(&self.index("order", &format!("{order:020}")))?
-            else {
-                continue;
-            };
-            let entry = self.required(&identity)?;
-            if entry.order != order {
-                return invalid("pending queue order differs from its operation");
-            }
-            entries.push(entry);
-            if entries.len() == limit {
-                break;
-            }
-        }
-        Ok(entries)
+        self.queue
+            .after(after, limit)?
+            .into_iter()
+            .map(|entry| self.prepared(entry))
+            .collect()
     }
 
-    /// Prefix discovery walks derived names, never parser frame bodies. Exact
-    /// names use `get` and do not need this index.
     pub fn visit_names(
         &self,
         prefix: &str,
         visit: &mut dyn FnMut(&str) -> Result<()>,
     ) -> Result<()> {
-        self.ensure_indexes()?;
-        names::visit(&self.index("names", ""), prefix, &mut |identity| {
-            let prepared = self.required(identity)?;
-            let name = prepared.logical_name().ok_or_else(|| {
-                Error::Invalid("named index points to an unnamed operation".into())
-            })?;
-            if name.starts_with(prefix) {
-                visit(identity)?;
+        let selector = polylogue_store::primary::NamedProductSelector::Prefix(prefix.to_owned());
+        let mut after = None;
+        loop {
+            let entries = self.queue.lookup(
+                Lookup::Name(&selector),
+                after,
+                None,
+                Order::OldestFirst,
+                128,
+            )?;
+            if entries.is_empty() {
+                return Ok(());
             }
-            Ok(())
-        })
+            after = entries.last().map(|entry| entry.order);
+            for entry in entries {
+                visit(&entry.identity)?;
+            }
+        }
     }
 
     pub fn acquisition_headers(
@@ -1093,44 +1005,27 @@ impl Spool {
         if limit == 0 {
             return invalid("acquisition page limit is zero");
         }
-        self.ensure_indexes()?;
-        let directory = self.root.join("operations").join(hash(group.as_bytes()));
-        let Some(acquisition) = read_checked::<Acquisition>(&directory.join("acquisition.json"))?
-        else {
+        let Some(disposition) = self.acquisition_disposition(group)? else {
             return Ok((None, Vec::new(), None));
         };
-        if acquisition.identity != group || acquisition.order_base.is_none() {
-            return invalid("acquisition page has another or unpublished group identity");
-        }
-        let mut ordinal = match after {
-            Some(after) => after
-                .checked_add(1)
-                .ok_or_else(|| Error::Invalid("acquisition cursor overflow".into()))?,
-            None => 0,
+        let mut entries = self
+            .queue
+            .acquisition_after(group, after, limit.saturating_add(1))?;
+        let next = if entries.len() > limit {
+            entries.truncate(limit);
+            self.queue
+                .acquisition_ordinal(&entries.last().expect("nonempty page").identity)?
+        } else {
+            None
         };
-        if ordinal > acquisition.count {
-            return invalid("acquisition cursor exceeds its membership");
-        }
-        let root = self.index("acquisition-members", &hash(group.as_bytes()));
-        let mut headers = Vec::new();
-        let mut last = None;
-        while ordinal < acquisition.count {
-            if let Some(identity) = read_json::<String>(&root.join(format!("{ordinal:020}")))? {
-                let prepared = self.required(&identity)?;
-                if !matches!(prepared.capture(), Some(Capture::Input(input)) if input.parsed.is_empty()
-                    && input.group.as_ref().is_some_and(|header| header.identity == group && header.ordinal == ordinal && header.count == acquisition.count))
-                {
-                    return invalid("acquisition index differs from its immutable member header");
-                }
-                if headers.len() == limit {
-                    return Ok((Some(acquisition.disposition), headers, last));
-                }
-                headers.push(prepared);
-                last = Some(ordinal);
-            }
-            ordinal += 1;
-        }
-        Ok((Some(acquisition.disposition), headers, None))
+        Ok((
+            Some(disposition),
+            entries
+                .into_iter()
+                .map(|entry| self.prepared(entry))
+                .collect::<Result<_>>()?,
+            next,
+        ))
     }
 
     pub fn source_heads(
@@ -1138,7 +1033,6 @@ impl Spool {
         source: &polylogue_store::primary::SourceSelector,
         version: &str,
     ) -> Result<sources::Heads> {
-        self.ensure_indexes()?;
         sources::get(self, source, version)
     }
 
@@ -1149,26 +1043,40 @@ impl Spool {
             if encoded_hash(&previous)? != encoded_hash(&acknowledgment)? {
                 return invalid("acknowledgment changed for an immutable operation");
             }
+            if prepared.phase.is_pending() {
+                self.finish_acknowledgment(
+                    &prepared.identity,
+                    &acknowledgment_phase(&acknowledgment),
+                    &acknowledgment,
+                )?;
+            }
             return Ok(());
         }
-        let phase = prepared.phase.advance(Phase::settled_by(&acknowledgment))?;
+        if !prepared.phase.is_pending() {
+            return invalid("a finished operation cannot change its outcome");
+        }
+        let phase = acknowledgment_phase(&acknowledgment);
         let directory = self.operation(&prepared.identity)?;
         let temporary = tempfile::Builder::new()
             .prefix(".ack-preparing-")
             .tempdir_in(&directory)?;
         let payload = write_encoded_json(&temporary.path().join("payload.zst"), &acknowledgment)?;
         write_checked(
-            &temporary.path().join("receipt.json"),
-            &Receipt { payload, phase },
+            &temporary.path().join("acknowledgment.json"),
+            &StoredAcknowledgment {
+                payload,
+                phase: phase.clone(),
+            },
         )?;
         sync(temporary.path())?;
         boundary("ack_synced");
         fs::rename(temporary.path(), directory.join("ack"))?;
         sync(&directory)?;
+        boundary("ack_files_published");
+        self.finish_acknowledgment(&prepared.identity, &phase, &acknowledgment)?;
         boundary("ack_published");
-        self.retirement_dirty.set(true);
         // The marker's modification time is when Sinex last acknowledged a
-        // write; it outlives a restart and the operations retirement removes.
+        // write; it outlives a restart and the removed operations.
         // A crash may leave it at an earlier acknowledgement, never a later one.
         fs::write(self.root.join(ACKNOWLEDGED), &acknowledgment.frame)?;
         Ok(())
@@ -1184,68 +1092,105 @@ impl Spool {
         }
     }
 
-    /// Conflict evidence retains the owner's prior receipt without acknowledging
-    /// the offered body. It uses the operation's existing atomic receipt directory.
+    /// Conflict evidence retains the owner's prior acknowledgment without acknowledging
+    /// the offered body. It uses the operation's existing atomic acknowledgment directory.
     pub fn record_conflict(
         &self,
         identity: &str,
         offered_hash: &str,
-        receipt: &Acknowledgment,
+        acknowledgment: &Acknowledgment,
     ) -> Result<()> {
         let prepared = self.required(identity)?;
-        validate_conflict(&prepared, offered_hash, receipt)?;
-        if let Some(old) = self.conflict_receipt(identity)? {
-            if encoded_hash(&old)? != encoded_hash(receipt)? {
-                return invalid("conflicting receipt evidence changed");
+        validate_conflict(&prepared, offered_hash, acknowledgment)?;
+        if let Some(old) = self.conflict_acknowledgment(identity)? {
+            if encoded_hash(&old)? != encoded_hash(acknowledgment)? {
+                return invalid("conflicting acknowledgment evidence changed");
+            }
+            if prepared.phase.is_pending() {
+                self.finish_acknowledgment(
+                    identity,
+                    &Phase::Conflicted {
+                        offered: offered_hash.into(),
+                    },
+                    acknowledgment,
+                )?;
             }
             return Ok(());
         }
-        let phase = prepared.phase.advance(Phase::Conflicted {
+        if !prepared.phase.is_pending() {
+            return invalid("a finished operation cannot change its outcome");
+        }
+        let phase = Phase::Conflicted {
             offered: offered_hash.into(),
-        })?;
+        };
         let directory = self.operation(identity)?;
         let temporary = tempfile::Builder::new()
             .prefix(".ack-preparing-")
             .tempdir_in(&directory)?;
-        let payload = write_encoded_json(&temporary.path().join("payload.zst"), receipt)?;
+        let payload = write_encoded_json(&temporary.path().join("payload.zst"), acknowledgment)?;
         write_checked(
-            &temporary.path().join("receipt.json"),
-            &Receipt { payload, phase },
+            &temporary.path().join("acknowledgment.json"),
+            &StoredAcknowledgment {
+                payload,
+                phase: phase.clone(),
+            },
         )?;
         sync(temporary.path())?;
         boundary("ack_synced");
         fs::rename(temporary.path(), directory.join("ack"))?;
         sync(&directory)?;
+        boundary("ack_files_published");
+        self.finish_acknowledgment(identity, &phase, acknowledgment)?;
         boundary("ack_published");
-        self.retirement_dirty.set(true);
         Ok(())
     }
 
-    pub fn conflict_receipt(&self, identity: &str) -> Result<Option<Acknowledgment>> {
-        let Some(summary) = self.receipt(identity)? else {
+    fn finish_acknowledgment(
+        &self,
+        identity: &str,
+        phase: &Phase,
+        acknowledgment: &Acknowledgment,
+    ) -> Result<()> {
+        let admitted = acknowledgment
+            .admitted()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        self.queue.acknowledge(
+            identity,
+            phase,
+            &admitted,
+            directory_bytes(&self.operation(identity)?.join("ack"))?,
+        )?;
+        self.wake();
+        Ok(())
+    }
+
+    pub fn conflict_acknowledgment(&self, identity: &str) -> Result<Option<Acknowledgment>> {
+        let Some(summary) = self.stored_acknowledgment(identity)? else {
             return Ok(None);
         };
         let Phase::Conflicted { offered } = summary.phase else {
             return Ok(None);
         };
         let prepared = self.required(identity)?;
-        let receipt: Acknowledgment = decode_json(verified_encoded(
+        let acknowledgment: Acknowledgment = decode_json(verified_encoded(
             &self.operation(identity)?.join("ack/payload.zst"),
             summary.payload.descriptor()?,
         )?)?;
-        validate_conflict(&prepared, &offered, &receipt)?;
-        Ok(Some(receipt))
+        validate_conflict(&prepared, &offered, &acknowledgment)?;
+        Ok(Some(acknowledgment))
     }
 
     /// The caller supplies only a head verified after publication acknowledgments
-    /// in this scope. Missing head evidence retains grouped source custody.
+    /// in this scope. Missing head evidence retains grouped source capture.
     ///
     /// `applied` answers whether `index.db` holds a fact for one Sinex event.
-    /// An operation whose events were admitted retires only when every one of
+    /// An operation whose events were admitted is removed only when every one of
     /// them is in `index.db`: the applied position alone can pass positions the
-    /// confirmed stream lost in a host crash, and retiring then would drop the
+    /// confirmed stream lost in a host crash, and removing then would drop the
     /// only local copy of writes the index never received.
-    pub fn retire(
+    pub fn remove_confirmed(
         &self,
         state: &ReplayState,
         applied: &dyn Fn(&str) -> Result<bool>,
@@ -1255,140 +1200,45 @@ impl Spool {
         {
             return invalid("confirmed position is negative");
         }
-        let key = ReplayState {
-            applied_position: state.applied_position,
-            scope: state.scope.clone(),
-            head: state.head,
-            staged_delivery: None,
-        };
         let caught_up = state.scope.as_ref().is_some_and(|scope| !scope.is_empty())
             && state
                 .applied_position
                 .zip(state.head)
                 .is_some_and(|(applied, head)| applied >= head);
-        self.ensure_indexes()?;
-        if self.last_retired.borrow().as_ref() == Some(&key) && !self.retirement_dirty.get() {
-            return Ok(());
+        let mut after = None;
+        loop {
+            let candidates = self.queue.confirmed_after(
+                state.applied_position.unwrap_or(0),
+                caught_up,
+                after,
+                128,
+            )?;
+            if candidates.is_empty() {
+                break;
+            }
+            after = candidates.last().map(|candidate| candidate.entry.order);
+            for candidate in candidates {
+                if candidate.material {
+                    continue;
+                }
+                if candidate
+                    .admitted
+                    .iter()
+                    .map(|event| applied(event))
+                    .collect::<Result<Vec<_>>>()?
+                    .iter()
+                    .any(|present| !present)
+                {
+                    continue;
+                }
+                self.remove(&candidate.entry.identity)?;
+            }
         }
-        // Indexes stay unchanged during this pass. Rebuilding after every
-        // removed page would turn queue retirement into a quadratic scan.
-        let through = self.next.get();
-        for order in self.first.get()..through {
-            let Some(identity) =
-                read_json::<String>(&self.index("order", &format!("{order:020}")))?
-            else {
-                continue;
-            };
-            let Some(prepared) = self.get(&identity)? else {
-                continue;
-            };
-            if prepared.order != order {
-                return invalid("pending queue order differs from its operation");
-            }
-            let positioned = state
-                .applied_position
-                .is_some_and(|applied| prepared.phase.confirmed_through(applied));
-            let no_event_position =
-                matches!(prepared.phase, Phase::Acknowledged { commit_seq: None })
-                    && matches!(
-                        prepared.payload,
-                        Payload::Events { .. }
-                            | Payload::ReplaySequence { .. }
-                            | Payload::RegisterKinds
-                    )
-                    && (prepared.group().is_none() || caught_up);
-            if !positioned && !no_event_position {
-                continue;
-            }
-            // A summary phase cannot substitute for the immutable full receipt.
-            let receipt = self.acknowledgment(&identity)?.ok_or_else(|| {
-                Error::Invalid("settled operation has no verified receipt".into())
-            })?;
-            if !all_applied(&receipt, applied)? {
-                continue;
-            }
-            if prepared.group().is_some() {
-                self.visit_captures(&prepared.identity, |identity| {
-                    self.remove(identity)?;
-                    boundary("group_member_retired");
-                    Ok(())
-                })?;
-            } else if prepared.material().is_some() {
-                continue;
-            }
-            self.remove(&prepared.identity)?;
-        }
-        self.ensure_indexes()?;
-        *self.last_retired.borrow_mut() = Some(key);
-        self.retirement_dirty.set(false);
         Ok(())
     }
 
     pub fn counts(&self) -> Result<(u64, u64, u64)> {
-        let (mut materials, mut writes, mut bytes) = (0, 0, 0u64);
-        let mut after = None;
-        loop {
-            let page = self.pending_after(after, 128)?;
-            if page.is_empty() {
-                break;
-            }
-            after = page.last().map(|entry| entry.order);
-            for prepared in page {
-                if prepared.material().is_some() {
-                    materials += 1;
-                } else if prepared.is_write() {
-                    writes += 1;
-                }
-                for file in fs::read_dir(self.operation(&prepared.identity)?)? {
-                    let file = file?;
-                    if file.file_type()?.is_file() {
-                        bytes = bytes.saturating_add(file.metadata()?.len());
-                    } else if file.file_name() == "ack" && file.file_type()?.is_dir() {
-                        for receipt_file in fs::read_dir(file.path())? {
-                            let receipt_file = receipt_file?;
-                            if receipt_file.file_type()?.is_file() {
-                                bytes = bytes.saturating_add(receipt_file.metadata()?.len());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        Ok((materials, writes, bytes))
-    }
-
-    pub fn visit_captures(
-        &self,
-        identity: &str,
-        mut visit: impl FnMut(&str) -> Result<()>,
-    ) -> Result<()> {
-        let prepared = self.required(identity)?;
-        let group = prepared
-            .group()
-            .cloned()
-            .ok_or_else(|| Error::Invalid("operation is not a capture group".into()))?;
-        let descriptor = group.encoding.descriptor()?;
-        if descriptor.hash.to_string() != group.captures_hash {
-            return invalid("capture group encoding differs from its immutable set");
-        }
-        let mut file =
-            verified_encoded(&self.operation(identity)?.join("captures.zst"), descriptor)?;
-        let mut count = 0u64;
-        for line in BufReader::new(&mut file).lines() {
-            let _: String = serde_json::from_str(&line?)?;
-            count = count
-                .checked_add(1)
-                .ok_or_else(|| Error::Invalid("capture count overflow".into()))?;
-        }
-        if count != group.captures_count {
-            return invalid("capture group differs from its immutable member set");
-        }
-        file.rewind()?;
-        for line in BufReader::new(file).lines() {
-            let capture: String = serde_json::from_str(&line?)?;
-            visit(&capture)?;
-        }
-        Ok(())
+        Ok(self.queue.counts()?)
     }
 
     fn required(&self, identity: &str) -> Result<Prepared> {
@@ -1404,7 +1254,6 @@ impl Spool {
         full_capture: Option<&Capture>,
         encoded_body: Option<Vec<polylogue_store::primary::PreparedBody>>,
     ) -> Result<Prepared> {
-        self.ensure_indexes()?;
         let identity = frame.frame().to_owned();
         if let Some(previous) = self.get(&identity)? {
             let desired = encoded_hash(&frame)?;
@@ -1536,29 +1385,9 @@ impl Spool {
         } else {
             None
         };
-        let group = captures
-            .map(|(captures, captures_hash)| -> Result<Group> {
-                let path = temporary.path().join("captures.zst");
-                let mut writer =
-                    Preparation::new(temporary.path())?.plain_writer(create_payload(&path)?, 3)?;
-                for capture in captures {
-                    serde_json::to_writer(&mut writer, capture)?;
-                    writer.write_all(b"\n")?;
-                }
-                let encoded = writer.finish()?;
-                let descriptor = encoded.descriptor();
-                encoded.into_file().sync_all()?;
-                if descriptor.hash.to_string() != captures_hash {
-                    return invalid("capture group serialization changed");
-                }
-                Ok(Group {
-                    captures_hash,
-                    captures_count: captures.len() as u64,
-                    encoding: Encoding::new(&descriptor),
-                })
-            })
-            .transpose()?;
-        let order = self.next.get();
+        let group = captures.as_ref().map(|(_, captures_hash)| Group {
+            captures_hash: captures_hash.clone(),
+        });
         let export_bindings = exports::bindings(&frame, full_capture)?;
         let payload = match (&frame, facts.take()) {
             (Ingress::Material { .. }, Some(facts)) => Payload::Material(Box::new(Material {
@@ -1584,261 +1413,57 @@ impl Spool {
             (Ingress::Material { .. }, None) => return invalid("material has no descriptor"),
         };
         let prepared = Record {
-            order,
             identity: identity.clone(),
             frame: frame_bytes,
             payload,
         };
-        write_checked(&temporary.path().join("metadata.json"), &prepared)?;
         sync(temporary.path())?;
         boundary("operation_synced");
         if prepared.group().is_some() {
             boundary("group_synced");
         }
-        self.index_dirty.set(true);
-        fs::rename(temporary.path(), self.operation(&identity)?)?;
+        let directory = format!("operations/{}", hash(identity.as_bytes()));
+        let destination = self.root.join(&directory);
+        if destination.exists() {
+            fs::remove_dir_all(&destination)?;
+        }
+        fs::rename(temporary.path(), &destination)?;
         sync(&self.root.join("operations"))?;
+        let mut operation = operation(&prepared, directory, &frame)?;
+        operation.stored_bytes = directory_bytes(&destination)?;
+        let members = captures
+            .map(|(members, _)| members.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>())
+            .unwrap_or_default();
+        let entry = self.queue.prepare(
+            &operation,
+            prepared.group().map(|group| group.captures_hash.as_str()),
+            &members,
+        )?;
         boundary("operation_published");
         if prepared.group().is_some() {
             boundary("group_published");
+            boundary("group_members_published");
         }
-        self.next.set(
-            order
-                .checked_add(1)
-                .ok_or_else(|| Error::Invalid("producer queue order exhausted".into()))?,
-        );
-        let prepared = Prepared {
-            record: prepared,
-            phase: Phase::Pending,
-            unresolved: false,
-        };
-        self.index_entry(&prepared)?;
-        self.index_dirty.set(false);
-        Ok(prepared)
+        self.wake();
+        self.prepared(entry)
     }
 
     fn remove(&self, identity: &str) -> Result<()> {
-        let mut path = self.operation(identity)?;
-        let acquisition = identity.rsplit_once(':').and_then(|(batch, ordinal)| {
-            (batch.starts_with("acquisition:") && ordinal.parse::<u64>().is_ok()).then_some(batch)
-        });
-        let batch =
-            acquisition.map(|batch| self.root.join("operations").join(hash(batch.as_bytes())));
-        if let Some(batch) = &batch
-            && let Some(metadata) = read_checked::<Acquisition>(&batch.join("acquisition.json"))?
-        {
-            if Some(metadata.identity.as_str()) != acquisition {
-                return invalid("retiring acquisition has another identity");
+        let paths = self.queue.remove(identity)?;
+        boundary("operation_removed");
+        let mut parents = std::collections::HashSet::new();
+        for relative in paths {
+            let path = self.root.join(relative);
+            if path.exists() {
+                fs::remove_dir_all(&path)?;
+                parents.insert(path.parent().expect("operation parent").to_owned());
             }
-            // A crash may have retired this member before its acquisition
-            // header. The confirmed group still owns the cleanup.
-            path = batch.join("operations").join(hash(identity.as_bytes()));
+            boundary("group_member_removed");
         }
-        self.retire_path(&path)?;
-        if let Some(batch) = batch.filter(|batch| batch.exists())
-            && fs::read_dir(batch.join("operations"))?.try_fold(
-                true,
-                |empty, entry| -> Result<bool> {
-                    Ok(empty && !entry?.file_name().to_str().is_some_and(hex_name))
-                },
-            )?
-        {
-            self.retire_path(&batch)?;
-        }
-        Ok(())
-    }
-
-    fn retire_path(&self, directory: &Path) -> Result<()> {
-        if !directory.try_exists()? {
-            return Ok(());
-        }
-        let retired = self
-            .root
-            .join("retired")
-            .join(directory.file_name().expect("owned spool directory"));
-        self.index_dirty.set(true);
-        if retired.try_exists()? {
-            fs::remove_dir_all(&retired)?;
-            sync(&self.root.join("retired"))?;
-        }
-        fs::rename(directory, &retired)?;
-        sync(directory.parent().expect("owned operation parent"))?;
-        sync(&self.root.join("retired"))?;
-        boundary("operation_retired");
-        fs::remove_dir_all(retired)?;
-        Ok(())
-    }
-
-    fn ensure_indexes(&self) -> Result<()> {
-        if self.index_dirty.get() {
-            self.rebuild_indexes()?;
-        }
-        Ok(())
-    }
-
-    fn rebuild_indexes(&self) -> Result<()> {
-        let index = self.root.join("index");
-        if index.try_exists()? {
-            fs::remove_dir_all(&index)?;
-        }
-        for name in [
-            "order",
-            "groups",
-            "members",
-            "locations",
-            "names",
-            "pending-source",
-            "acquisition-members",
-            "raw-generations",
-            "raw-roots",
-            "raw-children",
-            "export-readings",
-            "export-inputs",
-        ] {
-            fs::create_dir_all(index.join(name))?;
-        }
-        let (mut first, mut last) = (u64::MAX, 0);
-        // Locations are derived from the one published acquisition directory.
-        // Build them before resolving member receipts and capture dependencies.
-        self.visit_operation_paths(|path, batch| {
-            if let Some(batch) = batch {
-                let name = path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .ok_or_else(|| Error::Invalid("invalid acquisition member name".into()))?;
-                let location = self.index("locations", name);
-                if read_json::<String>(&location)?.is_some()
-                    || self.root.join("operations").join(name).try_exists()?
-                {
-                    return invalid("operation occurs in more than one acquisition");
-                }
-                write_index(&location, batch)?;
+        for parent in parents {
+            if parent.exists() {
+                sync(&parent)?;
             }
-            Ok(())
-        })?;
-        self.visit_operation_paths(|path, _| {
-            let name = path.file_name().and_then(|name| name.to_str())
-                .ok_or_else(|| Error::Invalid("invalid spool operation name".into()))?;
-            if path.join("frame.json").try_exists()? {
-                return invalid(
-                    "producer spool contains plaintext pending payloads; preserve them before an explicit transition",
-                );
-            }
-            let metadata = read_checked::<Record>(&path.join("metadata.json"))?
-                .ok_or_else(|| Error::Invalid("published operation has no metadata".into()))?;
-            if hash(metadata.identity.as_bytes()) != name {
-                return invalid("spool directory has another operation identity");
-            }
-            let prepared = self.required(&metadata.identity)?;
-            first = first.min(prepared.order);
-            last = last.max(prepared.order);
-            self.index_entry(&prepared)?;
-            Ok(())
-        })?;
-        self.first.set(if first == u64::MAX { 1 } else { first });
-        self.next.set(
-            last.checked_add(1)
-                .ok_or_else(|| Error::Invalid("producer queue order exhausted".into()))?,
-        );
-        self.index_dirty.set(false);
-        sync(&index)?;
-        Ok(())
-    }
-
-    fn visit_operation_paths(
-        &self,
-        mut visit: impl FnMut(&Path, Option<&str>) -> Result<()>,
-    ) -> Result<()> {
-        for entry in fs::read_dir(self.root.join("operations"))? {
-            let entry = entry?;
-            let name = entry.file_name();
-            let Some(name) = name.to_str().filter(|name| hex_name(name)) else {
-                continue;
-            };
-            if !entry.file_type()?.is_dir() {
-                return invalid("spool operation is not a directory");
-            }
-            if let Some(acquisition) =
-                read_checked::<Acquisition>(&entry.path().join("acquisition.json"))?
-            {
-                if hash(acquisition.identity.as_bytes()) != name {
-                    return invalid("acquisition directory has another identity");
-                }
-                for member in fs::read_dir(entry.path().join("operations"))? {
-                    let member = member?;
-                    let member_name = member.file_name();
-                    if !member_name.to_str().is_some_and(hex_name) {
-                        continue;
-                    }
-                    if !member.file_type()?.is_dir() {
-                        return invalid("acquisition member is not a directory");
-                    }
-                    visit(&member.path(), Some(name))?;
-                }
-            } else {
-                visit(&entry.path(), None)?;
-            }
-        }
-        Ok(())
-    }
-
-    fn index_entry(&self, prepared: &Prepared) -> Result<()> {
-        let path = self.operation(&prepared.identity)?;
-        let parent = path.parent().expect("operation parent");
-        if parent != self.root.join("operations") {
-            let acquisition = read_checked::<Acquisition>(
-                &parent
-                    .parent()
-                    .expect("acquisition parent")
-                    .join("acquisition.json"),
-            )?
-            .ok_or_else(|| Error::Invalid("indexed member has no acquisition".into()))?;
-            let base = acquisition
-                .order_base
-                .ok_or_else(|| Error::Invalid("indexed acquisition has no order".into()))?;
-            let ordinal = prepared
-                .order
-                .checked_sub(base)
-                .and_then(|relative| relative.checked_sub(1))
-                .filter(|ordinal| *ordinal < acquisition.count)
-                .ok_or_else(|| {
-                    Error::Invalid("indexed member has another acquisition order".into())
-                })?;
-            let root = self.index(
-                "acquisition-members",
-                &hash(acquisition.identity.as_bytes()),
-            );
-            fs::create_dir_all(&root)?;
-            write_index(&root.join(format!("{ordinal:020}")), &prepared.identity)?;
-        }
-        exports::insert(self, prepared)?;
-        sources::insert(self, prepared)?;
-        raw_ranges::insert(self, prepared)?;
-        if let Some(name) = prepared.logical_name() {
-            names::insert(&self.index("names", ""), name, &prepared.identity)?;
-        }
-        let order = self.index("order", &format!("{:020}", prepared.order));
-        if read_json::<String>(&order)?.is_some_and(|identity| identity != prepared.identity) {
-            return invalid("two pending operations have the same queue order");
-        }
-        write_index(&order, &prepared.identity)?;
-        if let Some(group) = prepared.group() {
-            let index = self.index("groups", &group.captures_hash);
-            if read_json::<String>(&index)?.is_some_and(|identity| identity != prepared.identity) {
-                return invalid("two frames claim the same capture group");
-            }
-            write_index(&index, &prepared.identity)?;
-            self.visit_captures(&prepared.identity, |capture| {
-                let index = self.index("members", &hash(capture.as_bytes()));
-                if read_json::<String>(&index)?
-                    .is_some_and(|identity| identity != prepared.identity)
-                {
-                    return invalid("capture belongs to two frames");
-                }
-                write_index(&index, &prepared.identity)?;
-                boundary("group_indexed_member");
-                Ok(())
-            })?;
         }
         Ok(())
     }
@@ -1863,13 +1488,136 @@ fn remove_dot_entries(directory: &Path) -> Result<()> {
     Ok(())
 }
 
-fn all_applied(receipt: &Acknowledgment, applied: &dyn Fn(&str) -> Result<bool>) -> Result<bool> {
-    for event in receipt.admitted() {
-        if !applied(&event.to_string())? {
-            return Ok(false);
-        }
+fn empty_operation(
+    identity: String,
+    directory: String,
+    metadata: Vec<u8>,
+    kind: queue::Kind,
+) -> queue::Operation {
+    queue::Operation {
+        identity,
+        directory,
+        metadata,
+        kind,
+        material: None,
+        previous_material: None,
+        logical_name: None,
+        acquisition: None,
+        ordinal: None,
+        unresolved: false,
+        source: None,
+        raw: false,
+        raw_generation: None,
+        raw_predecessor: None,
+        raw_root: false,
+        reading_version: None,
+        input: None,
+        format: None,
+        export_keys: Vec::new(),
+        stored_bytes: 0,
+        completion: None,
+        captured: false,
+        blob: None,
     }
-    Ok(true)
+}
+
+fn operation(record: &Record, directory: String, frame: &Ingress) -> Result<queue::Operation> {
+    let kind = match &record.payload {
+        Payload::Material(material) => {
+            if material.request {
+                queue::Kind::Request
+            } else {
+                queue::Kind::Material
+            }
+        }
+        Payload::Events { .. } => queue::Kind::Events,
+        Payload::ReplaySequence { .. } => queue::Kind::Replay,
+        Payload::Signals => queue::Kind::Signals,
+        Payload::RegisterKinds => queue::Kind::Registration,
+        Payload::Chunk => queue::Kind::Chunk,
+        Payload::LargeFrame => queue::Kind::LargeFrame,
+    };
+    let mut operation = empty_operation(
+        record.identity.clone(),
+        directory,
+        serde_json::to_vec(record)?,
+        kind,
+    );
+    operation.material = record.material().map(|material| material.id.clone());
+    if let Ingress::Material { material, .. } = frame {
+        operation.completion = match material.parser.as_str() {
+            "polylogue-request" if record.identity.starts_with("request:") => {
+                Some(queue::Completion::Request)
+            }
+            "polylogue-products" | "polylogue-request-restore" if record.capture().is_none() => {
+                Some(queue::Completion::Observation)
+            }
+            _ if record.capture().is_none()
+                && material
+                    .manifest
+                    .details
+                    .contains_key("polylogue_replacement") =>
+            {
+                Some(queue::Completion::Reading)
+            }
+            _ => None,
+        };
+        operation.previous_material = material.previous_part.as_ref().map(ToString::to_string);
+    }
+    operation.logical_name = record.logical_name().map(str::to_owned);
+    operation.reading_version = record
+        .control()
+        .map(|control| control.reading_version.clone());
+    operation.export_keys = record
+        .exports()
+        .iter()
+        .map(|binding| binding.key.identity().to_string())
+        .collect();
+    if let Some(binding) = record.exports().first() {
+        operation.input = Some(binding.key.input.id.clone());
+        operation.format = Some(binding.key.input.format.clone());
+    }
+    operation.captured = record.capture().is_some();
+    if let Some(Capture::Blob { hash, .. }) = record.capture() {
+        operation.blob = Some(hash.to_string());
+    }
+    if let Some(Capture::Input(input)) = record.capture() {
+        operation.input = Some(input.rows.input.clone());
+        operation.format = Some(input.rows.format.clone());
+        operation.source = input
+            .basis
+            .as_ref()
+            .map(|basis| serde_json::to_vec(&basis.source))
+            .transpose()?;
+        operation.raw = input.raw_range.is_some();
+        operation.raw_generation = if operation.raw {
+            input
+                .generation
+                .as_ref()
+                .map(serde_json::to_vec)
+                .transpose()?
+        } else {
+            None
+        };
+        operation.raw_predecessor = input.raw_predecessor.clone();
+        operation.raw_root = input.raw_predecessor.is_none()
+            && input
+                .raw_range
+                .zip(input.generation.as_ref())
+                .is_some_and(|(range, generation)| range.start == generation.window().start);
+    }
+    Ok(operation)
+}
+
+fn directory_bytes(directory: &Path) -> Result<u64> {
+    fs::read_dir(directory)?.try_fold(0u64, |total, entry| {
+        let entry = entry?;
+        Ok(total.saturating_add(if entry.file_type()?.is_file() {
+            entry.metadata()?.len()
+        } else {
+            0
+        }))
+    })
 }
 
 fn hex_name(name: &str) -> bool {
@@ -2033,7 +1781,7 @@ fn validate_ack(prepared: &Prepared, acknowledgment: &Acknowledgment) -> Result<
                 return invalid("material acknowledgment has another material identity");
             }
             // An absent position is an explicit owner outcome, not an empty
-            // or partial receipt.
+            // or partial acknowledgment.
             if commit_seq.is_none() && matches!(payload, Payload::Events { .. }) {
                 exact_frame(prepared, acknowledgment)?;
                 if !admitted.is_empty() || material.is_some() || !material_extents.is_empty() {
@@ -2050,7 +1798,7 @@ fn validate_ack(prepared: &Prepared, acknowledgment: &Acknowledgment) -> Result<
     }
 }
 
-/// The receipt is the owner's durable record of this exact frame body.
+/// The acknowledgment is the owner's durable record of this exact frame body.
 fn exact_frame(prepared: &Prepared, acknowledgment: &Acknowledgment) -> Result<()> {
     if acknowledgment.number <= 0
         || acknowledgment.content_hash.as_deref() != Some(prepared.frame.blob.as_str())
@@ -2060,11 +1808,15 @@ fn exact_frame(prepared: &Prepared, acknowledgment: &Acknowledgment) -> Result<(
     Ok(())
 }
 
-fn validate_conflict(prepared: &Prepared, offered: &str, receipt: &Acknowledgment) -> Result<()> {
-    if receipt.frame != prepared.identity
+fn validate_conflict(
+    prepared: &Prepared,
+    offered: &str,
+    acknowledgment: &Acknowledgment,
+) -> Result<()> {
+    if acknowledgment.frame != prepared.identity
         || offered != prepared.frame.blob
-        || receipt.number <= 0
-        || receipt.content_hash.as_deref() == Some(offered)
+        || acknowledgment.number <= 0
+        || acknowledgment.content_hash.as_deref() == Some(offered)
     {
         return invalid("conflict evidence does not bind this exact offered operation");
     }
@@ -2143,22 +1895,6 @@ fn write_checked(path: &Path, value: &impl Serialize) -> Result<()> {
             digest: encoded_hash(value)?.0,
         },
     )?;
-    Ok(())
-}
-
-fn write_index(path: &Path, identity: &str) -> Result<()> {
-    write_derived(path, &identity)
-}
-
-fn write_derived(path: &Path, value: &impl Serialize) -> Result<()> {
-    // An interrupted derived index is rebuilt before it is read again; only
-    // the immutable operation publication needs a durability barrier.
-    let file = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(path)?;
-    serde_json::to_writer(file, value)?;
     Ok(())
 }
 

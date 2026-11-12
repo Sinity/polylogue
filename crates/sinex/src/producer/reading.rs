@@ -67,13 +67,17 @@ impl Sinex {
                 .to_string();
             let prefix = format!("reading:{scope}:");
             let desired = format!("{prefix}{content}:");
-            let mut latest = None;
-            self.visit_prepared(|_, entry| {
-                if entry.identity.starts_with(&prefix) {
-                    latest = Some(entry);
-                }
-                Ok(())
-            })?;
+            let latest = self
+                .queue()?
+                .lookup(
+                    Lookup::IdentityPrefix(&prefix),
+                    None,
+                    None,
+                    Order::NewestFirst,
+                    1,
+                )?
+                .into_iter()
+                .next();
             if let Some(entry) = latest.filter(|entry| entry.identity.starts_with(&desired)) {
                 return Ok(PreparedWrite {
                     identity: entry.record.identity,
@@ -134,7 +138,7 @@ impl Sinex {
 
     pub(super) fn drain_readings(&self) -> Result<()> {
         let mut ready = Vec::new();
-        self.visit_prepared(|queue, entry| {
+        self.visit_matching(Lookup::Completion(Completion::Reading), |queue, entry| {
             if entry.material().is_some()
                 && entry.phase.is_acknowledged()
                 && entry.capture().is_none()
@@ -150,115 +154,128 @@ impl Sinex {
             }
             Ok(())
         })?;
+        let mut refusal = None;
         for (identity, replacement) in ready {
-            let frame = format!("{identity}:replay");
-            if self.queue()?.get(&frame)?.is_some() {
-                continue;
-            }
-            let events = {
-                let queue = self.queue()?;
-                let mut events = Vec::new();
-                let mut line = String::new();
-                let mut body = std::io::BufReader::new(queue.body(&identity)?);
-                while body.read_line(&mut line)? > 0 {
-                    let write: ProductWrite = crate::spool::decode_json(line.as_bytes())?;
-                    crate::products::require_reading(&write.product, &replacement.key)?;
-                    events.extend(crate::products::events(&[write])?);
-                    line.clear();
+            match self.complete_reading(identity, replacement) {
+                Ok(()) => {}
+                Err(error @ Error::Refused { .. }) => {
+                    if refusal.is_none() {
+                        refusal = Some(error);
+                    }
                 }
-                events
-            };
-            let root = MaterialId(
-                replacement
-                    .root
-                    .parse()
-                    .map_err(|error| Error::Invalid(format!("reading root: {error}")))?,
-            );
-            let event_types = Some(
-                crate::kinds::declarations("polylogue")
-                    .into_iter()
-                    .map(|declaration| declaration.kind.name)
-                    .filter(|name| {
-                        matches!(
-                            name.as_str(),
-                            "polylogue.session"
-                                | "polylogue.message"
-                                | "polylogue.document"
-                                | "polylogue.fragment"
-                                | "polylogue.event"
-                                | "polylogue.link"
-                                | "polylogue.background"
-                                | "polylogue.repository"
-                                | "polylogue.parse_progress"
-                        )
-                    })
-                    .collect(),
-            );
-            let query = sinex_protocol::ReplayScopeQuery {
-                materials: vec![root],
-                event_types: event_types.clone(),
-                from: None,
-                until: None,
-                after: None,
-            };
-            let (selection, declarations, source) = self.client_operation(async |client| {
-                let mut selections = client.replay_scope(&query).await?;
-                if selections.len() != 1 || selections[0].root != root {
+                Err(error) => return Err(error),
+            }
+        }
+        refusal.map_or(Ok(()), Err)
+    }
+
+    fn complete_reading(&self, identity: String, replacement: ReadingReplacement) -> Result<()> {
+        let frame = format!("{identity}:replay");
+        if self.queue()?.get(&frame)?.is_some() {
+            return Ok(());
+        }
+        let events = {
+            let queue = self.queue()?;
+            let mut events = Vec::new();
+            let mut line = String::new();
+            let mut body = std::io::BufReader::new(queue.body(&identity)?);
+            while body.read_line(&mut line)? > 0 {
+                let write: ProductWrite = crate::spool::decode_json(line.as_bytes())?;
+                crate::products::require_reading(&write.product, &replacement.key)?;
+                events.extend(crate::products::events(&[write])?);
+                line.clear();
+            }
+            events
+        };
+        let root = MaterialId(
+            replacement
+                .root
+                .parse()
+                .map_err(|error| Error::Invalid(format!("reading root: {error}")))?,
+        );
+        let event_types = Some(
+            crate::kinds::declarations("polylogue")
+                .into_iter()
+                .map(|declaration| declaration.kind.name)
+                .filter(|name| {
+                    matches!(
+                        name.as_str(),
+                        "polylogue.session"
+                            | "polylogue.message"
+                            | "polylogue.document"
+                            | "polylogue.fragment"
+                            | "polylogue.event"
+                            | "polylogue.link"
+                            | "polylogue.background"
+                            | "polylogue.repository"
+                            | "polylogue.parse_progress"
+                    )
+                })
+                .collect(),
+        );
+        let query = sinex_protocol::ReplayScopeQuery {
+            materials: vec![root],
+            event_types: event_types.clone(),
+            from: None,
+            until: None,
+            after: None,
+        };
+        let (selection, declarations, source) = self.client_operation(async |client| {
+            let mut selections = client.replay_scope(&query).await?;
+            if selections.len() != 1 || selections[0].root != root {
+                return Err(Error::Invalid(
+                    "replacement scope does not identify one complete raw chain".into(),
+                ));
+            }
+            let selection = selections.remove(0);
+            let mut source = None;
+            for material in &selection.materials {
+                let actual = client.fetch_material(material.id).await?.source;
+                if source.as_ref().is_some_and(|source| source != &actual) {
                     return Err(Error::Invalid(
-                        "replacement scope does not identify one complete raw chain".into(),
+                        "reading materials span different registered sources".into(),
                     ));
                 }
-                let selection = selections.remove(0);
-                let mut source = None;
-                for material in &selection.materials {
-                    let actual = client.fetch_material(material.id).await?.source;
-                    if source.as_ref().is_some_and(|source| source != &actual) {
-                        return Err(Error::Invalid(
-                            "reading materials span different registered sources".into(),
-                        ));
-                    }
-                    source = Some(actual);
-                }
-                let source = source.ok_or_else(|| {
-                    Error::Invalid("reading has no material source evidence".into())
-                })?;
-                let declarations = crate::kinds::declarations(client.family())
-                    .iter()
-                    .map(|declaration| sinex_protocol::DeclarationHash {
-                        kind: declaration.kind.clone(),
-                        hash: declaration.definition_hash(),
-                    })
-                    .collect();
-                Ok((selection, declarations, source))
-            })?;
-            let operation_hash = blake3::hash(identity.as_bytes());
-            let mut operation = [0u8; 16];
-            operation.copy_from_slice(&operation_hash.as_bytes()[..16]);
-            let sequence = sinex_protocol::ProducerReplay {
-                source,
-                operation: sinex_model::OperationId(uuid::Uuid::from_bytes(operation)),
-                root: selection.root,
-                materials: selection.materials,
-                event_types,
-                from: None,
-                until: None,
-                declarations,
-                parser_build: build_id()?,
-                parser_version: replacement.key.reading_version,
-                expected_live_hash: selection.expected_live_hash,
-                batches: vec![sinex_protocol::ReplayBatch {
-                    events,
-                    failures: Vec::new(),
-                }],
-            };
-            self.queue()?.prepare_group(
-                Ingress::ReplaySequence {
-                    frame,
-                    sequence: Box::new(sequence),
-                },
-                &[identity],
-            )?;
-        }
+                source = Some(actual);
+            }
+            let source = source
+                .ok_or_else(|| Error::Invalid("reading has no material source evidence".into()))?;
+            let declarations = crate::kinds::declarations(client.family())
+                .iter()
+                .map(|declaration| sinex_protocol::DeclarationHash {
+                    kind: declaration.kind.clone(),
+                    hash: declaration.definition_hash(),
+                })
+                .collect();
+            Ok((selection, declarations, source))
+        })?;
+        let operation_hash = blake3::hash(identity.as_bytes());
+        let mut operation = [0u8; 16];
+        operation.copy_from_slice(&operation_hash.as_bytes()[..16]);
+        let sequence = sinex_protocol::ProducerReplay {
+            source,
+            operation: sinex_model::OperationId(uuid::Uuid::from_bytes(operation)),
+            root: selection.root,
+            materials: selection.materials,
+            event_types,
+            from: None,
+            until: None,
+            declarations,
+            parser_build: build_id()?,
+            parser_version: replacement.key.reading_version,
+            expected_live_hash: selection.expected_live_hash,
+            batches: vec![sinex_protocol::ReplayBatch {
+                events,
+                failures: Vec::new(),
+            }],
+        };
+        self.queue()?.prepare_group(
+            Ingress::ReplaySequence {
+                frame,
+                sequence: Box::new(sequence),
+            },
+            &[identity],
+        )?;
         Ok(())
     }
 }

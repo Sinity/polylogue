@@ -173,7 +173,7 @@ fn unsupported_versions_and_changed_kind_definitions_are_refused() {
 }
 
 #[test]
-fn no_position_retirement_requires_post_ack_head_in_the_applied_scope() {
+fn no_position_confirmed_removal_requires_post_ack_head_in_the_applied_scope() {
     let state = crate::tests::applied(42);
     let before = std::time::Instant::now();
     let after = before + std::time::Duration::from_secs(1);
@@ -185,30 +185,33 @@ fn no_position_retirement_requires_post_ack_head_in_the_applied_scope() {
         ..Default::default()
     };
     assert_eq!(
-        retirement_state(&state, &health).head,
+        confirmed_removal_state(&state, &health).head,
         None,
-        "a caught-up presend head cannot cover a new receipt"
+        "a caught-up presend head cannot cover a new acknowledgment"
     );
     health.position_observed = Some(after);
     assert_eq!(
-        retirement_state(&state, &health).head,
+        confirmed_removal_state(&state, &health).head,
         Some(42),
         "a newly verified head need not advance numerically"
     );
     health.owner_scope = Some("replacement-scope".into());
     assert_eq!(
-        retirement_state(&state, &health).head,
+        confirmed_removal_state(&state, &health).head,
         None,
         "the same number in another scope is not the applied prefix"
     );
     let mut reset = state;
     reset.scope = health.owner_scope.clone();
     reset.applied_position = None;
-    assert_eq!(retirement_state(&reset, &health).applied_position, None);
+    assert_eq!(
+        confirmed_removal_state(&reset, &health).applied_position,
+        None
+    );
     health.owner_position = Some(43);
     assert_eq!(
-        retirement_state(&reset, &health).head,
+        confirmed_removal_state(&reset, &health).head,
         None,
-        "a newer observed head must itself be saved before retirement"
+        "a newer observed head must itself be saved before confirmed_removal"
     );
 }

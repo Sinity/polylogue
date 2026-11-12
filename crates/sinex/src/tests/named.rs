@@ -200,7 +200,7 @@ fn named_query_phases_survive_restart_and_publication_until_confirmed_applicatio
                 .unwrap();
             bytes
         };
-        let physical_root = root.path().join(format!("receipt-{ordinal}"));
+        let physical_root = root.path().join(format!("acknowledgment-{ordinal}"));
         std::fs::create_dir_all(&physical_root).unwrap();
         let physical = extent(&physical_root, &bytes);
         sinex.queue().unwrap().acknowledge(serde_json::from_value(json!({"number":ordinal+1,"frame":observation,"material":crate::material_id("polylogue-test",&observation),"material_extents":[physical.encode()],"admitted":[],"content_hash":null,"result":"admitted","counts":crate::tests::zero_counts(),"commit_seq":null})).unwrap()).unwrap();
@@ -212,7 +212,7 @@ fn named_query_phases_survive_restart_and_publication_until_confirmed_applicatio
     sinex
         .queue()
         .unwrap()
-        .retire(
+        .remove_confirmed(
             &crate::tests::applied(9),
             &crate::tests::every_event_applied,
         )
@@ -228,7 +228,7 @@ fn named_query_phases_survive_restart_and_publication_until_confirmed_applicatio
     sinex
         .queue()
         .unwrap()
-        .retire(
+        .remove_confirmed(
             &crate::tests::applied(10),
             &crate::tests::every_event_applied,
         )

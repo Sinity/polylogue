@@ -63,6 +63,9 @@ pub struct Operation {
     pub format: Option<String>,
     pub export_keys: Vec<String>,
     pub stored_bytes: u64,
+    pub completion: Option<Completion>,
+    pub captured: bool,
+    pub blob: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -112,7 +115,29 @@ pub struct Confirmed {
     pub group: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum Completion {
+    Request,
+    Observation,
+    Reading,
+}
+impl Completion {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Request => "request",
+            Self::Observation => "observation",
+            Self::Reading => "reading",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
 pub enum Lookup<'a> {
+    IdentityPrefix(&'a str),
+    Completion(Completion),
+    Requests,
+    Blobs(Option<&'a str>),
+    Captures,
     Name(&'a super::NamedProductSelector),
     GroupHash(&'a str),
     Members(&'a str),
@@ -141,6 +166,7 @@ pub enum Order {
 pub struct Queue {
     path: PathBuf,
     connection: Connection,
+    newest_next: std::cell::Cell<bool>,
 }
 
 /// A read transaction fixes the database at the producer backup cut. Copying
@@ -149,11 +175,40 @@ pub struct Snapshot {
     connection: Connection,
 }
 impl Snapshot {
-    pub fn write_to(self, destination: &Path) -> Result<()> {
-        self.connection
-            .backup(rusqlite::MAIN_DB, destination, None)?;
+    pub fn write_to(
+        self,
+        destination: &Path,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> Result<()> {
+        use rusqlite::backup::{Backup, StepResult};
+        let check = || {
+            if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+                Err(StoreError::Invalid(
+                    "producer backup acquisition cancelled".into(),
+                ))
+            } else {
+                Ok(())
+            }
+        };
+        check()?;
+        let mut target = Connection::open(destination)?;
+        {
+            let backup = Backup::new(&self.connection, &mut target)?;
+            loop {
+                check()?;
+                match backup.step(128)? {
+                    StepResult::Done => break,
+                    StepResult::More => {}
+                    StepResult::Busy | StepResult::Locked => {
+                        std::thread::sleep(std::time::Duration::from_millis(10))
+                    }
+                    _ => return Err(StoreError::Invalid("unknown producer backup step".into())),
+                }
+            }
+        }
+        drop(target);
         std::fs::File::open(destination)?.sync_all()?;
-        Ok(())
+        check()
     }
 }
 
@@ -186,8 +241,15 @@ CREATE TABLE operation (
   input TEXT,
   format TEXT,
   export_keys TEXT NOT NULL,
-  stored_bytes INTEGER NOT NULL
+  stored_bytes INTEGER NOT NULL,
+  completion TEXT,
+  captured INTEGER NOT NULL,
+  blob TEXT
 ) STRICT;
+CREATE INDEX queue_completion ON operation(completion,phase,confirmed_group,ordering);
+CREATE INDEX queue_blobs ON operation(blob,ordering);
+CREATE INDEX queue_requests ON operation(kind,ordering);
+CREATE INDEX queue_captures ON operation(captured,ordering);
 CREATE INDEX queue_ready ON operation(ready,ordering);
 CREATE INDEX queue_material_dependency ON operation(previous_material);
 CREATE INDEX queue_confirmed ON operation(phase,position,ordering);
@@ -242,6 +304,12 @@ fn refresh_ready(connection: &Connection, identity: &str) -> Result<()> {
     Ok(())
 }
 
+fn insert(connection: &Connection, operation: &Operation, group_hash: Option<&str>) -> Result<()> {
+    connection.execute("INSERT INTO operation(identity,directory,metadata,kind,logical_name,acquisition,ordinal,unresolved,source,raw_generation,raw_predecessor,raw_root,reading_version,input,format,export_keys,stored_bytes,group_hash,material,previous_material,raw,completion,captured,blob)
+          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24)", params![operation.identity, operation.directory, operation.metadata, operation.kind.name(), operation.logical_name.as_ref().map(|name| name.as_bytes()), operation.acquisition, operation.ordinal, operation.unresolved, operation.source, operation.raw_generation, operation.raw_predecessor, operation.raw_root, operation.reading_version, operation.input, operation.format, serde_json::to_string(&operation.export_keys)?, operation.stored_bytes, group_hash, operation.material, operation.previous_material, operation.raw, operation.completion.map(Completion::name), operation.captured, operation.blob])?;
+    Ok(())
+}
+
 impl Queue {
     pub fn snapshot(&self) -> Result<Snapshot> {
         let connection = archive::open_read(&self.path)?;
@@ -282,6 +350,7 @@ impl Queue {
         Ok(Self {
             path: path.into(),
             connection,
+            newest_next: std::cell::Cell::new(true),
         })
     }
 
@@ -293,8 +362,7 @@ impl Queue {
         members: &[String],
     ) -> Result<Entry> {
         let transaction = self.connection.unchecked_transaction()?;
-        transaction.execute("INSERT INTO operation(identity,directory,metadata,kind,logical_name,acquisition,ordinal,unresolved,source,raw_generation,raw_predecessor,raw_root,reading_version,input,format,export_keys,stored_bytes,group_hash,material,previous_material,raw)
-          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)", params![operation.identity, operation.directory, operation.metadata, operation.kind.name(), operation.logical_name.as_ref().map(|name| name.as_bytes()), operation.acquisition, operation.ordinal, operation.unresolved, operation.source, operation.raw_generation, operation.raw_predecessor, operation.raw_root, operation.reading_version, operation.input, operation.format, serde_json::to_string(&operation.export_keys)?, operation.stored_bytes, group_hash, operation.material, operation.previous_material, operation.raw])?;
+        insert(&transaction, operation, group_hash)?;
         for member in members {
             let changed = transaction.execute("UPDATE operation SET confirmed_group=?1 WHERE identity=?2 AND (confirmed_group IS NULL OR confirmed_group=?1)", params![operation.identity, member])?;
             if changed != 1 {
@@ -307,6 +375,139 @@ impl Queue {
         transaction.commit()?;
         self.get(&operation.identity)?
             .ok_or_else(|| StoreError::Invalid("published queue operation disappeared".into()))
+    }
+
+    /// Publish a staged acquisition as one commit. The adapter has synced and
+    /// moved its immutable directory before this call. Copy queue metadata
+    /// directly, without decoding every member or performing one sync per row.
+    pub fn publish_acquisition(&self, staged: &Queue, header: &Operation) -> Result<()> {
+        if header.kind != Kind::Acquisition {
+            return Err(StoreError::Invalid(
+                "acquisition publication needs its header".into(),
+            ));
+        }
+        self.connection.execute(
+            "ATTACH DATABASE ?1 AS staged",
+            [staged.path.as_os_str().as_encoded_bytes()],
+        )?;
+        let result: Result<()> = (|| {
+            let tx = self.connection.unchecked_transaction()?;
+            insert(&tx, header, None)?;
+            tx.execute("INSERT INTO operation(identity,directory,metadata,kind,material,previous_material,phase,position,offered,admitted,logical_name,acquisition,ordinal,confirmed_group,group_hash,unresolved,source,raw,raw_generation,raw_predecessor,raw_root,reading_version,input,format,export_keys,stored_bytes,completion,captured,blob)
+                SELECT identity,?1 || '/' || directory,metadata,kind,material,previous_material,phase,position,offered,admitted,logical_name,?2,ordering-1,confirmed_group,group_hash,?3,source,raw,raw_generation,raw_predecessor,raw_root,reading_version,input,format,export_keys,stored_bytes,completion,captured,blob FROM staged.operation ORDER BY ordering",
+                params![header.directory, header.identity, header.unresolved])?;
+            tx.execute("UPDATE operation AS current SET ready=(phase='pending' AND unresolved=0 AND kind!='acquisition'
+                AND NOT EXISTS(SELECT 1 FROM operation AS member WHERE member.confirmed_group=current.identity AND (member.phase!='acknowledged' OR member.unresolved!=0))
+                AND NOT EXISTS(SELECT 1 FROM operation AS previous WHERE previous.material=current.previous_material AND previous.phase!='acknowledged')) WHERE acquisition=?1", [&header.identity])?;
+            tx.commit()?;
+            Ok(())
+        })();
+        let detached = self.connection.execute("DETACH DATABASE staged", []);
+        result?;
+        detached?;
+        Ok(())
+    }
+
+    pub fn remove(&self, identity: &str) -> Result<Vec<String>> {
+        let tx = self.connection.unchecked_transaction()?;
+        let mut paths = Vec::new();
+        let mut groups = Vec::new();
+        {
+            let mut query = tx.prepare_cached("SELECT directory,acquisition FROM operation WHERE identity=?1 OR confirmed_group=?1")?;
+            for row in query.query_map([identity], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            })? {
+                let (path, acquisition) = row?;
+                paths.push(path);
+                if let Some(group) = acquisition {
+                    groups.push(group);
+                }
+            }
+        }
+        tx.execute(
+            "DELETE FROM operation WHERE identity=?1 OR confirmed_group=?1",
+            [identity],
+        )?;
+        for group in groups {
+            if tx.query_row(
+                "SELECT NOT EXISTS(SELECT 1 FROM operation WHERE acquisition=?1)",
+                [&group],
+                |row| row.get::<_, bool>(0),
+            )? {
+                if let Some(path) = tx
+                    .query_row(
+                        "SELECT directory FROM operation WHERE identity=?1",
+                        [&group],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?
+                {
+                    paths.push(path);
+                }
+                tx.execute("DELETE FROM operation WHERE identity=?1", [&group])?;
+            }
+        }
+        tx.commit()?;
+        Ok(paths)
+    }
+
+    pub fn references_directory(&self, directory: &str) -> Result<bool> {
+        Ok(self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM operation WHERE directory=?1)",
+            [directory],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub fn group_for_member(&self, identity: &str) -> Result<Option<Entry>> {
+        Ok(self.connection.query_row(&format!("SELECT {COLUMNS} FROM operation WHERE identity=(SELECT confirmed_group FROM operation WHERE identity=?1)"), [identity], entry).optional()?)
+    }
+
+    pub fn acquisition_ordinal(&self, identity: &str) -> Result<Option<u64>> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT ordinal FROM operation WHERE identity=?1",
+                [identity],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
+    pub fn acquisition_after(
+        &self,
+        identity: &str,
+        after: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<Entry>> {
+        let mut query = self.connection.prepare_cached(&format!("SELECT {COLUMNS} FROM operation WHERE acquisition=?1 AND ordinal>=?2 ORDER BY ordinal LIMIT ?3"))?;
+        Ok(query
+            .query_map(
+                params![identity, after.map_or(0, |n| n.saturating_add(1)), limit],
+                entry,
+            )?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn last_order(&self) -> Result<u64> {
+        Ok(self.connection.query_row(
+            "SELECT coalesce(max(ordering),0) FROM operation",
+            [],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub fn len(&self) -> Result<u64> {
+        Ok(self.connection.query_row(
+            "SELECT count(*) FROM operation WHERE kind!='acquisition'",
+            [],
+            |r| r.get(0),
+        )?)
+    }
+
+    pub fn is_empty(&self) -> Result<bool> {
+        self.len().map(|n| n == 0)
     }
 
     pub fn get(&self, identity: &str) -> Result<Option<Entry>> {
@@ -381,11 +582,43 @@ impl Queue {
         use rusqlite::types::Value;
         let exclude_refused = matches!(
             &lookup,
-            Lookup::Name(_) | Lookup::Source { .. } | Lookup::Unattributed | Lookup::Export { .. }
+            Lookup::Name(_)
+                | Lookup::Source { .. }
+                | Lookup::Unattributed
+                | Lookup::Export { .. }
+                | Lookup::Requests
+                | Lookup::IdentityPrefix(_)
         );
         let text = |value: &str| Value::Text(value.into());
         let blob = |value: &[u8]| Value::Blob(value.into());
         let (condition, mut parameters) = match lookup {
+            Lookup::IdentityPrefix(prefix) => {
+                let mut upper = prefix.to_owned();
+                while let Some(last) = upper.pop() {
+                    let mut next = u32::from(last) + 1;
+                    if (0xD800..=0xDFFF).contains(&next) {
+                        next = 0xE000;
+                    }
+                    if let Some(next) = char::from_u32(next) {
+                        upper.push(next);
+                        break;
+                    }
+                }
+                (
+                    "identity>=?1 AND (?2='' OR identity<?2)",
+                    vec![text(prefix), text(&upper)],
+                )
+            }
+            Lookup::Completion(completion) => (
+                "completion=?1 AND confirmed_group IS NULL AND (phase='acknowledged' OR (?1='request' AND phase='refused'))",
+                vec![text(completion.name())],
+            ),
+            Lookup::Requests => ("kind='request'", vec![]),
+            Lookup::Blobs(hash) => (
+                "blob IS NOT NULL AND (?1 IS NULL OR blob=?1)",
+                vec![hash.map(text).unwrap_or(Value::Null)],
+            ),
+            Lookup::Captures => ("captured=1", vec![]),
             Lookup::Name(super::NamedProductSelector::Exact(name)) => {
                 ("logical_name=?1", vec![blob(name.as_bytes())])
             }
@@ -412,7 +645,10 @@ impl Queue {
                     reading_version.map(text).unwrap_or(Value::Null),
                 ],
             ),
-            Lookup::Unattributed => ("input IS NOT NULL AND source IS NULL", vec![]),
+            Lookup::Unattributed => (
+                "input IS NOT NULL AND source IS NULL AND unresolved=0",
+                vec![],
+            ),
             Lookup::RawGeneration(generation) => ("raw_generation=?1", vec![blob(generation)]),
             Lookup::RawChildren(previous) => ("raw_predecessor=?1", vec![text(previous)]),
             Lookup::RawRoots(generation) => {
@@ -462,8 +698,12 @@ impl Queue {
     pub fn ready(&self, in_flight: &[String], limit: usize) -> Result<Vec<Entry>> {
         let mut excluded = in_flight.to_vec();
         let mut result = Vec::new();
-        for index in 0..limit {
-            let direction = if index % 2 == 0 { "DESC" } else { "ASC" };
+        for _ in 0..limit {
+            let direction = if self.newest_next.get() {
+                "DESC"
+            } else {
+                "ASC"
+            };
             let next = self
                 .connection
                 .query_row(
@@ -479,6 +719,7 @@ impl Queue {
             let Some(next) = next else {
                 break;
             };
+            self.newest_next.set(!self.newest_next.get());
             excluded.push(next.identity.clone());
             result.push(next);
         }

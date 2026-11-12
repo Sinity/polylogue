@@ -71,13 +71,22 @@ fn encoding(
 }
 
 /// Material ACK, dependent canonical group, actual confirmed-cache application,
-/// then ordinary consumer retirement. No test manufactures a receipt or position.
+/// then ordinary consumer confirmed removal. No test manufactures an acknowledgment or position.
 fn publish_and_project(sinex: &Arc<Sinex>, cache: &Path, items: &[(&str, &[u8])]) {
-    sinex
-        .client_operation(async |client| client.retry_prepared().await)
-        .unwrap();
+    sinex.send_pending();
+    wait_until(|| {
+        items.iter().all(|(identity, _)| {
+            sinex
+                .spool
+                .lock()
+                .unwrap()
+                .acknowledgment(identity)
+                .unwrap()
+                .is_some()
+        })
+    });
     for (identity, bytes) in items {
-        let receipt = sinex
+        let acknowledgment = sinex
             .spool
             .lock()
             .unwrap()
@@ -88,9 +97,9 @@ fn publish_and_project(sinex: &Arc<Sinex>, cache: &Path, items: &[(&str, &[u8])]
             material: Some(id),
             material_extents,
             ..
-        } = receipt.result
+        } = acknowledgment.result
         else {
-            panic!("material admitted: {receipt:?}")
+            panic!("material admitted: {acknowledgment:?}")
         };
         let material = Material {
             id: id.to_string(),
@@ -159,7 +168,7 @@ fn frame_count(native: &native::Native, identity: &str) -> i64 {
 
 #[test]
 #[ignore = "needs matching public Sinex daemon plus pg_restore; set SINEXD"]
-fn paired_backup_restores_polylogue_pending_frames_after_live_retirement() {
+fn paired_backup_restores_polylogue_pending_frames_after_live_confirmed_removal() {
     let root = tempfile::tempdir().unwrap();
     let mut running = native::Native::start(
         &root.path().join("native"),
@@ -177,14 +186,10 @@ fn paired_backup_restores_polylogue_pending_frames_after_live_retirement() {
 
     // Pausing the native callback before its queue lock lets the ordinary SDK
     // prepare new bytes while publication is paused.
-    let sinex = Arc::new(
-        Sinex::open(
-            &config(&running),
-            &Authentication::Anonymous,
-            "fixture-host",
-        )
-        .unwrap(),
-    );
+    let mut sinex = Arc::new(super::synchronous(
+        &config(&running),
+        &Authentication::Anonymous,
+    ));
     let (entered, wait_capture) = mpsc::sync_channel(1);
     let (resume, wait_resume) = mpsc::sync_channel(1);
     let wait_resume = Mutex::new(wait_resume);
@@ -201,12 +206,14 @@ fn paired_backup_restores_polylogue_pending_frames_after_live_retirement() {
     };
     let client = sinex
         .runtime
-        .block_on(Client::connect_with_backup_capture(
+        .block_on(Client::connect_with_context(
             &sinex.config,
             &sinex.authentication,
             sinex.spool.clone(),
             sinex.health.clone(),
             callback,
+            sinex.publication.clone(),
+            true,
         ))
         .unwrap();
     *sinex.client.lock().unwrap() = Some(client);
@@ -231,18 +238,18 @@ fn paired_backup_restores_polylogue_pending_frames_after_live_retirement() {
     let during_id = prepare(&sinex, during);
     let during_encoding = encoding(&sinex, &during_id);
     // Exercise the normal sender while native backup holds its publication
-    // gate. It may own the connection mutex, but capture above used only the
-    // independent queue owner and completed before acquisition was released.
-    let sender = sinex.clone();
-    let sending = std::thread::spawn(move || {
-        sender.client_operation(async |client| client.retry_prepared().await)
-    });
-    wait_until(|| sinex.client.try_lock().is_err());
+    // gate. Its independent connection leaves confirmed reads available, and
+    // capture above completed before acquisition was released.
+    Arc::get_mut(&mut sinex).unwrap().start_sender().unwrap();
+    assert!(
+        sinex.client.try_lock().is_ok(),
+        "publication does not own the confirmed-reader lock"
+    );
+    sinex.reachable().unwrap();
     assert_eq!(frame_count(&running, &before_id), 0);
     assert_eq!(frame_count(&running, &during_id), 0);
     resume.send(()).unwrap();
     let reply = backup.join().unwrap();
-    sending.join().unwrap().unwrap();
     assert!(reply.get("result").is_some(), "{reply}");
     let manifest: sinex_model::backup::Manifest =
         serde_json::from_slice(&std::fs::read(artifact.join("manifest.json")).unwrap()).unwrap();
@@ -281,7 +288,7 @@ fn paired_backup_restores_polylogue_pending_frames_after_live_retirement() {
     let restored_store = root.path().join("restored-store");
     running.restore(&artifact, &restored_store);
     // The core backup excludes both untransmitted frames, although the later live core
-    // admitted and retired them. Only the acquired producer artifact can retry.
+    // admitted and removed them. Only the acquired producer artifact can retry.
     assert_eq!(frame_count(&running, &baseline_id), 1);
     assert_eq!(frame_count(&running, &before_id), 0);
     assert_eq!(frame_count(&running, &during_id), 0);

@@ -8,7 +8,9 @@ use serde_json::json;
 /// The acknowledgment of an accepted frame that admitted no new events, as
 /// Sinex records it: an empty admission, also for a kind registration that
 /// declares nothing.
-pub(crate) fn no_event_receipt(frame: &sinex_protocol::Ingress) -> sinex_protocol::Acknowledgment {
+pub(crate) fn no_event_acknowledgment(
+    frame: &sinex_protocol::Ingress,
+) -> sinex_protocol::Acknowledgment {
     sinex_protocol::Acknowledgment {
         number: 1,
         frame: frame.frame().into(),
@@ -23,12 +25,12 @@ pub(crate) fn no_event_receipt(frame: &sinex_protocol::Ingress) -> sinex_protoco
     }
 }
 
-/// Admission counts that are all zero, as JSON for receipts written inline.
+/// Admission counts that are all zero, as JSON for acknowledgments written inline.
 pub(crate) fn zero_counts() -> serde_json::Value {
     serde_json::to_value(sinex_model::AdmissionCounts::default()).unwrap()
 }
 
-/// An index that holds every event, for tests about positions and receipts.
+/// An index that holds every event, for tests about positions and acknowledgments.
 pub(crate) fn every_event_applied(_: &str) -> crate::Result<bool> {
     Ok(true)
 }
@@ -177,8 +179,13 @@ fn grouped_capture_remains_pending_until_its_confirmed_barrier() {
         )
         .unwrap();
     let physical = extent(root.path(), bytes);
-    let receipt=serde_json::from_value(json!({"number":1,"frame":raw.identity,"material":crate::material_id("polylogue-test", &raw.identity),"material_extents":[physical.encode()],"admitted":[],"content_hash":null,"result":"admitted","counts":crate::tests::zero_counts(),"commit_seq":null})).unwrap();
-    sinex.spool.lock().unwrap().acknowledge(receipt).unwrap();
+    let acknowledgment=serde_json::from_value(json!({"number":1,"frame":raw.identity,"material":crate::material_id("polylogue-test", &raw.identity),"material_extents":[physical.encode()],"admitted":[],"content_hash":null,"result":"admitted","counts":crate::tests::zero_counts(),"commit_seq":null})).unwrap();
+    sinex
+        .spool
+        .lock()
+        .unwrap()
+        .acknowledge(acknowledgment)
+        .unwrap();
     let pending = sinex.pending_captures().unwrap();
     let material = pending[0].material.clone().unwrap();
     let write = ProductWrite {
@@ -200,7 +207,7 @@ fn grouped_capture_remains_pending_until_its_confirmed_barrier() {
         .spool
         .lock()
         .unwrap()
-        .retire(
+        .remove_confirmed(
             &crate::tests::applied(9),
             &crate::tests::every_event_applied,
         )
@@ -210,7 +217,7 @@ fn grouped_capture_remains_pending_until_its_confirmed_barrier() {
         .spool
         .lock()
         .unwrap()
-        .retire(
+        .remove_confirmed(
             &crate::tests::applied(10),
             &crate::tests::every_event_applied,
         )
@@ -338,11 +345,11 @@ fn advisory_readiness_is_nonblocking_and_retains_pending_advice_across_restart()
     assert!(!sinex.advisory_history_ready());
     let identity = "request:pending-advice";
     let queue = sinex.queue().unwrap();
-    let receipt = serde_json::from_value(json!({
+    let acknowledgment = serde_json::from_value(json!({
         "number":1,"frame":identity,"material":crate::material_id("polylogue-test",identity),"material_extents":[],
         "admitted":[],"content_hash":null,"result":"admitted","counts":crate::tests::zero_counts(),"commit_seq":18
     })).unwrap();
-    queue.acknowledge(receipt).unwrap();
+    queue.acknowledge(acknowledgment).unwrap();
     drop(queue);
     assert!(
         !sinex.advisory_history_ready(),

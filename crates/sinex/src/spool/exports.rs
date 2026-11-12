@@ -1,7 +1,10 @@
-//! Rebuildable references to exact export callback custody. The immutable
-//! sidecar or material frame owns the key; the index never supplies it.
+//! Export callback capture is selected by durable queue keys; sidecars and
+//! material frames retain the original bytes.
 use super::*;
-use polylogue_store::primary::ExportReadingKey;
+use polylogue_store::primary::{
+    ExportReadingKey,
+    queue::{Lookup, Order},
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ExportBinding {
@@ -19,7 +22,7 @@ pub(super) fn bindings(frame: &Ingress, capture: Option<&Capture>) -> Result<Vec
         && let Some(value) = material.manifest.details.get("polylogue_export_key")
     {
         if !result.is_empty() || capture.is_some() {
-            return invalid("export material has conflicting custody layouts");
+            return invalid("export material has conflicting capture layouts");
         }
         let key: ExportReadingKey = serde_json::from_value(value.clone())?;
         key.validate()?;
@@ -68,39 +71,6 @@ pub(super) fn unknown(capture: &Capture, bindings: &[ExportBinding]) -> bool {
     })
 }
 
-pub(super) fn insert(spool: &Spool, prepared: &Prepared) -> Result<()> {
-    // Every captured input is indexed by its source name, including those
-    // whose sidecar cannot supply a valid export key.
-    if let Some(material) = prepared.material()
-        && let Some(Capture::Input(input)) = &material.capture
-    {
-        let path = spool.index(
-            "export-inputs",
-            &input_key(&input.rows.input, &input.rows.format)?,
-        );
-        insert_order(&path, prepared)?;
-    }
-    for binding in prepared.exports() {
-        let path = spool.index("export-readings", &binding.key.identity().to_string());
-        insert_order(&path, prepared)?;
-    }
-    Ok(())
-}
-
-fn input_key(input: &str, format: &str) -> Result<String> {
-    Ok(hash(&serde_json::to_vec(&(input, format))?))
-}
-
-fn insert_order(root: &Path, prepared: &Prepared) -> Result<()> {
-    let mut path = root.to_path_buf();
-    for byte in &prepared.order.to_be_bytes()[..7] {
-        path.push(format!("{byte:02x}"));
-    }
-    fs::create_dir_all(&path)?;
-    path.push(format!("{:02x}", prepared.order.to_be_bytes()[7]));
-    write_index(&path, &prepared.identity)
-}
-
 impl Spool {
     pub fn next_export(
         &self,
@@ -108,56 +78,61 @@ impl Spool {
         after: Option<u64>,
         through: u64,
     ) -> Result<Option<Prepared>> {
-        self.ensure_indexes()?;
-        let path = self.index("export-readings", &key.identity().to_string());
-        if !path.try_exists()? {
-            return Ok(None);
-        }
-        let mut found = None;
-        raw_ranges::walk(&path, 0, 0, after, through, 1, &mut |order, identity| {
-            let entry = self.required(identity)?;
-            if entry.order != order || !entry.exports().iter().any(|binding| &binding.key == key) {
-                return invalid("export index differs from its immutable custody key");
-            }
-            found = Some(entry);
-            Ok(())
-        })?;
-        Ok(found)
+        let identity = key.identity().to_string();
+        self.queue
+            .lookup(
+                Lookup::Export {
+                    input: &key.input.id,
+                    format: &key.input.format,
+                    key: Some(&identity),
+                },
+                after,
+                Some(through),
+                Order::OldestFirst,
+                1,
+            )?
+            .into_iter()
+            .next()
+            .map(|entry| self.prepared(entry))
+            .transpose()
     }
 
-    /// Refuses export progress for `key` while custody of the same input
+    /// Refuses export progress for `key` while capture of the same input
     /// holds an export reading that is bound to no valid key: its callback
     /// may belong to this export, and its body cannot be checked against it.
     pub fn require_known_exports(&self, key: &ExportReadingKey, through: u64) -> Result<()> {
-        self.ensure_indexes()?;
-        let path = self.index(
-            "export-inputs",
-            &input_key(&key.input.id, &key.input.format)?,
-        );
-        if !path.try_exists()? {
-            return Ok(());
+        let mut after = None;
+        loop {
+            let entries = self.queue.lookup(
+                Lookup::Export {
+                    input: &key.input.id,
+                    format: &key.input.format,
+                    key: None,
+                },
+                after,
+                Some(through),
+                Order::OldestFirst,
+                64,
+            )?;
+            if entries.is_empty() {
+                return Ok(());
+            }
+            for entry in entries {
+                after = Some(entry.order);
+                let prepared = self.prepared(entry)?;
+                if !matches!(prepared.capture(), Some(Capture::Input(_))) {
+                    continue;
+                }
+                let capture = self.capture(&prepared.identity)?;
+                let bindings = capture_bindings(&capture)?;
+                if unknown(&capture, &bindings) {
+                    return Err(Error::Refused {
+                        name: key.identity().to_string(),
+                        reason: "pending capture of this input holds an export reading without a valid export key".into(),
+                    });
+                }
+            }
         }
-        raw_ranges::walk(&path, 0, 0, None, through, usize::MAX, &mut |order, identity| {
-            let entry = self.required(identity)?;
-            let input_matches = entry.capture().is_some_and(|capture| matches!(capture,
-                Capture::Input(input) if input.rows.input == key.input.id && input.rows.format == key.input.format));
-            if entry.order != order || !input_matches {
-                return invalid("export input index differs from its immutable custody");
-            }
-            if entry.phase.is_refused() {
-                return Ok(());
-            }
-            let capture = self.capture(identity)?;
-            let bindings = capture_bindings(&capture)?;
-            if !unknown(&capture, &bindings) {
-                return Ok(());
-            }
-            Err(Error::Refused {
-                name: key.identity().to_string(),
-                reason: "pending custody of this input holds an export reading without a valid export key".into(),
-            })
-        })
-        .map(|_| ())
     }
 
     pub fn export_material_key(&self, identity: &str) -> Result<Option<ExportReadingKey>> {

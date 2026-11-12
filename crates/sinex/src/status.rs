@@ -13,7 +13,7 @@ pub(crate) struct Health {
     /// The last complete publication retry, independent of reads.
     pub publication_error: Option<String>,
     /// This run's last acknowledgement on the monotonic clock, which
-    /// retirement compares with when the owner head was observed. Status
+    /// confirmed removal compares with when the owner head was observed. Status
     /// reads the spool's record instead, which survives a restart.
     pub last_ack: Option<Instant>,
     pub owner_position: Option<i64>,

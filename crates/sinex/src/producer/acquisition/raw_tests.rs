@@ -300,8 +300,8 @@ fn raw_cursor_refuses_holes_other_generations_and_corrupt_committed_bodies() {
     );
 }
 
-fn first_body(sinex: &Sinex, receipt: CaptureReceipt) -> String {
-    let group = match receipt {
+fn first_body(sinex: &Sinex, acknowledgment: CaptureReceipt) -> String {
+    let group = match acknowledgment {
         CaptureReceipt::Accepted { write } => write.identity,
         CaptureReceipt::UnresolvedBasisConflict { custody } => custody.identity,
     };

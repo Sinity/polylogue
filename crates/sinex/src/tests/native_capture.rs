@@ -432,11 +432,11 @@ fn offline_empty_native_file_has_an_actual_body_and_eof_with_no_confirmed_source
         else {
             panic!("provider material expected");
         };
-        let receipt = serde_json::from_value(serde_json::json!({
+        let acknowledgment = serde_json::from_value(serde_json::json!({
             "number":1,"frame":identity,"material":material.id,"material_extents":[physical.encode()],
             "admitted":[],"content_hash":null,"result":"admitted","counts":crate::tests::zero_counts(),"commit_seq":null
         })).unwrap();
-        queue.acknowledge(receipt).unwrap();
+        queue.acknowledge(acknowledgment).unwrap();
     }
     drop(engine);
     // Run the real confirmed-consumer path in writer order. An unreachable
@@ -708,17 +708,17 @@ fn an_explicit_package_keeps_its_member_custody_atomic() {
         .store_group(vec![a, b], Arc::new(archive.blobs().unwrap()))
         .unwrap();
     assert_eq!(results.len(), 2);
-    let receipts: Vec<_> = results
+    let acknowledgments: Vec<_> = results
         .into_iter()
         .map(|result| match result {
             Err(polylogue_store::StoreError::UnresolvedBasisConflict { custody }) => custody,
             other => panic!("a package must retain every member together: {other:?}"),
         })
         .collect();
-    assert_eq!(receipts[0], receipts[1]);
-    assert_eq!(receipts[0].count, 2);
+    assert_eq!(acknowledgments[0], acknowledgments[1]);
+    assert_eq!(acknowledgments[0].count, 2);
     let page = sdk
-        .pending_group_headers(&receipts[0].identity, None, 32)
+        .pending_group_headers(&acknowledgments[0].identity, None, 32)
         .unwrap();
     assert_eq!(
         page.disposition,

@@ -29,6 +29,9 @@ fn capture_backup(
         .map_err(|_| "producer spool panicked".to_string())?
         .pin_backup(cancelled)
         .map_err(|error| error.to_string())?;
+    let pinned = pinned
+        .finish(cancelled)
+        .map_err(|error| error.to_string())?;
     let directory = tempfile::Builder::new()
         .prefix(".backup-acquired-")
         .tempdir_in(pinned.path().parent().expect("snapshot parent"))
@@ -44,7 +47,6 @@ pub(crate) struct Client {
     family: String,
     max_message: usize,
     pub(crate) store_root: PathBuf,
-    acknowledgments: async_nats::Subscriber,
     consumer_cache: Option<String>,
     consumer_instance: Option<String>,
     health: std::sync::Arc<std::sync::Mutex<crate::status::Health>>,
@@ -52,7 +54,7 @@ pub(crate) struct Client {
     pending: Vec<async_nats::jetstream::Message>,
     spool: std::sync::Arc<std::sync::Mutex<crate::spool::Spool>>,
     publication: sinex_transport::backup::Publication,
-    _backup: sinex_transport::backup::BackupResponder,
+    _backup: Option<sinex_transport::backup::BackupResponder>,
 }
 
 impl Client {
@@ -91,20 +93,28 @@ impl Client {
         }
     }
 
-    pub(crate) async fn connect(
+    pub(crate) async fn connect_shared(
         config: &Config,
         authentication: &Authentication,
         spool: std::sync::Arc<std::sync::Mutex<crate::spool::Spool>>,
         health: std::sync::Arc<std::sync::Mutex<crate::status::Health>>,
+        publication: sinex_transport::backup::Publication,
+        start_backup: bool,
     ) -> Result<Self> {
-        let backup_spool = std::sync::Arc::clone(&spool);
-        Self::connect_with_backup_capture(config, authentication, spool, health, move |cancelled| {
-            capture_backup(&backup_spool, &cancelled)
-        })
+        let backup_spool = spool.clone();
+        Self::connect_with_context(
+            config,
+            authentication,
+            spool,
+            health,
+            move |cancelled| capture_backup(&backup_spool, &cancelled),
+            publication,
+            start_backup,
+        )
         .await
     }
 
-    async fn connect_with_backup_capture(
+    async fn connect_with_context(
         config: &Config,
         authentication: &Authentication,
         spool: std::sync::Arc<std::sync::Mutex<crate::spool::Spool>>,
@@ -115,12 +125,10 @@ impl Client {
         + Send
         + Sync
         + 'static,
+        publication: sinex_transport::backup::Publication,
+        start_backup: bool,
     ) -> Result<Self> {
         let (client, subjects, welcome) = transport(config, authentication).await?;
-        let acknowledgments = client
-            .subscribe(subjects.ack(&config.producer))
-            .await
-            .map_err(|e| Error::Unreachable(e.to_string()))?;
         client
             .flush()
             .await
@@ -135,16 +143,21 @@ impl Client {
             health.family = Some(family.clone());
         }
         let max_message = client.server_info().max_payload;
-        let publication = sinex_transport::backup::Publication::default();
-        let backup = sinex_transport::backup::BackupResponder::start(
-            client.clone(),
-            subjects.clone(),
-            config.producer.clone(),
-            publication.clone(),
-            std::sync::Arc::new(capture),
-        )
-        .await
-        .map_err(Error::Invalid)?;
+        let backup = if start_backup {
+            Some(
+                sinex_transport::backup::BackupResponder::start(
+                    client.clone(),
+                    subjects.clone(),
+                    config.producer.clone(),
+                    publication.clone(),
+                    std::sync::Arc::new(capture),
+                )
+                .await
+                .map_err(Error::Invalid)?,
+            )
+        } else {
+            None
+        };
         let mut connected = Self {
             client,
             subjects,
@@ -152,7 +165,6 @@ impl Client {
             family: family.clone(),
             max_message,
             store_root: config.store.clone(),
-            acknowledgments,
             consumer_cache: None,
             consumer_instance: None,
             health,
@@ -162,27 +174,32 @@ impl Client {
             publication,
             _backup: backup,
         };
-        let declarations = crate::kinds::declarations(&family);
-        let hashes: Vec<_> = declarations
-            .iter()
-            .map(|d| (d.kind.clone(), d.definition_hash()))
-            .collect();
-        let body = serde_json::to_vec(&hashes)?;
-        let name = format!("kinds:{}", blake3::hash(&body).to_hex());
-        let registration = Ingress::RegisterKinds {
-            frame: name.clone(),
-            declarations,
-        };
-        let ack = connected.send(registration).await?;
-        let sinex_protocol::FrameResult::KindsRegistered { kinds: registered } = ack.result else {
-            return Err(Error::Invalid(
-                "Sinex answered the kind registration with another result".into(),
-            ));
-        };
-        if registered != hashes {
-            return Err(Error::Invalid(
-                "Sinex acknowledged different kind definitions".into(),
-            ));
+        // The publication connection owns registration and backup custody.
+        // A confirmed reader never publishes while acquiring its connection.
+        if start_backup {
+            let declarations = crate::kinds::declarations(&family);
+            let hashes: Vec<_> = declarations
+                .iter()
+                .map(|d| (d.kind.clone(), d.definition_hash()))
+                .collect();
+            let body = serde_json::to_vec(&hashes)?;
+            let name = format!("kinds:{}", blake3::hash(&body).to_hex());
+            let registration = Ingress::RegisterKinds {
+                frame: name.clone(),
+                declarations,
+            };
+            let ack = connected.send(registration).await?;
+            let sinex_protocol::FrameResult::KindsRegistered { kinds: registered } = ack.result
+            else {
+                return Err(Error::Invalid(
+                    "Sinex answered the kind registration with another result".into(),
+                ));
+            };
+            if registered != hashes {
+                return Err(Error::Invalid(
+                    "Sinex acknowledged different kind definitions".into(),
+                ));
+            }
         }
         connected.refresh_context().await;
         Ok(connected)
@@ -243,150 +260,62 @@ impl Client {
         self.publish_prepared(prepared).await
     }
 
-    /// Resume original immutable operations in bounded preparation-order pages.
+    /// Resume a bounded turn of immutable operations, leaving completion
+    /// preparation a turn even while capture continually adds new material.
     pub(crate) async fn retry_prepared(&mut self) -> Result<()> {
-        let mut after = None;
+        use futures_util::{StreamExt, stream::FuturesUnordered};
+        const IN_FLIGHT: usize = 4;
+        const PER_TURN: usize = 64;
+        let mut selected = 0;
+        let mut sending = FuturesUnordered::new();
+        let mut identities = Vec::new();
+        let mut refused = None;
         loop {
-            let page = self
+            let ready = self
                 .spool
                 .lock()
                 .map_err(|_| Error::Invalid("producer spool panicked".into()))?
-                .pending_after(after, 64)?;
-            if page.is_empty() {
-                return Ok(());
+                .ready(
+                    &identities,
+                    (IN_FLIGHT - identities.len()).min(PER_TURN - selected),
+                )?;
+            selected += ready.len();
+            for prepared in ready {
+                let publisher = self.publisher();
+                identities.push(prepared.identity.clone());
+                sending.push(async move {
+                    let identity = prepared.identity.clone();
+                    (identity, publisher.publish_prepared(prepared).await)
+                });
             }
-            for prepared in page {
-                after = Some(prepared.order);
-                if !prepared.phase.is_pending() || prepared.unresolved {
-                    continue;
+            let Some((identity, result)) = sending.next().await else {
+                return refused.map_or(Ok(()), Err);
+            };
+            identities.retain(|active| active != &identity);
+            match result {
+                Ok(_) => {}
+                Err(error @ Error::Refused { .. }) => {
+                    refused = Some(error);
                 }
-                self.publish_prepared(prepared).await?;
+                Err(error) => return Err(error),
             }
         }
     }
 
-    async fn publish_prepared(
-        &mut self,
-        prepared: crate::spool::Prepared,
-    ) -> Result<Acknowledgment> {
-        // Freeze waits for transmission and durable receipt publication as one
-        // unit. Capture may append new spool operations while this waits.
-        let _publication = self.publication.enter().await;
-        let (frame, body) = {
-            let spool = self
-                .spool
-                .lock()
-                .map_err(|_| Error::Invalid("producer spool panicked".into()))?;
-            let current = spool
-                .get(&prepared.identity)?
-                .ok_or_else(|| Error::Invalid("prepared operation disappeared".into()))?;
-            if let Some(receipt) = spool.acknowledgment(&prepared.identity)? {
-                return checked(verified_receipt(&prepared, receipt)?);
-            }
-            if current.unresolved || current.phase.is_refused() {
-                return Err(Error::Refused {
-                    name: prepared.identity.clone(),
-                    reason: "the original operation is not publishable".into(),
-                });
-            }
-            (
-                spool.prepared_frame(&prepared.identity)?,
-                if prepared.body().is_some() {
-                    Some(spool.prepared_body(&prepared.identity)?)
-                } else {
-                    None
-                },
-            )
-        };
-        // A chunked material's frame directory holds every chunk's encoding.
-        for part in body.into_iter().flatten() {
-            frame_bytes::write_prepared(&self.store_root, &self.producer, &prepared.identity, part)
-                .map_err(|error| Error::Invalid(error.to_string()))?;
+    fn publisher(&self) -> Publisher {
+        Publisher {
+            client: self.client.clone(),
+            subjects: self.subjects.clone(),
+            producer: self.producer.clone(),
+            store_root: self.store_root.clone(),
+            max_message: self.max_message,
+            spool: self.spool.clone(),
+            publication: self.publication.clone(),
+            health: self.health.clone(),
         }
-        let body = if prepared
-            .frame
-            .length
-            .saturating_add(MESSAGE_OVERHEAD as u64)
-            <= self.max_message as u64
-        {
-            let mut bytes = Vec::new();
-            std::io::BufReader::new(frame.reader(None, hashed_blobs::ReadLimits::default())?)
-                .read_to_end(&mut bytes)?;
-            bytes
-        } else {
-            frame_bytes::write_prepared(
-                &self.store_root,
-                &self.producer,
-                &prepared.identity,
-                frame,
-            )
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-            serde_json::to_vec(&Ingress::LargeFrame {
-                frame: prepared.identity.clone(),
-                blob: prepared.frame.blob.clone(),
-                length: prepared.frame.length,
-            })?
-        };
-        let acknowledgment = match self.transmit(&prepared.identity, body).await {
-            Ok(receipt) => receipt,
-            Err(Error::ReceiptConflict {
-                frame,
-                offered_hash,
-                receipt,
-            }) => {
-                self.spool
-                    .lock()
-                    .map_err(|_| Error::Invalid("producer spool panicked".into()))?
-                    .record_conflict(&frame, &offered_hash, &receipt)?;
-                return Err(Error::Refused {
-                    name: frame,
-                    reason: "the owner recorded different immutable contents".into(),
-                });
-            }
-            Err(error) => return Err(error),
-        };
-        self.spool
-            .lock()
-            .map_err(|_| Error::Invalid("producer spool panicked".into()))?
-            .acknowledge(acknowledgment.clone())?;
-        if let Ok(mut health) = self.health.lock() {
-            health.last_ack = Some(std::time::Instant::now());
-        }
-        checked(acknowledgment)
     }
-
-    /// Publishes one frame's JSON and waits for its acknowledgment. Accepted
-    /// by NATS is not confirmed: only the acknowledgment, which Sinex commits
-    /// with the frame's contents, is. A lost acknowledgment is an error here;
-    /// sending the frame again is answered from Sinex's record of it.
-    async fn transmit(&mut self, name: &str, body: Vec<u8>) -> Result<Acknowledgment> {
-        let frame: Ingress = serde_json::from_slice(&body)?;
-        if frame.frame() != name {
-            return Err(Error::Invalid(
-                "prepared transport changed frame identity".into(),
-            ));
-        }
-        sinex_transport::producer::transfer_frame(
-            &self.client,
-            &self.subjects,
-            &self.producer,
-            &mut self.acknowledgments,
-            &self.store_root,
-            &frame,
-            ACKNOWLEDGMENT_WAIT,
-        )
-        .await
-        .map_err(|error| Error::Unreachable(error.to_string()))?;
-        sinex_transport::producer::submit_frame(
-            &self.client,
-            &self.subjects,
-            &self.producer,
-            &mut self.acknowledgments,
-            &frame,
-            ACKNOWLEDGMENT_WAIT,
-        )
-        .await
-        .map_err(submit_error)
+    async fn publish_prepared(&self, prepared: crate::spool::Prepared) -> Result<Acknowledgment> {
+        self.publisher().publish_prepared(prepared).await
     }
 }
 
@@ -441,11 +370,11 @@ pub(crate) fn submit_error(error: sinex_transport::producer::SubmitError) -> Err
         sinex_transport::producer::SubmitError::ReceiptConflict {
             frame,
             offered_hash,
-            receipt,
-        } => Error::ReceiptConflict {
+            receipt: acknowledgment,
+        } => Error::AcknowledgmentConflict {
             frame,
             offered_hash,
-            receipt,
+            acknowledgment,
         },
         other => Error::Unreachable(other.to_string()),
     }
@@ -453,21 +382,21 @@ pub(crate) fn submit_error(error: sinex_transport::producer::SubmitError) -> Err
 
 /// A LargeFrame envelope names the original logical frame hash. Receipt
 /// adoption needs that identity, independently of the encoded custody layout.
-pub(crate) fn verified_receipt(
+pub(crate) fn verified_acknowledgment(
     prepared: &crate::spool::Prepared,
-    receipt: Acknowledgment,
+    acknowledgment: Acknowledgment,
 ) -> Result<Acknowledgment> {
     let frame = Ingress::LargeFrame {
         frame: prepared.identity.clone(),
         blob: prepared.frame.blob.clone(),
         length: prepared.frame.length,
     };
-    if receipt.frame != prepared.identity {
+    if acknowledgment.frame != prepared.identity {
         return Err(Error::Invalid(
-            "recorded receipt changed its operation identity".into(),
+            "recorded acknowledgment changed its operation identity".into(),
         ));
     }
-    sinex_transport::producer::check_receipt(&frame, receipt).map_err(submit_error)
+    sinex_transport::producer::check_receipt(&frame, acknowledgment).map_err(submit_error)
 }
 
 pub(crate) fn checked(acknowledgment: Acknowledgment) -> Result<Acknowledgment> {
@@ -482,3 +411,168 @@ pub(crate) fn checked(acknowledgment: Acknowledgment) -> Result<Acknowledgment> 
 
 #[cfg(test)]
 mod tests;
+
+#[derive(Clone)]
+struct Publisher {
+    client: async_nats::Client,
+    subjects: Subjects,
+    producer: String,
+    store_root: PathBuf,
+    max_message: usize,
+    spool: std::sync::Arc<std::sync::Mutex<crate::spool::Spool>>,
+    publication: sinex_transport::backup::Publication,
+    health: std::sync::Arc<std::sync::Mutex<crate::status::Health>>,
+}
+fn frame_error(error: frame_bytes::Error) -> Error {
+    match error {
+        frame_bytes::Error::Storage(error) => Error::Io(error),
+        frame_bytes::Error::Invalid(reason)
+        | frame_bytes::Error::Mismatch(reason)
+        | frame_bytes::Error::Permissions(reason) => Error::Invalid(reason),
+    }
+}
+
+impl Publisher {
+    async fn publish_prepared(&self, prepared: crate::spool::Prepared) -> Result<Acknowledgment> {
+        // Freeze waits for transmission and durable acknowledgment publication as one
+        // unit. Capture may append new spool operations while this waits.
+        let _publication = self.publication.enter().await;
+        let (frame, body) = {
+            let spool = self
+                .spool
+                .lock()
+                .map_err(|_| Error::Invalid("producer spool panicked".into()))?;
+            let current = spool
+                .get(&prepared.identity)?
+                .ok_or_else(|| Error::Invalid("prepared operation disappeared".into()))?;
+            if let Some(acknowledgment) = spool.acknowledgment(&prepared.identity)? {
+                spool.acknowledge(acknowledgment.clone())?;
+                return checked(verified_acknowledgment(&prepared, acknowledgment)?);
+            }
+            if current.unresolved || current.phase.is_refused() {
+                return Err(Error::Refused {
+                    name: prepared.identity.clone(),
+                    reason: "the original operation is not publishable".into(),
+                });
+            }
+            (
+                spool.pin_frame(&prepared.identity)?,
+                if prepared.body().is_some() {
+                    Some(spool.pin_body(&prepared.identity)?)
+                } else {
+                    None
+                },
+            )
+        };
+        let frame = hashed_blobs::Prepared::from_encoded(
+            frame.0,
+            frame.1,
+            None,
+            hashed_blobs::ReadLimits::default(),
+        )?;
+        // A chunked material's frame directory holds every chunk's encoding.
+        for (file, descriptor) in body.into_iter().flatten() {
+            let part = hashed_blobs::Prepared::from_encoded(
+                file,
+                descriptor,
+                None,
+                hashed_blobs::ReadLimits::default(),
+            )?;
+            frame_bytes::write_prepared(&self.store_root, &self.producer, &prepared.identity, part)
+                .map_err(frame_error)?;
+        }
+        let body = if prepared
+            .frame
+            .length
+            .saturating_add(MESSAGE_OVERHEAD as u64)
+            <= self.max_message as u64
+        {
+            let mut bytes = Vec::new();
+            std::io::BufReader::new(frame.reader(None, hashed_blobs::ReadLimits::default())?)
+                .read_to_end(&mut bytes)?;
+            bytes
+        } else {
+            frame_bytes::write_prepared(
+                &self.store_root,
+                &self.producer,
+                &prepared.identity,
+                frame,
+            )
+            .map_err(frame_error)?;
+            serde_json::to_vec(&Ingress::LargeFrame {
+                frame: prepared.identity.clone(),
+                blob: prepared.frame.blob.clone(),
+                length: prepared.frame.length,
+            })?
+        };
+        let acknowledgment = match self.transmit(&prepared.identity, body).await {
+            Ok(acknowledgment) => acknowledgment,
+            Err(Error::AcknowledgmentConflict {
+                frame,
+                offered_hash,
+                acknowledgment,
+            }) => {
+                self.spool
+                    .lock()
+                    .map_err(|_| Error::Invalid("producer spool panicked".into()))?
+                    .record_conflict(&frame, &offered_hash, &acknowledgment)?;
+                return Err(Error::Refused {
+                    name: frame,
+                    reason: "the owner recorded different immutable contents".into(),
+                });
+            }
+            Err(error) => return Err(error),
+        };
+        self.spool
+            .lock()
+            .map_err(|_| Error::Invalid("producer spool panicked".into()))?
+            .acknowledge(acknowledgment.clone())?;
+        if let Ok(mut health) = self.health.lock() {
+            health.last_ack = Some(std::time::Instant::now());
+        }
+        checked(acknowledgment)
+    }
+
+    /// Publishes one frame's JSON and waits for its acknowledgment. Accepted
+    /// by NATS is not confirmed: only the acknowledgment, which Sinex commits
+    /// with the frame's contents, is. A lost acknowledgment is an error here;
+    /// sending the frame again is answered from Sinex's record of it.
+    async fn transmit(&self, name: &str, body: Vec<u8>) -> Result<Acknowledgment> {
+        let mut acknowledgments = self
+            .client
+            .subscribe(self.subjects.ack(&self.producer))
+            .await
+            .map_err(|error| Error::Unreachable(error.to_string()))?;
+        self.client
+            .flush()
+            .await
+            .map_err(|error| Error::Unreachable(error.to_string()))?;
+        let frame: Ingress = serde_json::from_slice(&body)?;
+        if frame.frame() != name {
+            return Err(Error::Invalid(
+                "prepared transport changed frame identity".into(),
+            ));
+        }
+        sinex_transport::producer::transfer_frame(
+            &self.client,
+            &self.subjects,
+            &self.producer,
+            &mut acknowledgments,
+            &self.store_root,
+            &frame,
+            ACKNOWLEDGMENT_WAIT,
+        )
+        .await
+        .map_err(|error| Error::Unreachable(error.to_string()))?;
+        sinex_transport::producer::submit_frame(
+            &self.client,
+            &self.subjects,
+            &self.producer,
+            &mut acknowledgments,
+            &frame,
+            ACKNOWLEDGMENT_WAIT,
+        )
+        .await
+        .map_err(submit_error)
+    }
+}

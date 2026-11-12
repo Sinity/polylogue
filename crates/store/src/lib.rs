@@ -213,6 +213,25 @@ pub enum StoreError {
 }
 
 impl StoreError {
+    /// Whether retrying a write can get past a transient storage condition.
+    /// A content, permission or format failure needs its cause corrected first.
+    pub fn retryable_write(&self) -> bool {
+        match self {
+            Self::Io(error) | Self::Blobs(hashed_blobs::Error::Io(error)) => retryable_io(error),
+            Self::Sqlite(error) => matches!(
+                error.sqlite_error_code(),
+                Some(
+                    rusqlite::ErrorCode::DatabaseBusy
+                        | rusqlite::ErrorCode::DatabaseLocked
+                        | rusqlite::ErrorCode::SystemIoFailure
+                        | rusqlite::ErrorCode::DiskFull
+                        | rusqlite::ErrorCode::OperationInterrupted
+                )
+            ),
+            _ => false,
+        }
+    }
+
     /// Whether the writer refused the batch's content: writing the same
     /// rows to the same archive again is refused again. Every other write
     /// error is a failure to commit, which a later attempt can get past.
@@ -308,3 +327,23 @@ impl From<rusqlite::Error> for StoreError {
 pub type Result<T> = std::result::Result<T, StoreError>;
 
 pub mod parser_context;
+
+/// Transient file failures may be retried with the original immutable bytes.
+pub fn retryable_io(error: &std::io::Error) -> bool {
+    use std::io::ErrorKind;
+    !matches!(
+        error.kind(),
+        ErrorKind::PermissionDenied
+            | ErrorKind::ReadOnlyFilesystem
+            | ErrorKind::InvalidInput
+            | ErrorKind::Unsupported
+            | ErrorKind::InvalidData
+            | ErrorKind::NotFound
+            | ErrorKind::IsADirectory
+            | ErrorKind::NotADirectory
+            | ErrorKind::AlreadyExists
+    )
+}
+
+#[cfg(test)]
+mod tests;
