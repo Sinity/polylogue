@@ -1078,7 +1078,7 @@ fn a_value_computed_from_rows_that_changed_is_not_stored() {
     // was stored, and the session is still due.
     assert_eq!(state(), (None, 2, 1, 0));
     assert!(w.writer.derive().unwrap() > 0);
-    assert_eq!(state(), (Some(3_000), 2, 0, 11));
+    assert_eq!(state(), (Some(3_000), 2, 0, 12));
 }
 
 #[test]

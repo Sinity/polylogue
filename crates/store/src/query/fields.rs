@@ -381,8 +381,8 @@ pub fn rule(id: FieldId) -> Rule {
         SessionsTag => Rule::NONE.custom(custom::tag),
         SessionsHas => Rule::NONE.custom(custom::has),
         SessionsParent => Rule::NONE.custom(custom::parent),
-        SessionsRoot => Rule::NONE.custom(custom::root),
-        SessionsDepth => Rule::NONE.custom(custom::depth),
+        SessionsRoot => Rule::NONE.custom(custom::root).sql_fn(sessions_root),
+        SessionsDepth => Rule::NONE.sql_fn(sessions_depth),
         SessionsLink => Rule::NONE.custom(custom::link),
         SessionsContinues => Rule::NONE.custom(custom::continues),
         SessionsContinuedBy => Rule::NONE.custom(custom::continued_by),
@@ -671,6 +671,14 @@ fn own_sum(s: &str, col: &str) -> String {
 
 fn sessions_hidden(a: &Aliases) -> String {
     hidden(&a.s)
+}
+
+fn sessions_root(a: &Aliases) -> String {
+    crate::lineage::value_sql(&format!("{}.pk", a.s), "root")
+}
+
+fn sessions_depth(a: &Aliases) -> String {
+    crate::lineage::value_sql(&format!("{}.pk", a.s), "depth")
 }
 
 fn sessions_title(a: &Aliases) -> String {

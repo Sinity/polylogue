@@ -592,12 +592,13 @@ fields! {
         "the session has thinking, tool calls, errors, …",
     ),
     SessionsParent = sp(Sessions, "parent", "sessions linked from the given session"),
-    SessionsRoot = sp(
+    SessionsRoot = f(
         Sessions,
         "root",
+        Match,
         "sessions whose explicit ancestry has the given root",
     ),
-    SessionsDepth = sp(Sessions, "depth", "depth in the explicit provider lineage"),
+    SessionsDepth = f(Sessions, "depth", Number, "depth in the explicit provider lineage"),
     SessionsLink = sp(
         Sessions,
         "link",

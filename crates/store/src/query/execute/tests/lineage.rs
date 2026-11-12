@@ -27,11 +27,14 @@ fn root_and_depth_queries_use_current_explicit_lineage_before_and_after_derivati
                 "sessions where root:test:root | sort by id",
                 vec!["test:fork", "test:resume", "test:root"],
             ),
-            ("sessions where depth=2", vec!["test:resume"]),
+            (
+                "sessions where depth=2 | sort by depth",
+                vec!["test:resume"],
+            ),
         ] {
             let mut opts = options();
             opts.page_size = Some(20);
-            opts.fields = vec!["id".into()];
+            opts.fields = vec!["id".into(), "root".into(), "depth".into()];
             let program = crate::query::compile(query, &opts).unwrap();
             let page = reader.query_page(&program, None).unwrap();
             let ids: Vec<_> = page
@@ -40,6 +43,10 @@ fn root_and_depth_queries_use_current_explicit_lineage_before_and_after_derivati
                 .map(|row| row["id"].as_str().unwrap())
                 .collect();
             assert_eq!(ids, expected, "{query}, derived={derived}");
+            for row in &page.rows {
+                assert_eq!(row["root"], "test:root");
+                assert!(row["depth"].is_number());
+            }
         }
     }
     // A known cached root cannot leak through a newly conflicting parent.
@@ -49,7 +56,7 @@ fn root_and_depth_queries_use_current_explicit_lineage_before_and_after_derivati
     let reader = pool.reader().unwrap();
     let mut opts = options();
     opts.page_size = Some(20);
-    opts.fields = vec!["id".into()];
+    opts.fields = vec!["id".into(), "root".into(), "depth".into()];
     let program = crate::query::compile("sessions where root:test:root", &opts).unwrap();
     let page = reader.query_page(&program, None).unwrap();
     assert_eq!(page.rows.len(), 1);

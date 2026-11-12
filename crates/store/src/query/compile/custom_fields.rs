@@ -583,18 +583,6 @@ pub(crate) fn root(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Que
     Ok(c.session_reference(&root, "id", &x.value()?))
 }
 
-pub(crate) fn depth(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
-    let expr = crate::lineage::value_sql(&format!("{}.pk", x.s()), "depth");
-    let def = fields::FieldId::SessionsDepth.declaration();
-    if x.top {
-        c.show("depth", &expr, ColKind::Number, None);
-    }
-    let Some(comparison) = x.comparison() else {
-        return Err(x.need_value());
-    };
-    c.compare_as(def, Kind::Number, &expr, comparison, x.span)
-}
-
 pub(crate) fn link(_: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
     let s = x.s();
     let mut parts = vec![];
