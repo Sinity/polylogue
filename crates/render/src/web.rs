@@ -34,7 +34,7 @@ pub fn read(
     let query_display = crate::terminal::json(&Value::String(query.into()), false);
     frame.query = &query_display[1..query_display.len() - 1];
     frame.navigation = navigation_entries();
-    frame.status = currency(&page.snapshot.currency);
+    frame.status = currency(&page.snapshot.freshness.owner);
     let route = table
         .descriptions()
         .iter()
@@ -45,7 +45,7 @@ pub fn read(
         .as_deref()
         .ok_or_else(|| Failure::new(FailureKind::BadRequest, "read operation has no HTTP route"))?;
     let body = html! {
-        (currency_notice(&page.snapshot.currency, &frame.command))
+        (freshness_notice(&page.snapshot.freshness, &frame.command))
         nav class="read-views" aria-label="Read view" { @for view in View::ALL { a href=(view_url(request,route,view)?) aria-current=[(view==page.document.header.view).then_some("page")] { (view) } } }
         (navigation(page))
         (crate::html::document(&page.document))
@@ -55,7 +55,7 @@ pub fn read(
             dt { "Index" } dd { (page.snapshot.read_at.index) }
             dt { "Archive" } dd { (page.snapshot.read_at.archive) }
             dt { "Ran at" } dd { (page.snapshot.ran_at) }
-            dt { "Caught up" } dd { (page.snapshot.caught_up) }
+            dt { "Caught up" } dd { (page.snapshot.freshness.up_to_date()) }
         } }
     };
     Ok(crate::terminal::escape(
@@ -158,28 +158,8 @@ fn view_url(request: &RunnableRequest, route: &str, view: View) -> Result<String
     })
 }
 
-fn currency_notice(currency: &IndexCurrency, command: &str) -> Markup {
-    match currency {
-        IndexCurrency::Primary {
-            state: CurrencyState::Behind,
-            ..
-        } => web_shell::values::view_state(
-            "behind",
-            "the primary index is behind its observed owner position",
-            command,
-        ),
-        IndexCurrency::Primary {
-            state: CurrencyState::Unknown,
-            ..
-        } => web_shell::values::view_state("unknown", "primary index currency is unknown", command),
-        IndexCurrency::Primary {
-            state: CurrencyState::Unavailable,
-            ..
-        } => web_shell::values::view_state(
-            "unavailable",
-            "the primary owner observation is unavailable",
-            command,
-        ),
-        _ => html! {},
-    }
+fn freshness_notice(freshness: &polylogue_model::currency::ReadFreshness, command: &str) -> Markup {
+    html! { @for note in freshness.notes() {
+        (web_shell::values::view_state("behind", note, command))
+    } }
 }

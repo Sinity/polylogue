@@ -189,16 +189,6 @@ pub(crate) fn with_variants(
     Ok(request)
 }
 
-/// What read cursors are sealed with: this index generation's key and the
-/// generation.
-/// Whether the index has caught up, read from the snapshot of `reader`
-/// through the counts the writer keeps, without walking the chains.
-fn caught_up(reader: &Reader<'_>) -> polylogue_store::Result<bool> {
-    Ok(reader
-        .completeness(&polylogue_engine::reading_contracts())?
-        .caught_up())
-}
-
 fn cursor_seal(reader: &polylogue_store::Reader<'_>) -> Result<CursorSeal, Failure> {
     Ok(CursorSeal {
         key: reader.cursor_key()?,
@@ -327,14 +317,12 @@ fn prepared<T>(
             let compile = crate::daemon::query::options(reader, &ask, seed(&reading.target))?;
             let selection = reader.prepare_selection(&reading.target, &compile)?;
             let positions = reader.change_position()?;
-            let caught_up = caught_up(reader)?;
             let snapshot = ReadSnapshot {
                 query: format!("query:{}", selection.question_id()),
                 query_text: reading.target.clone(),
                 ran_at: operation.ran_at,
-                caught_up,
                 read_at: positions,
-                currency: d.currency(reader)?,
+                freshness: d.freshness(reader)?,
                 enabled_variants: reading.options.variants.clone(),
                 author: operation.authorship.author.clone(),
                 notes: selection.program().notes.clone(),
@@ -879,7 +867,7 @@ pub(crate) fn page(
     })();
     match result {
         Ok(page) => match serde_json::to_value(&page) {
-            Ok(value) => crate::protocol::read(value, &page.snapshot.currency),
+            Ok(value) => crate::protocol::read(value, &page.snapshot.freshness),
             Err(problem) => error("internal", problem),
         },
         Err(failure) => failure.answer(),

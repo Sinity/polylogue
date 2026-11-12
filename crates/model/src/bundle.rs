@@ -11,7 +11,7 @@ pub use fragments::{
 };
 
 pub const FORMAT: &str = "polylogue-bundle";
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 /// One reader's immutable context. Streaming batches share this snapshot;
 /// delivery computes record counts without collecting the complete selection.
@@ -22,8 +22,7 @@ pub struct ReadSnapshot {
     pub query_text: String,
     pub ran_at: Timestamp,
     pub read_at: ChangePosition,
-    pub caught_up: bool,
-    pub currency: crate::currency::IndexCurrency,
+    pub freshness: crate::currency::ReadFreshness,
     pub enabled_variants: Vec<String>,
     pub author: Author,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -43,8 +42,7 @@ pub struct Manifest {
     pub query_text: String,
     pub ran_at: Timestamp,
     pub read_at: ChangePosition,
-    pub caught_up: bool,
-    pub currency: crate::currency::IndexCurrency,
+    pub freshness: crate::currency::ReadFreshness,
     pub counts: Counts,
     pub flags: Flags,
     pub enabled_variants: Vec<String>,
@@ -463,8 +461,7 @@ impl Manifest {
             query_text: snapshot.query_text,
             ran_at: snapshot.ran_at,
             read_at: snapshot.read_at,
-            caught_up: snapshot.caught_up,
-            currency: snapshot.currency,
+            freshness: snapshot.freshness,
             enabled_variants: snapshot.enabled_variants,
             author: snapshot.author,
             notes: snapshot.notes,

@@ -90,20 +90,7 @@ fn typed_read_real_cli_pages_unicode_once_and_publishes_a_canonical_bundle() {
     let expected = "A synthetic λ🙂 prompt across source and transport boundaries.";
     std::fs::write(project.join("typed.jsonl"), line("u1", "typed", expected)).unwrap();
     let _daemon = start_daemon(&fixture);
-    let until = Instant::now() + Duration::from_secs(30);
-    loop {
-        let output = cli(&fixture, &["--deadline", "none", "--json", "status"]);
-        assert!(output.status.success(), "{output:?}");
-        let status = json(&output);
-        if status["store"]["messages"] == 1 && status["busy"] == false {
-            break;
-        }
-        assert!(
-            Instant::now() < until,
-            "synthetic source never became ready: {status}"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    wait_status(&fixture, |status| status["store"]["messages"] == 1);
     let target = "session:claude-code:typed";
     let whole = typed_page(&cli(
         &fixture,
@@ -182,13 +169,12 @@ fn typed_read_real_cli_pages_unicode_once_and_publishes_a_canonical_bundle() {
     eprintln!(
         "bundle snapshot: positions={:?}, caught_up={}, currency={:?}, incomplete={:?}, coverage={:?}",
         manifest.read_at,
-        manifest.caught_up,
-        manifest.currency,
+        manifest.freshness.up_to_date(),
+        manifest.freshness.owner,
         manifest.incomplete,
         manifest.coverage
     );
-    let degraded = !manifest.caught_up
-        || manifest.currency.degraded()
+    let degraded = !manifest.freshness.up_to_date()
         || !manifest.incomplete.is_empty()
         || !manifest.coverage.is_empty();
     assert_eq!(delivered.status.code(), Some(if degraded { 5 } else { 0 }));

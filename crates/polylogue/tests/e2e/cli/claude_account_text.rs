@@ -25,9 +25,30 @@ pub(super) fn reading(env: &crate::Fixture, reference: &str, options: &[&str]) -
     let target = target(reference);
     let mut args = vec!["--json", "read", target.as_str()];
     args.extend_from_slice(options);
-    let out = cli(env, &args);
-    assert!(out.status.success(), "{out:?}");
-    serde_json::from_value(json(&out)).unwrap()
+    let started = Instant::now();
+    loop {
+        let out = cli(env, &args);
+        let answer: command_surface::Answer<ReadPage> = serde_json::from_slice(&out.stdout)
+            .unwrap_or_else(|error| panic!("invalid reading: {error}: {out:?}"));
+        assert_eq!(
+            out.status.code(),
+            Some(i32::from(answer.exit_code())),
+            "{out:?}"
+        );
+        match answer.outcome {
+            command_surface::Outcome::Ok(page) | command_surface::Outcome::Empty(page) => {
+                return page;
+            }
+            command_surface::Outcome::Degraded { value: _, missing } => {
+                assert!(
+                    started.elapsed() < READY_DEADLINE,
+                    "the awaited current reading did not come within {READY_DEADLINE:?}: {missing:?}"
+                );
+            }
+            other => panic!("reading failed: {other:?}: {out:?}"),
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
 }
 pub(super) fn next_args(call: &ReadyCall) -> Vec<String> {
     let stages = polylogue_model::command::effective_stages(&call.cli);

@@ -116,10 +116,21 @@ pub(super) fn wait_status(
         // The poll lifts its deadline, so a loaded host delays the answer
         // instead of turning it into a timeout.
         let out = cli(env, &["--deadline", "none", "--json", "status"]);
-        assert!(out.status.success(), "{out:?}");
-        let status = json(&out);
-        // The archive counts come once the daemon's first count ends.
-        if status["busy"] == false && status["store"].is_object() && ready(&status) {
+        let answer: command_surface::Answer<serde_json::Value> =
+            serde_json::from_slice(&out.stdout)
+                .unwrap_or_else(|error| panic!("invalid startup status: {error}: {out:?}"));
+        assert_eq!(
+            out.status.code(),
+            Some(i32::from(answer.exit_code())),
+            "{out:?}"
+        );
+        let (status, current) = match answer.outcome {
+            command_surface::Outcome::Ok(value) => (value, true),
+            command_surface::Outcome::Degraded { value, .. } => (value, false),
+            other => panic!("startup status failed: {other:?}: {out:?}"),
+        };
+        // A settled fixture requires a current index as well as its expected rows.
+        if current && status["busy"] == false && status["store"].is_object() && ready(&status) {
             return status;
         }
         assert!(
@@ -127,6 +138,62 @@ pub(super) fn wait_status(
             "the awaited status did not come within {READY_DEADLINE:?}; last status: {status}"
         );
         std::thread::sleep(PAUSE);
+    }
+}
+
+/// Poll a query until the current answer has the expected rows. A degraded
+/// answer cannot satisfy a settled fixture even when its partial rows match.
+pub(super) fn wait_rows(
+    env: &crate::Fixture,
+    query: &str,
+    ready: impl Fn(&serde_json::Value) -> bool,
+) -> serde_json::Value {
+    let started = Instant::now();
+    loop {
+        let out = cli(env, &["--json", query]);
+        let answer: command_surface::Answer<serde_json::Value> =
+            serde_json::from_slice(&out.stdout)
+                .unwrap_or_else(|error| panic!("invalid query answer: {error}: {out:?}"));
+        assert_eq!(
+            out.status.code(),
+            Some(i32::from(answer.exit_code())),
+            "{out:?}"
+        );
+        if !matches!(&answer.outcome, command_surface::Outcome::Degraded { .. }) {
+            let rows = query_rows(&out);
+            if ready(&rows) {
+                return rows;
+            }
+        }
+        assert!(
+            started.elapsed() < READY_DEADLINE,
+            "the awaited current rows did not come within {READY_DEADLINE:?}: {answer:?}"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+pub(super) fn query_rows(out: &Output) -> serde_json::Value {
+    let answer: command_surface::Answer<serde_json::Value> =
+        serde_json::from_slice(&out.stdout).unwrap();
+    match answer {
+        command_surface::Answer {
+            outcome: command_surface::Outcome::Ok(value),
+            ..
+        } => {
+            assert!(out.status.success(), "{out:?}");
+            value
+        }
+        command_surface::Answer {
+            outcome: command_surface::Outcome::Empty(value),
+            ..
+        } => {
+            assert_eq!(out.status.code(), Some(1), "{out:?}");
+            assert_eq!(value["count"], 0, "{value}");
+            assert_eq!(value["rows"], serde_json::json!([]), "{value}");
+            value
+        }
+        answer => panic!("expected rows or typed empty query: {answer:?}; {out:?}"),
     }
 }
 
@@ -185,8 +252,17 @@ fn killing_the_test_parent_stops_its_real_daemon() {
         .env("XDG_CONFIG_HOME", dir.path().join("config"))
         .output()
         .unwrap();
-    assert!(running.status.success(), "{running:?}");
-    assert_eq!(json(&running)["pid"].as_u64(), Some(daemon_pid));
+    let answer: command_surface::Answer<serde_json::Value> =
+        serde_json::from_slice(&running.stdout).unwrap();
+    assert_eq!(running.status.code(), Some(i32::from(answer.exit_code())));
+    assert!(
+        matches!(
+            &answer.outcome,
+            command_surface::Outcome::Ok(_) | command_surface::Outcome::Degraded { .. }
+        ),
+        "{answer:?}"
+    );
+    assert_eq!(answer.value().unwrap()["pid"].as_u64(), Some(daemon_pid));
     assert!(matches!(
         polylogue_store::Archive::open_or_create(&dir.path().join("archive")),
         Err(polylogue_store::StoreError::Locked { .. })

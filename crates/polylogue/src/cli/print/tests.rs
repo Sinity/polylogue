@@ -29,7 +29,7 @@ fn terminal_printers_escape_archived_text() {
     }
     let page = json!({
         "format":"markdown",
-        "snapshot":{"query":"query:synthetic","ran_at":"2026-03-01T12:00:00Z","read_at":{"generation":"synthetic","index":0,"archive":0},"caught_up":true,"currency":{"mode":"standalone"}},
+        "snapshot":{"query":"query:synthetic","ran_at":"2026-03-01T12:00:00Z","read_at":{"generation":"synthetic","index":0,"archive":0},"freshness":{"local":{"parsing":{"state":"complete"},"derivation":{"state":"complete"},"search":{"state":"complete"},"projection":{"state":"not_applicable"},"kept_chains":0,"raw_only_chains":0},"owner":{"mode":"standalone"}}},
         "records":[],
         "document":{
             "header":{"target":"event:synthetic","view":"transcript","title":{"state":"value","value":HOSTILE},"kind":{"kind":"event","event_type":"synthetic"}},

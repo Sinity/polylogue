@@ -25,9 +25,7 @@ mod object;
 pub use object::ObjectRead;
 mod behind_index;
 mod completeness;
-pub use completeness::{
-    CompletenessDimension, CompletenessReason, ReadCompleteness, ReadingContract,
-};
+pub use completeness::ReadingContract;
 mod captured;
 mod cursor_generation;
 pub use cursor_generation::open_cursor;

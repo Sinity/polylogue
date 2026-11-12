@@ -601,7 +601,7 @@ fn rows_document(
     );
     let rows = crate::protocol::query::Rows {
         read_at: crate::protocol::query::Position {
-            currency: None,
+            freshness: None,
             generation: "synthetic".into(),
             index: 1,
             archive: 1,

@@ -47,8 +47,8 @@ pub(super) fn answer(
         Ok(mode) => mode,
         Err(problem) => return error("internal", problem),
     };
-    let currency = match d.currency(reader) {
-        Ok(currency) => currency,
+    let freshness = match d.freshness(reader) {
+        Ok(freshness) => freshness,
         Err(error) => return store_error(&error),
     };
     let status = crate::protocol::status::Answer {
@@ -63,19 +63,17 @@ pub(super) fn answer(
         running,
         warm: d.warm.summary(),
         mode,
-        currency: currency.clone(),
+        freshness: freshness.clone(),
         #[cfg(feature = "sinex")]
         primary: primary(d, reader),
     };
     match serde_json::to_value(status) {
         Ok(value) => {
             let super::ModeState::Blocked { path, error, .. } = &d.mode else {
-                return crate::protocol::read(value, &currency);
+                return crate::protocol::read(value, &freshness);
             };
-            let mut missing: Vec<String> = crate::protocol::currency_note(&currency)
-                .map(str::to_owned)
-                .into_iter()
-                .collect();
+            let mut missing: Vec<String> =
+                freshness.notes().into_iter().map(str::to_owned).collect();
             missing.push(format!("{}: {error}", path.display()));
             command_surface::Answer {
                 outcome: command_surface::Outcome::Degraded { value, missing },

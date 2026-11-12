@@ -1276,9 +1276,8 @@ pub(super) fn page(
     let snapshot = ReadPageSnapshot {
         query: target.clone(),
         ran_at: operation.ran_at,
-        caught_up: super::caught_up(reader)?,
         read_at: positions,
-        currency: d.currency(reader)?,
+        freshness: d.freshness(reader)?,
     };
     Ok(ReadPage {
         format,

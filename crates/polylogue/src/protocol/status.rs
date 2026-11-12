@@ -27,7 +27,7 @@ pub struct Answer {
     pub running: Running,
     pub warm: Warm,
     pub mode: Mode,
-    pub currency: polylogue_model::currency::IndexCurrency,
+    pub freshness: polylogue_model::currency::ReadFreshness,
     #[cfg(feature = "sinex")]
     pub primary: Option<Primary>,
 }

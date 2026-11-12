@@ -286,38 +286,21 @@ pub fn written<T>(value: T, pending: bool) -> Answer<T> {
 pub const AWAITING_CONFIRMATION: &str = "accepted locally; awaiting Sinex confirmation";
 
 /// A read over an index that is not current keeps its value and says why.
-pub fn read<T>(value: T, currency: &polylogue_model::currency::IndexCurrency) -> Answer<T> {
-    match currency_note(currency) {
-        Some(note) => command_surface::Answer {
+pub fn read<T>(value: T, freshness: &polylogue_model::currency::ReadFreshness) -> Answer<T> {
+    if freshness.up_to_date() {
+        Answer::ok(value)
+    } else {
+        command_surface::Answer {
             outcome: command_surface::Outcome::Degraded {
                 value,
-                missing: vec![note.into()],
+                missing: freshness.notes().into_iter().map(str::to_owned).collect(),
             },
             envelope: command_surface::Envelope {
                 next: vec![],
                 ..Default::default()
             },
-        },
-        None => Answer::ok(value),
+        }
     }
-}
-
-pub fn currency_note(currency: &polylogue_model::currency::IndexCurrency) -> Option<&'static str> {
-    use polylogue_model::currency::{CurrencyState, IndexCurrency};
-    if !currency.degraded() {
-        return None;
-    }
-    Some(match currency {
-        IndexCurrency::Primary {
-            state: CurrencyState::Behind,
-            ..
-        } => "primary index is behind the observed owner position",
-        IndexCurrency::Primary {
-            state: CurrencyState::Unavailable,
-            ..
-        } => "primary owner is unavailable",
-        _ => "primary index currency is unknown",
-    })
 }
 
 #[cfg(test)]

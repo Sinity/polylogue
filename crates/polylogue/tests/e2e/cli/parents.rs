@@ -57,8 +57,10 @@ fn write_bundle(path: &Path, sessions: Vec<Vec<Record>>) -> Vec<u8> {
             index: 1,
             archive: 1,
         },
-        caught_up: true,
-        currency: polylogue_model::currency::IndexCurrency::Standalone,
+        freshness: polylogue_model::currency::ReadFreshness {
+            local: polylogue_model::currency::ReadCompleteness::empty(),
+            owner: polylogue_model::currency::IndexCurrency::Standalone,
+        },
         counts: bundle::Counts {
             sessions: records
                 .iter()

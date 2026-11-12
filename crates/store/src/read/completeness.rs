@@ -31,61 +31,7 @@ impl ReadingContract {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CompletenessReason {
-    MissingDeclaration,
-    MissingCheckpoint,
-    ReadingVersionChanged,
-    ParserBehind,
-    MissingSourcePrefix,
-    KnownRawOnly,
-    DerivationBehind,
-    SearchPending,
-    FirstBuild,
-    /// Primary mode: the index has not yet applied the confirmed stream.
-    StreamNotApplied,
-    /// Primary mode: the index is behind Sinex's commit position; the lag is
-    /// in the read's position report.
-    StreamBehind,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "state", content = "reasons", rename_all = "snake_case")]
-pub enum CompletenessDimension {
-    Complete,
-    Incomplete(Vec<CompletenessReason>),
-    Unknown(Vec<CompletenessReason>),
-    NotApplicable,
-}
-impl CompletenessDimension {
-    fn current(&self) -> bool {
-        matches!(self, Self::Complete | Self::NotApplicable)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ReadCompleteness {
-    pub parsing: CompletenessDimension,
-    pub derivation: CompletenessDimension,
-    pub search: CompletenessDimension,
-    pub projection: CompletenessDimension,
-    /// Deliberately retained without promising parsed products.
-    pub kept_chains: u64,
-    /// Known nonparsed chains, independently of retained raw-byte coverage.
-    pub raw_only_chains: u64,
-}
-impl ReadCompleteness {
-    pub fn caught_up(&self) -> bool {
-        self.parsing.current()
-            && self.derivation.current()
-            && self.search.current()
-            && self.projection.current()
-    }
-    pub fn degraded(&self) -> bool {
-        !self.caught_up()
-    }
-}
+use polylogue_model::currency::{CompletenessDimension, CompletenessReason, ReadCompleteness};
 
 impl Reader<'_> {
     pub fn completeness(&self, contracts: &[ReadingContract]) -> Result<ReadCompleteness> {

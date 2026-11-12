@@ -33,8 +33,7 @@ pub struct ReadPageSnapshot {
     pub query: String,
     pub ran_at: crate::Timestamp,
     pub read_at: crate::ChangePosition,
-    pub caught_up: bool,
-    pub currency: crate::currency::IndexCurrency,
+    pub freshness: crate::currency::ReadFreshness,
 }
 impl From<&ReadSnapshot> for ReadPageSnapshot {
     fn from(snapshot: &ReadSnapshot) -> Self {
@@ -42,8 +41,7 @@ impl From<&ReadSnapshot> for ReadPageSnapshot {
             query: snapshot.query.clone(),
             ran_at: snapshot.ran_at,
             read_at: snapshot.read_at.clone(),
-            caught_up: snapshot.caught_up,
-            currency: snapshot.currency.clone(),
+            freshness: snapshot.freshness.clone(),
         }
     }
 }

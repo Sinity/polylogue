@@ -135,7 +135,11 @@ fn noncurrent_primary_reads_keep_their_data_and_say_why() {
         IndexCurrency::primary(Some(5), None, None, Some(false), Some("unreachable".into())),
     ] {
         let value = json!({"rows":[{"ref":"session:synthetic"}]});
-        let result = read(value.clone(), &currency);
+        let freshness = polylogue_model::currency::ReadFreshness {
+            local: polylogue_model::currency::ReadCompleteness::empty(),
+            owner: currency.clone(),
+        };
+        let result = read(value.clone(), &freshness);
         assert_eq!(result.exit_code(), 5);
         assert_eq!(result.http_status(), Some(200));
         assert_eq!(result.value(), Some(&value));
@@ -147,7 +151,13 @@ fn noncurrent_primary_reads_keep_their_data_and_say_why() {
     }
     let current = IndexCurrency::primary(Some(8), Some(8), Some(0.5), Some(true), None);
     assert!(matches!(
-        read(json!({}), &current),
+        read(
+            json!({}),
+            &polylogue_model::currency::ReadFreshness {
+                local: polylogue_model::currency::ReadCompleteness::empty(),
+                owner: current
+            }
+        ),
         command_surface::Answer {
             outcome: command_surface::Outcome::Ok(_),
             ..

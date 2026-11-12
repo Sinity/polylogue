@@ -21,7 +21,7 @@ pub struct Arguments {
 #[serde(deny_unknown_fields)]
 pub struct Position {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub currency: Option<polylogue_model::currency::IndexCurrency>,
+    pub freshness: Option<polylogue_model::currency::ReadFreshness>,
     pub generation: String,
     pub index: u64,
     pub archive: u64,

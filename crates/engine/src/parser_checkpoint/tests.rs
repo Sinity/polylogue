@@ -225,7 +225,7 @@ fn raw_only_capture_keeps_bytes_without_inventing_a_parser_checkpoint_or_replayi
         assert_eq!(rows[0]["n"], 0);
         let completeness = reader.completeness(&crate::reading_contracts()).unwrap();
         assert!(
-            matches!(completeness.parsing, polylogue_store::CompletenessDimension::Incomplete(ref reasons) if reasons.contains(&polylogue_store::CompletenessReason::KnownRawOnly))
+            matches!(completeness.parsing, polylogue_model::currency::CompletenessDimension::Incomplete(ref reasons) if reasons.contains(&polylogue_model::currency::CompletenessReason::KnownRawOnly))
         );
         assert_eq!(completeness.raw_only_chains, 1);
         assert!(!completeness.caught_up());
@@ -234,7 +234,8 @@ fn raw_only_capture_keeps_bytes_without_inventing_a_parser_checkpoint_or_replayi
 
 #[test]
 fn declared_registry_keeps_absent_raw_only_origins_valid_and_real_row_dump_versions() {
-    use polylogue_store::{CompletenessDimension, ReadingContract};
+    use polylogue_model::currency::CompletenessDimension;
+    use polylogue_store::ReadingContract;
     let home = ClaudeHome::new();
     let (engine, _lock) = crate::import::tests::engine(&home, 1024);
     let contracts = crate::reading_contracts();

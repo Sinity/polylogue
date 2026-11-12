@@ -4,8 +4,8 @@ fn authored_bundle() -> Vec<u8> {
     // Independent wire literals: the manifest's claimed operator is unrelated
     // to the current program accepting this historical setting.
     let manifest = json!({"record":"manifest","data":{
-        "format":"polylogue-bundle","version":1,"query":format!("query:{}","0".repeat(64)),"query_text":"synthetic",
-        "ran_at":"2026-01-01T00:00:00Z","read_at":{"generation":"synthetic","index":100,"archive":100},"caught_up":true,"currency":{"mode":"standalone"},
+        "format":"polylogue-bundle","version":2,"query":format!("query:{}","0".repeat(64)),"query_text":"synthetic",
+        "ran_at":"2026-01-01T00:00:00Z","read_at":{"generation":"synthetic","index":100,"archive":100},"freshness":{"local":{"parsing":{"state":"complete"},"derivation":{"state":"complete"},"search":{"state":"complete"},"projection":{"state":"not_applicable"},"kept_chains":0,"raw_only_chains":0},"owner":{"mode":"standalone"}},
         "counts":{"sessions":1,"messages":0,"documents":0,"events":0,"links":0,"authored":1,"assertions":0,"text_fragments":0,"variants":0,"variant_parts":0,"blobs":0},
         "flags":{"format":"jsonl","with_blobs":false,"read":{"view":"transcript","inherited":false,"assertions":true}},"enabled_variants":[],"author":"operator"}});
     let session = json!({"record":"session","data":{"ref":"session:claude-code:bundle-session","commit":1,"session":{"id":"claude-code:bundle-session","kind":"main","cwd":[]}}});

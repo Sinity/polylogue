@@ -12,8 +12,10 @@ fn begin() -> ReadBegin {
                 index: 1,
                 archive: 1,
             },
-            caught_up: true,
-            currency: polylogue_model::currency::IndexCurrency::Standalone,
+            freshness: polylogue_model::currency::ReadFreshness {
+                local: polylogue_model::currency::ReadCompleteness::empty(),
+                owner: polylogue_model::currency::IndexCurrency::Standalone,
+            },
             enabled_variants: vec![],
             author: Author::Operator,
             notes: vec![],

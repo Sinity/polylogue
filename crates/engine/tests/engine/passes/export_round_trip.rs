@@ -199,8 +199,10 @@ fn export_file(w: &ClaudeHome, sessions: &[&str]) -> std::path::PathBuf {
             query_text: "synthetic session and authored state".into(),
             ran_at: Timestamp::from_unix_ms(1_790_000_000_000).unwrap(),
             read_at: reader.change_position().unwrap(),
-            caught_up: true,
-            currency: polylogue_model::currency::IndexCurrency::Standalone,
+            freshness: polylogue_model::currency::ReadFreshness {
+                local: polylogue_model::currency::ReadCompleteness::empty(),
+                owner: polylogue_model::currency::IndexCurrency::Standalone,
+            },
             enabled_variants: Vec::new(),
             author: Author::Operator,
             notes: Vec::new(),
