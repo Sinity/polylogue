@@ -188,6 +188,12 @@ static MESSAGE_FIELDS: Fields = Fields::new(
         ("stop_reason", Rule::Read(T::String)),
         ("input_mode", Rule::Kept("how the prompt was entered")),
         ("compaction_summary", Rule::Read(T::Array)),
+        ("compaction_summary[].type", Rule::Read(T::String)),
+        ("compaction_summary[].text", Rule::Read(T::String)),
+        (
+            "compaction_summary[].citations",
+            Rule::Kept("summary block citation metadata"),
+        ),
     ],
 )
 .shape(
@@ -314,7 +320,7 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
                         .then(|| summary_ids.next_blocks(&sid, Role::User, &mut blocks))
                         .flatten();
                     if let Some(id) = summary_id {
-                        let summary_message = context_summary(
+                        let mut summary_message = context_summary(
                             sid.clone(),
                             id.clone(),
                             msg.parent.clone(),
@@ -322,6 +328,12 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
                             msg.time_evidence(),
                             blocks,
                         );
+                        let details = content_details(summary);
+                        if !details.is_empty() {
+                            summary_message
+                                .attrs
+                                .insert("content".into(), Json::Array(details));
+                        }
                         let index = m.get("index").and_then(Json::as_i64).unwrap_or(i as i64);
                         rows.push((
                             msg.at.map(|at| at.unix_ms()),
@@ -494,11 +506,20 @@ fn content_attrs(message: &Json) -> serde_json::Map<String, Json> {
     if let Some(value) = message.get("metadata") {
         attrs.insert("metadata".into(), value.clone());
     }
-    let details: Vec<Json> = message
+    let details = message
         .get("content")
         .and_then(Json::as_array)
-        .into_iter()
-        .flatten()
+        .map(|parts| content_details(parts))
+        .unwrap_or_default();
+    if !details.is_empty() {
+        attrs.insert("content".into(), Json::Array(details));
+    }
+    attrs
+}
+
+fn content_details(parts: &[Json]) -> Vec<Json> {
+    parts
+        .iter()
         .enumerate()
         .filter_map(|(position, block)| {
             let fields: serde_json::Map<String, Json> = block
@@ -514,11 +535,7 @@ fn content_attrs(message: &Json) -> serde_json::Map<String, Json> {
                 .collect();
             (!fields.is_empty()).then(|| serde_json::json!({"position":position,"fields":fields}))
         })
-        .collect();
-    if !details.is_empty() {
-        attrs.insert("content".into(), Json::Array(details));
-    }
-    attrs
+        .collect()
 }
 
 /// One content block. Provider-only kinds remain structured index blocks.

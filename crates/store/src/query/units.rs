@@ -96,11 +96,13 @@ impl Hits<'_> {
         format!("{b}.kind IN ({kinds})")
     }
 
-    /// For prose, the condition that message alias `m` was written by a
-    /// person or a model, after ` AND `; empty for the other indexes.
+    /// Prose excludes harness prompts except summaries. Unknown authorship
+    /// keeps its text searchable. Empty for the other indexes.
     pub fn writer(&self, m: &str) -> String {
         match self.index {
-            Index::Prose => format!(" AND {m}.written_by IN ('human', 'model')"),
+            Index::Prose => format!(
+                " AND ({m}.written_by IN ('human', 'model', 'unknown') OR {m}.prompt_kind='compaction_summary')"
+            ),
             _ => String::new(),
         }
     }

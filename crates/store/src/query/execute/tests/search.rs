@@ -11,12 +11,12 @@ const DOWNWARD: &str = "WITH hits AS MATERIALIZED (
 ) SELECT id,rank FROM (
     SELECT s.id,s.last_activity_at,(SELECT min(h.rank) FROM hits h
       JOIN block b ON b.text_id=h.text_id JOIN message m ON m.pk=b.message_pk
-      WHERE b.kind='text' AND m.written_by IN ('human','model')
+      WHERE b.kind='text' AND (m.written_by IN ('human','model','unknown') OR m.prompt_kind='compaction_summary')
         AND m.duplicate_of IS NULL AND coalesce(m.on_active_path,1)=1
         AND m.session_pk IN (WITH RECURSIVE tree(pk) AS (
           SELECT s.pk UNION SELECT l.child_pk FROM link l
           JOIN session parent ON parent.id=l.parent_id JOIN tree ON tree.pk=parent.pk
-          WHERE l.kind='subagent' AND l.child_pk IS NOT NULL
+          WHERE l.kind='spawn' AND l.child_pk IS NOT NULL
         ) SELECT pk FROM tree)) AS rank
     FROM session s WHERE s.origin='test' AND s.kind='main'
 ) WHERE rank IS NOT NULL ORDER BY rank,last_activity_at DESC,id";
@@ -89,10 +89,10 @@ fn archive(unrelated: usize, cycle: bool) -> (tempfile::TempDir, Fixture) {
             .unwrap();
     }
     fixture
-        .link("test:root-a", "test:leaf", "subagent", "fresh")
+        .link("test:root-a", "test:leaf", "spawn", None)
         .unwrap();
     fixture
-        .link("test:leaf", "test:deep", "subagent", "fresh")
+        .link("test:leaf", "test:deep", "spawn", None)
         .unwrap();
     fixture
         .many_sessions(ManySessions {
@@ -113,7 +113,7 @@ fn archive(unrelated: usize, cycle: bool) -> (tempfile::TempDir, Fixture) {
         // Search reachability is bounded even when retained source links cycle.
         // This test reads query rows, independently of transcript layout indexes.
         conn.execute("INSERT INTO link(parent_id,child_id,child_pk,kind,how,evidence,input_pk)
-          VALUES('test:deep','test:leaf',?1,'subagent','fresh','fixture',(SELECT pk FROM input_ref LIMIT 1))", [sessions["leaf"]]).unwrap();
+          VALUES('test:deep','test:leaf',?1,'spawn',NULL,'fixture',(SELECT pk FROM input_ref LIMIT 1))", [sessions["leaf"]]).unwrap();
     }
     drop(conn);
     (dir, fixture)

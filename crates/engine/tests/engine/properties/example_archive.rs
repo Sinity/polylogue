@@ -189,7 +189,7 @@ fn a_subagent_has_one_parent() {
     w.run_pass();
     let twice = count(
         &w,
-        "SELECT count(*) AS n FROM (SELECT child_id FROM link WHERE kind = 'spawn'
+        "SELECT count(*) AS n FROM (SELECT child_id FROM session_link WHERE kind = 'spawn'
              GROUP BY child_id HAVING count(DISTINCT parent_id) > 1)",
     );
     assert_eq!(twice, 0, "a session has two subagent parents");
@@ -198,7 +198,7 @@ fn a_subagent_has_one_parent() {
         .reader()
         .unwrap()
         .query(
-            "SELECT parent_id FROM link WHERE kind = 'spawn' AND child_id = ?1",
+            "SELECT parent_id FROM session_link WHERE kind = 'spawn' AND child_id = ?1",
             &[SqlValue::Text(session(3).to_string())],
         )
         .unwrap();

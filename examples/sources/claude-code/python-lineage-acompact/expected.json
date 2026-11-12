@@ -70,7 +70,6 @@
             }
           ],
           "id": "claude-code:compact-u",
-          "prompt_kind": "harness",
           "role": "user",
           "session": "claude-code:agent-acompact-1a",
           "at_quality": "intrinsic",

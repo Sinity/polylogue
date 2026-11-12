@@ -257,6 +257,10 @@ fn a_compaction_summary_marks_the_discontinuity_before_its_message() {
     );
     assert_eq!(step.output.messages.len(), 4);
     assert_eq!(step.output.messages[2].message.id, summary.message.id);
+    assert_eq!(
+        summary.message.attrs["content"][0]["fields"]["citations"],
+        json!([])
+    );
     assert!(
         !step
             .counts

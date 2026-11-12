@@ -141,8 +141,7 @@ struct PromptState {
     ambiguous_calls: bool,
     position: usize,
     started: bool,
-    parent: Option<polylogue_model::SessionId>,
-    ambiguous_parent: bool,
+    parents: std::collections::BTreeSet<polylogue_model::SessionId>,
     /// Names the chunks that carry no `id`.
     ids: crate::content_ids::ContentIds,
 }
@@ -361,15 +360,7 @@ impl ExportParser for AiStudio {
             .and_then(Json::as_str)
             .and_then(|p| session_id(ORIGIN, p))
         {
-            if self
-                .state
-                .parent
-                .as_ref()
-                .is_some_and(|known| known != &parent)
-            {
-                self.state.ambiguous_parent = true;
-            }
-            self.state.parent = Some(parent);
+            self.state.parents.insert(parent);
         }
         match self.message(&sid, chunk, sink) {
             Ok((mut message, id_kind)) => {
@@ -468,21 +459,19 @@ impl ExportParser for AiStudio {
                 sink.records.record(&kind, &d);
             }
         }
-        // The whole prompt must agree on its parent before a fork is emitted.
-        if self.state.position as u64 == self.state.chunks
-            && !self.state.ambiguous_parent
-            && let Some(parent) = self.state.parent.take()
-        {
-            sink.out.links.push(Link {
-                kind: LinkKind::Fork,
-                copies_prefix: false,
-                how: None,
-                parent,
-                child: sid,
-                at: None,
-                call_id: None,
-                evidence: "branchParent.promptId".into(),
-            });
+        if self.state.position as u64 == self.state.chunks {
+            for parent in std::mem::take(&mut self.state.parents) {
+                sink.out.links.push(Link {
+                    kind: LinkKind::Fork,
+                    copies_prefix: false,
+                    how: None,
+                    parent,
+                    child: sid.clone(),
+                    at: None,
+                    call_id: None,
+                    evidence: "branchParent.promptId".into(),
+                });
+            }
         }
         if !self.state.emitted && self.state.position as u64 == self.state.chunks {
             sink.records

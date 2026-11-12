@@ -673,4 +673,9 @@ fn rewritten_compactor_markers_report_unknown_work_ownership() {
         out.messages[0].message.session.to_string(),
         "claude-code:agent-acompact-one"
     );
+    assert_eq!(out.messages[0].message.prompt_kind, None);
+    assert_eq!(
+        polylogue_model::WrittenBy::of(&out.messages[0].message),
+        polylogue_model::WrittenBy::Unknown
+    );
 }

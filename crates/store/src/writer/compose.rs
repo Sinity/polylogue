@@ -14,6 +14,8 @@ pub(super) struct MessageReading<'a> {
     pub route: Route,
     /// The reading's session is a main session, not a sidechain's copy of it.
     pub main: bool,
+    /// This source names the work session rather than carrying unknown compaction history.
+    pub explicit_owner: bool,
     pub completion: Completion,
     pub hash: &'a [u8],
     pub message: &'a Message,
@@ -29,8 +31,9 @@ pub(super) struct Composition {
     pub message: Message,
 }
 
-/// Each field group is taken from the reading that has a value for it, then
-/// from a main session's reading, then by the group's route precedence, then
+/// Content comes from an explicit work-session owner when one is recorded.
+/// Each field group otherwise prefers a reading that has a value for it, then
+/// a main session's reading, then the group's route precedence, then
 /// finished before unknown before in-progress, and last by content hash, so
 /// the result never depends on arrival order. `None` without readings.
 pub(super) fn message(readings: &[MessageReading<'_>]) -> Option<Composition> {
@@ -38,6 +41,7 @@ pub(super) fn message(readings: &[MessageReading<'_>]) -> Option<Composition> {
         (0..readings.len()).min_by_key(|&n| {
             let r = &readings[n];
             (
+                group == FieldGroup::Content && !r.explicit_owner,
                 !group.present(r.message),
                 Reverse(r.main),
                 group.rank(r.route),

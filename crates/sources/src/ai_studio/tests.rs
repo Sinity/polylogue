@@ -353,7 +353,14 @@ fn metadata_waits_for_a_usable_chunk_but_fork_links_do_not() {
     let mut chunks = chunks;
     chunks.push(json!({"role":"model", "text":"usable", "branchParent":{"promptId":"another"}}));
     let step = parse("child", &prompt(chunks));
-    assert!(step.output.links.is_empty());
+    assert_eq!(
+        step.output
+            .links
+            .iter()
+            .map(|link| link.parent.native().as_str())
+            .collect::<Vec<_>>(),
+        ["another", "parent"]
+    );
     assert_eq!(step.output.messages.len(), 2);
     assert_eq!(step.output.messages[0].message.role, Role::System);
     assert_eq!(
@@ -367,13 +374,23 @@ fn metadata_waits_for_a_usable_chunk_but_fork_links_do_not() {
 }
 
 #[test]
-fn repeated_prompt_parents_make_one_fork_and_conflicting_parents_make_none() {
-    for (parents, count) in [(["parent", "parent"], 1), (["first", "second"], 0)] {
+fn repeated_prompt_parents_make_one_fork_and_conflicting_parents_remain_explicit() {
+    for (parents, expected) in [
+        (["parent", "parent"], vec!["parent"]),
+        (["first", "second"], vec!["first", "second"]),
+    ] {
         let chunks = parents.into_iter().map(|parent| {
             json!({"role":"user", "text":"continue", "branchParent":{"promptId":parent}})
         }).collect();
         let step = parse("child", &prompt(chunks));
-        assert_eq!(step.output.links.len(), count);
+        assert_eq!(
+            step.output
+                .links
+                .iter()
+                .map(|link| link.parent.native().as_str())
+                .collect::<Vec<_>>(),
+            expected
+        );
     }
 }
 

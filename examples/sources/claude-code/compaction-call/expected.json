@@ -41,7 +41,6 @@
             }
           ],
           "id": "claude-code:h1",
-          "prompt_kind": "harness",
           "role": "user",
           "session": "claude-code:agent-acompact-5e",
           "at_quality": "intrinsic",

@@ -824,11 +824,11 @@ impl ClaudeCode {
                     at_precision: time_evidence.precision,
                     at_until: time_evidence.until,
                     model,
-                    prompt_kind: Some(if harness {
-                        PromptKind::Harness
+                    prompt_kind: if harness {
+                        Some(PromptKind::Harness)
                     } else {
                         self.prompt_kind(v, content)
-                    }),
+                    },
                     blocks,
                     usage,
                     stop_reason,
@@ -892,29 +892,26 @@ impl ClaudeCode {
         self.event(parser_state, record, v, kind, out)
     }
 
-    /// Who wrote a user record. A subagent transcript's root record (no
-    /// parent) is the task its parent model wrote; a compaction call's is
-    /// the harness's summarizing instruction.
-    fn prompt_kind(&self, v: &Json, content: &Json) -> PromptKind {
+    /// Native authorship markers win. Unmarked prose in an unknown
+    /// compaction carrier does not establish who originally wrote it.
+    fn prompt_kind(&self, v: &Json, content: &Json) -> Option<PromptKind> {
         if v.get("isCompactSummary").and_then(Json::as_bool) == Some(true) {
-            return PromptKind::CompactionSummary;
+            return Some(PromptKind::CompactionSummary);
         }
         let kind = blocks::prompt_kind(v, content);
-        match &self.file {
-            File::Subagent { stem }
-                if kind == PromptKind::Prose && str_field(v, "parentUuid").is_none() =>
-            {
-                let agent = str_field(v, "agentId");
-                if agent.is_some_and(|agent| !agent.starts_with("acompact")) {
-                    PromptKind::Model
-                } else if stem.starts_with("agent-acompact") {
-                    PromptKind::Harness
-                } else {
-                    PromptKind::Model
-                }
-            }
-            _ => kind,
+        let human = v.pointer("/origin/kind").and_then(Json::as_str) == Some("human");
+        let owner = self.record_session(v).kind;
+        if kind == PromptKind::Prose && owner == SessionKind::Compaction && !human {
+            return None;
         }
+        if kind == PromptKind::Prose
+            && owner == SessionKind::Subagent
+            && !human
+            && str_field(v, "parentUuid").is_none()
+        {
+            return Some(PromptKind::Model);
+        }
+        Some(kind)
     }
 
     fn title(
@@ -1451,8 +1448,7 @@ impl Parser for ClaudeCode {
             parser_state.alias(uuid, target);
         }
         self.names(parser_state, record, v, out);
-        if matches!(&self.file, File::Subagent { stem } if stem.starts_with("agent-acompact"))
-            && self.record_session(v).kind == SessionKind::Compaction
+        if self.record_session(v).kind == SessionKind::Compaction
             && !parser_state.compaction_ownership_reported
         {
             let session = self.own_session(parser_state);

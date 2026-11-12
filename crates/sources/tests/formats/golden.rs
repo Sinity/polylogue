@@ -173,6 +173,7 @@ fn every_declaration_checks_its_reading_version() {
                 + step.output.events.len()
                 + step.output.links.len()
                 + step.output.prefix_copies.len()
+                + step.output.prefix_members.len()
                 + step.output.repo_lookups.len();
             let output = serde_json::to_vec(&sorted(serde_json::to_value(step).unwrap())).unwrap();
             hash.update(&(output.len() as u64).to_le_bytes());

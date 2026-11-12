@@ -2159,3 +2159,106 @@ fn explicit_copied_members_preserve_large_coordinates_and_retract_without_expand
         .unwrap();
     assert_eq!(texts, ["own"]);
 }
+
+#[test]
+fn late_compaction_header_and_known_source_retraction_reselect_exact_native_claims() {
+    let w = test_archive();
+    let mut original = text_message(
+        "shared-native",
+        "agent-worker",
+        Role::User,
+        "known work body",
+        None,
+    );
+    original.prompt_kind = Some(PromptKind::Model);
+    let mut known = batch(
+        "known-native",
+        Route::Live,
+        0,
+        vec![row(0, original.clone())],
+        &["agent-worker"],
+    );
+    known.parse[0].output.sessions[0].kind = SessionKind::Subagent;
+    known.parse[0].prepare();
+    let mut retracted = batch("known-native", Route::Live, 0, Vec::new(), &[]);
+    let known_chain = w.store_reading(known, Some(&SOURCE_RECORD)).unwrap().chain;
+    let mut copied = text_message(
+        "shared-native",
+        "agent-acompact-unknown",
+        Role::User,
+        "unknown carrier body",
+        None,
+    );
+    copied.prompt_kind = None;
+    let mut carrier = batch(
+        "unknown-carrier",
+        Route::Live,
+        0,
+        vec![row(0, copied.clone())],
+        &[],
+    );
+    carrier.parse[0].prepare();
+    w.store_reading(carrier, Some(&SOURCE_RECORD)).unwrap();
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    let reads = ReadPool::open(&w.archive).unwrap();
+    assert_eq!(
+        reads
+            .reader()
+            .unwrap()
+            .message_with_projection(&original.id)
+            .unwrap()
+            .unwrap()
+            .0
+            .session,
+        original.session
+    );
+    let mut header = batch(
+        "unknown-carrier",
+        Route::Live,
+        100,
+        Vec::new(),
+        &["agent-acompact-unknown"],
+    );
+    header.parse[0].output.sessions[0].kind = SessionKind::Compaction;
+    header.parse[0].prepare();
+    w.store_reading(header, Some(&SOURCE_RECORD)).unwrap();
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    {
+        let reader = reads.reader().unwrap();
+        assert_eq!(
+            reader
+                .message_with_projection(&original.id)
+                .unwrap()
+                .unwrap()
+                .0
+                .session,
+            original.session
+        );
+        assert_eq!(reader.query("SELECT main FROM message_source s JOIN input_ref i ON i.pk=s.input_pk WHERE i.id='unknown-carrier'",&[]).unwrap()[0]["main"],0);
+        assert_eq!(
+            reader
+                .query("SELECT count(*) AS n FROM message_source", &[])
+                .unwrap()[0]["n"],
+            2
+        );
+    }
+    retracted.change = Change::Reparse { chain: known_chain };
+    retracted.observation = None;
+    retracted.parse[0].reset = true;
+    retracted.parse[0].reading_version = "synthetic-owner=2".into();
+    retracted.parse[0].output.sessions =
+        vec![Session::new(sid("agent-worker"), SessionKind::Compaction)];
+    retracted.parse[0].output.messages.clear();
+    retracted.parse[0].prepare();
+    w.store_reading(retracted, None).unwrap();
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    let fallback = reads
+        .reader()
+        .unwrap()
+        .message_with_projection(&original.id)
+        .unwrap()
+        .unwrap()
+        .0;
+    assert_eq!(fallback.session, copied.session);
+    assert_eq!(fallback.text(), "unknown carrier body");
+}
