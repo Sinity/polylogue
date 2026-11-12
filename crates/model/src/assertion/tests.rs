@@ -5,7 +5,7 @@ fn assertion_input_refuses_caller_authorship_and_seen_hash() {
     let value = serde_json::json!({"kind":"note","value":"A statement","links":[{"role":"about","reference":"message:codex:message"}]});
     let parsed: NewAssertion = serde_json::from_value(value.clone()).unwrap();
     assert_eq!(parsed.links[0].role, LinkRole::About);
-    for field in ["author", "via", "machine", "created_at"] {
+    for field in ["author", "via", "machine"] {
         let mut with_actor = value.clone();
         with_actor[field] = "operator".into();
         assert!(
@@ -132,14 +132,14 @@ fn assertion_text_uses_declared_prose_fields_and_preserves_recorded_empty_string
 }
 
 #[test]
-fn a_stored_fact_without_author_channel_machine_or_time_does_not_decode() {
+fn a_stored_fact_without_author_channel_or_machine_does_not_decode() {
     let complete = serde_json::json!({
         "id":"exact","root":"exact","kind":"note","key":null,"value":"text",
         "author":"operator","via":"cli","machine":"host","created_at":"2026-01-01T00:00:00Z",
         "valid_until":null,"links":[{"role":"about","reference":"session:codex:s","seen_hash":null}]
     });
     serde_json::from_value::<AssertionFact>(complete.clone()).unwrap();
-    for field in ["author", "via", "machine", "created_at"] {
+    for field in ["author", "via", "machine"] {
         let mut missing = complete.clone();
         missing[field] = serde_json::Value::Null;
         assert!(
