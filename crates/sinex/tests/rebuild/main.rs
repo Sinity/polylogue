@@ -510,7 +510,7 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
     assert_eq!(
         sinex_rows(
             &running.socket,
-            "events where event_type = polylogue.tool_call AND call_id = call-read-draft"
+            "events where event_type = polylogue.tool_call AND payload.call_id = call-read-draft"
         ),
         1
     );
