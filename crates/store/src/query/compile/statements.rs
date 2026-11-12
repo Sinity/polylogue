@@ -27,6 +27,18 @@ pub struct KeyedRows {
     pub rows: String,
     /// The count of selected rows and of those without a similarity.
     pub count: String,
+    /// The ranked text prefix that can fill a page before row hydration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub search: Option<RankedSearch>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RankedSearch {
+    pub index: polylogue_query::search::SnippetIndex,
+    pub expression: String,
+    /// One-based parameter holding the number of ranked indexed texts.
+    /// Its ordinary value is -1, so counts and whole selections stay exact.
+    pub limit: usize,
 }
 
 /// A derived relation's rows.

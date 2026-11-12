@@ -234,15 +234,42 @@ impl Reader<'_> {
         );
         let result = match program.statements.hydrate(program.params.len()) {
             Some(hydrate) => {
-                let mut keys = Vec::new();
-                self.query_each(&page, &params, |key| {
-                    keys.push(key);
-                    if keys.len() < HYDRATE_BATCH {
-                        return Ok(());
+                let ranked = match &program.statements {
+                    super::compile::Statements::Keyed(rows) if !reverse && limit >= 0 => {
+                        rows.search.as_ref()
                     }
-                    self.visit_hydrated(program, &hydrate, std::mem::take(&mut keys), &mut visit)
-                })
-                .and_then(|()| self.visit_hydrated(program, &hydrate, keys, &mut visit))
+                    _ => None,
+                };
+                if let Some(search) = ranked {
+                    self.ranked_keys(&page, params, search, limit)
+                        .map_err(StreamError::Selection)
+                        .and_then(|keys| {
+                            let mut keys = keys.into_iter();
+                            loop {
+                                let chunk = keys.by_ref().take(HYDRATE_BATCH).collect::<Vec<_>>();
+                                if chunk.is_empty() {
+                                    break;
+                                }
+                                self.visit_hydrated(program, &hydrate, chunk, &mut visit)?;
+                            }
+                            Ok(())
+                        })
+                } else {
+                    let mut keys = Vec::new();
+                    self.query_each(&page, &params, |key| {
+                        keys.push(key);
+                        if keys.len() < HYDRATE_BATCH {
+                            return Ok(());
+                        }
+                        self.visit_hydrated(
+                            program,
+                            &hydrate,
+                            std::mem::take(&mut keys),
+                            &mut visit,
+                        )
+                    })
+                    .and_then(|()| self.visit_hydrated(program, &hydrate, keys, &mut visit))
+                }
             }
             None => match row_at {
                 None => self.query_each(&page, &params, |row| flow(visit(row))),
@@ -268,6 +295,57 @@ impl Reader<'_> {
             Ok(()) | Err(StreamError::Stop) => Ok(()),
             Err(StreamError::Consumer(e)) => Err(e),
             Err(StreamError::Selection(e)) => Err(E::from(e)),
+        }
+    }
+
+    /// Enlarge the ranked text prefix until no unseen score can enter this
+    /// page. Owner best scores are folded by SQL before the cursor applies,
+    /// so weaker duplicate hits never reintroduce an earlier owner.
+    fn ranked_keys(
+        &self,
+        page: &str,
+        mut params: Vec<SqlValue>,
+        search: &super::compile::RankedSearch,
+        limit: i64,
+    ) -> Result<Vec<Value>, SelectionError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let table = match search.index {
+            SnippetIndex::Prose => "text_fts",
+            SnippetIndex::Output => "output_fts",
+        };
+        let boundary = format!(
+            "SELECT rank AS score FROM {table} WHERE {table} MATCH ?1 ORDER BY rank LIMIT 1 OFFSET ?2"
+        );
+        let mut prefix = limit.max(1);
+        loop {
+            params[search.limit - 1] = SqlValue::Int(prefix);
+            let rows = self.query(page, &params)?;
+            if prefix < 0 {
+                return Ok(rows);
+            }
+            let next = self.query(
+                &boundary,
+                &[
+                    SqlValue::Text(search.expression.clone()),
+                    SqlValue::Int(prefix),
+                ],
+            )?;
+            let Some(next_score) = next.first().and_then(|row| row["score"].as_f64()) else {
+                return Ok(rows);
+            };
+            if rows.len() as u64 >= limit as u64
+                && rows
+                    .last()
+                    .and_then(|row| row["_rank"].as_f64())
+                    .is_some_and(|score| next_score > score)
+            {
+                return Ok(rows);
+            }
+            // Overflow selects the complete index, rather than imposing a
+            // correctness limit on a large valid result.
+            prefix = prefix.checked_mul(2).unwrap_or(-1);
         }
     }
 
