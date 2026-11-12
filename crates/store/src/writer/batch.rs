@@ -88,9 +88,9 @@ pub struct ParseStep {
     #[serde(default)]
     pub(crate) source_prefix_missing: bool,
     /// Original identities and eligibility used before receiver normalization.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip)]
     pub(crate) source_eligibility: Option<super::source_eligibility::Snapshot>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip)]
     pub(crate) original_export_body: Option<BlobHash>,
     /// IDs from admitted products, separate from the explicit map in a sealed callback.
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -397,6 +397,121 @@ fn sinex_rows(socket: &Path, query: &str) -> usize {
 
 #[test]
 #[ignore = "needs the matching Sinex daemon; set SINEXD"]
+fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
+    use polylogue_model::SessionId;
+    use polylogue_testkit::{ClaudeHome, claude_user};
+    let home = ClaudeHome::new();
+    let user = claude_user("user-1", "original-session", "Inspect the draft");
+    let action = format!(
+        "{}\n",
+        serde_json::json!({
+            "type":"assistant","uuid":"assistant-1","sessionId":"original-session",
+            "timestamp":"2026-03-01T10:00:01Z",
+            "message":{"id":"msg_action","role":"assistant","model":"synthetic-model",
+                "stop_reason":"tool_use","content":[
+                    {"type":"text","text":"I will inspect the draft."},
+                    {"type":"tool_use","id":"call-read-draft","name":"Bash",
+                        "input":{"command":"cat /home/op/project/draft.txt"}}
+                ]}
+        })
+    );
+    let original = format!("{user}{action}");
+    home.append("original-session.jsonl", &original);
+    let standalone = ClaudeHome::new();
+    standalone.append("original-session.jsonl", &original);
+    let (mut ordinary, lock) = standalone.engine(1 << 20);
+    assert!(ordinary.run_pass().unwrap().errors.is_empty());
+    drop(ordinary);
+    drop(lock);
+    let session = SessionId::parse("claude-code:original-session").unwrap();
+    let expected_messages = standalone
+        .reads()
+        .reader()
+        .unwrap()
+        .messages(&session, false)
+        .unwrap();
+    assert_eq!(expected_messages.len(), 2);
+
+    let running = sinex(home.dir.path());
+    let sdk = connect(&running.config);
+    let build = |source_home: &Path| {
+        let (archive, lock) = Archive::open_primary(&home.root, &running.config.store).unwrap();
+        let mut config = home.config(1 << 20);
+        config.home = source_home.into();
+        let mut engine = Engine::on_sinex(
+            config,
+            archive.clone(),
+            sdk.clone(),
+            polylogue_testkit::stopped_attempt(),
+        )
+        .unwrap();
+        engine.writer().unwrap().synchronize_primary().unwrap();
+        let commits = engine.writer().unwrap().completion_commits();
+        confirm_capture(
+            &mut engine,
+            &commits,
+            Instant::now(),
+            (&archive, &sdk, &running),
+            |_| {
+                let reader = ReadPool::open(&archive)?.reader()?;
+                Ok(reader.messages(&session, false)? == expected_messages)
+            },
+            String::new,
+        );
+        drop(engine);
+        drop(lock);
+        archive
+    };
+    let archive = build(&home.home);
+    let reader = ReadPool::open(&archive).unwrap().reader().unwrap();
+    let coordinates = reader.query(
+        "SELECT m.source_start AS start,m.source_end AS end,s.id AS material FROM message m JOIN source_material s ON s.input=(SELECT id FROM input_ref WHERE pk=m.input_pk) AND s.chain=m.source_chain AND s.offset=0 WHERE m.id='claude-code:msg_action'",
+        &[],
+    ).unwrap();
+    assert_eq!(coordinates.len(), 1);
+    let citation = &coordinates[0];
+    assert_eq!(citation["start"].as_u64(), Some(user.len() as u64));
+    assert_eq!(citation["end"].as_u64(), Some(original.len() as u64));
+    let material = sinex_model::MaterialId(citation["material"].as_str().unwrap().parse().unwrap());
+    let mut offset = user.len() as u64;
+    let mut quoted = Vec::new();
+    loop {
+        let page = sdk
+            .fetch_material_bytes(material, offset, Some(original.len() as u64), 37)
+            .unwrap();
+        quoted.extend(page.bytes);
+        match page.next_offset {
+            Some(next) => offset = next,
+            None => break,
+        }
+    }
+    assert_eq!(quoted, action.as_bytes());
+    assert_eq!(
+        sinex_rows(
+            &running.socket,
+            "events where event_type = polylogue.tool_call and call_id = call-read-draft"
+        ),
+        1
+    );
+    let before = reader.session_export(&session).unwrap().unwrap();
+    drop(reader);
+    // Every removed path belongs to this fixture; the native originals remain.
+    fs::remove_dir_all(&home.root).unwrap();
+    let empty = home.dir.path().join("empty-home");
+    fs::create_dir(&empty).unwrap();
+    let rebuilt = build(&empty);
+    let after = ReadPool::open(&rebuilt)
+        .unwrap()
+        .reader()
+        .unwrap()
+        .session_export(&session)
+        .unwrap()
+        .unwrap();
+    assert_eq!(after, before);
+}
+
+#[test]
+#[ignore = "needs the matching Sinex daemon; set SINEXD"]
 fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
     let started = Instant::now();
     let phase = |name: &str| eprintln!("{:>6.1}s {name}", started.elapsed().as_secs_f64());

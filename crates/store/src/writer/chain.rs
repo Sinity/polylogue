@@ -378,6 +378,8 @@ fn write_step(
             &step.prepared.events,
             texts,
             step.prepared.released,
+            &step.source_eligibility,
+            step.original_export_body,
             choices,
         ),
     )?;
@@ -402,8 +404,20 @@ fn read_step(
     let mut decoder = zstd::stream::read::Decoder::new(reader.take(size))?;
     let mut bytes = Vec::new();
     decoder.read_to_end(&mut bytes)?;
-    let StoredStep(mut step, messages, documents, fragments, events, texts, released, choices) =
-        crate::encoding::read_json(&bytes)?;
+    let StoredStep(
+        mut step,
+        messages,
+        documents,
+        fragments,
+        events,
+        texts,
+        released,
+        eligibility,
+        original_body,
+        choices,
+    ) = crate::encoding::read_json(&bytes)?;
+    step.source_eligibility = eligibility;
+    step.original_export_body = original_body;
     step.prepared = batch::PreparedRows {
         messages,
         documents,
@@ -445,6 +459,8 @@ struct StoredStep(
     Vec<(String, Vec<u8>)>,
     Vec<([u8; 32], Vec<u8>)>,
     bool,
+    Option<super::source_eligibility::Snapshot>,
+    Option<BlobHash>,
     Option<resolve::membership::Choices>,
 );
 #[derive(Clone, Copy)]

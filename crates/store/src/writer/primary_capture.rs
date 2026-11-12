@@ -3,8 +3,7 @@
 use super::*;
 use crate::input_rows::{InputRows, Revision};
 use crate::primary::{
-    Capture, CaptureGroup, CapturedInput, CapturedReading, Material, PendingCapture, Product,
-    ProductWrite,
+    Capture, CaptureGroup, CapturedInput, Material, PendingCapture, Product, ProductWrite,
 };
 use crate::staging::{PreparedBatch, StoredInput};
 use std::collections::{BTreeMap, BTreeSet};
