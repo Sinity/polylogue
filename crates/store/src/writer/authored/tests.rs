@@ -304,6 +304,7 @@ impl crate::primary::Sinex for Producer {
             event: String::new(),
             change: ConfirmedChange::Control(Box::new(crate::primary::ReplayControl::Completion {
                 position: 1,
+                delivery: None,
             })),
         });
         Ok(events)
@@ -592,9 +593,15 @@ fn a_failed_later_position_reports_earlier_commits_without_inventing_progress() 
     let error = writer
         .apply_confirmed(vec![
             input(1, "first"),
-            control(ReplayControl::Completion { position: 1 }),
+            control(ReplayControl::Completion {
+                position: 1,
+                delivery: None,
+            }),
             input(2, "second"),
-            control(ReplayControl::Completion { position: 2 }),
+            control(ReplayControl::Completion {
+                position: 2,
+                delivery: None,
+            }),
         ])
         .unwrap_err();
     assert!(matches!(error, StoreError::Sqlite(_)), "{error:?}");

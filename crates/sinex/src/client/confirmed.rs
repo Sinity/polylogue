@@ -257,6 +257,13 @@ impl Client {
                         }
                     }),
                     after,
+                    completion: state.completed_delivery.as_ref().map(|receipt| {
+                        sinex_protocol::DeliveredCompletion {
+                            stream_instance: receipt.stream_instance.clone(),
+                            stream_sequence: receipt.stream_sequence,
+                            fingerprint: receipt.fingerprint.clone(),
+                        }
+                    }),
                     cache: cache.into(),
                     status_only: provisioned,
                 },
@@ -356,16 +363,35 @@ impl Client {
                 stream_instance: instance.clone(),
                 stream_sequence: sequence,
             });
-            changes.push(serde_json::from_slice::<sinex_protocol::Confirmed>(
-                &message.payload,
-            )?);
+            let receipt = local::CompletedDelivery {
+                stream_instance: instance.clone(),
+                stream_sequence: sequence,
+                fingerprint: sinex_protocol::DeliveredCompletion::fingerprint(
+                    sequence,
+                    info.published.unix_timestamp_nanos(),
+                    message.subject.as_str(),
+                    &message.payload,
+                ),
+            };
+            changes.push((
+                serde_json::from_slice::<sinex_protocol::Confirmed>(&message.payload)?,
+                receipt,
+            ));
         }
         let mut page = vec![control_fact(ReplayControl::Head { position })];
-        let mut reads = stream::iter(
-            changes
-                .into_iter()
-                .map(|change| self.read_change(change, after)),
-        )
+        let reader = &*self;
+        let mut reads = stream::iter(changes.into_iter().map(|(change, receipt)| async move {
+            let mut fact = reader.read_change(change, after).await?;
+            if let Some(Confirmed {
+                change: ConfirmedChange::Control(control),
+                ..
+            }) = &mut fact
+                && let ReplayControl::Completion { delivery, .. } = control.as_mut()
+            {
+                *delivery = Some(receipt);
+            }
+            Ok::<_, Error>(fact)
+        }))
         .buffered(FETCH_CONCURRENCY);
         while let Some(read) = reads.next().await {
             page.extend(read?);
@@ -452,6 +478,7 @@ impl Client {
                 if commit_seq >= after {
                     return Ok(Some(control_fact(ReplayControl::Completion {
                         position: commit_seq,
+                        delivery: None,
                     })));
                 }
                 return Ok(None);

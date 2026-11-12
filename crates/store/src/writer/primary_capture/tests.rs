@@ -113,7 +113,10 @@ fn projection_start_replaces_an_equal_scope_and_preserves_original_and_paid_stor
         })])
         .unwrap();
     writer
-        .apply_confirmed(vec![control(ReplayControl::Completion { position: 4 })])
+        .apply_confirmed(vec![control(ReplayControl::Completion {
+            position: 4,
+            delivery: None,
+        })])
         .unwrap();
     let read_state = || {
         let pool = crate::ReadPool::open(&archive).unwrap();
@@ -622,7 +625,10 @@ fn offline_writer_retains_source_and_complete_parsed_facts_before_releasing_prep
                 output_index: 0,
                 event: String::new(),
                 change: crate::primary::ConfirmedChange::Control(Box::new(
-                    crate::primary::ReplayControl::Completion { position: 0 },
+                    crate::primary::ReplayControl::Completion {
+                        position: 0,
+                        delivery: None,
+                    },
                 )),
             }])
             .unwrap();
@@ -791,7 +797,10 @@ fn an_imported_attachment_binding_is_sent_to_sinex_and_reaches_the_index_only_fr
                 output_index: 0,
                 event: String::new(),
                 change: crate::primary::ConfirmedChange::Control(Box::new(
-                    crate::primary::ReplayControl::Completion { position: 1 },
+                    crate::primary::ReplayControl::Completion {
+                        position: 1,
+                        delivery: None,
+                    },
                 )),
             },
         ])
@@ -973,7 +982,10 @@ fn frozen_unknown_empty_capture_publishes_only_after_scoped_stream_completion() 
     writer
         .apply_confirmed(vec![
             control(ReplayControl::Head { position: 1 }),
-            control(ReplayControl::Completion { position: 0 }),
+            control(ReplayControl::Completion {
+                position: 0,
+                delivery: None,
+            }),
         ])
         .unwrap();
     let snapshot = writer.source_snapshot(source.clone(), "").unwrap();
@@ -985,7 +997,10 @@ fn frozen_unknown_empty_capture_publishes_only_after_scoped_stream_completion() 
         "known unapplied commits leave current source coordinates pending"
     );
     writer
-        .apply_confirmed(vec![control(ReplayControl::Completion { position: 1 })])
+        .apply_confirmed(vec![control(ReplayControl::Completion {
+            position: 1,
+            delivery: None,
+        })])
         .unwrap();
     writer.synchronize_primary().unwrap();
     let writes: Vec<ProductWrite> =
@@ -1003,6 +1018,7 @@ fn frozen_unknown_empty_capture_publishes_only_after_scoped_stream_completion() 
         })
         .chain(std::iter::once(control(ReplayControl::Completion {
             position: 2,
+            delivery: None,
         })))
         .collect();
     writer.apply_confirmed(products).unwrap();
@@ -1032,7 +1048,10 @@ fn frozen_unknown_empty_capture_publishes_only_after_scoped_stream_completion() 
                     unreadable_input: true,
                 },
             },
-            control(ReplayControl::Completion { position: 3 }),
+            control(ReplayControl::Completion {
+                position: 3,
+                delivery: None,
+            }),
         ])
         .unwrap();
     writer.synchronize_primary().unwrap();
@@ -1088,7 +1107,10 @@ fn original_source_basis_survives_normal_progress_and_retains_real_conflicts() {
             })])
             .unwrap();
         writer
-            .apply_confirmed(vec![control(ReplayControl::Completion { position: 0 })])
+            .apply_confirmed(vec![control(ReplayControl::Completion {
+                position: 0,
+                delivery: None,
+            })])
             .unwrap();
         let mut sampled = if scenario == "unknown-to-ready" {
             unknown
@@ -1116,7 +1138,10 @@ fn original_source_basis_survives_normal_progress_and_retains_real_conflicts() {
                             material: None,
                         })),
                     },
-                    control(ReplayControl::Completion { position: 1 }),
+                    control(ReplayControl::Completion {
+                        position: 1,
+                        delivery: None,
+                    }),
                 ])
                 .unwrap();
         } else if scenario == "changed-scope" {
@@ -1126,7 +1151,10 @@ fn original_source_basis_survives_normal_progress_and_retains_real_conflicts() {
                 })])
                 .unwrap();
             writer
-                .apply_confirmed(vec![control(ReplayControl::Completion { position: 0 })])
+                .apply_confirmed(vec![control(ReplayControl::Completion {
+                    position: 0,
+                    delivery: None,
+                })])
                 .unwrap();
         }
         if matches!(scenario, "copied-alias" | "forged-alias") {
@@ -1150,7 +1178,10 @@ fn original_source_basis_survives_normal_progress_and_retains_real_conflicts() {
                             material: None,
                         })),
                     },
-                    control(ReplayControl::Completion { position: 1 }),
+                    control(ReplayControl::Completion {
+                        position: 1,
+                        delivery: None,
+                    }),
                 ])
                 .unwrap();
             sampled = writer.source_snapshot(selector.clone(), "").unwrap().basis;
@@ -1383,7 +1414,10 @@ fn stored_readings_use_their_exact_confirmed_chain_instead_of_a_database_path_he
                         }),
                     })),
                 },
-                control(ReplayControl::Completion { position }),
+                control(ReplayControl::Completion {
+                    position,
+                    delivery: None,
+                }),
             ])
             .unwrap();
     }
@@ -1458,7 +1492,10 @@ fn stored_readings_use_their_exact_confirmed_chain_instead_of_a_database_path_he
             change: ConfirmedChange::Live(Box::new(write.product)),
         })
         .collect();
-    confirmed.push(control(ReplayControl::Completion { position: 3 }));
+    confirmed.push(control(ReplayControl::Completion {
+        position: 3,
+        delivery: None,
+    }));
     writer.apply_confirmed(confirmed).unwrap();
     assert_eq!(
         crate::ReadPool::open(&archive)

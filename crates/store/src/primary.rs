@@ -17,8 +17,9 @@ pub use raw_acquisition::{
     RawAcquisitionQuery, RawBodyRange, RawStream, RawStreamRole, SourceGeneration,
 };
 pub use replay::{
-    ConfirmedOrigin, NativeDeliveryCursor, NativeFactContext, NativeKind, NativeSource,
-    ProjectionBasis, ProjectionIdentity, ProjectionReplay, ReplayControl, ReplayState,
+    CompletedDelivery, ConfirmedOrigin, NativeDeliveryCursor, NativeFactContext, NativeKind,
+    NativeSource, ProjectionBasis, ProjectionIdentity, ProjectionReplay, ReplayControl,
+    ReplayState,
 };
 pub(crate) mod projection;
 pub(crate) mod scope;

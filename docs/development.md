@@ -94,6 +94,12 @@ committing a lock file, as the shared
 [dependency guide](https://github.com/Sinity/polylogue-sinex-common#depending-on-this-repository)
 describes.
 
+For an early type-check of one package, `cargo check --locked -p
+polylogue-sinex --tests` checks its native target without compiling a test
+executable. The declared AgentCTL `compile` operation accepts those Cargo check
+arguments in the same one-slot compile queue. `fast` and the required hosted
+checks retain their complete feature matrices.
+
 A host may queue these commands through its own job runner. AgentCTL routes
 `fast` and `focused` through the same one-slot `compile` queue. Selected tests
 therefore wait for source checks rather than long runtime proofs, and their
