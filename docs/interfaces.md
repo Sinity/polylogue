@@ -93,31 +93,11 @@ Commands are not about a query's rows.
 | `verify [--manifest FILE]` | the on-demand read-only check ([operations.md](operations.md#verification)) |
 | `sinex cutover` | the one mode transition ([primary-mode.md](primary-mode.md#cutover)) |
 
-### What is built today
+### Available operations
 
-The verbs and commands above are the design. The command table on master
-(`crates/polylogue/src/commands.rs`) differs from it, and the query-first
-command line that closes the gap is tracked under plnext-ojv:
-
-- **Designed, not built yet:** the query-first grammar (a query followed by a
-  verb), `trace`, `pack`, `pick`, `variant`, `applies`, the page operations
-  (`add`, `move`, `toc`, `checkout`, `checkin`), `next`, `auth drive`,
-  `hooks print|status` and `sinex cutover`. Calling one answers with an
-  unknown-command error.
-- **Built rows the design replaces:** `list`, `live`, `notices`, `waiting`,
-  `cost`, `timeline`, `attachment` and the `measure NAME` commands exist as
-  rows today; by the discipline above they become the bare query, the
-  shipped saved queries and the `| measure` and `| agg` stages. Until then
-  they answer as rows. `cost` clips usage to the requested day, which
-  `| measure usage` does not yet do.
-- **Built rows not listed above:** `query`, `recall`, `brief`, `takeover`,
-  `continue`, `hand-off`, `start`, `interrupt`, `answer`, `watch`, `keep`,
-  `save`, `revise`, `withdraw`, `assert`, `assert-query`, `conversations`,
-  `stored-files`, `manual`, `embed build|preview|status`,
-  `hooks install|uninstall`, `schema diff`, `backfill start|cancel|list`,
-  `chat send|approve|decline|list`, and the hidden rows the hooks and the
-  browser host send (`delivery-event`, `mail-claim`, `permission`,
-  `selection-note`, `chat claim`, `backfill claim`, `judge`, `ping`).
+The operation grammar above defines the intended interface. The current
+binary's `--help`, per-command help and `explain capabilities --json`,
+together with generated MCP schemas, describe the operations it provides.
 
 ## Latency classes
 
