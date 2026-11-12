@@ -230,12 +230,16 @@ impl Inner {
         if parsed.is_empty() {
             return results;
         }
-        let Err(error) = self.write(parsed.iter().map(|(_, batch)| batch)) else {
+        let Err(error) = crate::timing::time(crate::timing::Stage::Rows, || {
+            self.write(parsed.iter().map(|(_, batch)| batch))
+        }) else {
             return results;
         };
         if independent && parsed.len() > 1 {
             for (position, batch) in &parsed {
-                if let Err(error) = self.write(std::iter::once(batch)) {
+                if let Err(error) = crate::timing::time(crate::timing::Stage::Rows, || {
+                    self.write(std::iter::once(batch))
+                }) {
                     results[*position] = rows_refused(results[*position].as_ref().ok(), error);
                 }
             }
