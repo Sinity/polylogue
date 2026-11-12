@@ -206,6 +206,8 @@ struct WriterQueue {
     users: Arc<user_queue::UserQueue>,
     resolver: Arc<resolve::Resolver>,
     commits: crate::completion::CommitEvents,
+    sinex: Option<Arc<dyn crate::primary::Sinex>>,
+    stop: WriterStop,
     #[cfg(any(test, feature = "fixture"))]
     dispatch: dispatch::Barriers,
 }
@@ -244,6 +246,8 @@ impl WriterQueue {
         users: Arc<user_queue::UserQueue>,
         resolver: Arc<resolve::Resolver>,
         commits: crate::completion::CommitEvents,
+        sinex: Option<Arc<dyn crate::primary::Sinex>>,
+        stop: WriterStop,
         #[cfg(any(test, feature = "fixture"))] dispatch: dispatch::Barriers,
     ) -> Self {
         Self {
@@ -252,6 +256,8 @@ impl WriterQueue {
             users,
             resolver,
             commits,
+            sinex,
+            stop,
             #[cfg(any(test, feature = "fixture"))]
             dispatch,
         }
@@ -483,6 +489,8 @@ impl Writer {
             Arc::clone(&users),
             Arc::clone(&resolver),
             commits.clone(),
+            sinex.clone(),
+            stop.clone(),
             #[cfg(any(test, feature = "fixture"))]
             dispatch.clone(),
         );
@@ -923,6 +931,9 @@ impl WriterSender {
         mut reading: ChainReading,
     ) -> Result<Receiver<Result<u64>>> {
         reading.finish()?;
+        if self.0.sinex.is_some() {
+            self.prepare_primary_reading(&input, chain, length, &mut reading)?;
+        }
         reading.resolve(&self.0.resolver, &input, chain, length)?;
         let (reply, wait) = sync_channel(1);
         crate::timing::reading_commit_queue(1);

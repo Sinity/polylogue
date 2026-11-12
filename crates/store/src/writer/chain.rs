@@ -13,6 +13,7 @@ pub struct ChainReading {
     decoded: Vec<crate::staging::PreparedBatch>,
     resolved: Option<ResolvedChain>,
     release: InFlight,
+    publication: Option<crate::primary::PublicationReceipt>,
 }
 
 /// The row identities a chain reading's steps were resolved with, and the
@@ -31,6 +32,7 @@ impl ChainReading {
             decoded: Vec::new(),
             resolved: None,
             release: InFlight::default(),
+            publication: None,
         })
     }
     pub fn push(&mut self, step: &mut ParseStep) -> Result<()> {
@@ -75,6 +77,10 @@ impl ChainReading {
         self.decoded.push(batch);
     }
 
+    pub(super) fn take_decoded(&mut self) -> Vec<crate::staging::PreparedBatch> {
+        std::mem::take(&mut self.decoded)
+    }
+
     /// Complete source facts are read without resolving local cache keys first.
     pub(crate) fn visit_source(
         &mut self,
@@ -85,6 +91,30 @@ impl ChainReading {
         while let Some((step, _)) = read_step(&mut input)? {
             apply(&step)?;
         }
+        Ok(())
+    }
+
+    pub(super) fn select_source(
+        &mut self,
+        index: &Connection,
+        input: &InputKey,
+        chain: i64,
+        length: u64,
+        publication: crate::primary::PublicationReceipt,
+    ) -> Result<()> {
+        self.finish()?;
+        let (file, path) = tempfile::NamedTempFile::new()?.into_parts();
+        let mut output = BufWriter::new(file);
+        let mut reader = BufReader::new(std::fs::File::open(&self.path)?);
+        while let Some((mut step, _)) = read_step(&mut reader)? {
+            super::source_eligibility::retain_source_records(
+                index, input, chain, length, &mut step,
+            )?;
+            write_step(&mut output, &step, None)?;
+        }
+        drop(output.into_inner().map_err(|error| error.into_error())?);
+        self.path = path;
+        self.publication = Some(publication);
         Ok(())
     }
 
@@ -593,16 +623,10 @@ impl Inner {
         mut reading: ChainReading,
     ) -> Result<u64> {
         if self.sinex.is_some() {
-            if !reading.decoded.is_empty() {
-                let store = Arc::new(self.location.blobs()?);
-                for result in self.store_group(std::mem::take(&mut reading.decoded), store) {
-                    match result {
-                        Ok(_) | Err(StoreError::PrimaryPending { .. }) => {}
-                        Err(error) => return Err(error),
-                    }
-                }
-            }
-            return self.primary_reading(input, chain, length, reading);
+            let publication = reading.publication.clone().ok_or_else(|| {
+                StoreError::Invalid("a primary replacement has no admitted interpretation".into())
+            })?;
+            return self.replace_index(input, chain, length, reading, Some(&publication));
         }
         let exists: bool = self.archive.query_row(
             "SELECT EXISTS(SELECT 1 FROM revision WHERE input=?1 AND chain=?2 AND length>=?3)",

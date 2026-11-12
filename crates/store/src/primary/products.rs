@@ -541,7 +541,7 @@ pub fn parse(
     let mut native_fields = output.native_hook_fields;
     let mut declared_injections = output.declared_injections;
     let mut declared_attachment_bindings = output.declared_attachment_bindings;
-    for row in &output.messages {
+    for (message_index, row) in output.messages.iter().enumerate() {
         for (block, value) in row.message.blocks.iter().enumerate() {
             if let polylogue_model::Block::ToolCall {
                 call_id,
@@ -559,7 +559,10 @@ pub fn parse(
                     facts: Box::new(ToolCall {
                         session: row.message.session.clone(),
                         message: row.message.id.clone(),
-                        block: block as u64,
+                        block: output
+                            .message_projections
+                            .get(&message_index)
+                            .map_or(block as u64, |projection| projection.block_ordinals[block]),
                         source_start: row.offset,
                         source_end: row.end,
                         at: row.message.at,

@@ -1,6 +1,7 @@
 //! Primary writes prepare durable producer intents. Only confirmed facts write the cache.
 use super::*;
 mod export;
+mod reading;
 use crate::primary::{Product, ProductWrite, SourceLocation};
 use polylogue_model::authored::PreparedRequest;
 
@@ -129,65 +130,7 @@ impl Inner {
 
     pub(super) fn product_writes(&self, products: Vec<Product>) -> Result<Vec<ProductWrite>> {
         self.primary_cache_ready()?;
-        let mut writes = Vec::with_capacity(products.len());
-        for (index, product) in products.into_iter().enumerate() {
-            let (location, machine) = if let Some(reading) = product.reading() {
-                let start = match &product {
-                    Product::Message { facts, .. } => facts.offset,
-                    Product::ToolCall { facts, .. } => facts.source_start,
-                    Product::Document { facts, .. } => facts.offset,
-                    Product::Fragment { facts, .. } => facts.offset,
-                    Product::Event { facts, .. } => {
-                        facts.range.map_or(reading.start, |range| range.0)
-                    }
-                    _ => reading.start,
-                };
-                let location = crate::primary::projection::material_at(
-                    &self.index,
-                    &reading.input.id,
-                    reading.chain,
-                    start,
-                )?;
-                let machine=self.index.query_row("SELECT machine FROM source_observation WHERE input=?1 ORDER BY commit_seq DESC,rowid DESC LIMIT 1",[&reading.input.id],|row|row.get::<_,String>(0)).optional()?;
-                (location, machine)
-            } else {
-                match &product {
-                    Product::Coverage(coverage) => (None, Some(coverage.machine.clone())),
-                    Product::Input { rows, material } => {
-                        let location = material.as_ref().map(|material| SourceLocation {
-                            material: material.id.clone(),
-                            anchor: 0,
-                        });
-                        (
-                            location,
-                            rows.observation.as_ref().map(|row| row.machine.clone()),
-                        )
-                    }
-                    Product::Blob(material) => (
-                        Some(SourceLocation {
-                            material: material.id.clone(),
-                            anchor: 0,
-                        }),
-                        None,
-                    ),
-                    Product::Request(prepared) => (None, Some(prepared.request.machine.clone())),
-                    Product::RestoredRequest { prepared } => {
-                        (None, Some(prepared.request.machine.clone()))
-                    }
-                    Product::RestoredAssertion { fact, .. } => (None, Some(fact.machine.clone())),
-                    _ => unreachable!(),
-                }
-            };
-            writes.push(ProductWrite {
-                product,
-                location,
-                parents: Vec::new(),
-                machine,
-                output_index: index as u64,
-                publish: true,
-            });
-        }
-        Ok(writes)
+        product_writes(&self.index, products)
     }
 
     pub(super) fn validate_primary_reading(&self, batch: &Batch) -> Result<i64> {
@@ -294,85 +237,6 @@ impl Inner {
         Ok(publications)
     }
 
-    pub(super) fn primary_reading(
-        &mut self,
-        input: InputKey,
-        chain: i64,
-        length: u64,
-        mut source: ChainReading,
-    ) -> Result<u64> {
-        let mut version = None;
-        let mut complete = false;
-        let mut refusal = false;
-        source.visit_source(|step| {
-            if version
-                .as_ref()
-                .is_some_and(|old| old != &step.reading_version)
-            {
-                return Err(StoreError::Invalid(
-                    "one replacement has several reading versions".into(),
-                ));
-            }
-            version.get_or_insert_with(|| step.reading_version.clone());
-            complete = step.progress.reached_end() && step.parsed_upto <= length;
-            refusal = crate::wire_shapes::is_refusal(step);
-            Ok(())
-        })?;
-        if !complete && !refusal {
-            return Err(StoreError::Invalid(
-                "a replacement reading is not complete".into(),
-            ));
-        }
-        let version =
-            version.ok_or_else(|| StoreError::Invalid("a replacement has no reading".into()))?;
-        let key = crate::primary::ExportReadingKey {
-            input: input.clone(),
-            chain,
-            reading_version: version,
-            length,
-        };
-        self.primary_cache_ready()?;
-        let sinex = Arc::clone(self.sinex.as_ref().expect("primary writer"));
-        let root: String = self.index.query_row(
-            "SELECT id FROM source_material WHERE input=?1 AND chain=?2 AND offset=0 ORDER BY rowid LIMIT 1",
-            params![input.id,chain], |row| row.get(0),
-        )?;
-        let publication = sinex.prepare_reading(&root, &key, &mut |scope, emit| {
-            let live_hash = crate::primary::products::scope_hash(&self.index, scope)?;
-            if live_hash != scope.expected_live_hash {
-                return Ok(live_hash);
-            }
-            source.visit_source(|step| {
-                for mut product in self.product_writes(crate::primary::products::parse(
-                    &input,
-                    chain,
-                    Some(length),
-                    step,
-                )?)? {
-                    let reading = product.product.reading().expect("source interpretation");
-                    let record =
-                        crate::primary::SourceRecord::of(&product.product)?.expect("source record");
-                    product.publish =
-                        crate::primary::products::allowed(&self.index, reading, &record)?;
-                    emit(product)?;
-                }
-                Ok(())
-            })?;
-            Ok(live_hash)
-        })?;
-        match publication {
-            crate::primary::ParsedPublication::Following(_) => {
-                Err(StoreError::PrimaryPending { identity: root })
-            }
-            crate::primary::ParsedPublication::Pending { identity } => {
-                Err(StoreError::PrimaryPending { identity })
-            }
-            crate::primary::ParsedPublication::Admitted(receipt) => {
-                self.replace_index(input, chain, length, source, Some(&receipt))
-            }
-        }
-    }
-
     pub(super) fn primary_request(
         &mut self,
         request: &polylogue_model::user::UserRequest,
@@ -458,4 +322,67 @@ impl Inner {
             })
         }
     }
+}
+
+pub(super) fn product_writes(
+    index: &Connection,
+    products: Vec<Product>,
+) -> Result<Vec<ProductWrite>> {
+    let mut writes = Vec::with_capacity(products.len());
+    for (index, product) in products.into_iter().enumerate() {
+        let (location, machine) = if let Some(reading) = product.reading() {
+            let start = match &product {
+                Product::Message { facts, .. } => facts.offset,
+                Product::ToolCall { facts, .. } => facts.source_start,
+                Product::Document { facts, .. } => facts.offset,
+                Product::Fragment { facts, .. } => facts.offset,
+                Product::Event { facts, .. } => facts.range.map_or(reading.start, |range| range.0),
+                _ => reading.start,
+            };
+            let location = crate::primary::projection::material_at(
+                index,
+                &reading.input.id,
+                reading.chain,
+                start,
+            )?;
+            let machine=index.query_row("SELECT machine FROM source_observation WHERE input=?1 ORDER BY commit_seq DESC,rowid DESC LIMIT 1",[&reading.input.id],|row|row.get::<_,String>(0)).optional()?;
+            (location, machine)
+        } else {
+            match &product {
+                Product::Coverage(coverage) => (None, Some(coverage.machine.clone())),
+                Product::Input { rows, material } => {
+                    let location = material.as_ref().map(|material| SourceLocation {
+                        material: material.id.clone(),
+                        anchor: 0,
+                    });
+                    (
+                        location,
+                        rows.observation.as_ref().map(|row| row.machine.clone()),
+                    )
+                }
+                Product::Blob(material) => (
+                    Some(SourceLocation {
+                        material: material.id.clone(),
+                        anchor: 0,
+                    }),
+                    None,
+                ),
+                Product::Request(prepared) => (None, Some(prepared.request.machine.clone())),
+                Product::RestoredRequest { prepared } => {
+                    (None, Some(prepared.request.machine.clone()))
+                }
+                Product::RestoredAssertion { fact, .. } => (None, Some(fact.machine.clone())),
+                _ => unreachable!(),
+            }
+        };
+        writes.push(ProductWrite {
+            product,
+            location,
+            parents: Vec::new(),
+            machine,
+            output_index: index as u64,
+            publish: true,
+        });
+    }
+    Ok(writes)
 }

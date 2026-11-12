@@ -3,6 +3,26 @@ use super::*;
 use crate::primary::SourceRecord;
 use crate::primary::products::allowed;
 
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Snapshot {
+    reading: crate::primary::Reading,
+    records: Vec<(SourceRecord, bool)>,
+}
+
+pub(super) fn validate(index: &Connection, step: &ParseStep) -> Result<()> {
+    let snapshot = step.source_eligibility.as_ref().ok_or_else(|| {
+        StoreError::Invalid("a primary reading has no original eligibility snapshot".into())
+    })?;
+    for (record, keep) in &snapshot.records {
+        if allowed(index, &snapshot.reading, record)? != *keep {
+            return Err(StoreError::PrimaryPending {
+                identity: snapshot.reading.input.id.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
 fn retain<T>(values: &mut Vec<T>, mask: &[bool]) {
     let mut index = 0;
     values.retain(|_| {
@@ -43,6 +63,9 @@ pub(super) fn retain_source_records(
 ) -> Result<()> {
     let products = crate::primary::products::parse(input, chain, Some(length), step)?;
     let mut masks = std::collections::BTreeMap::<String, Vec<bool>>::new();
+    let reading = crate::primary::Reading::from_step(input, chain, Some(length), step);
+    let mut records = Vec::with_capacity(products.len());
+    step.preserve_export_body()?;
     for product in products {
         let reading = product.reading().expect("parser fact has source");
         let record = SourceRecord::of(&product)?.expect("parser fact has identity");
@@ -50,12 +73,16 @@ pub(super) fn retain_source_records(
         if record.family == "parse_progress" {
             step.source_prefix_missing |= !keep;
         }
-        masks.entry(record.family).or_default().push(keep);
+        masks.entry(record.family.clone()).or_default().push(keep);
+        records.push((record, keep));
     }
+    step.source_eligibility = Some(Snapshot { reading, records });
     let all = masks.values().all(|mask| mask.iter().all(|keep| *keep));
     if all {
         return Ok(());
     }
+    // A hidden value cannot supply the parser's resume context on this receiver.
+    step.checkpoint = None;
     let event_ids = step.event_identities(&input.id, chain)?;
     let output = &mut step.output;
     let mask = |family: &str| masks.get(family).map(Vec::as_slice).unwrap_or(&[]);

@@ -29,7 +29,16 @@ impl ParseStep {
         Ok(())
     }
 
+    pub(super) fn preserve_export_body(&mut self) -> Result<()> {
+        self.validate_export()?;
+        self.original_export_body = Some(self.export_body_hash()?);
+        Ok(())
+    }
+
     fn export_body_hash(&self) -> Result<BlobHash> {
+        if let Some(original) = self.original_export_body {
+            return Ok(original);
+        }
         let mut output = if self.prepared.released {
             self.complete_output()?
         } else {

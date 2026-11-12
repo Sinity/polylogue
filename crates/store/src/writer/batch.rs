@@ -87,6 +87,11 @@ pub struct ParseStep {
     /// Confirmed surviving facts can omit source ranges despite a scratch reset.
     #[serde(default)]
     pub(crate) source_prefix_missing: bool,
+    /// Original identities and eligibility used before receiver normalization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) source_eligibility: Option<super::source_eligibility::Snapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) original_export_body: Option<BlobHash>,
     /// IDs from admitted products, separate from the explicit map in a sealed callback.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) confirmed_event_ids: Option<Vec<String>>,
@@ -169,6 +174,8 @@ impl ParseStep {
             stopped_attempt: None,
             receipt: None,
             source_prefix_missing: false,
+            source_eligibility: None,
+            original_export_body: None,
             confirmed_event_ids: None,
             reset: range.start == 0,
             repeats_whole_conversations: false,

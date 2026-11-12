@@ -65,6 +65,9 @@ pub(super) fn write_published_rows(
             "native publication receipt is incomplete".into(),
         ));
     }
+    if p.source_eligibility.is_some() {
+        super::source_eligibility::validate(tx, p)?;
+    }
     apply_rows(
         tx,
         b,
