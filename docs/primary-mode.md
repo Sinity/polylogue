@@ -79,7 +79,13 @@ JSON object keys return in a different order. The original callback body and
 its seal remain unchanged.
 
 The stream follower alone reads and acknowledges confirmed pages. It sends each
-page to the writer and acknowledges it after durable application.
+page to the writer and acknowledges it after durable application. It drains
+remaining stream or snapshot pages without an idle pause, checking stop and
+synchronization requests between bounded pages. An empty or nonadvancing page
+waits before polling again; failures retain their retry backoff. Event payload
+references use at most sixteen concurrent grant-checked fetches, with results
+applied in delivery order. A refused or erased event keeps its own position;
+a lost connection fails the page before its deliveries can be acknowledged.
 Acknowledging a page removes the producer spool operations that it confirmed. An
 operation whose events Sinex admitted is removed only when every one of those
 events has a fact in `index.db`; the applied position alone is not enough,
