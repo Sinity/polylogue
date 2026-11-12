@@ -474,7 +474,11 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
                 let reader = pool.reader()?;
                 Ok(reader.messages(&session, false)? == wanted)
             },
-            String::new,
+            || {
+                let actual = ReadPool::open(&archive)
+                    .and_then(|pool| pool.reader()?.messages(&session, false));
+                format!("expected {wanted:?}; actual {actual:?}")
+            },
         );
         engine.writer().unwrap().derive().unwrap();
         drop(engine);
