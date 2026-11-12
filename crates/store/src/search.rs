@@ -66,7 +66,7 @@ pub struct SnippetQuery<'a> {
 }
 
 impl SnippetQuery<'_> {
-    fn fts(&self) -> Option<String> {
+    pub(crate) fn fts(&self) -> Option<String> {
         let expressions = self
             .terms
             .iter()
@@ -86,6 +86,14 @@ impl SnippetQuery<'_> {
 
 mod hits;
 
+/// The same source wins query ranking and snippet selection.
+pub(crate) fn best_source(source: &str, group: &str) -> String {
+    format!(
+        "SELECT * FROM (SELECT *,row_number() OVER(PARTITION BY {group} ORDER BY rank,at DESC,message,block) AS choice FROM {source}) WHERE choice=1"
+    )
+}
+
+#[derive(Clone)]
 struct Hit {
     /// Which of the queries found it.
     query: usize,
@@ -104,6 +112,53 @@ impl Reader<'_> {
         scopes: &[Within],
     ) -> Result<Vec<Option<Snippet>>> {
         let hits = self.snippet_hits(queries, scopes)?;
+        self.cut_snippets(queries, hits)
+    }
+
+    /// Cut sources already chosen by the query's identical ranked expression.
+    pub(crate) fn snippets_from_blocks(
+        &self,
+        query: &SnippetQuery<'_>,
+        blocks: &[i64],
+    ) -> Result<Vec<Option<Snippet>>> {
+        let wanted = serde_json::to_string(blocks)?;
+        let conn = self.conn()?;
+        let mut statement = conn.prepare_cached(
+            "SELECT b.pk,m.session_pk,s.id,m.id FROM json_each(?1) wanted \
+             CROSS JOIN block b ON b.pk=wanted.value CROSS JOIN message m ON m.pk=b.message_pk \
+             CROSS JOIN session s ON s.pk=m.session_pk",
+        )?;
+        let selected = statement
+            .query_map([wanted], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    Hit {
+                        query: 0,
+                        block: row.get(0)?,
+                        session_pk: row.get(1)?,
+                        session: row.get(2)?,
+                        message: row.get(3)?,
+                    },
+                ))
+            })?
+            .collect::<std::result::Result<HashMap<_, _>, _>>()?;
+        let hits =
+            blocks
+                .iter()
+                .map(|block| {
+                    selected.get(block).cloned().map(Some).ok_or_else(|| {
+                        StoreError::Invalid("selected hit block is unavailable".into())
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+        self.cut_snippets(std::slice::from_ref(query), hits)
+    }
+
+    fn cut_snippets(
+        &self,
+        queries: &[SnippetQuery<'_>],
+        hits: Vec<Option<Hit>>,
+    ) -> Result<Vec<Option<Snippet>>> {
         let words = queries.iter().map(SnippetQuery::words).collect::<Vec<_>>();
         let mut sessions: BTreeMap<i64, HashMap<(i64, usize), Vec<usize>>> = BTreeMap::new();
         for (index, hit) in hits.iter().enumerate() {
@@ -116,7 +171,7 @@ impl Reader<'_> {
                     .push(index);
             }
         }
-        let mut snippets = vec![None; scopes.len()];
+        let mut snippets = vec![None; hits.len()];
         for (_, pending) in sessions {
             for ((block_pk, query), indices) in pending {
                 let block = crate::ordered_blocks::one(self.conn()?, block_pk)?;

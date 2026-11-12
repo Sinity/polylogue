@@ -483,10 +483,40 @@ pub fn snippets(
         polylogue_query::ast::Unit::Messages => Within::Message,
         _ => return Ok(()),
     };
+    let reuse = match &program.statements {
+        super::compile::Statements::Keyed(keyed) => keyed.search.as_ref().is_some_and(|search| {
+            queries[0].index == search.index
+                && queries[0].fts().as_deref() == Some(search.expression.as_str())
+        }),
+        _ => false,
+    };
+    let mut supplied = vec![false; rows.len()];
+    if reuse {
+        let (indices, blocks): (Vec<_>, Vec<_>) = rows
+            .iter()
+            .enumerate()
+            .filter_map(|(index, row)| row["_hit_block"].as_i64().map(|block| (index, block)))
+            .unzip();
+        for (index, snippet) in indices
+            .into_iter()
+            .zip(reader.snippets_from_blocks(&queries[0], &blocks)?)
+        {
+            if let Some(snippet) = snippet {
+                rows[index]["snippet"] = serde_json::to_value(snippet).unwrap_or(Value::Null);
+                supplied[index] = true;
+            }
+        }
+    }
     let (indices, scopes): (Vec<_>, Vec<_>) = rows
         .iter()
         .enumerate()
-        .filter_map(|(index, row)| row["_pk"].as_i64().map(|pk| (index, scope(pk))))
+        .filter_map(|(index, row)| {
+            if supplied[index] {
+                None
+            } else {
+                row["_pk"].as_i64().map(|pk| (index, scope(pk)))
+            }
+        })
         .unzip();
     for (index, snippet) in indices.into_iter().zip(reader.snippets(&queries, &scopes)?) {
         if let Some(snippet) = snippet {

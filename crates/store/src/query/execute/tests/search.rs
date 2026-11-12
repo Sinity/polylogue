@@ -284,6 +284,7 @@ fn many_hits(blocks: usize, output: bool) -> (tempfile::TempDir, Fixture) {
                     role: "assistant",
                     written_by: "model",
                     text: (!output).then_some(text.as_str()),
+                    at: Some(if n == blocks { 2000 } else { 1000 }),
                     ..Default::default()
                 },
             )
@@ -298,6 +299,7 @@ fn many_hits(blocks: usize, output: bool) -> (tempfile::TempDir, Fixture) {
                         action: "shell",
                         outcome: "ok",
                         output: Some(&text),
+                        at: Some(if n == blocks { 2000 } else { 1000 }),
                         ..Default::default()
                     },
                 )
@@ -494,4 +496,208 @@ fn first_ranked_page_does_not_expand_worse_shared_body_owners() {
             "unlimited selector must discriminate: {small:?} → {large:?}"
         );
     }
+}
+
+fn assert_hit_sources(fixture: &Fixture, expected: &[(&str, &str)]) {
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let mut program = crate::query::compile("needle", &options_for_search()).unwrap();
+    program.page_size = 1;
+    let mut rows = pages(&reader, &program);
+    crate::query::execute::snippets(&reader, &program, &mut rows).unwrap();
+    let actual = rows
+        .iter()
+        .map(|row| {
+            (
+                row["id"].as_str().unwrap(),
+                row["snippet"]["message"].as_str().unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn relevance_ties_use_the_chosen_message_and_snippets_keep_its_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(dir.path()).unwrap();
+    let active = fixture
+        .session(SessionFacts {
+            id: "test:activity",
+            kind: "main",
+            last: Some(9000),
+            ..Default::default()
+        })
+        .unwrap();
+    let matching = fixture
+        .session(SessionFacts {
+            id: "test:matching",
+            kind: "main",
+            last: Some(2000),
+            ..Default::default()
+        })
+        .unwrap();
+    for (owner, id, text, at, author, prompt) in [
+        (
+            active,
+            "test:old-hit",
+            "needle",
+            1000,
+            "human",
+            Some("prose"),
+        ),
+        (
+            active,
+            "test:activity-tail",
+            "unrelated activity",
+            9000,
+            "model",
+            None,
+        ),
+        (
+            matching,
+            "test:recent-hit",
+            "needle",
+            2000,
+            "human",
+            Some("prose"),
+        ),
+        (
+            active,
+            "test:harness-copy",
+            "needle",
+            10000,
+            "harness",
+            Some("harness"),
+        ),
+    ] {
+        fixture
+            .message(
+                owner,
+                MessageFacts {
+                    id,
+                    role: if author == "model" {
+                        "assistant"
+                    } else {
+                        "user"
+                    },
+                    written_by: author,
+                    prompt_kind: prompt,
+                    text: Some(text),
+                    at: Some(at),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+    assert_hit_sources(
+        &fixture,
+        &[
+            ("test:matching", "test:recent-hit"),
+            ("test:activity", "test:old-hit"),
+        ],
+    );
+    let child = fixture
+        .session(SessionFacts {
+            id: "test:child",
+            kind: "subagent",
+            last: Some(3000),
+            ..Default::default()
+        })
+        .unwrap();
+    fixture
+        .message(
+            child,
+            MessageFacts {
+                id: "test:child-hit",
+                role: "assistant",
+                written_by: "model",
+                text: Some("needle"),
+                at: Some(3000),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    fixture
+        .link("test:activity", "test:child", "spawn", None)
+        .unwrap();
+    assert_hit_sources(
+        &fixture,
+        &[
+            ("test:activity", "test:child-hit"),
+            ("test:matching", "test:recent-hit"),
+        ],
+    );
+    fixture
+        .message(
+            active,
+            MessageFacts {
+                id: "test:summary-hit",
+                role: "user",
+                written_by: "harness",
+                prompt_kind: Some("compaction_summary"),
+                text: Some("needle"),
+                at: Some(11000),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_hit_sources(
+        &fixture,
+        &[
+            ("test:activity", "test:summary-hit"),
+            ("test:matching", "test:recent-hit"),
+        ],
+    );
+}
+
+#[test]
+fn snippet_reuse_does_not_rescan_many_hit_owners() {
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+    let mut work = Vec::new();
+    for blocks in [128, 512] {
+        let (_dir, fixture) = many_hits(blocks, false);
+        let pool = fixture.reads().unwrap();
+        let reader = pool.reader().unwrap();
+        let program = crate::query::compile("needle", &options_for_search()).unwrap();
+        let rows = reader.query_rows(&program).unwrap();
+        let mut fallback = rows.clone();
+        for row in &mut fallback {
+            row.as_object_mut().unwrap().remove("_hit_block");
+        }
+        let conn = reader.conn().unwrap();
+        conn.authorizer(Some(|context: AuthContext<'_>| {
+            if matches!(context.action,AuthAction::Read { table_name, .. }
+                if table_name.starts_with("text_fts") || table_name.starts_with("output_fts"))
+            {
+                Authorization::Deny
+            } else {
+                Authorization::Allow
+            }
+        }))
+        .unwrap();
+        let (reused, steps) = counted(&reader, || {
+            let mut rows = rows;
+            crate::query::execute::snippets(&reader, &program, &mut rows).unwrap();
+            rows
+        });
+        conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
+            .unwrap();
+        let (fallback, old_steps) = counted(&reader, || {
+            crate::query::execute::snippets(&reader, &program, &mut fallback).unwrap();
+            fallback
+        });
+        assert_eq!(
+            reused.iter().map(|row| &row["snippet"]).collect::<Vec<_>>(),
+            fallback
+                .iter()
+                .map(|row| &row["snippet"])
+                .collect::<Vec<_>>()
+        );
+        work.push((steps, old_steps));
+    }
+    assert!(
+        work[1].0 <= work[0].0 + work[0].0 / 5,
+        "selected-source work: {work:?}"
+    );
 }
