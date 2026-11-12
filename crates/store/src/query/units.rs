@@ -213,27 +213,26 @@ fn sessions_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
 fn messages_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
     if h.source {
         let found = format!("{}_messages", h.cte);
-        let best = crate::search::best_source("candidates", "owner");
+        let sources = format!("{found}_sources");
+        let best = crate::search::best_source(&found, "owner");
         let rows = format!(
-            "{found} AS MATERIALIZED (WITH candidates AS MATERIALIZED (\
+            "{found} AS MATERIALIZED (\
               SELECT xm.pk AS owner,xb.pk AS block,xm.at,xm.id AS message,h.rank \
               FROM {} h CROSS JOIN block xb ON xb.text_id=h.text_id \
-              CROSS JOIN message xm ON xm.pk=xb.message_pk WHERE {}{}) \
-              SELECT owner AS message_pk,block,at,rank FROM ({best}))",
+              CROSS JOIN message xm ON xm.pk=xb.message_pk WHERE {}{})",
             h.cte,
             h.block_kind("xb"),
             h.writer("xm")
         );
         return Some(HitRelation {
-            ctes: vec![rows],
-            condition: format!("{}.pk IN (SELECT message_pk FROM {found})", a.m),
-            rank: format!("(SELECT rank FROM {found} h WHERE h.message_pk={}.pk)", a.m),
+            // Membership reads candidates directly. Only ranked answers read
+            // the winner window; SQLite can omit it from counts and set stages.
+            ctes: vec![rows, format!("{sources} AS MATERIALIZED ({best})")],
+            condition: format!("{}.pk IN (SELECT owner FROM {found})", a.m),
+            rank: format!("(SELECT rank FROM {sources} h WHERE h.owner={}.pk)", a.m),
             source: Some(HitSource {
-                block: format!(
-                    "(SELECT block FROM {found} h WHERE h.message_pk={}.pk)",
-                    a.m
-                ),
-                at: format!("(SELECT at FROM {found} h WHERE h.message_pk={}.pk)", a.m),
+                block: format!("(SELECT block FROM {sources} h WHERE h.owner={}.pk)", a.m),
+                at: format!("(SELECT at FROM {sources} h WHERE h.owner={}.pk)", a.m),
             }),
         });
     }
