@@ -48,12 +48,14 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+pub(crate) const SOURCE_VERSION: u32 = 7;
+
 /// This adapter declaration is installed by the owner, never self-registered
 /// from a producer's requested permissions.
 pub fn source_reference() -> sinex_protocol::SourceRef {
     sinex_protocol::SourceRef {
         name: "polylogue".into(),
-        version: 7,
+        version: SOURCE_VERSION,
     }
 }
 
