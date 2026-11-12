@@ -29,6 +29,7 @@ fn text(body: &str) -> Block {
 
 fn call(id: &str, command: &str) -> Block {
     Block::ToolCall {
+        written_text: None,
         call_id: Some(id.into()),
         tool: Some("Bash".into()),
         action: ToolAction::Shell,
@@ -190,6 +191,7 @@ fn varied_entries() -> Vec<IndexEntry> {
         ..Default::default()
     });
     let lookup = Block::ToolCall {
+        written_text: None,
         call_id: Some("c2".into()),
         tool: Some("Read".into()),
         action: ToolAction::Other,

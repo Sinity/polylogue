@@ -565,6 +565,7 @@ impl AiStudio {
                     self.state.pending_call = Some(call_id.clone());
                 }
                 blocks.push(Block::ToolCall {
+                    written_text: None,
                     run_by_script: false,
                     call_id: Some(call_id),
                     tool: Some("code_execution".into()),

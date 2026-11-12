@@ -503,6 +503,7 @@ fn span_fold_after_append_equals_full_recompute() {
             Role::Assistant,
             at,
             vec![Block::ToolCall {
+                written_text: None,
                 run_by_script,
                 call_id: Some(format!("k{n}")),
                 tool: Some("python".into()),

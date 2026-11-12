@@ -164,13 +164,24 @@ pub fn call_input(item: &Json) -> Json {
         .unwrap_or(Json::Null)
 }
 
+/// The built-in patch body, distinct from arbitrary tool arguments.
+pub fn written_text(tool: &str, input: &Json) -> Option<String> {
+    match tool {
+        "apply_patch" | "functions.apply_patch" => input
+            .as_str()
+            .or_else(|| input.get("input").and_then(Json::as_str))
+            .map(str::to_owned),
+        _ => None,
+    }
+}
+
 /// What a Codex tool does, by its name. Code mode's `exec` runs a script
 /// whose own `exec_command` calls are counted as the shell commands.
 pub fn action(tool: &str) -> ToolAction {
     match tool {
         "shell" | "local_shell" | "exec_command" | "shell_command" => ToolAction::Shell,
         "exec" => ToolAction::Code,
-        "apply_patch" | "file_change" => ToolAction::FileEdit,
+        "apply_patch" | "functions.apply_patch" | "file_change" => ToolAction::FileEdit,
         "view_image" => ToolAction::FileRead,
         "tool_search" => ToolAction::Search,
         "web_search" => ToolAction::Web,
@@ -211,7 +222,7 @@ fn shell_line(words: &[&str]) -> String {
 
 /// The file a call edits, for patch tools.
 pub fn call_path(tool: &str, input: &Json) -> Option<String> {
-    if tool != "apply_patch" {
+    if !matches!(tool, "apply_patch" | "functions.apply_patch") {
         return input.get("path").and_then(Json::as_str).map(str::to_owned);
     }
     let patch = input
@@ -521,6 +532,7 @@ pub fn recovered_call(item: &Json, blobs: &mut Vec<ExtractedBlob>) -> Option<Vec
             let name = format!("mcp__{server}__{tool}");
             return Some(vec![
                 Block::ToolCall {
+                    written_text: None,
                     run_by_script: false,
                     call_id: Some(id.clone()),
                     tool: Some(name),
@@ -546,6 +558,7 @@ pub fn recovered_call(item: &Json, blobs: &mut Vec<ExtractedBlob>) -> Option<Vec
     };
     Some(vec![
         Block::ToolCall {
+            written_text: None,
             // A command execution item is a command a code-mode script ran.
             run_by_script: tool == "exec_command",
             call_id: Some(id.clone()),

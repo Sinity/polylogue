@@ -3,6 +3,7 @@ use super::*;
 fn messages(duration: u64) -> (Message, Message) {
     let mut call = text_message("c", "s", Role::Assistant, "", Some("tool_use"));
     call.blocks = vec![Block::ToolCall {
+        written_text: None,
         run_by_script: false,
         call_id: Some("t1".into()),
         tool: Some("Bash".into()),

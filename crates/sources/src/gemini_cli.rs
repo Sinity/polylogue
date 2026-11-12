@@ -371,6 +371,7 @@ fn blocks(m: &Json) -> Vec<Block> {
     {
         let args = call.get("args").cloned().unwrap_or(Json::Null);
         out.push(Block::ToolCall {
+            written_text: None,
             run_by_script: false,
             call_id: string_of(call, "id"),
             tool: string_of(call, "name"),

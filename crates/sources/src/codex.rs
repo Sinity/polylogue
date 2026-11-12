@@ -16,7 +16,7 @@
 //! and their parent session, and the rest is accounted as copied.
 
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
 
 pub mod database;
 mod fields;
@@ -619,6 +619,7 @@ impl Rollout {
                     );
                 }
                 let block = Block::ToolCall {
+                    written_text: items::written_text(&tool, &input),
                     run_by_script: false,
                     call_id: id,
                     action: items::action(&tool),
@@ -660,6 +661,7 @@ impl Rollout {
                 };
                 let blocks = vec![
                     Block::ToolCall {
+                        written_text: None,
                         run_by_script: false,
                         call_id: id.clone(),
                         tool: Some("web_search".into()),

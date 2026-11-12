@@ -44,6 +44,25 @@ fn string(v: &Json, key: &str) -> Option<String> {
     v.get(key).and_then(Json::as_str).map(str::to_owned)
 }
 
+/// File content carried by a declared file-changing tool, without interpreting other arguments.
+fn written_text(tool: &str, input: &Json) -> Option<String> {
+    match tool {
+        "Write" => string(input, "content"),
+        "Edit" => string(input, "new_string"),
+        "NotebookEdit" => string(input, "new_source"),
+        "MultiEdit" => {
+            let bodies: Vec<_> = input
+                .get("edits")?
+                .as_array()?
+                .iter()
+                .filter_map(|edit| edit.get("new_string").and_then(Json::as_str))
+                .collect();
+            (!bodies.is_empty()).then(|| bodies.join("\n\n"))
+        }
+        _ => None,
+    }
+}
+
 /// What a Claude Code tool does, by its name. Server tools (`web_search`,
 /// `code_execution`) run on the API side under their own names.
 pub fn action(tool: &str) -> ToolAction {
@@ -80,6 +99,7 @@ fn block(record: &Json, item: &Json, sole_result: bool, blobs: &mut Vec<Extracte
             let input = item.get("input").cloned().unwrap_or(Json::Null);
             let tool = string(item, "name");
             Block::ToolCall {
+                written_text: written_text(tool.as_deref().unwrap_or(""), &input),
                 run_by_script: false,
                 call_id: string(item, "id"),
                 action: action(tool.as_deref().unwrap_or("")),

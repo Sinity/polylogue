@@ -569,6 +569,7 @@ fn block_items(
                 }
                 _ => call_item(
                     &Block::ToolCall {
+                        written_text: None,
                         call_id: None,
                         tool: None,
                         action: Default::default(),

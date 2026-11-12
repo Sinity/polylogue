@@ -26,6 +26,7 @@ pub(super) fn blocks(step: &Json) -> (Vec<Block>, Vec<&'static str>) {
                 let args = call.get("arguments").filter(|v| v.is_object());
                 if let (Some(id), Some(tool), Some(args)) = (id, tool, args) {
                     out.push(Block::ToolCall {
+                        written_text: None,
                         run_by_script: false,
                         call_id: Some(id.into()),
                         tool: Some(tool.into()),

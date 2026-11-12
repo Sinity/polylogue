@@ -146,6 +146,7 @@ fn prepared_and_fallback_bodies_keep_exact_messages_and_events() {
             Some("tool_use"),
         );
         message.blocks.push(Block::ToolCall {
+            written_text: None,
             run_by_script: false,
             call_id: Some("call-1".into()),
             tool: Some("Bash".into()),
@@ -281,6 +282,7 @@ fn prepared_hook_events_keep_waiting_reasons_and_current_tool_facts() {
             let w = test_archive();
             let mut message = text_message("m", "s", Role::Assistant, "Synthetic reply", None);
             message.blocks.push(Block::ToolCall {
+                written_text: None,
                 run_by_script: false,
                 call_id: Some("call-1".into()),
                 tool: Some("TodoWrite".into()),
@@ -330,6 +332,7 @@ fn complete_products_restore_prepared_structured_values_without_an_index_read() 
     let mut message = text_message("m", "s", Role::Assistant, "exact text", None);
     message.blocks.extend([
         Block::ToolCall {
+            written_text: None,
             call_id: Some("call".into()),
             tool: Some("Bash".into()),
             action: ToolAction::Shell,

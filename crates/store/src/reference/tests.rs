@@ -31,6 +31,7 @@ fn reference_text_streams_original_blocks_and_hashes_the_declared_plain_text() {
                         text: "a💡ż".into(),
                     },
                     Block::ToolCall {
+                        written_text: None,
                         call_id: Some("call".into()),
                         tool: Some("tool".into()),
                         action: Default::default(),

@@ -15,7 +15,7 @@
 //! once, and the copying session gets a `copy` link.
 
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 6;
+pub const VERSION: u32 = 7;
 
 mod blocks;
 mod fields;

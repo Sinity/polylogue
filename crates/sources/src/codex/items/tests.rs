@@ -188,3 +188,20 @@ fn recovered_mcp_result_keeps_media_and_structured_parts() {
     assert_eq!(attachments[0].blob, Some(BlobHash::of(&[1, 2])));
     assert_eq!(blobs[0].bytes, [1, 2]);
 }
+
+#[test]
+fn patch_body_is_exact_for_native_and_namespaced_tools() {
+    let patch = "*** Begin Patch\n*** Add File: synthetic.txt\n+λ\n*** End Patch";
+    for name in ["apply_patch", "functions.apply_patch"] {
+        assert_eq!(written_text(name, &json!(patch)).as_deref(), Some(patch));
+        assert_eq!(action(name), ToolAction::FileEdit);
+        assert_eq!(
+            call_path(name, &json!(patch)).as_deref(),
+            Some("synthetic.txt")
+        );
+    }
+    assert_eq!(
+        written_text("exec_command", &json!({"command":patch})),
+        None
+    );
+}

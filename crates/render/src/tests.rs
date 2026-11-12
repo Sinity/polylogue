@@ -156,6 +156,7 @@ fn dialogue_has_no_thinking_harness_or_tools_and_keeps_original_ordinals() {
 #[test]
 fn tool_pair_uses_declared_relationship_outside_current_record() {
     let call = Block::ToolCall {
+        written_text: None,
         call_id: Some("call-x".into()),
         tool: Some("Bash".into()),
         action: polylogue_model::ToolAction::Shell,
@@ -672,6 +673,7 @@ fn html_export_has_no_network_font_dependency() {
 #[test]
 fn declared_tool_pairs_refuse_conflicting_ids() {
     let call = Block::ToolCall {
+        written_text: None,
         call_id: Some("a".into()),
         tool: None,
         action: Default::default(),
@@ -1084,6 +1086,7 @@ fn budgeted_pages_name_the_canonical_token_estimator() {
 #[test]
 fn a_recorded_call_with_unknown_tool_name_is_not_an_orphan_result() {
     let call = Block::ToolCall {
+        written_text: None,
         call_id: Some("known-call".into()),
         tool: None,
         action: Default::default(),
@@ -1233,6 +1236,7 @@ fn variant_marks_only_describe_visible_substitutions() {
 #[test]
 fn paired_off_page_result_attachments_use_their_own_original_ordinal() {
     let call = Block::ToolCall {
+        written_text: None,
         call_id: Some("c".into()),
         tool: Some("capture".into()),
         action: Default::default(),
@@ -1457,6 +1461,7 @@ fn text_variant(original: &str, text: &str, alignment: Vec<TextAlignment>) -> Va
 #[test]
 fn variants_replace_thinking_and_remote_tool_output_at_their_exact_sources() {
     let call = Block::ToolCall {
+        written_text: None,
         call_id: Some("c".into()),
         tool: Some("test".into()),
         action: Default::default(),
@@ -1713,6 +1718,7 @@ fn a_paired_result_header_marks_only_the_pair_actually_emitted_here() {
             call: SourceBlock {
                 source: call_source,
                 block: Block::ToolCall {
+                    written_text: None,
                     call_id: Some("c".into()),
                     tool: Some("test".into()),
                     action: Default::default(),
