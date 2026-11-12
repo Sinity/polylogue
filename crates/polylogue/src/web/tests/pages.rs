@@ -157,12 +157,16 @@ fn changed_generation_refuses_content_continuation_and_replaces_change_populatio
 }
 
 #[test]
-fn live_client_recovery_and_visibility_contract() {
+fn web_client_authentication_recovery_and_visibility_contract() {
     let output = std::process::Command::new("node")
         .arg("--test")
         .arg(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/src/web/assets/tests/live.test.mjs"
+        ))
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/web/assets/tests/auth.test.mjs"
         ))
         .output()
         .expect("Node from the development shell");
