@@ -23,6 +23,11 @@ impl AssembledReading {
         receipt: Option<crate::wire_shapes::ReadingReceipt>,
     ) -> crate::Result<()> {
         match product {
+            Product::Interpreted { .. } => {
+                return Err(crate::StoreError::Invalid(
+                    "native eligibility does not supply original parser values".into(),
+                ));
+            }
             // The invocation is already in its message. Its separate native
             // fact is for Sinex queries, not another local block or event.
             Product::ToolCall { .. } => {}

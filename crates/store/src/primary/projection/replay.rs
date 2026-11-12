@@ -76,6 +76,14 @@ pub(super) fn validate_context(context: &NativeFactContext) -> Result<()> {
         || !hash(&context.kind_definition_hash)
         || !hash(&context.projection.payload_hash)
         || context
+            .record_hash
+            .as_deref()
+            .is_some_and(|value| !hash(value))
+        || context
+            .location
+            .as_ref()
+            .is_some_and(|location| location.material.is_empty())
+        || context
             .origin
             .source
             .as_ref()

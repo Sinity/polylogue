@@ -1742,6 +1742,7 @@ impl Inner {
                 parents: Vec::new(),
                 machine: Some(machine),
                 output_index: 0,
+                publish: true,
             }])?;
             return Ok(());
         }

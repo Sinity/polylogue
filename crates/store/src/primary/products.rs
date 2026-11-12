@@ -7,9 +7,11 @@ use polylogue_model::{
     Session,
 };
 use serde::{Deserialize, Serialize};
-mod rebuild;
-pub(crate) use rebuild::AssembledReading;
+mod eligibility;
+pub use eligibility::SourceRecord;
+pub(crate) use eligibility::{allowed, retain_source_records};
 mod export;
+mod rebuild;
 pub use export::ExportReadingKey;
 
 /// The parser reading and exact source chain that produced a fact.
@@ -173,6 +175,12 @@ impl Material {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "product", rename_all = "snake_case")]
 pub enum Product {
+    /// Reconstructible native eligibility, without a copied local model value.
+    Interpreted {
+        reading: Reading,
+        record: SourceRecord,
+    },
+
     Input {
         rows: Box<InputRows>,
         material: Option<Material>,
@@ -270,7 +278,8 @@ pub enum Product {
 impl Product {
     pub fn reading(&self) -> Option<&Reading> {
         match self {
-            Self::Session { reading, .. }
+            Self::Interpreted { reading, .. }
+            | Self::Session { reading, .. }
             | Self::Message { reading, .. }
             | Self::ToolCall { reading, .. }
             | Self::Document { reading, .. }
@@ -479,6 +488,15 @@ pub struct ProductWrite {
     pub parents: Vec<String>,
     pub machine: Option<String>,
     pub output_index: u64,
+    /// Eligibility is a local publication instruction; it is not native payload data.
+    #[serde(default = "publish_by_default", skip_serializing_if = "is_published")]
+    pub publish: bool,
+}
+fn publish_by_default() -> bool {
+    true
+}
+fn is_published(value: &bool) -> bool {
+    *value
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

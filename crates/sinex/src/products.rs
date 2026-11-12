@@ -25,6 +25,11 @@ pub(crate) fn decode_source(
 }
 
 pub(crate) fn require_source(product: &Product) -> Result<()> {
+    if matches!(product, Product::Interpreted { .. }) {
+        return Err(Error::Invalid(
+            "native eligibility metadata is not a domain fact".into(),
+        ));
+    }
     if product
         .reading()
         .is_some_and(|reading| reading.delivery.is_some())
@@ -84,6 +89,7 @@ pub(crate) fn require_reading(
 
 pub(crate) fn kind(product: &Product) -> &'static str {
     match product {
+        Product::Interpreted { .. } => "polylogue.interpreted",
         Product::AttachmentBinding { .. } => "polylogue.attachment_binding",
         Product::Input { .. } => crate::kinds::INPUT_KIND,
         Product::Blob(_) => "polylogue.blob",
@@ -124,6 +130,7 @@ pub(crate) fn kind(product: &Product) -> &'static str {
 /// every source rank and provider attribute when another copy arrives.
 pub(crate) fn key(product: &Product, _occurrence: u64) -> Result<String> {
     let natural = match product {
+        Product::Interpreted { record, .. } => json!([record.reference, record.value_hash]),
         Product::AttachmentBinding { record } => json!([record.selection()]),
         Product::Input { rows, .. } => json!([
             rows.input,
@@ -188,6 +195,7 @@ pub(crate) fn payload(product: &Product, occurrence: u64) -> Result<Value> {
         })?);
     }
     let mut payload = match product {
+        Product::Interpreted { .. } => unreachable!("eligibility is local metadata"),
         Product::ToolCall { .. } => unreachable!("handled as a native fact"),
         Product::Session { facts, .. } => serde_json::to_value(ai::SessionFields::from(facts))?,
         Product::Message { facts, .. } => {
@@ -594,7 +602,7 @@ pub(crate) fn events(
 ) -> Result<Vec<sinex_protocol::ProducerEvent>> {
     use sinex_model::{Class, MaterialId, RecordLocation};
     let mut observations = std::collections::BTreeMap::<String, crate::native::Native>::new();
-    for write in writes {
+    for write in writes.iter().filter(|write| write.publish) {
         match &write.product {
             Product::Session { facts, .. } => {
                 let context = observations
@@ -629,6 +637,7 @@ pub(crate) fn events(
         .collect::<std::collections::BTreeMap<_, _>>();
     writes
         .iter()
+        .filter(|write| write.publish)
         .map(|write| {
             let mut payload = payload(&write.product, write.output_index)?;
             let mut source = write.location.clone();

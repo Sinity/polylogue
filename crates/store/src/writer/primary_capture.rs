@@ -853,6 +853,7 @@ impl Inner {
                         parents: Vec::new(),
                         machine: None,
                         output_index: writes.len() as u64,
+                        publish: true,
                     });
                 }
                 Capture::Input(input) => {
@@ -939,6 +940,7 @@ impl Inner {
                             parents: Vec::new(),
                             machine: rows.observation.as_ref().map(|o| o.machine.clone()),
                             output_index: writes.len() as u64,
+                            publish: true,
                         });
                     }
                     writes.push(ProductWrite {
@@ -950,6 +952,7 @@ impl Inner {
                         location: member.anchor.clone(),
                         parents: Vec::new(),
                         output_index: writes.len() as u64,
+                        publish: true,
                     });
                     for captured in &input.parsed {
                         let mut step = captured.clone().into_step();

@@ -120,6 +120,7 @@ fn publish_and_project(sinex: &Arc<Sinex>, cache: &Path, items: &[(&str, &[u8])]
                     parents: Vec::new(),
                     machine: Some("fixture-host".into()),
                     output_index: 0,
+                    publish: true,
                 }],
             )
             .unwrap();

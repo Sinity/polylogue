@@ -30,6 +30,7 @@ impl Inner {
                             parents: Vec::new(),
                             machine: None,
                             output_index: bindings.len() as u64,
+                            publish: true,
                         });
                     }
                 }

@@ -1047,6 +1047,7 @@ impl Sinex {
             parents: Vec::new(),
             machine: Some(request.request.machine),
             output_index: writes.len() as u64,
+            publish: true,
         });
         self.complete_captures(&dependencies, &writes)?;
         Ok(())

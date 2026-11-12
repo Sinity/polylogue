@@ -138,6 +138,7 @@ fn named_query_phases_survive_restart_and_publication_until_confirmed_applicatio
             parents: vec![],
             machine: Some("synthetic-machine".into()),
             output_index: 0,
+            publish: true,
         };
         assert!(
             sinex
@@ -267,6 +268,7 @@ fn an_attachment_binding_is_an_ordinary_named_product() {
         parents: vec![],
         machine: None,
         output_index: 0,
+        publish: true,
     };
     let prepared = sinex
         .prepare_named_products("ordinary-name", std::slice::from_ref(&write))

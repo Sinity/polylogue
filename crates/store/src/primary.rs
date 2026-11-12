@@ -27,6 +27,7 @@ pub use products::{
     Capture, CaptureGroup, CapturedInput, CapturedReading, Confirmed, ConfirmedChange,
     ExportReadingKey, Material, ParsedPublication, ParsedSource, PendingCapture, PreparedInput,
     PreparedWrite, Product, ProductWrite, PublicationReceipt, Reading, SourceLocation,
+    SourceRecord,
 };
 
 use crate::{Result, StoreError};

@@ -67,27 +67,39 @@ fn decode_event(event: &sinex_protocol::ConfirmedEvent) -> Result<Confirmed> {
         position: event.commit_seq,
         event: event.id.to_string(),
         output_index: event.output_index,
-        native: Some(local::NativeFactContext {
-            kind: local::NativeKind {
-                name: event.event_type.clone(),
-                version: event.kind_version,
-            },
-            kind_definition_hash: event.kind_definition_hash.clone(),
-            projection: local::ProjectionIdentity {
-                payload_hash: event.projection.payload_hash.clone(),
-            },
-            origin: local::ConfirmedOrigin {
-                source: event.source_ref.as_ref().map(|source| local::NativeSource {
-                    name: source.name.clone(),
-                    version: source.version,
-                }),
-                source_fingerprint: event.source_fingerprint.clone(),
-                producer_family: event.producer_family.clone(),
-                producer_identity: event.producer_identity.clone(),
-            },
-        }),
+        native: Some(native_context(event)),
         change: ConfirmedChange::Live(Box::new(product)),
     })
+}
+
+fn native_context(event: &sinex_protocol::ConfirmedEvent) -> local::NativeFactContext {
+    local::NativeFactContext {
+        kind: local::NativeKind {
+            name: event.event_type.clone(),
+            version: event.kind_version,
+        },
+        kind_definition_hash: event.kind_definition_hash.clone(),
+        record_hash: Some(event.record_hash.clone()),
+        location: event
+            .location
+            .as_ref()
+            .map(|location| polylogue_model::native::NativeLocation {
+                material: location.material.to_string(),
+                anchor: location.anchor,
+            }),
+        projection: local::ProjectionIdentity {
+            payload_hash: event.projection.payload_hash.clone(),
+        },
+        origin: local::ConfirmedOrigin {
+            source: event.source_ref.as_ref().map(|source| local::NativeSource {
+                name: source.name.clone(),
+                version: source.version,
+            }),
+            source_fingerprint: event.source_fingerprint.clone(),
+            producer_family: event.producer_family.clone(),
+            producer_identity: event.producer_identity.clone(),
+        },
+    }
 }
 
 impl Client {
@@ -422,13 +434,17 @@ impl Client {
                                 "a fetched event differs from its confirmed position".into(),
                             ))
                         };
-                        readable(
+                        let mut fact = readable(
                             commit_seq,
                             &event.to_string(),
                             format!("{}@{}", fetched.event_type, fetched.kind_version),
                             same_position.then_some(fetched.kind_definition_hash.as_str()),
                             read,
-                        )?
+                        )?;
+                        if same_position {
+                            fact.native = Some(native_context(&fetched));
+                        }
+                        fact
                     }
                     Ok(None) => Confirmed {
                         position: commit_seq,

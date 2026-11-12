@@ -999,6 +999,7 @@ fn refused_attachment_retains_its_request_while_independent_completions_progress
                 parents: vec![],
                 machine: None,
                 output_index: 0,
+                publish: true,
             }],
         )
         .unwrap();

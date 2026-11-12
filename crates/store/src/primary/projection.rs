@@ -4,10 +4,13 @@ ALTER TABLE parse_state ADD COLUMN native_publication BLOB;
 CREATE TABLE primary_fact (
  event TEXT PRIMARY KEY, admitted INTEGER NOT NULL, changed INTEGER NOT NULL, source_order INTEGER NOT NULL,
  state TEXT NOT NULL CHECK(state IN ('live','archived','tombstoned')),
- product BLOB, input TEXT, chain INTEGER, reference TEXT, kind TEXT NOT NULL, step_start INTEGER, step_end INTEGER, reading_version TEXT, session TEXT, native_context BLOB
+ product BLOB, input TEXT, chain INTEGER, reference TEXT, kind TEXT NOT NULL, step_start INTEGER, step_end INTEGER, reading_version TEXT, session TEXT, native_context BLOB, value_hash BLOB, material TEXT, record_hash TEXT, native_kind TEXT
 ) STRICT;
 CREATE INDEX primary_fact_chain ON primary_fact(input,chain,admitted,event);
 CREATE INDEX primary_fact_session ON primary_fact(session,kind,state,admitted);
+CREATE INDEX primary_fact_live_material ON primary_fact(material,event) WHERE state='live';
+CREATE INDEX primary_fact_value ON primary_fact(input,chain,reading_version,reference,value_hash,state);
+CREATE INDEX primary_fact_reading_progress ON primary_fact(input,chain,reading_version,step_start,step_end) WHERE kind='reading_progress';
 ", include_str!("projection/read_indexes.sql"), "
 CREATE TABLE primary_fact_blob (
  event TEXT NOT NULL REFERENCES primary_fact(event), hash BLOB NOT NULL,
@@ -100,7 +103,16 @@ fn stage(index: &mut Connection, events: &[Confirmed]) -> Result<()> {
             ConfirmedChange::Refused { .. } => "refused",
             ConfirmedChange::Control(_) => unreachable!(),
         };
-        let bytes = packed(&event.change)?;
+        let change = match &event.change {
+            ConfirmedChange::Live(product) if product.reading().is_some() => {
+                ConfirmedChange::Live(Box::new(Product::Interpreted {
+                    reading: product.reading().expect("matched source reading").clone(),
+                    record: super::SourceRecord::of(product)?.expect("source record"),
+                }))
+            }
+            change => change.clone(),
+        };
+        let bytes = packed(&change)?;
         let native = event.native.as_ref().map(packed).transpose()?;
         let source_order = i64::try_from(event.output_index).map_err(|_| {
             StoreError::Invalid(
@@ -143,6 +155,10 @@ struct Fact {
     version: Option<String>,
     session: Option<String>,
     native: Option<Vec<u8>>,
+    value_hash: Option<Vec<u8>>,
+    material: Option<String>,
+    record_hash: Option<String>,
+    native_kind: Option<String>,
 }
 impl Fact {
     fn read(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
@@ -162,10 +178,14 @@ impl Fact {
             version: row.get(12)?,
             session: row.get(13)?,
             native: row.get(14)?,
+            value_hash: row.get(15)?,
+            material: row.get(16)?,
+            record_hash: row.get(17)?,
+            native_kind: row.get(18)?,
         })
     }
     fn insert(&self, index: &Connection, table: &str) -> Result<()> {
-        index.execute(&format!("INSERT OR REPLACE INTO {table}(event,admitted,changed,source_order,state,product,input,chain,reference,kind,step_start,step_end,reading_version,session,native_context) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)"),params![self.event,self.admitted,self.changed,self.order,self.state,self.product,self.input,self.chain,self.reference,self.kind,self.start,self.end,self.version,self.session,self.native])?;
+        index.execute(&format!("INSERT OR REPLACE INTO {table}(event,admitted,changed,source_order,state,product,input,chain,reference,kind,step_start,step_end,reading_version,session,native_context,value_hash,material,record_hash,native_kind) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)"),params![self.event,self.admitted,self.changed,self.order,self.state,self.product,self.input,self.chain,self.reference,self.kind,self.start,self.end,self.version,self.session,self.native,self.value_hash,self.material,self.record_hash,self.native_kind])?;
         Ok(())
     }
     fn tombstoned(event: String, position: i64, order: i64) -> Self {
@@ -185,6 +205,10 @@ impl Fact {
             version: None,
             session: None,
             native: None,
+            value_hash: None,
+            material: None,
+            record_hash: None,
+            native_kind: None,
         }
     }
     // The delivered event has lifecycle identity even when its body is unavailable.
@@ -200,12 +224,16 @@ impl Fact {
 }
 
 fn metadata(product: &Product) -> (Option<String>, Option<i64>, Option<String>, &'static str) {
-    if let Product::ToolCall { reading, facts } = product {
+    if let Product::Interpreted { reading, record } = product {
         return (
             Some(reading.input.id.clone()),
             Some(reading.chain),
-            Some(format!("call:{}:{}", facts.message, facts.block)),
-            "tool_call",
+            Some(record.reference.clone()),
+            if record.family == "parse_progress" {
+                "reading_progress"
+            } else {
+                "reading"
+            },
         );
     }
     let reference = match product {
@@ -282,6 +310,16 @@ fn candidate(index: &Connection, through: i64) -> Result<()> {
         let order: i64 = row.get(2)?;
         let position: i64 = row.get(3)?;
         let native: Option<Vec<u8>> = row.get(4)?;
+        let context: Option<super::NativeFactContext> =
+            native.as_deref().map(unpacked).transpose()?;
+        let native_material = context
+            .as_ref()
+            .and_then(|context| context.location.as_ref())
+            .map(|location| location.material.clone());
+        let native_hash = context
+            .as_ref()
+            .and_then(|context| context.record_hash.clone());
+        let native_kind = context.as_ref().map(|context| context.kind.name.clone());
         let change: ConfirmedChange = unpacked(&bytes)?;
         let old = index
             .query_row(
@@ -309,6 +347,7 @@ fn candidate(index: &Connection, through: i64) -> Result<()> {
                 }
                 let (input, chain, reference, kind) = metadata(&product);
                 let session = match product.as_ref() {
+                    Product::Interpreted { record, .. } => record.session.clone(),
                     Product::Session { facts, .. } => Some(facts.id.to_string()),
                     Product::Message { facts, .. } => Some(facts.message.session.to_string()),
                     Product::Event { facts, .. } => facts.session.as_ref().map(ToString::to_string),
@@ -333,6 +372,10 @@ fn candidate(index: &Connection, through: i64) -> Result<()> {
                         )
                     })?;
                 let version = reading.map(|r| r.reading_version.clone());
+                let value_hash = match product.as_ref() {
+                    Product::Interpreted { record, .. } => Some(record.value_hash.0.to_vec()),
+                    _ => None,
+                };
                 Some(Fact {
                     event,
                     admitted: old.as_ref().map_or(position, |f| f.admitted),
@@ -349,6 +392,10 @@ fn candidate(index: &Connection, through: i64) -> Result<()> {
                     version,
                     session,
                     native,
+                    value_hash,
+                    material: native_material,
+                    record_hash: native_hash,
+                    native_kind,
                 })
             }
             ConfirmedChange::Archived => old.map(|mut fact| {
@@ -383,7 +430,14 @@ fn candidate(index: &Connection, through: i64) -> Result<()> {
                 None => Fact::tombstoned(event, position, order),
             }),
             ConfirmedChange::Refused { .. } => {
-                Some(old.unwrap_or_else(|| Fact::unreadable(event, position, order)))
+                let mut fact = old.unwrap_or_else(|| Fact::unreadable(event, position, order));
+                if fact.native.is_none() {
+                    fact.native = native;
+                    fact.material = native_material;
+                    fact.record_hash = native_hash;
+                    fact.native_kind = native_kind;
+                }
+                Some(fact)
             }
             ConfirmedChange::Control(_) => None,
         };
@@ -488,88 +542,6 @@ fn attachments(
     }
 }
 
-fn step(
-    reading: &super::Reading,
-    output: polylogue_model::Output,
-    counts: polylogue_model::RecordCounts,
-) -> crate::ParseStep {
-    let mut step = crate::ParseStep::new(output, counts, reading.start..reading.parsed_upto, false);
-    step.progress = reading.progress.clone();
-    step.delivery = reading.delivery;
-    step.order_from = reading.order_from;
-    step.reading_version = reading.reading_version.clone();
-    step.repeats_whole_conversations = reading.repeats_whole_conversations;
-    step
-}
-
-type ReadingStep = super::products::AssembledReading;
-#[derive(Default)]
-struct SourceSpans {
-    through: u64,
-    missing: bool,
-}
-fn finish_step(
-    file: &mut crate::writer::ChainReading,
-    reading: &super::Reading,
-    facts: ReadingStep,
-    spans: &mut SourceSpans,
-) -> Result<()> {
-    if let Some(checkpoint) = &facts.checkpoint
-        && !checkpoint.matches(&reading.reading_version, reading.parsed_upto)
-    {
-        return Err(StoreError::Invalid(
-            "parser continuation differs from its confirmed reading cursor".into(),
-        ));
-    }
-    if facts.reset {
-        spans.missing = false;
-    } else if reading.start > spans.through {
-        spans.missing = true;
-    }
-    let mut output = facts.output;
-    let mut confirmed_event_ids = None;
-    if reading.delivery.is_some() {
-        let semantic_event_ids = facts.semantic_event_ids.ok_or_else(|| {
-            StoreError::Invalid(
-                "export progress omitted its original semantic event identities".into(),
-            )
-        })?;
-        // The explicit map restores the sealed callback body. The admitted
-        // Event products also carry generated identities, which must survive
-        // payload normalization when the confirmed reading is applied.
-        if semantic_event_ids
-            .iter()
-            .any(|(index, id)| output.event_ids.get(index) != Some(id))
-        {
-            return Err(StoreError::Invalid(
-                "export event identities differ from their explicit callback identities".into(),
-            ));
-        }
-        confirmed_event_ids = Some(
-            (0..output.events.len())
-                .map(|index| {
-                    output.event_ids.get(&index).cloned().ok_or_else(|| {
-                        StoreError::Invalid(
-                            "confirmed export event omitted its admitted identity".into(),
-                        )
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?,
-        );
-        output.event_ids = semantic_event_ids;
-    }
-    let mut step = step(reading, output, facts.counts);
-    step.confirmed_event_ids = confirmed_event_ids;
-    step.receipt = facts.receipt;
-    step.reset = facts.reset;
-    step.comparison = facts.comparison;
-    step.checkpoint = facts.checkpoint;
-    step.stopped_attempt = facts.stopped_attempt;
-    step.source_prefix_missing = spans.missing || step.receipt.is_none();
-    spans.through = spans.through.max(reading.parsed_upto);
-    file.push_confirmed(&mut step)
-}
-
 fn plan(index: &Connection) -> Result<Plan> {
     let mut out = Plan {
         readings: Vec::new(),
@@ -581,196 +553,109 @@ fn plan(index: &Connection) -> Result<Plan> {
         binding_messages: BTreeSet::new(),
         coverage: StateChange::of(index, "coverage")?,
     };
-    let mut chains = BTreeMap::<(String, i64), crate::InputKey>::new();
-    let mut new_materials = HashMap::new();
-    let mut q=index.prepare("SELECT * FROM primary_candidate UNION ALL SELECT f.* FROM primary_fact f JOIN primary_candidate c ON c.event=f.event")?;
-    let mut rows = q.query([])?;
+    let mut chains = BTreeMap::<(String, i64), (crate::InputKey, u64)>::new();
+    let mut query = index.prepare("SELECT * FROM primary_candidate UNION ALL SELECT f.* FROM primary_fact f JOIN primary_candidate c ON c.event=f.event")?;
+    let mut rows = query.query([])?;
     while let Some(row) = rows.next()? {
         let fact = Fact::read(row)?;
-        if let Some(product) = fact.product()? {
-            if fact.kind == "parsed"
-                && let Some(reading) = product.reading()
+        if matches!(fact.kind.as_str(), "reading" | "reading_progress")
+            && fact.changed != fact.admitted
+        {
+            if let (Some(input), Some(chain), Some(version)) =
+                (&fact.input, fact.chain, &fact.version)
             {
-                chains.insert(
-                    (reading.input.id.clone(), reading.chain),
-                    reading.input.clone(),
-                );
+                let local: Option<(String,u64)> = index.query_row(
+                    "SELECT i.format,coalesce((SELECT max(length) FROM source_revision WHERE input=i.id AND chain=p.chain),0) FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id=?1 AND p.chain=?2 AND p.reading_version=?3",
+                    params![input,chain,version], |row| Ok((row.get(0)?,row.get(1)?)),
+                ).optional()?;
+                if let Some((format, length)) = local {
+                    chains.insert(
+                        (input.clone(), chain),
+                        (
+                            crate::InputKey {
+                                id: input.clone(),
+                                format,
+                                route: polylogue_model::Route::Live,
+                            },
+                            length,
+                        ),
+                    );
+                }
             }
+        }
+        if let Some(product) = fact.product()? {
             if let Product::AttachmentBinding { record } = &product {
                 out.binding_messages
                     .insert(record.context().message.to_string());
             }
             if let Product::Input { rows, .. } = &product {
                 out.inputs.insert(rows.input.clone());
+                if fact.changed != fact.admitted {
+                    let mut states = index.prepare("SELECT p.chain,i.format,coalesce((SELECT max(length) FROM source_revision WHERE input=i.id AND chain=p.chain),0) FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id=?1")?;
+                    for row in states.query_map([&rows.input], |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, u64>(2)?,
+                        ))
+                    })? {
+                        let (chain, format, length) = row?;
+                        chains.insert(
+                            (rows.input.clone(), chain),
+                            (
+                                crate::InputKey {
+                                    id: rows.input.clone(),
+                                    format,
+                                    route: polylogue_model::Route::Live,
+                                },
+                                length,
+                            ),
+                        );
+                    }
+                }
             }
             if let Some(material) = material(&product) {
-                for descriptor in material.descriptors()? {
-                    out.materials
-                        .insert(polylogue_model::BlobHash(descriptor.hash.0));
-                }
                 out.materials.insert(material.hash);
-                let live: bool = index.query_row(
-                    "SELECT state='live' FROM primary_next WHERE event=?1",
-                    [&fact.event],
-                    |row| row.get(0),
-                )?;
-                if live {
-                    new_materials.insert(material.hash, material.length);
-                }
+                out.materials.extend(
+                    material
+                        .descriptors()?
+                        .into_iter()
+                        .map(|descriptor| polylogue_model::BlobHash(descriptor.hash.0)),
+                );
             }
         }
     }
-    drop(rows);
-    drop(q);
     for hash in &out.materials {
-        let mut query = index.prepare("SELECT f.product FROM primary_fact_blob b JOIN primary_next f ON f.event=b.event WHERE b.hash=?1 AND f.state='live' AND f.kind='parsed'")?;
-        let mut rows = query.query([&hash.0[..]])?;
-        while let Some(row) = rows.next()? {
-            let bytes: Vec<u8> = row.get(0)?;
-            let product: Product = unpacked(&bytes)?;
-            let reading = product.reading().expect("parsed fact has reading");
+        let mut affected = index.prepare("SELECT f.input,f.chain,i.format,p.parsed_upto FROM primary_fact_blob b JOIN primary_fact f ON f.event=b.event JOIN input_ref i ON i.id=f.input JOIN parse_state p ON p.input_pk=i.pk AND p.chain=f.chain WHERE b.hash=?1")?;
+        for row in affected.query_map([hash.0.as_slice()], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, u64>(3)?,
+            ))
+        })? {
+            let (input, chain, format, length) = row?;
             chains.insert(
-                (reading.input.id.clone(), reading.chain),
-                reading.input.clone(),
+                (input.clone(), chain),
+                (
+                    crate::InputKey {
+                        id: input,
+                        format,
+                        route: polylogue_model::Route::Live,
+                    },
+                    length,
+                ),
             );
         }
     }
-    let mut needed = BTreeSet::new();
-    for ((input, chain), key) in chains {
-        let mut reading_file = crate::writer::ChainReading::new()?;
-        let mut current: Option<super::Reading> = None;
-        let mut pending = ReadingStep::default();
-        let mut spans = SourceSpans::default();
-        let mut length = index.query_row(
-            "SELECT coalesce(max(length),0) FROM source_revision WHERE input=?1 AND chain=?2",
-            params![input, chain],
-            |row| row.get::<_, u64>(0),
-        )?;
-        // Appends on the same immutable chain create a new length-bound export
-        // reading instance. Select its actual reset control in original owner
-        // admission order, never the largest length or callback ordinal. Older
-        // instances remain facts, not callbacks of the current scan.
-        let mut export_lengths = BTreeMap::<String, u64>::new();
-        let mut export_instances = BTreeSet::new();
-        let mut lengths = index.prepare("SELECT product FROM primary_next WHERE state='live' AND kind='parsed' AND input=?1 AND chain=?2 ORDER BY admitted,source_order,event")?;
-        let mut length_rows = lengths.query(params![input, chain])?;
-        while let Some(row) = length_rows.next()? {
-            let bytes: Vec<u8> = row.get(0)?;
-            let product: Product = unpacked(&bytes)?;
-            let reading = product.reading().expect("parsed fact has reading");
-            if let Product::ParseProgress { reset: true, .. } = &product
-                && reading
-                    .delivery
-                    .is_some_and(|delivery| delivery.ordinal == 0)
-            {
-                let bound = reading.source_length.ok_or_else(|| {
-                    StoreError::Invalid(
-                        "confirmed export callback has no actual source length".into(),
-                    )
-                })?;
-                let key = super::ExportReadingKey {
-                    input: reading.input.clone(),
-                    chain: reading.chain,
-                    reading_version: reading.reading_version.clone(),
-                    length: bound,
-                };
-                key.validate()?;
-                let mut bound_to_source = false;
-                let mut source_records = index.prepare("SELECT product FROM primary_next WHERE state!='tombstoned' AND kind='input' AND input=?1 AND chain=?2 ORDER BY admitted,source_order,event")?;
-                let mut source_rows = source_records.query(params![input, chain])?;
-                while let Some(row) = source_rows.next()? {
-                    let bytes: Vec<u8> = row.get(0)?;
-                    if let Product::Input { rows, .. } = unpacked(&bytes)?
-                        && rows.input == reading.input.id
-                        && rows.format == reading.input.format
-                        && rows.revision.as_ref().is_some_and(|revision| {
-                            revision.chain == chain
-                                && u64::try_from(revision.length).ok() == Some(bound)
-                        })
-                    {
-                        bound_to_source = true;
-                        break;
-                    }
-                }
-                if !bound_to_source {
-                    return Err(StoreError::Invalid(
-                        "export reset length has no retained confirmed source revision".into(),
-                    ));
-                }
-                export_instances.insert((reading.reading_version.clone(), bound));
-                export_lengths.insert(reading.reading_version.clone(), bound);
-            }
-        }
-        drop(length_rows);
-        drop(lengths);
-        let mut query=index.prepare("SELECT product,event,admitted FROM primary_next WHERE state='live' AND kind='parsed' AND input=?1 AND chain=?2 ORDER BY step_start,step_end,reading_version,admitted,source_order,event")?;
-        let mut rows = query.query(params![input, chain])?;
-        while let Some(row) = rows.next()? {
-            let bytes: Vec<u8> = row.get(0)?;
-            let product: Product = unpacked(&bytes)?;
-            let admitted = row.get::<_, u64>(2)?;
-            if admitted == 0 {
-                return Err(StoreError::Invalid(
-                    "a canonical product has no positive admission receipt".into(),
-                ));
-            }
-            let reading = product.reading().expect("parsed fact has reading").clone();
-            if reading.delivery.is_some() {
-                if !reading.source_length.is_some_and(|bound| {
-                    export_instances.contains(&(reading.reading_version.clone(), bound))
-                }) {
-                    return Err(StoreError::Invalid(
-                        "export callback has no matching source-bound reset control".into(),
-                    ));
-                }
-                if export_lengths.get(&reading.reading_version).copied() != reading.source_length {
-                    continue;
-                }
-            }
-            if current.as_ref().is_some_and(|old| old != &reading) {
-                let old = current.take().expect("reading exists");
-                finish_step(
-                    &mut reading_file,
-                    &old,
-                    std::mem::take(&mut pending),
-                    &mut spans,
-                )?;
-            }
-            current = Some(reading.clone());
-            length = length.max(reading.source_length.unwrap_or(reading.parsed_upto));
-            match &product {
-                Product::Message { facts, .. } => attachments(&facts.message.blocks, &mut needed),
-                Product::Document { facts, .. } => attachments(&facts.document.blocks, &mut needed),
-                _ => {}
-            }
-            pending.push(
-                product,
-                Some(admitted),
-                Some(crate::wire_shapes::ReadingReceipt {
-                    sequence: row.get(2)?,
-                    id: Some(row.get(1)?),
-                    observation: None,
-                    observed_at_ms: None,
-                }),
-            )?;
-        }
-        if let Some(reading) = current {
-            finish_step(&mut reading_file, &reading, pending, &mut spans)?;
-        } else {
-            let mut absent =
-                crate::ParseStep::new(Default::default(), Default::default(), 0..0, false);
-            absent.source_prefix_missing = true;
-            reading_file.push_confirmed(&mut absent)?;
-        }
-        reading_file.finish()?;
-        out.readings.push((key, chain, length, reading_file));
-    }
-    for hash in needed {
-        let size=match new_materials.get(&hash) {
-            Some(size)=>Some(*size),
-            None=>index.query_row("SELECT m.length FROM source_material m JOIN primary_next f ON f.event=m.event WHERE f.state='live' AND m.hash=?1 LIMIT 1",[&hash.0[..]],|row|row.get::<_, u64>(0)).optional()?,
-        };
-        out.available.insert(hash, size);
+    for ((_, chain), (input, length)) in chains {
+        let mut reading = crate::writer::ChainReading::new()?;
+        let mut absent = crate::ParseStep::new(Default::default(), Default::default(), 0..0, false);
+        absent.source_prefix_missing = true;
+        reading.push_confirmed(&mut absent)?;
+        reading.finish()?;
+        out.readings.push((input, chain, length, reading));
     }
     Ok(out)
 }
@@ -994,6 +879,7 @@ fn remember_blobs(tx: &rusqlite::Transaction<'_>) -> Result<()> {
         let product: Product = unpacked(&bytes)?;
         let mut hashes = BTreeSet::new();
         match product {
+            Product::Interpreted { record, .. } => hashes.extend(record.blobs),
             Product::Message { facts, .. } => attachments(&facts.message.blocks, &mut hashes),
             Product::Document { facts, .. } => attachments(&facts.document.blocks, &mut hashes),
             _ => {}

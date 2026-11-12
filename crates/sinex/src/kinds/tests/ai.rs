@@ -206,6 +206,7 @@ fn tool_facts_keep_original_coordinates_and_only_their_sessions_observed_context
                 parents: vec![],
                 machine: Some("fixture-host".into()),
                 output_index: index as u64,
+                publish: true,
             }
         })
         .collect::<Vec<_>>();

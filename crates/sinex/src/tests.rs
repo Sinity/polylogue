@@ -201,6 +201,7 @@ fn grouped_capture_remains_pending_until_its_confirmed_barrier() {
         parents: Vec::new(),
         machine: None,
         output_index: 0,
+        publish: true,
     };
     let grouped = sinex
         .complete_captures(std::slice::from_ref(&raw.identity), &[write])

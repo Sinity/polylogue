@@ -184,6 +184,7 @@ impl Inner {
                 parents: Vec::new(),
                 machine,
                 output_index: index as u64,
+                publish: true,
             });
         }
         Ok(writes)
