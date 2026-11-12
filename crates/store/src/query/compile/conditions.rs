@@ -283,22 +283,23 @@ impl<'a> Compiler<'a> {
         };
         let param = self.text_param(&match_text);
         let cte = format!("h{}", self.ctes.len() + 1);
-        let Some((cond, rank)) = rows(a, &units::Hits { cte: &cte, index }) else {
+        let Some(hits) = rows(a, &units::Hits { cte: &cte, index }) else {
             self.params.pop();
             return Err(refuse(scope.unit));
         };
         self.ctes.push(format!(
             "{cte} AS MATERIALIZED (SELECT rowid AS text_id, bm25({table}) AS rank FROM {table} WHERE {table} MATCH {param})"
         ));
+        self.ctes.extend(hits.ctes);
         let ranks = match index {
             Index::Prose => Some(polylogue_query::search::SnippetIndex::Prose),
             Index::Output => Some(polylogue_query::search::SnippetIndex::Output),
             Index::Thinking => None,
         };
         if top && ranks.is_some() && ranks == self.rank_index && self.rank.is_none() {
-            self.rank = Some(rank);
+            self.rank = Some(hits.rank);
         }
-        Ok(cond)
+        Ok(hits.condition)
     }
 
     /// A word that names something: `last`, `latest`, `self`, or a pasted

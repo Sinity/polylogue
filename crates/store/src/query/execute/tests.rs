@@ -1,6 +1,8 @@
 use super::*;
 use crate::fixture::{Fixture, MessageFacts, SessionFacts};
 
+mod search;
+
 fn options() -> crate::query::Options {
     crate::query::Options {
         clock: query_language::time::Clock::new(

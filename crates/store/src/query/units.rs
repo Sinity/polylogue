@@ -71,7 +71,7 @@ pub enum Search {
     /// is better), or `None` when the index does not apply to the unit.
     /// Which words search it is the query unit's declaration.
     Hits {
-        rows: fn(&Aliases, &Hits<'_>) -> Option<(String, String)>,
+        rows: fn(&Aliases, &Hits<'_>) -> Option<HitRelation>,
     },
     /// Each word is a substring of this column: notes are few and live in
     /// archive.db, outside the full-text index.
@@ -106,7 +106,14 @@ impl Hits<'_> {
     }
 }
 
-fn documents_hits(a: &Aliases, h: &Hits<'_>) -> Option<(String, String)> {
+/// The membership and rank read from shared hit relations.
+pub struct HitRelation {
+    pub ctes: Vec<String>,
+    pub condition: String,
+    pub rank: String,
+}
+
+fn documents_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
     if h.index != Index::Prose {
         return None;
     }
@@ -114,29 +121,53 @@ fn documents_hits(a: &Aliases, h: &Hits<'_>) -> Option<(String, String)> {
         "FROM {} h JOIN document_block db ON db.text_id=h.text_id WHERE db.document_pk={}.pk AND db.kind='text'",
         h.cte, a.row
     );
-    Some((
-        format!("EXISTS(SELECT 1 {from})"),
-        format!("(SELECT min(h.rank) {from})"),
-    ))
+    Some(HitRelation {
+        ctes: vec![],
+        condition: format!("EXISTS(SELECT 1 {from})"),
+        rank: format!("(SELECT min(h.rank) {from})"),
+    })
 }
 
-fn sessions_hits(a: &Aliases, h: &Hits<'_>) -> Option<(String, String)> {
-    let from = format!(
-        "FROM {cte} h JOIN block xb ON xb.text_id = h.text_id \
-         JOIN message xm ON xm.pk = xb.message_pk \
-         WHERE {}{} AND {}",
+fn sessions_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
+    let sessions = format!("{}_sessions", h.cte);
+    // Find the owning sessions from the hits, then their subagent ancestors.
+    // UNION over (session, rank) bounds cycles and shared descendants. A
+    // session's own best rank suffices for every ancestor's best rank. Keep
+    // the edge lookup indexed: statistics can otherwise choose a link-table
+    // scan for each ancestor, making unrelated links part of search cost.
+    let rows = format!(
+        "{sessions} AS MATERIALIZED (WITH RECURSIVE \
+         matched(session_pk, rank) AS MATERIALIZED (\
+           SELECT xm.session_pk, min(h.rank) FROM {texts} h \
+           CROSS JOIN block xb ON xb.text_id=h.text_id \
+           CROSS JOIN message xm ON xm.pk=xb.message_pk \
+           WHERE {}{} AND {} GROUP BY xm.session_pk), \
+         ancestors(session_pk, rank) AS (\
+           SELECT session_pk, rank FROM matched UNION \
+           SELECT parent.pk, child.rank FROM ancestors child \
+           CROSS JOIN link l INDEXED BY link_child ON l.child_pk=child.session_pk AND l.kind='subagent' \
+           CROSS JOIN session parent ON parent.id=l.parent_id) \
+         SELECT session_pk, min(rank) AS rank FROM ancestors GROUP BY session_pk)",
         h.block_kind("xb"),
         h.writer("xm"),
-        fields::own_messages("xm", Some(&format!("IN ({})", fields::subtree(&a.s)))),
-        cte = h.cte
+        fields::own_messages("xm", None),
+        texts = h.cte
     );
-    Some((
-        format!("EXISTS (SELECT 1 {from})"),
-        format!("(SELECT min(h.rank) {from})"),
-    ))
+    Some(HitRelation {
+        ctes: vec![rows],
+        // A missing related session has no hits, including under NOT.
+        condition: format!(
+            "({s}.pk IS NOT NULL AND {s}.pk IN (SELECT session_pk FROM {sessions}))",
+            s = a.s
+        ),
+        rank: format!(
+            "(SELECT rank FROM {sessions} h WHERE h.session_pk={}.pk)",
+            a.s
+        ),
+    })
 }
 
-fn messages_hits(a: &Aliases, h: &Hits<'_>) -> Option<(String, String)> {
+fn messages_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
     let from = format!(
         "FROM {cte} h JOIN block xb ON xb.text_id = h.text_id \
          WHERE xb.message_pk = {m}.pk AND {}",
@@ -144,8 +175,6 @@ fn messages_hits(a: &Aliases, h: &Hits<'_>) -> Option<(String, String)> {
         cte = h.cte,
         m = a.m
     );
-    // The messages holding a hit, found from the hits: the rows are read by
-    // key instead of every message being tested.
     let holding = format!(
         "{m}.pk IN (SELECT xb.message_pk FROM {cte} h JOIN block xb ON xb.text_id = h.text_id \
          WHERE {})",
@@ -153,29 +182,31 @@ fn messages_hits(a: &Aliases, h: &Hits<'_>) -> Option<(String, String)> {
         cte = h.cte,
         m = a.m
     );
-    Some((
-        format!("({holding}{})", h.writer(&a.m)),
-        format!("(SELECT min(h.rank) {from})"),
-    ))
+    Some(HitRelation {
+        ctes: vec![],
+        condition: format!("({holding}{})", h.writer(&a.m)),
+        rank: format!("(SELECT min(h.rank) {from})"),
+    })
 }
 
-fn blocks_hits(a: &Aliases, h: &Hits<'_>) -> Option<(String, String)> {
-    Some((
-        format!(
+fn blocks_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
+    Some(HitRelation {
+        ctes: vec![],
+        condition: format!(
             "({b}.text_id IN (SELECT text_id FROM {cte}) AND {})",
             h.block_kind(&a.b),
             b = a.b,
             cte = h.cte
         ),
-        format!(
-            "(SELECT h.rank FROM {cte} h WHERE h.text_id = {b}.text_id)",
+        rank: format!(
+            "(SELECT h.rank FROM {cte} h WHERE h.text_id={b}.text_id)",
             b = a.b,
             cte = h.cte
         ),
-    ))
+    })
 }
 
-fn tool_call_hits(a: &Aliases, h: &Hits<'_>) -> Option<(String, String)> {
+fn tool_call_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
     if h.index != Index::Output {
         return None;
     }
@@ -184,10 +215,11 @@ fn tool_call_hits(a: &Aliases, h: &Hits<'_>) -> Option<(String, String)> {
         cte = h.cte,
         t = a.t
     );
-    Some((
-        format!("EXISTS (SELECT 1 {from})"),
-        format!("(SELECT min(h.rank) {from})"),
-    ))
+    Some(HitRelation {
+        ctes: vec![],
+        condition: format!("EXISTS (SELECT 1 {from})"),
+        rank: format!("(SELECT min(h.rank) {from})"),
+    })
 }
 
 /// A `prefix.FIELD` path from one unit to another.

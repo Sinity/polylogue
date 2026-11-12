@@ -112,32 +112,14 @@ fn started_as_chrome_starts_it_the_binary_is_the_host() {
 fn a_native_selection_note_is_readable_by_cli_after_daemon_restart() {
     use base64::Engine as _;
     use serde_json::{Value, json};
-    use std::io::{BufRead, BufReader};
-    struct OwnedDaemon(std::process::Child);
-    impl Drop for OwnedDaemon {
-        fn drop(&mut self) {
-            let _ = self.0.kill();
-            let _ = self.0.wait();
-        }
-    }
     let dir = tempfile::tempdir().unwrap();
-    let state = dir.path().join("state");
-    let command = || {
-        let mut command = crate::command(dir.path());
-        command.env("XDG_STATE_HOME", &state);
-        command
-    };
-    let start = || {
-        let mut child =
-            polylogue_testkit::spawn_daemon(command().arg("daemon").stderr(Stdio::piped()))
-                .unwrap();
-        let mut line = String::new();
-        BufReader::new(child.stderr.as_mut().unwrap())
-            .read_line(&mut line)
-            .unwrap();
-        assert!(line.contains("serving"), "{line}");
-        OwnedDaemon(child)
-    };
+    let environment = crate::Fixture::new(
+        &dir.path().join("archive"),
+        &dir.path().join("home"),
+        &dir.path().join("config"),
+    );
+    let command = || environment.command();
+    let start = || crate::cli::start_daemon(&environment);
     let native = |path: &str, body: &Value| -> (u64, Value) {
         let mut child = command()
             .arg("chrome-extension://abcdefghijklmnop/")
@@ -178,20 +160,7 @@ fn a_native_selection_note_is_readable_by_cli_after_daemon_restart() {
         "provenance":{"captured_at":"2026-10-24T00:00:00Z","source_url":"https://chatgpt.com/c/passage"},
         "session":{"provider":"chatgpt","provider_session_id":"passage","turns":[{"provider_turn_id":"native-message","role":"assistant","text":"Exact  selected\nquote"}]}});
     assert_eq!(native("/v1/captures", &capture).0, 200);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    loop {
-        let status = command().args(["status", "--json"]).output().unwrap();
-        assert!(status.status.success(), "{status:?}");
-        let status: Value = serde_json::from_slice(&status.stdout).unwrap();
-        if status["value"]["store"]["messages"] == 1 && status["value"]["busy"] == false {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the capture was not stored: {status}"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
+    crate::cli::wait_status(&environment, |status| status["store"]["messages"] == 1);
     let note = json!({"request_id":"019c6e27-e55b-73d1-87d8-4e01f1f75043","body":"My edited annotation","quote":"Exact  selected\nquote",
         "source":{"provider":"chatgpt","conversation_id":"passage","message_id":"native-message","page_url":"https://chatgpt.com/c/passage","selected_at":"2026-10-24T00:00:00Z"}});
     let mut missing = note.clone();

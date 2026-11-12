@@ -365,7 +365,6 @@ impl<'a> Compiler<'a> {
                             row_select.join(", "),
                             base_from(unit, &scope.a)
                         ),
-                        pk.clone(),
                     ));
                 }
                 select.extend(hidden);
@@ -476,12 +475,9 @@ impl<'a> Compiler<'a> {
         // Only the answer's own rows are read key first; a stage or a
         // combination over them reads them whole.
         let statements = match (keyed, row_count) {
-            (Some((keys, rows, key)), Some(count)) if self.answer => Statements::Keyed(KeyedRows {
-                keys,
-                rows,
-                key,
-                count,
-            }),
+            (Some((keys, rows)), Some(count)) if self.answer => {
+                Statements::Keyed(KeyedRows { keys, rows, count })
+            }
             (_, count) => Statements::Derived(DerivedRows {
                 rows: sql,
                 count,
