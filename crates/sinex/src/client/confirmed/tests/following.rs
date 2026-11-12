@@ -50,6 +50,7 @@ async fn connections(
             "polylogue".into(),
             "synthetic-password".into(),
         )
+        .custom_inbox_prefix(subjects.inbox_prefix("polylogue"))
         .connect(server.url())
         .await
         .unwrap(),
