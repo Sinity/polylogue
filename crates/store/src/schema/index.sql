@@ -403,14 +403,14 @@ WHERE
 CREATE VIEW session_prefix AS
 SELECT DISTINCT parent_id,child_id,branch_point,copies_prefix
 FROM session_link
-WHERE kind <> 'reference' AND (kind='fork' OR copies_prefix=1)
+WHERE kind <> 'reference' AND (kind IN ('fork','continuation','resume') OR copies_prefix=1)
 UNION
 SELECT DISTINCT p.parent_id,p.child_id,NULL,1
 FROM prefix_copy p
 WHERE NOT EXISTS (
   SELECT 1 FROM session_link l
   WHERE l.parent_id=p.parent_id AND l.child_id=p.child_id
-    AND l.kind <> 'reference' AND (l.kind='fork' OR l.copies_prefix=1));
+    AND l.kind <> 'reference' AND (l.kind IN ('fork','continuation','resume') OR l.copies_prefix=1));
 
 CREATE TABLE event (
   pk                INTEGER PRIMARY KEY,

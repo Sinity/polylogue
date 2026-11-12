@@ -188,3 +188,29 @@ fn changed_turn_context_keeps_each_context_and_returns_to_prior_settings() {
     assert_eq!(parsed["output"]["events"].as_array().unwrap().len(), 6);
     assert_eq!(messages(&parsed).len(), 1);
 }
+
+#[test]
+fn compaction_does_not_reintroduce_a_skipped_self_parent() {
+    for metadata in [
+        json!({"forked_from_id":SID}),
+        json!({"thread_source":"subagent","parent_thread_id":SID,"forked_from_id":SID}),
+    ] {
+        let parsed = run(&[
+            meta(metadata),
+            record(
+                "compacted",
+                json!({"replacement_history":[{"id":"retained","type":"message","role":"user","content":[]}]}),
+            ),
+            message("own", "user", "own tail"),
+        ]);
+        assert_eq!(
+            parsed["output"]
+                .get("links")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len),
+            0
+        );
+        assert_eq!(messages(&parsed).len(), 1);
+        assert_eq!(events(&parsed, "compaction").len(), 1);
+    }
+}

@@ -124,6 +124,14 @@ fn fork_prefixes_keep_parent_ordinals_and_the_childs_own_order() {
         call_id: None,
         evidence: "synthetic".into(),
     });
+    child.parse[0]
+        .output
+        .prefix_copies
+        .push(polylogue_model::PrefixCopy {
+            parent: sid("s"),
+            child: sid("child"),
+            explicit_members: false,
+        });
     write(&w, child);
     let pool = ReadPool::open(&w.archive).unwrap();
     let reader = pool.reader().unwrap();
@@ -179,6 +187,14 @@ fn copied_parent_subsets_do_not_renumber_their_original_own_session() {
         call_id: None,
         evidence: "synthetic".into(),
     });
+    child.parse[0]
+        .output
+        .prefix_copies
+        .push(polylogue_model::PrefixCopy {
+            parent: sid("s"),
+            child: sid("child"),
+            explicit_members: false,
+        });
     write(&w, child);
     let pool = ReadPool::open(&w.archive).unwrap();
     let reader = pool.reader().unwrap();

@@ -32,7 +32,7 @@ impl Reader<'_> {
         use polylogue_model::{PrefixSource, bundle::CopiedFor};
         let conn = self.conn()?;
         let mut result = Vec::new();
-        let mut explicit = conn.prepare_cached("SELECT DISTINCT child_id,source_input,source_chain,source_version,sequence,position FROM prefix_member WHERE message_id=?1 ORDER BY child_id,source_input,source_chain,source_version,sequence,position")?;
+        let mut explicit = conn.prepare_cached("SELECT DISTINCT child_id,source_input,source_chain,source_version,sequence,position,parent_id FROM prefix_member WHERE message_id=?1 ORDER BY child_id,source_input,source_chain,source_version,sequence,position")?;
         for row in explicit.query_map([id.to_string()], |r| {
             Ok((
                 r.get::<_, String>(0)?,
@@ -41,14 +41,17 @@ impl Reader<'_> {
                 r.get::<_, String>(3)?,
                 r.get::<_, String>(4)?,
                 r.get::<_, String>(5)?,
+                r.get::<_, String>(6)?,
             ))
         })? {
-            let (child, input, chain, reading_version, sequence, position) = row?;
+            let (child, input, chain, reading_version, sequence, position, parent) = row?;
             let coordinate = |s: String| {
                 s.parse::<u64>()
                     .map_err(|e| crate::StoreError::Invalid(e.to_string()))
             };
             result.push(CopiedFor {
+                parent: SessionId::parse(&parent)
+                    .map_err(|e| crate::StoreError::Invalid(e.to_string()))?,
                 child: SessionId::parse(&child)
                     .map_err(|e| crate::StoreError::Invalid(e.to_string()))?,
                 source: PrefixSource {
@@ -59,7 +62,7 @@ impl Reader<'_> {
                 position: [coordinate(sequence)?, coordinate(position)?],
             });
         }
-        let mut inferred = conn.prepare_cached("SELECT DISTINCT p.child_id,ir.id,s.chain,ps.reading_version,s.seq,s.record_position FROM message m JOIN session owner ON owner.pk=m.session_pk JOIN session_prefix p ON p.parent_id=owner.id AND p.copies_prefix=1 AND p.branch_point IS NULL JOIN message_source s ON s.message_pk=m.pk JOIN input_ref ir ON ir.pk=s.input_pk JOIN parse_state ps ON ps.input_pk=s.input_pk AND ps.chain=s.chain WHERE m.id=?1 AND m.duplicate_of IS NULL AND (EXISTS(SELECT 1 FROM parsed x JOIN session child ON child.pk=x.session_pk WHERE x.input_pk=s.input_pk AND x.chain=s.chain AND child.id=p.child_id) OR EXISTS(SELECT 1 FROM prefix_copy x WHERE x.input_pk=s.input_pk AND x.chain=s.chain AND x.child_id=p.child_id AND x.parent_id=p.parent_id AND x.explicit_members=0)) AND NOT EXISTS(SELECT 1 FROM prefix_copy x WHERE x.input_pk=s.input_pk AND x.chain=s.chain AND x.child_id=p.child_id AND x.parent_id=p.parent_id AND x.explicit_members=1)")?;
+        let mut inferred = conn.prepare_cached("SELECT DISTINCT p.child_id,ir.id,s.chain,ps.reading_version,s.seq,s.record_position,p.parent_id FROM message m JOIN session owner ON owner.pk=m.session_pk JOIN session_prefix p ON p.parent_id=owner.id AND p.copies_prefix=1 AND p.branch_point IS NULL JOIN message_source s ON s.message_pk=m.pk JOIN input_ref ir ON ir.pk=s.input_pk JOIN parse_state ps ON ps.input_pk=s.input_pk AND ps.chain=s.chain WHERE m.id=?1 AND m.duplicate_of IS NULL AND EXISTS(SELECT 1 FROM prefix_copy x WHERE x.input_pk=s.input_pk AND x.chain=s.chain AND x.child_id=p.child_id AND x.parent_id=p.parent_id AND x.explicit_members=0) AND NOT EXISTS(SELECT 1 FROM prefix_copy x WHERE x.input_pk=s.input_pk AND x.chain=s.chain AND x.child_id=p.child_id AND x.parent_id=p.parent_id AND x.explicit_members=1)")?;
         for row in inferred.query_map([id.to_string()], |r| {
             Ok((
                 r.get::<_, String>(0)?,
@@ -68,10 +71,13 @@ impl Reader<'_> {
                 r.get::<_, String>(3)?,
                 r.get::<_, u64>(4)?,
                 r.get::<_, u64>(5)?,
+                r.get::<_, String>(6)?,
             ))
         })? {
-            let (child, input, chain, reading_version, sequence, position) = row?;
+            let (child, input, chain, reading_version, sequence, position, parent) = row?;
             result.push(CopiedFor {
+                parent: SessionId::parse(&parent)
+                    .map_err(|e| crate::StoreError::Invalid(e.to_string()))?,
                 child: SessionId::parse(&child)
                     .map_err(|e| crate::StoreError::Invalid(e.to_string()))?,
                 source: PrefixSource {

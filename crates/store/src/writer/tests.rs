@@ -594,6 +594,14 @@ fn copied_messages_are_stored_once_and_read_logically() {
         call_id: None,
         evidence: "sessionId".into(),
     }];
+    child.parse[0]
+        .output
+        .prefix_copies
+        .push(polylogue_model::PrefixCopy {
+            parent: sid("parent"),
+            child: sid("child"),
+            explicit_members: false,
+        });
     w.store_reading(child, Some(&SOURCE_RECORD)).unwrap();
     w.writer.flush().unwrap();
     let pool = ReadPool::open(&w.archive).unwrap();

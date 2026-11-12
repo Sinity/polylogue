@@ -2182,6 +2182,54 @@ fn late_compaction_header_and_known_source_retraction_reselect_exact_native_clai
     known.parse[0].prepare();
     let mut retracted = batch("known-native", Route::Live, 0, Vec::new(), &[]);
     let known_chain = w.store_reading(known, Some(&SOURCE_RECORD)).unwrap().chain;
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    let before = ReadPool::open(&w.archive)
+        .unwrap()
+        .reader()
+        .unwrap()
+        .message_admission(&original.id)
+        .unwrap()
+        .unwrap();
+    let mut annotation = batch(
+        "later-copy-annotation",
+        Route::Live,
+        0,
+        Vec::new(),
+        &["declared-copy"],
+    );
+    annotation.parse[0]
+        .output
+        .prefix_members
+        .push(polylogue_model::PrefixMember {
+            parent: original.session.clone(),
+            child: sid("declared-copy"),
+            message: original.id.clone(),
+            source: Some(polylogue_model::PrefixSource {
+                input: "original-work-reading".into(),
+                chain: known_chain,
+                reading_version: "synthetic=1".into(),
+            }),
+            position: [0, 0],
+        });
+    annotation.parse[0].prepare();
+    w.store_reading(annotation, Some(&SOURCE_RECORD)).unwrap();
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    {
+        let pool = ReadPool::open(&w.archive).unwrap();
+        let reader = pool.reader().unwrap();
+        assert_eq!(
+            reader.message_admission(&original.id).unwrap(),
+            Some(before)
+        );
+        assert!(
+            reader
+                .session_commit(&sid("declared-copy"))
+                .unwrap()
+                .unwrap()
+                > before
+        );
+        assert_eq!(reader.copied_for(&original.id).unwrap().len(), 1);
+    }
     let mut copied = text_message(
         "shared-native",
         "agent-acompact-unknown",

@@ -374,3 +374,47 @@ fn incompatible_recorded_forks_report_both_exact_references_without_choosing_a_p
     );
     assert_eq!(texts(&selected), ["own child"]);
 }
+
+#[test]
+fn continuation_and_resume_use_the_recorded_anchor_without_claiming_physical_copies() {
+    for kind in ["continuation", "resume"] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut fixture = Fixture::new(dir.path()).unwrap();
+        session(&mut fixture, "p", &["first", "anchor", "uncopied tail"]);
+        session(&mut fixture, "c", &["own"]);
+        fixture
+            .link("claude-code:p", "claude-code:c", kind, None)
+            .unwrap();
+        let conn =
+            crate::archive::open_write(&fixture.archive.index_db(), crate::archive::cache::SETUP)
+                .unwrap();
+        conn.execute(
+            "UPDATE link SET branch_point='claude-code:p-1' WHERE child_id='claude-code:c'",
+            [],
+        )
+        .unwrap();
+        let pool = fixture.reads().unwrap();
+        {
+            let reader = pool.reader().unwrap();
+            let selected = reader
+                .select_messages(&crate::fixture::writer::sid("c"), true)
+                .unwrap();
+            selected.require_complete().unwrap();
+            assert_eq!(texts(&selected), ["first", "anchor", "own"]);
+        }
+        conn.execute(
+            "UPDATE link SET branch_point=NULL WHERE child_id='claude-code:c'",
+            [],
+        )
+        .unwrap();
+        let reader = pool.reader().unwrap();
+        let selected = reader
+            .select_messages(&crate::fixture::writer::sid("c"), true)
+            .unwrap();
+        assert!(matches!(
+            selected.parents().issues.as_slice(),
+            [ParentIssue::MissingAnchor { anchor: None, .. }]
+        ));
+        assert_eq!(texts(&selected), ["own"]);
+    }
+}

@@ -1374,6 +1374,7 @@ impl Parser for Rollout {
                 parser_state.branch_point.clone(),
                 parser_state.anchored_relation.clone(),
             )
+            && relation.parent != relation.child
         {
             relation.at = Some(at);
             let key = relation.selection_tag();

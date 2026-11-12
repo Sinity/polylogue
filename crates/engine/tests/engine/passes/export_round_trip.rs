@@ -559,3 +559,119 @@ fn native_copied_file_subset_survives_export_with_whole_parent() {
     assert!(report.pass.errors.is_empty(), "{report:?}");
     assert_eq!(bodies(&target), ["copied first", "own child"]);
 }
+
+#[test]
+fn later_copy_annotations_preserve_declared_parent_without_expanding_earlier_bundles() {
+    fn view(home: &ClaudeHome) -> (polylogue_model::read::Parents, Vec<String>) {
+        let pool = home.reads();
+        let reader = pool.reader().unwrap();
+        let selected = reader
+            .select_messages(&SessionId::parse("claude-code:child").unwrap(), true)
+            .unwrap();
+        let mut texts = Vec::new();
+        selected
+            .visit(|m| {
+                texts.push(m.text());
+                std::ops::ControlFlow::Continue(())
+            })
+            .unwrap();
+        (selected.parents().clone(), texts)
+    }
+    for declared in ["parent", "other"] {
+        let original = ClaudeHome::new();
+        original.append(
+            "parent.jsonl",
+            &(user("shared", "parent", "shared") + &user("uncopied", "parent", "uncopied")),
+        );
+        original.append("other.jsonl", &user("other-own", "other", "other own"));
+        original.append("child.jsonl", &user("own", "child", "own"));
+        let (mut source, _source_lock) = original.engine(64 << 20);
+        assert!(source.run_pass().unwrap().errors.is_empty());
+        let sessions = [
+            "claude-code:parent",
+            "claude-code:other",
+            "claude-code:child",
+        ];
+        let base = export_file(&original, &sessions);
+        let annotated = export_file(&original, &sessions);
+        let mut records: Vec<Record> = fs::read_to_string(&annotated)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let claim = polylogue_model::bundle::CopiedFor {
+            parent: SessionId::parse(&format!("claude-code:{declared}")).unwrap(),
+            child: SessionId::parse("claude-code:child").unwrap(),
+            source: polylogue_model::PrefixSource {
+                input: "supplied-native-reading".into(),
+                chain: 3,
+                reading_version: "copy-reader=1".into(),
+            },
+            position: [42, 7],
+        };
+        for record in &mut records {
+            match record {
+                Record::Message(record) if record.message.id.native().as_str() == "shared" => {
+                    record.copied_for = vec![claim.clone()]
+                }
+                Record::Session(record) if record.session.id.native().as_str() == "child" => {
+                    record.copied_prefixes = vec![claim.parent.clone()]
+                }
+                _ => {}
+            }
+        }
+        let mut file = fs::File::create(&annotated).unwrap();
+        for record in records {
+            record.validate().unwrap();
+            serde_json::to_writer(&mut file, &record).unwrap();
+            file.write_all(b"\n").unwrap();
+        }
+        drop(file);
+        let receiving = ClaudeHome::new();
+        let (mut target, _target_lock) = receiving.engine(64 << 20);
+        let report = target.import(&[base]).unwrap();
+        assert!(report.refused.is_empty(), "{report:?}");
+        assert!(report.pass.errors.is_empty(), "{report:?}");
+        assert_eq!(view(&receiving).1, ["own"]);
+        let report = target.import(&[annotated]).unwrap();
+        assert!(report.refused.is_empty(), "{report:?}");
+        assert!(report.pass.errors.is_empty(), "{report:?}");
+        let expected = view(&receiving);
+        if declared == "parent" {
+            assert!(expected.0.complete, "{:?}", expected.0);
+            assert_eq!(expected.1, ["shared", "own"]);
+        } else {
+            assert!(
+                matches!(expected.0.issues.as_slice(),[polylogue_model::read::ParentIssue::MissingCopiedMessage {parent,..}] if parent==&claim.parent)
+            );
+            assert_eq!(expected.1, ["own"]);
+        }
+        let id = polylogue_model::MessageId::parse("claude-code:shared").unwrap();
+        assert_eq!(
+            receiving
+                .reads()
+                .reader()
+                .unwrap()
+                .copied_for(&id)
+                .unwrap()
+                .as_slice(),
+            std::slice::from_ref(&claim)
+        );
+        let portable = export_file(&receiving, &sessions);
+        let final_home = ClaudeHome::new();
+        let (mut final_engine, _final_lock) = final_home.engine(64 << 20);
+        let report = final_engine.import(&[portable]).unwrap();
+        assert!(report.refused.is_empty(), "{report:?}");
+        assert!(report.pass.errors.is_empty(), "{report:?}");
+        assert_eq!(view(&final_home), expected);
+        assert_eq!(
+            final_home
+                .reads()
+                .reader()
+                .unwrap()
+                .copied_for(&id)
+                .unwrap(),
+            [claim]
+        );
+    }
+}

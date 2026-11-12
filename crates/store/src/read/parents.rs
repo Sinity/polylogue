@@ -205,12 +205,11 @@ impl<'a> Reader<'a> {
                              JOIN message_source s ON s.message_pk = m.pk
                              JOIN input_ref ir ON ir.pk=s.input_pk
                              WHERE m.session_pk = ?1 AND m.duplicate_of IS NULL
-                               AND (EXISTS(SELECT 1 FROM parsed p WHERE p.input_pk=s.input_pk AND p.chain=s.chain AND p.session_pk=?2)
-                                 OR EXISTS(SELECT 1 FROM prefix_copy p WHERE p.input_pk=s.input_pk AND p.chain=s.chain AND p.child_id=?3 AND p.parent_id=?4 AND p.explicit_members=0))
-                               AND NOT EXISTS(SELECT 1 FROM prefix_copy p WHERE p.input_pk=s.input_pk AND p.chain=s.chain AND p.child_id=?3 AND p.parent_id=?4 AND p.explicit_members=1)
+                               AND EXISTS(SELECT 1 FROM prefix_copy p WHERE p.input_pk=s.input_pk AND p.chain=s.chain AND p.child_id=?2 AND p.parent_id=?3 AND p.explicit_members=0)
+                               AND NOT EXISTS(SELECT 1 FROM prefix_copy p WHERE p.input_pk=s.input_pk AND p.chain=s.chain AND p.child_id=?2 AND p.parent_id=?3 AND p.explicit_members=1)
                              ORDER BY m.session_order, m.id",
                              order::canonical_rows("?1")))?
-                        .query_map(params![parent_pk, frame.pk, frame.session.to_string(), parent.to_string()], |r| {
+                        .query_map(params![parent_pk, frame.session.to_string(), parent.to_string()], |r| {
                             Ok(CopiedKey {
                                 source: r.get(3)?,
                                 chain: r.get(4)?,

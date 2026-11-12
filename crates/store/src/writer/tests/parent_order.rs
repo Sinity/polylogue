@@ -54,6 +54,18 @@ fn child(w: &TestArchive, input: &str, order: &[(&str, &str)], links: Vec<Link>)
         })
         .collect();
     let mut b = batch(input, Route::Live, 0, rows, &["p0", "c0", "c1"]);
+    b.parse[0].output.prefix_copies = order
+        .iter()
+        .map(|(session, _)| *session)
+        .filter(|session| *session != "c1")
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .map(|parent| polylogue_model::PrefixCopy {
+            parent: sid(parent),
+            child: sid("c1"),
+            explicit_members: false,
+        })
+        .collect();
     b.parse[0].output.links = links;
     w.store_reading(b, Some(&SOURCE_RECORD)).unwrap();
     assert!(w.writer.flush().unwrap().errors.is_empty());
