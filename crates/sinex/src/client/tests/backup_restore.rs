@@ -19,6 +19,7 @@ fn config(native: &native::Native) -> Config {
         subject_root: "rebuild".into(),
         producer: "polylogue".into(),
         store: native.store.clone(),
+        upload_root: None,
     }
 }
 

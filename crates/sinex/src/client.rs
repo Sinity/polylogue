@@ -1,8 +1,8 @@
 //! The producer protocol over NATS: frames to the ingress, their
 //! acknowledgments, which frames Sinex recorded, and the materials Sinex holds from this producer.
-//! A material's bytes, and a frame too large for one message, are written to
-//! the frame's directory under Sinex's store root on this host; Sinex
-//! stores them before it records the frame.
+//! Frozen spool encodings pass through local frame directories. Shared-host
+//! peers use hardlinks; remote peers receive encoded chunks before the logical
+//! frame. Sinex stores the bytes before it records that frame.
 use crate::{Authentication, Config, Error, Result};
 pub(crate) mod confirmed;
 use sinex_protocol::{Acknowledgment, Ingress, ProducerHello, ProducerWelcome, Subjects};
@@ -46,7 +46,8 @@ pub(crate) struct Client {
     producer: String,
     family: String,
     max_message: usize,
-    pub(crate) store_root: PathBuf,
+    pub(crate) frame_root: PathBuf,
+    remote_upload: bool,
     consumer_cache: Option<String>,
     consumer_instance: Option<String>,
     health: std::sync::Arc<std::sync::Mutex<crate::status::Health>>,
@@ -164,7 +165,8 @@ impl Client {
             producer: config.producer.clone(),
             family: family.clone(),
             max_message,
-            store_root: config.store.clone(),
+            frame_root: config.upload_root.as_ref().unwrap_or(&config.store).clone(),
+            remote_upload: config.upload_root.is_some(),
             consumer_cache: None,
             consumer_instance: None,
             health,
@@ -307,7 +309,8 @@ impl Client {
             client: self.client.clone(),
             subjects: self.subjects.clone(),
             producer: self.producer.clone(),
-            store_root: self.store_root.clone(),
+            frame_root: self.frame_root.clone(),
+            remote_upload: self.remote_upload,
             max_message: self.max_message,
             spool: self.spool.clone(),
             publication: self.publication.clone(),
@@ -326,7 +329,7 @@ async fn transport(
     authentication: &Authentication,
 ) -> Result<(async_nats::Client, Subjects, Option<String>)> {
     let subjects = Subjects::new(config.subject_root.clone());
-    let options = match authentication {
+    let mut options = match authentication {
         Authentication::Password(password) => async_nats::ConnectOptions::with_user_and_password(
             config.producer.clone(),
             password.clone(),
@@ -338,6 +341,23 @@ async fn transport(
             )));
         }
     };
+    let address: async_nats::ServerAddr = config
+        .nats
+        .parse()
+        .map_err(|error| Error::Invalid(format!("invalid NATS endpoint: {error}")))?;
+    let loopback = address.host().eq_ignore_ascii_case("localhost")
+        || address
+            .host()
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback());
+    if loopback {
+        // A local forwarder owns its upstream. Broker discovery must not move
+        // the plaintext loopback exception onto another host.
+        options = options.ignore_discovered_servers();
+    } else {
+        // The native handshake establishes and verifies TLS before sending AUTH.
+        options = options.require_tls(true);
+    }
     let client = options
         .custom_inbox_prefix(subjects.inbox_prefix(&config.producer))
         .connect(config.nats.as_str())
@@ -417,7 +437,8 @@ struct Publisher {
     client: async_nats::Client,
     subjects: Subjects,
     producer: String,
-    store_root: PathBuf,
+    frame_root: PathBuf,
+    remote_upload: bool,
     max_message: usize,
     spool: std::sync::Arc<std::sync::Mutex<crate::spool::Spool>>,
     publication: sinex_transport::backup::Publication,
@@ -464,22 +485,17 @@ impl Publisher {
                 },
             )
         };
-        let frame = hashed_blobs::Prepared::from_encoded(
-            frame.0,
-            frame.1,
-            None,
-            hashed_blobs::ReadLimits::default(),
-        )?;
-        // A chunked material's frame directory holds every chunk's encoding.
-        for (file, descriptor) in body.into_iter().flatten() {
-            let part = hashed_blobs::Prepared::from_encoded(
-                file,
-                descriptor,
-                None,
-                hashed_blobs::ReadLimits::default(),
-            )?;
-            frame_bytes::write_prepared(&self.store_root, &self.producer, &prepared.identity, part)
-                .map_err(frame_error)?;
+        // Frozen spool paths are local custody only; the wire names logical bytes.
+        for part in body.into_iter().flatten() {
+            frame_bytes::link_file(
+                &self.frame_root,
+                &self.producer,
+                &prepared.identity,
+                &part.descriptor,
+                &part.path,
+                part.file,
+            )
+            .map_err(frame_error)?;
         }
         let body = if prepared
             .frame
@@ -488,15 +504,23 @@ impl Publisher {
             <= self.max_message as u64
         {
             let mut bytes = Vec::new();
+            let frame = hashed_blobs::Prepared::from_encoded(
+                frame.file,
+                frame.descriptor,
+                None,
+                hashed_blobs::ReadLimits::default(),
+            )?;
             std::io::BufReader::new(frame.reader(None, hashed_blobs::ReadLimits::default())?)
                 .read_to_end(&mut bytes)?;
             bytes
         } else {
-            frame_bytes::write_prepared(
-                &self.store_root,
+            frame_bytes::link_file(
+                &self.frame_root,
                 &self.producer,
                 &prepared.identity,
-                frame,
+                &frame.descriptor,
+                &frame.path,
+                frame.file,
             )
             .map_err(frame_error)?;
             serde_json::to_vec(&Ingress::LargeFrame {
@@ -553,17 +577,19 @@ impl Publisher {
                 "prepared transport changed frame identity".into(),
             ));
         }
-        sinex_transport::producer::transfer_frame(
-            &self.client,
-            &self.subjects,
-            &self.producer,
-            &mut acknowledgments,
-            &self.store_root,
-            &frame,
-            ACKNOWLEDGMENT_WAIT,
-        )
-        .await
-        .map_err(|error| Error::Unreachable(error.to_string()))?;
+        if self.remote_upload {
+            sinex_transport::producer::transfer_frame(
+                &self.client,
+                &self.subjects,
+                &self.producer,
+                &mut acknowledgments,
+                &self.frame_root,
+                &frame,
+                ACKNOWLEDGMENT_WAIT,
+            )
+            .await
+            .map_err(|error| Error::Unreachable(error.to_string()))?;
+        }
         sinex_transport::producer::submit_frame(
             &self.client,
             &self.subjects,

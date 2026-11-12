@@ -72,7 +72,7 @@ staged whitespace and formats staged Rust files, including partial staging and
 renames. Formatting-only shell entry supplies an unused local target directory
 so it does not select or seed a compiler cache. The hook enters the shell once
 for the complete staged Rust set; the declared `fmt` operation also skips cache
-selection. There is no push hook: crate boundaries run in `cargo xtask check`,
+selection. The lock operation likewise supplies an unused local target before shell entry because dependency resolution uses no compiler artifacts. There is no push hook: crate boundaries run in `cargo xtask check`,
 which GitHub Actions runs for every pull request. The shell also carries coverage and fuzzing tools, LLVM tools matching
 the compiler, SQLite, jq and the time zone database.
 

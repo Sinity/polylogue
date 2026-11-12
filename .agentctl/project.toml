@@ -117,7 +117,7 @@ cache = "none"
 
 [operations.lock]
 description = "Update selected Cargo.lock entries, e.g. -- -p serde"
-exec = ["nix", "develop", "--command", "cargo", "update"]
+exec = ["env", "CARGO_TARGET_DIR=target", "nix", "develop", "--command", "cargo", "update"]
 arguments = "required"
 pool = "interactive"
 result = "exit"

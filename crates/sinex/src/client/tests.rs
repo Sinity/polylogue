@@ -19,6 +19,7 @@ fn config(server: &devkit::nats::Server, store: &Path, password_file: Option<&Pa
         subject_root: "auth".into(),
         producer: "polylogue".into(),
         store: store.into(),
+        upload_root: None,
     }
 }
 
@@ -366,6 +367,7 @@ fn authentication_and_host_are_explicit_and_password_debug_is_redacted() {
         subject_root: "fixture".into(),
         producer: "polylogue".into(),
         store: root.path().into(),
+        upload_root: None,
     };
     assert!(Sinex::open(&config, &Authentication::Anonymous, "").is_err());
     let secret = Authentication::Password("synthetic-sensitive-value".into());
@@ -451,6 +453,7 @@ fn an_unreadable_event_is_refused_at_its_position_but_a_lost_connection_stops_th
 }
 
 mod backup_restore;
+mod material_bytes;
 
 #[test]
 fn reordered_duplicate_acknowledgments_keep_concurrent_frames_independent_after_refusal() {

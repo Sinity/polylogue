@@ -132,6 +132,7 @@ fn sinex(dir: &Path) -> Running {
             subject_root: "rebuild".into(),
             producer: "polylogue".into(),
             store: native.store.clone(),
+            upload_root: None,
         },
         socket: native.socket.clone(),
         native,

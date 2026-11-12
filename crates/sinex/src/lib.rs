@@ -91,11 +91,22 @@ pub struct Config {
     /// This producer's name on the ingress.
     #[serde(default = "default_producer")]
     pub producer: String,
-    /// Sinex's store root on this host. Polylogue writes the bytes it sends
-    /// into frame directories under it and reads stored bytes from its
-    /// content store.
+    /// Sinex's shared store root, or the client's local spool root when
+    /// `upload_root` is configured. Shared-store readers use its content store.
     #[serde(default)]
     pub store: PathBuf,
+    /// Local encoded-upload scratch when Sinex does not share `store`.
+    /// Omit this on the same host to hand off frozen files directly.
+    pub upload_root: Option<PathBuf>,
+}
+
+/// One decoded byte page; physical content-store locations stay inside the client.
+#[derive(Debug)]
+pub struct MaterialPage {
+    pub material: sinex_protocol::MaterialFrame,
+    pub offset: u64,
+    pub bytes: Vec<u8>,
+    pub next_offset: Option<u64>,
 }
 
 fn default_subject_root() -> String {
@@ -306,6 +317,27 @@ impl Sinex {
             client.take();
         }
         result
+    }
+
+    /// Fetch a decoded material range in byte-budgeted pages. Continue using
+    /// the returned offset and the same exclusive end until `next_offset` is absent.
+    pub fn fetch_material_bytes(
+        &self,
+        material: sinex_model::MaterialId,
+        offset: u64,
+        end: Option<u64>,
+        byte_budget: u64,
+    ) -> Result<MaterialPage> {
+        self.read_client(async |client| {
+            client
+                .fetch_material_page(sinex_protocol::FetchMaterial {
+                    material,
+                    offset,
+                    end,
+                    byte_budget,
+                })
+                .await
+        })
     }
 
     /// Sinex's store root.

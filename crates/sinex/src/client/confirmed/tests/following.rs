@@ -59,7 +59,8 @@ async fn connections(
         producer: "polylogue".into(),
         family: "polylogue".into(),
         max_message: 1 << 20,
-        store_root: root.into(),
+        frame_root: root.into(),
+        remote_upload: false,
         consumer_cache: None,
         consumer_instance: None,
         health: Default::default(),
@@ -106,6 +107,7 @@ fn background_follow_drains_split_position_after_durable_staging_then_waits_when
         subject_root: "auth".into(),
         producer: "polylogue".into(),
         store: root.path().join("spool"),
+        upload_root: None,
     };
     let sinex = crate::client::tests::synchronous(
         &config,

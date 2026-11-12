@@ -111,36 +111,65 @@ impl Client {
         &self,
         material: sinex_model::MaterialId,
     ) -> Result<sinex_protocol::MaterialFrame> {
+        let mut request = FetchMaterial::new(material);
+        request.byte_budget = 1;
+        Ok(self.fetch_material_page(request).await?.material)
+    }
+
+    pub(crate) async fn fetch_material_page(
+        &self,
+        request: FetchMaterial,
+    ) -> Result<crate::MaterialPage> {
         let reply: FetchMaterialReply = self
             .request(
                 self.subjects.fetch_material(&self.producer),
-                FetchMaterial { material },
+                request.clone(),
             )
             .await?;
-        let (metadata, extents) = match reply {
+        let (metadata, offset, bytes, next_offset) = match reply {
             FetchMaterialReply::Refused(refusal) => {
                 return Err(Error::Refused {
-                    name: format!("material {material}"),
+                    name: format!("material {}", request.material),
                     reason: refusal.reason,
                 });
             }
-            FetchMaterialReply::Material { material, extents } => (*material, extents),
+            FetchMaterialReply::Material {
+                material,
+                offset,
+                bytes,
+                next_offset,
+            } => (*material, offset, bytes, next_offset),
         };
-        if metadata.id != material {
-            return Err(Error::Invalid("material fetch changed its identity".into()));
+        let end = request.end.unwrap_or(metadata.length);
+        let length = end
+            .checked_sub(request.offset)
+            .ok_or_else(|| Error::Invalid("material fetch has a reversed range".into()))?;
+        let expected = length.min(request.byte_budget);
+        let through = offset
+            .checked_add(bytes.len() as u64)
+            .ok_or_else(|| Error::Invalid("material page offset overflow".into()))?;
+        if metadata.id != request.material
+            || offset != request.offset
+            || end > metadata.length
+            || request.byte_budget == 0
+            || bytes.len() as u64 != expected
+            || next_offset != (through < end).then_some(through)
+        {
+            return Err(Error::Invalid(
+                "material fetch changed its identity or byte range".into(),
+            ));
         }
-        let hash = metadata
+        metadata
             .blob
             .strip_prefix("blake3:")
             .and_then(|hash| polylogue_model::BlobHash::parse(hash).ok())
             .ok_or_else(|| Error::Invalid("material has no BLAKE3 digest".into()))?;
-        crate::material::validate(&polylogue_store::primary::Material {
-            id: material.to_string(),
-            hash,
-            length: metadata.length,
-            extents,
-        })?;
-        Ok(metadata)
+        Ok(crate::MaterialPage {
+            material: metadata,
+            offset,
+            bytes,
+            next_offset,
+        })
     }
 
     /// The event a stream reference names, or `None` when Sinex erased it
