@@ -4,15 +4,21 @@
 shell and the packages; the flake reads it through its pinned rust-overlay
 input. Change the compiler version in common and both products together.
 
-```sh
-nix develop
-cargo xtask check
-cargo xtask test -p polylogue-store -E 'test(name)'
-nix build
-nix run . -- --help
-nix flake check
-nix fmt
-```
+| Command | Does |
+|---|---|
+| `cargo xtask check --changed` | formatting, crate boundaries, Clippy (unchanged crates reuse their result) and the tests your changes since the merge base with `origin/master` can affect: the loop while editing |
+| `cargo xtask check [--changed-base <ref>]` | the same with every test, or with the tests the changes since the merge base with `<ref>` can affect |
+| `cargo xtask fast` | formatting, boundaries and clippy, without tests |
+| `cargo xtask test -p <crate> -E 'test(<name>)'` | the selected tests under nextest |
+| `cargo xtask test --changed` | tests selected through changed packages and their dependents (`--changed-base=<ref>` for another base than `origin/master`) |
+| `cargo xtask test --no-run` | build every test binary without running tests |
+| `cargo xtask warm` | build every test binary and both Clippy configurations without running tests |
+| `cargo xtask scenarios` | end-to-end tests of the real daemon, CLI and MCP server |
+| `cargo xtask bench ...` | corpus builds and interactive read measurements |
+| `cargo xtask status`, `cargo xtask history ...` | what failed in this checkout's last run, and the recorded run history |
+| `cargo fmt --all` | format |
+| `nix flake check` | locked package, source, module and VM checks |
+| `nix build` | the package |
 
 The Nix package includes the Sinex adapter (the Cargo feature `sinex`, off in a plain `cargo build`). `packages.polylogue-extension`
 builds the Chrome and Firefox archives with the extension's Node builder and
@@ -21,6 +27,11 @@ builds set `POLYLOGUE_REVISION` at compile time, and `--version` shows it.
 `--version` and `--help` load no deployment file.
 
 Native test commands select targets marked `test = true` by default, so examples without tests do not add links. An example with unit tests opts in through its Cargo manifest. Explicit Cargo target flags such as `--lib` or `--example NAME` retain their native selection. Every test command builds the whole workspace with the one feature list in `xtask/src/main.rs` (the Sinex client and the fault features), so a focused run reuses the landing check's units; selectors choose which tests run. Clippy compiles every target in that configuration and again without the Sinex client.
+
+Shared dependency features are declared once in the root manifest's
+`[workspace.dependencies]`; workspace crates add no further features, except
+test-only dev-dependencies. Focused runs, checks and warm-up use that same
+graph so they can reuse compiler units.
 
 The package uses a Crane dependency build with the package's exact feature
 and package selection and without test compilation. Clippy and nextest share

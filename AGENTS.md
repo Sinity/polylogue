@@ -20,9 +20,10 @@ working rules that apply here.
 ## The design of record
 
 The pages in `docs/` are Polylogue's design: behaviour, model and formats,
-one page per area, each fact on one page. They describe the product as
-designed, not the code as it is; when the code and a page differ, the page is
-the target and closing the difference is the work. `docs/README.md` indexes
+one page per area, each fact on one page. Relevant design constraints bind
+changes to that behaviour. The selected Bead bounds the current delivery;
+unrelated future capabilities and other design gaps do not become its scope
+or release blockers. `docs/README.md` indexes
 the pages and defines how the operator's rulings are cited. Start with `docs/architecture.md` (purpose, principles, modes, stores,
 durability, pipeline, configuration and clocks), then read the page that owns
 the area you are changing. CLI help, MCP tool schemas and module
@@ -97,55 +98,12 @@ stay its own.
 
 ## Building, testing and measuring
 
-Enter the development shell with `direnv allow` (the `.envrc` loads the
-flake) or `nix develop`. It carries the toolchain and the development tools.
-Put personal settings (`CARGO_TARGET_DIR`, job counts) in a git-ignored
-`.envrc.local`.
-
-| Command | Does |
-|---|---|
-| `cargo xtask check --changed` | formatting, crate boundaries, Clippy (unchanged crates reuse their result) and the tests your changes since the merge base with `origin/master` can affect: the loop while editing |
-| `cargo xtask check [--changed-base <ref>]` | the same with every test, or with the tests the changes since the merge base with `<ref>` can affect |
-| `cargo xtask fast` | formatting, boundaries and clippy, without tests |
-| `cargo xtask test -p <crate> -E 'test(<name>)'` | the selected tests under nextest |
-| `cargo xtask test --changed` | tests selected through changed packages and their dependents (`--changed-base=<ref>` for another base than `origin/master`) |
-| `cargo xtask test --no-run` | build every test binary without running tests |
-| `cargo xtask warm` | build every test binary and both Clippy configurations without running tests |
-| `cargo xtask scenarios` | end-to-end tests of the real daemon, CLI and MCP server |
-| `cargo xtask bench ...` | corpus builds and interactive read measurements |
-| `cargo xtask status`, `cargo xtask history ...` | what failed in this checkout's last run, and the recorded run history |
-| `cargo fmt --all` | format |
-| `nix flake check` | locked package, source, module and VM checks described in [development](docs/development.md) |
-| `nix build` | the package |
-
-Every command builds one dependency graph: the whole workspace with the Sinex
-client and the fault-test features. Shared dependencies declare their
-features once, in the root manifest's `[workspace.dependencies]`, and crates
-add none of their own (dev-dependencies may add test-only ones), because
-Cargo builds a crate again for each feature set it sees, and everything above
-it. So Clippy, `check`, `test`, `scenarios`, `warm` and every focused run reuse
-the same units. Selectors (`-p`, `--exclude`, `-E`, `--changed`) choose which
-tests run, never what is built, and feature flags are refused. Tests run in
-the primary-mode build; the standalone Clippy pass compiles the code that the
-Sinex client replaces. Every xtask run is recorded in devkit's history
-database.
-
-Designed and not built yet: `cargo xtask compile` and `coverage`.
-
-Pull requests and master run `cargo xtask check` on GitHub Actions; read the
-result with `gh pr checks`. A pull request runs the tests its changes can
-affect: devkit maps each changed file to its package and selects that package
-and every package depending on it, or only the changed tests when a change is
-confined to test functions. A change to the lockfile, a manifest, the
-toolchain, the Cargo or AgentCTL configuration or any file outside the crates
-(documentation included, which tests read) selects every test. Master runs
-every test on each push. A host may queue these same commands through its own job runner; the
-operator's host does so with AgentCTL, whose descriptor in `.agentctl/`
-carries only host tuning. Use it where your environment provides it; the
-commands and their results are the same either way.
-
-The pre-commit hook checks whitespace and formatting of staged files in
-seconds. Crate boundaries and everything else run in `cargo xtask check`.
+[Development](docs/development.md) owns shell setup, command selection,
+local overrides and build graphs. Enter with `nix develop`. Use
+`cargo xtask check --changed` while editing,
+`cargo xtask test -p <crate> -E 'test(<name>)'` for focused behaviour,
+and `cargo xtask check` for the required hosted check. Polylogue selectors choose test execution while
+building the canonical workspace graph.
 
 **What a test checks.** A test exercises behaviour a caller can observe
 through a stable interface (a command, an operation, a reader, a stored
@@ -170,11 +128,11 @@ configuration.
 ## How work is done here
 
 **Design first.** Before writing code, read the page in `docs/` that owns the
-area, the pages it links, the current code of the area, and the
+area, its relevant linked pages, the current code of the area, and the
 predecessor's implementation and tests for what you are building (Polylogue's
-earlier Python implementation is in this repository's Git history). Write the
-whole change from the design: complete features, built on the architecture's
-abstractions, with the predecessor's behaviour and test cases ported.
+earlier Python implementation is in this repository's Git history). Implement
+the selected behaviour completely on the architecture's abstractions, with
+the predecessor's behaviour and test cases ported.
 
 **Edit in bulk; type-check as you go.** Change whole modules, crates and call
 sites in one pass. Run `cargo xtask check --changed` (formatting, boundaries,
@@ -182,17 +140,10 @@ clippy and the tests the change can affect) after each layer you write; it
 reports every type error at once. Run the wider tests once the change is
 coherent.
 
-**Review your own work before verifying it.** Read the whole diff once
-against the task, the owning page, `docs/architecture.md` and the
-predecessor's behaviour, and list everything wrong in that one pass: a
-requirement not met, a mechanism duplicated, a predecessor left in place, a
-caller not converted, a limit that refuses valid input, a test that cannot
-fail, a name that does not say what the thing is, a case the design covers
-and the code does not. Fix the whole list, then read only what the fixes
-changed. Then verify. The author makes the work good; a separate reviewer is not the mechanism for
-that. "Review should not look for a single wrong thing, it should strive to
-list everything wrong. so that there is no forever loop of fixing and finding
-new issue" (operator, 2026-09-29, `cc:9ec284a7-6a6a-486b-949f-d8bbdb22ae1e:16cb3a25-318f-455b-82b5-bf0f6f732e30`).
+**Review before verification.** Read the coherent diff against the selected
+acceptance, owning design and predecessor behaviour. Fix unmet requirements,
+duplicated mechanisms, unconverted callers, invalid refusals and weak tests
+in one pass, then revisit the affected invariants.
 
 **Verify scoped to the change.** Commit first, so a result belongs to a
 commit. While editing, `cargo xtask check --changed` runs formatting, clippy
@@ -202,11 +153,16 @@ every test runs again on master after the merge. Run a full local check only
 to reproduce a failure CI reported. Before treating a failure as yours,
 compare with the same test on current master (`gh run list -b master`).
 
-**Finish what the task names.** A task states its done condition before work
-starts, as behaviour on master and the tests that prove it. A defect inside
-the area that stops that condition from holding is fixed in the same work.
-Anything else found goes on a Bead with what was found, and the current work
-lands without it.
+**Finish the selected delivery.** The Bead owns its outcome, acceptance and
+actual prerequisites. Fix findings that invalidate that acceptance in the
+same work. Independent findings do not enlarge it: use an existing task, or
+file a concrete outcome with a finite completion condition when useful.
+Unselected designs and globally ready tasks are not implicit prerequisites.
+Source acceptance requires the tested change on master; runtime acceptance
+requires its named deployment, data and client observations. Keep one concise
+current-state note with evidence pointers; native task, Git, CI and job
+history retain the chronology. Leave unmet criteria open and name the next
+observation or external blocker that decides them.
 
 **Git and pull requests.** Work on a branch from `origin/master`; every pull
 request targets `master`, and stacked pull requests are not used. Commit with
@@ -282,8 +238,6 @@ do more than its predecessor did, without the predecessor's machinery. "Why
 build some sort of bare-bones features which will need to be replaced by
 actual full-fledged ones anyway?" (2026-10-27,
 `cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:3c3dd59f-4560-4fee-95d4-5c43b6c94ca5`).
-When an area you are changing works but its design is wrong, redesign it as
-part of the task; an area you are not changing gets a Bead.
 
 **Use the predecessor's knowledge, not its mechanisms.** The Python
 predecessor had a working core under layers of repair and bookkeeping. Port

@@ -29,11 +29,11 @@ A golden is the expected parse of an input, written by hand from knowledge of th
 
 **Waiting, never timing.** No test asserts elapsed time. A test of a deadline makes the peer stay silent until the client gives up, so only the deadline can end the wait; other tests wait for an event (a reply, a file, a closed connection). A test that waits for the daemon to read a change waits until `status` shows it up to date. nextest's slow timeout ends a hung test.
 
-## Properties tested
+## Properties
 
 A test sits in the module of the area that owns its behaviour. The query language's shared tests live in common's [query-language](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/query-language/README.md) and run against Polylogue's catalog; the signal evaluator's conformance cases are in common's [signals](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/signals/README.md) and run against Polylogue's occurrence keys.
 
-These properties hold for every input; the tests named are where to look when one changes:
+These properties are required for every input; named tests identify existing coverage. A verification result states which cases actually ran:
 
 - Appending to an input in steps gives the same rows as reading it whole (`append_equivalence`).
 - The order in which inputs arrive does not change the result (`order_independence`, `session_facts_do_not_depend_on_arrival_order`).
@@ -44,7 +44,7 @@ These properties hold for every input; the tests named are where to look when on
 - Budgeted pages concatenate to the whole read (`fused_pages_concatenate_to_the_whole_answer`).
 - Archived text renders inert in every format (`archived_html_and_dangerous_urls_stay_inert`, `archive_quotes_escape_roles_and_controls_without_changing_source`).
 - Writes between pages neither repeat nor skip rows, and a rebuild retires the cursor (`writes_between_pages_neither_refuse_nor_repeat_rows`).
-- Not yet tested: re-parsing the same bytes twice yields identical rows; the same question gives identical answers over CLI, socket, HTTP and MCP; every writer-kept counter equals the count it stands for (plnext-s5oe.14).
+- Re-parsing the same bytes twice yields identical rows; the same question gives identical answers over CLI, socket, HTTP and MCP; every writer-kept counter equals the count it stands for.
 
 ## Fault points and crash tests
 
@@ -56,7 +56,14 @@ The store and engine have a `faults` feature that adds a fault registry. It star
 
 One end-to-end harness: the real `polylogue` binary runs as a daemon over a temporary archive built from a seeded template, driven through the CLI, MCP and the browser extension's native-messaging host, with answers compared to goldens. Harness behaviour is tested with fixture harnesses: stub binaries on `PATH` that record their argv, cwd and stdin, so pings, resumes and installs are checked without a real agent.
 
-**Primary mode** is tested against a real Sinex stack (PostgreSQL with TimescaleDB, NATS and `sinexd` at the Sinex revision Polylogue pins): Morrow converged in primary mode must answer as standalone does, and again after a rebuild from the confirmed stream ([primary-mode.md](primary-mode.md)). These tests, and the primary-mode backup and restore test, are ignored unless `SINEXD` names a `sinexd` built at that revision, so neither `cargo xtask check` nor CI runs them today; run them by hand with `SINEXD` set. Making them run in the ordinary check is plnext-jo9u.
+**Primary mode** uses a real Sinex stack (PostgreSQL with TimescaleDB, NATS and
+`sinexd` at the revision Polylogue pins). Morrow converged in primary mode
+must answer as standalone does, and again after rebuilding from the confirmed
+stream; backup and restore must preserve the same observations
+([primary-mode.md](primary-mode.md)). A result proves these laws only when
+those real-stack cases ran. Test selection and service preparation belong to
+[development](development.md); generated command help describes the available
+runner options.
 
 ## Fuzzing
 
@@ -76,7 +83,7 @@ What is measured: the first build per stage; incremental updates; interactive re
 
 **Reads.** The read benchmark generates one 16 MiB session and eight small ones with the testkit builders, checks that a complete read holds every message once in order, that windows at the first, middle and last positions match it, and that repeated windows render the same bytes, then reports daemon start, the first request after each restart and later requests (median and p95), page counts and daemon memory.
 
-The target is a whole suite under 10 minutes, measured per stage (compile, setup, run); CI's master runs currently take 14–21 minutes including the build.
+The target is a whole suite under 10 minutes, measured per stage (compile, setup, run). Recorded CI results give the actual duration.
 
 ## Row dictionary
 
