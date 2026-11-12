@@ -599,13 +599,13 @@ fn lineage_walks_links_transitively_and_skips_references() {
     let c = SessionId::parse("test:c").unwrap();
     assert_eq!(
         reader
-            .lineage(&a, crate::items::Lineage::Descendants)
+            .lineage(&a, crate::lineage::Lineage::Descendants)
             .unwrap(),
         ["test:b", "test:c"]
     );
     assert_eq!(
         reader
-            .lineage(&c, crate::items::Lineage::Ancestors)
+            .lineage(&c, crate::lineage::Lineage::Ancestors)
             .unwrap(),
         ["test:b", "test:a"]
     );

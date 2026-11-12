@@ -498,6 +498,7 @@ impl<'a> Encoder<'a> {
             }
             Card::LinkNode {
                 reference,
+                lineage,
                 title,
                 parents,
                 own_messages,
@@ -508,6 +509,9 @@ impl<'a> Encoder<'a> {
                 open,
             } => {
                 self.line(&format!("{} {reference} · {} · parents {} · {} own + {} inherited · cost {} own / {} tree",if *seed {"▶"}else{"↳"},value_text(title),parents.join(", "),value_text(own_messages),value_text(inherited_messages),value_text(own_cost),value_text(tree_cost)))?;
+                if let Some(lineage) = lineage {
+                    self.line(&lineage_text(lineage))?;
+                }
                 if let Some(open) = open {
                     self.line(&open.cli)?;
                 }
@@ -518,10 +522,26 @@ impl<'a> Encoder<'a> {
                 relation,
                 how,
                 cross_link,
+                branch_point,
+                spawning_call,
+                copies_prefix,
             } => self.line(&format!(
-                "{from} → {to} · {relation}{}{}",
+                "{from} → {to} · {relation}{}{}{}{}{}",
                 how.as_ref()
                     .map(|how| format!(" ({how})"))
+                    .unwrap_or_default(),
+                if *copies_prefix {
+                    " · copied prefix"
+                } else {
+                    ""
+                },
+                branch_point
+                    .as_ref()
+                    .map(|at| format!(" · at {at}"))
+                    .unwrap_or_default(),
+                spawning_call
+                    .as_ref()
+                    .map(|call| format!(" · call {call}"))
                     .unwrap_or_default(),
                 if *cross_link { " · cross-link" } else { "" }
             ))?,
@@ -794,4 +814,28 @@ pub(crate) fn recorded_time(
         ));
     }
     format!("{time} ({quality})")
+}
+
+/// Human-readable structural facts; graph layout never supplies a root.
+pub(crate) fn lineage_text(lineage: &polylogue_model::read::SessionLineage) -> String {
+    match &lineage.root {
+        Some(root) => format!(
+            "root session:{root} · depth {}",
+            lineage
+                .depth
+                .map(|d| d.to_string())
+                .unwrap_or_else(|| "unknown".into())
+        ),
+        None => {
+            let state = if lineage.root_pending {
+                "root pending"
+            } else {
+                "root unknown"
+            };
+            match &lineage.issue {
+                Some(issue) => format!("{state} · {issue}"),
+                None => state.into(),
+            }
+        }
+    }
 }

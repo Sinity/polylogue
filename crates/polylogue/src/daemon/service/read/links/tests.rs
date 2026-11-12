@@ -133,9 +133,9 @@ fn a_middle_links_page_does_not_visit_the_prefix() {
         .find(|(_, (_, page))| page.document.footer.position > Some(total as u64 / 2))
         .unwrap();
     let shown = nodes(&expected.document.items).len() as u64;
-    let reads = polylogue_store::items::link_reads();
+    let reads = polylogue_store::lineage::link_reads();
     let again = read(&d, 200, anchor.as_ref());
-    let visited = polylogue_store::items::link_reads() - reads;
+    let visited = polylogue_store::lineage::link_reads() - reads;
     assert_eq!(again.document.items, expected.document.items);
     assert!(
         visited <= 2 * shown + 8,

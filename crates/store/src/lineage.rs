@@ -6,6 +6,36 @@ use polylogue_model::{
 };
 use rusqlite::{Connection, OptionalExtension};
 
+/// How many sessions' links reads have looked up, for tests of how much of
+/// a links tree a page reads.
+#[cfg(any(test, feature = "fixture"))]
+static LINK_READS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(any(test, feature = "fixture"))]
+pub fn link_reads() -> u64 {
+    LINK_READS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// One stored link between two sessions, as the reading needs it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionLink {
+    pub parent: String,
+    pub child: String,
+    /// A documented provider relationship, or `reference`.
+    pub kind: String,
+    pub how: Option<String>,
+    pub copies_prefix: bool,
+    pub branch_point: Option<String>,
+    pub spawning_call: Option<String>,
+}
+
+/// Which way a lineage walk goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lineage {
+    Ancestors,
+    Descendants,
+}
+
 /// The walk advances only when all recorded structural edges name one parent.
 /// Different anchors to that parent remain recorded alternatives, but do not
 /// change structural depth. No path is selected between different parents.
@@ -97,6 +127,65 @@ pub(crate) fn compute(conn: &Connection, session: i64) -> Result<Option<SessionL
 }
 
 impl crate::read::Reader<'_> {
+    fn links_where(&self, column: &str, session: &str) -> Result<Vec<SessionLink>> {
+        #[cfg(any(test, feature = "fixture"))]
+        LINK_READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(self
+            .conn()?
+            .prepare_cached(&format!(
+                "SELECT parent_id, child_id, kind, how, branch_point, spawning_call, copies_prefix FROM session_link
+                 WHERE {column} = ?1 ORDER BY pk"
+            ))?
+            .query_map([session], |row| {
+                Ok(SessionLink {
+                    parent: row.get(0)?,
+                    child: row.get(1)?,
+                    kind: row.get(2)?,
+                    how: row.get(3)?,
+                    copies_prefix: row.get(6)?,
+                    branch_point: row.get(4)?,
+                    spawning_call: row.get(5)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Links from `id` to its children, in the order they were stored.
+    pub fn child_links(&self, id: &SessionId) -> Result<Vec<SessionLink>> {
+        self.links_where("parent_id", &id.to_string())
+    }
+
+    /// Links from `id`'s parents to it, in the order they were stored.
+    pub fn parent_links(&self, id: &SessionId) -> Result<Vec<SessionLink>> {
+        self.links_where("child_id", &id.to_string())
+    }
+
+    /// Every session reached from `id` through links other than
+    /// `reference`, transitively, each once; a cycle ends where it closes.
+    pub fn lineage(&self, id: &SessionId, direction: Lineage) -> Result<Vec<String>> {
+        let mut seen = std::collections::HashSet::from([id.to_string()]);
+        let mut queue = std::collections::VecDeque::from([id.to_string()]);
+        let mut out = Vec::new();
+        while let Some(current) = queue.pop_front() {
+            self.check()?;
+            let links = match direction {
+                Lineage::Ancestors => self.links_where("child_id", &current)?,
+                Lineage::Descendants => self.links_where("parent_id", &current)?,
+            };
+            for link in links.into_iter().filter(|link| link.kind != "reference") {
+                let next = match direction {
+                    Lineage::Ancestors => link.parent,
+                    Lineage::Descendants => link.child,
+                };
+                if seen.insert(next.clone()) {
+                    out.push(next.clone());
+                    queue.push_back(next);
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// Current structural root and depth in this pinned read. Missing sessions
     /// return None; unresolved ancestry is an explicit typed issue.
     pub fn lineage_root(&self, session: &SessionId) -> Result<Option<SessionLineage>> {
@@ -118,6 +207,54 @@ impl crate::read::Reader<'_> {
             })),
             None => compute(self.conn()?, pk),
         }
+    }
+    /// Graph entry points for inspecting a session family. A proven root is
+    /// the only entry of a tree. Otherwise retain every parent frontier and
+    /// cycle witness; these are display positions, never asserted roots.
+    pub fn lineage_starting_sessions(&self, seed: &SessionId) -> Result<Vec<SessionId>> {
+        if let Some(root) = self.lineage_root(seed)?.and_then(|lineage| lineage.root) {
+            return Ok(vec![root]);
+        }
+        let mut states = std::collections::HashMap::new();
+        let mut starts = Vec::new();
+        let mut entered = std::collections::HashSet::new();
+        let mut stack = vec![(seed.clone(), false)];
+        while let Some((session, leaving)) = stack.pop() {
+            self.check()?;
+            if leaving {
+                states.insert(session, 2);
+                continue;
+            }
+            match states.get(&session) {
+                Some(1) => {
+                    if entered.insert(session.clone()) {
+                        starts.push(session);
+                    }
+                    continue;
+                }
+                Some(_) => continue,
+                None => {}
+            }
+            states.insert(session.clone(), 1);
+            let mut unique = std::collections::HashSet::new();
+            let parents = self
+                .parent_links(&session)?
+                .into_iter()
+                .filter(|link| link.kind != "reference")
+                .map(|link| {
+                    SessionId::parse(&link.parent).map_err(|e| StoreError::Invalid(e.to_string()))
+                })
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .filter(|id| unique.insert(id.clone()))
+                .collect::<Vec<_>>();
+            if parents.is_empty() && entered.insert(session.clone()) {
+                starts.push(session.clone());
+            }
+            stack.push((session, true));
+            stack.extend(parents.into_iter().rev().map(|parent| (parent, false)));
+        }
+        Ok(starts)
     }
 }
 

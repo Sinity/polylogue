@@ -118,8 +118,8 @@ fn card(card: &Card, zone: &jiff::tz::TimeZone) -> Markup {
     html! { section class="read-card" { @match card {
         Card::Fields { title,figures } => { h3 { (title) } dl { @for figure in figures { dt { (&figure.name) } dd { (value(&figure.value)) @if let Some(unit)=&figure.unit { " " (unit) } } } } },
         Card::Session { session,open,lineage_complete } => { @if lineage_complete == &ValueState::known(false) { p class="lineage-incomplete" { "Parents incomplete" } } h3 { "session:" (&session.id) " · " (session.title.as_ref().map(|title| title.text.as_str()).unwrap_or("title unknown")) } @for line in crate::encode::session_lines(session, zone) { p { (line) } } @if let Some(call)=open { (ready(call)) } },
-        Card::LinkNode { reference,title,parents,own_messages,inherited_messages,own_cost,tree_cost,seed,open } => { h3 { @if *seed { "▶ " } (reference) " · " (value(title)) } p { "parents: " (parents.join(", ")) } p { (value(own_messages)) " own + " (value(inherited_messages)) " inherited · cost " (value(own_cost)) " own / " (value(tree_cost)) " tree" } @if let Some(call)=open { (ready(call)) } },
-        Card::LinkEdge { from,to,relation,how,cross_link } => {
+        Card::LinkNode { reference,lineage,title,parents,own_messages,inherited_messages,own_cost,tree_cost,seed,open } => { h3 { @if *seed { "▶ " } (reference) " · " (value(title)) } p { "parents: " (parents.join(", ")) } @if let Some(lineage)=lineage { p { (crate::encode::lineage_text(lineage)) } } p { (value(own_messages)) " own + " (value(inherited_messages)) " inherited · cost " (value(own_cost)) " own / " (value(tree_cost)) " tree" } @if let Some(call)=open { (ready(call)) } },
+        Card::LinkEdge { from,to,relation,how,branch_point,spawning_call,copies_prefix,cross_link } => {
             // Stable session object URLs preserve recorded references without an execution envelope.
             @let href = |reference: &str| match polylogue_model::Reference::parse(reference) {
                 Ok(polylogue_model::Reference::Session(id)) => Some(format!("/s/{}", encode_path_segment(&id.to_string()))),
@@ -129,7 +129,7 @@ fn card(card: &Card, zone: &jiff::tz::TimeZone) -> Markup {
                 @if let Some(url)=href(from) { a href=(url) { code { (from) } } } @else { code { (from) } }
                 " → "
                 @if let Some(url)=href(to) { a href=(url) { code { (to) } } } @else { code { (to) } }
-                " · " (relation) @if let Some(how)=how { " (" (how) ")" } @if *cross_link { " · cross-link" }
+                " · " (relation) @if let Some(how)=how { " (" (how) ")" } @if *copies_prefix { " · copied prefix" } @if let Some(at)=branch_point { " · at " code { (at) } } @if let Some(call)=spawning_call { " · call " code { (call) } } @if *cross_link { " · cross-link" }
             }
         },
         Card::Change { edit:e } => { (edit(e)) },

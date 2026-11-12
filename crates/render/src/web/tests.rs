@@ -157,6 +157,7 @@ fn typed_lineage_issues_keep_unknowns_and_exact_evidence_in_every_encoder() {
             kind: ItemKind::Card {
                 card: Box::new(Card::LinkNode {
                     reference: "session:codex:p".into(),
+                    lineage: None,
                     title: ValueState::Unknown {
                         reason: Some("not stored".into()),
                     },

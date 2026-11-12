@@ -735,7 +735,7 @@ fn logical_header(
 fn card(
     d: &Daemon,
     reader: &Reader<'_>,
-    link: &polylogue_store::items::SessionLink,
+    link: &polylogue_store::lineage::SessionLink,
     child: &SessionId,
     call: Option<&IndexEntry>,
     view: View,

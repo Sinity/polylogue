@@ -35,7 +35,7 @@ pub mod input_rows;
 pub mod items;
 mod kept;
 pub mod legacy_import;
-mod lineage;
+pub mod lineage;
 mod live;
 pub use live::{
     FollowSnapshot, FollowedCall, FollowedMessage, LiveDetail, LiveFootprint, LiveRoot,

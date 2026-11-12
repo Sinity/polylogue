@@ -440,6 +440,7 @@ pub enum Card {
     },
     LinkNode {
         reference: String,
+        lineage: Option<super::SessionLineage>,
         title: ValueState<String>,
         parents: Vec<String>,
         own_messages: ValueState<u64>,
@@ -456,6 +457,9 @@ pub enum Card {
         relation: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         how: Option<String>,
+        branch_point: Option<String>,
+        spawning_call: Option<String>,
+        copies_prefix: bool,
         cross_link: bool,
     },
     Change {
