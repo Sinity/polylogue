@@ -226,6 +226,50 @@ fn rare_word_steps_stay_flat_as_unrelated_history_grows_with_or_without_statisti
 }
 
 #[test]
+fn rare_ranked_pages_skip_a_catalog_sized_scope_probe() {
+    let mut work = Vec::new();
+    for unrelated in [100, 2000] {
+        let (_dir, fixture) = archive(unrelated, false);
+        let mut program =
+            crate::query::compile("sessions where kind:main needle", &options_for_search())
+                .unwrap();
+        program.page_size = 1;
+        assert!(matches!(
+            &program.statements,
+            crate::query::compile::Statements::Keyed(rows)
+                if rows.search.as_ref().unwrap().scope.is_some()
+        ));
+        for analyzed in [false, true] {
+            if analyzed {
+                crate::archive::open_write(&fixture.archive.index_db(), 1024)
+                    .unwrap()
+                    .execute_batch("ANALYZE")
+                    .unwrap();
+            }
+            let pool = fixture.reads().unwrap();
+            let reader = pool.reader().unwrap();
+            let (rows, steps) = counted(&reader, || pages(&reader, &program));
+            assert_eq!(rows.len(), 2);
+            work.push((unrelated, analyzed, steps));
+        }
+    }
+    for analyzed in [false, true] {
+        let small = work
+            .iter()
+            .find(|entry| entry.0 == 100 && entry.1 == analyzed)
+            .unwrap();
+        let large = work
+            .iter()
+            .find(|entry| entry.0 == 2000 && entry.1 == analyzed)
+            .unwrap();
+        assert!(
+            large.2 <= small.2 + small.2 / 10,
+            "rare page work: {small:?} -> {large:?}"
+        );
+    }
+}
+
+#[test]
 fn session_text_search_remains_readable_with_first_build_indexes_deferred() {
     let (_dir, fixture) = archive(20, true);
     let write = crate::archive::open_write(&fixture.archive.index_db(), 1024).unwrap();
@@ -338,6 +382,148 @@ fn pages(reader: &Reader<'_>, program: &Program) -> Vec<Value> {
         }
     }
     rows
+}
+
+fn shared_body_outside_scope(fixture: &mut Fixture, message: &str, owners: usize) {
+    fixture
+        .many_sessions(ManySessions {
+            prefix: "/synthetic/outside-search-scope",
+            sessions: owners,
+            messages: 1,
+            answered: 0,
+            last: 1000,
+        })
+        .unwrap();
+    let write = crate::archive::open_write(&fixture.archive.index_db(), 1024).unwrap();
+    write
+        .execute(
+            "INSERT INTO block(message_pk,session_pk,idx,kind,text_id,body) \
+         SELECT m.pk,m.session_pk,0,source.kind,source.text_id,source.body \
+         FROM message m JOIN session s ON s.pk=m.session_pk \
+         CROSS JOIN block source JOIN message owner ON owner.pk=source.message_pk \
+         WHERE s.id LIKE 'test:many-%' AND owner.id=?1 \
+         AND source.kind IN ('text','tool_result')",
+            [message],
+        )
+        .unwrap();
+}
+
+#[test]
+fn scope_and_index_plans_agree_on_rows_sources_counts_and_continuations() {
+    for output in [false, true] {
+        let (_dir, mut fixture) = many_hits(32, output);
+        shared_body_outside_scope(&mut fixture, "test:hit-000032", 512);
+        for analyzed in [false, true] {
+            if analyzed {
+                crate::archive::open_write(&fixture.archive.index_db(), 1024)
+                    .unwrap()
+                    .execute_batch("ANALYZE")
+                    .unwrap();
+            }
+            let pool = fixture.reads().unwrap();
+            let reader = pool.reader().unwrap();
+            let term = if output { "output:needle" } else { "needle" };
+            for query in [
+                format!("sessions where (id:test:old OR id:test:new) {term}"),
+                format!("sessions where id:test:old {term}"),
+                format!("sessions where {term} | where id:test:new"),
+                format!("messages where {term} id:test:hit-000032"),
+            ] {
+                let mut program = crate::query::compile(&query, &options_for_search()).unwrap();
+                program.page_size = 1;
+                let mode = match &program.statements {
+                    crate::query::compile::Statements::Keyed(rows) => {
+                        rows.search.as_ref().unwrap().scope.as_ref().unwrap().mode
+                    }
+                    _ => panic!("native scope search"),
+                };
+                let mut scoped = program.clone();
+                scoped.params[mode - 1] = crate::query::compile::Param::Int(1);
+                if let crate::query::compile::Statements::Keyed(rows) = &mut scoped.statements {
+                    rows.search = None;
+                }
+                let mut indexed = program.clone();
+                if let crate::query::compile::Statements::Keyed(rows) = &mut indexed.statements {
+                    rows.search = None;
+                }
+                let expected = reader.query_rows(&indexed).unwrap();
+                for candidate in [&program, &scoped] {
+                    assert_eq!(
+                        result(&reader.query_rows(candidate).unwrap()),
+                        result(&expected),
+                        "whole selection: {query}"
+                    );
+                    let mut actual = pages(&reader, candidate);
+                    assert_eq!(result(&actual), result(&expected), "{query}");
+                    assert_eq!(
+                        reader.query_count(candidate).unwrap(),
+                        Some((expected.len() as u64, 0))
+                    );
+                    let mut expected = expected.clone();
+                    crate::query::execute::snippets(&reader, candidate, &mut actual).unwrap();
+                    crate::query::execute::snippets(&reader, &program, &mut expected).unwrap();
+                    assert_eq!(
+                        actual.iter().map(|row| &row["snippet"]).collect::<Vec<_>>(),
+                        expected
+                            .iter()
+                            .map(|row| &row["snippet"])
+                            .collect::<Vec<_>>(),
+                        "{query}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_narrow_search_scope_does_not_expand_shared_bodies_outside_it() {
+    let mut work = Vec::new();
+    for owners in [512, 4096] {
+        let (_dir, mut fixture) = many_hits(32, false);
+        shared_body_outside_scope(&mut fixture, "test:hit-000032", owners);
+        let program = crate::query::compile("id:test:new needle", &options_for_search()).unwrap();
+        let mut unlimited = program.clone();
+        if let crate::query::compile::Statements::Keyed(rows) = &mut unlimited.statements {
+            rows.search = None;
+        }
+        for analyzed in [false, true] {
+            if analyzed {
+                crate::archive::open_write(&fixture.archive.index_db(), 1024)
+                    .unwrap()
+                    .execute_batch("ANALYZE")
+                    .unwrap();
+            }
+            let pool = fixture.reads().unwrap();
+            let reader = pool.reader().unwrap();
+            let (rows, steps) =
+                counted(&reader, || reader.query_page(&program, None).unwrap().rows);
+            let (old, old_steps) = counted(&reader, || {
+                reader.query_page(&unlimited, None).unwrap().rows
+            });
+            assert_eq!(result(&rows), result(&old));
+            assert_eq!(rows[0]["id"], "test:new");
+            work.push((owners, analyzed, steps, old_steps));
+        }
+    }
+    for analyzed in [false, true] {
+        let small = work
+            .iter()
+            .find(|entry| entry.0 == 512 && entry.1 == analyzed)
+            .unwrap();
+        let large = work
+            .iter()
+            .find(|entry| entry.0 == 4096 && entry.1 == analyzed)
+            .unwrap();
+        assert!(
+            large.2 <= small.2 + small.2 / 5,
+            "scope work: {small:?} -> {large:?}"
+        );
+        assert!(
+            large.3 > small.3 * 4,
+            "full-index control: {small:?} -> {large:?}"
+        );
+    }
 }
 
 #[test]

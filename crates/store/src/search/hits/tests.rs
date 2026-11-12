@@ -5,6 +5,21 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
+fn scope_drives(reader: &Reader<'_>, fts: &str, wanted: &str) -> bool {
+    let scope = scope_ctes(SnippetIndex::Prose, false);
+    reader
+        .search_scope_drives(
+            &format!("WITH RECURSIVE {scope} SELECT DISTINCT block FROM eligible"),
+            &[
+                crate::SqlValue::Text(fts.into()),
+                crate::SqlValue::Text(wanted.into()),
+            ],
+            SnippetIndex::Prose,
+            fts,
+        )
+        .unwrap()
+}
+
 #[test]
 fn scoped_snippets_read_the_eligible_blocks_once() {
     let mut work = Vec::new();
@@ -33,6 +48,27 @@ fn scoped_snippets_read_the_eligible_blocks_once() {
                 )
                 .unwrap();
         }
+        let outside = fixture
+            .session(SessionFacts {
+                id: "test:outside-scope",
+                kind: "main",
+                ..Default::default()
+            })
+            .unwrap();
+        for i in 0..257 {
+            fixture
+                .message(
+                    outside,
+                    MessageFacts {
+                        id: &format!("outside-{i}"),
+                        role: "user",
+                        written_by: "human",
+                        text: Some("needle outside filler"),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+        }
         let terms = [polylogue_query::search::SnippetTerms::Word {
             text: "needle".into(),
             index: SnippetIndex::Prose,
@@ -48,6 +84,11 @@ fn scoped_snippets_read_the_eligible_blocks_once() {
             let pool = fixture.reads().unwrap();
             let reader = pool.reader().unwrap();
             let conn = reader.conn().unwrap();
+            assert!(scope_drives(
+                &reader,
+                "needle",
+                &serde_json::to_string(&[(0, session, true)]).unwrap()
+            ));
             let steps = Arc::new(AtomicU64::new(0));
             let counter = Arc::clone(&steps);
             conn.progress_handler(
@@ -147,16 +188,7 @@ fn shared_text_reference_fanout_and_actually_rare_text_choose_different_plans() 
     {
         let pool = fixture.reads().unwrap();
         let reader = pool.reader().unwrap();
-        assert!(
-            !reader
-                .snippet_scope_drives(
-                    &scope_ctes(SnippetIndex::Prose, false),
-                    SnippetIndex::Prose,
-                    "needle",
-                    &wanted
-                )
-                .unwrap()
-        );
+        assert!(!scope_drives(&reader, "needle", &wanted));
     }
     write.execute(insert, params![text, body, 19_000]).unwrap();
     for analyzed in [false, true] {
@@ -181,17 +213,8 @@ fn shared_text_reference_fanout_and_actually_rare_text_choose_different_plans() 
                 .unwrap(),
             20_301
         );
-        let scope = scope_ctes(SnippetIndex::Prose, false);
-        assert!(
-            reader
-                .snippet_scope_drives(&scope, SnippetIndex::Prose, "needle", &wanted)
-                .unwrap()
-        );
-        assert!(
-            !reader
-                .snippet_scope_drives(&scope, SnippetIndex::Prose, "actuallyrare", &wanted)
-                .unwrap()
-        );
+        assert!(scope_drives(&reader, "needle", &wanted));
+        assert!(!scope_drives(&reader, "actuallyrare", &wanted));
         let terms = [polylogue_query::search::SnippetTerms::Word {
             text: "needle".into(),
             index: SnippetIndex::Prose,

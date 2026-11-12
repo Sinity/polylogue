@@ -84,6 +84,7 @@ pub struct Hits<'a> {
     pub cte: &'a str,
     pub index: Index,
     pub source: bool,
+    pub scope: Option<(&'a str, &'a str)>,
 }
 
 impl Hits<'_> {
@@ -95,6 +96,33 @@ impl Hits<'_> {
             Index::Output => "'tool_result','tool_call'",
         };
         format!("{b}.kind IN ({kinds})")
+    }
+
+    /// Scope execution starts from eligible block keys, rather than expanding
+    /// every global reference to a shared matching text and filtering later.
+    fn blocks(&self) -> (Vec<String>, String) {
+        let Some((mode, scope)) = self.scope else {
+            return (
+                vec![],
+                format!(
+                    "FROM {} h CROSS JOIN block xb ON xb.text_id=h.text_id",
+                    self.cte
+                ),
+            );
+        };
+        let blocks = format!("{}_blocks", self.cte);
+        let cte = format!(
+            "{blocks} AS NOT MATERIALIZED (\
+             SELECT b.pk AS block,h.rank FROM {} h \
+             CROSS JOIN block b ON b.text_id=h.text_id WHERE {mode}=0 UNION ALL \
+             SELECT b.pk,h.rank FROM {scope} e CROSS JOIN block b ON b.pk=e.block \
+             CROSS JOIN {} h ON h.text_id=b.text_id WHERE {mode}=1)",
+            self.cte, self.cte
+        );
+        (
+            vec![cte],
+            format!("FROM {blocks} h CROSS JOIN block xb ON xb.pk=h.block"),
+        )
     }
 
     /// Prose excludes harness prompts except summaries. Unknown authorship
@@ -141,6 +169,7 @@ fn documents_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
 
 fn sessions_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
     let sessions = format!("{}_sessions", h.cte);
+    let (mut ctes, blocks) = h.blocks();
     // Find the owning sessions from the hits, then their subagent ancestors.
     // A session's best own source suffices for every ancestor. UNION over
     // the owner and retained score/source bounds cycles and shared descendants.
@@ -152,7 +181,7 @@ fn sessions_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
         format!(
             "{sessions} AS MATERIALIZED (WITH RECURSIVE \
              candidates AS MATERIALIZED (SELECT xm.session_pk AS owner,xb.pk AS block,xm.at,xm.id AS message,h.rank \
-               FROM {texts} h CROSS JOIN block xb ON xb.text_id=h.text_id \
+               {blocks} \
                CROSS JOIN message xm ON xm.pk=xb.message_pk WHERE {}{} AND {}), \
              owned AS MATERIALIZED ({own}), \
              ancestors(owner,block,at,message,rank) AS (\
@@ -164,7 +193,6 @@ fn sessions_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
             h.block_kind("xb"),
             h.writer("xm"),
             fields::own_messages("xm", None),
-            texts = h.cte
         )
     } else {
         format!(
@@ -186,8 +214,9 @@ fn sessions_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
             texts = h.cte
         )
     };
+    ctes.push(rows);
     Some(HitRelation {
-        ctes: vec![rows],
+        ctes,
         // A missing related session has no hits, including under NOT.
         condition: format!(
             "({s}.pk IS NOT NULL AND {s}.pk IN (SELECT session_pk FROM {sessions}))",
@@ -212,22 +241,23 @@ fn sessions_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
 
 fn messages_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
     if h.source {
+        let (mut ctes, blocks) = h.blocks();
         let found = format!("{}_messages", h.cte);
         let sources = format!("{found}_sources");
         let best = crate::search::best_source(&found, "owner");
         let rows = format!(
             "{found} AS MATERIALIZED (\
               SELECT xm.pk AS owner,xb.pk AS block,xm.at,xm.id AS message,h.rank \
-              FROM {} h CROSS JOIN block xb ON xb.text_id=h.text_id \
+              {blocks} \
               CROSS JOIN message xm ON xm.pk=xb.message_pk WHERE {}{})",
-            h.cte,
             h.block_kind("xb"),
             h.writer("xm")
         );
+        ctes.extend([rows, format!("{sources} AS MATERIALIZED ({best})")]);
         return Some(HitRelation {
             // Membership reads candidates directly. Only ranked answers read
             // the winner window; SQLite can omit it from counts and set stages.
-            ctes: vec![rows, format!("{sources} AS MATERIALIZED ({best})")],
+            ctes,
             condition: format!("{}.pk IN (SELECT owner FROM {found})", a.m),
             rank: format!("(SELECT rank FROM {sources} h WHERE h.owner={}.pk)", a.m),
             source: Some(HitSource {

@@ -30,7 +30,16 @@ impl Reader<'_> {
             let (table, _, _) = parts(terms.index);
             let wanted = serde_json::to_string(&pending).expect("snippet scope serializes");
             let scope = scope_ctes(terms.index, false);
-            let scope_drives = self.snippet_scope_drives(&scope, terms.index, &fts, &wanted)?;
+            let probe = format!("WITH RECURSIVE {scope} SELECT DISTINCT block FROM eligible");
+            let scope_drives = self.search_scope_drives(
+                &probe,
+                &[
+                    crate::SqlValue::Text(fts.clone()),
+                    crate::SqlValue::Text(wanted.clone()),
+                ],
+                terms.index,
+                &fts,
+            )?;
             let sql = if scope_drives {
                 let scope = scope_ctes(terms.index, true);
                 format!(
@@ -66,25 +75,14 @@ impl Reader<'_> {
         Ok(hits)
     }
 
-    fn snippet_scope_drives(
+    pub(crate) fn search_scope_drives(
         &self,
         scope: &str,
+        params: &[crate::SqlValue],
         index: SnippetIndex,
         fts: &str,
-        wanted: &str,
     ) -> Result<bool> {
         let conn = self.conn()?;
-        let mut scoped = conn.prepare_cached(&format!(
-            "WITH RECURSIVE {scope} SELECT DISTINCT block FROM eligible"
-        ))?;
-        let mut scope_rows = scoped.query(params![fts, wanted])?;
-        let mut blocks = 0u64;
-        while blocks <= SMALL_SCOPE {
-            if scope_rows.next()?.is_none() {
-                return Ok(true);
-            }
-            blocks += 1;
-        }
         let (table, kinds, writer) = parts(index);
         let mut indexed = conn.prepare_cached(&format!(
             "SELECT b.pk FROM {table} CROSS JOIN block b INDEXED BY block_text ON b.text_id={table}.rowid \
@@ -92,6 +90,26 @@ impl Reader<'_> {
         ))?;
         let mut index_rows = indexed.query([fts])?;
         let mut occurrences = 0u64;
+        // A rare index leg is cheaper to read directly than to establish a
+        // scope's size, especially across owners with no eligible blocks.
+        while occurrences <= SMALL_SCOPE {
+            if index_rows.next()?.is_none() {
+                return Ok(false);
+            }
+            occurrences += 1;
+        }
+        let mut scoped = conn.prepare_cached(scope)?;
+        for (i, value) in params.iter().take(scoped.parameter_count()).enumerate() {
+            scoped.raw_bind_parameter(i + 1, value)?;
+        }
+        let mut scope_rows = scoped.raw_query();
+        let mut blocks = 0u64;
+        while blocks <= SMALL_SCOPE {
+            if scope_rows.next()?.is_none() {
+                return Ok(true);
+            }
+            blocks += 1;
+        }
         // Probe the two sources together, without retaining their prefixes.
         // A shared indexed text counts once for every block it expands to.
         loop {

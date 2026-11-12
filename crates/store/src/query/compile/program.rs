@@ -226,6 +226,7 @@ impl<'a> Compiler<'a> {
             None
         };
         self.fuse_text_and_near(&scope, &mut where_sql)?;
+        self.search_scope(selection, &scope, &defaults_only)?;
         let recursive = matched.as_ref().is_some_and(|m| m.recursive);
         let ctes = if self.ctes.is_empty() {
             String::new()
