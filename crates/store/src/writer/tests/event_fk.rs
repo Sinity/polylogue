@@ -11,8 +11,8 @@ fn removal_steps(unrelated: usize, indexed: bool) -> u64 {
             |r| r.get::<_, i64>(0)
         )
         .unwrap(),
-        0,
-        "the supported first-build writer currently defers this index"
+        1,
+        "the supported first-build writer keeps this foreign-key lookup"
     );
     let tx = conn.transaction().unwrap();
     let first = crate::first_build::FirstBuild::load(&tx).unwrap();
@@ -61,8 +61,8 @@ fn removal_steps(unrelated: usize, indexed: bool) -> u64 {
         .events
         .push(event("target", "gone", unrelated));
     write_test_rows(&tx, &attached, &attached.parse[0], 1, 3, Some(&first)).unwrap();
-    if indexed {
-        tx.execute_batch("CREATE INDEX event_after ON event(after_message_pk) WHERE after_message_pk IS NOT NULL").unwrap();
+    if !indexed {
+        tx.execute_batch("DROP INDEX event_after").unwrap();
     }
     assert_eq!(
         tx.query_row("PRAGMA foreign_keys", [], |r| r.get::<_, i64>(0))
@@ -158,5 +158,122 @@ fn first_build_message_removal_uses_keyed_event_foreign_keys() {
     assert!(
         indexed_large <= indexed_small + 64,
         "existing event_after must bound the real writer: {indexed_small} -> {indexed_large}"
+    );
+}
+
+fn session_removal_steps(unrelated: usize, indexed: bool) -> u64 {
+    let w = test_archive();
+    let mut conn = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
+    assert!(crate::schema::building(&conn).unwrap());
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM sqlite_schema WHERE name='link_child'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1,
+        "the first-build writer keeps its session foreign-key lookup"
+    );
+    let tx = conn.transaction().unwrap();
+    let first = crate::first_build::FirstBuild::load(&tx).unwrap();
+    let mut input = batch("sessions", Route::Live, 0, vec![], &["target", "other"]);
+    for n in 0..unrelated {
+        input.parse[0].output.links.push(polylogue_model::Link {
+            kind: LinkKind::Fork,
+            copies_prefix: false,
+            how: None,
+            parent: sid(&format!("p{n}")),
+            child: sid("other"),
+            at: None,
+            call_id: None,
+            evidence: "synthetic".into(),
+        });
+    }
+    write_test_rows(&tx, &input, &input.parse[0], 1, 1, Some(&first)).unwrap();
+    let target: i64 = tx
+        .query_row(
+            "SELECT pk FROM session WHERE id='claude-code:target'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let snapshot =
+        || {
+            tx.prepare(
+        "SELECT json_array(pk,parent_id,child_id,child_pk,kind,how,copies_prefix,branch_point,
+                           spawning_call,evidence,source_chain,input_pk) FROM link ORDER BY pk"
+    ).unwrap().query_map([],|r|r.get::<_,String>(0)).unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>().unwrap()
+        };
+    let links = snapshot();
+    if !indexed {
+        tx.execute_batch("DROP INDEX link_child").unwrap();
+    }
+    tx.execute_batch("SAVEPOINT removal").unwrap();
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    };
+    let steps = Arc::new(AtomicU64::new(0));
+    let count = Arc::clone(&steps);
+    tx.progress_handler(
+        1,
+        Some(move || {
+            count.fetch_add(1, Ordering::Relaxed);
+            false
+        }),
+    )
+    .unwrap();
+    crate::session_row::remove(&tx, target, "claude-code:target", 2).unwrap();
+    tx.progress_handler(0, None::<fn() -> bool>).unwrap();
+    let measured = steps.load(Ordering::Relaxed);
+    assert_eq!(
+        tx.query_row("SELECT count(*) FROM session WHERE pk=?1", [target], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        snapshot(),
+        links,
+        "unrelated child links must remain byte-equivalent"
+    );
+    assert_eq!(
+        tx.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+    tx.execute_batch("ROLLBACK TO removal; RELEASE removal")
+        .unwrap();
+    assert_eq!(
+        tx.query_row("SELECT count(*) FROM session WHERE pk=?1", [target], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap(),
+        1
+    );
+    assert_eq!(snapshot(), links);
+    measured
+}
+
+#[test]
+fn first_build_session_removal_keeps_its_link_foreign_key_lookup() {
+    let small = session_removal_steps(0, false);
+    let large = session_removal_steps(8192, false);
+    let indexed_small = session_removal_steps(0, true);
+    let indexed_large = session_removal_steps(8192, true);
+    eprintln!(
+        "first-build session removal VM: {small} -> {large}; indexed: {indexed_small} -> {indexed_large}"
+    );
+    // The existing cleanup also examines links' natural IDs. Isolate the
+    // additional FK scan without claiming the entire helper is constant work.
+    assert!(
+        large - small > indexed_large - indexed_small + 8192,
+        "the numeric child FK must not add another history scan"
     );
 }

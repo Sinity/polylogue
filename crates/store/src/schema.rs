@@ -50,7 +50,8 @@ pub(crate) const QUERY_OBJECTS: &str = concat!(
     "\n",
     include_str!("schema/query_runs.sql")
 );
-pub(crate) const READ_INDEXES: &str = include_str!("schema/index_reads.sql");
+/// Physical indexes created at open; the writer defers only its query-only subset.
+pub(crate) const OPEN_INDEXES: &str = include_str!("schema/open_indexes.sql");
 #[cfg(test)]
 pub(crate) const INDEX_SCHEMA: &[&str] = &[
     INDEX,
@@ -58,7 +59,7 @@ pub(crate) const INDEX_SCHEMA: &[&str] = &[
     crate::variants::SCHEMA,
     crate::parser_context::SCHEMA,
     crate::parser_context::VERSION_INDEX,
-    READ_INDEXES,
+    OPEN_INDEXES,
 ];
 /// The vectors and failures tables of `embeddings.db`, as the first build at
 /// the baseline created them.
@@ -134,7 +135,7 @@ fn base_index(conn: &Connection) -> Result<()> {
 
 fn create_index_in(conn: &Connection, primary: bool) -> Result<()> {
     base_index(conn)?;
-    conn.execute_batch(READ_INDEXES)?;
+    conn.execute_batch(OPEN_INDEXES)?;
     if primary {
         add_primary(conn)?;
         conn.execute(
@@ -179,13 +180,13 @@ fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
         // This reverse reference is needed by the writer, including a resumed
         // first build. Adding the index preserves rows and table identity.
         tx.execute_batch(crate::parser_context::VERSION_INDEX)?;
-        // Read indexes are added before the shape check, so an index missing
+        // Physical indexes are added before the shape check, so an index missing
         // only those is completed rather than refused. A first build still in
         // progress leaves out the ones it defers: it builds each once from a
         // sorted scan when it ends, and building one here would read the
         // whole table at every restart.
         let deferring = building(&tx)?;
-        let statements = READ_INDEXES
+        let statements = OPEN_INDEXES
             .lines()
             .filter(|line| !line.trim_start().starts_with("--"))
             .collect::<Vec<_>>()
@@ -224,9 +225,8 @@ fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
 
 /// The schema identity of an index file: a hash of its version, its format
 /// identity and the tables, views and triggers it holds, as statements
-/// without comments or spacing. Indexes are left out, because read indexes
-/// are added at open and a first build defers some, so a file keeps its
-/// identity through both.
+/// without comments or spacing. Indexes are left out: opening a file can add them,
+/// and a first build defers query-only indexes, so a file keeps its identity through both.
 pub(crate) fn index_identity(conn: &Connection) -> Result<String> {
     let mut hash = blake3::Hasher::new();
     hash.update(format!("version {} format {}\n", version(conn)?, format_id(conn)?).as_bytes());
@@ -396,7 +396,7 @@ pub(crate) fn same_schema(conn: &Connection, sql: &[&str]) -> Result<bool> {
     Ok(shape(conn)? == shape(&expected)?)
 }
 
-/// Missing read indexes can be created without rebuilding parsed rows.
+/// Physical indexes created at open do not change the parsed table format.
 fn same_index_schema_in(conn: &Connection, primary: bool) -> Result<bool> {
     let expected = Connection::open_in_memory()?;
     base_index(&expected)?;
@@ -404,9 +404,9 @@ fn same_index_schema_in(conn: &Connection, primary: bool) -> Result<bool> {
         add_primary(&expected)?;
     }
     let base = shape(&expected)?;
-    expected.execute_batch(READ_INDEXES)?;
+    expected.execute_batch(OPEN_INDEXES)?;
     let expected = shape(&expected)?;
-    let read_indexes: HashSet<_> = expected
+    let open_indexes: HashSet<_> = expected
         .iter()
         .filter(|item| item.0 == "index" && !base.contains(item))
         .map(|item| item.1.clone())
@@ -414,7 +414,7 @@ fn same_index_schema_in(conn: &Connection, primary: bool) -> Result<bool> {
     let found = shape(conn)?;
     Ok(found.iter().all(|item| expected.contains(item))
         && expected.iter().all(|item| {
-            (item.0 == "index" && read_indexes.contains(&item.1)) || found.contains(item)
+            (item.0 == "index" && open_indexes.contains(&item.1)) || found.contains(item)
         }))
 }
 
@@ -422,7 +422,7 @@ fn same_index_schema_in(conn: &Connection, primary: bool) -> Result<bool> {
 fn same_build_schema_in(conn: &Connection, primary: bool) -> Result<bool> {
     let expected = Connection::open_in_memory()?;
     base_index(&expected)?;
-    expected.execute_batch(READ_INDEXES)?;
+    expected.execute_batch(OPEN_INDEXES)?;
     if primary {
         add_primary(&expected)?;
     }

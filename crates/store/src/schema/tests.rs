@@ -134,7 +134,7 @@ fn comments_and_spacing_in_the_declarations_do_not_change_the_schema() {
 }
 
 #[test]
-fn read_indexes_are_added_in_place_and_survive_reopen() {
+fn open_indexes_are_added_in_place_and_survive_reopen() {
     let conn = Connection::open_in_memory().unwrap();
     base_index(&conn).unwrap();
     set_version(&conn, INDEX_VERSION).unwrap();
@@ -142,23 +142,23 @@ fn read_indexes_are_added_in_place_and_survive_reopen() {
         .unwrap();
     conn.execute("INSERT INTO input_ref(id) VALUES ('synthetic')", [])
         .unwrap();
-    // Read views are part of the schema; only read indexes may be absent.
-    conn.execute_batch(READ_INDEXES).unwrap();
+    // Views are part of the schema; open indexes are recreated before writing.
+    conn.execute_batch(OPEN_INDEXES).unwrap();
     assert!(same_index_schema_in(&conn, false).unwrap());
     ensure_index(&conn).unwrap();
     let base = Connection::open_in_memory().unwrap();
     base_index(&base).unwrap();
     let base_shape = shape(&base).unwrap();
-    base.execute_batch(READ_INDEXES).unwrap();
+    base.execute_batch(OPEN_INDEXES).unwrap();
     let expected = shape(&base).unwrap();
-    let read_indexes: Vec<_> = shape(&conn)
+    let open_indexes: Vec<_> = shape(&conn)
         .unwrap()
         .into_iter()
         .filter(|item| item.0 == "index" && !base_shape.contains(item))
         .map(|item| item.1)
         .collect();
-    assert!(!read_indexes.is_empty());
-    for name in read_indexes {
+    assert!(!open_indexes.is_empty());
+    for name in open_indexes {
         conn.execute_batch(&format!("DROP INDEX {name}")).unwrap();
         assert!(
             same_index_schema_in(&conn, false).unwrap(),

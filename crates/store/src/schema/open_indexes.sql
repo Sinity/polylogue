@@ -1,3 +1,7 @@
+-- Foreign-key parent deletes need these child lookups during the first build too.
+CREATE INDEX IF NOT EXISTS link_child  ON link(child_pk);
+CREATE INDEX IF NOT EXISTS event_after   ON event(after_message_pk) WHERE after_message_pk IS NOT NULL;
+
 -- A default page reads its unit's rows in the order of its first terms
 -- (`time IS NULL, time, ...`), so these indexes carry those exact
 -- expressions: the page stops after its rows instead of sorting the table.
