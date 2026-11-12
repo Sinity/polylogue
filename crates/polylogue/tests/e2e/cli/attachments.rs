@@ -220,15 +220,9 @@ fn directory_and_zip_imports_describe_exact_stored_attachment_bytes() {
             assert_eq!(binding.candidates[0].size, SECRET.len() as u64);
             binding.validate().unwrap();
         }
-        let mut shown = Vec::new();
-        polylogue_render::encode_document(
-            &page.document,
-            polylogue_render::Format::Markdown,
-            Default::default(),
-            &mut shown,
-        )
-        .unwrap();
-        let shown = String::from_utf8(shown).unwrap();
+        let shown = cli(&fixture.env(), &["read", SESSION, "--format", "markdown"]);
+        assert!(shown.status.success(), "{shown:?}");
+        let shown = String::from_utf8(shown.stdout).unwrap();
         assert!(!shown.contains("synthetic-private-file-value"));
     }
 }

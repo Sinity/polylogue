@@ -622,7 +622,7 @@ fn generated_ready_mcp_call_executes_its_exact_typed_envelope() {
             arguments: json!({"query":"sessions"}),
             request_id: "mcp-ready-id".into(),
             deadline: command_surface::Deadline::None,
-            budget_tokens: command_surface::TokenBudget::Unlimited,
+            budget_tokens: Default::default(),
             cursor: None,
             fresh: false,
             format: Default::default(),
