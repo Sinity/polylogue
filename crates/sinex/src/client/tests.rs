@@ -403,7 +403,7 @@ fn an_unreadable_event_is_refused_at_its_position_but_a_lost_connection_stops_th
     );
     for (kind, unreadable_input) in [
         ("polylogue.input_observation@6", true),
-        ("polylogue.session@5", false),
+        ("polylogue.session@6", false),
         ("polylogue.session@999", true),
         ("", true),
     ] {
@@ -430,7 +430,7 @@ fn an_unreadable_event_is_refused_at_its_position_but_a_lost_connection_stops_th
     let unknown_definition = crate::client::confirmed::readable(
         11,
         "unknown-definition",
-        "polylogue.session@5".into(),
+        "polylogue.session@6".into(),
         Some("unrecognized definition"),
         Err(Error::Invalid("synthetic unreadable payload".into())),
     )

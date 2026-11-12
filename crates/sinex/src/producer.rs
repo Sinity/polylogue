@@ -408,10 +408,9 @@ impl Sinex {
                     "named product intent is not an event group".into(),
                 ));
             };
-            if source
-                .as_ref()
-                .is_none_or(|source| source.name != "polylogue" || !matches!(source.version, 5 | 6))
-            {
+            if source.as_ref().is_none_or(|source| {
+                source.name != "polylogue" || !matches!(source.version, 5 | 6 | 7)
+            }) {
                 return Err(Error::Invalid(
                     "named product intent has an unsupported source".into(),
                 ));
@@ -490,7 +489,8 @@ impl Sinex {
                 let Ingress::Material { material, .. } = queue.decode_frame(&observation)? else {
                     return Err(Error::Invalid("observation has no material".into()));
                 };
-                if material.source.name != "polylogue" || !matches!(material.source.version, 5 | 6)
+                if material.source.name != "polylogue"
+                    || !matches!(material.source.version, 5 | 6 | 7)
                 {
                     return Err(Error::Invalid(
                         "observation has an unsupported source".into(),
@@ -763,7 +763,8 @@ impl Sinex {
             let Ingress::Material { material, .. } = queue.decode_frame(&identity)? else {
                 return Err(Error::Invalid("authored intent has no material".into()));
             };
-            if material.source.name != "polylogue" || !matches!(material.source.version, 5 | 6) {
+            if material.source.name != "polylogue" || !matches!(material.source.version, 5 | 6 | 7)
+            {
                 return Err(Error::Invalid(
                     "authored intent belongs to an unsupported adapter source".into(),
                 ));
@@ -930,7 +931,8 @@ impl Sinex {
             let Ingress::Material { material, .. } = queue.decode_frame(identity)? else {
                 return Err(Error::Invalid("authored intent has no material".into()));
             };
-            if material.source.name != "polylogue" || !matches!(material.source.version, 5 | 6) {
+            if material.source.name != "polylogue" || !matches!(material.source.version, 5 | 6 | 7)
+            {
                 return Err(Error::Invalid(
                     "authored intent belongs to an unsupported adapter source".into(),
                 ));

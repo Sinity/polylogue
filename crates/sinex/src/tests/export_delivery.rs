@@ -198,7 +198,7 @@ fn export_source_length_and_callback_coordinate_distinguish_native_keys() {
             .version,
         6
     );
-    assert_eq!(crate::source_reference().version, 6);
+    assert_eq!(crate::source_reference().version, 7);
     assert_eq!(
         crate::kinds::kind_reference("polylogue.query_run")
             .unwrap()

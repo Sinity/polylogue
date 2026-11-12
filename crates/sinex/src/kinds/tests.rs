@@ -2,6 +2,7 @@ use super::*;
 use crate::products;
 use polylogue_store::primary::{Product, Reading};
 use serde_json::json;
+mod ai;
 
 fn reading(input: &str, start: u64) -> Reading {
     Reading {
@@ -130,14 +131,14 @@ fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
         assert_eq!(
             declaration.kind.version,
             match declaration.kind.name.as_str() {
-                "polylogue.message" => 6,
+                "polylogue.message" => 7,
                 "polylogue.kept_result"
                 | "polylogue.delivery"
                 | "polylogue.delivery_outcome"
                 | "polylogue.request"
                 | "polylogue.request_restore" => 6,
-                "polylogue.session"
-                | "polylogue.document"
+                "polylogue.session" => 6,
+                "polylogue.document"
                 | "polylogue.event"
                 | "polylogue.link"
                 | "polylogue.background"
@@ -162,7 +163,17 @@ fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
                 .iter()
                 .any(|hint| hint.field == "/record" && hint.class == sinex_model::Class::Guarded)
         );
-        assert_eq!(declaration.search, sinex_model::kinds::Search::None);
+        assert_eq!(
+            declaration.search,
+            if matches!(
+                declaration.kind.name.as_str(),
+                "polylogue.message" | "polylogue.session"
+            ) {
+                sinex_model::kinds::Search::Words
+            } else {
+                sinex_model::kinds::Search::None
+            }
+        );
     }
     assert!(kind_reference("polylogue.unknown").is_err());
 }

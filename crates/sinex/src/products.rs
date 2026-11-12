@@ -2,9 +2,9 @@
 //! reading is part of every parsed fact; indexed summaries are never an input.
 use crate::{Error, Result};
 use polylogue_model::user::UserWrite;
-use polylogue_model::{Block, WrittenBy};
 use polylogue_store::primary::products::Product;
 use serde_json::{Value, json};
+mod ai;
 
 /// Decode a confirmed fact whose kind definition is the one Polylogue declares.
 pub(crate) fn decode_source(
@@ -178,31 +178,9 @@ pub(crate) fn key(product: &Product, _occurrence: u64) -> Result<String> {
 /// to its other domains without understanding Polylogue's internal model.
 pub(crate) fn payload(product: &Product, occurrence: u64) -> Result<Value> {
     let mut payload = match product {
-        Product::Session { facts, .. } => json!({
-            "session": facts.id, "origin": facts.id.origin().as_str(), "kind": facts.kind,
-            "title": facts.title.as_ref().map(|title| &title.text), "cwd": facts.cwd,
-            "repo": facts.repo, "branch": facts.git_branch, "tool_version": facts.tool_version,
-            "mode": facts.mode, "started": facts.started, "machine": Value::Null,
-            "objectives": [], "git_identity": Value::Null, "terminal": Value::Null,
-            "boot_id": Value::Null, "native_sources": [], "native_unavailable": [],
-        }),
+        Product::Session { facts, .. } => serde_json::to_value(ai::SessionFields::from(facts))?,
         Product::Message { facts, .. } => {
-            let message = &facts.message;
-            let text: Vec<_> = message
-                .blocks
-                .iter()
-                .filter_map(|block| match block {
-                    Block::Text { text } => Some(text.as_str()),
-                    _ => None,
-                })
-                .collect();
-            json!({
-                "message": message.id, "session": message.session, "parent": message.parent,
-                "role": message.role, "written_by": WrittenBy::of(message),
-                "prompt_kind": message.prompt_kind, "at": message.at, "model": message.model,
-                "text": text.join("\n\n"), "usage": message.usage,
-                "stop_reason": message.stop_reason, "duration_ms": message.duration_ms,
-            })
+            serde_json::to_value(ai::MessageFields::from(&facts.message))?
         }
         Product::Document { facts, .. } => {
             json!({"document": facts.document.id, "at": facts.document.source_time})
@@ -434,7 +412,7 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
             variants.retain(|variant| variant["properties"]["product"]["const"] == *product);
             assert_eq!(variants.len(), 1, "one complete product schema per kind");
             let definitions = reachable_definitions(&facts, &definitions);
-            let schema = json!({
+            let mut schema = json!({
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
                 "type": "object", "properties": {
                     "record_key": {"type":"string", "minLength":1}, "record":facts,
@@ -446,6 +424,54 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                 },
                 "required":["record_key","record"], "$defs":definitions,
             });
+            if let Some(fields) = ai::schema(product) {
+                schema["properties"]
+                    .as_object_mut()
+                    .expect("object properties")
+                    .extend(
+                        fields["properties"]
+                            .as_object()
+                            .expect("AI properties")
+                            .clone(),
+                    );
+                if let Some(definitions) = fields.get("$defs").and_then(Value::as_object) {
+                    let retained = schema["$defs"].as_object_mut().expect("object definitions");
+                    for (name, definition) in definitions {
+                        if let Some(existing) = retained.get(name) {
+                            assert_eq!(existing, definition, "one definition for {name}");
+                        } else {
+                            retained.insert(name.clone(), definition.clone());
+                        }
+                    }
+                }
+                schema["required"]
+                    .as_array_mut()
+                    .expect("required properties")
+                    .extend(
+                        fields["required"]
+                            .as_array()
+                            .expect("required AI properties")
+                            .clone(),
+                    );
+            }
+            let field_hints = [
+                "record",
+                "text",
+                "query",
+                "rows",
+                "refs",
+                "blocks",
+                "production",
+                "attrs",
+                "instructions",
+            ]
+            .into_iter()
+            .filter(|field| schema["properties"].get(*field).is_some())
+            .map(|field| FieldHint {
+                field: format!("/{field}"),
+                class: Class::Guarded,
+            })
+            .collect();
             KindDeclaration {
                 kind: KindRef {
                     name: (*name).into(),
@@ -455,10 +481,10 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                         match *product {
                             // A product holding a parser reading moved to one
                             // progress value in place of two flags.
-                            "message" => 6,
+                            "message" => 7,
                             "request" | "restored_request" => 6,
-                            "session" | "document" | "event" | "link" | "background"
-                            | "repository" => 5,
+                            "session" => 6,
+                            "document" | "event" | "link" | "background" | "repository" => 5,
                             "parse_progress" => 6,
                             // An input step's rows refuse fields they do not
                             // name (version 5 moved `extent` to `extents`).
@@ -495,7 +521,22 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                         ReplaceRule::ReplaceWhenNewer
                     },
                 ),
-                time_rule: Some(if *product == "attachment_binding" {
+                time_rule: Some(if matches!(*product, "message" | "session") {
+                    TimeRule::InstantEvidence {
+                        field: if *product == "message" {
+                            "at"
+                        } else {
+                            "started"
+                        }
+                        .into(),
+                        evidence_field: if *product == "message" {
+                            "at_evidence"
+                        } else {
+                            "started_evidence"
+                        }
+                        .into(),
+                    }
+                } else if *product == "attachment_binding" {
                     TimeRule::Unknown
                 } else {
                     TimeRule::FirstPresent {
@@ -503,17 +544,15 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                         quality: TimeQuality::Intrinsic,
                     }
                 }),
-                field_hints: ["record", "text", "query", "rows", "refs"]
-                    .into_iter()
-                    .map(|field| FieldHint {
-                        field: format!("/{field}"),
-                        class: Class::Guarded,
-                    })
-                    .collect(),
+                field_hints,
                 removed_rule: Some(RemovedRule::Never),
                 keep_known: Vec::new(),
                 owned_blobs: Vec::new(),
-                search: Search::None,
+                search: if matches!(*product, "message" | "session") {
+                    Search::Words
+                } else {
+                    Search::None
+                },
             }
         })
         .collect()
