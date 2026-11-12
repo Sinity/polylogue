@@ -622,18 +622,12 @@ fn generated_ready_mcp_call_executes_its_exact_typed_envelope() {
             arguments: json!({"query":"sessions"}),
             request_id: "mcp-ready-id".into(),
             deadline: command_surface::Deadline::None,
-            budget_tokens: Default::default(),
+            budget_tokens: command_surface::TokenBudget::Unlimited,
             cursor: None,
-            fresh: true,
-            format: command_surface::Format::Json,
+            fresh: false,
+            format: Default::default(),
         })
         .unwrap();
-    let projected = crate::commands::declarations()
-        .mcp_call(&ready.request)
-        .unwrap();
-    let admitted: ToolCall = serde_json::from_value(projected["arguments"].clone()).unwrap();
-    assert!(admitted.fresh);
-    assert_eq!(admitted.format, command_surface::Format::Json);
     let mut session = Session {
         initialized: true,
         ..Default::default()
@@ -659,6 +653,31 @@ fn generated_ready_mcp_call_executes_its_exact_typed_envelope() {
             .unwrap()["arguments"]["operation"],
         "query"
     );
+    // Preserve shared metadata through the transport, then let the product's
+    // declarations reject options it does not offer, as every other surface does.
+    for option in ["fresh", "format"] {
+        let mut request = ready.request.clone();
+        request.request_id = format!("unsupported-{option}");
+        if option == "fresh" {
+            request.fresh = true;
+        } else {
+            request.format = command_surface::Format::Json;
+        }
+        let params = crate::commands::declarations().mcp_call(&request).unwrap();
+        let refusal = session
+            .prepare(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":params}))
+            .answer(&daemon.daemon.archive)
+            .unwrap();
+        assert_eq!(refusal["result"]["isError"], true, "{refusal}");
+        assert_eq!(
+            refusal["result"]["structuredContent"]["error"]["kind"],
+            "bad_request"
+        );
+        assert_eq!(
+            refusal["result"]["structuredContent"]["error"]["message"],
+            format!("polylogue does not take {option}")
+        );
+    }
     // Every declared request retains an executable MCP form.
     let sql = daemon
         .daemon
