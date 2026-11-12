@@ -1,6 +1,5 @@
 //! Primary writes prepare durable producer intents. Only confirmed facts write the cache.
 use super::*;
-mod export;
 mod reading;
 use crate::primary::{Product, ProductWrite, SourceLocation};
 use polylogue_model::authored::PreparedRequest;

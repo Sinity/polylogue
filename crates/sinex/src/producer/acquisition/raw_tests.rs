@@ -128,7 +128,6 @@ fn offline_raw_cursor_checks_many_bodies_and_restarts_without_source_or_parser_a
     let Capture::Input(header) = &last.headers[0].captured else {
         panic!()
     };
-    assert!(header.parsed.is_empty());
     assert_eq!(header.generation.as_ref(), Some(&generation));
     assert!(last.headers[0].material.is_none());
     assert!(

@@ -15,11 +15,10 @@ use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-mod exports;
 mod raw_ranges;
 mod sources;
 
-/// A durable body or sidecar file: its decoded identity and the encoding that
+/// An encoded file: its decoded identity and the encoding that
 /// reads it back.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Bytes {
@@ -101,9 +100,6 @@ pub(crate) struct Material {
     pub length: u64,
     pub body: Body,
     pub capture: Option<Capture>,
-    pub captured: Option<Bytes>,
-    pub control: Option<Control>,
-    pub exports: Vec<exports::ExportBinding>,
     /// Its observation is found by logical name.
     pub named: bool,
     /// Carries an authored request.
@@ -164,16 +160,6 @@ impl Record {
     pub(crate) fn capture(&self) -> Option<&Capture> {
         self.material()?.capture.as_ref()
     }
-    pub(crate) fn captured(&self) -> Option<&Bytes> {
-        self.material()?.captured.as_ref()
-    }
-    pub(crate) fn control(&self) -> Option<&Control> {
-        self.material()?.control.as_ref()
-    }
-    pub(crate) fn exports(&self) -> &[exports::ExportBinding] {
-        self.material()
-            .map_or(&[], |material| material.exports.as_slice())
-    }
     pub(crate) fn group(&self) -> Option<&Group> {
         match &self.payload {
             Payload::Events { group, .. } | Payload::ReplaySequence { group, .. } => group.as_ref(),
@@ -228,12 +214,6 @@ impl std::ops::Deref for Prepared {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Control {
-    pub reading_version: String,
-    pub parsed_upto: u64,
-}
-
 #[derive(Serialize, Deserialize)]
 struct Acquisition {
     identity: String,
@@ -286,37 +266,6 @@ impl StagedAcquisition {
         }
         sync(self.temporary.path())?;
         Ok(())
-    }
-}
-
-/// A pinned immutable sidecar may be checked after releasing the queue lock.
-pub(crate) struct PinnedCapture {
-    header: Capture,
-    control: Option<Control>,
-    exports: Vec<exports::ExportBinding>,
-    bytes: Option<(File, EncodedBlob)>,
-}
-impl PinnedCapture {
-    pub fn decode(self) -> Result<Capture> {
-        let Some((file, descriptor)) = self.bytes else {
-            if !self.exports.is_empty() {
-                return invalid("export capture has no captured body");
-            }
-            return Ok(self.header);
-        };
-        let prepared =
-            hashed_blobs::Prepared::from_encoded(file, descriptor, None, ReadLimits::default())?;
-        let capture = decode_capture(prepared.reader(None, ReadLimits::default())?)?;
-        if capture_header(&capture) != self.header {
-            return invalid("capture sidecar differs from its queue header");
-        }
-        if exports::capture_bindings(&capture)? != self.exports {
-            return invalid("export sidecar differs from its immutable reading-key index");
-        }
-        if control(&capture) != self.control {
-            return invalid("parser control differs from its immutable capture index");
-        }
-        Ok(capture)
     }
 }
 
@@ -881,8 +830,7 @@ impl Spool {
                 };
                 if original.frame.identity() != desired.frame.identity()
                     || original.body().map(Body::identity) != desired.body().map(Body::identity)
-                    || original.captured().map(Bytes::identity)
-                        != desired.captured().map(Bytes::identity)
+                    || original.capture() != desired.capture()
                 {
                     return Ok(None);
                 }
@@ -958,32 +906,11 @@ impl Spool {
         )
     }
 
-    pub fn pin_capture(&self, identity: &str) -> Result<PinnedCapture> {
-        let Payload::Material(material) = self.required(identity)?.record.payload else {
-            return invalid("operation has no captured facts");
-        };
-        let header = material
-            .capture
-            .ok_or_else(|| Error::Invalid("operation has no captured facts".into()))?;
-        let bytes = material
-            .captured
-            .map(|captured| -> Result<_> {
-                Ok((
-                    regular(&self.operation(identity)?.join("captured.zst"))?,
-                    captured.descriptor()?,
-                ))
-            })
-            .transpose()?;
-        Ok(PinnedCapture {
-            header,
-            control: material.control,
-            exports: material.exports,
-            bytes,
-        })
-    }
-
     pub fn capture(&self, identity: &str) -> Result<Capture> {
-        self.pin_capture(identity)?.decode()
+        self.required(identity)?
+            .capture()
+            .cloned()
+            .ok_or_else(|| Error::Invalid("operation has no capture metadata".into()))
     }
 
     /// One publication owns the complete immutable capture set. Per-capture
@@ -1415,13 +1342,10 @@ impl Spool {
                     return invalid("prepared identity changed immutable encoded body contents");
                 }
             }
-            let desired_capture = full_capture.map(encoded_hash).transpose()?;
-            if previous.captured().map(Bytes::identity)
-                != desired_capture
-                    .as_ref()
-                    .map(|(blob, length)| (blob.as_str(), *length))
+            if let Some(capture) = full_capture
+                && previous.capture() != Some(capture)
             {
-                return invalid("prepared identity changed immutable captured facts");
+                return invalid("prepared identity changed immutable capture metadata");
             }
             return Ok(previous);
         }
@@ -1431,17 +1355,11 @@ impl Spool {
             .tempdir_in(self.root.join("operations"))?;
         let frame_bytes = write_encoded_json(&temporary.path().join("frame.zst"), &frame)?;
         let mut facts = material_facts(&frame)?;
-        let captured = full_capture
-            .map(|full| -> Result<Bytes> {
-                let header = capture_header(full);
-                if facts.as_ref().and_then(|facts| facts.capture.as_ref()) != Some(&header) {
-                    return invalid("capture header differs from its material manifest");
-                }
-                let bytes = write_encoded_json(&temporary.path().join("captured.zst"), full)?;
-                boundary("capture_synced");
-                Ok(bytes)
-            })
-            .transpose()?;
+        if let Some(capture) = full_capture
+            && facts.as_ref().and_then(|facts| facts.capture.as_ref()) != Some(capture)
+        {
+            return invalid("capture metadata differs from its material manifest");
+        }
         let body = if body.is_some() || encoded_body.is_some() {
             let descriptor = facts
                 .as_ref()
@@ -1504,7 +1422,6 @@ impl Spool {
         let group = captures.as_ref().map(|(_, captures_hash)| Group {
             captures_hash: captures_hash.clone(),
         });
-        let export_bindings = exports::bindings(&frame, full_capture)?;
         let payload = match (&frame, facts.take()) {
             (Ingress::Material { .. }, Some(facts)) => Payload::Material(Box::new(Material {
                 id: facts.id,
@@ -1514,9 +1431,6 @@ impl Spool {
                     Error::Invalid("material must have its immutable body prepared".into())
                 })?,
                 capture: facts.capture,
-                captured,
-                control: full_capture.and_then(control),
-                exports: export_bindings,
                 named: facts.named,
                 request: facts.request,
             })),
@@ -1703,18 +1617,6 @@ fn operation(record: &Record, directory: String, frame: &Ingress) -> Result<queu
         operation.previous_material = material.previous_part.as_ref().map(ToString::to_string);
     }
     operation.logical_name = record.logical_name().map(str::to_owned);
-    operation.reading_version = record
-        .control()
-        .map(|control| control.reading_version.clone());
-    operation.export_keys = record
-        .exports()
-        .iter()
-        .map(|binding| binding.key.identity().to_string())
-        .collect();
-    if let Some(binding) = record.exports().first() {
-        operation.input = Some(binding.key.input.id.clone());
-        operation.format = Some(binding.key.input.format.clone());
-    }
     operation.captured = record.capture().is_some();
     if let Some(Capture::Blob { hash, .. }) = record.capture() {
         operation.blob = Some(hash.to_string());
@@ -1762,48 +1664,6 @@ fn hex_name(name: &str) -> bool {
     name.len() == 64 && name.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-fn control(capture: &Capture) -> Option<Control> {
-    let Capture::Input(input) = capture else {
-        return None;
-    };
-    input
-        .parsed
-        .iter()
-        .rev()
-        .find_map(|reading| reading.checkpoint.as_ref())
-        .map(|checkpoint| Control {
-            reading_version: checkpoint.reading_version.clone(),
-            parsed_upto: checkpoint.parsed_upto,
-        })
-}
-
-pub(crate) fn capture_header(capture: &Capture) -> Capture {
-    match capture {
-        Capture::Input(input) => {
-            Capture::Input(Box::new(polylogue_store::primary::CapturedInput {
-                generation: input.generation.clone(),
-                raw_total: input.raw_total,
-                raw_predecessor: input.raw_predecessor.clone(),
-                input: input.input.clone(),
-                rows: input.rows.clone(),
-                index: input.index,
-                previous: input.previous.clone(),
-                hash: input.hash,
-                length: input.length,
-                group: input.group.clone(),
-                route: input.route,
-                parsed: Vec::new(),
-                raw_range: input.raw_range,
-                basis: input.basis.clone(),
-            }))
-        }
-        Capture::Blob { hash, length } => Capture::Blob {
-            hash: *hash,
-            length: *length,
-        },
-    }
-}
-
 /// What a material frame says about itself before its bytes are stored.
 struct MaterialFacts {
     id: String,
@@ -1829,13 +1689,6 @@ fn material_facts(frame: &Ingress) -> Result<Option<MaterialFacts>> {
         .get("polylogue_capture")
         .map(|capture| serde_json::from_value(capture.clone()))
         .transpose()?;
-    if let Some(capture) = &capture
-        && *capture != capture_header(capture)
-    {
-        return invalid(
-            "raw material manifest must keep parser facts in the private capture sidecar",
-        );
-    }
     let parser = material.parser.as_str();
     Ok(Some(MaterialFacts {
         id: material.id.to_string(),
@@ -2009,10 +1862,6 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>> {
         Err(error) => Err(error),
     }
 }
-fn decode_capture(reader: impl Read) -> Result<Capture> {
-    decode_json(reader)
-}
-
 /// The checksum covers the stored bytes of the value, so a record written by
 /// an earlier build verifies even where the current type no longer keeps one
 /// of its fields.

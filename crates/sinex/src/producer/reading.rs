@@ -139,20 +139,6 @@ impl Sinex {
                 reading = write.product.reading().cloned();
                 group.push(write);
                 if complete {
-                    if group.iter().any(|write| {
-                        write
-                            .product
-                            .reading()
-                            .is_some_and(|reading| reading.delivery.is_some())
-                    }) {
-                        let products = group
-                            .iter()
-                            .map(|write| write.product.clone())
-                            .collect::<Vec<_>>();
-                        polylogue_store::primary::CapturedReading::from_product_group(
-                            key, &products,
-                        )?;
-                    }
                     events.extend(
                         crate::products::events(&group)
                             .map_err(polylogue_store::StoreError::from)?,

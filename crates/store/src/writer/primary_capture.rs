@@ -230,7 +230,7 @@ pub(super) fn validate(item: &PreparedBatch, archive: &Archive) -> Result<()> {
 }
 
 // An acquisition intent is independent of observer time and generated observation IDs.
-// Ordered source content, source facts and reading versions distinguish actual new work.
+// Ordered source content and source facts distinguish actual new work.
 fn capture_group_identity(group: &[PreparedBatch], immutable: bool) -> Result<String> {
     let mut hash = blake3::Hasher::new();
     hash.update(b"polylogue-capture-group-v1");
@@ -274,19 +274,6 @@ fn capture_group_identity(group: &[PreparedBatch], immutable: bool) -> Result<St
             b.new_blob.as_ref().map(|v| (v.hash, v.size)),
             b.blobs.iter().map(|v| (v.hash, v.size)).collect::<Vec<_>>(),
             observation,
-            b.parse
-                .iter()
-                .map(|step| {
-                    (
-                        &step.reading_version,
-                        step.start,
-                        step.parsed_upto,
-                        &step.progress,
-                        step.reset,
-                        step.delivery,
-                    )
-                })
-                .collect::<Vec<_>>(),
         ))?;
         hash.update(&(encoded.len() as u64).to_le_bytes());
         hash.update(&encoded);
@@ -445,61 +432,6 @@ impl Inner {
                 }
             }
         }
-        let mut preview = revisions.clone();
-        let mut prefixes = BTreeMap::new();
-        let mut export_apply = Vec::with_capacity(group.len());
-        for item in group {
-            let batch = &item.batch;
-            let previous = preview
-                .get(&batch.input.id)
-                .cloned()
-                .or(latest(&self.index, &batch.input.id)?);
-            let mut metadata = batch.clone();
-            metadata.new_blob = None;
-            metadata.blobs.clear();
-            let (chain, rows) =
-                bytes::capture_rows(&self.index, &metadata, previous.clone(), &known)?;
-            let actual_chain = chain.or_else(|| previous.as_ref().map(|revision| revision.chain));
-            if let Some(revision) = rows.revision {
-                preview.insert(batch.input.id.clone(), revision);
-            }
-            let mut decisions = Vec::with_capacity(batch.parse.len());
-            for step in &batch.parse {
-                if step.delivery.is_none() {
-                    decisions.push(true);
-                    continue;
-                }
-                let admitted = (|| {
-                    let chain = actual_chain.ok_or_else(|| {
-                        StoreError::Invalid("export capture has no actual source chain".into())
-                    })?;
-                    let key = crate::primary::ExportReadingKey {
-                        input: batch.input.clone(),
-                        chain,
-                        reading_version: step.reading_version.clone(),
-                        length: batch.length,
-                    };
-                    let identity = key.identity().to_string();
-                    if !prefixes.contains_key(&identity) {
-                        prefixes.insert(identity.clone(), self.pending_export_prefix(&key)?);
-                    }
-                    crate::wire_shapes::advance_prefix(
-                        prefixes.get_mut(&identity).expect("inserted export prefix"),
-                        batch.length,
-                        step,
-                    )
-                })();
-                match admitted {
-                    Ok(apply) => decisions.push(apply),
-                    Err(_) => {
-                        required_disposition =
-                            Some(crate::primary::CaptureDisposition::UnresolvedBasisConflict);
-                        decisions.push(false);
-                    }
-                }
-            }
-            export_apply.push(decisions);
-        }
         let plan = crate::primary::CapturePlan {
             intent: intent.clone(),
             bases: bases.values().cloned().collect(),
@@ -606,7 +538,6 @@ impl Inner {
                     basis: Some(bases[&self.capture_source_selector(batch, &pending)?].clone()),
                     input: name,
                     route: batch.input.route,
-                    parsed: Vec::new(),
                     rows,
                     index,
                     previous: previous_material,
@@ -937,63 +868,6 @@ impl Inner {
                         output_index: writes.len() as u64,
                         publish: true,
                     });
-                    for captured in &input.parsed {
-                        let mut step = captured.clone().into_step();
-                        step.prepare();
-                        for product in crate::primary::products::parse(
-                            &key,
-                            chain,
-                            captured.export_key.as_ref().map(|key| key.length),
-                            &step,
-                        )? {
-                            let reading = product.reading().expect("parsed product");
-                            let start = match &product {
-                                Product::Message { facts, .. } => facts.offset,
-                                Product::Document { facts, .. } => facts.offset,
-                                Product::Fragment { facts, .. } => facts.offset,
-                                Product::Event { facts, .. } => {
-                                    facts.range.map_or(reading.start, |range| range.0)
-                                }
-                                _ => reading.start,
-                            };
-                            let location =
-                                match captured_location(input, member.material.as_ref(), start)? {
-                                    Some(location) => Some(location),
-                                    None => {
-                                        match ready_extents.iter().rev().find(|placed| {
-                                            placed.input == key.id
-                                                && placed.chain == chain
-                                                && start >= placed.start
-                                                && start <= placed.end
-                                        }) {
-                                            Some(placed) => Some(crate::primary::SourceLocation {
-                                                material: placed.material.id.clone(),
-                                                anchor: start - placed.start + placed.at,
-                                            }),
-                                            None => crate::primary::projection::material_at(
-                                                &self.index,
-                                                &key.id,
-                                                chain,
-                                                start,
-                                            )?,
-                                        }
-                                    }
-                                };
-                            if location.is_none() {
-                                return Err(StoreError::Invalid(
-                                    "parsed fact has no captured source anchor".into(),
-                                ));
-                            }
-                            writes.push(ProductWrite {
-                                product,
-                                location,
-                                machine: machine.clone(),
-                                parents: Vec::new(),
-                                output_index: writes.len() as u64,
-                                publish: true,
-                            });
-                        }
-                    }
                 }
             }
         }

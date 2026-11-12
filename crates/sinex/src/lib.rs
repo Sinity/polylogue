@@ -457,22 +457,6 @@ impl polylogue_store::primary::Sinex for Sinex {
     ) -> polylogue_store::Result<polylogue_store::primary::ParsedPublication> {
         Ok(self.prepare_parsed(source, products)?)
     }
-    fn prepare_export_products(
-        &self,
-        key: &polylogue_store::primary::ExportReadingKey,
-        products: &[polylogue_store::primary::ProductWrite],
-    ) -> polylogue_store::Result<polylogue_store::primary::PreparedWrite> {
-        Ok(self.prepare_export_products(key, products)?)
-    }
-    fn visit_pending_export_readings(
-        &self,
-        key: &polylogue_store::primary::ExportReadingKey,
-        visit: &mut dyn FnMut(
-            &polylogue_store::primary::CapturedReading,
-        ) -> polylogue_store::Result<()>,
-    ) -> polylogue_store::Result<()> {
-        Ok(self.visit_pending_export_readings(key, visit)?)
-    }
     fn prepare_request(
         &self,
         request: &polylogue_model::authored::PreparedRequest,

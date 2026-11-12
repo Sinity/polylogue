@@ -11,7 +11,6 @@ mod eligibility;
 pub use eligibility::SourceRecord;
 pub(crate) use eligibility::{allowed, scope_hash};
 mod export;
-mod rebuild;
 pub use export::ExportReadingKey;
 
 /// The parser reading and exact source chain that produced a fact.
@@ -352,7 +351,6 @@ pub struct CapturedInput {
     pub length: u64,
     pub group: Option<CaptureGroup>,
     pub route: polylogue_model::Route,
-    pub parsed: Vec<CapturedReading>,
     /// Original acquired interval, independent of tentative source coordinates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_range: Option<super::RawRange>,
@@ -366,96 +364,6 @@ pub struct CapturedInput {
     /// None is legacy unknown evidence, never a freshly observed source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub basis: Option<super::SourceBasis>,
-}
-
-/// Complete parser facts retained with an immutable source acquisition.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct CapturedReading {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub export_key: Option<ExportReadingKey>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub delivery: Option<polylogue_model::batch::ExportDelivery>,
-    pub output: polylogue_model::Output,
-    pub counts: RecordCounts,
-    pub start: u64,
-    pub parsed_upto: u64,
-    pub progress: polylogue_model::batch::StepProgress,
-    pub order_from: Option<u64>,
-    pub reading_version: String,
-    pub repeats_whole_conversations: bool,
-    pub reset: bool,
-    pub comparison: Option<crate::tool_databases::Comparison>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub checkpoint: Option<polylogue_model::batch::ParserCheckpoint>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stopped_attempt: Option<polylogue_model::batch::StoppedAttempt>,
-}
-impl CapturedReading {
-    pub fn from_step(
-        step: &crate::ParseStep,
-        export_key: Option<ExportReadingKey>,
-    ) -> crate::Result<Self> {
-        if step.delivery.is_some() {
-            let key = export_key.as_ref().ok_or_else(|| {
-                crate::StoreError::Invalid(
-                    "an export capture needs its actual stored source binding".into(),
-                )
-            })?;
-            key.validate()?;
-            if key.reading_version != step.reading_version {
-                return Err(crate::StoreError::Invalid(
-                    "export capture changed its reading version".into(),
-                ));
-            }
-        } else if export_key.is_some() {
-            return Err(crate::StoreError::Invalid(
-                "ordinary byte control cannot carry an export source binding".into(),
-            ));
-        }
-        let output = step.complete_output()?;
-        if !output.blobs.is_empty() {
-            return Err(crate::StoreError::Invalid(
-                "decoded bytes need their own durable capture before parser facts".into(),
-            ));
-        }
-        step.counts.check()?;
-        step.validate_export()?;
-        step.validate_stopped_attempt()?;
-        Ok(Self {
-            export_key,
-            delivery: step.delivery,
-            output,
-            counts: step.counts.clone(),
-            start: step.start,
-            parsed_upto: step.parsed_upto,
-            progress: step.progress.clone(),
-            order_from: step.order_from,
-            reading_version: step.reading_version.clone(),
-            repeats_whole_conversations: step.repeats_whole_conversations,
-            reset: step.reset,
-            comparison: step.comparison.clone(),
-            checkpoint: step.checkpoint.clone(),
-            stopped_attempt: step.stopped_attempt,
-        })
-    }
-    pub fn into_step(self) -> crate::ParseStep {
-        let mut step = crate::ParseStep::new(
-            self.output,
-            self.counts,
-            self.start..self.parsed_upto,
-            false,
-        );
-        step.progress = self.progress;
-        step.delivery = self.delivery;
-        step.order_from = self.order_from;
-        step.reading_version = self.reading_version;
-        step.repeats_whole_conversations = self.repeats_whole_conversations;
-        step.reset = self.reset;
-        step.comparison = self.comparison;
-        step.checkpoint = self.checkpoint;
-        step.stopped_attempt = self.stopped_attempt;
-        step
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

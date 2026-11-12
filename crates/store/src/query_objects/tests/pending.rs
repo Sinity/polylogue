@@ -141,20 +141,6 @@ impl Sinex for PendingProducer {
     fn complete_captures(&self, _: &[String], _: &[ProductWrite]) -> Result<PreparedWrite> {
         Self::unavailable()
     }
-    fn prepare_export_products(
-        &self,
-        _: &crate::primary::ExportReadingKey,
-        _: &[crate::primary::ProductWrite],
-    ) -> Result<crate::primary::PreparedWrite> {
-        Self::unavailable()
-    }
-    fn visit_pending_export_readings(
-        &self,
-        _: &crate::primary::ExportReadingKey,
-        _: &mut dyn FnMut(&crate::primary::CapturedReading) -> Result<()>,
-    ) -> Result<()> {
-        Ok(())
-    }
     fn prepare_parsed(
         &self,
         _: &crate::primary::ParsedSource,

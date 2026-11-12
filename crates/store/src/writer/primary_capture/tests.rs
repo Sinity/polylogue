@@ -293,16 +293,16 @@ impl crate::primary::Sinex for OfflineProducer {
     fn pending_source(
         &self,
         source: &crate::primary::SourceSelector,
-        version: &str,
+        _version: &str,
     ) -> Result<crate::primary::PendingSource> {
-        use crate::primary::{PendingCheckpoint, PendingSource, SourceSelector, SourceStatus};
+        use crate::primary::{PendingSource, SourceSelector, SourceStatus};
         if !self.root.join("capture.json").exists() {
             return Ok(PendingSource {
                 status: SourceStatus::Ready,
                 ..Default::default()
             });
         }
-        let mut full = self.captured();
+        let full = self.captured();
         let selector = full
             .basis
             .as_ref()
@@ -325,14 +325,6 @@ impl crate::primary::Sinex for OfflineProducer {
                 ..Default::default()
             });
         }
-        let checkpoint = full
-            .parsed
-            .iter()
-            .rev()
-            .filter_map(|p| p.checkpoint.as_ref())
-            .find(|c| c.reading_version == version)
-            .cloned();
-        full.parsed.clear();
         let head = PendingCapture {
             identity: "offline-capture".into(),
             captured: Capture::Input(Box::new(full.clone())),
@@ -346,11 +338,6 @@ impl crate::primary::Sinex for OfflineProducer {
                 .map_or(SourceStatus::MissingEvidence, |basis| basis.status),
             raw: full.raw_range.map(|_| head.clone()),
             head: Some(head),
-            continuation: checkpoint.map(|checkpoint| PendingCheckpoint {
-                capture: "offline-capture".into(),
-                header: full,
-                checkpoint,
-            }),
         })
     }
     fn prepare_input(
@@ -394,11 +381,6 @@ impl crate::primary::Sinex for OfflineProducer {
             }),
             _ => false,
         });
-        for header in &mut headers {
-            if let Capture::Input(input) = &mut header.captured {
-                input.parsed = Vec::new();
-            }
-        }
         Ok(crate::primary::PendingGroupPage {
             disposition: Some(crate::primary::CaptureDisposition::Prepared),
             headers,
@@ -427,11 +409,7 @@ impl crate::primary::Sinex for OfflineProducer {
         Ok(if self.root.join("capture.json").exists() {
             vec![PendingCapture {
                 identity: "offline-capture".into(),
-                captured: Capture::Input(Box::new({
-                    let mut header = self.captured();
-                    header.parsed.clear();
-                    header
-                })),
+                captured: Capture::Input(Box::new(self.captured())),
                 material: None,
                 anchor: self
                     .root
@@ -464,25 +442,6 @@ impl crate::primary::Sinex for OfflineProducer {
         }
         assert_eq!(identities, &["offline-capture".to_owned()]);
         self.prepare_products(writes)
-    }
-    fn prepare_export_products(
-        &self,
-        _: &crate::primary::ExportReadingKey,
-        _: &[crate::primary::ProductWrite],
-    ) -> Result<crate::primary::PreparedWrite> {
-        Self::unavailable()
-    }
-    fn visit_pending_export_readings(
-        &self,
-        _: &crate::primary::ExportReadingKey,
-        visit: &mut dyn FnMut(&crate::primary::CapturedReading) -> Result<()>,
-    ) -> Result<()> {
-        let path = self.root.join("pending-export.json");
-        if path.exists() {
-            let captured = serde_json::from_slice(&std::fs::read(path)?)?;
-            visit(&captured)?;
-        }
-        Ok(())
     }
     /// Spooled products are kept, so a test can read what was sent. Like the
     /// real producer's spool, a write becomes visible whole: a publication
@@ -559,7 +518,7 @@ impl crate::primary::Sinex for OfflineProducer {
 }
 
 #[test]
-fn offline_writer_retains_source_and_complete_parsed_facts_before_releasing_preparation() {
+fn offline_writer_retains_original_source_before_releasing_preparation() {
     let directory = tempfile::tempdir().unwrap();
     let cache = directory.path().join("cache");
     let byte_root = directory.path().join("bytes");
@@ -663,8 +622,8 @@ fn offline_writer_retains_source_and_complete_parsed_facts_before_releasing_prep
         let Capture::Input(hydrated) = writer.capture("offline-capture".into()).unwrap() else {
             panic!("the pending source must hydrate its original input facts");
         };
-        assert_eq!(hydrated.parsed[0].output.events[0].data, payload);
-        assert_eq!(hydrated.parsed[0].parsed_upto, bytes.len() as u64);
+        assert_eq!(hydrated.hash, BlobHash::of(bytes));
+        assert_eq!(hydrated.length, bytes.len() as u64);
         let index = crate::archive::open_read(&archive.index_db()).unwrap();
         assert_eq!(
             index
@@ -675,8 +634,8 @@ fn offline_writer_retains_source_and_complete_parsed_facts_before_releasing_prep
         );
         assert!(!archive.root.join("archive.db").exists());
     }
-    // The ordinary reopen has neither the source preparation nor a provider
-    // file available. The producer's immutable capture contains both facts.
+    // Reopening recovers the original bytes without the provider file or
+    // the parser preparation. The ordinary parser reconstructs their model.
     let (archive, _lock) = Archive::open_primary(&cache, &byte_root).unwrap();
     let reopened = OfflineProducer {
         root: producer_root.clone(),
@@ -692,10 +651,8 @@ fn offline_writer_retains_source_and_complete_parsed_facts_before_releasing_prep
         .unwrap();
     assert_eq!(restored, bytes);
     assert_eq!(captured.route, polylogue_model::Route::Export);
-    assert_eq!(captured.parsed.len(), 1);
-    assert_eq!(captured.parsed[0].output.events[0].data, payload);
-    assert_eq!(captured.parsed[0].reading_version, "synthetic:1");
-    assert_eq!(captured.parsed[0].parsed_upto, bytes.len() as u64);
+    assert_eq!(captured.hash, BlobHash::of(bytes));
+    assert_eq!(captured.length, bytes.len() as u64);
     assert_eq!(std::fs::read_dir(archive.staging_dir()).unwrap().count(), 0);
 }
 
@@ -819,102 +776,6 @@ fn an_imported_attachment_binding_is_sent_to_sinex_and_reaches_the_index_only_fr
         ])
         .unwrap();
     assert_eq!(bindings(), 1);
-}
-
-#[test]
-fn pending_export_fork_is_refused_before_semantic_preparation_or_publication() {
-    use polylogue_model::batch::{ExportDelivery, ExportDeliverySource};
-    let directory = tempfile::tempdir().unwrap();
-    let producer_root = directory.path().join("producer");
-    std::fs::create_dir_all(&producer_root).unwrap();
-    let (archive, _lock) = Archive::open_primary(
-        &directory.path().join("cache"),
-        &directory.path().join("bytes"),
-    )
-    .unwrap();
-    let producer = Arc::new(OfflineProducer {
-        root: producer_root.clone(),
-    });
-    let writer = Writer::start_on_sinex(&archive, producer).unwrap();
-    let key = crate::primary::ExportReadingKey {
-        input: InputKey {
-            id: "export".into(),
-            format: "fixture".into(),
-            route: polylogue_model::Route::Live,
-        },
-        chain: 1,
-        reading_version: "crate::export::VERSION=2".into(),
-        length: 2,
-    };
-    let mut retained = ParseStep::new(Default::default(), Default::default(), 0..0, false);
-    retained.reading_version = key.reading_version.clone();
-    retained
-        .seal_export(
-            0,
-            ExportDeliverySource::ContainerHeader,
-            ExportDelivery::seed(),
-        )
-        .unwrap();
-    retained.prepare();
-    let captured = CapturedReading::from_step(&retained, Some(key.clone())).unwrap();
-    std::fs::write(
-        producer_root.join("pending-export.json"),
-        serde_json::to_vec(&captured).unwrap(),
-    )
-    .unwrap();
-    let mut changed = retained;
-    changed.counts.records = 1;
-    changed.counts.skipped.insert("changed header".into(), 1);
-    let cursor = changed
-        .seal_export(
-            0,
-            ExportDeliverySource::ContainerHeader,
-            ExportDelivery::seed(),
-        )
-        .unwrap();
-    // Scratch requires complete values, as the actual Engine replacement does.
-    changed = CapturedReading::from_step(&changed, Some(key.clone()))
-        .unwrap()
-        .into_step();
-    let mut reading = crate::writer::ChainReading::new().unwrap();
-    reading.push(&mut changed).unwrap();
-    let mut complete = ParseStep::new(Default::default(), Default::default(), 0..2, true);
-    complete.reading_version = key.reading_version.clone();
-    complete.reset = false;
-    complete
-        .seal_export(
-            1,
-            ExportDeliverySource::Complete {
-                length: 2,
-                item_count: 0,
-                delivery_count: 1,
-            },
-            cursor.prefix_hash,
-        )
-        .unwrap();
-    reading.push(&mut complete).unwrap();
-    let error = writer
-        .sender()
-        .unwrap()
-        .replace_chain(key.input, key.chain, key.length, reading)
-        .unwrap_err();
-    assert!(
-        matches!(&error, StoreError::Invalid(reason) if reason.contains("replayed export prefix")),
-        "{error}"
-    );
-    assert_eq!(
-        std::fs::read(producer_root.join("pending-export.json")).unwrap(),
-        serde_json::to_vec(&captured).unwrap()
-    );
-    let index = Connection::open(archive.index_db()).unwrap();
-    assert_eq!(
-        index
-            .query_row("SELECT count(*) FROM primary_pending", [], |row| row
-                .get::<_, i64>(0))
-            .unwrap(),
-        0
-    );
-    assert!(!producer_root.join("capture.json").exists());
 }
 
 #[test]
@@ -1282,7 +1143,6 @@ fn captured_body_anchors_survive_duplicate_and_trimmed_logical_extents() {
         length: 8,
         group: None,
         route: polylogue_model::Route::Live,
-        parsed: vec![],
         raw_range: Some(crate::primary::RawRange { start: 10, end: 18 }),
         generation: None,
         raw_total: None,

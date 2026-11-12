@@ -1,8 +1,6 @@
 use crate::{Authentication, Config, Mode, Sinex};
-use polylogue_model::{BlobHash, Output, RecordCounts};
-use polylogue_store::primary::{
-    Capture, CapturedInput, CapturedReading, Product, ProductWrite, SourceLocation,
-};
+use polylogue_model::BlobHash;
+use polylogue_store::primary::{Capture, CapturedInput, Product, ProductWrite, SourceLocation};
 use serde_json::json;
 
 /// The acknowledgment of an accepted frame that admitted no new events, as
@@ -75,11 +73,11 @@ pub(crate) fn client(root: &std::path::Path) -> Sinex {
     )
     .unwrap()
 }
-pub(crate) fn capture(bytes: &[u8], parsed: Vec<CapturedReading>) -> CapturedInput {
+pub(crate) fn capture(bytes: &[u8]) -> CapturedInput {
     serde_json::from_value(json!({
         "input":{"origin":"codex","path":"/home/op/session.jsonl","host":"fixture-host"},
         "rows":{"input":"input-x","format":"codex","revision":{"number":1,"produced":"file","chain":1,"length":bytes.len()},"extents":[{"chain":1,"offset":0,"length":bytes.len(),"blob":BlobHash::of(bytes),"blob_offset":0}]},
-        "index":0,"previous":null,"hash":BlobHash::of(bytes),"length":bytes.len(),"raw_range":{"start":0,"end":bytes.len()},"group":null,"route":"live","parsed":parsed
+        "index":0,"previous":null,"hash":BlobHash::of(bytes),"length":bytes.len(),"raw_range":{"start":0,"end":bytes.len()},"group":null,"route":"live"
     })).unwrap()
 }
 pub(crate) fn extent(root: &std::path::Path, bytes: &[u8]) -> hashed_blobs::Extent {
@@ -99,22 +97,10 @@ pub(crate) fn extent(root: &std::path::Path, bytes: &[u8]) -> hashed_blobs::Exte
 }
 
 #[test]
-fn offline_capture_keeps_complete_parser_facts_through_restart() {
+fn offline_capture_keeps_original_source_metadata_through_restart() {
     let root = tempfile::tempdir().unwrap();
     let bytes = b"synthetic source";
-    let mut output = Output::default();
-    output.messages.push(serde_json::from_value(json!({"offset":0,"end":bytes.len(),"message":{"id":"codex:message","session":"codex:session","role":"assistant","attrs":{"native":{"answer":false}},"blocks":[{"type":"text","text":"Synthetic answer"}]}})).unwrap());
-    let mut step = polylogue_store::ParseStep::new(
-        output,
-        RecordCounts::default(),
-        0..bytes.len() as u64,
-        true,
-    );
-    step.prepare();
-    let captured = capture(
-        bytes,
-        vec![CapturedReading::from_step(&step, None).unwrap()],
-    );
+    let captured = capture(bytes);
     let sinex = client(root.path());
     let prepared = sinex
         .prepare_input(&captured, body(root.path(), bytes))
@@ -151,7 +137,7 @@ fn capture_retries_keep_identity_but_a_b_a_is_three_observations() {
         b"A".as_slice(),
     ] {
         sinex
-            .prepare_input(&capture(bytes, Vec::new()), body(root.path(), bytes))
+            .prepare_input(&capture(bytes), body(root.path(), bytes))
             .unwrap();
     }
     let pending = sinex.pending_captures().unwrap();

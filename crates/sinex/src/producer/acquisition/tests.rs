@@ -34,7 +34,7 @@ pub(super) fn acquire(
         mode,
     };
     let acknowledgment = sinex.prepare_input_group(&plan, &mut |emit| {
-        let mut input = capture(bytes, Vec::new());
+        let mut input = capture(bytes);
         input.raw_range = Some(RawRange {
             start: 0,
             end: bytes.len() as u64,
@@ -71,7 +71,7 @@ fn empty_local_sources_are_known_but_unattributed_custody_stays_uncertain() {
     assert!(state.head.is_none() && state.raw.is_none() && state.continuation.is_none());
     let bytes = b"synthetic unattributed capture";
     sinex
-        .prepare_input(&capture(bytes, Vec::new()), body(root.path(), bytes))
+        .prepare_input(&capture(bytes), body(root.path(), bytes))
         .unwrap();
     assert_eq!(
         sinex
@@ -97,7 +97,7 @@ fn receiver_downgrade_retains_new_bodies_and_exact_frozen_retries_keep_first_dis
     let prepare = |plan: &CapturePlan, bytes: &[u8]| {
         sinex
             .prepare_input_group(plan, &mut |emit| {
-                let mut input = capture(bytes, vec![]);
+                let mut input = capture(bytes);
                 input.basis = Some(plan.bases[0].clone());
                 emit(input, vec![body(root.path(), bytes)])
             })
@@ -276,7 +276,7 @@ fn failed_group_is_not_visible_and_immutable_imports_keep_content_identity() {
     assert!(
         sinex
             .prepare_input_group(&plan, &mut |emit| {
-                let mut input = capture(b"first", Vec::new());
+                let mut input = capture(b"first");
                 input.basis = Some(basis(&selector, None));
                 emit(input, vec![body(root.path(), b"first")])?;
                 Err(polylogue_store::StoreError::Invalid(
@@ -315,92 +315,6 @@ fn failed_group_is_not_visible_and_immutable_imports_keep_content_identity() {
         first.identity
     );
     assert_eq!(sinex.pending_captures().unwrap().len(), 2);
-}
-
-#[test]
-fn older_control_capture_is_explicit_when_newer_raw_has_no_parser_state() {
-    let root = tempfile::tempdir().unwrap();
-    let sinex = client(root.path());
-    let selector = source(b"source");
-    acquire(
-        &sinex,
-        root.path(),
-        b"A",
-        basis(&selector, None),
-        CaptureMode::Mutable,
-    )
-    .unwrap();
-    let prior = sinex
-        .pending_source(&selector, "v2")
-        .unwrap()
-        .head
-        .unwrap()
-        .identity;
-    let mut step = polylogue_store::ParseStep::new(
-        polylogue_model::Output::default(),
-        polylogue_model::RecordCounts::default(),
-        0..1,
-        true,
-    );
-    step.checkpoint = Some(polylogue_model::batch::ParserCheckpoint::new(
-        "v2".into(),
-        1,
-        Some(serde_json::json!({"state":"original"})),
-    ));
-    step.prepare();
-    let reading = polylogue_store::primary::CapturedReading::from_step(&step, None).unwrap();
-    let control_basis = basis(&selector, Some(prior));
-    sinex
-        .prepare_input_group(
-            &CapturePlan {
-                required_disposition: None,
-                intent: "control".into(),
-                bases: vec![control_basis.clone()],
-                count: 1,
-                mode: CaptureMode::Mutable,
-            },
-            &mut |emit| {
-                let mut input = capture(b"{}", vec![reading.clone()]);
-                input.rows.extents.clear();
-                input.raw_range = None;
-                input.basis = Some(control_basis.clone());
-                emit(input, vec![body(root.path(), b"{}")])
-            },
-        )
-        .unwrap();
-    let control_id = sinex
-        .pending_source(&selector, "v2")
-        .unwrap()
-        .head
-        .unwrap()
-        .identity;
-    acquire(
-        &sinex,
-        root.path(),
-        b"B",
-        basis(&selector, Some(control_id.clone())),
-        CaptureMode::Mutable,
-    )
-    .unwrap();
-    drop(sinex);
-    let sinex = client(root.path());
-    let state = sinex.pending_source(&selector, "v2").unwrap();
-    assert_ne!(state.head.as_ref().unwrap().identity, control_id);
-    assert_eq!(state.raw.unwrap().identity, state.head.unwrap().identity);
-    let continuation = state.continuation.unwrap();
-    assert_eq!(continuation.capture, control_id);
-    assert!(continuation.header.parsed.is_empty());
-    assert_eq!(
-        continuation.checkpoint.parser_state,
-        Some(serde_json::json!({"state":"original"}))
-    );
-    assert!(
-        sinex
-            .pending_source(&selector, "v3")
-            .unwrap()
-            .continuation
-            .is_none()
-    );
 }
 
 #[test]
@@ -498,7 +412,7 @@ fn acquisition_pages_preserve_original_siblings_and_relative_orders_after_restar
                 .into_iter()
                 .enumerate()
             {
-                let mut input = capture(bytes, vec![]);
+                let mut input = capture(bytes);
                 input.index = u32::try_from(ordinal).unwrap();
                 input.basis = Some(source_basis.clone());
                 emit(input, vec![body(root.path(), bytes)])?;
@@ -525,7 +439,6 @@ fn acquisition_pages_preserve_original_siblings_and_relative_orders_after_restar
     let Capture::Input(header) = &page.headers[0].captured else {
         panic!("input capture expected")
     };
-    assert!(header.parsed.is_empty());
     assert_eq!(header.group.as_ref().unwrap().ordinal, 0);
     let next = sinex
         .pending_group_headers(&first.identity, page.next, 1)
@@ -621,7 +534,7 @@ fn unresolved_retry_is_stable_after_head_movement_and_keeps_provider_bytes_witho
     let stage = |bytes: &[u8], no_extent: bool| {
         sinex
             .prepare_input_group(&plan, &mut |emit| {
-                let mut input = capture(bytes, vec![]);
+                let mut input = capture(bytes);
                 input.basis = Some(frozen_basis.clone());
                 if no_extent {
                     input.rows.extents.clear();

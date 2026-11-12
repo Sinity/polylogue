@@ -4,9 +4,9 @@ pub mod acquisition;
 pub mod authored;
 pub use acquisition::{
     AcquisitionReceipt, AcquisitionRoute, CaptureDisposition, CaptureEmitter, CaptureMembers,
-    CaptureMode, CapturePlan, CaptureReceipt, ConfirmedSource, PendingCheckpoint, PendingGroupPage,
-    PendingSource, RawCustodyReceipt, RawRange, SourceBasis, SourceSelector, SourceSnapshot,
-    SourceStatus, SourceSubject,
+    CaptureMode, CapturePlan, CaptureReceipt, ConfirmedSource, PendingGroupPage, PendingSource,
+    RawCustodyReceipt, RawRange, SourceBasis, SourceSelector, SourceSnapshot, SourceStatus,
+    SourceSubject,
 };
 pub mod products;
 pub mod queue;
@@ -24,10 +24,9 @@ pub use replay::{
 pub(crate) mod projection;
 pub(crate) mod scope;
 pub use products::{
-    Capture, CaptureGroup, CapturedInput, CapturedReading, Confirmed, ConfirmedChange,
-    ExportReadingKey, Material, ParsedPublication, ParsedSource, PendingCapture, PreparedInput,
-    PreparedWrite, Product, ProductWrite, PublicationReceipt, Reading, SourceLocation,
-    SourceRecord,
+    Capture, CaptureGroup, CapturedInput, Confirmed, ConfirmedChange, ExportReadingKey, Material,
+    ParsedPublication, ParsedSource, PendingCapture, PreparedInput, PreparedWrite, Product,
+    ProductWrite, PublicationReceipt, Reading, SourceLocation, SourceRecord,
 };
 
 use crate::{Result, StoreError};
@@ -118,17 +117,6 @@ pub trait Sinex: Send + Sync {
         source: &ParsedSource,
         products: &[ProductWrite],
     ) -> Result<ParsedPublication>;
-    fn prepare_export_products(
-        &self,
-        key: &ExportReadingKey,
-        products: &[ProductWrite],
-    ) -> Result<PreparedWrite>;
-    fn visit_pending_export_readings(
-        &self,
-        key: &ExportReadingKey,
-        visit: &mut dyn FnMut(&CapturedReading) -> Result<()>,
-    ) -> Result<()>;
-
     fn prepare_request(
         &self,
         request: &polylogue_model::authored::PreparedRequest,
