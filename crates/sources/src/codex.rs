@@ -186,6 +186,13 @@ pub struct ParserState {
     /// ordinal where the subagent's own records begin.
     copied_from: Option<String>,
     copied_until: Option<u64>,
+    #[serde(default)]
+    prefix_copies: BTreeSet<(SessionId, SessionId)>,
+    /// The explicit relation whose later context can supply its branch anchor.
+    #[serde(default)]
+    anchored_relation: Option<Link>,
+    #[serde(default)]
+    copied_history_complete: bool,
     /// The last copied item, where the child branched.
     branch_point: Option<MessageId>,
     model: Option<String>,
@@ -345,6 +352,9 @@ impl Rollout {
         let s = parser_state
             .session
             .get_or_insert_with(|| Session::new(id.clone(), kind));
+        if subagent {
+            s.kind = SessionKind::Subagent;
+        }
         if let Some(at) = p.get("timestamp").and_then(time::rfc3339) {
             s.offer_start(at.timestamp(), at.evidence())
                 .expect("decoded source time is valid");
@@ -407,14 +417,47 @@ impl Rollout {
                 "forked_from_id",
             );
         }
+        if let Some(fork_parent) = forked.and_then(session_id) {
+            let (kind, evidence) = if forked == parent {
+                (LinkKind::Spawn, "parent_thread_id")
+            } else {
+                (LinkKind::Fork, "forked_from_id")
+            };
+            parser_state.anchored_relation = Some(Link {
+                kind,
+                copies_prefix: false,
+                how: None,
+                parent: fork_parent,
+                child: id.clone(),
+                at: None,
+                call_id: None,
+                evidence: evidence.into(),
+            });
+        }
         if let Some(start) = p
             .get("subagent_history_start_ordinal")
             .and_then(Json::as_u64)
         {
             parser_state.copied_until = Some(start);
+            parser_state.copied_history_complete = false;
             parser_state.copied_from = forked.or(parent).map(str::to_owned);
-            if let Some(parent) = parser_state.copied_from.as_deref().and_then(session_id) {
-                Self::unknown_boundaries(parent, out);
+            if let Some(copied_parent) = parser_state.copied_from.as_deref().and_then(session_id) {
+                let (kind, evidence) = if forked.is_some() && forked != parent {
+                    (LinkKind::Fork, "forked_from_id")
+                } else {
+                    (LinkKind::Spawn, "parent_thread_id")
+                };
+                parser_state.anchored_relation = Some(Link {
+                    kind,
+                    copies_prefix: true,
+                    how: None,
+                    parent: copied_parent.clone(),
+                    child: id,
+                    at: None,
+                    call_id: None,
+                    evidence: evidence.into(),
+                });
+                Self::unknown_boundaries(copied_parent, out);
             }
         }
         self.event(parser_state, p, "session_meta", at, out)
@@ -559,6 +602,19 @@ impl Rollout {
             message,
         };
         if copied {
+            let parent = row.message.session.clone();
+            if let Some(child) = self.own(parser_state)
+                && parent != child
+                && parser_state
+                    .prefix_copies
+                    .insert((parent.clone(), child.clone()))
+            {
+                out.prefix_copies.push(polylogue_model::PrefixCopy {
+                    parent,
+                    child,
+                    explicit_members: false,
+                });
+            }
             parser_state.branch_point = Some(id);
             out.messages.push(row);
             return RecordOutcome::Used;
@@ -1085,18 +1141,18 @@ fn link(
     if parent == child {
         return;
     }
-    let key = format!("{kind:?} {parent} {child} {at:?} {call_id:?}");
-    if parser_state.links.insert(key) {
-        out.links.push(Link {
-            kind,
-            copies_prefix: false,
-            how: None,
-            parent,
-            child,
-            at,
-            call_id,
-            evidence: evidence.to_owned(),
-        });
+    let value = Link {
+        kind,
+        copies_prefix: false,
+        how: None,
+        parent,
+        child,
+        at,
+        call_id,
+        evidence: evidence.to_owned(),
+    };
+    if parser_state.links.insert(value.selection_tag()) {
+        out.links.push(value);
     }
 }
 
@@ -1130,6 +1186,12 @@ impl Parser for Rollout {
         }
         let rec = unwrap(v);
         let p = rec.payload;
+        if rec.ty != "session_meta"
+            && let (Some(until), Some(ordinal)) = (parser_state.copied_until, rec.ordinal)
+            && ordinal >= until.saturating_sub(1)
+        {
+            parser_state.copied_history_complete = true;
+        }
         if rec.ty == "response_item" && str_field(p, "type") != Some("token_count") {
             let ty = str_field(p, "type").unwrap_or("?");
             records.fields(&format!("response_item/{ty}"), p, fields::for_item(ty));
@@ -1305,13 +1367,31 @@ impl Parser for Rollout {
             Self::unknown_boundaries(session, out);
             parser_state.scope_recorded = true;
         }
-        // The branch point is known once the copied history has been read.
-        if let (Some(at), Some(s)) = (&parser_state.branch_point, &parser_state.session) {
-            for l in &mut out.links {
-                if l.child == s.id && l.at.is_none() {
-                    l.at = Some(at.clone());
-                    l.copies_prefix = true;
+        // A partial copied prefix cannot establish its final anchor. Once
+        // complete, emit the statement even if its header was in an earlier append.
+        if (parser_state.copied_until.is_none() || parser_state.copied_history_complete)
+            && let (Some(at), Some(mut relation)) = (
+                parser_state.branch_point.clone(),
+                parser_state.anchored_relation.clone(),
+            )
+        {
+            relation.at = Some(at);
+            let key = relation.selection_tag();
+            let mut updated = false;
+            for value in &mut out.links {
+                if value.kind == relation.kind
+                    && value.parent == relation.parent
+                    && value.child == relation.child
+                    && value.at.is_none()
+                {
+                    value.at.clone_from(&relation.at);
+                    value.copies_prefix = relation.copies_prefix;
+                    updated = true;
                 }
+            }
+            let unseen = parser_state.links.insert(key);
+            if !updated && unseen {
+                out.links.push(relation);
             }
         }
         out.sessions = parser_state.session.iter().cloned().collect();

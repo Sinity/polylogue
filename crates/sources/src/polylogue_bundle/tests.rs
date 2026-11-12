@@ -135,6 +135,7 @@ fn imported_text_fragment_keeps_foreign_claims_and_exact_receiving_record_range(
 fn imported_copy_members_keep_original_order_and_do_not_claim_other_parent_messages() {
     let mut copied = message_record("copied", 1);
     copied.copied_for.push(CopiedFor {
+        parent: polylogue_model::SessionId::parse("codex:declared-parent").unwrap(),
         child: polylogue_model::SessionId::parse("codex:child").unwrap(),
         source: polylogue_model::PrefixSource {
             input: "original-child-input".into(),
@@ -153,7 +154,7 @@ fn imported_copy_members_keep_original_order_and_do_not_claim_other_parent_messa
     let [member] = &step.output.prefix_members[..] else {
         panic!("only the observed copy")
     };
-    assert_eq!(member.parent.to_string(), "codex:session");
+    assert_eq!(member.parent.to_string(), "codex:declared-parent");
     assert_eq!(member.child.to_string(), "codex:child");
     assert_eq!(member.message.to_string(), "codex:copied");
     assert_eq!(member.position, [u64::MAX, u64::MAX - 1]);

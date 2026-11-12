@@ -44,8 +44,8 @@
     "3c18cef36ae3a1a6771c81f25aac746115b8bddcc624a57e937cf92e767eb8ba"
   ],
   "codex": [
-    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=1,crate::codex::VERSION=6",
-    "c9514461c90160fd2a672a0f2a83256134ed289d15353fe42316c21f6f1e4177"
+    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=1,crate::codex::VERSION=5",
+    "3c8ad495a6c9fe1aa6a07aa3e6d7266a277bdd298c50a73b313385cb078dfd30"
   ],
   "codex-cloud": [
     "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=1,crate::export::VERSION=2,crate::codex_cloud::VERSION=1",

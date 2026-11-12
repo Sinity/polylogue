@@ -138,6 +138,8 @@ pub struct SessionRecord {
 pub struct MessageRecord {
     #[serde(rename = "ref")]
     pub reference: String,
+    /// Immutable admission of the selected source body; metadata sidecars
+    /// are covered by the enclosing read snapshot's freshness.
     pub commit: u64,
     /// Snapshot ordinal over the canonical, unfiltered physical session's full
     /// display order, including native ordering ties. Subsets never renumber it;
@@ -166,6 +168,8 @@ pub struct MessageRecord {
 )]
 #[serde(deny_unknown_fields)]
 pub struct CopiedFor {
+    /// The observed parent claim survives conflicting canonical ownership.
+    pub parent: crate::SessionId,
     pub child: crate::SessionId,
     pub source: crate::PrefixSource,
     pub position: [u64; 2],

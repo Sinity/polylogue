@@ -174,7 +174,7 @@ impl ExportParser for Bundle {
                     .prefix_members
                     .extend(record.copied_for.into_iter().map(|copy| {
                         polylogue_model::PrefixMember {
-                            parent: record.message.session.clone(),
+                            parent: copy.parent,
                             child: copy.child,
                             message: record.message.id.clone(),
                             source: Some(copy.source),
