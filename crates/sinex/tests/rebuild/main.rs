@@ -395,6 +395,219 @@ fn sinex_rows(socket: &Path, query: &str) -> usize {
         .len()
 }
 
+/// Admit captured evidence through the public producer transport. Every event
+/// cites its exact record in the original synthetic JSONL material.
+fn captured_evidence(
+    running: &Running,
+    frame: &str,
+    rows: &[(sinex_model::KindRef, serde_json::Value)],
+) {
+    let root = tempfile::tempdir().unwrap();
+    let mut bytes = Vec::new();
+    let material = sinex_model::MaterialId::new();
+    let events = rows
+        .iter()
+        .map(|(kind, payload)| {
+            let anchor = bytes.len() as u64;
+            serde_json::to_writer(&mut bytes, payload).unwrap();
+            bytes.push(b'\n');
+            sinex_protocol::ProducerEvent {
+                kind: kind.clone(),
+                payload: payload.clone(),
+                location: Some(sinex_model::RecordLocation { material, anchor }),
+                output_index: 0,
+                parents: vec![],
+                reading_order: None,
+                class: sinex_model::Class::Open,
+            }
+        })
+        .collect();
+    let blob = format!("blake3:{}", blake3::hash(&bytes).to_hex());
+    let source = sinex_model::SourceRef {
+        name: "synthetic-evidence".into(),
+        version: 1,
+    };
+    let raw = sinex_protocol::Ingress::Material {
+        frame: format!("{frame}/material"),
+        material: Box::new(sinex_protocol::MaterialFrame {
+            source: source.clone(),
+            id: material,
+            input: sinex_model::InputRef {
+                kind: "synthetic-evidence".into(),
+                locator: frame.into(),
+                host: "fixture-host".into(),
+            },
+            blob: blob.clone(),
+            length: bytes.len() as u64,
+            chunks: vec![],
+            parser: "synthetic-evidence".into(),
+            parser_version: 1,
+            part_index: 0,
+            previous_part: None,
+            manifest: Default::default(),
+        }),
+    };
+    sinex_transport::frame_bytes::write(
+        root.path(),
+        "evidence",
+        raw.frame(),
+        &blob,
+        bytes.len() as u64,
+        bytes.as_slice(),
+    )
+    .unwrap();
+    let interpreted = sinex_protocol::Ingress::Events {
+        frame: format!("{frame}/events"),
+        source: Some(source),
+        coverage: None,
+        events,
+        failures: vec![],
+    };
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let client = async_nats::connect(running.native.nats.url())
+            .await
+            .unwrap();
+        let subjects = sinex_protocol::Subjects::new("rebuild");
+        let mut acks = client.subscribe(subjects.ack("evidence")).await.unwrap();
+        client.flush().await.unwrap();
+        sinex_transport::producer::transfer_frame(
+            &client,
+            &subjects,
+            "evidence",
+            &mut acks,
+            root.path(),
+            &raw,
+            Duration::from_secs(30),
+        )
+        .await
+        .unwrap();
+        for frame in [&raw, &interpreted] {
+            let receipt = sinex_transport::producer::submit_frame(
+                &client,
+                &subjects,
+                "evidence",
+                &mut acks,
+                frame,
+                Duration::from_secs(30),
+            )
+            .await
+            .unwrap();
+            assert_eq!(receipt.refusal(), None, "{receipt:?}");
+        }
+    });
+}
+
+fn native_rows(running: &Running, query: &str) -> Vec<serde_json::Value> {
+    let answer = native::request(
+        &running.socket,
+        "read",
+        serde_json::json!({"method":"query","query":query}),
+    );
+    assert_eq!(answer["outcome"], "ok", "{answer}");
+    answer["result"]["rows"].as_array().unwrap().clone()
+}
+
+fn exact_crossdomain_evidence(running: &Running) {
+    use serde_json::json;
+    use sinex_model::EventPayload;
+    use sinex_model::event_types::{machine::FileChanged, session::TerminalReport, work::WorkAct};
+    let at = "2026-03-01T10:00:01Z";
+    let terminal = |execution: &str| {
+        json!({
+            "received_at":at,"terminal":"same-terminal","execution":execution,"event":"cmd_end",
+            "window_id":1,"cwd":"/home/op/project","cmdline":"cat /home/op/project/draft.txt",
+            "exit_status":0,"title":null,"output":"draft content"
+        })
+    };
+    let file = || {
+        json!({"received_at":at,"change":"written","path":"/home/op/project/draft.txt",
+        "path_hex":null,"to":null,"is_dir":false,"note":null})
+    };
+    captured_evidence(
+        running,
+        "external-originals",
+        &[
+            (
+                TerminalReport::declaration().kind,
+                terminal("chosen-execution"),
+            ),
+            (FileChanged::declaration().kind, file()),
+            (
+                TerminalReport::declaration().kind,
+                terminal("unrelated-execution"),
+            ),
+            (FileChanged::declaration().kind, file()),
+        ],
+    );
+    let tools = native_rows(
+        running,
+        "events where event_type = polylogue.tool_call | fields id, key, source, event_type, material, offset, output, payload",
+    );
+    assert_eq!(tools.len(), 2);
+    let chosen = tools
+        .iter()
+        .find(|row| row["payload"]["call_id"] == "call-read-draft")
+        .unwrap();
+    let other = tools
+        .iter()
+        .find(|row| row["payload"]["call_id"] == "call-unrelated")
+        .unwrap();
+    assert_eq!(chosen["payload"]["session"], other["payload"]["session"]);
+    assert_eq!(chosen["payload"]["message"], other["payload"]["message"]);
+    let mut external = native_rows(
+        running,
+        "events where event_type = terminal.reported OR event_type = file.changed | fields id, key, source, event_type, material, offset, output, payload",
+    );
+    external.sort_by_key(|row| row["offset"].as_u64().unwrap());
+    assert_eq!(external.len(), 4);
+    let evidence = |row: &serde_json::Value| {
+        let record = row["key"].as_str().map(str::to_owned).unwrap_or_else(|| {
+            format!(
+                "{}:{}:{}",
+                row["material"].as_str().unwrap(),
+                row["offset"].as_u64().unwrap(),
+                row["output"].as_u64().unwrap()
+            )
+        });
+        json!({"event":row["id"],"record":serde_json::to_string(&(&row["source"],&row["event_type"],record)).unwrap(),
+            "event_type":row["event_type"],"source":row["source"]})
+    };
+    // The association itself is explicitly captured. Ordinary terminal/file
+    // watchers supply no causal edge from a provider's tool-call identity.
+    let acts: Vec<_> = external.iter().enumerate().map(|(index, row)| {
+        let tool = if index < 2 { chosen } else { other };
+        (WorkAct::declaration().kind, json!({
+            "act":format!("explicit-{index}"),"session":"claude-code:original-session",
+            "episode":null,"objective":null,"label":null,"label_source":evidence(tool),
+            "machine":"fixture-host","at":at,"at_evidence":{"quality":"captured","precision":"instant","until":null},
+            "ended_at":null,"evidence":evidence(row),"agency":"delegated",
+            "action":"inspect","path":"/home/op/project/draft.txt"
+        }))
+    }).collect();
+    captured_evidence(running, "explicit-associations", &acts);
+    let linked = native_rows(
+        running,
+        "events where event_type = polylogue.tool_call AND payload.call_id = call-read-draft | join (events where event_type = work.act) on id = payload.label_source.event | fields payload.call_id as call_id, match.payload.evidence.event as evidence | join (events where event_type = terminal.reported OR event_type = file.changed) on evidence = id | fields call_id, evidence, match.id as id, match.event_type as event_type",
+    );
+    assert_eq!(linked.len(), 2, "{linked:?}");
+    let actual: std::collections::BTreeSet<_> = linked
+        .iter()
+        .map(|row| {
+            assert_eq!(row["call_id"], "call-read-draft");
+            assert_eq!(row["id"], row["evidence"]);
+            row["id"].as_str().unwrap().to_owned()
+        })
+        .collect();
+    let expected: std::collections::BTreeSet<_> = external[..2]
+        .iter()
+        .map(|row| row["id"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(actual, expected);
+    for unrelated in &external[2..] {
+        assert!(!actual.contains(unrelated["id"].as_str().unwrap()));
+    }
+}
+
 #[test]
 #[ignore = "needs the matching Sinex daemon; set SINEXD"]
 fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
@@ -411,6 +624,8 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
                 "stop_reason":"tool_use","content":[
                     {"type":"text","text":"I will inspect the draft."},
                     {"type":"tool_use","id":"call-read-draft","name":"Bash",
+                        "input":{"command":"cat /home/op/project/draft.txt"}},
+                    {"type":"tool_use","id":"call-unrelated","name":"Bash",
                         "input":{"command":"cat /home/op/project/draft.txt"}}
                 ]}
         })
@@ -519,6 +734,7 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
         ),
         1
     );
+    exact_crossdomain_evidence(&running);
     let before = reader.session_export(&session).unwrap().unwrap();
     drop(reader);
     drop(pool);
