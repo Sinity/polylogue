@@ -133,11 +133,45 @@ fn projection_start_replaces_an_equal_scope_and_preserves_original_and_paid_stor
     assert_eq!(state.projection.as_ref().unwrap().origin, 10);
     assert_eq!(state.projection.unwrap().stream_instance, "new-stream");
     writer
-        .apply_confirmed(vec![control(ReplayControl::ProjectionPage {
-            position: 12,
-            cursor: "unfinished".into(),
-        })])
+        .apply_confirmed(vec![
+            Confirmed {
+                position: 11,
+                event: "pending-projection-fact".into(),
+                output_index: 0,
+                native: None,
+                change: ConfirmedChange::Refused {
+                    kind: "synthetic".into(),
+                    reason: "retained pending fact".into(),
+                    unreadable_input: true,
+                },
+            },
+            control(ReplayControl::ProjectionPage {
+                position: 12,
+                cursor: "unfinished".into(),
+            }),
+        ])
         .unwrap();
+    let staged = read_state();
+    let pending_bytes = || {
+        Connection::open(archive.index_db())
+            .unwrap()
+            .query_row(
+                "SELECT product FROM primary_pending WHERE event='pending-projection-fact'",
+                [],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .unwrap()
+    };
+    let bytes = pending_bytes();
+    assert!(
+        writer
+            .synchronize_primary()
+            .unwrap_err()
+            .to_string()
+            .contains("synthetic offline transport")
+    );
+    assert_eq!(read_state(), staged);
+    assert_eq!(pending_bytes(), bytes);
     let error = writer
         .apply_confirmed(vec![control(ReplayControl::ProjectionStart {
             scope: "scope".into(),

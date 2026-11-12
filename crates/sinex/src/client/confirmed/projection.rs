@@ -78,8 +78,20 @@ impl Client {
                 inputs,
                 continuation,
             } => (position, scope, inputs, continuation),
-            InputReplayReply::Incomplete { reason, .. } => {
+            InputReplayReply::Incomplete {
+                reason,
+                basis: sinex_protocol::ReplayBasisStatus::Invalidated { .. },
+            } => {
                 return Ok(start(scope, origin, stream_instance, Some(reason)));
+            }
+            InputReplayReply::Incomplete {
+                reason,
+                basis: sinex_protocol::ReplayBasisStatus::Unverified,
+            } => {
+                return Err(Error::Refused {
+                    name: "projection replay".into(),
+                    reason,
+                });
             }
         };
         if position < origin

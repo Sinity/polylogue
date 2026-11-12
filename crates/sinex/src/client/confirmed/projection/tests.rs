@@ -53,12 +53,12 @@ fn roundtrip(wrong_source: bool) {
             let expected_basis = sinex_protocol::FullProjectionComplete { stamp: "owner-signature".into(), position: 21, scope: "scope".into(), catalog: "catalog".into() };
             let basis = expected_basis.clone();
             let owner = tokio::spawn(async move {
-                for step in 0..5 {
+                for step in 0..6 {
                     let request = consumers.next().await.unwrap();
                     let query: ConfirmedConsumer = serde_json::from_slice(&request.payload).unwrap();
                     assert_eq!(query.cache, "cache");
                     assert!(!query.status_only);
-                    if step == 4 {
+                    if step == 5 {
                         assert_eq!(query.basis, (!wrong_source).then_some(basis));
                         assert_eq!(query.after, if wrong_source { 0 } else { 21 });
                         reply(&daemon, request, ConfirmedConsumerReply::Refused { reason: "fixture finished".into() }).await;
@@ -71,8 +71,12 @@ fn roundtrip(wrong_source: bool) {
                     let request = replay.next().await.unwrap();
                     let ReplayQuery::Inputs { cache, cursor } = serde_json::from_slice(&request.payload).unwrap() else { panic!("indexed snapshot expected"); };
                     assert_eq!(cache, "cache");
-                    assert_eq!(cursor.as_deref(), (step == 2).then_some("next-page"));
+                    assert_eq!(cursor.as_deref(), matches!(step, 2 | 3).then_some("next-page"));
                     if step == 2 {
+                        reply(&daemon, request, ReplayReply::Inputs { result: InputReplayReply::Incomplete { reason: "owner unavailable".into(), basis: sinex_protocol::ReplayBasisStatus::Unverified } }).await;
+                        continue;
+                    }
+                    if step == 3 {
                         reply(&daemon, request, ReplayReply::Inputs { result: InputReplayReply::Incomplete { reason: "owner context changed".into(), basis: sinex_protocol::ReplayBasisStatus::Invalidated { scope: Some("scope".into()) } } }).await;
                         continue;
                     }
@@ -89,7 +93,7 @@ fn roundtrip(wrong_source: bool) {
                     let query: FetchEvent = serde_json::from_slice(&request.payload).unwrap();
                     assert_eq!(query.event, event.id);
                     let mut fetched = event.clone();
-                    if step == 3 && wrong_source { fetched.source_fingerprint = Some("different-source".into()); }
+                    if step == 4 && wrong_source { fetched.source_fingerprint = Some("different-source".into()); }
                     reply(&daemon, request, FetchEventReply::Event(Box::new(fetched))).await;
                 }
             });
@@ -103,6 +107,9 @@ fn roundtrip(wrong_source: bool) {
             let progress = state.projection.as_mut().unwrap();
             progress.position = Some(20);
             progress.cursor = Some("next-page".into());
+            let staged = state.clone();
+            assert!(client.page(&state, "cache").await.unwrap_err().to_string().contains("owner unavailable"));
+            assert_eq!(state, staged);
             let reset = client.page(&state, "cache").await.unwrap();
             assert!(matches!(reset[0].change, ConfirmedChange::Control(ref c) if matches!(c.as_ref(), ReplayControl::ProjectionStart { reason: Some(reason), .. } if reason == "owner context changed")));
             state.projection.as_mut().unwrap().position = None;
