@@ -285,6 +285,7 @@ impl<'a> Compiler<'a> {
             Index::Output => "output_fts",
             _ => "text_fts",
         };
+        let parameter_start = self.params.len();
         let param = self.text_param(&match_text);
         let cte = format!("h{}", self.ctes.len() + 1);
         let ranks = match index {
@@ -293,15 +294,30 @@ impl<'a> Compiler<'a> {
             Index::Thinking => None,
         };
         let source = top && ranks.is_some() && ranks == self.rank_index && self.rank.is_none();
+        let scoped = source
+            && self.answer
+            && !self.measuring
+            && self.near_request.is_none()
+            && self.ranked_search.is_none()
+            && self.input_rows.is_none()
+            && matches!(scope.unit, Unit::Sessions | Unit::Messages);
+        let mode = scoped.then(|| {
+            let sql = self.bind(Param::Int(0));
+            (sql, self.params.len())
+        });
+        let blocks = format!("{cte}_scope_candidates");
         let Some(hits) = rows(
             a,
             &units::Hits {
                 cte: &cte,
                 index,
                 source,
+                scope: mode
+                    .as_ref()
+                    .map(|(sql, _)| (sql.as_str(), blocks.as_str())),
             },
         ) else {
-            self.params.pop();
+            self.params.truncate(parameter_start);
             return Err(refuse(scope.unit));
         };
         let mut prefix = String::new();
@@ -323,6 +339,14 @@ impl<'a> Compiler<'a> {
                     index: rank_index,
                     expression: match_text,
                     limit,
+                    scope: None,
+                    scope_build: mode.as_ref().map(|(_, mode)| super::search::ScopeBuild {
+                        cte: self.ctes.len(),
+                        name: cte.clone(),
+                        expression: param.clone(),
+                        mode: *mode,
+                        spans: words.iter().map(|word| word.2).collect(),
+                    }),
                 });
                 prefix = format!(" ORDER BY {table}.rank LIMIT {bound}");
             }
@@ -396,15 +420,20 @@ impl<'a> Compiler<'a> {
         self.id_checks.push(IdCheck {
             word: id.to_owned(),
             sql: format!(
-                "SELECT id FROM session WHERE {column} = ?1 UNION \
-                 SELECT id FROM session WHERE {column} LIKE ?2 ESCAPE '\\' \
-                 AND NOT EXISTS (SELECT 1 FROM session WHERE {column} = ?1) LIMIT 5"
+                "WITH exact AS MATERIALIZED (SELECT id FROM session WHERE {column}=?1) \
+                 SELECT id FROM exact UNION SELECT s.id \
+                 FROM (SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM exact)) missing \
+                 CROSS JOIN session s WHERE s.{column} LIKE ?2 ESCAPE '\\' LIMIT 5"
             ),
             params: vec![Param::Text(id.to_owned()), Param::Text(like_prefix(id))],
         });
+        // The check above refuses missing or ambiguous references. Resolve the
+        // value once, with a short-circuited fallback, so an exact ID remains
+        // an indexed equality when it drives a scope.
         format!(
-            "({expr} = {exact} OR (NOT EXISTS (SELECT 1 FROM session WHERE {column} = {exact}) \
-             AND {expr} LIKE {prefix} ESCAPE '\\'))"
+            "{expr}=coalesce(\
+             (SELECT {column} FROM session WHERE {column}={exact} LIMIT 1),\
+             (SELECT {column} FROM session WHERE {column} LIKE {prefix} ESCAPE '\\' LIMIT 1))"
         )
     }
 

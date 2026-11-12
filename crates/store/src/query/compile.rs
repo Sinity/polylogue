@@ -24,12 +24,13 @@ mod expression;
 mod program;
 mod relations;
 mod saved;
+mod search;
 mod sequences;
 mod stages;
 mod statements;
 use conditions::unknown_field;
 use polylogue_query::filter::{alternatives, bind_unit, value_text};
-pub use statements::{DerivedRows, KeyedRows, PageColumns, RankedSearch, Statements};
+pub use statements::{DerivedRows, KeyedRows, PageColumns, RankedSearch, ScopedSearch, Statements};
 
 /// Reciprocal rank fusion gives a row `1 / (RANK_FUSION_OFFSET + place)` in
 /// each ranked list it is in; the offset keeps one list's first places

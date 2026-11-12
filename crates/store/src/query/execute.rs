@@ -234,12 +234,29 @@ impl Reader<'_> {
         );
         let result = match program.statements.hydrate(program.params.len()) {
             Some(hydrate) => {
-                let ranked = match &program.statements {
-                    super::compile::Statements::Keyed(rows) if !reverse && limit >= 0 => {
-                        rows.search.as_ref()
-                    }
+                let search = match &program.statements {
+                    super::compile::Statements::Keyed(rows) => rows.search.as_ref(),
                     _ => None,
                 };
+                let scoped = if limit != 0
+                    && let Some(search) = search
+                    && let Some(scope) = &search.scope
+                    && self
+                        .search_scope_drives(
+                            &scope.blocks,
+                            &params,
+                            search.index,
+                            &search.expression,
+                        )
+                        .map_err(SelectionError::from)
+                        .map_err(E::from)?
+                {
+                    params[scope.mode - 1] = SqlValue::Int(1);
+                    true
+                } else {
+                    false
+                };
+                let ranked = search.filter(|_| !scoped && !reverse && limit >= 0);
                 if let Some(search) = ranked {
                     self.ranked_keys(&page, params, search, limit)
                         .map_err(StreamError::Selection)
