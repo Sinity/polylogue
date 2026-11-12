@@ -624,6 +624,7 @@ impl Inner {
         let mut ordinary = false;
         let mut version = None;
         let mut complete = false;
+        let mut diagnosed = false;
         reading.visit_source(|step| {
             if version
                 .as_ref()
@@ -634,6 +635,11 @@ impl Inner {
                 ));
             }
             version.get_or_insert_with(|| step.reading_version.clone());
+            diagnosed |= matches!(
+                step.progress,
+                polylogue_model::batch::StepProgress::Refused { .. }
+                    | polylogue_model::batch::StepProgress::Failed { .. }
+            );
             ordinary |= step.delivery.is_none();
             complete = step.progress.reached_end() && step.parsed_upto == length;
             Ok(())
@@ -643,6 +649,21 @@ impl Inner {
                 "an ordinary chain replacement must finish its stored source".into(),
             ));
         }
+        if diagnosed {
+            self.replace_index(input, chain, length, reading)
+        } else {
+            self.until_stopped(|inner| inner.replace_index(input, chain, length, reading))?
+                .ok_or(StoreError::WriteCancelled)
+        }
+    }
+
+    fn replace_index(
+        &mut self,
+        input: InputKey,
+        chain: i64,
+        length: u64,
+        reading: ChainReading,
+    ) -> Result<u64> {
         let file = std::fs::File::open(&reading.path)?;
         let mut reader = BufReader::new(file);
         let mut all_replayed = true;
@@ -663,6 +684,7 @@ impl Inner {
         let tx = self
             .index
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        crate::fault::check("write.replay_rows", "")?;
         let counter = bump_counter(&tx)?;
         let changes = crate::change_summary::ChangeSummary::start(&tx)?;
         let mut batch = Batch {

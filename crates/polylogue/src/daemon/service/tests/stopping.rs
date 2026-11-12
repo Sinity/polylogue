@@ -55,3 +55,91 @@ fn a_stop_during_a_pass_commits_the_parse_in_hand_and_starts_no_more() {
         );
     }
 }
+
+#[test]
+fn a_stop_during_index_rebuild_preserves_retained_bytes_and_restart_finishes() {
+    let records: String = (0..48)
+        .map(|n| {
+            polylogue_testkit::claude_user(&format!("rebuild-{n}"), "rebuild", "retained source")
+        })
+        .collect();
+    let mut original = crate::test_daemon::start_with_sources_and_workers(
+        "already captured",
+        &|home| {
+            std::fs::write(home.join(".claude/projects/-p/rebuild.jsonl"), &records).unwrap();
+        },
+        48,
+        1,
+    );
+    original.stop().unwrap();
+    let root = original._dir.path().join("archive");
+    polylogue_testkit::delete_index(&root);
+    let mut config = original.config.clone();
+    config.reads_sources = false;
+    fault::clear();
+    fault::arm("write.replay_rows", "", Action::Hold, 0, 1);
+    let mut runtime = crate::daemon::service::start(
+        crate::config::Config::for_test(&config, &root),
+        config.clone(),
+        crate::daemon::service::ArchiveMode::Standalone,
+        polylogue_engine::Lifetime::UntilIdle,
+        Some(polylogue_testkit::stopped_attempt()),
+    )
+    .unwrap();
+    let started = Instant::now();
+    while !fault::held() {
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "rebuild did not reach index transaction"
+        );
+        std::thread::yield_now();
+    }
+    let idle = runtime.idle();
+    runtime.stop_accepting();
+    fault::release();
+    let started = Instant::now();
+    loop {
+        if let Some(summary) = idle.borrow().as_ref() {
+            assert!(summary.work.errors.is_empty(), "{summary:?}");
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "cancelled rebuild did not finish"
+        );
+        std::thread::yield_now();
+    }
+    runtime.shutdown().unwrap();
+    assert!(started.elapsed() < Duration::from_secs(5));
+    fault::clear();
+    let mut runtime = crate::test_daemon::start_runtime(
+        &root,
+        config,
+        crate::daemon::service::ArchiveMode::Standalone,
+    )
+    .unwrap();
+    let started = Instant::now();
+    loop {
+        let messages = runtime
+            .daemon
+            .reads
+            .reader()
+            .unwrap()
+            .messages(&SessionId::parse("claude-code:rebuild").unwrap(), false)
+            .unwrap();
+        if messages.len() == 48 {
+            assert!(
+                messages
+                    .iter()
+                    .all(|message| message.text() == "retained source")
+            );
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "restart did not replay retained bytes"
+        );
+        std::thread::yield_now();
+    }
+    runtime.shutdown().unwrap();
+}

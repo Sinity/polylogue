@@ -419,8 +419,9 @@ pub enum LoopMsg {
 }
 
 /// Asks a running loop to end its pass at the next batch boundary: parses
-/// already handed to workers commit, a chain reading in preparation is
-/// dropped, the writer's derive pass or first-build ending ends early
+/// already capturing new bytes commit, replay of retained bytes can roll
+/// back its unfinished index transaction, a chain reading in preparation is
+/// dropped, and the writer's derive pass or first-build ending ends early
 /// ([`polylogue_store::writer::WriterStop`]), work not yet started is left
 /// for the next start, and [`Engine::run`] returns. A loop waiting between
 /// passes also needs [`LoopMsg::Stop`] to wake.

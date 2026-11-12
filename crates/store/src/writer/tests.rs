@@ -18,6 +18,7 @@ mod saved;
 mod scoped;
 mod session_order;
 mod sparse_projection;
+mod stopping;
 mod tool_durations;
 mod written_text;
 
