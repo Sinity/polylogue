@@ -114,6 +114,18 @@ fn projection_pages_resume_hidden_and_install_the_certificate_with_the_complete_
     );
     assert_eq!(rows(&index, "SELECT count(*) FROM primary_pending"), 0);
     assert!(!has_fact(&index, &input(1, "obsolete").event).unwrap());
+    assert_eq!(
+        state.completed_delivery, None,
+        "a projection certificate is not a native delivery"
+    );
+    apply(&mut index, &resolver, &[completed(8, 20)]).unwrap();
+    let state = replay_state(&index).unwrap();
+    assert_eq!(state.applied_position, Some(8));
+    assert_eq!(
+        state.completed_delivery.unwrap().stream_sequence,
+        20,
+        "a real marker at the unchanged head supplies completion evidence"
+    );
 }
 
 #[test]

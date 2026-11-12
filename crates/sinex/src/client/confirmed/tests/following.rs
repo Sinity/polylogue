@@ -402,7 +402,7 @@ fn confirmed_fetches_overlap_with_a_bound_and_keep_order_refusals_and_erasure() 
                         _ => assert!(matches!(&item.change, ConfirmedChange::Live(_))),
                     }
                 }
-                assert!(matches!(&page[37].change, ConfirmedChange::Control(c) if matches!(c.as_ref(), ReplayControl::Completion { position: 17, .. })));
+                assert!(matches!(&page[37].change, ConfirmedChange::Control(c) if matches!(c.as_ref(), ReplayControl::Completion { position: 17, delivery: Some(receipt) } if receipt.stream_sequence == 37 && receipt.fingerprint.len() == 64)));
                 assert!(matches!(&page[38].change, ConfirmedChange::Control(c) if matches!(c.as_ref(), ReplayControl::Delivered { delivery } if delivery.stream_sequence == 37)));
                 // Transport delivery alone cannot authorize ACK or retire producer custody.
                 assert!(client.acknowledge(&state, &|_| Ok(false)).await.unwrap_err().to_string().contains("not been durably staged"));
@@ -410,5 +410,66 @@ fn confirmed_fetches_overlap_with_a_bound_and_keep_order_refusals_and_erasure() 
             };
             tokio::join!(owner, reader);
         }).await.expect("bounded confirmed transport fixture");
+    });
+}
+
+#[test]
+fn reconnect_requests_the_completed_receipt_and_delivers_the_head_marker_without_new_data() {
+    let server = crate::client::tests::server();
+    let root = tempfile::tempdir().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let spool = Arc::new(std::sync::Mutex::new(crate::spool::Spool::open(root.path(), "polylogue").unwrap()));
+            let (daemon, mut client) = connections(&server, root.path(), spool).await;
+            let subjects = Subjects::new("auth");
+            for number in 1..=36 {
+                publish(&daemon, sinex_protocol::Confirmed::EventReference {
+                    commit_seq: 17, event: EventId(uuid::Uuid::from_u128(number)),
+                }).await;
+            }
+            publish(&daemon, sinex_protocol::Confirmed::PositionComplete { commit_seq: 17 }).await;
+            let stream = jetstream::new(daemon.clone()).get_stream(subjects.confirmed_stream()).await.unwrap();
+            let raw = stream.get_raw_message(37).await.unwrap();
+            let receipt = local::CompletedDelivery {
+                stream_instance: "native-instance".into(), stream_sequence: 37,
+                fingerprint: sinex_protocol::DeliveredCompletion::fingerprint(37, raw.time.unix_timestamp_nanos(), raw.subject.as_str(), &raw.payload),
+            };
+            let name = subjects.consumer_name("test-scope");
+            stream.delete_consumer(&name).await.unwrap();
+            let consumer = stream.create_consumer(jetstream::consumer::pull::Config {
+                durable_name: Some(name), ack_policy: jetstream::consumer::AckPolicy::Explicit,
+                deliver_policy: jetstream::consumer::DeliverPolicy::ByStartSequence { start_sequence: 37 },
+                ..Default::default()
+            }).await.unwrap();
+            assert_eq!(consumer.cached_info().delivered.consumer_sequence, 0);
+            let mut requests = daemon.subscribe(subjects.confirmed_consumer("polylogue")).await.unwrap();
+            daemon.flush().await.unwrap();
+            let state = ReplayState {
+                applied_position: Some(17), scope: Some("test-scope".into()),
+                completed_delivery: Some(receipt.clone()),
+                staged_delivery: Some(local::NativeDeliveryCursor { stream_instance: "native-instance".into(), stream_sequence: 99 }),
+                ..Default::default()
+            };
+            let owner = async {
+                let request = requests.next().await.unwrap();
+                let body: sinex_protocol::ConfirmedConsumer = serde_json::from_slice(&request.payload).unwrap();
+                assert_eq!(body.after, 17);
+                assert_eq!(body.completion.as_ref().unwrap().stream_sequence, 37, "a newer partial cursor cannot replace completion");
+                assert_eq!(body.completion.as_ref().unwrap().fingerprint, receipt.fingerprint);
+                reply(&daemon, request, provisioned()).await;
+            };
+            let read = async {
+                let page = client.confirmed(&state, "cache").await.unwrap();
+                assert_eq!(client.pending.len(), 1, "native delivery excludes all original data");
+                assert_eq!(page.len(), 3);
+                assert!(matches!(&page[1].change, ConfirmedChange::Control(control)
+                    if matches!(control.as_ref(), ReplayControl::Completion { position: 17, delivery: Some(actual) } if actual == &receipt)));
+            };
+            tokio::join!(owner, read);
+        }).await.expect("bounded reconnect fixture");
     });
 }
