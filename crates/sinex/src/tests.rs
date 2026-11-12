@@ -67,6 +67,7 @@ pub(crate) fn client(root: &std::path::Path) -> Sinex {
             subject_root: "offline".into(),
             producer: "polylogue-test".into(),
             store: root.into(),
+            upload_root: None,
         },
         &Authentication::Anonymous,
         "fixture-host",

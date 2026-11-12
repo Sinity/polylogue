@@ -60,6 +60,7 @@ let
       password_file = optional absolutePath "File containing the producer password.";
       subject_root = optional types.str "Sinex subject root.";
       producer = optional types.str "Declared Sinex producer identity.";
+      upload_root = optional absolutePath "Local upload scratch when Sinex runs on another host.";
       store = mkOption {
         type = absolutePath;
         description = "Sinex store root on this host.";

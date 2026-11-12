@@ -345,6 +345,12 @@ fn pin_backup_tree(source: &Path, destination: &Path, cancelled: &AtomicBool) ->
     Ok(())
 }
 
+pub(crate) struct PinnedEncoding {
+    pub path: PathBuf,
+    pub file: File,
+    pub descriptor: EncodedBlob,
+}
+
 pub(crate) struct PinnedBackup {
     directory: tempfile::TempDir,
     database: queue::Snapshot,
@@ -556,18 +562,26 @@ impl Spool {
 
     /// Open immutable files under the queue lock; codec verification belongs
     /// to the sender after that lock is released.
-    pub fn pin_frame(&self, identity: &str) -> Result<(File, EncodedBlob)> {
+    pub fn pin_frame(&self, identity: &str) -> Result<PinnedEncoding> {
         let descriptor = self.required(identity)?.frame.descriptor()?;
-        Ok((
-            regular(&self.operation(identity)?.join("frame.zst"))?,
+        let path = self.operation(identity)?.join("frame.zst");
+        Ok(PinnedEncoding {
+            file: regular(&path)?,
+            path,
             descriptor,
-        ))
+        })
     }
 
-    pub fn pin_body(&self, identity: &str) -> Result<Vec<(File, EncodedBlob)>> {
+    pub fn pin_body(&self, identity: &str) -> Result<Vec<PinnedEncoding>> {
         self.encoded_body(identity)?
             .into_iter()
-            .map(|(path, descriptor)| Ok((regular(&path)?, descriptor)))
+            .map(|(path, descriptor)| {
+                Ok(PinnedEncoding {
+                    file: regular(&path)?,
+                    path,
+                    descriptor,
+                })
+            })
             .collect()
     }
 
