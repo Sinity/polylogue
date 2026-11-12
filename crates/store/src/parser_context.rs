@@ -8,6 +8,10 @@ use std::sync::{Arc, Mutex};
 pub(crate) const SCHEMA: &str = "CREATE TABLE parser_context_state(input_pk INTEGER NOT NULL REFERENCES input_ref(pk),chain INTEGER NOT NULL,reading_version TEXT NOT NULL,through INTEGER NOT NULL,PRIMARY KEY(input_pk,chain,reading_version)) STRICT, WITHOUT ROWID;
 CREATE TABLE parser_context(input_pk INTEGER NOT NULL REFERENCES input_ref(pk),chain INTEGER NOT NULL,reading_version TEXT NOT NULL,cursor INTEGER NOT NULL,key TEXT NOT NULL,value BLOB NOT NULL,version_hash BLOB REFERENCES message_version(version_hash),PRIMARY KEY(input_pk,chain,reading_version,key,cursor)) STRICT, WITHOUT ROWID;";
 
+// Collection and foreign-key checks follow this reference during first build,
+// so its reverse index must remain present while query-only indexes are deferred.
+pub(crate) const VERSION_INDEX: &str = "CREATE INDEX IF NOT EXISTS parser_context_version ON parser_context(version_hash) WHERE version_hash IS NOT NULL;";
+
 #[derive(Clone)]
 pub struct Overlay(Arc<Mutex<Attempt>>);
 struct Attempt {

@@ -78,6 +78,11 @@ query's sealed bytes, semantic hash or frozen dependencies.
 
 Claude response keys and record UUID aliases remain addressable for the whole input chain. Small in-memory windows cache them; Store retains compact mappings and reuses the existing message versions. The mappings and exact parser checkpoint commit in the same transaction. A replacement keeps one private context across its staged chunks, emitting only each chunk's changed mappings. Its admitted lookup cutoff stays fixed while its private cursor advances. A rejected preparation reports its original error in the pass summary and leaves the admitted checkpoint, context and rows unchanged. If its failed cursor, chain, reading version and stored length exactly match an already admitted stop, that stop keeps its original error and binds the retry's executable identity through the same progress path. Other rejected replacements remain eligible for a later attempt.
 
+Response-version references keep their reverse index during first build and
+ordinary parsing. Collecting a candidate version checks its references instead
+of scanning retained context; opening an existing index adds a missing reverse
+index without changing parsed checkpoints or stored readings.
+
 A new reading version reconstructs missing historical context from retained bytes through ordinary re-parse. Once recorded, an ordinary restart resumes directly at that checkpoint. Lost derived context can be rebuilt from the admitted prefix. An absent context record means unrecorded context, not a complete empty map.
 
 ## Format drift
