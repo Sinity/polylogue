@@ -181,6 +181,31 @@ fn read_indexes_are_added_in_place_and_survive_reopen() {
 }
 
 #[test]
+fn recent_read_indexes_wait_for_first_build_completion_on_reopen() {
+    let conn = Connection::open_in_memory().unwrap();
+    create_index(&conn).unwrap();
+    conn.execute_batch("DROP INDEX session_recent; DROP INDEX message_recent;")
+        .unwrap();
+    let recent = || {
+        conn.query_row(
+            "SELECT count(*) FROM sqlite_master
+             WHERE name IN ('session_recent','message_recent')",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
+    };
+    ensure_index(&conn).unwrap();
+    assert_eq!(recent(), 0);
+    conn.execute("DELETE FROM meta WHERE key='building'", [])
+        .unwrap();
+    ensure_index(&conn).unwrap();
+    assert_eq!(recent(), 2);
+    ensure_index(&conn).unwrap();
+    assert_eq!(recent(), 2);
+}
+
+#[test]
 fn an_archive_written_before_the_baseline_is_an_older_format_and_stays_as_it_is() {
     // An archive with tables and a version but no format identity, as every
     // earlier Polylogue wrote it (master's archives are at version 4).

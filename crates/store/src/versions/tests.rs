@@ -74,15 +74,58 @@ fn text_cleanup_checks_only_candidates_and_keeps_all_reference_kinds() {
          INSERT INTO temp.unreferenced_text VALUES(1),(2),(3),(4),(5),(9000);",
     ).unwrap();
     let steps = cleanup_steps(&conn);
-    let missing: Vec<i64> = conn
+    let retained: Vec<i64> = conn
         .prepare("SELECT id FROM text WHERE id<=6 ORDER BY id")
         .unwrap()
         .query_map([], |r| r.get(0))
         .unwrap()
         .collect::<rusqlite::Result<_>>()
         .unwrap();
-    assert_eq!(missing, [1, 2, 3, 4, 6]);
+    assert_eq!(retained, [1, 2, 3, 4, 6]);
     assert!(steps < 2000, "fixed six candidates used {steps} VM steps");
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM temp.unreferenced_text", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn removing_the_last_text_reference_and_its_cleanup_roll_back_together() {
+    let conn = database(1);
+    conn.execute_batch(
+        "INSERT INTO message_version(version_hash,body) VALUES(x'01',x'00');
+         INSERT INTO message_version_text(version_hash,idx,text_id) VALUES(x'01',0,1);
+         SAVEPOINT reading;
+         DELETE FROM message_version_text;",
+    )
+    .unwrap();
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM temp.unreferenced_text", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    remove_unreferenced(&conn, true).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM text", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    conn.execute_batch("ROLLBACK TO reading; RELEASE reading;")
+        .unwrap();
+    assert_eq!(
+        conn.query_row("SELECT text_id FROM message_version_text", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM text", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
     assert_eq!(
         conn.query_row("SELECT count(*) FROM temp.unreferenced_text", [], |r| r
             .get::<_, i64>(0))
