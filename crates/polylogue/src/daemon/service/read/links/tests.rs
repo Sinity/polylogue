@@ -475,6 +475,55 @@ fn adding_a_parent_outside_the_cursor_frames_stales_the_links_walk() {
     assert!(
         matches!(&response,command_surface::Answer {outcome:command_surface::Outcome::Error(error),..}
         if error.code.as_deref()==Some("stale_cursor")),
-        "the rewritten family must not continue the old walk: {response:?}"
+        "the rewritten family must not continue the old walk"
+    );
+}
+
+#[test]
+fn links_cursor_survives_body_append_but_not_an_unrelated_relationship_edit() {
+    use std::io::Write;
+    let d = test_daemon::start("placeholder");
+    family(&d);
+    let page = read(&d, 60, None);
+    let cursor = resume(page.document.footer.next.as_ref()).unwrap();
+    let expected = read(&d, 60, Some(&cursor)).document.items;
+    let dir = d.home.join(".claude/projects/-p");
+    let mut source = std::fs::OpenOptions::new()
+        .append(true)
+        .open(dir.join("root.jsonl"))
+        .unwrap();
+    source
+        .write_all(polylogue_testkit::claude_user("r2", "root", "a later question").as_bytes())
+        .unwrap();
+    drop(source);
+    d.wait_for(|status| status["store"]["messages"] == 4);
+    assert_eq!(read(&d, 60, Some(&cursor)).document.items, expected);
+    let reader = d.daemon.reads.reader().unwrap();
+    let seal = super::super::cursor_seal(&reader).unwrap();
+    let mut old =
+        polylogue_model::read::PageCursor::open(cursor.cursor.as_deref().unwrap(), &seal).unwrap();
+    old.versions = polylogue_model::read::PageCursor::version(&[]);
+    let mut old_request = cursor.clone();
+    old_request.cursor = Some(old.seal(&seal));
+    drop(reader);
+    assert_stale(&d, &old_request);
+    std::fs::write(
+        dir.join("other.jsonl"),
+        format!(
+            "{}{}",
+            polylogue_testkit::claude_user("o1", "other", "another family"),
+            continued("other", "another-child")
+        ),
+    )
+    .unwrap();
+    d.wait_for(|status| status["store"]["messages"] == 5);
+    assert_stale(&d, &cursor);
+}
+
+fn assert_stale(d: &test_daemon::TestDaemon, cursor: &RunnableRequest) {
+    let answer = test_daemon::Call::from_request(cursor).answer(&d.daemon);
+    assert!(
+        matches!(&answer,command_surface::Answer {outcome:command_surface::Outcome::Error(error),..}
+        if error.code.as_deref()==Some("stale_cursor"))
     );
 }
