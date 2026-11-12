@@ -632,3 +632,46 @@ fn a_new_completion_after_higher_pending_data_cannot_become_a_restart_boundary()
         9
     );
 }
+
+#[test]
+fn malformed_and_wrong_kind_pending_evidence_refuse_visible_progress() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut index = cache(&dir.path().join("index.db"));
+    let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    apply(&mut index, &resolver, &[input(2, "first"), delivered(5)]).unwrap();
+    let projection =
+        serde_json::json!({"stamp":"certificate","position":2,"scope":"scope","catalog":"catalog"});
+    for evidence in [
+        serde_json::json!({"stream_instance":"instance","stream_sequence":5,"fingerprint":"bad"}),
+        serde_json::json!({"stream_instance":"instance","stream_sequence":0,"fingerprint":"a".repeat(64)}),
+        serde_json::json!({"stream_instance":"instance","stream_sequence":5,"fingerprint":"a".repeat(64),"stamp":"ambiguous","position":2,"scope":"scope","catalog":"catalog"}),
+        projection,
+    ] {
+        index
+            .execute(
+                "INSERT OR REPLACE INTO primary_complete(position,evidence) VALUES (2,?1)",
+                [packed(&evidence).unwrap()],
+            )
+            .unwrap();
+        assert!(
+            apply(&mut index, &resolver, &[]).is_err(),
+            "invalid evidence must refuse: {evidence}"
+        );
+        assert_eq!(checkpoint(&index).unwrap(), None);
+        assert_eq!(replay_state(&index).unwrap().completed_delivery, None);
+        assert_eq!(rows(&index, "SELECT count(*) FROM source_input"), 0);
+        assert_eq!(rows(&index, "SELECT count(*) FROM primary_pending"), 1);
+    }
+    index.execute("DELETE FROM primary_complete", []).unwrap();
+    apply(&mut index, &resolver, &[completed(2, 5)]).unwrap();
+    assert_eq!(checkpoint(&index).unwrap(), Some(2));
+    assert_eq!(
+        replay_state(&index)
+            .unwrap()
+            .completed_delivery
+            .unwrap()
+            .stream_sequence,
+        5
+    );
+}

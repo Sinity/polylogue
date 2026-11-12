@@ -1,6 +1,17 @@
 //! The applied position, scope and staged delivery share the fact transaction.
 use super::*;
-use crate::primary::{NativeFactContext, ReplayControl, ReplayState};
+use crate::primary::{
+    CompletedDelivery, NativeFactContext, ProjectionBasis, ReplayControl, ReplayState,
+};
+
+/// Both forms attest to a complete position and share its pending row.
+/// Their required fields are disjoint; the projection keeps its current encoding.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+enum CompletionEvidence {
+    Projection(ProjectionBasis),
+    Delivery(CompletedDelivery),
+}
 
 pub(crate) fn replay_state(conn: &Connection) -> Result<ReplayState> {
     let value: Option<String> = conn
@@ -85,6 +96,38 @@ pub(super) fn validate_context(context: &NativeFactContext) -> Result<()> {
     Ok(())
 }
 
+fn validate_projection(state: &ReplayState, basis: &ProjectionBasis) -> Result<()> {
+    let projection = state
+        .projection
+        .as_ref()
+        .ok_or_else(|| invalid("a projection completion has no start"))?;
+    if basis.position < projection.origin
+        || projection
+            .position
+            .is_some_and(|position| position != basis.position)
+        || state.scope.as_deref() != Some(basis.scope.as_str())
+        || basis.stamp.is_empty()
+        || basis.catalog.is_empty()
+    {
+        return Err(invalid(
+            "a projection certificate differs from the staged snapshot",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_delivery(receipt: &CompletedDelivery) -> Result<()> {
+    if receipt.stream_instance.is_empty()
+        || receipt.stream_sequence == 0
+        || !hash(&receipt.fingerprint)
+    {
+        return Err(invalid(
+            "a completed delivery needs its native record identity",
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn stage_control(
     conn: &Connection,
     state: &mut ReplayState,
@@ -111,23 +154,8 @@ pub(super) fn stage_control(
             projection.cursor = Some(cursor.clone());
         }
         ReplayControl::ProjectionComplete { basis } => {
-            let projection = state
-                .projection
-                .as_ref()
-                .ok_or_else(|| invalid("a projection completion has no start"))?;
-            if basis.position < projection.origin
-                || projection
-                    .position
-                    .is_some_and(|position| position != basis.position)
-                || state.scope.as_deref() != Some(basis.scope.as_str())
-                || basis.stamp.is_empty()
-                || basis.catalog.is_empty()
-            {
-                return Err(invalid(
-                    "a projection certificate differs from the staged snapshot",
-                ));
-            }
-            conn.execute("INSERT INTO primary_complete(position,evidence) VALUES (?1,?2) ON CONFLICT(position) DO UPDATE SET evidence=excluded.evidence", params![basis.position, packed(basis)?])?;
+            validate_projection(state, basis)?;
+            conn.execute("INSERT INTO primary_complete(position,evidence) VALUES (?1,?2) ON CONFLICT(position) DO UPDATE SET evidence=excluded.evidence", params![basis.position, packed(&CompletionEvidence::Projection(basis.clone()))?])?;
         }
         ReplayControl::Head { position } => {
             if *position < 0 {
@@ -163,14 +191,8 @@ pub(super) fn stage_control(
             {
                 return Err(invalid("a completion moved behind the applied position"));
             }
-            if delivery.as_ref().is_some_and(|receipt| {
-                receipt.stream_instance.is_empty()
-                    || receipt.stream_sequence == 0
-                    || !hash(&receipt.fingerprint)
-            }) {
-                return Err(invalid(
-                    "a completed delivery needs its native record identity",
-                ));
+            if let Some(receipt) = delivery {
+                validate_delivery(receipt)?;
             }
             // An old cumulative barrier can be appended after newer facts.
             // Its physical sequence cannot be a new restart boundary past
@@ -182,8 +204,16 @@ pub(super) fn stage_control(
             )?;
             let receipt = delivery.as_ref().filter(|_| !newer);
             conn.execute(
-                "INSERT OR IGNORE INTO primary_complete(position,delivery) VALUES (?1,?2)",
-                params![position, receipt.map(packed).transpose()?],
+                "INSERT OR IGNORE INTO primary_complete(position,evidence) VALUES (?1,?2)",
+                params![
+                    position,
+                    receipt
+                        .cloned()
+                        .map(CompletionEvidence::Delivery)
+                        .as_ref()
+                        .map(packed)
+                        .transpose()?
+                ],
             )?;
         }
     }
@@ -192,20 +222,41 @@ pub(super) fn stage_control(
 
 pub(super) fn complete(conn: &Connection, position: i64) -> Result<()> {
     let mut state = replay_state(conn)?;
-    let (evidence, delivery): (Option<Vec<u8>>, Option<Vec<u8>>) = conn.query_row(
-        "SELECT evidence,delivery FROM primary_complete WHERE position=?1",
+    let evidence: Option<Vec<u8>> = conn.query_row(
+        "SELECT evidence FROM primary_complete WHERE position=?1",
         [position],
-        |row| Ok((row.get(0)?, row.get(1)?)),
+        |row| row.get(0),
     )?;
-    if let Some(evidence) = evidence {
-        state.basis = Some(unpacked(&evidence)?);
-        state.projection = None;
-        state.staged_delivery = None;
-        state.completed_delivery = None;
-    } else if state.applied_position.is_none_or(|old| position > old)
-        || (state.applied_position == Some(position) && state.completed_delivery.is_none())
-    {
-        state.completed_delivery = delivery.as_deref().map(unpacked).transpose()?;
+    let install_receipt = state.applied_position.is_none_or(|old| position > old)
+        || (state.applied_position == Some(position) && state.completed_delivery.is_none());
+    match evidence.as_deref().map(unpacked).transpose()? {
+        Some(CompletionEvidence::Projection(basis)) => {
+            validate_projection(&state, &basis)?;
+            if basis.position != position {
+                return Err(invalid("projection evidence changed position"));
+            }
+            state.basis = Some(basis);
+            state.projection = None;
+            state.staged_delivery = None;
+            state.completed_delivery = None;
+        }
+        delivery => {
+            if state.projection.is_some() {
+                return Err(invalid(
+                    "a projection completion needs its owner certificate",
+                ));
+            }
+            let receipt = match delivery {
+                Some(CompletionEvidence::Delivery(receipt)) => {
+                    validate_delivery(&receipt)?;
+                    Some(receipt)
+                }
+                _ => None,
+            };
+            if install_receipt {
+                state.completed_delivery = receipt;
+            }
+        }
     }
     state.applied_position = Some(position);
     save(conn, &state)

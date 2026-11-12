@@ -14,6 +14,7 @@ pub struct NativeDeliveryCursor {
 
 /// The actual completion marker saved with its fully applied local position.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CompletedDelivery {
     pub stream_instance: String,
     pub stream_sequence: u64,
@@ -43,6 +44,7 @@ pub struct ReplayState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectionBasis {
     pub stamp: String,
     pub position: i64,
