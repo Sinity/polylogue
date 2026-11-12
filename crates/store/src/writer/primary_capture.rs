@@ -119,29 +119,6 @@ impl AcquiredBody<'_> {
 }
 
 // The acquired body keeps its own coordinates after logical extents are trimmed.
-fn captured_location(
-    input: &CapturedInput,
-    material: Option<&Material>,
-    offset: u64,
-) -> Result<Option<crate::primary::SourceLocation>> {
-    let (Some(range), Some(material)) = (input.raw_range, material) else {
-        return Ok(None);
-    };
-    if material.hash != input.hash
-        || material.length != input.length
-        || range.length()? != input.length
-    {
-        return Err(StoreError::Invalid(
-            "ready provider material differs from its acquired body".into(),
-        ));
-    }
-    Ok(
-        (offset >= range.start && offset <= range.end).then(|| crate::primary::SourceLocation {
-            material: material.id.clone(),
-            anchor: offset - range.start,
-        }),
-    )
-}
 
 // The acquired body may be retained without creating a logical source extent.
 // A receipt identifies the physical preparation, never a whole-chain blob guess.
@@ -795,43 +772,6 @@ impl Inner {
                     else {
                         return Ok(());
                     };
-                    let chain = if let Some(chain) = rows.observation.as_ref().and_then(|o| o.chain)
-                    {
-                        chain
-                    } else if let Some(extent) = rows.extents.first() {
-                        extent.chain
-                    } else if let Some(revision) = &rows.revision {
-                        revision.chain
-                    } else if let Some(revision) =
-                        rows.observation.as_ref().and_then(|o| o.revision)
-                    {
-                        self.index
-                            .query_row(
-                                "SELECT chain FROM source_revision WHERE input=?1 AND number=?2",
-                                params![rows.input, revision],
-                                |row| row.get(0),
-                            )
-                            .optional()?
-                            .or_else(|| {
-                                ready_revisions
-                                    .get(&rows.input)
-                                    .filter(|r| r.number == revision)
-                                    .map(|r| r.chain)
-                            })
-                            .ok_or_else(|| {
-                                StoreError::Invalid(
-                                    "capture observation references an unavailable revision".into(),
-                                )
-                            })?
-                    } else {
-                        latest(&self.index, &rows.input)?.map_or(1, |revision| revision.chain)
-                    };
-                    let key = InputKey {
-                        id: rows.input.clone(),
-                        format: rows.format.clone(),
-                        route: input.route,
-                    };
-                    let machine = rows.observation.as_ref().map(|o| o.machine.clone());
                     if let Some(revision) = &rows.revision {
                         ready_revisions.insert(rows.input.clone(), revision.clone());
                     }

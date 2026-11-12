@@ -78,7 +78,7 @@ fn acquire_ranges_on(
             &mut |emit| {
                 for (ordinal, range) in ranges.iter().copied().enumerate() {
                     let bytes = vec![b'A' + (ordinal % 26) as u8; range.length()? as usize];
-                    let mut input = capture(&bytes, vec![]);
+                    let mut input = capture(&bytes);
                     // Logical NoExtent still owns the actual provider body.
                     input.rows.extents.clear();
                     input.rows.input = generation.stream().input.id.clone();

@@ -217,37 +217,6 @@ fn export_event_identities_survive_normalized_product_objects() {
             .unwrap(),
         2
     );
-
-    // An explicit source identity remains part of the seal; a conflicting
-    // Event product must not override it during receiver application.
-    item.output.event_ids.insert(0, "explicit-settings".into());
-    item.seal_export(
-        0,
-        ExportDeliverySource::Item { start: 0, end: 2 },
-        ExportDelivery::seed(),
-    )
-    .unwrap();
-    let mut facts = super::super::ReadingStep::default();
-    let mut reading = None;
-    for change in callback(3, "target", &item) {
-        if let ConfirmedChange::Live(mut product) = change.change {
-            reading.get_or_insert_with(|| product.reading().unwrap().clone());
-            if let Product::Event { id, .. } = product.as_mut() {
-                *id = "conflicting-event".into();
-            }
-            facts.push(*product, None, None).unwrap();
-        }
-    }
-    let error = super::super::finish_step(
-        &mut crate::writer::ChainReading::new().unwrap(),
-        &reading.unwrap(),
-        facts,
-        &mut super::super::SourceSpans::default(),
-    )
-    .unwrap_err();
-    assert!(
-        matches!(error, StoreError::Invalid(message) if message == "export event identities differ from their explicit callback identities")
-    );
 }
 
 #[test]

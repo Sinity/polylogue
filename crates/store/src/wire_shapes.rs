@@ -7,7 +7,7 @@ use crate::{ParseStep, Result, StoreError};
 use polylogue_model::WireShape;
 use polylogue_model::batch::{ExportCursor, ExportDeliverySource, ReadingFootprint, StepProgress};
 mod export;
-pub(crate) use export::{ExportPrefix, admit_export, advance_prefix, is_refusal, load_prefix};
+pub(crate) use export::{admit_export, is_refusal};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

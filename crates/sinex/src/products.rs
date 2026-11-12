@@ -42,23 +42,6 @@ pub(crate) fn require_source(product: &Product) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn require_export(
-    product: &Product,
-    key: &polylogue_store::primary::ExportReadingKey,
-) -> Result<()> {
-    key.validate()?;
-    require_reading(product, key)?;
-    if product
-        .reading()
-        .is_none_or(|reading| reading.delivery.is_none())
-    {
-        return Err(Error::Invalid(
-            "export product has no delivery identity".into(),
-        ));
-    }
-    Ok(())
-}
-
 pub(crate) fn require_reading(
     product: &Product,
     key: &polylogue_store::primary::ExportReadingKey,

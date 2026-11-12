@@ -186,50 +186,5 @@ fn admit(previous: Option<&ExportPrefix>, length: u64, step: &ParseStep) -> Resu
     Ok(true)
 }
 
-pub(crate) fn advance_prefix(
-    prefix: &mut Option<ExportPrefix>,
-    length: u64,
-    step: &ParseStep,
-) -> Result<bool> {
-    if !admit(prefix.as_ref(), length, step)? {
-        return Ok(false);
-    }
-    let delivery = step.delivery.as_ref().ok_or_else(|| {
-        StoreError::Invalid("pending export callback has no delivery envelope".into())
-    })?;
-    let first = if step.reset {
-        ReadingFootprint::Export {
-            source: delivery.source,
-        }
-    } else {
-        prefix
-            .as_ref()
-            .ok_or_else(|| {
-                StoreError::Invalid("export continuation has no retained first callback".into())
-            })?
-            .first
-    };
-    let refused = is_refusal(step);
-    *prefix = Some(ExportPrefix {
-        cursor: if refused {
-            None
-        } else {
-            Some(
-                delivery
-                    .cursor()
-                    .map_err(|error| StoreError::Invalid(error.to_string()))?,
-            )
-        },
-        first,
-        last: ReadingFootprint::Export {
-            source: delivery.source,
-        },
-        length,
-        body_hash: delivery.body_hash.to_string(),
-        refused,
-    });
-    Ok(true)
-}
-
 #[cfg(test)]
 mod tests;

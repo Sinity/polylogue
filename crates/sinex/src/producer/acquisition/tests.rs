@@ -68,7 +68,7 @@ fn empty_local_sources_are_known_but_unattributed_custody_stays_uncertain() {
         .pending_source(&source(b"/synthetic/new-source.jsonl"), "reading")
         .unwrap();
     assert_eq!(state.status, SourceStatus::Ready);
-    assert!(state.head.is_none() && state.raw.is_none() && state.continuation.is_none());
+    assert!(state.head.is_none() && state.raw.is_none());
     let bytes = b"synthetic unattributed capture";
     sinex
         .prepare_input(&capture(bytes), body(root.path(), bytes))
@@ -335,7 +335,7 @@ fn private_staging_releases_custody_lock_and_rechecks_moved_source_before_public
             sinex.spool.try_lock().is_ok(),
             "body staging retained the shared custody lock"
         );
-        let mut input = capture(b"A", vec![]);
+        let mut input = capture(b"A");
         input.basis = Some(original_basis.clone());
         emit(input, vec![body(root.path(), b"A")])?;
         acquire(
@@ -494,7 +494,7 @@ fn exact_retry_retains_first_capture_coordinates_after_cache_coordinates_change(
     let mut first_header = None;
     let first = sinex
         .prepare_input_group(&plan, &mut |emit| {
-            let mut input = capture(b"A", vec![]);
+            let mut input = capture(b"A");
             input.basis = Some(source_basis.clone());
             first_header = Some(input.clone());
             emit(input, vec![body(root.path(), b"A")])

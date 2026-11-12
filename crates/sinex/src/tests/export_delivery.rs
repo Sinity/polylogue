@@ -1,5 +1,6 @@
 use super::*;
 use polylogue_model::batch::{ExportDelivery, ExportDeliverySource};
+use polylogue_model::{Output, RecordCounts};
 use polylogue_store::primary::ExportReadingKey;
 
 fn key(length: u64) -> ExportReadingKey {
