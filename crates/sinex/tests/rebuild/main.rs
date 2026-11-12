@@ -484,7 +484,7 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
     let pool = ReadPool::open(&archive).unwrap();
     let reader = pool.reader().unwrap();
     let coordinates = reader.query(
-        "SELECT m.source_start AS start,m.source_end AS end,s.id AS material FROM message m JOIN source_material s ON s.input=(SELECT id FROM input_ref WHERE pk=m.input_pk) AND s.chain=m.source_chain AND s.offset=0 WHERE m.id='claude-code:msg_action'",
+        "SELECT m.source_start AS start,m.source_end AS end,s.id AS material FROM message m JOIN source_material s ON s.input=(SELECT id FROM input_ref WHERE pk=m.input_pk) AND s.chain=m.source_chain AND s.offset=0 WHERE m.id='claude-code:assistant-1'",
         &[],
     ).unwrap();
     assert_eq!(coordinates.len(), 1);
