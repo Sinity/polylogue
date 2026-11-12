@@ -65,6 +65,7 @@ fn native_time_companions_use_evidence_and_keep_missing_relations_distinct() {
     )
     .unwrap();
     call.blocks.push(Block::ToolCall {
+        written_text: None,
         call_id: Some("native-call".into()),
         tool: Some("shell".into()),
         action: polylogue_model::ToolAction::Shell,

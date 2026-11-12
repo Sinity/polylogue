@@ -168,3 +168,37 @@ fn server_tool_results_pair_and_keep_structured_success_or_failure() {
         }
     ));
 }
+
+#[test]
+fn file_tool_bodies_keep_exact_new_text_and_original_arguments() {
+    for (tool, input, expected) in [
+        (
+            "Write",
+            json!({"file_path":"/synthetic.txt","content":" Ω\n"}),
+            Some(" Ω\n"),
+        ),
+        (
+            "Edit",
+            json!({"old_string":"old","new_string":"new λ"}),
+            Some("new λ"),
+        ),
+        (
+            "Read",
+            json!({"file_path":"/synthetic.txt","content":"not written"}),
+            None,
+        ),
+    ] {
+        let item = json!({"type":"tool_use","name":tool,"input":input});
+        let result = block(&Json::Null, &item, false, &mut Vec::new());
+        let Block::ToolCall {
+            input: found,
+            written_text,
+            ..
+        } = result
+        else {
+            panic!("not a call")
+        };
+        assert_eq!(found, input);
+        assert_eq!(written_text.as_deref(), expected);
+    }
+}

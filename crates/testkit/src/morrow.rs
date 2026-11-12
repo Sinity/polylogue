@@ -92,7 +92,12 @@ impl Morrow {
     /// The set run, with its exports imported.
     pub fn build(set: Set) -> Self {
         let morrow = Self::lay_out(set);
-        morrow.run_pass();
+        let (pass, _) = morrow.run_pass();
+        assert!(
+            pass.errors.is_empty(),
+            "build Morrow archive: {:?}",
+            pass.errors
+        );
         morrow
     }
 

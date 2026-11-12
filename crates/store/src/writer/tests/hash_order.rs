@@ -22,6 +22,7 @@ pub(super) fn structured_message(reverse: bool) -> Message {
     );
     message.blocks.extend([
         Block::ToolCall {
+            written_text: None,
             run_by_script: false,
             call_id: Some("call".into()),
             tool: Some("synthetic".into()),

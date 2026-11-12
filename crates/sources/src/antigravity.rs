@@ -361,6 +361,7 @@ fn activity(line: &str) -> Option<Block> {
         input.insert(key.into(), Json::String(value.trim().into()));
     }
     Some(Block::ToolCall {
+        written_text: None,
         call_id: None,
         tool: Some(tool.into()),
         action,

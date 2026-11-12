@@ -119,7 +119,8 @@
               },
               "path": "/repo/src/lib.rs",
               "tool": "Edit",
-              "type": "tool_call"
+              "type": "tool_call",
+              "written_text": "y"
             }
           ],
           "id": "claude-code:a3",

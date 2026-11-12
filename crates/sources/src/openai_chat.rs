@@ -351,6 +351,7 @@ fn blocks(m: &Json, role: Role) -> Vec<Block> {
             .or_else(|| function.get("arguments").cloned())
             .unwrap_or(Json::Null);
         blocks.push(Block::ToolCall {
+            written_text: None,
             run_by_script: false,
             call_id: string_of(call, "id"),
             tool: string_of(&function, "name"),

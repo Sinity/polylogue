@@ -290,7 +290,8 @@
               "call_id": "call_patch_fail",
               "input": "*** Begin Patch\n*** End Patch",
               "tool": "apply_patch",
-              "type": "tool_call"
+              "type": "tool_call",
+              "written_text": "*** Begin Patch\n*** End Patch"
             }
           ],
           "id": "codex:tool-result-headers~assistant-a60026e15c054ee8-0",

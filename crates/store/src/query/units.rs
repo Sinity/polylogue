@@ -88,12 +88,12 @@ pub struct Hits<'a> {
 impl Hits<'_> {
     /// The condition that block alias `b` is of the index's kind.
     pub fn block_kind(&self, b: &str) -> String {
-        let kind = match self.index {
-            Index::Prose => "text",
-            Index::Thinking => "thinking",
-            Index::Output => "tool_result",
+        let kinds = match self.index {
+            Index::Prose => "'text'",
+            Index::Thinking => "'thinking'",
+            Index::Output => "'tool_result','tool_call'",
         };
-        format!("{b}.kind = '{kind}'")
+        format!("{b}.kind IN ({kinds})")
     }
 
     /// For prose, the condition that message alias `m` was written by a
@@ -180,7 +180,7 @@ fn tool_call_hits(a: &Aliases, h: &Hits<'_>) -> Option<(String, String)> {
         return None;
     }
     let from = format!(
-        "FROM {cte} h JOIN block xb ON xb.text_id = h.text_id WHERE xb.pk = {t}.result_block_pk",
+        "FROM {cte} h JOIN block xb ON xb.text_id = h.text_id WHERE xb.pk IN ({t}.call_block_pk, {t}.result_block_pk)",
         cte = h.cte,
         t = a.t
     );

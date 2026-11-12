@@ -503,6 +503,7 @@ fn content_block(b: &Json, direction: AttachmentDirection) -> Option<Block> {
             }
         }
         "tool_use" => Block::ToolCall {
+            written_text: None,
             run_by_script: false,
             call_id: string_of(b, "id"),
             tool: string_of(b, "name"),

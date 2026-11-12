@@ -83,6 +83,7 @@ pub fn call(
         Role::Assistant,
         at,
         vec![Block::ToolCall {
+            written_text: None,
             run_by_script: false,
             call_id: Some(call_id.clone()),
             tool: Some(tool.into()),

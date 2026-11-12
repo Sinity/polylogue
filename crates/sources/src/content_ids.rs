@@ -27,6 +27,30 @@ pub struct ContentIds {
 }
 
 impl ContentIds {
+    /// Normalized indexing text repeats the original tool arguments and does not change message identity.
+    pub fn next_blocks(
+        &mut self,
+        session: &SessionId,
+        role: Role,
+        blocks: &mut [polylogue_model::Block],
+    ) -> Option<MessageId> {
+        let mut written = Vec::new();
+        for (index, block) in blocks.iter_mut().enumerate() {
+            if let polylogue_model::Block::ToolCall { written_text, .. } = block
+                && let Some(text) = written_text.take()
+            {
+                written.push((index, text));
+            }
+        }
+        let id = self.next(session, role, &blocks);
+        for (index, text) in written {
+            if let polylogue_model::Block::ToolCall { written_text, .. } = &mut blocks[index] {
+                *written_text = Some(text);
+            }
+        }
+        id
+    }
+
     /// The ID of the next message of `session` with this role and content.
     /// `content` is what the message says, usually its blocks; it must not
     /// hold the message's position or arrival time.

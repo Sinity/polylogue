@@ -74,7 +74,8 @@
               },
               "path": "/home/op/morrow/Cargo.toml",
               "tool": "Write",
-              "type": "tool_call"
+              "type": "tool_call",
+              "written_text": "[package]\nname = \"morrow\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"
             },
             {
               "action": "file_write",
@@ -85,7 +86,8 @@
               },
               "path": "/home/op/morrow/src/lib.rs",
               "tool": "Write",
-              "type": "tool_call"
+              "type": "tool_call",
+              "written_text": "//! Parse human-written dates.\n\npub mod parse;\n"
             }
           ],
           "id": "claude-code:c1000000-0000-4000-8000-000000000002",

@@ -231,6 +231,8 @@ fn read_body<T: DeserializeOwned>(
         let block = &mut value["blocks"][idx as usize];
         let field = if block.get("output").is_some() {
             "output"
+        } else if block.get("written_text").is_some() {
+            "written_text"
         } else {
             "text"
         };

@@ -15,6 +15,7 @@ fn absent_and_present_blobs_keep_other_prepared_values() {
     for prepared in [false, true] {
         let mut message = text_message("m", "s", Role::Assistant, "text", Some("end_turn"));
         message.blocks.push(Block::ToolCall {
+            written_text: None,
             call_id: Some("call".into()),
             tool: Some("Bash".into()),
             action: ToolAction::Shell,

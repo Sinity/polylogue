@@ -356,6 +356,7 @@ fn sparse_message_metadata_and_complete_text_coverage_do_not_grant_canonical_att
     let mut w = WriterArchive::new();
     let mut full = source();
     full.blocks.push(Block::ToolCall {
+        written_text: None,
         run_by_script: false,
         call_id: Some("tool".into()),
         tool: Some("provider-tool".into()),

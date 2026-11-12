@@ -25,6 +25,9 @@ pub enum Block {
         #[serde(default)]
         action: ToolAction,
         input: Json,
+        /// Text written by a file-changing call, extracted from its origin's tool schema.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        written_text: Option<String>,
         /// The shell command, when the call runs one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         command: Option<String>,
