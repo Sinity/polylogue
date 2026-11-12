@@ -15,7 +15,7 @@ fn read(f: &Fixture, id: &str) -> SessionLineage {
     let pool = f.reads().unwrap();
     let reader = pool.reader().unwrap();
     reader
-        .lineage(&SessionId::parse(id).unwrap())
+        .lineage_root(&SessionId::parse(id).unwrap())
         .unwrap()
         .unwrap()
 }

@@ -99,7 +99,7 @@ pub(crate) fn compute(conn: &Connection, session: i64) -> Result<Option<SessionL
 impl crate::read::Reader<'_> {
     /// Current structural root and depth in this pinned read. Missing sessions
     /// return None; unresolved ancestry is an explicit typed issue.
-    pub fn lineage(&self, session: &SessionId) -> Result<Option<SessionLineage>> {
+    pub fn lineage_root(&self, session: &SessionId) -> Result<Option<SessionLineage>> {
         let Some(pk) = self.session_pk(session)? else {
             return Ok(None);
         };
