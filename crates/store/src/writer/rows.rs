@@ -1558,7 +1558,11 @@ impl RowWriter<'_, '_> {
     fn write_event(&self, index: usize) -> Result<()> {
         let id = &self.choices.event_ids[index];
         let (pk, source) = &self.choices.event_sources[index];
-        self.changes.event(self.tx, *pk)?;
+        // The resolver has already distinguished retained events from new identities.
+        // Another source claim alone does not change the selected event's items.
+        if !self.keys.get(resolve::Kind::Event, id.as_bytes())?.existing {
+            self.changes.event(self.tx, *pk)?;
+        }
         self.tx.prepare_cached("INSERT OR IGNORE INTO event(pk,id,session_pk,seq,kind,at,input_pk,source_chain,source_start,source_end,fields,data)
             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)")?
             .execute(params![pk,id,source.session,source.seq.unwrap_or(0),source.kind,source.at,self.input_pk,self.chain,source.start,source.end,source.fields,source.body])?;
