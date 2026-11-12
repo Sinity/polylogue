@@ -287,18 +287,37 @@ impl<'a> Compiler<'a> {
             self.params.pop();
             return Err(refuse(scope.unit));
         };
-        self.ctes.push(format!(
-            "{cte} AS MATERIALIZED (SELECT rowid AS text_id, bm25({table}) AS rank FROM {table} WHERE {table} MATCH {param})"
-        ));
-        self.ctes.extend(hits.ctes);
         let ranks = match index {
             Index::Prose => Some(polylogue_query::search::SnippetIndex::Prose),
             Index::Output => Some(polylogue_query::search::SnippetIndex::Output),
             Index::Thinking => None,
         };
-        if top && ranks.is_some() && ranks == self.rank_index && self.rank.is_none() {
+        let mut prefix = String::new();
+        if let Some(rank_index) = ranks
+            && top
+            && Some(rank_index) == self.rank_index
+            && self.rank.is_none()
+        {
             self.rank = Some(hits.rank);
+            if self.answer
+                && !self.measuring
+                && self.near_request.is_none()
+                && self.ranked_search.is_none()
+            {
+                let limit = self.params.len() + 1;
+                let bound = self.bind(Param::Int(-1));
+                self.ranked_search = Some(RankedSearch {
+                    index: rank_index,
+                    expression: match_text,
+                    limit,
+                });
+                prefix = format!(" ORDER BY {table}.rank LIMIT {bound}");
+            }
         }
+        self.ctes.push(format!(
+            "{cte} AS MATERIALIZED (SELECT rowid AS text_id, bm25({table}) AS rank FROM {table} WHERE {table} MATCH {param}{prefix})"
+        ));
+        self.ctes.extend(hits.ctes);
         Ok(hits.condition)
     }
 

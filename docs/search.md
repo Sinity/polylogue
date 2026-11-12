@@ -30,7 +30,7 @@ The compiler emits the non-text conditions as a filter plan plus a **search leg*
 - **the index drives** otherwise: rank inside the index, filter by scope in rank order, and fetch rank batches of doubling size until the page is full, reading ties through;
 - **recency drives** for a recency order with a frequent word: walk the newest sessions' blocks newest first, checking each text.
 
-All three return the same rows in the same order. Rows are joined to blocks, messages and sessions only for the page and what fills it.
+All three return the same rows in the same order. Rows are joined to blocks, messages and sessions only for the page and what fills it. The index prefix is folded into each owner's best score before the cursor applies, so weaker later hits cannot reintroduce an earlier row. Prefix aggregation uses bounded temporary storage; cursors retain only order values.
 
 For this cost decision, the word's frequency counts eligible block occurrences before the non-text scope, including every block that shares an indexed text. The full-text vocabulary counts distinct stored texts; it can make a body repeated across thousands of messages look rare and underestimate expansion work. The store probes scope blocks and matching block occurrences together, stopping as soon as the 256-block or 64-to-one comparison is decided. The probe retains no prefix and changes only the physical plan.
 

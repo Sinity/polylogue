@@ -239,3 +239,259 @@ fn session_text_search_remains_readable_with_first_build_indexes_deferred() {
     // first build has deferred its natural-key and secondary read indexes.
     read(&fixture, false);
 }
+
+fn many_hits(blocks: usize, output: bool) -> (tempfile::TempDir, Fixture) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(dir.path()).unwrap();
+    let mut owners = Vec::new();
+    for (id, kind, last) in [
+        ("old", "main", 1000),
+        ("new", "main", 2000),
+        ("leaf", "subagent", 1000),
+    ] {
+        owners.push(
+            fixture
+                .session(SessionFacts {
+                    id: &format!("test:{id}"),
+                    kind,
+                    last: Some(last),
+                    ..Default::default()
+                })
+                .unwrap(),
+        );
+    }
+    fixture
+        .link("test:old", "test:leaf", "spawn", None)
+        .unwrap();
+    // A retained cycle must not change the owner best-score fold.
+    fixture
+        .link("test:leaf", "test:old", "spawn", None)
+        .unwrap();
+    for n in 0..=blocks {
+        let owner = if n == blocks {
+            owners[1]
+        } else if n % 2 == 0 {
+            owners[0]
+        } else {
+            owners[2]
+        };
+        let text = format!("needle token{n:06}");
+        let pk = fixture
+            .message(
+                owner,
+                MessageFacts {
+                    id: &format!("test:hit-{n:06}"),
+                    role: "assistant",
+                    written_by: "model",
+                    text: (!output).then_some(text.as_str()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        if output {
+            fixture
+                .tool_call(
+                    owner,
+                    pk,
+                    crate::fixture::CallFacts {
+                        tool: "Bash",
+                        action: "shell",
+                        outcome: "ok",
+                        output: Some(&text),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+        }
+    }
+    (dir, fixture)
+}
+
+fn pages(reader: &Reader<'_>, program: &Program) -> Vec<Value> {
+    let mut after = None;
+    let mut rows = Vec::new();
+    loop {
+        let page = reader.query_page(program, after.as_deref()).unwrap();
+        if page.rows.is_empty() {
+            break;
+        }
+        after = page.rows.last().map(|row| {
+            program
+                .order
+                .iter()
+                .map(|key| row[&key.column].clone())
+                .collect::<Vec<_>>()
+        });
+        rows.extend(page.rows);
+        if !page.more {
+            // The final cursor also has no weaker duplicate owner left behind it.
+            assert!(
+                reader
+                    .query_page(program, after.as_deref())
+                    .unwrap()
+                    .rows
+                    .is_empty()
+            );
+            break;
+        }
+    }
+    rows
+}
+
+#[test]
+fn ranked_pages_read_score_ties_and_do_not_repeat_many_hit_owners() {
+    for output in [false, true] {
+        let (_dir, fixture) = many_hits(384, output);
+        for statistics in [false, true] {
+            if statistics {
+                crate::archive::open_write(&fixture.archive.index_db(), 1024)
+                    .unwrap()
+                    .execute_batch("ANALYZE")
+                    .unwrap();
+            }
+            let pool = fixture.reads().unwrap();
+            let reader = pool.reader().unwrap();
+            let term = if output { "output:needle" } else { "needle" };
+            let program = crate::query::compile(
+                &format!("sessions where kind:main {term}"),
+                &options_for_search(),
+            )
+            .unwrap();
+            let mut program = program;
+            program.page_size = 1;
+            let expected = reader.query_rows(&program).unwrap();
+            let actual = pages(&reader, &program);
+            assert_eq!(result(&actual), result(&expected));
+            assert_eq!(
+                actual
+                    .iter()
+                    .map(|row| row["id"].as_str().unwrap())
+                    .collect::<Vec<_>>(),
+                ["test:new", "test:old"]
+            );
+            assert_eq!(reader.query_count(&program).unwrap(), Some((2, 0)));
+            let scoped =
+                crate::query::compile(&format!("id:test:new {term}"), &options_for_search())
+                    .unwrap();
+            assert_eq!(pages(&reader, &scoped).len(), 1);
+        }
+    }
+}
+
+#[test]
+fn many_hit_page_and_continuation_work_grows_with_input_not_its_square() {
+    let mut work = Vec::new();
+    for blocks in [128, 512] {
+        let (_dir, fixture) = many_hits(blocks, false);
+        let pool = fixture.reads().unwrap();
+        let reader = pool.reader().unwrap();
+        let mut program =
+            crate::query::compile("sessions where kind:main needle", &options_for_search())
+                .unwrap();
+        program.page_size = 1;
+        let (rows, steps) = counted(&reader, || pages(&reader, &program));
+        assert_eq!(rows.len(), 2);
+        work.push(steps);
+    }
+    // A fourfold input grows the prefix fold roughly by N log N. The old
+    // per-candidate owner reconstruction exceeded this bound already at256.
+    assert!(work[1] < work[0] * 7, "128→512 blocks: {work:?}");
+}
+
+#[test]
+fn first_ranked_page_does_not_expand_worse_shared_body_owners() {
+    let mut work = Vec::new();
+    for owners in [64, 512] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut fixture = Fixture::new(dir.path()).unwrap();
+        let sessions = fixture
+            .many_sessions(ManySessions {
+                prefix: "/home/op/shared-body",
+                sessions: owners,
+                messages: 1,
+                answered: 0,
+                last: 1000,
+            })
+            .unwrap();
+        let body = format!("needle {}", "ordinary ".repeat(80));
+        for (n, session) in sessions.into_iter().enumerate() {
+            fixture
+                .message(
+                    session,
+                    MessageFacts {
+                        id: &format!("test:weak-{n}"),
+                        role: "assistant",
+                        written_by: "model",
+                        text: Some(&body),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+        }
+        for (id, text) in [("strong", "needle"), ("runner-up", "needle second")] {
+            let session = fixture
+                .session(SessionFacts {
+                    id: &format!("test:{id}"),
+                    kind: "main",
+                    last: Some(2000),
+                    ..Default::default()
+                })
+                .unwrap();
+            fixture
+                .message(
+                    session,
+                    MessageFacts {
+                        id: &format!("test:{id}-message"),
+                        role: "user",
+                        written_by: "human",
+                        text: Some(text),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+        }
+        let mut program = crate::query::compile("needle", &options_for_search()).unwrap();
+        program.page_size = 1;
+        // The same logical selection without the prefix driver is the old
+        // full-index page, not an unpaged answer with extra hydration work.
+        let mut unlimited = program.clone();
+        match &mut unlimited.statements {
+            crate::query::compile::Statements::Keyed(rows) => rows.search = None,
+            _ => panic!("native search has keyed rows"),
+        }
+        for statistics in [false, true] {
+            if statistics {
+                crate::archive::open_write(&fixture.archive.index_db(), 1024)
+                    .unwrap()
+                    .execute_batch("ANALYZE")
+                    .unwrap();
+            }
+            let pool = fixture.reads().unwrap();
+            let reader = pool.reader().unwrap();
+            let (actual, steps) =
+                counted(&reader, || reader.query_page(&program, None).unwrap().rows);
+            let (old, old_steps) = counted(&reader, || {
+                reader.query_page(&unlimited, None).unwrap().rows
+            });
+            assert_eq!(result(&actual), result(&old));
+            assert_eq!(actual[0]["id"], "test:strong");
+            work.push((statistics, steps, old_steps));
+        }
+    }
+    for statistics in [false, true] {
+        let small = work.iter().find(|entry| entry.0 == statistics).unwrap();
+        let large = work
+            .iter()
+            .rev()
+            .find(|entry| entry.0 == statistics)
+            .unwrap();
+        assert!(
+            large.1 <= small.1 + small.1 / 5,
+            "statistics={statistics}: {small:?} → {large:?}"
+        );
+        assert!(
+            large.2 > small.2 * 4,
+            "unlimited selector must discriminate: {small:?} → {large:?}"
+        );
+    }
+}

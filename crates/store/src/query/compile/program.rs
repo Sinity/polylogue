@@ -104,6 +104,7 @@ impl<'a> Compiler<'a> {
                     // The session ranking selects sessions; children have their own order.
                     self.near_request = None;
                     self.rank = None;
+                    self.ranked_search = None;
                     self.rank_index = None;
                     self.near_rank = None;
                     self.near_join = None;
@@ -475,9 +476,16 @@ impl<'a> Compiler<'a> {
         // Only the answer's own rows are read key first; a stage or a
         // combination over them reads them whole.
         let statements = match (keyed, row_count) {
-            (Some((keys, rows)), Some(count)) if self.answer => {
-                Statements::Keyed(KeyedRows { keys, rows, count })
-            }
+            (Some((keys, rows)), Some(count)) if self.answer => Statements::Keyed(KeyedRows {
+                keys,
+                rows,
+                count,
+                search: if self.fusion.is_none() && self.near_rank.is_none() {
+                    self.ranked_search
+                } else {
+                    None
+                },
+            }),
             (_, count) => Statements::Derived(DerivedRows {
                 rows: sql,
                 count,
