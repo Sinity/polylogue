@@ -220,8 +220,9 @@ impl RawAcquisitionCursor {
     pub fn disposition(&self) -> Option<CaptureDisposition> {
         self.disposition
     }
-    pub fn is_complete_stream(&self) -> bool {
-        self.range.start == 0 && self.known_total == Some(self.range.end)
+    pub fn is_complete_window(&self) -> bool {
+        let window = self.generation.window();
+        self.range == window && self.known_total == Some(window.end)
     }
 }
 

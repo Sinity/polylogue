@@ -128,7 +128,10 @@ impl Engine {
             file_snapshot(&metadata)?,
             polylogue_store::primary::RawStreamRole::ProviderBytes,
             RawRange {
-                start: 0,
+                start: match plan.change {
+                    Change::Appended { from } => from,
+                    _ => 0,
+                },
                 end: facts.size,
             },
         );
@@ -146,7 +149,7 @@ impl Engine {
             );
         }
         if let Some(cursor) = cursor.filter(|cursor| {
-            cursor.range().end > plan.stored_upto || plan.size == 0 && cursor.is_complete_stream()
+            cursor.range().end > plan.stored_upto || plan.size == 0 && cursor.is_complete_window()
         }) {
             plan.raw = Some(crate::plan::RawState {
                 cursor: Some(cursor),
@@ -202,7 +205,7 @@ impl Engine {
             ));
             return Ok(());
         };
-        if !cursor.is_complete_stream() {
+        if !cursor.is_complete_window() {
             pass.errors.push(format!(
                 "raw coverage for {} has no verified EOF",
                 plan.input.id
@@ -265,7 +268,7 @@ impl Engine {
                     .filter(|cursor| {
                         cursor.range().end >= receipt.range.end
                             && (receipt.range.end > receipt.range.start
-                                || cursor.is_complete_stream())
+                                || cursor.is_complete_window())
                     })
             } else {
                 None

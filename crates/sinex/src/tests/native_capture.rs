@@ -115,7 +115,7 @@ fn assert_custody_complete(sdk: &Sinex, path: &Path, expected: &[u8]) -> usize {
         }
     );
     assert_eq!(cursor.known_total(), Some(expected.len() as u64));
-    assert!(cursor.is_complete_stream());
+    assert!(cursor.is_complete_window());
     let (bytes, count) = retained(sdk, &generation);
     assert_eq!(bytes, expected);
     count

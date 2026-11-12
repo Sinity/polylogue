@@ -599,7 +599,12 @@ pub(crate) fn run(
                     observed.clone(),
                     polylogue_store::primary::RawStreamRole::ProviderBytes,
                     polylogue_store::primary::RawRange {
-                        start: 0,
+                        // The earlier prefix belongs to its confirmed input;
+                        // this file snapshot owns the newly acquired tail.
+                        start: match job.change {
+                            Change::Appended { from } => from,
+                            _ => 0,
+                        },
                         end: observed.size,
                     },
                 ),

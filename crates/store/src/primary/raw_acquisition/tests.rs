@@ -59,9 +59,44 @@ fn holes_and_conflicting_overlaps_do_not_become_maximum_end_cursors() {
     proof.push(body(&generation, 0, 5)).unwrap();
     proof.push(body(&generation, 5, 10)).unwrap();
     let cursor = proof.finish().unwrap();
-    assert!(cursor.is_complete_stream());
+    assert!(cursor.is_complete_window());
     assert_eq!(cursor.root_body(), "body:0:5");
     assert_eq!(cursor.last_body(), "body:5:10");
+}
+
+#[test]
+fn a_tail_window_proves_only_its_own_predecessor_linked_bytes_and_eof() {
+    let mut generation = generation();
+    let SourceGeneration::File { window, .. } = &mut generation else {
+        unreachable!()
+    };
+    window.start = 3;
+    let mut first = body(&generation, 3, 6);
+    first.predecessor = None;
+    let mut last = body(&generation, 6, 10);
+    last.predecessor = Some(first.body.clone());
+    let mut proof = RawAcquisitionProof::new(generation.clone()).unwrap();
+    proof.push(first.clone()).unwrap();
+    let partial = proof.finish().unwrap();
+    assert_eq!(partial.range(), RawRange { start: 3, end: 6 });
+    assert!(!partial.is_complete_window());
+    let mut proof = RawAcquisitionProof::new(generation.clone()).unwrap();
+    proof.push(first.clone()).unwrap();
+    proof.push(last.clone()).unwrap();
+    let complete = proof.finish().unwrap();
+    assert_eq!(complete.range(), RawRange { start: 3, end: 10 });
+    assert!(complete.is_complete_window());
+    assert_eq!(complete.root_body(), first.body);
+    assert_eq!(complete.last_body(), last.body);
+    let mut changed_generation = last;
+    let SourceGeneration::File { observed, .. } = &mut changed_generation.generation else {
+        unreachable!()
+    };
+    observed.changed.nanos += 1;
+    let mut proof = RawAcquisitionProof::new(generation).unwrap();
+    proof.push(first).unwrap();
+    proof.push(changed_generation).unwrap();
+    assert!(proof.finish().is_none());
 }
 
 #[test]
@@ -136,7 +171,7 @@ fn empty_custody_requires_an_actual_body_and_duplicate_ranges_keep_eof_evidence(
     let mut actual = body(&empty, 0, 0);
     actual.known_total = Some(0);
     proof.push(actual).unwrap();
-    assert!(proof.finish().unwrap().is_complete_stream());
+    assert!(proof.finish().unwrap().is_complete_window());
 
     let generation = generation();
     let mut proof = RawAcquisitionProof::new(generation.clone()).unwrap();
@@ -144,7 +179,7 @@ fn empty_custody_requires_an_actual_body_and_duplicate_ranges_keep_eof_evidence(
     first.known_total = None;
     proof.push(first).unwrap();
     proof.push(body(&generation, 0, 10)).unwrap();
-    assert!(proof.finish().unwrap().is_complete_stream());
+    assert!(proof.finish().unwrap().is_complete_window());
 }
 
 #[test]
@@ -200,7 +235,7 @@ fn custody_continuation_preserves_unresolved_or_unknown_disposition() {
         proof.push(first).unwrap();
         proof.push(body(&generation, 5, 10)).unwrap();
         let cursor = proof.finish().unwrap();
-        assert!(cursor.is_complete_stream());
+        assert!(cursor.is_complete_window());
         assert_eq!(cursor.disposition(), disposition);
     }
 }
