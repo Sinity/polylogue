@@ -22,6 +22,7 @@ fn stopping_retained_byte_replay_rolls_back_the_index_and_restart_replays_it() {
             Some(&SOURCE_RECORD),
         )
         .unwrap();
+        assert!(w.writer.flush_rows().unwrap().errors.is_empty());
         let replacement = || {
             let mut b = batch(
                 "replay-stop",
@@ -61,7 +62,10 @@ fn stopping_retained_byte_replay_rolls_back_the_index_and_restart_replays_it() {
                     {
                         let (reply, report) = sync_channel(1);
                         sender.0.send(Msg::Flush(reply, false)).unwrap();
-                        !report.recv().unwrap().errors.is_empty()
+                        {
+                            let report = report.recv().unwrap();
+                            report.batches == 0 && report.errors.is_empty()
+                        }
                     }
                 }
                 1 => sender
@@ -74,14 +78,14 @@ fn stopping_retained_byte_replay_rolls_back_the_index_and_restart_replays_it() {
                     )
                     .unwrap()
                     .into_iter()
-                    .all(|result| matches!(result, Err(StoreError::WriterGone))),
+                    .all(|result| matches!(result, Err(StoreError::WriteCancelled))),
                 _ => {
                     let mut b = b;
                     let mut reading = ChainReading::new().unwrap();
                     reading.push(&mut b.parse[0]).unwrap();
                     matches!(
                         sender.replace_chain(b.input, 1, b.length, reading),
-                        Err(StoreError::WriterGone)
+                        Err(StoreError::WriteCancelled)
                     )
                 }
             };

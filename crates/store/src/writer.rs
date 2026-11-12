@@ -1900,6 +1900,9 @@ impl Inner {
         }
         for b in group {
             if let Err(e) = self.write(std::iter::once(&**b), replay_only(b)) {
+                if matches!(e, StoreError::WriteCancelled) {
+                    continue;
+                }
                 self.report
                     .errors
                     .push(format!("input {}: {e}", b.input.id));
@@ -2043,7 +2046,7 @@ impl Inner {
     ) -> Result<()> {
         if replay && self.sinex.is_none() {
             self.until_stopped(|inner| inner.write_uninterrupted(batches))?
-                .ok_or(StoreError::WriterGone)
+                .ok_or(StoreError::WriteCancelled)
         } else {
             self.write_uninterrupted(batches)
         }

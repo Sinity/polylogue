@@ -388,6 +388,7 @@ impl Engine {
             Err(polylogue_store::StoreError::PrimaryPending { .. }) => {
                 pass.capture_pending = true;
             }
+            Err(polylogue_store::StoreError::WriteCancelled) => {}
             // The old reading remains committed and the next pass retries.
             Err(error) => pass.errors.push(format!("re-parse: {error}")),
         }

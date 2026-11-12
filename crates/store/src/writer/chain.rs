@@ -653,7 +653,7 @@ impl Inner {
             self.replace_index(input, chain, length, reading)
         } else {
             self.until_stopped(|inner| inner.replace_index(input, chain, length, reading))?
-                .ok_or(StoreError::WriterGone)
+                .ok_or(StoreError::WriteCancelled)
         }
     }
 

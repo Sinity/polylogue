@@ -145,6 +145,9 @@ pub enum StoreError {
     Counts(#[from] polylogue_model::CountMismatch),
     #[error("the writer has stopped")]
     WriterGone,
+    /// Shutdown rolled back replay of retained bytes; its cursor did not move.
+    #[error("retained-byte replay was cancelled")]
+    WriteCancelled,
     /// The disk failed a sync of the register: writing stopped for the rest
     /// of this boot ([`storage_failure`]).
     #[error("{0}")]
@@ -252,6 +255,9 @@ impl StoreError {
     /// the group's reason, refusing content exactly when the group's error
     /// did.
     pub(crate) fn for_group_member(&self) -> Self {
+        if matches!(self, Self::WriteCancelled) {
+            return Self::WriteCancelled;
+        }
         let reason = self.to_string();
         if self.refuses_content() {
             Self::Invalid(reason)
@@ -284,7 +290,7 @@ impl StoreError {
                 _ => "bad_request",
             },
             Self::ReadDeadlineExceeded => "deadline_exceeded",
-            Self::ReadCancelled => "cancelled",
+            Self::ReadCancelled | Self::WriteCancelled => "cancelled",
             Self::ReadPoolClosed => "shutting_down",
             Self::NotFound(_) => "not_found",
             Self::Invalid(_) => "bad_request",

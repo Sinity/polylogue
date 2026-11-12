@@ -78,10 +78,12 @@ fn a_stop_during_index_rebuild_preserves_retained_bytes_and_restart_finishes() {
     config.reads_sources = false;
     fault::clear();
     fault::arm("write.replay_rows", "", Action::Hold, 0, 1);
-    let mut runtime = crate::test_daemon::start_runtime(
-        &root,
+    let mut runtime = crate::daemon::service::start(
+        crate::config::Config::for_test(&config, &root),
         config.clone(),
         crate::daemon::service::ArchiveMode::Standalone,
+        polylogue_engine::Lifetime::UntilIdle,
+        Some(polylogue_testkit::stopped_attempt()),
     )
     .unwrap();
     let started = Instant::now();
@@ -92,9 +94,21 @@ fn a_stop_during_index_rebuild_preserves_retained_bytes_and_restart_finishes() {
         );
         std::thread::yield_now();
     }
+    let idle = runtime.idle();
     runtime.stop_accepting();
     fault::release();
     let started = Instant::now();
+    loop {
+        if let Some(summary) = idle.borrow().as_ref() {
+            assert!(summary.work.errors.is_empty(), "{summary:?}");
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "cancelled rebuild did not finish"
+        );
+        std::thread::yield_now();
+    }
     runtime.shutdown().unwrap();
     assert!(started.elapsed() < Duration::from_secs(5));
     fault::clear();
