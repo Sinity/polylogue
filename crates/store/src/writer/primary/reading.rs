@@ -150,6 +150,7 @@ impl WriterSender {
         let mut version = None;
         let mut complete = false;
         let mut diagnosed = false;
+        let mut partial = false;
         source.visit_source(|step| {
             step.counts.check()?;
             if step.start > step.parsed_upto || step.parsed_upto > length {
@@ -167,10 +168,12 @@ impl WriterSender {
             }
             version.get_or_insert_with(|| step.reading_version.clone());
             complete = step.progress.reached_end() && step.parsed_upto == length;
+            partial = matches!(step.progress, polylogue_model::batch::StepProgress::AtEnd)
+                && step.parsed_upto < length;
             diagnosed = crate::wire_shapes::is_refusal(step);
             Ok(())
         })?;
-        if !complete && !diagnosed {
+        if !complete && !diagnosed && !partial {
             return Err(StoreError::Invalid(
                 "a replacement reading is not complete".into(),
             ));
@@ -251,6 +254,39 @@ impl WriterSender {
                 params![input.id,chain], |row| row.get(0),
             )?
         };
+        if partial {
+            // A read through an unfinished record observes a prefix, not a
+            // replacement output set. Use the ordinary bounded publisher;
+            // the local partial reading still commits atomically below.
+            let mut publication = None;
+            source.visit_source(|step| {
+                open()?;
+                let mut batch = Batch {
+                    input: input.clone(),
+                    change: Change::Reparse { chain },
+                    observation: None,
+                    continues: false,
+                    new_blob: None,
+                    blobs: Vec::new(),
+                    length,
+                    parse: vec![step.clone()],
+                    release: Default::default(),
+                    acquisition: None,
+                    basis: None,
+                    required_disposition: None,
+                };
+                self.prepare_primary_batch(&mut batch)?;
+                publication = batch.parse[0].publication.take();
+                Ok(())
+            })?;
+            let publication = publication.ok_or_else(|| {
+                StoreError::Invalid("a partial reading has no admitted interpretation".into())
+            })?;
+            let mut index = open()?;
+            let snapshot = index.transaction()?;
+            source.select_source(&snapshot, input, chain, length, publication)?;
+            return Ok(());
+        }
         let sinex = self.0.sinex.as_ref().expect("primary sender");
         let mut following: Option<ReadingScope> = None;
         let publication = loop {
