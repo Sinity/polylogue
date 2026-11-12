@@ -181,22 +181,40 @@ fn continued(parent: &str, child: &str) -> String {
 #[test]
 fn cyclic_and_conflicting_families_tile_both_directions_without_a_guessed_root() {
     use polylogue_model::read::LineageIssue;
-    let cases: [(&[(&str, &str)], &str, bool); 3] = [
-        (&[("a", "b"), ("b", "a"), ("b", "tail")], "tail", true),
-        (
-            &[
+    struct Case {
+        edges: &'static [(&'static str, &'static str)],
+        seed: &'static str,
+        cycle_issue: bool,
+    }
+    let cases = [
+        Case {
+            edges: &[("a", "b"), ("b", "a"), ("b", "tail")],
+            seed: "tail",
+            cycle_issue: true,
+        },
+        Case {
+            edges: &[
                 ("r", "fork"),
                 ("c", "d"),
                 ("d", "c"),
                 ("c", "fork"),
                 ("fork", "tail"),
             ],
-            "tail",
-            false,
-        ),
-        (&[("r", "c"), ("c", "d"), ("d", "c")], "d", false),
+            seed: "tail",
+            cycle_issue: false,
+        },
+        Case {
+            edges: &[("r", "c"), ("c", "d"), ("d", "c")],
+            seed: "d",
+            cycle_issue: false,
+        },
     ];
-    for (edges, seed, cycle) in cases {
+    for Case {
+        edges,
+        seed,
+        cycle_issue,
+    } in cases
+    {
         let d = test_daemon::start("placeholder");
         let ids = edges
             .iter()
@@ -278,7 +296,7 @@ fn cyclic_and_conflicting_families_tile_both_directions_without_a_guessed_root()
             .unwrap();
         assert_eq!(state.root, None);
         assert_eq!(state.depth, None);
-        if cycle {
+        if cycle_issue {
             assert!(matches!(state.issue, Some(LineageIssue::Cycle { .. })));
         } else {
             assert!(matches!(
