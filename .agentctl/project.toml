@@ -6,7 +6,7 @@ root_markers = ["Cargo.toml", "crates"]
 [environment]
 kind = "direct"
 command = ["env", "-u", "CARGO_TARGET_DIR"]
-inherit = ["HOME", "USER", "PATH", "LANG", "XDG_RUNTIME_DIR"]
+inherit = ["HOME", "USER", "PATH", "LANG", "XDG_RUNTIME_DIR", "SINEXD"]
 unset = ["CARGO_TARGET_DIR", "PYTHONPATH", "PYTHONHOME"]
 
 [environment.values]
