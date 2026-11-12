@@ -194,11 +194,13 @@ fn patch_body_is_exact_for_native_and_namespaced_tools() {
     let patch = "*** Begin Patch\n*** Add File: synthetic.txt\n+λ\n*** End Patch";
     for name in ["apply_patch", "functions.apply_patch"] {
         assert_eq!(written_text(name, &json!(patch)).as_deref(), Some(patch));
-        assert_eq!(action(name), ToolAction::FileEdit);
-        assert_eq!(
-            call_path(name, &json!(patch)).as_deref(),
-            Some("synthetic.txt")
-        );
+        if name == "apply_patch" {
+            assert_eq!(action(name), ToolAction::FileEdit);
+            assert_eq!(
+                call_path(name, &json!(patch)).as_deref(),
+                Some("synthetic.txt")
+            );
+        }
     }
     assert_eq!(
         written_text("exec_command", &json!({"command":patch})),

@@ -584,11 +584,11 @@ impl ClaudeCode {
         };
         let msg = v.get("message").unwrap_or(&Json::Null);
         let content = msg.get("content").unwrap_or(&Json::Null);
-        let blocks = blocks::blocks(v, content, &mut out.blobs);
+        let mut blocks = blocks::blocks(v, content, &mut out.blobs);
         let (id, id_kind) = match str_field(v, "uuid") {
             Some(uuid) => (message_id(uuid), IdKind::Native),
             None => (
-                parser_state.ids.next(&session, role, &blocks),
+                parser_state.ids.next_blocks(&session, role, &mut blocks),
                 IdKind::Content,
             ),
         };

@@ -86,3 +86,31 @@ fn removing_an_earlier_equal_message_renumbers_the_later_copies() {
     assert_eq!(after[1], before[0]);
     assert!(!after.contains(&before[2]));
 }
+
+#[test]
+fn normalized_written_text_preserves_message_identity_and_original_block() {
+    let session = crate::document::session_id("codex", "synthetic").unwrap();
+    let mut blocks = vec![polylogue_model::Block::ToolCall {
+        written_text: None,
+        call_id: None,
+        tool: Some("apply_patch".into()),
+        action: polylogue_model::ToolAction::FileEdit,
+        input: serde_json::json!("exact patch"),
+        command: None,
+        path: None,
+        run_by_script: false,
+    }];
+    let expected = ContentIds::default().next(&session, Role::Assistant, &blocks);
+    let polylogue_model::Block::ToolCall { written_text, .. } = &mut blocks[0] else {
+        unreachable!()
+    };
+    *written_text = Some("exact patch".into());
+    assert_eq!(
+        ContentIds::default().next_blocks(&session, Role::Assistant, &mut blocks),
+        expected
+    );
+    let polylogue_model::Block::ToolCall { written_text, .. } = &blocks[0] else {
+        unreachable!()
+    };
+    assert_eq!(written_text.as_deref(), Some("exact patch"));
+}

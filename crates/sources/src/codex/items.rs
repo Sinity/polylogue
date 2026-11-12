@@ -181,7 +181,7 @@ pub fn action(tool: &str) -> ToolAction {
     match tool {
         "shell" | "local_shell" | "exec_command" | "shell_command" => ToolAction::Shell,
         "exec" => ToolAction::Code,
-        "apply_patch" | "functions.apply_patch" | "file_change" => ToolAction::FileEdit,
+        "apply_patch" | "file_change" => ToolAction::FileEdit,
         "view_image" => ToolAction::FileRead,
         "tool_search" => ToolAction::Search,
         "web_search" => ToolAction::Web,
@@ -222,7 +222,7 @@ fn shell_line(words: &[&str]) -> String {
 
 /// The file a call edits, for patch tools.
 pub fn call_path(tool: &str, input: &Json) -> Option<String> {
-    if !matches!(tool, "apply_patch" | "functions.apply_patch") {
+    if tool != "apply_patch" {
         return input.get("path").and_then(Json::as_str).map(str::to_owned);
     }
     let patch = input

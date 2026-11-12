@@ -491,7 +491,7 @@ impl Rollout {
                 }
             }
         };
-        let Some((role, prompt_kind, blocks)) =
+        let Some((role, prompt_kind, mut blocks)) =
             self.item_blocks(parser_state, &session, ty, item, at, out)
         else {
             return RecordOutcome::skipped("item with no content");
@@ -499,7 +499,7 @@ impl Rollout {
         let (id, id_kind) = match str_field(item, "id") {
             Some(native) => (message_id(native), IdKind::Native),
             None => (
-                parser_state.ids.next(&session, role, &blocks),
+                parser_state.ids.next_blocks(&session, role, &mut blocks),
                 IdKind::Content,
             ),
         };
