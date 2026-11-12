@@ -565,6 +565,7 @@ fn start(conn: &Connection, session_pk: i64, change: &SessionChange) -> Result<S
            AND (session_order, id) > (?2, ?3)
          ORDER BY session_order, id",
     )?;
+    let mut first_changed: Option<(String, String)> = None;
     for &pk in &change.messages {
         if let Some(seq) = header(conn, session_pk, "message_pk", pk)? {
             lower(&mut limit, seq);
@@ -574,8 +575,16 @@ fn start(conn: &Connection, session_pk: i64, change: &SessionChange) -> Result<S
                 Ok((row.get(0)?, row.get(1)?))
             })
             .optional()?;
-        let Some(order) = order else { continue };
-        // Its entries go before the first unchanged message after it.
+        if let Some(order) = order
+            && first_changed.as_ref().is_none_or(|first| &order < first)
+        {
+            first_changed = Some(order);
+        }
+    }
+    // Message headers follow this same order. The first unchanged successor
+    // after the earliest changed message is also the earliest insertion
+    // boundary; scanning from every changed message repeats a batch's tail.
+    if let Some(order) = first_changed {
         let mut place = end;
         let mut rows = later.query(params![session_pk, order.0, order.1])?;
         while let Some(row) = rows.next()? {
@@ -1621,3 +1630,6 @@ impl Reader<'_> {
             .transpose()
     }
 }
+
+#[cfg(test)]
+mod tests;
