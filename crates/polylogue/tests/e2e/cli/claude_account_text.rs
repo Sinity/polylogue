@@ -2,7 +2,7 @@ use super::*;
 use serde_json::json;
 
 use polylogue_model::bundle::Record;
-use polylogue_model::read::{ReadPage, ReadyCall};
+use polylogue_model::read::ReadPage;
 
 pub(super) fn import_report(out: &Output) -> polylogue_engine::ImportReport {
     assert!(out.status.success(), "{out:?}");

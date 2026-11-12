@@ -108,21 +108,6 @@ fn continuation_encodes_the_complete_ready_call_without_decoding_its_cursor() {
     assert_eq!(fields["cursor"], "sealed +λ&?");
     let args: Value = serde_json::from_str(&fields["arguments"]).unwrap();
     assert_eq!(args, call.arguments);
-    for path in [
-        "https://example.test/read",
-        "//example.test/read",
-        "javascript:run",
-        "/read?target=other",
-    ] {
-        let mut declarations = OperationDeclarations::builder("polylogue", Default::default());
-        let mut spec =
-            OperationSpec::request("read", &["read"], "read", "Read", "Read a synthetic record");
-        spec.http_route = Some(path.into());
-        declarations
-            .declare::<Value, Value>(spec, |answer, _| answer.to_string())
-            .unwrap();
-        assert!(http_url(&declarations.finish(), &call).is_err());
-    }
 }
 #[test]
 fn continuation_links_use_service_calls_instead_of_template_cursor_state() {

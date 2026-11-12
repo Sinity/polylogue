@@ -1,7 +1,7 @@
 //! Stored attachment metadata and checked byte pages through the real CLI.
 use super::read_current::Items;
 use super::*;
-use polylogue_model::read::{ItemKind, ReadItem, ReadPage, ReadyCall};
+use polylogue_model::read::{ItemKind, ReadItem, ReadPage};
 use serde_json::{Value, json};
 
 const MESSAGE: &str = "chatgpt:asset-message";
