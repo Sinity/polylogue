@@ -118,7 +118,8 @@ qualify that exact tree with `gh workflow run check -f rev=<full-commit-sha>`,
 then publish it with `gh workflow run package -f rev=<full-commit-sha>`. The manual
 check records and asserts its checked commit and runs the full check. Pull requests
 continue to check their merge with the default branch. Manual checks may reuse
-master's build cache but never replace it or its recorded source commit.
+master's build cache but never replace it or its recorded source commit. The package
+log records the actual fetched flake source path, revision and NAR hash before building.
 
 ## Deployment modules
 
