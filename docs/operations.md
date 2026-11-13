@@ -35,9 +35,9 @@ not keep ordinary replay running during shutdown.
 
 **Restart** resumes from committed positions; it does not rescan the archive, replay tool-database captures or re-read history. Target: socket ready within 2 s of start.
 
-**Requests during stored parsing.** A queued import ends the background parser
-turn after its already-admitted chunks have committed and its parser readers
-have drained. The loop answers the request through the normal import path,
+**Requests during stored parsing.** A queued import returns chunks that no worker
+has started to ordinary planning. Chunks already in hand commit and their parser
+readers drain before the loop answers through the normal import path,
 then reloads committed source and parser positions before continuing. Work
 not admitted is selected again from those positions; no input is truncated
 or marked complete by the yield. An unfinished private replacement reading is
