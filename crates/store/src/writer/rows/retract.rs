@@ -1,5 +1,6 @@
 //! Remove one chain's statements and show the readings that remain.
 use super::*;
+use crate::versions::VersionKind;
 
 impl RowWriter<'_, '_> {
     pub(super) fn retract(&self) -> Result<()> {
