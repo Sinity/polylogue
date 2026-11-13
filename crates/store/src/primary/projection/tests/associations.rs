@@ -61,6 +61,7 @@ fn confirmed_forward_message_associations_survive_weaker_donors_and_target_arriv
     let mut index = crate::archive::open_write(&archive.index_db(), 1024).unwrap();
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
     apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
         &[
@@ -199,6 +200,7 @@ fn confirmed_explicit_copied_prefix_members_wait_for_message_and_keep_original_c
     let mut index = crate::archive::open_write(&archive.index_db(), 1024).unwrap();
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
     apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
         &[

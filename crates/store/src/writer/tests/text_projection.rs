@@ -24,6 +24,7 @@ fn current_blocks_reuse_stored_text_identities() {
         .collect();
     let mut b = batch("input", Route::Live, 0, rows, &["session"]);
     resolve::prepare_index(&tx, &mut b, 1, false).unwrap();
+    let texts = crate::text_rows::TextIds::new(&tx, false).unwrap();
     tx.authorizer(Some(|context: AuthContext<'_>| match context.action {
         AuthAction::Read {
             table_name: "text",
@@ -34,6 +35,7 @@ fn current_blocks_reuse_stored_text_identities() {
     .unwrap();
     assert_eq!(
         write_rows(
+            &texts,
             &tx,
             &b,
             &b.parse[0],

@@ -92,6 +92,7 @@ fn removal_steps(unrelated: usize, indexed: bool) -> u64 {
     )
     .unwrap();
     write_rows(
+        &crate::text_rows::TextIds::new(&tx, false).unwrap(),
         &tx,
         &removed,
         &removed.parse[0],

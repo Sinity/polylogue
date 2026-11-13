@@ -36,6 +36,7 @@ fn write_test_rows(
     batch.parse = vec![step.clone()];
     resolve::prepare_index(tx, &mut batch, chain, first.is_some())?;
     write_rows(
+        &crate::text_rows::TextIds::new(tx, false).unwrap(),
         tx,
         &batch,
         &batch.parse[0],

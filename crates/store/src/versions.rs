@@ -45,7 +45,7 @@ impl VersionKind {
 
 pub(crate) struct TextRows<'a> {
     pub packed: &'a HashMap<[u8; 32], Vec<u8>>,
-    pub first_build: Option<&'a FirstBuild>,
+    pub texts: &'a crate::text_rows::TextIds,
 }
 
 pub(crate) fn store(
@@ -92,7 +92,7 @@ fn store_value(
 ) -> Result<()> {
     let TextRows {
         packed,
-        first_build,
+        texts: identities,
     } = text_rows;
     let kind = kind.name();
     let sql = if replace {
@@ -113,12 +113,8 @@ fn store_value(
     }
     for (idx, text_hash) in texts.iter().enumerate() {
         if let Some(text_hash) = text_hash {
-            let text_id = crate::text_rows::resolve(
-                conn,
-                text_hash,
-                packed.get(text_hash).map(Vec::as_slice),
-                first_build,
-            )?;
+            let text_id =
+                identities.resolve(conn, text_hash, packed.get(text_hash).map(Vec::as_slice))?;
             conn.prepare_cached(&format!(
                 "INSERT INTO {kind}_version_text(version_hash,idx,text_id) VALUES (?1,?2,?3)"
             ))?
@@ -385,6 +381,7 @@ pub(crate) fn track_unreferenced(conn: &Connection) -> Result<()> {
 pub(crate) fn remove_unreferenced(
     conn: &Connection,
     first_build: Option<&FirstBuild>,
+    texts: &crate::text_rows::TextIds,
 ) -> Result<()> {
     for kind in VersionKind::ALL {
         let name = kind.name();
@@ -420,7 +417,7 @@ pub(crate) fn remove_unreferenced(
         .execute([])?;
     // Candidates drive the lookup. An ordinary JOIN can scan every retained
     // text and its references before checking even an empty candidate table.
-    let texts = conn
+    let unused_texts = conn
         .prepare_cached(
             "SELECT t.id,t.indexed,t.hash FROM temp.unreferenced_text u CROSS JOIN text t ON t.id=u.text_id
              WHERE NOT EXISTS(SELECT 1 FROM block b WHERE b.text_id=t.id)
@@ -430,16 +427,33 @@ pub(crate) fn remove_unreferenced(
         )?
         .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, crate::encoding::Columns::hash(r, 2)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    for (id, indexed, hash) in texts {
-        if let Some(first) = first_build {
+    for (id, indexed, hash) in unused_texts {
+        if first_build.is_some() {
             conn.prepare_cached("DELETE FROM text WHERE id=?1")?
                 .execute([id])?;
-            first.remove_text(&hash);
+            texts.removed(&hash, id);
         } else {
             crate::text_rows::remove(conn, id, indexed)?;
+            texts.removed(&hash, id);
         }
     }
     conn.prepare_cached("DELETE FROM temp.unreferenced_text")?
         .execute([])?;
     Ok(())
+}
+
+/// The version already owns these references; selection need not resolve
+/// their text hashes again.
+pub(crate) fn text_ids(
+    conn: &Connection,
+    kind: VersionKind,
+    hash: &[u8],
+) -> Result<std::collections::BTreeMap<usize, i64>> {
+    Ok(conn
+        .prepare_cached(&format!(
+            "SELECT idx,text_id FROM {}_version_text WHERE version_hash=?1",
+            kind.name()
+        ))?
+        .query_map([hash], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?)
 }

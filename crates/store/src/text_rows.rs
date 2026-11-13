@@ -2,10 +2,12 @@
 //! in their own transaction; indexing consumes committed queue entries.
 
 use crate::Result;
+mod identities;
 #[cfg(any(test, feature = "fixture"))]
 use crate::encoding::pack_text;
 use crate::encoding::unpack_text;
 use crate::first_build::FirstBuild;
+pub(crate) use identities::TextIds;
 use rusqlite::OptionalExtension;
 use rusqlite::{Connection, TransactionBehavior, params};
 #[cfg(any(test, feature = "fixture"))]
@@ -23,7 +25,10 @@ pub(crate) fn intern(
     first_build: Option<&FirstBuild>,
 ) -> Result<i64> {
     let hash = blake3::hash(body.as_bytes());
-    let id = find(conn, hash.as_bytes(), first_build)?;
+    let id = conn
+        .prepare_cached("SELECT id FROM text WHERE hash=?1")?
+        .query_row([hash.as_bytes().as_slice()], |r| r.get::<_, i64>(0))
+        .optional()?;
     let bulk = first_build.is_some();
     let (id, indexed) = match id {
         Some(id) => (
@@ -42,9 +47,6 @@ pub(crate) fn intern(
             conn.prepare_cached("INSERT INTO text(hash, body, indexed) VALUES (?1, ?2, ?3)")?
                 .execute(params![&hash.as_bytes()[..], &*packed, claimed])?;
             let id = conn.last_insert_rowid();
-            if let Some(first_build) = first_build {
-                first_build.add_text(hash.as_bytes(), id);
-            }
             (id, claimed)
         }
     };
@@ -55,46 +57,6 @@ pub(crate) fn intern(
         activate(conn, id, bit, bulk)?;
     }
     Ok(id)
-}
-
-/// Resolves content identity on the serial writer's transaction, after all
-/// earlier groups have committed. Workers supply hashes and packed bodies.
-pub(crate) fn resolve(
-    conn: &Connection,
-    hash: &[u8; 32],
-    body: Option<&[u8]>,
-    first: Option<&FirstBuild>,
-) -> Result<i64> {
-    if let Some(id) = find(conn, hash, first)? {
-        return Ok(id);
-    }
-    let body =
-        body.ok_or_else(|| crate::StoreError::Invalid("a new text has no prepared bytes".into()))?;
-    conn.prepare_cached("INSERT INTO text(hash,body,indexed) VALUES (?1,?2,0)")?
-        .execute(params![hash.as_slice(), body])?;
-    let id = conn.last_insert_rowid();
-    if let Some(first) = first {
-        first.add_text(hash, id);
-    }
-    Ok(id)
-}
-
-fn find(conn: &Connection, hash: &[u8; 32], first: Option<&FirstBuild>) -> Result<Option<i64>> {
-    match first {
-        Some(first) => first.text(conn, hash),
-        None => Ok(conn
-            .prepare_cached("SELECT id FROM text WHERE hash=?1")?
-            .query_row([hash.as_slice()], |r| r.get(0))
-            .optional()?),
-    }
-}
-
-pub(crate) fn retained(
-    conn: &Connection,
-    hash: &[u8; 32],
-    first: Option<&FirstBuild>,
-) -> Result<i64> {
-    resolve(conn, hash, None, first)
 }
 
 /// Marks an already stored text for current-block search membership.

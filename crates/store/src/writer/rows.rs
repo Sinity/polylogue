@@ -15,6 +15,7 @@ pub(super) use retract::prune_sessions;
 /// Writes a parse step's rows; returns the number of message rows written.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn write_rows(
+    texts: &crate::text_rows::TextIds,
     tx: &Transaction<'_>,
     b: &Batch,
     p: &ParseStep,
@@ -30,6 +31,7 @@ pub(super) fn write_rows(
         p,
         ReadingWrite {
             resolution,
+            texts,
             counter,
             first_build,
             confirmed: false,
@@ -44,6 +46,7 @@ pub(super) fn write_rows(
 /// its first ordinary chunk. Later chunks use the ordinary continuation path.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn write_replacement_rows(
+    texts: &crate::text_rows::TextIds,
     tx: &Transaction<'_>,
     b: &Batch,
     p: &ParseStep,
@@ -59,6 +62,7 @@ pub(super) fn write_replacement_rows(
         p,
         ReadingWrite {
             resolution,
+            texts,
             counter,
             first_build,
             confirmed: false,
@@ -73,6 +77,7 @@ pub(super) fn write_replacement_rows(
 /// was already proved by the producer and lifecycle may hide earlier facts.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn write_confirmed_rows(
+    texts: &crate::text_rows::TextIds,
     tx: &Transaction<'_>,
     b: &Batch,
     p: &ParseStep,
@@ -88,6 +93,7 @@ pub(super) fn write_confirmed_rows(
         p,
         ReadingWrite {
             resolution,
+            texts,
             counter,
             first_build,
             confirmed: true,
@@ -99,6 +105,7 @@ pub(super) fn write_confirmed_rows(
 }
 
 struct ReadingWrite<'a> {
+    texts: &'a crate::text_rows::TextIds,
     resolution: &'a resolve::Resolution,
     counter: i64,
     first_build: Option<&'a FirstBuild>,
@@ -116,6 +123,7 @@ fn apply_rows(
 ) -> Result<u64> {
     let ReadingWrite {
         resolution,
+        texts,
         counter,
         first_build,
         confirmed,
@@ -189,7 +197,7 @@ fn apply_rows(
             &version.prepared,
             crate::versions::TextRows {
                 packed: &p.prepared.texts,
-                first_build,
+                texts,
             },
             version.replace,
             version.admitted.or(native_admission),
@@ -214,6 +222,7 @@ fn apply_rows(
         counter,
         packed: &p.prepared.texts,
         first_build,
+        texts,
         keys,
     };
     for (i, row) in p.output.documents.iter().enumerate() {
@@ -459,7 +468,15 @@ fn apply_rows(
             written += u64::from(rows.refresh_message(*pk)?);
         }
         for (pk, choice) in &choices.documents {
-            crate::documents::apply_choice(tx, *pk, choice.as_ref(), counter, first_build, keys)?;
+            crate::documents::apply_choice(
+                tx,
+                *pk,
+                choice.as_ref(),
+                counter,
+                first_build,
+                texts,
+                keys,
+            )?;
         }
         for pk in choices.events.keys() {
             rows.refresh_event(*pk)?;
@@ -570,6 +587,7 @@ pub(crate) fn finish(
     tx: &Transaction<'_>,
     changes: &ChangeSummary,
     first_build: Option<&FirstBuild>,
+    texts: &crate::text_rows::TextIds,
 ) -> Result<u64> {
     changes.finish_links(tx)?;
     let read = crate::items::refresh(tx, changes)?;
@@ -580,7 +598,7 @@ pub(crate) fn finish(
         crate::derive::links::fold(tx, &sessions)?;
         crate::measure::time::forget_settled(tx, changes, &sessions)?;
     }
-    crate::versions::remove_unreferenced(tx, first_build)?;
+    crate::versions::remove_unreferenced(tx, first_build, texts)?;
     Ok(read)
 }
 
@@ -1320,6 +1338,8 @@ impl RowWriter<'_, '_> {
             ));
         }
         prepared.projection.validate(m.blocks.len())?;
+        let stored_texts =
+            crate::versions::text_ids(self.tx, VersionKind::Message, &prepared.hash)?;
         for (idx, ((block, body), data)) in m
             .blocks
             .iter()
@@ -1329,7 +1349,11 @@ impl RowWriter<'_, '_> {
         {
             let text_id = prepared.texts[idx]
                 .as_ref()
-                .map(|hash| crate::text_rows::retained(self.tx, hash, self.first_build))
+                .map(|_| {
+                    stored_texts.get(&idx).copied().ok_or_else(|| {
+                        StoreError::Invalid("stored message text reference is missing".into())
+                    })
+                })
                 .transpose()?;
             let stored = StoredBlock {
                 body,

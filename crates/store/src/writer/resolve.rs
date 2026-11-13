@@ -139,7 +139,7 @@ pub(crate) struct Resolver {
     archive: Archive,
     active: Mutex<Active>,
     available: Condvar,
-    first: Option<Arc<crate::first_build::Keys>>,
+    first: Option<Arc<crate::first_build::FirstBuild>>,
     #[cfg(test)]
     waiting: Mutex<Option<std::sync::mpsc::Sender<()>>>,
 }
@@ -182,7 +182,7 @@ impl Resolver {
     pub(crate) fn new(
         archive: &Archive,
         index: &Connection,
-        first: Option<Arc<crate::first_build::Keys>>,
+        first: Option<Arc<crate::first_build::FirstBuild>>,
     ) -> Result<Arc<Self>> {
         let mut next = BTreeMap::new();
         for kind in [
@@ -776,7 +776,7 @@ pub(super) fn prepare_index(
     first: bool,
 ) -> Result<()> {
     let first = first
-        .then(|| crate::first_build::Keys::load(index).map(Arc::new))
+        .then(|| crate::first_build::FirstBuild::load(index).map(Arc::new))
         .transpose()?;
     let resolver = Resolver::new(
         &Archive::at(std::path::Path::new("unused-test-location")),

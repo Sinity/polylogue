@@ -1002,6 +1002,7 @@ fn remember_blobs(tx: &rusqlite::Transaction<'_>) -> Result<()> {
 
 /// Stages bounded pages and atomically applies each complete global position.
 pub(crate) fn apply(
+    texts: &crate::text_rows::TextIds,
     index: &mut Connection,
     resolver: &Arc<crate::writer::resolve::Resolver>,
     events: &[Confirmed],
@@ -1024,6 +1025,7 @@ pub(crate) fn apply(
         candidate(index, next)?;
         let mut plan = plan(index)?;
         resolver.confirmed_readings(&mut plan.readings, &plan.available)?;
+        let text_transaction = texts.transaction();
         let tx = index.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let counter = crate::archive::bump_counter(&tx)?;
         // Lifecycle changes can remove or restore source admissions older than
@@ -1042,7 +1044,7 @@ pub(crate) fn apply(
         coverage(&tx, &plan)?;
         refusals(&tx, next)?;
         let changes = crate::change_summary::ChangeSummary::start(&tx)?;
-        crate::writer::apply_confirmed_readings(&tx, &mut plan.readings, counter, &changes)?;
+        crate::writer::apply_confirmed_readings(texts, &tx, &mut plan.readings, counter, &changes)?;
         bindings(&tx, &plan)?;
         // Variants are authored records, so only a request can change them.
         if plan.requests != StateChange::Unchanged {
@@ -1066,9 +1068,10 @@ pub(crate) fn apply(
         for session in touched {
             changes.whole_session(session);
         }
-        crate::writer::finish_rows(&tx, &changes, None)?;
+        crate::writer::finish_rows(&tx, &changes, None, texts)?;
         crate::fault::check("primary.before_commit", "")?;
         tx.commit()?;
+        text_transaction.commit();
         drop(plan);
     }
 }
