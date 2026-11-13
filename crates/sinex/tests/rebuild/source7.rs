@@ -109,7 +109,7 @@ fn admit_originals(running: &Running, parts: &[(&str, Option<Message>)]) -> (Inp
                     source:source.clone(), id:material,
                     input:sinex_model::InputRef {kind:"claude-code".into(),locator:"/other-host/session.jsonl".into(),host:"fixture-host".into()},
                     blob:blob.clone(),length:bytes.len() as u64,chunks:vec![],parser:"polylogue-claude-code".into(),
-                    parser_version:3,part_index:index as u64,previous_part:previous,manifest:Default::default(),
+                    parser_version:3,part_index:index as u32,previous_part:previous,manifest:Default::default(),
                 }) };
             sinex_transport::frame_bytes::write(root.path(),"polylogue",raw.frame(),&blob,bytes.len() as u64,bytes.as_bytes()).unwrap();
             sinex_transport::producer::transfer_frame(&client,&subjects,"polylogue",&mut acks,root.path(),&raw,Duration::from_secs(30)).await.unwrap();
