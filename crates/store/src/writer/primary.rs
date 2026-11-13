@@ -355,7 +355,7 @@ pub(super) fn validate_primary_reading(index: &Connection, batch: &Batch) -> Res
 
 impl WriterQueue {
     pub(super) fn apply_confirmed(&self, events: Vec<crate::primary::Confirmed>) -> Result<i64> {
-        let result = (|| {
+        let result: Result<i64> = (|| {
             let kinds = confirmed_kinds(&events);
             let (reply, wait) = sync_channel(1);
             self.send(Msg::StageConfirmed(events, reply))
