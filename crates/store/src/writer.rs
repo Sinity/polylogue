@@ -98,7 +98,13 @@ enum Msg {
         Box<(crate::NewBlob, Option<crate::staging::PreparedBytes>)>,
         SyncSender<Result<BlobHash>>,
     ),
-    ReplaceChain(InputKey, i64, u64, ChainReading, SyncSender<Result<u64>>),
+    ReplaceChain(
+        InputKey,
+        i64,
+        u64,
+        Box<ChainReading>,
+        SyncSender<Result<u64>>,
+    ),
     /// Record older chains' readings from newer chains of the same inputs
     /// holding the same bytes.
     CopyReadings(
@@ -957,7 +963,13 @@ impl WriterSender {
         crate::timing::reading_commit_queue(1);
         if self
             .0
-            .send(Msg::ReplaceChain(input, chain, length, reading, reply))
+            .send(Msg::ReplaceChain(
+                input,
+                chain,
+                length,
+                Box::new(reading),
+                reply,
+            ))
             .is_err()
         {
             crate::timing::reading_commit_queue(-1);
@@ -1438,7 +1450,7 @@ impl Inner {
                         false
                     }
                     Msg::ReplaceChain(input, chain, length, reading, reply) => {
-                        replacements.push((input, chain, length, reading, reply));
+                        replacements.push((input, chain, length, *reading, reply));
                         false
                     }
                     Msg::StageConfirmed(events, reply) => {

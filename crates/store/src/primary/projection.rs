@@ -522,27 +522,27 @@ fn plan(index: &Connection) -> Result<Plan> {
     let mut rows = query.query([])?;
     while let Some(row) = rows.next()? {
         let fact = Fact::read(row)?;
-        if fact.kind == "reading" && fact.changed != fact.admitted {
-            if let (Some(input), Some(chain), Some(version)) =
+        if fact.kind == "reading"
+            && fact.changed != fact.admitted
+            && let (Some(input), Some(chain), Some(version)) =
                 (&fact.input, fact.chain, &fact.version)
-            {
-                let local: Option<(String,u64)> = index.query_row(
+        {
+            let local: Option<(String,u64)> = index.query_row(
                     "SELECT i.format,coalesce((SELECT max(length) FROM source_revision WHERE input=i.id AND chain=p.chain),0) FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id=?1 AND p.chain=?2 AND p.reading_version=?3",
                     params![input,chain,version], |row| Ok((row.get(0)?,row.get(1)?)),
                 ).optional()?;
-                if let Some((format, length)) = local {
-                    chains.insert(
-                        (input.clone(), chain),
-                        (
-                            crate::InputKey {
-                                id: input.clone(),
-                                format,
-                                route: polylogue_model::Route::Live,
-                            },
-                            length,
-                        ),
-                    );
-                }
+            if let Some((format, length)) = local {
+                chains.insert(
+                    (input.clone(), chain),
+                    (
+                        crate::InputKey {
+                            id: input.clone(),
+                            format,
+                            route: polylogue_model::Route::Live,
+                        },
+                        length,
+                    ),
+                );
             }
         }
         if let Some(product) = fact.product()? {
@@ -853,9 +853,8 @@ fn remember_blobs(tx: &rusqlite::Transaction<'_>) -> Result<()> {
         let bytes: Vec<u8> = row.get(1)?;
         let product: Product = unpacked(&bytes)?;
         let mut hashes = BTreeSet::new();
-        match product {
-            Product::Interpreted { record, .. } => hashes.extend(record.blobs),
-            _ => {}
+        if let Product::Interpreted { record, .. } = product {
+            hashes.extend(record.blobs);
         }
         for hash in hashes {
             tx.execute(
