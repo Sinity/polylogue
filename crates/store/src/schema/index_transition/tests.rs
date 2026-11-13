@@ -324,7 +324,6 @@ fn ordinary_open_keeps_originals_vectors_and_progress_across_separate_atomic_tra
         );
         batch.parse.clear();
         batch.length = bytes.len() as u64;
-        batch.new_blob = Some(blob.clone());
         writer.store_bytes(prepared.unwrap(), batch).unwrap();
         drop(writer);
 
