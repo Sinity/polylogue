@@ -543,7 +543,13 @@ fn an_import_answers_before_queued_captures_or_replays_start_and_the_next_turn_f
         captured_before: u64,
         before: Vec<Json>,
     }
-    let queued = || polylogue_store::timing::queues()[0].1;
+    let queued = || {
+        polylogue_store::timing::queues()
+            .into_iter()
+            .find(|(name, _)| *name == "parse")
+            .unwrap()
+            .1
+    };
     for retained in [false, true] {
         let home = ClaudeHome::new();
         let files: Vec<_> = (0..12)
@@ -663,7 +669,8 @@ fn an_import_answers_before_queued_captures_or_replays_start_and_the_next_turn_f
         // the committed capture and untouched queued inputs are inspected.
         let at_reply = READS.lock().unwrap().clone();
         let before_reply = {
-            let reader = home.reads().reader().unwrap();
+            let reads = home.reads();
+            let reader = reads.reader().unwrap();
             inputs.iter().map(|input| {
                 let claims = reader.query(
                     "SELECT count(*) AS n FROM message_source m JOIN input_ref i ON i.pk=m.input_pk WHERE i.id=?1",
