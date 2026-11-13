@@ -1,0 +1,86 @@
+[
+  {
+    "input": "fixture",
+    "record_key": "caab0b9d7a4f12f3985c7747105181a8f10ede91f6e65458fe0ce255a145a8e2",
+    "record": {
+      "product": "input",
+      "rows": {
+        "input": "fixture",
+        "format": "claude-code",
+        "revision": {
+          "number": 1,
+          "produced": "first",
+          "chain": 1,
+          "length": 10
+        },
+        "extents": [
+          {
+            "chain": 1,
+            "offset": 0,
+            "length": 10,
+            "blob": "0000000000000000000000000000000000000000000000000000000000000000",
+            "blob_offset": 0
+          }
+        ]
+      },
+      "material": {
+        "id": "00000000-0000-0000-0000-000000000001",
+        "hash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "length": 10,
+        "extents": []
+      }
+    }
+  },
+  {
+    "message": "claude-code:message",
+    "session": "claude-code:session",
+    "parent": null,
+    "role": "user",
+    "written_by": "unknown",
+    "prompt_kind": null,
+    "at": null,
+    "model": null,
+    "text": "",
+    "usage": {
+      "input": null,
+      "cached_input": null,
+      "cache_write": null,
+      "output": null,
+      "reasoning": null
+    },
+    "stop_reason": null,
+    "duration_ms": null,
+    "record_key": "42aed7b7e0f95171821d34f7f27b133a28989fa5be6b33e646d4224d959ea5c7",
+    "record": {
+      "product": "message",
+      "reading": {
+        "source_length": 10,
+        "input": {
+          "id": "fixture",
+          "format": "claude-code",
+          "route": "live"
+        },
+        "chain": 1,
+        "reading_version": "source7-parser",
+        "order_from": null,
+        "repeats_whole_conversations": false,
+        "start": 0,
+        "parsed_upto": 10,
+        "progress": "at_end"
+      },
+      "facts": {
+        "offset": 0,
+        "end": 9,
+        "message": {
+          "id": "claude-code:message",
+          "session": "claude-code:session",
+          "role": "user",
+          "at_quality": "unknown",
+          "blocks": []
+        }
+      },
+      "order": null,
+      "projection": null
+    }
+  }
+]
