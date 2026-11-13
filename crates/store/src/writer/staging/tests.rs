@@ -335,3 +335,126 @@ fn an_equal_length_change_to_a_staged_file_is_refused_at_append() {
         Err(StoreError::NotFound(_))
     ));
 }
+
+use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+fn reading(input: &str, chain: i64, length: u64) -> PreparedBatch {
+    PreparedBatch {
+        batch: Batch {
+            input: InputKey {
+                id: input.into(),
+                // An imported input can retain export-file as its register
+                // format while its reading uses the recognized provider.
+                format: "claude-code".into(),
+                route: polylogue_model::Route::Live,
+            },
+            change: Change::Reparse { chain },
+            length,
+            observation: None,
+            new_blob: None,
+            blobs: Vec::new(),
+            parse: Vec::new(),
+            continues: false,
+            acquisition: None,
+            basis: None,
+            required_disposition: None,
+            release: Default::default(),
+        },
+        files: Vec::new(),
+    }
+}
+
+fn retained() -> Connection {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(crate::schema::ARCHIVE).unwrap();
+    conn.execute("INSERT INTO input VALUES ('input','synthetic')", [])
+        .unwrap();
+    conn
+}
+
+#[test]
+fn stored_reading_validation_uses_logical_lengths_without_archive_writes() {
+    let conn = retained();
+    // Empty, incomplete-prefix and incomplete-tail inputs are valid register
+    // states. Their parser diagnosis must not require full physical coverage.
+    for (number, chain, length) in [(1, 1, 0), (2, 2, 100), (3, 2, 200), (4, 4, 10)] {
+        conn.execute(
+            "INSERT INTO revision VALUES ('input',?1,'rewritten',?2,?3,1)",
+            params![number, chain, length],
+        )
+        .unwrap();
+    }
+    conn.authorizer(Some(|context: AuthContext<'_>| match context.action {
+        AuthAction::Insert { .. }
+        | AuthAction::Update { .. }
+        | AuthAction::Delete { .. }
+        | AuthAction::Transaction { .. } => Authorization::Deny,
+        _ => Authorization::Allow,
+    }))
+    .unwrap();
+    for (chain, length) in [(1, 0), (2, 0), (2, 100), (2, 200), (4, 10)] {
+        let stored = stored_readings(&conn, &[reading("input", chain, length)])
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (
+                stored[0].chain,
+                stored[0].length,
+                stored[0].already_stored,
+                stored[0].bytes_written
+            ),
+            (chain, length, true, 0)
+        );
+    }
+    for item in [
+        reading("other", 2, 100),
+        reading("input", 3, 0),
+        reading("input", 2, 201),
+        reading("input", 4, 200),
+        reading("input", 1, 1),
+        reading("input", 1, u64::MAX),
+    ] {
+        assert!(stored_readings(&conn, &[item]).is_err());
+    }
+}
+
+fn validation_steps(revisions: usize) -> usize {
+    let mut conn = retained();
+    {
+        let tx = conn.transaction().unwrap();
+        for number in 1..=revisions {
+            tx.execute(
+                "INSERT INTO revision VALUES ('input',?1,'appended',1,?1,1)",
+                [number as i64],
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+    }
+    let count = Arc::new(AtomicUsize::new(0));
+    let steps = Arc::clone(&count);
+    conn.progress_handler(
+        1,
+        Some(move || {
+            steps.fetch_add(1, Ordering::Relaxed);
+            false
+        }),
+    );
+    let stored = stored_readings(&conn, &[reading("input", 1, revisions as u64)])
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored[0].length, revisions as u64);
+    conn.progress_handler(0, None::<fn() -> bool>);
+    count.load(Ordering::Relaxed)
+}
+
+#[test]
+fn replay_validation_does_not_walk_a_growing_current_revision_history() {
+    let short = validation_steps(1);
+    let long = validation_steps(10_000);
+    assert_eq!(
+        long, short,
+        "SQLite VM work must be independent of append history length"
+    );
+}
