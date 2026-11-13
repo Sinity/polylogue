@@ -1100,5 +1100,53 @@ pub fn by_extension_name(name: &str) -> Option<&'static OriginSpec> {
     })
 }
 
+/// Conversation URL declarations shared by ordinary query and read preparation.
+/// Captured path segments are provider IDs, retaining their original spelling.
+pub fn conversation_catalog() -> std::sync::Arc<references::Catalog> {
+    use references::{Catalog, Kind, Product, ProductCatalog, UrlPattern};
+    use std::sync::{Arc, LazyLock};
+    static CATALOG: LazyLock<Arc<Catalog>> = LazyLock::new(|| {
+        let mut patterns = Vec::new();
+        for origin in ORIGINS {
+            let Some(web) = &origin.web else { continue };
+            let mut paths = vec![format!("/{}/{{id}}", web.path)];
+            paths.extend(
+                web.prefixes
+                    .iter()
+                    .map(|prefix| format!("/{}/{{account}}/{}/{{id}}", prefix.path, web.path)),
+            );
+            for host in web.hosts {
+                for host in [host.to_string(), format!("www.{host}")] {
+                    for path in &paths {
+                        for path in [path.to_string(), format!("{path}/")] {
+                            patterns.push(
+                                UrlPattern::new(
+                                    &host,
+                                    &path,
+                                    &[],
+                                    &format!("session:{}:{{id}}", origin.name),
+                                )
+                                .and_then(|pattern| pattern.with_literal_capture("id"))
+                                .expect("origin conversation URL declarations are valid"),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        Arc::new(
+            Catalog::new(
+                Product::Polylogue,
+                vec![
+                    ProductCatalog::new(Product::Polylogue, vec![Kind::new("session", &[])])
+                        .with_patterns(patterns),
+                ],
+            )
+            .expect("conversation catalog declares valid product kinds"),
+        )
+    });
+    Arc::clone(&CATALOG)
+}
+
 #[cfg(test)]
 mod tests;

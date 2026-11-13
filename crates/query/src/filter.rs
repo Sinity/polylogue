@@ -22,6 +22,7 @@ pub struct Binder<'a> {
     pub text: &'a str,
     pub origins: &'a [String],
     pub clock: &'a Clock,
+    pub provider_catalog: Option<&'a references::Catalog>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -42,11 +43,6 @@ pub enum Filter {
     /// whose ID starts with it.
     Session {
         id: String,
-        span: Span,
-    },
-    /// A provider conversation URL.
-    Url {
-        url: String,
         span: Span,
     },
     /// A reference to rows by their natural key (`block:…`, `message:a..b`).
@@ -260,8 +256,26 @@ impl Binder<'_> {
             return Err(not_built(&format!("{kind} references")));
         }
         if reference.starts_with("http") {
-            Ok(Filter::Url {
-                url: reference.into(),
+            let invalid = || QueryError::Invalid {
+                message: format!("{reference} is not a conversation URL Polylogue recognizes"),
+                position: span.start,
+            };
+            let parsed = self
+                .provider_catalog
+                .ok_or_else(invalid)?
+                .read_url(reference)
+                .map_err(|_| invalid())?;
+            let references::Target::Object(object) = parsed.target() else {
+                return Err(invalid());
+            };
+            if object.product() != references::Product::Polylogue || object.kind() != "session" {
+                return Err(invalid());
+            }
+            let session = polylogue_model::SessionId::parse(object.id()).map_err(|_| invalid())?;
+            // A conversation page fragment selects its browser view; ordinary
+            // session selection keeps naming the complete physical session.
+            Ok(Filter::Session {
+                id: session.to_string(),
                 span,
             })
         } else if reference.starts_with('@') {

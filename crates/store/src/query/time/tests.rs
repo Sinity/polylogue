@@ -133,7 +133,7 @@ fn fractional_compiled_since_until_and_comparisons_keep_index_boundaries_exclusi
         saved: Default::default(),
         kept: Default::default(),
         fields: vec!["id".into()],
-        chat_pages: vec![],
+        provider_catalog: None,
     };
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();

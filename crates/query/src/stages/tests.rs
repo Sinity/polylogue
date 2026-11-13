@@ -80,7 +80,7 @@ fn the_selection_holds_the_stages_after_its_folded_filters() {
         )
         .unwrap(),
     );
-    let selection = plan.selection(&[], &clock).unwrap().unwrap();
+    let selection = plan.selection(&[], &clock, None).unwrap().unwrap();
     assert_eq!(
         selection.stages,
         vec![Stage {

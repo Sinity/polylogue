@@ -90,7 +90,7 @@ fn options() -> Options {
         saved: Default::default(),
         fields: vec![],
         kept: Default::default(),
-        chat_pages: vec![],
+        provider_catalog: None,
     }
 }
 

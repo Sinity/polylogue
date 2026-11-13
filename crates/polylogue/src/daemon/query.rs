@@ -134,23 +134,8 @@ pub(crate) fn options(reader: &Reader<'_>, ask: &Ask<'_>, seed: u64) -> Result<O
         saved: named.saved,
         kept: named.kept,
         fields: ask.fields.to_vec(),
-        chat_pages: chat_pages(),
+        provider_catalog: Some(polylogue_sources::origin::conversation_catalog()),
     })
-}
-
-/// Every origin's web chat pages, for pasted conversation URLs.
-fn chat_pages() -> Vec<polylogue_query::ChatPage> {
-    polylogue_sources::origin::ORIGINS
-        .iter()
-        .filter_map(|o| {
-            let web = o.web.as_ref()?;
-            Some(polylogue_query::ChatPage {
-                origin: o.name.to_owned(),
-                hosts: web.hosts.iter().map(|h| (*h).to_owned()).collect(),
-                path: web.path.to_owned(),
-            })
-        })
-        .collect()
 }
 
 /// Runs a query in full for keeping: its rows, and, when it has one

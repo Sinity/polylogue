@@ -1,6 +1,6 @@
 # References
 
-A reference names one thing in the archive, or one thing outside it, in a form every surface accepts: the CLI, MCP, HTTP, hooks, markup in transcripts, the web reader and the import of user state. One grammar and one parser (in the `model` crate) serve all of them. How references appear inside query text is [query.md](query.md); the CLI's own shorthands (`@N`, `@last`) are [interfaces.md](interfaces.md#addressing).
+A reference names one thing in the archive, or one thing outside it, in a form every surface accepts: the CLI, MCP, HTTP, hooks, markup in transcripts, the web reader and the import of user state. One grammar and one parser serve all of them. How references appear inside query text is [query.md](query.md); the CLI's own shorthands (`@N`, `@last`) are [interfaces.md](interfaces.md#addressing).
 
 ## Forms
 
@@ -30,6 +30,14 @@ A reference names one thing in the archive, or one thing outside it, in a form e
 | `sx:<sinex reference>` | a Sinex object. Sinex owns the grammar of the string ([Sinex query](https://github.com/Sinity/sinex/blob/master/docs/query.md)); Polylogue resolves it through Sinex's API when Sinex is reachable and shows it `unavailable` otherwise |
 
 Surfaces also accept shorter forms that resolve to one of the above before anything is stored or sent: `self` (the calling session), `last` and `latest`, a bare native ID or a unique prefix of at least eight characters, and a pasted provider URL.
+
+Ordinary query and read preparation match provider conversation URLs through
+the shared `references::Catalog`, using the origin declarations' hosts,
+conversation paths and account/project prefixes. Supported `www` aliases and
+an optional trailing slash name the same session. Native ID segments retain
+their literal spelling, including percent escapes; neither a query string nor
+a browser fragment changes the selected physical session. Extra or embedded
+path segments and lookalike hosts do not name a declared conversation page.
 
 ## Text coordinates
 

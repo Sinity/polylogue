@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 polylogue-model.workspace = true
 query-language.workspace = true
+references.workspace = true
 serde.workspace = true
 schemars.workspace = true
 canonical-json.workspace = true

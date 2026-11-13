@@ -110,11 +110,13 @@ impl Plan {
         &self,
         fields: &[String],
         clock: &crate::time::Clock,
+        provider_catalog: Option<&references::Catalog>,
     ) -> Result<Option<crate::selection::Selection>, QueryError> {
         let binder = crate::filter::Binder {
             text: &self.text,
             origins: &self.bindings.origins,
             clock,
+            provider_catalog,
         };
         crate::selection::Selection::of(self.expanded.query(), &binder, fields)
     }

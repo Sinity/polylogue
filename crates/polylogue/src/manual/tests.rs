@@ -27,7 +27,7 @@ fn the_manual_gives_working_example_queries() {
         saved: Default::default(),
         fields: Vec::new(),
         kept: Default::default(),
-        chat_pages: Vec::new(),
+        provider_catalog: None,
     };
     for query in examples {
         let answer = polylogue_store::query::compile(query, &options);

@@ -20,7 +20,7 @@ fn matched(home: &ClaudeHome, text: &str) -> u64 {
         saved: Default::default(),
         fields: vec!["id".into()],
         kept: Default::default(),
-        chat_pages: vec![],
+        provider_catalog: None,
     };
     let program =
         polylogue_store::query::compile(&format!("messages where {text}"), &options).unwrap();

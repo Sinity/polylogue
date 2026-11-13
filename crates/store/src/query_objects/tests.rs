@@ -442,7 +442,7 @@ fn executed_selection_records_its_actual_clock_resolution_and_read_context() {
             saved: BTreeMap::new(),
             fields: vec![],
             kept: BTreeMap::new(),
-            chat_pages: vec![],
+            provider_catalog: None,
         };
         let text = "sessions where since:7d";
         let selection = reader.prepare_selection(text, &options).unwrap();

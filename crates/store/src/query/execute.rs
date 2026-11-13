@@ -880,7 +880,7 @@ pub fn options_from_snapshot(
         saved: Default::default(),
         fields: options.fields.clone(),
         kept: Default::default(),
-        chat_pages: vec![],
+        provider_catalog: None,
     }
 }
 

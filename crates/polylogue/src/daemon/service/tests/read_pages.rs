@@ -58,6 +58,64 @@ fn call_cursor(call: &polylogue_model::read::ReadyCall) -> ResumeArguments {
 fn next(page: &ReadPage) -> Option<ResumeArguments> {
     page.document.footer.next.as_ref().map(call_cursor)
 }
+
+#[test]
+fn provider_conversation_urls_read_original_capture_ids_and_ignore_page_fragments() {
+    let daemon = test_daemon::start("unrelated session");
+    let spool = daemon
+        .config
+        .spool_dir(polylogue_sources::browser_capture::ORIGIN)
+        .join("chatgpt");
+    std::fs::create_dir_all(&spool).unwrap();
+    for (index, native) in ["a%2Fb", "a%2fb", "a%61b", "a%25b", "a@b"]
+        .into_iter()
+        .enumerate()
+    {
+        let text = format!("original text {index}");
+        let raw = (index % 2 == 0).then(|| {
+            serde_json::json!({
+                "id": native, "conversation_id": native, "title": "original conversation",
+                "create_time": 1_700_000_000.0, "current_node": "n1",
+                "mapping": {"n1": {"id": "n1", "parent": null, "children": [],
+                    "message": {"id": format!("turn-{index}"), "author": {"role": "user"},
+                        "create_time": 1_700_000_000.0,
+                        "content": {"content_type": "text", "parts": [&text]},
+                        "status": "finished_successfully", "metadata": {}}}}
+            })
+        });
+        let collector_id = if raw.is_some() {
+            "collector-metadata-id"
+        } else {
+            native
+        };
+        let capture = serde_json::json!({
+            "polylogue_capture_kind": "browser_llm_session", "schema_version": 1,
+            "provenance": {"captured_at": "2026-03-01T10:00:00Z"},
+            "raw_provider_payload": raw,
+            "session": {"provider": "chatgpt", "provider_session_id": collector_id,
+                "turns": [{"provider_turn_id": format!("turn-{index}"), "role": "user",
+                    "text": text}]}
+        });
+        std::fs::write(
+            spool.join(format!("capture-{index}.json")),
+            capture.to_string(),
+        )
+        .unwrap();
+    }
+    daemon.wait_for(|status| {
+        status["store"]["messages"] == 6 && status["store"]["search_pending"] == 0
+    });
+    for (index, native) in ["a%2Fb", "a%2fb", "a%61b", "a%25b", "a@b"]
+        .into_iter()
+        .enumerate()
+    {
+        let url = format!("https://chatgpt.com/g/project/c/{native}/?model=x#turn");
+        assert_eq!(
+            all(&daemon.daemon, &url, false, View::Transcript),
+            format!("original text {index}")
+        );
+    }
+}
 #[derive(Default)]
 struct Text {
     value: String,
