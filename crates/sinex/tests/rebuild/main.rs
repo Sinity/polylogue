@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 #[allow(dead_code)]
 #[path = "../support/native.rs"]
 mod native;
+mod source7;
 
 struct Running {
     config: Config,
@@ -122,7 +123,7 @@ impl Running {
 fn sinex(dir: &Path) -> Running {
     let native = native::Native::start(
         dir,
-        serde_json::to_value(polylogue_sinex::kinds::source_declaration()).unwrap(),
+        vec![serde_json::to_value(polylogue_sinex::kinds::source_declaration()).unwrap()],
     );
     Running {
         config: Config {

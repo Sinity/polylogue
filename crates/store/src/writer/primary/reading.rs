@@ -154,6 +154,7 @@ impl WriterSender {
         let mut complete = false;
         let mut diagnosed = false;
         let mut partial = false;
+        let mut frontier = 0;
         source.visit_source(|step| {
             step.counts.check()?;
             if step.start > step.parsed_upto || step.parsed_upto > length {
@@ -170,6 +171,7 @@ impl WriterSender {
                 ));
             }
             version.get_or_insert_with(|| step.reading_version.clone());
+            frontier = frontier.max(step.parsed_upto);
             complete = step.progress.reached_end() && step.parsed_upto == length;
             partial = matches!(step.progress, polylogue_model::batch::StepProgress::AtEnd)
                 && step.parsed_upto < length;
@@ -257,14 +259,21 @@ impl WriterSender {
                 params![input.id,chain], |row| row.get(0),
             )?
         };
-        let supersedes_live_version: bool = open()?.query_row(
-            "SELECT EXISTS(SELECT 1 FROM primary_fact WHERE input=?1 AND chain=?2 AND state='live' AND kind='reading' AND reading_version!=?3)",
-            params![input.id,chain,key.reading_version], |row| row.get(0),
+        let previous = crate::primary::products::previous_reading_bound(
+            &open()?,
+            &input.id,
+            chain,
+            &key.reading_version,
         )?;
-        if partial || !supersedes_live_version {
-            // Reconstruction and unfinished reads observe values; only a
-            // complete new parser version replaces the native output set.
-            // Local reconstruction still commits atomically below.
+        if previous.is_some_and(|required| required > frontier) {
+            return Err(StoreError::Invalid(format!(
+                "native replacement parsed through {frontier}, but previous facts require source bytes through {}",
+                previous.expect("checked previous bound"),
+            )));
+        }
+        if previous.is_none() {
+            // Reconstruct the current native reading without replacing its
+            // output set. Lifecycle eligibility still selects its local rows.
             let mut publication = None;
             source.visit_source(|step| {
                 open()?;
@@ -312,6 +321,19 @@ impl WriterSender {
                 let mut index = open()?;
                 let snapshot = index.transaction()?;
                 let live_hash = crate::primary::products::scope_hash(&snapshot, scope)?;
+                if crate::primary::products::previous_reading_bound(
+                    &snapshot,
+                    &input.id,
+                    chain,
+                    &key.reading_version,
+                )?
+                .is_some_and(|required| required > frontier)
+                {
+                    return Err(StoreError::Invalid(
+                        "previous native facts extend beyond the replacement's parsed prefix"
+                            .into(),
+                    ));
+                }
                 if live_hash != scope.expected_live_hash {
                     return Ok(live_hash);
                 }

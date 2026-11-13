@@ -43,7 +43,7 @@ mod revisions;
 pub use revisions::RevisionPoint;
 mod tool_outcomes;
 mod tool_pairs;
-pub use behind_index::{BehindChain, StoppedChains, StoredInput};
+pub use behind_index::{BehindChain, StoppedChains, StoredSource};
 pub use captured::{CapturedSession, StoredFile};
 mod order;
 mod record_seek;
@@ -751,10 +751,10 @@ impl Reader<'_> {
     pub fn confirmed_refusals(&self) -> Result<(u64, Option<String>)> {
         let conn = self.conn()?;
         let count: i64 =
-            conn.query_row("SELECT count(*) FROM primary_refused", [], |row| row.get(0))?;
+            conn.query_row("SELECT count(*) FROM primary_refused r LEFT JOIN primary_fact f ON f.event=r.event WHERE f.event IS NULL OR f.state='live'", [], |row| row.get(0))?;
         let latest = conn
             .query_row(
-                "SELECT kind,position,reason FROM primary_refused ORDER BY position DESC LIMIT 1",
+                "SELECT r.kind,r.position,r.reason FROM primary_refused r LEFT JOIN primary_fact f ON f.event=r.event WHERE f.event IS NULL OR f.state='live' ORDER BY r.position DESC LIMIT 1",
                 [],
                 |row| {
                     Ok(format!(

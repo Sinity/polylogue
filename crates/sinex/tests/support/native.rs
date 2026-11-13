@@ -21,7 +21,7 @@ pub struct Native {
     daemon: Option<Daemon>,
 }
 impl Native {
-    pub fn start(root: &Path, declaration: serde_json::Value) -> Self {
+    pub fn start(root: &Path, declarations: Vec<serde_json::Value>) -> Self {
         fs::create_dir_all(root).unwrap();
         let pg = devkit::pg::Server::start(&devkit::pg::ClusterOptions {
             required_extensions: vec!["timescaledb".into(), "vector".into()],
@@ -59,7 +59,7 @@ impl Native {
         let grants = serde_json::json!({"polylogue":{
             "kind_prefixes":["polylogue"],"classes":["open","guarded"],"public_context":true,
             "write":{"family":"polylogue","host":"fixture-host","source_prefixes":["polylogue"],
-                "source_declarations":[declaration],"kind_prefixes":["polylogue"],
+                "source_declarations":declarations,"kind_prefixes":["polylogue"],
                 "canonical_prefixes":["polylogue"],"classes":["open","guarded"]}
         }, "evidence": {
             "kind_prefixes":["terminal","file","work"],"classes":["open"],"public_context":true,

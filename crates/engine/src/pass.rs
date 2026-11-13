@@ -1183,7 +1183,8 @@ impl Engine {
             if c.current && origin.arrival == polylogue_sources::Arrival::Live {
                 plan.priority = Priority::Live;
             }
-            if state.parsed && (c.reading_changed || c.stopped_at_length) {
+            if c.previous_reading || state.parsed && (c.reading_changed || c.stopped_at_length) {
+                plan.replace = true;
                 replacements.push(plan);
                 continue;
             }

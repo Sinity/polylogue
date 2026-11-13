@@ -174,7 +174,7 @@ fn paired_backup_restores_polylogue_pending_frames_after_live_confirmed_removal(
     let root = tempfile::tempdir().unwrap();
     let mut running = native::Native::start(
         &root.path().join("native"),
-        serde_json::to_value(crate::kinds::source_declaration()).unwrap(),
+        vec![serde_json::to_value(crate::kinds::source_declaration()).unwrap()],
     );
     let initial = connect(&config(&running));
     let baseline = b"synthetic baseline bytes";

@@ -190,7 +190,21 @@ hints describe defaults for operator-configured output rules; they impose no
 kind-wide admission class floor. Event frame names include declaration hashes.
 A producer replay selects the exact declarations and parser/build identities
 for its complete material sequence, and waits for the replacement acknowledgment
-before updating its local index.
+before updating its local index. Snapshot and live reads retain verified native
+identity, material, record hash and lifecycle even for an older domain kind
+whose body this build no longer reads. A parser upgrade replaces those output
+kinds by name across their versions, using the owner's exact material sequence,
+digests and live-set hash. It reconstructs values from original bytes.
+
+A complete replacement output set need not mean a complete original input.
+An incomplete appended tail can report waiting while replacing the outputs of
+the complete prefix. Every previous domain contribution must fit inside that
+prefix. An older opaque fact uses its whole original material extent as a
+conservative bound; its parser diagnostic claims no additional domain values.
+A refused or partial parse before that bound leaves the previous native output
+set live. The bound and live-set hash are checked together before publication,
+and Sinex revalidates that live set at admission. Archived unreadable facts
+remain historical diagnostics rather than current refusal counts.
 
 ## Local state
 

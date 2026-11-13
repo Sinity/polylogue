@@ -243,3 +243,59 @@ pub(crate) fn scope_hash(
     }
     Ok(hash.finalize().to_hex().to_string())
 }
+
+/// A previous native output set must fit inside the replacement's interpreted
+/// prefix. Opaque older facts retain their whole material as a conservative
+/// source bound; diagnostics do not claim domain values from that tail.
+pub(crate) fn previous_reading_bound(
+    index: &Connection,
+    input: &str,
+    chain: i64,
+    version: &str,
+) -> Result<Option<u64>> {
+    let mut query = index.prepare_cached(
+        "SELECT f.native_kind,f.reading_version,f.step_end,s.offset+s.length
+         FROM source_material s JOIN primary_fact f ON f.material=s.id
+         WHERE s.input=?1 AND s.chain=?2 AND f.state='live'",
+    )?;
+    let mut rows = query.query(params![input, chain])?;
+    let mut required = None;
+    while let Some(row) = rows.next()? {
+        let kind: Option<String> = row.get(0)?;
+        let family = kind
+            .as_deref()
+            .and_then(|kind| kind.strip_prefix("polylogue."));
+        if !matches!(
+            family,
+            Some(
+                "session"
+                    | "message"
+                    | "tool_call"
+                    | "document"
+                    | "fragment"
+                    | "event"
+                    | "link"
+                    | "prefix_copy"
+                    | "prefix_member"
+                    | "background"
+                    | "repository"
+                    | "parse_progress"
+            )
+        ) || row.get::<_, Option<String>>(1)?.as_deref() == Some(version)
+        {
+            continue;
+        }
+        let bound = if family == Some("parse_progress") {
+            0
+        } else {
+            row.get::<_, Option<i64>>(2)?.unwrap_or(row.get(3)?)
+        };
+        let bound = u64::try_from(bound).map_err(|_| {
+            crate::StoreError::Invalid(
+                "a previous native reading has a negative source bound".into(),
+            )
+        })?;
+        required = Some(required.unwrap_or(0).max(bound));
+    }
+    Ok(required)
+}

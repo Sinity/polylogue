@@ -16,9 +16,10 @@ fn expected(
         input: input.into(),
         current,
         reading_changed: false,
+        previous_reading: false,
         stopped_attempt: None,
         stopped_at_length: false,
-        source: StoredInput {
+        source: StoredSource {
             format: source.0.into(),
             path: source.1.map(str::to_owned),
         },

@@ -9,7 +9,9 @@ use polylogue_model::{
 use serde::{Deserialize, Serialize};
 mod eligibility;
 pub use eligibility::SourceRecord;
-pub(crate) use eligibility::{allowed, needs_publication, scope_hash, selected};
+pub(crate) use eligibility::{
+    allowed, needs_publication, previous_reading_bound, scope_hash, selected,
+};
 mod export;
 pub use export::ExportReadingKey;
 

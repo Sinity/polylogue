@@ -9,15 +9,17 @@ pub struct BehindChain {
     /// The chain holds the input's latest revision.
     pub current: bool,
     /// The selected parser format and recorded path, independent of local discovery.
-    pub source: StoredInput,
+    pub source: StoredSource,
     pub progress: ChainProgress,
     pub reading_changed: bool,
+    /// Native facts from a previous interpretation remain even without a local index.
+    pub previous_reading: bool,
     pub stopped_attempt: Option<polylogue_model::batch::StoppedAttempt>,
     pub stopped_at_length: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StoredInput {
+pub struct StoredSource {
     pub format: String,
     /// The path the parser reads the bytes as, never a file to open.
     pub path: Option<String>,
@@ -124,14 +126,35 @@ impl Reader<'_> {
             let stopped_at_length = progress
                 .as_ref()
                 .is_some_and(|progress| progress.stopped() && progress.at_length() == Some(length));
+            let input: String = row.get(0)?;
+            let chain_number: i64 = row.get(1)?;
+            let previous_reading = if self.pool.archive.is_primary() {
+                versions
+                    .iter()
+                    .find(|(name, _)| name == &origin)
+                    .map(|(_, version)| {
+                        crate::primary::products::previous_reading_bound(
+                            self.conn()?,
+                            &input,
+                            chain_number,
+                            version,
+                        )
+                    })
+                    .transpose()?
+                    .flatten()
+                    .is_some()
+            } else {
+                false
+            };
             let chain = BehindChain {
-                input: row.get(0)?,
+                input,
                 current: row.get(3)?,
-                source: StoredInput {
+                source: StoredSource {
                     format: origin,
                     path: row.get(6)?,
                 },
                 reading_changed,
+                previous_reading,
                 stopped_at_length,
                 stopped_attempt: row
                     .get::<_, Option<Vec<u8>>>(14)?
@@ -139,7 +162,7 @@ impl Reader<'_> {
                     .map(crate::encoding::unpack_json)
                     .transpose()?,
                 progress: ChainProgress {
-                    chain: row.get(1)?,
+                    chain: chain_number,
                     length,
                     parsed_upto,
                     parsed: row.get(8)?,
