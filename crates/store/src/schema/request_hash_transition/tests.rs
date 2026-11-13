@@ -405,12 +405,24 @@ fn register_request_hash_transition_reopens_both_predecessors_and_reads_unrelate
         assert_eq!(crate::schema::version(&conn).unwrap(), ARCHIVE_VERSION);
         let reads = crate::ReadPool::open(&archive).unwrap();
         let reader = reads.reader().unwrap();
-        let reference =
-            polylogue_model::Reference::parse(&format!("assertion:{}", written_note.id)).unwrap();
-        assert!(matches!(
-            reader.authored_record(&reference).unwrap(),
-            Some(crate::read::authored_evidence::AuthoredReadEvidence::Local { .. })
-        ));
+        let note_root: String = conn
+            .query_row(
+                "SELECT root FROM assertion WHERE id=?1",
+                [&written_note.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let reference = polylogue_model::Reference::Assertion(
+            polylogue_model::RevisionReference::exact(note_root, written_note.id),
+        );
+        let evidence = reader.authored_record(&reference).unwrap();
+        assert!(
+            matches!(
+                &evidence,
+                Some(crate::read::authored_evidence::AuthoredReadEvidence::Local { .. })
+            ),
+            "{evidence:?}"
+        );
         assert!(
             crate::primary::authored::known_request(&conn, &prior)
                 .unwrap()
