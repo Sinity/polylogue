@@ -178,7 +178,7 @@ fn grouped_capture_rejects_parser_values_and_waits_for_its_confirmed_barrier() {
         .unwrap();
     let pending = sinex.pending_captures().unwrap();
     let material = pending[0].material.clone().unwrap();
-    let step = polylogue_store::ParseStep::new(
+    let mut step = polylogue_store::ParseStep::new(
         polylogue_model::Output {
             sessions: vec![polylogue_model::Session::new(
                 polylogue_model::SessionId::parse("claude-code:session").unwrap(),
@@ -190,6 +190,7 @@ fn grouped_capture_rejects_parser_values_and_waits_for_its_confirmed_barrier() {
         0..bytes.len() as u64,
         true,
     );
+    step.prepare();
     let mut parser_values = polylogue_store::primary::products::parse(
         &polylogue_store::InputKey {
             id: "source".into(),
