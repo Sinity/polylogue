@@ -5,7 +5,7 @@ display_name = "Polylogue"
 root_markers = ["Cargo.toml", "crates"]
 [environment]
 kind = "direct"
-command = ["env", "-u", "CARGO_TARGET_DIR"]
+command = ["env"]
 inherit = ["HOME", "USER", "PATH", "LANG", "XDG_RUNTIME_DIR"]
 unset = ["CARGO_TARGET_DIR", "PYTHONPATH", "PYTHONHOME"]
 
@@ -137,12 +137,23 @@ scratch = "nvme"
 cache = "none"
 
 [operations.extension]
+environment = { CARGO_TARGET_DIR = "target" }
 description = "Run extension npm commands: ci, test -- <files>, run validate, run build"
 exec = ["nix", "develop", "--command", "env", "npm_config_cache=extension/.npm-cache", "npm", "--prefix", "extension"]
 arguments = "required"
 pool = "normal"
 result = "exit"
 timeout_seconds = 900
+cache = "none"
+
+[operations.extension-package]
+description = "Build extension artifacts and check Nix formatting"
+exec = ["nix", "build", "--no-link", "--print-build-logs", "--print-out-paths", ".#polylogue-extension", ".#checks.x86_64-linux.nix-fmt"]
+environment = { CARGO_TARGET_DIR = "target" }
+pool = "normal"
+result = "exit"
+timeout_seconds = 900
+scratch = "nvme"
 cache = "none"
 
 [operations.codex]
