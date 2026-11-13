@@ -267,4 +267,78 @@ fn an_archived_value_does_not_turn_a_processed_incomplete_tail_into_an_unknown_p
     assert!(
         crate::primary::projection::processed_source(&index, &source(&original), &receipt).unwrap()
     );
+
+    // The parser's private continuation can still name the suppressed response
+    // when its next slice contains only an incomplete trailing record.
+    let row = original.parse[0].complete_output().unwrap().messages[0].clone();
+    let version = row.message.content_hash().unwrap();
+    assert!(
+        crate::versions::read_message(&index, &version.0)
+            .unwrap()
+            .is_none()
+    );
+    index
+        .execute(
+            "INSERT INTO parser_context_state SELECT pk,1,'synthetic=1',90 FROM input_ref WHERE id='original'",
+            [],
+        )
+        .unwrap();
+    let delta = polylogue_model::parser_context::Delta {
+        version: 1,
+        base: 90,
+        through: 90,
+        entries: vec![polylogue_model::parser_context::Entry {
+            key: polylogue_model::parser_context::Key::Response {
+                namespace: String::new(),
+                session: row.message.session.to_string(),
+                key: "native-response".into(),
+            },
+            value: polylogue_model::parser_context::Reference::Response {
+                message: row.message.id.clone(),
+                version,
+                offset: row.offset,
+                end: row.end,
+            },
+        }],
+    };
+    let mut tail = original.clone();
+    let mut step = ParseStep::new(Default::default(), Default::default(), 90..90, true);
+    step.reading_version = "synthetic=1".into();
+    step.checkpoint = Some(polylogue_model::batch::ParserCheckpoint::new(
+        "synthetic=1".into(),
+        90,
+        Some(serde_json::json!({ "_polylogue_context": delta })),
+    ));
+    step.prepare();
+    tail.parse = vec![step];
+    let receipt = publication("processed-hidden-tail", 13);
+    apply(&mut index, tail.clone(), &receipt).unwrap();
+    assert_eq!(
+        index
+            .query_row(
+                "SELECT status,parsed_upto,at_length,checkpoint FROM parse_state",
+                [],
+                |row| Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, Option<Vec<u8>>>(3)?,
+                )),
+            )
+            .unwrap(),
+        ("waiting".into(), 90, 100, None)
+    );
+    for table in ["message", "parser_context", "parser_context_state"] {
+        assert_eq!(
+            index
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0,
+            "{table}",
+        );
+    }
+    assert!(
+        crate::primary::projection::processed_source(&index, &source(&tail), &receipt).unwrap()
+    );
 }

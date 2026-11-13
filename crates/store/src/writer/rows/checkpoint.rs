@@ -181,6 +181,10 @@ impl Update {
         })
     }
 
+    pub(super) fn forget_context(&mut self) {
+        self.state.checkpoint = None;
+    }
+
     pub(super) fn write(&self, tx: &Transaction<'_>, input: i64, chain: i64) -> Result<()> {
         let at_length = self
             .state

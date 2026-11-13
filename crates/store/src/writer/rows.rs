@@ -189,7 +189,7 @@ fn apply_rows(
     if let Some(update) = &p.comparison {
         update.write(tx, input_pk)?;
     }
-    let rows = RowWriter {
+    let mut rows = RowWriter {
         tx,
         checkpoint: checkpoint::Update::new(
             b,
@@ -608,7 +608,9 @@ fn apply_rows(
         },
         p,
     )?;
-    crate::parser_context::apply(tx, input_pk, chain, p)?;
+    if !crate::parser_context::apply(tx, input_pk, chain, p)? {
+        rows.checkpoint.forget_context();
+    }
     rows.write_parse_state(b, p)?;
     Ok(written)
 }

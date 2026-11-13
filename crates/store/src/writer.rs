@@ -899,14 +899,13 @@ impl WriterSender {
                 }
             }
         }
-        let mut batches: Vec<_> = group.iter_mut().map(|item| &mut item.batch).collect();
-        if !self.0.resolver.location().is_primary()
-            || batches
-                .iter()
-                .all(|batch| matches!(batch.change, Change::Reparse { .. }))
-        {
-            self.0.resolver.batches(&mut batches)?;
-        }
+        let primary = self.0.resolver.location().is_primary();
+        let mut batches: Vec<_> = group
+            .iter_mut()
+            .filter(|item| !primary || matches!(item.batch.change, Change::Reparse { .. }))
+            .map(|item| &mut item.batch)
+            .collect();
+        self.0.resolver.batches(&mut batches)?;
         let (reply, wait) = sync_channel(1);
         self.0
             .send(Msg::StoreGroup(group, store, reply))

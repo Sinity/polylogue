@@ -242,21 +242,22 @@ impl Overlay {
     }
 }
 
+/// Returns whether the opaque checkpoint can reuse the stored keyed context.
 pub(crate) fn apply(
     tx: &Connection,
     input: i64,
     chain: i64,
     step: &crate::ParseStep,
-) -> Result<()> {
+) -> Result<bool> {
     let Some(state) = step
         .checkpoint
         .as_ref()
         .and_then(|c| c.parser_state.as_ref())
     else {
-        return Ok(());
+        return Ok(true);
     };
     let Some(delta) = polylogue_model::parser_context::delta(state)? else {
-        return Ok(());
+        return Ok(true);
     };
     if delta.version != 1
         || (delta.base != step.start && delta.base != 0)
@@ -268,20 +269,15 @@ pub(crate) fn apply(
     }
     let through = sql_cursor(delta.through)?;
     if step.source_prefix_missing {
-        return Ok(());
+        return Ok(true);
     }
     let prior=tx.query_row("SELECT through FROM parser_context_state WHERE input_pk=?1 AND chain=?2 AND reading_version=?3",params![input,chain,step.reading_version],|r|r.get::<_,i64>(0)).optional()?.map(stored_cursor).transpose()?;
     if delta.base != 0 && prior != Some(delta.base) {
-        return Ok(());
+        return Ok(true);
     }
-    if delta.base == 0 {
-        tx.execute(
-            "DELETE FROM parser_context WHERE input_pk=?1 AND chain=?2 AND reading_version=?3",
-            params![input, chain, step.reading_version],
-        )?;
-    }
+    let mut unavailable = false;
     let mut seen = std::collections::BTreeSet::new();
-    for entry in delta.entries {
+    for entry in &delta.entries {
         if !seen.insert(entry.key.clone()) {
             return Err(StoreError::Invalid(
                 "parser context repeats a key in one checkpoint".into(),
@@ -296,7 +292,7 @@ pub(crate) fn apply(
                 "parser context key and value have different kinds".into(),
             ));
         }
-        let hash = if let Reference::Response {
+        if let Reference::Response {
             message,
             version,
             offset,
@@ -308,9 +304,17 @@ pub(crate) fn apply(
                     "response context range exceeds its reading".into(),
                 ));
             }
-            let (body, _) = crate::versions::read_message(tx, &version.0)?.ok_or_else(|| {
-                StoreError::Invalid("response context has no archived message version".into())
-            })?;
+            let Some((body, _)) = crate::versions::read_message(tx, &version.0)? else {
+                if step.source_eligibility.is_some() {
+                    // Native eligibility can omit an original response from
+                    // this receiver. Its cache cannot supply that response.
+                    unavailable = true;
+                    continue;
+                }
+                return Err(StoreError::Invalid(
+                    "response context has no archived message version".into(),
+                ));
+            };
             if body.id != *message {
                 return Err(StoreError::Invalid(
                     "response context has another message identity".into(),
@@ -323,14 +327,30 @@ pub(crate) fn apply(
                     "response key has another source session".into(),
                 ));
             }
-            Some(version.0.to_vec())
-        } else {
-            None
+        }
+    }
+    if unavailable || delta.base == 0 {
+        tx.execute(
+            "DELETE FROM parser_context WHERE input_pk=?1 AND chain=?2 AND reading_version=?3",
+            params![input, chain, step.reading_version],
+        )?;
+    }
+    if unavailable {
+        tx.execute(
+            "DELETE FROM parser_context_state WHERE input_pk=?1 AND chain=?2 AND reading_version=?3",
+            params![input, chain, step.reading_version],
+        )?;
+        return Ok(false);
+    }
+    for entry in delta.entries {
+        let hash = match &entry.value {
+            Reference::Response { version, .. } => Some(version.0.as_slice()),
+            Reference::Alias { .. } => None,
         };
         tx.execute("INSERT INTO parser_context VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(input_pk,chain,reading_version,key,cursor) DO UPDATE SET value=excluded.value,version_hash=excluded.version_hash",params![input,chain,step.reading_version,through,serde_json::to_string(&entry.key)?,crate::encoding::pack_json(&entry.value)?,hash])?;
     }
     tx.execute("INSERT INTO parser_context_state VALUES(?1,?2,?3,?4) ON CONFLICT(input_pk,chain,reading_version) DO UPDATE SET through=excluded.through",params![input,chain,step.reading_version,through])?;
-    Ok(())
+    Ok(true)
 }
 
 /// Native record aliases survive corrected response grouping. Authored targets
