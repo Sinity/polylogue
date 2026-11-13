@@ -3,8 +3,8 @@ use crate::schema::{ARCHIVE_VERSION, PRIMARY_INDEX_VERSION};
 use polylogue_model::user::UserWrite;
 use rusqlite::{Connection, types::Value};
 
-// Frozen neutral predecessor bytes: unlike assertion values, the signal
-// structs were never sorted by the predecessor's intent function.
+// A neutral signal initializer. The wire oracle below uses the actual
+// predecessor serializer, rather than treating this initializer as its bytes.
 const SIGNAL_INTENT: &[u8] = br#"["synthetic-machine",{"author":"script:signal-fixture","via":"daemon"},{"write":"signal_commit","prior":null,"checkpoint":{"owner":"synthetic-machine","evaluator":{"now":0,"rules":{},"products":[],"inputs":[],"consumed":[],"pending":{},"open":{},"retractions":[],"reports":[]},"rules":[]},"outbox":[],"events":[]}]"#;
 
 fn signal(id: &str) -> UserRequest {
@@ -48,7 +48,7 @@ fn predecessor_bytes(request: &UserRequest) -> Vec<u8> {
 #[test]
 fn request_hash_transition_recognizes_the_exact_prior_signal_encoding() {
     let request = signal("signal-fixture");
-    let prior = *blake3::hash(SIGNAL_INTENT).as_bytes();
+    let prior = *blake3::hash(&predecessor_bytes(&request)).as_bytes();
     assert_eq!(
         prior_hash(&request, &crate::encoding::pack_json(&request).unwrap()).unwrap(),
         prior
@@ -142,21 +142,28 @@ fn request_hash_transition_retains_prior_nested_map_order_escaping_and_intent_ed
     }
 }
 
-fn saved(id: &str) -> UserRequest {
+fn delivery(id: &str) -> UserRequest {
     crate::fixture::authored::operator_request(
         id.into(),
-        UserWrite::SaveQuery {
-            name: "example".into(),
-            text: "sessions".into(),
-            denominator: None,
-        },
+        UserWrite::Deliver(polylogue_model::user::Delivery {
+            recipient_kind: "operator".into(),
+            recipient_id: None,
+            sender: "synthetic".into(),
+            event: "test".into(),
+            cwd: None,
+            text: "Retain this delivered content".into(),
+            refs: vec![],
+            left_out: vec![],
+        }),
     )
 }
 
-fn insert(conn: &Connection, request: &UserRequest, sequence: i64) {
+fn insert(conn: &Connection, request: &UserRequest) -> polylogue_model::user::UserOutcome {
     let tx = conn.unchecked_transaction().unwrap();
-    crate::user_writes::apply(&tx, request, sequence).unwrap();
+    let sequence = crate::archive::bump_counter(&tx).unwrap();
+    let outcome = crate::user_writes::apply(&tx, request, sequence).unwrap();
     tx.commit().unwrap();
+    outcome
 }
 
 fn source(primary: bool) -> (Connection, crate::source::Source) {
@@ -204,12 +211,12 @@ fn reopen(conn: &Connection, primary: bool) -> Result<()> {
 fn request_hash_transition_preserves_mixed_records_and_pending_bytes_and_retry() {
     for primary in [false, true] {
         let (conn, source) = source(primary);
-        let prior = saved("prior");
-        let current = saved("current");
-        insert(&conn, &prior, 1);
-        insert(&conn, &current, 2);
+        let prior = delivery("prior");
+        let current = delivery("current");
+        insert(&conn, &prior);
+        insert(&conn, &current);
         // This is the predecessor's exact tuple/struct encoding, independently
-        // of the transition's implementation. SaveQuery carries no resolved data.
+        // of the transition's implementation. Deliver carries no resolved data.
         let old_bytes =
             serde_json::to_vec(&(&prior.machine, &prior.authorship, &prior.write)).unwrap();
         let old_hash = blake3::hash(&old_bytes);
@@ -222,7 +229,14 @@ fn request_hash_transition_preserves_mixed_records_and_pending_bytes_and_retry()
             params![old_hash.as_bytes().as_slice(), prior.id],
         )
         .unwrap();
-        let pending = saved("pending");
+        let pending = crate::fixture::authored::operator_request(
+            "pending".into(),
+            UserWrite::SaveQuery {
+                name: "example".into(),
+                text: "sessions".into(),
+                denominator: None,
+            },
+        );
         let pending_hash = blake3::hash(
             &serde_json::to_vec(&(&pending.machine, &pending.authorship, &pending.write)).unwrap(),
         );
@@ -278,10 +292,10 @@ fn request_hash_transition_refuses_corruption_without_partial_conversion() {
     for primary in [false, true] {
         for corrupt in ["hash", "request identity", "request body"] {
             let (conn, source) = source(primary);
-            let first = saved("a-valid-prior");
-            let later = saved("z-corrupt");
-            insert(&conn, &first, 1);
-            insert(&conn, &later, 2);
+            let first = delivery("a-valid-prior");
+            let later = delivery("z-corrupt");
+            insert(&conn, &first);
+            insert(&conn, &later);
             let old_hash = blake3::hash(
                 &serde_json::to_vec(&(&first.machine, &first.authorship, &first.write)).unwrap(),
             );
@@ -332,7 +346,7 @@ fn register_request_hash_transition_reopens_both_predecessors_and_reads_unrelate
             crate::schema::ensure_archive(&conn).unwrap();
         }
         let prior = signal("old-request");
-        insert(&conn, &prior, 20);
+        insert(&conn, &prior);
         let old_hash = blake3::hash(
             &serde_json::to_vec(&(&prior.machine, &prior.authorship, &prior.write)).unwrap(),
         );
@@ -356,7 +370,7 @@ fn register_request_hash_transition_reopens_both_predecessors_and_reads_unrelate
                 }],
             },
         );
-        insert(&conn, &note, 21);
+        let written_note = insert(&conn, &note);
         crate::schema::set_version(&conn, predecessor).unwrap();
         let before = rows(&conn, crate::source::Source::Ledger);
         drop(conn);
@@ -391,7 +405,8 @@ fn register_request_hash_transition_reopens_both_predecessors_and_reads_unrelate
         assert_eq!(crate::schema::version(&conn).unwrap(), ARCHIVE_VERSION);
         let reads = crate::ReadPool::open(&archive).unwrap();
         let reader = reads.reader().unwrap();
-        let reference = polylogue_model::Reference::parse("assertion:unrelated-note").unwrap();
+        let reference =
+            polylogue_model::Reference::parse(&format!("assertion:{}", written_note.id)).unwrap();
         assert!(matches!(
             reader.authored_record(&reference).unwrap(),
             Some(crate::read::authored_evidence::AuthoredReadEvidence::Local { .. })
@@ -428,8 +443,8 @@ fn request_hash_transition_fault_preserves_all_bytes_and_version_then_retries() 
             crate::schema::ensure_archive(&conn).unwrap();
         }
         let source = crate::source::Source::of(&conn).unwrap();
-        let request = saved("old");
-        insert(&conn, &request, 1);
+        let request = delivery("old");
+        insert(&conn, &request);
         let old_hash = blake3::hash(
             &serde_json::to_vec(&(&request.machine, &request.authorship, &request.write)).unwrap(),
         );
