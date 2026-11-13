@@ -303,12 +303,14 @@ fn register_request_hash_transition_reopens_both_predecessors_and_reads_unrelate
 #[cfg(feature = "faults")]
 #[test]
 fn request_hash_transition_fault_preserves_all_bytes_and_version_then_retries() {
-    for primary in [false, true] {
+    for (primary, predecessor) in [(false, 1), (false, 2), (true, 2)] {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("request-hash-fault.db");
         let conn = Connection::open(&path).unwrap();
         if primary {
             crate::schema::ensure_primary_index(&conn).unwrap();
+        } else if predecessor == 1 {
+            crate::schema::tests::archive_before_unknown_time(&conn);
         } else {
             crate::schema::ensure_archive(&conn).unwrap();
         }
@@ -323,8 +325,9 @@ fn request_hash_transition_fault_preserves_all_bytes_and_version_then_retries() 
             params![old_hash.as_bytes().as_slice(), request.id],
         )
         .unwrap();
-        previous(&conn, primary);
+        crate::schema::set_version(&conn, predecessor).unwrap();
         let before = rows(&conn, source);
+        let shape_before = crate::schema::shape(&conn).unwrap();
         crate::fault::arm(
             "archive.request_hash_transition",
             conn.path().unwrap(),
@@ -333,7 +336,8 @@ fn request_hash_transition_fault_preserves_all_bytes_and_version_then_retries() 
             1,
         );
         assert!(reopen(&conn, primary).is_err());
-        assert_eq!(crate::schema::version(&conn).unwrap(), 2);
+        assert_eq!(crate::schema::version(&conn).unwrap(), predecessor);
+        assert_eq!(crate::schema::shape(&conn).unwrap(), shape_before);
         assert_eq!(rows(&conn, source), before);
         let retained: Vec<u8> = conn
             .query_row(

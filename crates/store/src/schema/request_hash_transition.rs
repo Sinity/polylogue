@@ -22,7 +22,7 @@ fn prior_hash(request: &UserRequest) -> Result<[u8; 32]> {
             }
         }
         UserWrite::ReviseAssertions { patch, .. } => {
-            if let crate::assertion::Change::Set(value) = &mut patch.value {
+            if let polylogue_model::assertion::Change::Set(value) = &mut patch.value {
                 value.sort_all_objects();
             }
         }
