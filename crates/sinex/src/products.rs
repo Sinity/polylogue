@@ -671,10 +671,9 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                             | "task"
                             | "path"
                             | "input"
-                    ) {
-                        if !guarded.contains(field) {
-                            guarded.push(field.clone());
-                        }
+                    ) && !guarded.contains(field)
+                    {
+                        guarded.push(field.clone());
                     }
                 }
             }

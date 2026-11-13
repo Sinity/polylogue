@@ -222,7 +222,7 @@ impl Sinex {
                 part_index: if observation { 0 } else { part_index },
                 previous_part: if observation { None } else { previous_part },
                 manifest: Manifest {
-                    details: [("polylogue_capture".into(), serde_json::to_value(&header)?)]
+                    details: [("polylogue_capture".into(), serde_json::to_value(header)?)]
                         .into_iter()
                         .collect(),
                     role: if observation {
