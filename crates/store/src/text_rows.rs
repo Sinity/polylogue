@@ -21,7 +21,6 @@ pub(crate) fn intern(
     bit: i64,
     prepared: Option<&HashMap<[u8; 32], Vec<u8>>>,
     first_build: Option<&FirstBuild>,
-    _keys: Option<&crate::writer::resolve::ResolvedKeys>,
 ) -> Result<i64> {
     let hash = blake3::hash(body.as_bytes());
     let id = find(conn, hash.as_bytes(), first_build)?;

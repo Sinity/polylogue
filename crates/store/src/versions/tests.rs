@@ -36,7 +36,7 @@ fn cleanup_steps(conn: &Connection) -> u64 {
         }),
     )
     .unwrap();
-    remove_unreferenced(conn, None).unwrap();
+    remove_unreferenced(conn, Some(&FirstBuild::default())).unwrap();
     conn.progress_handler(0, None::<fn() -> bool>).unwrap();
     steps.load(Ordering::Relaxed)
 }
@@ -235,7 +235,7 @@ fn removing_the_last_text_reference_and_its_cleanup_roll_back_together() {
             .unwrap(),
         1
     );
-    remove_unreferenced(&conn, None).unwrap();
+    remove_unreferenced(&conn, Some(&FirstBuild::default())).unwrap();
     assert_eq!(
         conn.query_row("SELECT count(*) FROM text", [], |r| r.get::<_, i64>(0))
             .unwrap(),
