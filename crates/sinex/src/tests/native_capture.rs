@@ -1209,21 +1209,21 @@ fn a_late_other_host_original_is_parsed_with_an_empty_local_home() {
         change: ConfirmedChange::Control(Box::new(control)),
     };
     writer
-        .apply_confirmed(vec![
-            control(
-                1,
-                ReplayControl::Reset {
-                    scope: "late-original-scope".into(),
-                },
-            ),
-            control(
-                1,
-                ReplayControl::Completion {
-                    position: 1,
-                    delivery: None,
-                },
-            ),
-        ])
+        .apply_confirmed(vec![control(
+            1,
+            ReplayControl::Reset {
+                scope: "late-original-scope".into(),
+            },
+        )])
+        .unwrap();
+    writer
+        .apply_confirmed(vec![control(
+            1,
+            ReplayControl::Completion {
+                position: 1,
+                delivery: None,
+            },
+        )])
         .unwrap();
     let local_home = home.dir.path().join("empty-local-home");
     std::fs::create_dir_all(&local_home).unwrap();
