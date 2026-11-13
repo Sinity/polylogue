@@ -482,6 +482,7 @@ impl Engine {
         }
         if self.yielding() {
             pass.capture_pending = true;
+            pass.seconds = started.elapsed().as_secs_f64();
             return Ok((pass, HashSet::new()));
         }
 
@@ -598,6 +599,7 @@ impl Engine {
         self.execute(plans, &mut pass)?;
         if self.yielding() {
             pass.capture_pending = true;
+            pass.seconds = started.elapsed().as_secs_f64();
             return Ok((pass, seen));
         }
         if self.stop.requested() {
@@ -616,11 +618,13 @@ impl Engine {
         }
         if self.yielding() {
             pass.capture_pending = true;
+            pass.seconds = started.elapsed().as_secs_f64();
             return Ok((pass, seen));
         }
         self.copy_same_bytes(&mut pass)?;
         if self.poll_request() {
             pass.capture_pending = true;
+            pass.seconds = started.elapsed().as_secs_f64();
             return Ok((pass, seen));
         }
         if deferred_database && pass.errors.is_empty() && !self.captures.pending() {
@@ -2050,10 +2054,7 @@ impl Engine {
                     } else {
                         changed.clear();
                     }
-                    // A yielded full turn may not have planned its discovered
-                    // files yet. Re-scan them after the request even without a
-                    // new watcher event; durable positions avoid recapture.
-                    discover &= yielded;
+                    discover = false;
                     pass
                 }
                 Err(e) => {
