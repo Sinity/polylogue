@@ -107,6 +107,51 @@ pub(crate) fn apply_resolving(
     )
 }
 
+/// These deliveries already carry their complete body. They need no authored
+/// snapshot, target selection or post-write readback to freeze their effect.
+pub(crate) fn prepare_delivery(
+    r: &UserRequest,
+) -> Option<polylogue_model::authored::PreparedRequest> {
+    use polylogue_model::authored::{
+        AuthoredEffect, DeliveryChange, DeliveryEvent, DeliveryRecord, PreparedRequest,
+    };
+    let delivery = match &r.write {
+        UserWrite::Deliver(delivery) | UserWrite::DeliveredAdvice(delivery) => delivery,
+        _ => return None,
+    };
+    let events = if matches!(r.write, UserWrite::DeliveredAdvice(_)) {
+        vec![DeliveryEvent {
+            request: r.id.clone(),
+            what: polylogue_model::DeliveryOutcome::Delivered,
+            at: r.at,
+            detail: Some("written to the harness hook output".into()),
+        }]
+    } else {
+        Vec::new()
+    };
+    Some(PreparedRequest {
+        request: r.clone(),
+        outcome: UserOutcome {
+            pending: false,
+            id: r.id.clone(),
+            repeat: false,
+        },
+        effect: AuthoredEffect {
+            deliveries: vec![DeliveryChange {
+                delivery: DeliveryRecord {
+                    signal: None,
+                    id: r.id.clone(),
+                    prepared: delivery.clone(),
+                    at: r.at,
+                    events: events.clone(),
+                },
+                added_events: events,
+            }],
+            ..AuthoredEffect::default()
+        },
+    })
+}
+
 pub(crate) fn apply_using(
     tx: &Transaction<'_>,
     original: &rusqlite::Connection,
@@ -120,6 +165,10 @@ pub(crate) fn apply_using(
         let mut outcome = known.outcome;
         outcome.repeat = true;
         return Ok(outcome);
+    }
+    if let Some(prepared) = prepare_delivery(r) {
+        crate::primary::authored::apply(tx, &prepared, seq)?;
+        return Ok(prepared.outcome);
     }
     let hash = crate::primary::authored::request_hash(r)?;
     tx.execute(
@@ -267,37 +316,8 @@ pub(crate) fn apply_using(
             };
             crate::assertions::write_preparing(tx, &[statement], context, &mut resolve_saved)
         }
-        UserWrite::Deliver(d) | UserWrite::DeliveredAdvice(d) => {
-            let body = crate::encoding::pack_text(&d.text)?;
-            tx.execute(
-                &source.sql("INSERT INTO @source.delivery(id, recipient_kind, recipient_id, sender, event, cwd, at,
-                     content_hash, bytes, body, refs_json, left_out_json, commit_seq)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)"),
-                params![
-                    r.id,
-                    d.recipient_kind,
-                    d.recipient_id,
-                    d.sender,
-                    d.event,
-                    d.cwd,
-                    at,
-                    blake3::hash(d.text.as_bytes()).as_bytes().as_slice(),
-                    i64::try_from(d.text.len()).unwrap_or(i64::MAX),
-                    body,
-                    serde_json::to_string(&d.refs)?,
-                    serde_json::to_string(&d.left_out)?,
-                    seq,
-                ],
-            )?;
-            if matches!(r.write, UserWrite::DeliveredAdvice(_)) {
-                tx.execute(&source.sql("INSERT INTO @source.delivery_event(delivery, what, at, detail, request, commit_seq) VALUES (?1, 'delivered', ?2, ?3, ?4, ?5)"),
-                    params![r.id, at, "written to the harness hook output", r.id, seq])?;
-            }
-            Ok(UserOutcome {
-                pending: false,
-                id: r.id.clone(),
-                repeat: false,
-            })
+        UserWrite::Deliver(_) | UserWrite::DeliveredAdvice(_) => {
+            unreachable!("literal deliveries are applied before resolving other writes")
         }
         UserWrite::DeliveryEvent {
             delivery,

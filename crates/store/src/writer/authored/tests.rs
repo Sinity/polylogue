@@ -195,9 +195,20 @@ impl crate::primary::Sinex for Producer {
     fn prepare_products(&self, _: &[ProductWrite]) -> Result<PreparedWrite> {
         Self::unavailable()
     }
-    fn prepare_request(&self, _: &PreparedRequest) -> Result<UserOutcome> {
+    fn prepare_request(&self, prepared: &PreparedRequest) -> Result<UserOutcome> {
         self.live_calls.fetch_add(1, Ordering::SeqCst);
-        Self::unavailable()
+        let write = ProductWrite {
+            product: Product::Request(prepared.clone()),
+            location: None,
+            parents: Vec::new(),
+            machine: Some(prepared.request.machine.clone()),
+            output_index: 0,
+            publish: true,
+        };
+        self.prepare_named_products(&format!("live:{}", prepared.request.id), &[write])?;
+        let mut outcome = prepared.outcome.clone();
+        outcome.pending = true;
+        Ok(outcome)
     }
     fn prepare_reading(
         &self,
@@ -232,8 +243,12 @@ impl crate::primary::Sinex for Producer {
     ) -> Result<()> {
         if let Some((_, writes)) = self.original() {
             for write in writes {
-                if let Product::RestoredRequest { prepared } = write.product {
-                    visit(&PendingAuthored::Restore { prepared })?;
+                match write.product {
+                    Product::RestoredRequest { prepared } => {
+                        visit(&PendingAuthored::Restore { prepared })?
+                    }
+                    Product::Request(prepared) => visit(&PendingAuthored::Live { prepared })?,
+                    _ => {}
                 }
             }
         }
@@ -777,4 +792,83 @@ fn a_failed_sync_refuses_a_repeated_import_and_every_later_writer() {
     drop(writer);
     assert_refused_start(&archive);
     crate::fault::clear();
+}
+
+#[test]
+fn literal_deliveries_keep_the_same_frozen_result_in_standalone_and_offline_primary() {
+    for advice in [false, true] {
+        let body = polylogue_model::user::Delivery {
+            recipient_kind: "session".into(),
+            recipient_id: Some("future-session".into()),
+            sender: "hook".into(),
+            event: "advice".into(),
+            cwd: None,
+            text: "Synthetic advice\nwith original line breaks".into(),
+            refs: vec!["message:codex:future".into()],
+            left_out: vec![],
+        };
+        let original = prepared(if advice {
+            UserWrite::DeliveredAdvice(body)
+        } else {
+            UserWrite::Deliver(body)
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("cache");
+        let bytes = directory.path().join("bytes");
+        let producer = Arc::new(Producer {
+            path: directory.path().join("durable-product.json"),
+            online: AtomicBool::new(false),
+            live_calls: AtomicUsize::new(0),
+            follow: Mutex::default(),
+        });
+        {
+            let (archive, _lock) = Archive::open_primary(&root, &bytes).unwrap();
+            let writer = Writer::start_on_sinex(&archive, producer.clone()).unwrap();
+            assert!(writer.user(original.request.clone()).unwrap().pending);
+            let mut retry = original.request.clone();
+            retry.at = Timestamp::from_unix_ms(999).unwrap();
+            assert!(writer.user(retry.clone()).unwrap().pending);
+            assert_eq!(producer.live_calls.load(Ordering::SeqCst), 1);
+            match &mut retry.write {
+                UserWrite::Deliver(body) | UserWrite::DeliveredAdvice(body) => {
+                    body.text.push_str(" changed")
+                }
+                _ => unreachable!(),
+            }
+            assert!(matches!(writer.user(retry), Err(StoreError::Conflict(_))));
+            let pool = crate::ReadPool::open(&archive).unwrap();
+            assert!(
+                pool.reader()
+                    .unwrap()
+                    .user_request(&original.request.id)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        // A new adapter instance reads the durable body after the writer opens
+        // again. It is still pending until the authoritative stream is applied.
+        let reopened = Arc::new(Producer {
+            path: producer.path.clone(),
+            online: AtomicBool::new(false),
+            live_calls: AtomicUsize::new(0),
+            follow: Mutex::default(),
+        });
+        let (archive, _lock) = Archive::open_primary(&root, &bytes).unwrap();
+        let writer = Writer::start_on_sinex(&archive, reopened.clone()).unwrap();
+        assert!(writer.user(original.request.clone()).unwrap().pending);
+        assert_eq!(reopened.live_calls.load(Ordering::SeqCst), 0);
+        reopened.online.store(true, Ordering::SeqCst);
+        assert_eq!(writer.synchronize_primary().unwrap(), 1);
+        let pool = crate::ReadPool::open(&archive).unwrap();
+        let mut stored = Vec::new();
+        pool.reader()
+            .unwrap()
+            .visit_authored(&mut |record| {
+                stored.push(record.clone());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(stored, vec![original.clone()]);
+        assert!(writer.user(original.request.clone()).unwrap().repeat);
+    }
 }

@@ -1,5 +1,6 @@
-//! Prepare authored changes once in a private overlay; confirmed records apply
-//! their frozen effects without selecting targets, families or claims again.
+//! Freeze authored changes once. Writes that resolve prior facts use a private
+//! overlay; literal deliveries come directly from their admitted body. Confirmed
+//! records apply frozen effects without selecting targets, families or claims again.
 mod records;
 pub(crate) use records::insert_kept;
 #[cfg(test)]
@@ -124,6 +125,23 @@ pub fn prepare(
     if let Some(known) = known_request(index, request)? {
         return Ok(known);
     }
+    if let Some(prepared) = crate::user_writes::prepare_delivery(request) {
+        let mut known = None;
+        visit_pending(&mut |pending| {
+            let Some(original) = pending.prepared().filter(|p| p.request.id == request.id) else {
+                return Ok(());
+            };
+            validate(original)?;
+            if request_hash(&original.request)? != request_hash(request)?
+                || known.as_ref().is_some_and(|known| known != original)
+            {
+                return Err(StoreError::Conflict(request.id.clone()));
+            }
+            known = Some(original.clone());
+            Ok(())
+        })?;
+        return Ok(known.unwrap_or(prepared));
+    }
     let mut pending_blobs = HashMap::new();
     visit_blobs(&mut |blob| {
         if pending_blobs
@@ -212,6 +230,13 @@ pub(crate) fn with_overlay<T>(
 
 /// Checks a frozen request's internal consistency without applying it.
 pub fn validate(prepared: &PreparedRequest) -> Result<()> {
+    if let Some(expected) = crate::user_writes::prepare_delivery(&prepared.request)
+        && (prepared.effect != expected.effect || prepared.outcome != expected.outcome)
+    {
+        return Err(StoreError::Invalid(
+            "delivery effect differs from its admitted request".into(),
+        ));
+    }
     crate::signals::validate(prepared)?;
     for fact in &prepared.effect.assertions {
         fact.validate()
