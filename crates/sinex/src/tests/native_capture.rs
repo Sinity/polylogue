@@ -1189,3 +1189,121 @@ fn a_gone_observation_waits_on_the_confirmed_input_through_the_capture_route() {
     assert_eq!(next.bytes_stored, 0);
     assert_eq!(sdk.pending_captures().unwrap(), pending);
 }
+
+#[test]
+fn a_late_other_host_original_is_parsed_with_an_empty_local_home() {
+    use polylogue_store::primary::{Confirmed, ConfirmedChange, Material, Product, ReplayControl};
+    use polylogue_store::{BlobHash, Writer};
+
+    let home = ClaudeHome::new();
+    let store = home.dir.path().join("sdk");
+    let sdk = Arc::new(client(&store));
+    let (archive, _lock) = Archive::open_primary(&home.root, &store).unwrap();
+    let writer = Writer::start_on_sinex(&archive, sdk.clone()).unwrap();
+    let control = |position, control| Confirmed {
+        native: None,
+        position,
+        output_index: 0,
+        event: String::new(),
+        change: ConfirmedChange::Control(Box::new(control)),
+    };
+    writer
+        .apply_confirmed(vec![
+            control(
+                1,
+                ReplayControl::Reset {
+                    scope: "late-original-scope".into(),
+                },
+            ),
+            control(
+                1,
+                ReplayControl::Completion {
+                    position: 1,
+                    delivery: None,
+                },
+            ),
+        ])
+        .unwrap();
+    let mut engine = Engine::on_sinex(
+        home.config(4096),
+        archive.clone(),
+        sdk.clone(),
+        polylogue_testkit::stopped_attempt(),
+    )
+    .unwrap();
+    let initial = engine.run_pass().unwrap();
+    assert_eq!(initial.bytes_read, 0);
+    assert_eq!(std::fs::read_dir(&home.home).unwrap().count(), 0);
+
+    // This path belongs to another host. A conflicting local file must never
+    // supply the parser's bytes, even when its name happens to exist here.
+    let path = home.dir.path().join("other-host/session.jsonl");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        polylogue_testkit::claude_user("wrong", "late", "local decoy"),
+    )
+    .unwrap();
+    let bytes = polylogue_testkit::claude_user("original", "late", "confirmed original words");
+    let physical = super::extent(&store, bytes.as_bytes());
+    let hash = BlobHash::of(bytes.as_bytes());
+    let input = "late-other-host-input";
+    let rows = serde_json::from_value(serde_json::json!({
+        "input":input,"format":"claude-code",
+        "revision":{"number":1,"produced":"first","chain":1,"length":bytes.len()},
+        "extents":[{"chain":1,"offset":0,"length":bytes.len(),"blob":hash,"blob_offset":0}],
+        "observation":{
+            "id":"late-other-host-observation","machine":"other-machine","host":"other-host",
+            "path":path.to_string_lossy(),"path_bytes":path.as_os_str().as_encoded_bytes(),
+            "class":"first","revision":1,"length":bytes.len(),
+            "device":null,"inode":null,"size":null,"mtime_ns":null,"ctime_ns":null,
+            "polylogue_version":"synthetic","seen_at":1,"details_json":null
+        }
+    }))
+    .unwrap();
+    writer
+        .apply_confirmed(vec![
+            Confirmed {
+                native: None,
+                position: 2,
+                output_index: 0,
+                event: "late-original".into(),
+                change: ConfirmedChange::Live(Box::new(Product::Input {
+                    rows: Box::new(rows),
+                    material: Some(Material {
+                        id: "f26aa2e5-78c0-4541-9bba-0059b146df2e".into(),
+                        hash,
+                        length: bytes.len() as u64,
+                        extents: vec![physical.encode()],
+                    }),
+                })),
+            },
+            control(
+                2,
+                ReplayControl::Completion {
+                    position: 2,
+                    delivery: None,
+                },
+            ),
+        ])
+        .unwrap();
+    let pass = engine.run_pass().unwrap();
+    assert_eq!(pass.bytes_read, bytes.len() as u64, "{pass:?}");
+    assert!(
+        pass.capture_pending,
+        "native publication waits for admission: {pass:?}"
+    );
+    let queue = sdk.spool.lock().unwrap();
+    let parsed = queue
+        .ready(&[], 32)
+        .unwrap()
+        .into_iter()
+        .filter(|entry| entry.parsed().is_some())
+        .collect::<Vec<_>>();
+    assert_eq!(parsed.len(), 1, "{pass:?}");
+    assert_eq!(parsed[0].parsed().unwrap().reading.input.id, input);
+    let frame = serde_json::to_string(&queue.decode_frame(&parsed[0].identity).unwrap()).unwrap();
+    assert!(frame.contains("confirmed original words"), "{frame}");
+    assert!(!frame.contains("local decoy"), "{frame}");
+    assert_eq!(std::fs::read_dir(&home.home).unwrap().count(), 0);
+}

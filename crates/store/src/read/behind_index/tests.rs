@@ -17,10 +17,19 @@ fn expected(
         reading_changed: false,
         stopped_attempt: None,
         stopped_at_length: false,
-        imported: imported.map(|(format, path)| ImportedAs {
-            format: format.into(),
-            path: path.map(str::to_owned),
-        }),
+        source: StoredInput {
+            format: imported
+                .map_or(
+                    if input == "synthetic" {
+                        "codex-rollout"
+                    } else {
+                        "native"
+                    },
+                    |(format, _)| format,
+                )
+                .into(),
+            path: imported.and_then(|(_, path)| path).map(str::to_owned),
+        },
         progress: ChainProgress {
             chain,
             length,

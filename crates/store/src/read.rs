@@ -43,7 +43,7 @@ mod revisions;
 pub use revisions::RevisionPoint;
 mod tool_outcomes;
 mod tool_pairs;
-pub use behind_index::{BehindChain, ImportedAs, StoppedChains};
+pub use behind_index::{BehindChain, StoppedChains, StoredInput};
 pub use captured::{CapturedSession, StoredFile};
 mod order;
 mod record_seek;

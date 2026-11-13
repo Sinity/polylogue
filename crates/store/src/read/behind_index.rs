@@ -8,8 +8,8 @@ pub struct BehindChain {
     pub input: String,
     /// The chain holds the input's latest revision.
     pub current: bool,
-    /// For an imported input, the format and path it was imported as.
-    pub imported: Option<ImportedAs>,
+    /// The selected parser format and recorded path, independent of local discovery.
+    pub source: StoredInput,
     pub progress: ChainProgress,
     pub reading_changed: bool,
     pub stopped_attempt: Option<polylogue_model::batch::StoppedAttempt>,
@@ -17,7 +17,7 @@ pub struct BehindChain {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ImportedAs {
+pub struct StoredInput {
     pub format: String,
     /// The path the parser reads the bytes as, never a file to open.
     pub path: Option<String>,
@@ -127,13 +127,9 @@ impl Reader<'_> {
             let chain = BehindChain {
                 input: row.get(0)?,
                 current: row.get(3)?,
-                imported: if imported {
-                    Some(ImportedAs {
-                        format: origin,
-                        path: row.get(6)?,
-                    })
-                } else {
-                    None
+                source: StoredInput {
+                    format: origin,
+                    path: row.get(6)?,
                 },
                 reading_changed,
                 stopped_at_length,

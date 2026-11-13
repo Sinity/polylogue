@@ -1087,70 +1087,72 @@ impl Engine {
                 continue;
             }
             let state = c.progress;
-            let (path, origin) = match &c.imported {
-                Some(imported) => {
-                    let Some(origin) = polylogue_sources::origin::by_name(&imported.format)
-                        .filter(|origin| has_reading(origin))
-                    else {
-                        continue;
-                    };
-                    // The recorded path chooses the parser. Without one, this
-                    // input is refused with its reason and the pass goes on.
-                    let path = match imported.path.clone().map(PathBuf::from) {
-                        None => Err((
-                            PathBuf::new(),
-                            "the stored import has no recorded path".to_owned(),
-                        )),
-                        Some(path) => match unread_path(origin, &path) {
-                            Some(reason) => Err((path, reason)),
-                            None => Ok(path),
-                        },
-                    };
-                    match path {
-                        Ok(path) => (path, origin),
-                        Err((path, reason)) => {
-                            let mut plan = self.reparse_plan(
-                                path,
-                                origin,
-                                InputKey {
-                                    id: c.input.clone(),
-                                    format: origin.name.into(),
-                                    route: origin.route.imported(),
+            let (path, origin) = if state.imported || self.archive.is_primary() {
+                let source = &c.source;
+                let Some(origin) = polylogue_sources::origin::by_name(&source.format)
+                    .filter(|origin| has_reading(origin))
+                else {
+                    continue;
+                };
+                // The recorded path chooses the parser. Without one, this
+                // input is refused with its reason and the pass goes on.
+                let path = match source.path.clone().map(PathBuf::from) {
+                    None => Err((
+                        PathBuf::new(),
+                        "the stored input has no recorded path".to_owned(),
+                    )),
+                    Some(path) => match unread_path(origin, &path) {
+                        Some(reason) => Err((path, reason)),
+                        None => Ok(path),
+                    },
+                };
+                match path {
+                    Ok(path) => (path, origin),
+                    Err((path, reason)) => {
+                        let mut plan = self.reparse_plan(
+                            path,
+                            origin,
+                            InputKey {
+                                id: c.input.clone(),
+                                format: origin.name.into(),
+                                route: if state.imported {
+                                    origin.route.imported()
+                                } else {
+                                    origin.route
                                 },
-                                &state,
-                                None,
-                                false,
-                            )?;
-                            pass.errors
-                                .push(format!("refuse stored import {}: {reason}", c.input));
-                            self.record_stop(
-                                &mut plan,
-                                polylogue_model::batch::StepProgress::Refused { reason },
-                                pass,
-                            );
-                            continue;
-                        }
-                    }
-                }
-                None => {
-                    let Some(path) = watched.get(&c.input) else {
-                        continue;
-                    };
-                    let st = &self.inputs[path];
-                    // Current ordinary work belongs to stored_plan. The query
-                    // also selects a stopped attempt whose dependencies changed.
-                    if c.current
-                        && ((!c.reading_changed && !c.stopped_at_length) || st.unread.is_some())
-                    {
+                            },
+                            &state,
+                            None,
+                            false,
+                        )?;
+                        pass.errors
+                            .push(format!("refuse stored input {}: {reason}", c.input));
+                        self.record_stop(
+                            &mut plan,
+                            polylogue_model::batch::StepProgress::Refused { reason },
+                            pass,
+                        );
                         continue;
                     }
-                    (path.clone(), st.origin)
                 }
+            } else {
+                let Some(path) = watched.get(&c.input) else {
+                    continue;
+                };
+                let st = &self.inputs[path];
+                // Current ordinary work belongs to stored_plan. The query
+                // also selects a stopped attempt whose dependencies changed.
+                if c.current
+                    && ((!c.reading_changed && !c.stopped_at_length) || st.unread.is_some())
+                {
+                    continue;
+                }
+                (path.clone(), st.origin)
             };
             if !has_reading(origin) {
                 continue;
             }
-            let tracked = c.current && c.imported.is_none() && watched.get(&c.input) == Some(&path);
+            let tracked = c.current && !state.imported && watched.get(&c.input) == Some(&path);
             let facts = tracked
                 .then(|| self.inputs.get(&path).and_then(|st| st.facts))
                 .flatten();
@@ -1167,7 +1169,7 @@ impl Engine {
                 InputKey {
                     id: c.input,
                     format: origin.name.into(),
-                    route: if c.imported.is_some() {
+                    route: if state.imported {
                         origin.route.imported()
                     } else {
                         origin.route
@@ -1177,7 +1179,7 @@ impl Engine {
                 facts,
                 tracked,
             )?;
-            plan.input_finished = c.imported.is_some();
+            plan.input_finished = state.imported;
             if c.current && origin.arrival == polylogue_sources::Arrival::Live {
                 plan.priority = Priority::Live;
             }
