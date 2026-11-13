@@ -103,9 +103,9 @@ stay its own.
 local overrides and build graphs. Enter with `nix develop`. Use
 `cargo xtask check --changed` while editing,
 `cargo xtask test -p <crate> --lib -E 'test(<name>)'` for library unit tests,
-and `cargo xtask check` for the required hosted check. Package checks build the
-selected packages with all their features; full checks keep the canonical
-workspace graph.
+and `cargo xtask check` for the required hosted check. All test selections share
+the canonical workspace feature graph. Package filters select execution; native
+target flags such as `--lib` or `--bin NAME` bound compilation.
 
 **What a test checks.** A test exercises behaviour a caller can observe
 through a stable interface (a command, an operation, a reader, a stored
