@@ -1338,7 +1338,7 @@ pub fn start(
                     Some(Arc::clone(&expected)),
                 );
                 let started = ready.clone();
-                let result = engine.run(tx, &rx, &status, lifetime, || {
+                let result = engine.run(tx, rx, &status, lifetime, || {
                     let _ = started.send(Ok(()));
                 });
                 match result {

@@ -22,7 +22,7 @@ fn options() -> crate::query::Options {
         saved: Default::default(),
         fields: vec!["id".into(), "at".into()],
         kept: Default::default(),
-        chat_pages: vec![],
+        provider_catalog: None,
     }
 }
 #[test]

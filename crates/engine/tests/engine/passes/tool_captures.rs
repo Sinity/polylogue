@@ -115,7 +115,7 @@ fn daemon_continues_capture_without_a_watcher_event() {
         let _lock = lock;
         engine.run(
             worker_tx,
-            &rx,
+            rx,
             &shared,
             polylogue_engine::Lifetime::UntilStopped,
             || ready.send(()).unwrap(),

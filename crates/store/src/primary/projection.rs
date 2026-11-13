@@ -938,7 +938,12 @@ pub(crate) fn stage_next(index: &mut Connection, events: &[Confirmed]) -> Result
 
 /// Recheck the native authority and local chain set, then commit lifecycle,
 /// source retractions and completion together. No lease wait runs on this thread.
-pub(crate) fn apply_prepared(index: &mut Connection, prepared: Preparation) -> Result<Step> {
+pub(crate) fn apply_prepared(
+    texts: &crate::text_rows::TextIds,
+    index: &mut Connection,
+    prepared: Preparation,
+) -> Result<Step> {
+    let text_transaction = texts.transaction();
     let tx = index.transaction_with_behavior(TransactionBehavior::Immediate)?;
     super::scope::require_readable(&tx)?;
     // Staged rows are immutable: redelivery compares their entire contents.
@@ -987,7 +992,7 @@ pub(crate) fn apply_prepared(index: &mut Connection, prepared: Preparation) -> R
     coverage(&tx, &plan)?;
     refusals(&tx, next)?;
     let changes = crate::change_summary::ChangeSummary::start(&tx)?;
-    crate::writer::apply_source_retractions(&tx, &plan.retractions, counter, &changes)?;
+    crate::writer::apply_source_retractions(texts, &tx, &plan.retractions, counter, &changes)?;
     bindings(&tx, &plan)?;
     // Variants are authored records, so only a request can change them.
     if plan.requests != StateChange::Unchanged {
@@ -1011,15 +1016,17 @@ pub(crate) fn apply_prepared(index: &mut Connection, prepared: Preparation) -> R
     for session in touched {
         changes.whole_session(session);
     }
-    crate::writer::finish_rows(&tx, &changes, false)?;
+    crate::writer::finish_rows(&tx, &changes, None, texts)?;
     crate::fault::check("primary.before_commit", "")?;
     tx.commit()?;
+    text_transaction.commit();
     drop(plan);
     self::next(index)
 }
 
 #[cfg(test)]
 pub(crate) fn apply(
+    texts: &crate::text_rows::TextIds,
     index: &mut Connection,
     resolver: &std::sync::Arc<crate::writer::resolve::Resolver>,
     events: &[Confirmed],
@@ -1030,7 +1037,7 @@ pub(crate) fn apply(
             Step::Complete(position) => return Ok(position),
             Step::Prepare(mut prepared) => {
                 crate::writer::prepare_source_retractions(resolver, &mut prepared.retractions)?;
-                step = apply_prepared(index, *prepared)?;
+                step = apply_prepared(texts, index, *prepared)?;
             }
         }
     }

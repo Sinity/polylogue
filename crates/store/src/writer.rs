@@ -483,6 +483,7 @@ impl Writer {
         let first_build = building
             .then(|| crate::first_build::FirstBuild::load(&index).map(Arc::new))
             .transpose()?;
+        let texts = crate::text_rows::TextIds::new(&index, building)?;
         let segment = if sinex.is_none() {
             Some(crate::blobs::open_writer(&archive_conn, &archive.root)?)
         } else {
@@ -517,6 +518,7 @@ impl Writer {
             index,
             report: WriteReport::default(),
             first_build,
+            texts,
             deferred_indexes,
             users,
             search: Search::start(archive.index_db(), !building)?,
@@ -1256,6 +1258,7 @@ struct Inner {
     /// Set while the index is being built from nothing, without syncs
     /// ([`Writer::start`]).
     first_build: Option<Arc<crate::first_build::FirstBuild>>,
+    texts: crate::text_rows::TextIds,
     /// Secondary indexes dropped for a first build, recreated when it ends.
     deferred_indexes: Vec<String>,
     /// User requests, served between the writer's transactions.
@@ -2251,6 +2254,7 @@ impl Inner {
         }
 
         let indexed = batches.collect::<Vec<_>>();
+        let text_transaction = self.texts.transaction();
         let itx = self
             .index
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -2278,6 +2282,7 @@ impl Inner {
                     )?;
                     stats.1 += if primary {
                         rows::write_published_rows(
+                            &self.texts,
                             &itx,
                             b,
                             p,
@@ -2291,6 +2296,7 @@ impl Inner {
                         )?
                     } else {
                         write_rows(
+                            &self.texts,
                             &itx,
                             b,
                             p,
@@ -2308,7 +2314,8 @@ impl Inner {
             }
             stats.0 += 1;
         }
-        self.report.item_units_read += rows::finish(&itx, &changes, self.first_build.is_some())?;
+        self.report.item_units_read +=
+            rows::finish(&itx, &changes, self.first_build.as_deref(), &self.texts)?;
         let source_changed = if !primary {
             let changed = crate::chain_progress::recorded(&self.archive)?;
             crate::chain_progress::refresh(&itx, &changed)?;
@@ -2318,6 +2325,7 @@ impl Inner {
         };
         crate::fault::check("write.index_commit", "")?;
         itx.commit()?;
+        text_transaction.commit();
         if let Some(changed) = source_changed {
             crate::chain_progress::forget(&self.archive, &changed)?;
         }

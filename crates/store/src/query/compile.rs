@@ -13,7 +13,7 @@ use polylogue_query::compile::Parameters;
 pub use polylogue_query::search::SnippetTerms;
 use polylogue_query::selection::{Order, Projection, Selection, contains_order, top_level};
 pub use polylogue_query::{
-    ChatPage, ColKind, Column, ColumnReference, Definition, Kept, Options, SavedQuery, Shape,
+    ColKind, Column, ColumnReference, Definition, Kept, Options, SavedQuery, Shape,
 };
 use serde::Serialize;
 
@@ -556,22 +556,6 @@ fn relation_sql(template: &str, a: &Aliases, n: &Aliases, target: Unit, cond: &s
         .replace("{previous}", &units::adjacent_call(a, true))
         .replace("{from}", &base_from(target, n))
         .replace("{cond}", cond)
-}
-
-/// The session ID a web chat's conversation page URL names.
-fn provider_url(pages: &[ChatPage], url: &str) -> Option<String> {
-    let rest = url.split_once("://")?.1;
-    let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
-    let host = host.trim_start_matches("www.");
-    let page = pages.iter().find(|p| p.hosts.iter().any(|h| h == host))?;
-    let mut segments = path
-        .split(['?', '#'])
-        .next()
-        .unwrap_or("")
-        .split('/')
-        .filter(|s| !s.is_empty());
-    segments.find(|s| *s == page.path)?;
-    Some(format!("{}:{}", page.origin, segments.next()?))
 }
 
 fn parse_pr(v: &str) -> Option<(Option<String>, i64)> {

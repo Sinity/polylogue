@@ -12,7 +12,6 @@ pub(crate) enum Kind {
     Message,
     Event,
     Document,
-    Text,
     Link,
     EventValue,
     LinkValue,
@@ -25,14 +24,13 @@ impl Kind {
             Self::Message => "message",
             Self::Event => "event",
             Self::Document => "document",
-            Self::Text => "text",
             Self::Link => "link",
             Self::EventValue => "event_value",
             Self::LinkValue => "link_value",
         }
     }
     fn pk(self) -> &'static str {
-        if self == Self::Text { "id" } else { "pk" }
+        "pk"
     }
 }
 
@@ -193,7 +191,6 @@ impl Resolver {
             Kind::Message,
             Kind::Event,
             Kind::Document,
-            Kind::Text,
             Kind::Link,
             Kind::EventValue,
             Kind::LinkValue,
@@ -228,10 +225,6 @@ impl Resolver {
     }
 
     pub(super) fn lease(self: &Arc<Self>, keys: BTreeSet<Key>) -> Lease {
-        let keys: BTreeSet<_> = keys
-            .into_iter()
-            .filter(|key| key.kind != Kind::Text)
-            .collect();
         let mut active = self.active.lock().expect("resolver lock");
         while keys.iter().any(|key| active.keys.contains(key)) {
             #[cfg(test)]
@@ -259,9 +252,9 @@ impl Resolver {
 
     pub(super) fn resolve_key(&self, index: &Connection, key: &Key) -> Result<RowKey> {
         let existing = self.find(index, key)?;
-        // Texts and sessions are shared by batches resolved at once: a
+        // Sessions are shared by batches resolved at once: a
         // reservation gives them all one row, whichever commits first.
-        let pk = if matches!(key.kind, Kind::Text | Kind::Session) {
+        let pk = if matches!(key.kind, Kind::Session) {
             self.identity(key.clone(), existing)?.pk
         } else {
             match existing {
@@ -284,9 +277,6 @@ impl Resolver {
                 Kind::Event => {
                     first.add_event(std::str::from_utf8(&key.bytes).expect("event key"), pk)
                 }
-                Kind::Text => {
-                    first.add_text(key.bytes.as_slice().try_into().expect("text hash"), pk)
-                }
                 _ => {}
             }
         }
@@ -300,9 +290,6 @@ impl Resolver {
             Kind::Event if first.is_some() => first
                 .expect("first build")
                 .event(index, std::str::from_utf8(&key.bytes).expect("string key")),
-            Kind::Text if first.is_some() => first
-                .expect("first build")
-                .text(index, key.bytes.as_slice().try_into().expect("text hash")),
             Kind::Link => {
                 let (parent, child, kind, how, at, call): (
                     String,
@@ -315,14 +302,10 @@ impl Resolver {
                 Ok(index.query_row("SELECT pk FROM link WHERE parent_id=?1 AND child_id=?2 AND kind=?3 AND how IS ?4 AND branch_point IS ?5 AND spawning_call IS ?6",params![parent,child,kind,how,at,call],|r|r.get(0)).optional()?)
             }
             kind => {
-                let column = if kind == Kind::Text { "hash" } else { "id" };
-                let value = if kind == Kind::Text {
-                    rusqlite::types::Value::Blob(key.bytes.clone())
-                } else {
-                    String::from_utf8(key.bytes.clone())
-                        .expect("string key")
-                        .into()
-                };
+                let column = "id";
+                let value: rusqlite::types::Value = String::from_utf8(key.bytes.clone())
+                    .expect("string key")
+                    .into();
                 Ok(index
                     .query_row(
                         &format!(
@@ -547,9 +530,6 @@ impl Resolver {
                         d.document.id.to_string().into_bytes(),
                     ));
                 }
-                for hash in p.prepared.texts.keys() {
-                    keys.insert(Key::new(Kind::Text, hash.as_slice()));
-                }
                 let event_ids = p.event_identities(&b.input.id, chain)?;
                 for (index, event) in p.output.events.iter().enumerate() {
                     if let Some(session) = &event.session {
@@ -626,21 +606,6 @@ impl Resolver {
                         Kind::Message,
                         row.get::<_, String>(0)?.into_bytes(),
                     ));
-                }
-            }
-        }
-        let contents: Vec<_> = keys
-            .iter()
-            .filter(|key| matches!(key.kind, Kind::Message | Kind::Document))
-            .cloned()
-            .collect();
-        for key in contents {
-            if let Some(pk) = self.find(index, &key)? {
-                let kind = key.kind.table();
-                let mut statement=index.prepare_cached(&format!("SELECT t.hash FROM {kind}_source s JOIN {kind}_version_text v ON v.version_hash=s.version_hash JOIN text t ON t.id=v.text_id WHERE s.{kind}_pk=?1"))?;
-                let mut rows = statement.query([pk])?;
-                while let Some(row) = rows.next()? {
-                    keys.insert(Key::new(Kind::Text, row.get::<_, Vec<u8>>(0)?));
                 }
             }
         }

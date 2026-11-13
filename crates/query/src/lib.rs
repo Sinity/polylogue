@@ -18,7 +18,7 @@ pub mod time;
 pub mod units;
 
 pub use compile::{
-    Bindings, ChatPage, ColKind, Column, ColumnReference, Definition, Kept, Options, SavedQuery,
+    Bindings, ColKind, Column, ColumnReference, Definition, Kept, Options, SavedQuery,
     SavedQueryBody, Shape, compile,
 };
 pub use parse::parse;

@@ -38,7 +38,72 @@ fn unread_path(origin: &OriginSpec, path: &Path) -> Option<String> {
     })
 }
 
+impl Requests {
+    fn new(receiver: Receiver<LoopMsg>) -> Self {
+        Self {
+            receiver,
+            pending: None,
+            yielding: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            serving: false,
+        }
+    }
+
+    fn poll(&mut self) -> bool {
+        if self.serving {
+            return false;
+        }
+        if self.pending.is_none() {
+            loop {
+                match self.receiver.try_recv() {
+                    // The watcher owns the paths; this is only its wake-up.
+                    Ok(LoopMsg::Changed) => continue,
+                    Ok(message) => {
+                        self.pending = Some(message);
+                        self.yielding
+                            .store(true, std::sync::atomic::Ordering::Release);
+                        break;
+                    }
+                    Err(_) => break,
+                }
+            }
+        }
+        self.pending.is_some()
+    }
+
+    fn recv_timeout(&mut self, timeout: Duration) -> Result<LoopMsg, RecvTimeoutError> {
+        self.pending
+            .take()
+            .map_or_else(|| self.receiver.recv_timeout(timeout), Ok)
+    }
+
+    fn try_recv(&mut self) -> Result<LoopMsg, std::sync::mpsc::TryRecvError> {
+        self.pending
+            .take()
+            .map_or_else(|| self.receiver.try_recv(), Ok)
+    }
+}
+
 impl Engine {
+    /// Request admission pauses background parsing, never capture custody or
+    /// the request currently being answered. Workers and writes drain before
+    /// the loop takes the request; the next turn reads committed positions.
+    pub(super) fn poll_request(&mut self) -> bool {
+        let Some(requests) = &mut self.requests else {
+            return false;
+        };
+        let pending = requests.poll();
+        if matches!(requests.pending.as_ref(), Some(LoopMsg::Stop)) {
+            self.stop.request();
+        }
+        pending
+    }
+
+    pub(super) fn yielding(&self) -> bool {
+        self.requests.as_ref().is_some_and(|requests| {
+            !requests.serving && requests.yielding.load(std::sync::atomic::Ordering::Acquire)
+        })
+    }
+
     /// Fails `plan` with `error` and records the failure as its chain's parse
     /// state, at the position the chain was parsed to. Recording needs stored
     /// bytes; when it cannot be made, the failure stays the loop's own.
@@ -237,6 +302,7 @@ impl Engine {
         self.read_scope = None;
         self.loaded = false;
         self.pass_open = true;
+        self.same_bytes.clear();
         self.capture_checked = None;
         self.collectors_at = None;
         self.lookups = repo_lookup::Cache::default();
@@ -305,6 +371,15 @@ impl Engine {
         discover: bool,
         paths: &std::collections::BTreeSet<PathBuf>,
     ) -> Result<(Pass, HashSet<PathBuf>), EngineError> {
+        if self.poll_request() {
+            return Ok((
+                Pass {
+                    capture_pending: true,
+                    ..Pass::default()
+                },
+                HashSet::new(),
+            ));
+        }
         let continuing = self.pass_open;
         let started = Instant::now();
         self.load()?;
@@ -404,6 +479,11 @@ impl Engine {
         }
         if discover {
             self.reparse_behind(None, Chains::Newest, &mut pass)?;
+        }
+        if self.yielding() {
+            pass.capture_pending = true;
+            pass.seconds = started.elapsed().as_secs_f64();
+            return Ok((pass, HashSet::new()));
         }
 
         let mut seen = HashSet::new();
@@ -517,6 +597,11 @@ impl Engine {
             pass.errors.extend(report.errors);
         }
         self.execute(plans, &mut pass)?;
+        if self.yielding() {
+            pass.capture_pending = true;
+            pass.seconds = started.elapsed().as_secs_f64();
+            return Ok((pass, seen));
+        }
         if self.stop.requested() {
             pass.seconds = started.elapsed().as_secs_f64();
             return Ok((pass, seen));
@@ -527,9 +612,21 @@ impl Engine {
             if !pass.capture_pending && !self.captures.pending() {
                 pass.sessions_derived += self.derive()?;
             }
-            self.reparse_behind(None, Chains::Older, &mut pass)?;
+            if !self.poll_request() {
+                self.reparse_behind(None, Chains::Older, &mut pass)?;
+            }
+        }
+        if self.yielding() {
+            pass.capture_pending = true;
+            pass.seconds = started.elapsed().as_secs_f64();
+            return Ok((pass, seen));
         }
         self.copy_same_bytes(&mut pass)?;
+        if self.poll_request() {
+            pass.capture_pending = true;
+            pass.seconds = started.elapsed().as_secs_f64();
+            return Ok((pass, seen));
+        }
         if deferred_database && pass.errors.is_empty() && !self.captures.pending() {
             // Local parsing may have made a deferred database runnable. Start
             // that real work in this batch; a still-pending reading just yields.
@@ -1081,6 +1178,9 @@ impl Engine {
             .map(|(path, st)| (st.input_id.clone(), path.clone()))
             .collect();
         for c in behind {
+            if self.poll_request() {
+                break;
+            }
             if selected.is_some_and(|ids| !ids.contains(&c.input))
                 || c.current != (chains == Chains::Newest)
             {
@@ -1211,6 +1311,9 @@ impl Engine {
             parse.push(plan);
         }
         self.replace_readings(replacements, pass)?;
+        if self.yielding() {
+            return Ok(());
+        }
         self.execute_by_path(parse, pass)
     }
 
@@ -1229,7 +1332,13 @@ impl Engine {
             *round += 1;
         }
         for round in rounds {
+            if self.poll_request() {
+                break;
+            }
             self.execute(round, pass)?;
+            if self.yielding() {
+                break;
+            }
         }
         Ok(())
     }
@@ -1240,7 +1349,7 @@ impl Engine {
     /// stopped, or its reading writes rows shared by the input's chains) is
     /// parsed instead.
     fn copy_same_bytes(&mut self, pass: &mut Pass) -> Result<(), EngineError> {
-        if self.same_bytes.is_empty() {
+        if self.same_bytes.is_empty() || self.poll_request() {
             return Ok(());
         }
         let report = self.flush_writes()?;
@@ -1436,7 +1545,7 @@ impl Engine {
         let mut ordinary = Vec::new();
         let mut replacements = Vec::new();
         for mut plan in plans {
-            if self.stop.requested() {
+            if self.stop.requested() || self.poll_request() {
                 break;
             }
             self.prepare_raw_plan(&mut plan)?;
@@ -1486,6 +1595,9 @@ impl Engine {
                 && !matches!(plan.change, Change::First | Change::Rewritten);
             if plan.replace || store_first {
                 self.execute_pool(std::mem::take(&mut ordinary), pass)?;
+                if self.yielding() {
+                    return Ok(());
+                }
                 if store_first && let Err(error) = self.store_plan(&mut plan, pass) {
                     plan.failed = true;
                     self.finish_plan(plan);
@@ -1499,6 +1611,9 @@ impl Engine {
                 (plan.origin.open)(&plan.path)
             {
                 self.execute_pool(std::mem::take(&mut ordinary), pass)?;
+                if self.yielding() {
+                    return Ok(());
+                }
                 if !self.load_stored(&mut plan)? {
                     continue;
                 }
@@ -1520,6 +1635,9 @@ impl Engine {
             }
         }
         self.execute_pool(ordinary, pass)?;
+        if self.yielding() {
+            return Ok(());
+        }
         self.replace_readings(replacements, pass)?;
         if self.stop.requested() {
             return Err(EngineError::Stopped);
@@ -1560,14 +1678,16 @@ impl Engine {
         let room = self.config.workers.max(1) * IN_POOL_PER_WORKER;
         let every = self.config.live_every;
         let mut stopping = false;
+        let mut yielding = false;
         loop {
+            yielding |= self.poll_request();
             if !stopping && self.stop.requested() {
                 // What workers are parsing commits; nothing else starts.
                 stopping = true;
                 waiting.clear();
                 outstanding -= pool.cancel_queued();
             }
-            if !stopping && checked.elapsed() >= every {
+            if !stopping && !yielding && checked.elapsed() >= every {
                 checked = Instant::now();
                 let live = {
                     // A continuation owns its path while queued, too. Finish
@@ -1589,6 +1709,7 @@ impl Engine {
                 }
             }
             while !stopping
+                && !yielding
                 && outstanding < room
                 && let Some(mut plan) = waiting.pop_front()
             {
@@ -1880,7 +2001,7 @@ impl Engine {
     pub fn run(
         &mut self,
         tx: Sender<LoopMsg>,
-        rx: &Receiver<LoopMsg>,
+        rx: Receiver<LoopMsg>,
         status: &Arc<Mutex<LoopStatus>>,
         lifetime: Lifetime,
         ready: impl FnOnce(),
@@ -1896,6 +2017,7 @@ impl Engine {
             None
         };
         self.wake = Some(tx.clone());
+        self.requests = Some(Requests::new(rx));
         drop(tx);
         ready();
         let mut summary = RunSummary::default();
@@ -1918,7 +2040,11 @@ impl Engine {
                     return Ok(self.stopped(summary));
                 }
                 Ok((pass, seen)) => {
-                    pending = pass.capture_pending;
+                    let yielded = self.yielding();
+                    pending = pass.capture_pending || yielded;
+                    if yielded {
+                        self.discard_confirmed_state();
+                    }
                     if pending {
                         changed.extend(seen);
                     } else {
@@ -1978,7 +2104,12 @@ impl Engine {
                 // capture that continues gets `live_every` before the next pass.
                 let mut more = pending;
                 if pending {
-                    match rx.recv_timeout(self.config.live_every) {
+                    match self
+                        .requests
+                        .as_mut()
+                        .expect("running inbox")
+                        .recv_timeout(self.config.live_every)
+                    {
                         Ok(LoopMsg::Stop) | Err(RecvTimeoutError::Disconnected) => {
                             return Ok(self.stopped(summary));
                         }
@@ -1989,7 +2120,7 @@ impl Engine {
                     }
                 }
                 loop {
-                    match rx.try_recv() {
+                    match self.requests.as_mut().expect("running inbox").try_recv() {
                         Ok(LoopMsg::Stop) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                             return Ok(self.stopped(summary));
                         }
@@ -2007,7 +2138,11 @@ impl Engine {
                 }
                 continue;
             }
-            let mut msg = rx.recv_timeout(self.config.live_every);
+            let mut msg = self
+                .requests
+                .as_mut()
+                .expect("running inbox")
+                .recv_timeout(self.config.live_every);
             let burst = Instant::now();
             loop {
                 match msg {
@@ -2025,19 +2160,28 @@ impl Engine {
                 // Pending captures continue after queued requests, without
                 // waiting for a watcher event or a coalescing delay.
                 if pending {
-                    msg = rx.try_recv().map_err(|e| match e {
-                        std::sync::mpsc::TryRecvError::Empty => RecvTimeoutError::Timeout,
-                        std::sync::mpsc::TryRecvError::Disconnected => {
-                            RecvTimeoutError::Disconnected
-                        }
-                    });
+                    msg = self
+                        .requests
+                        .as_mut()
+                        .expect("running inbox")
+                        .try_recv()
+                        .map_err(|e| match e {
+                            std::sync::mpsc::TryRecvError::Empty => RecvTimeoutError::Timeout,
+                            std::sync::mpsc::TryRecvError::Disconnected => {
+                                RecvTimeoutError::Disconnected
+                            }
+                        });
                     if matches!(msg, Err(RecvTimeoutError::Timeout)) {
                         break;
                     }
                     continue;
                 }
                 // Coalesce a burst of file events into one pass.
-                msg = rx.recv_timeout(Duration::from_millis(200));
+                msg = self
+                    .requests
+                    .as_mut()
+                    .expect("running inbox")
+                    .recv_timeout(Duration::from_millis(200));
                 if matches!(msg, Err(RecvTimeoutError::Timeout)) {
                     break;
                 }
@@ -2093,6 +2237,12 @@ impl Engine {
         else {
             return;
         };
+        if let Some(requests) = &mut self.requests {
+            requests.serving = true;
+            requests
+                .yielding
+                .store(false, std::sync::atomic::Ordering::Release);
+        }
         // Queue waits belong to the producing transport. After
         // admission the engine owns completion and its ACK.
         let report = parent
@@ -2116,6 +2266,9 @@ impl Engine {
                 busy(pending);
                 report
             });
+        if let Some(requests) = &mut self.requests {
+            requests.serving = false;
+        }
         summary.imports += 1;
         match &report {
             Ok(report) => summary.work.add(report.pass.clone()),
@@ -2130,6 +2283,7 @@ impl Engine {
     fn stopped(&mut self, summary: RunSummary) -> RunSummary {
         self.captures = Databases::default();
         self.wake = None;
+        self.requests = None;
         self.watcher = None;
         self.pass_open = false;
         summary

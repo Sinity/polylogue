@@ -504,6 +504,7 @@ fn original_readings_use_confirmed_blob_sizes_without_a_local_source_database() 
     let tx = index.transaction().unwrap();
     let step = &input.parse[0];
     write_rows(
+        &crate::text_rows::TextIds::new(&tx, false).unwrap(),
         &tx,
         &input,
         step,
@@ -742,6 +743,7 @@ fn apply_source_batches(index: &mut Connection, batches: &[Batch]) -> Result<()>
     for batch in batches {
         for step in &batch.parse {
             write_rows(
+                &crate::text_rows::TextIds::new(&tx, false).unwrap(),
                 &tx,
                 batch,
                 step,
@@ -888,7 +890,16 @@ fn native_source_retraction_reselects_remaining_claims_and_rolls_back_atomically
     {
         let tx = index.transaction().unwrap();
         let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
-        assert!(apply_source_retractions(&tx, &retractions, 2, &changes).is_err());
+        assert!(
+            apply_source_retractions(
+                &crate::text_rows::TextIds::new(&tx, false).unwrap(),
+                &tx,
+                &retractions,
+                2,
+                &changes
+            )
+            .is_err()
+        );
     }
     assert_eq!(
         index
@@ -909,8 +920,21 @@ fn native_source_retraction_reselects_remaining_claims_and_rolls_back_atomically
         .unwrap();
     let tx = index.transaction().unwrap();
     let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
-    apply_source_retractions(&tx, &retractions, 2, &changes).unwrap();
-    rows::finish(&tx, &changes, false).unwrap();
+    apply_source_retractions(
+        &crate::text_rows::TextIds::new(&tx, false).unwrap(),
+        &tx,
+        &retractions,
+        2,
+        &changes,
+    )
+    .unwrap();
+    rows::finish(
+        &tx,
+        &changes,
+        None,
+        &crate::text_rows::TextIds::new(&tx, false).unwrap(),
+    )
+    .unwrap();
     tx.commit().unwrap();
     assert_eq!(
         index

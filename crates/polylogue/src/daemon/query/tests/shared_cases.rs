@@ -39,7 +39,7 @@ fn options(fields: Vec<String>) -> Options {
         saved: Default::default(),
         fields,
         kept: Default::default(),
-        chat_pages: vec![],
+        provider_catalog: None,
     }
 }
 impl compiler_cases::Compiler for Product {

@@ -35,6 +35,16 @@ not keep ordinary replay running during shutdown.
 
 **Restart** resumes from committed positions; it does not rescan the archive, replay tool-database captures or re-read history. Target: socket ready within 2 s of start.
 
+**Requests during stored parsing.** A queued import ends the background parser
+turn after its already-admitted chunks have committed and its parser readers
+have drained. The loop answers the request through the normal import path,
+then reloads committed source and parser positions before continuing. Work
+not admitted is selected again from those positions; no input is truncated
+or marked complete by the yield. An unfinished private replacement reading is
+dropped without changing its previous committed reading. A queued stop also
+requests the existing parser/writer shutdown path. These are request-driven
+boundaries, not limits on file size or the amount an archive may contain.
+
 **Batch mode.** `polylogue daemon --until-idle [--json]` runs the same pipeline and exits when no unit has work, printing a summary and exiting 0, or 1 when a pass or import met an error: the passes and imports it ran and their work added together (inputs seen and changed, bytes read and stored, messages written, sessions derived, unreadable roots and errors). "No work" means a pass ended with no capture continuing, no request queued and no change waiting from the watcher. Tests, benchmarks and the restore drill use it; it is not a second engine.
 
 **Without sources.** `polylogue daemon --no-sources` reads none of its sources: no root is scanned or watched, no spool or tool database is read, no collector runs and no repository lookup is written, so no input, observation or coverage is recorded from the machine. It parses and derives what the archive already stores (an index behind its archive catches up, a reading-version change re-parses) and serves every request, `import` included. A file that has gone from its location is not observed as gone, because nothing looked. With `--until-idle` it processes what is stored and exits. An archive that receives another archive's contents (`import`) is started this way, so that none of its locations is watched before the import, and the restore drill uses it to check a restored copy without touching the machine's live files.

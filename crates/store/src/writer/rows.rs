@@ -15,6 +15,7 @@ pub(super) use retract::prune_sessions;
 /// Writes a parse step's rows; returns the number of message rows written.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn write_rows(
+    texts: &crate::text_rows::TextIds,
     tx: &Transaction<'_>,
     b: &Batch,
     p: &ParseStep,
@@ -30,6 +31,7 @@ pub(super) fn write_rows(
         p,
         ReadingWrite {
             resolution,
+            texts,
             counter,
             first_build,
             retraction: false,
@@ -45,6 +47,7 @@ pub(super) fn write_rows(
 /// Its receipt and ordinary parser progress commit with the same model rows.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn write_published_rows(
+    texts: &crate::text_rows::TextIds,
     tx: &Transaction<'_>,
     b: &Batch,
     p: &ParseStep,
@@ -72,6 +75,7 @@ pub(super) fn write_published_rows(
         p,
         ReadingWrite {
             resolution,
+            texts,
             counter,
             first_build,
             retraction: false,
@@ -87,6 +91,7 @@ pub(super) fn write_published_rows(
 /// its first ordinary chunk. Later chunks use the ordinary continuation path.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn write_replacement_rows(
+    texts: &crate::text_rows::TextIds,
     tx: &Transaction<'_>,
     b: &Batch,
     p: &ParseStep,
@@ -102,6 +107,7 @@ pub(super) fn write_replacement_rows(
         p,
         ReadingWrite {
             resolution,
+            texts,
             counter,
             first_build,
             retraction: false,
@@ -115,6 +121,7 @@ pub(super) fn write_replacement_rows(
 
 /// Retract a native source contribution and show the surviving ordinary readings.
 pub(super) fn retract_source(
+    texts: &crate::text_rows::TextIds,
     tx: &Transaction<'_>,
     b: &Batch,
     p: &ParseStep,
@@ -128,6 +135,7 @@ pub(super) fn retract_source(
         p,
         ReadingWrite {
             resolution,
+            texts,
             counter,
             first_build: None,
             retraction: true,
@@ -140,6 +148,7 @@ pub(super) fn retract_source(
 }
 
 struct ReadingWrite<'a> {
+    texts: &'a crate::text_rows::TextIds,
     resolution: &'a resolve::Resolution,
     counter: i64,
     first_build: Option<&'a FirstBuild>,
@@ -158,6 +167,7 @@ fn apply_rows(
 ) -> Result<u64> {
     let ReadingWrite {
         resolution,
+        texts,
         counter,
         first_build,
         retraction,
@@ -234,8 +244,7 @@ fn apply_rows(
             &version.prepared,
             crate::versions::TextRows {
                 packed: &p.prepared.texts,
-                first_build,
-                keys,
+                texts,
             },
             version.replace,
             version.admitted.or(source_admission),
@@ -257,6 +266,7 @@ fn apply_rows(
         counter,
         packed: &p.prepared.texts,
         first_build,
+        texts,
         keys,
     };
     for (i, row) in p.output.documents.iter().enumerate() {
@@ -502,7 +512,15 @@ fn apply_rows(
             written += u64::from(rows.refresh_message(*pk)?);
         }
         for (pk, choice) in &choices.documents {
-            crate::documents::apply_choice(tx, *pk, choice.as_ref(), counter, first_build, keys)?;
+            crate::documents::apply_choice(
+                tx,
+                *pk,
+                choice.as_ref(),
+                counter,
+                first_build,
+                texts,
+                keys,
+            )?;
         }
         for pk in choices.events.keys() {
             rows.refresh_event(*pk)?;
@@ -614,18 +632,19 @@ fn apply_rows(
 pub(crate) fn finish(
     tx: &Transaction<'_>,
     changes: &ChangeSummary,
-    first_build: bool,
+    first_build: Option<&FirstBuild>,
+    texts: &crate::text_rows::TextIds,
 ) -> Result<u64> {
     changes.finish_links(tx)?;
     let read = crate::items::refresh(tx, changes)?;
     crate::session_values::refresh(tx, changes)?;
     // A first build derives every session once, when it ends.
-    if !first_build {
+    if first_build.is_none() {
         let sessions = changes.sessions(tx)?;
         crate::derive::links::fold(tx, &sessions)?;
         crate::measure::time::forget_settled(tx, changes, &sessions)?;
     }
-    crate::versions::remove_unreferenced(tx, first_build)?;
+    crate::versions::remove_unreferenced(tx, first_build, texts)?;
     Ok(read)
 }
 
@@ -1365,6 +1384,8 @@ impl RowWriter<'_, '_> {
             ));
         }
         prepared.projection.validate(m.blocks.len())?;
+        let stored_texts =
+            crate::versions::text_ids(self.tx, VersionKind::Message, &prepared.hash)?;
         for (idx, ((block, body), data)) in m
             .blocks
             .iter()
@@ -1374,7 +1395,11 @@ impl RowWriter<'_, '_> {
         {
             let text_id = prepared.texts[idx]
                 .as_ref()
-                .map(|hash| self.keys.get(resolve::Kind::Text, hash).map(|key| key.pk))
+                .map(|_| {
+                    stored_texts.get(&idx).copied().ok_or_else(|| {
+                        StoreError::Invalid("stored message text reference is missing".into())
+                    })
+                })
                 .transpose()?;
             let stored = StoredBlock {
                 body,

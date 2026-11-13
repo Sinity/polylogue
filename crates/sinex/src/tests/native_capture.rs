@@ -1015,7 +1015,7 @@ fn a_disappeared_pending_source_survives_reader_failure_and_no_event_continuatio
     let (tx, rx) = channel();
     let worker_tx = tx.clone();
     let worker = std::thread::spawn(move || {
-        let result = engine.run(worker_tx, &rx, &shared, Lifetime::UntilIdle, || {});
+        let result = engine.run(worker_tx, rx, &shared, Lifetime::UntilIdle, || {});
         (engine, result)
     });
     let deadline = Instant::now() + Duration::from_secs(10);

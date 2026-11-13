@@ -156,7 +156,7 @@ fn saved_metadata_follows_committed_families_and_late_exact_query_bodies() {
             saved: Default::default(),
             fields: vec![],
             kept: Default::default(),
-            chat_pages: vec![],
+            provider_catalog: None,
         },
     )
     .unwrap();

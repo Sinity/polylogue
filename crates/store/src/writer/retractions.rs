@@ -40,6 +40,7 @@ pub(crate) fn prepare_source_retractions(
 }
 
 pub(crate) fn apply_source_retractions(
+    texts: &crate::text_rows::TextIds,
     tx: &Transaction<'_>,
     batches: &[Batch],
     counter: i64,
@@ -59,7 +60,7 @@ pub(crate) fn apply_source_retractions(
                 .ok_or_else(|| {
                     StoreError::Invalid("source retraction was not resolved for its chain".into())
                 })?;
-            rows::retract_source(tx, batch, step, resolution, counter, changes)?;
+            rows::retract_source(texts, tx, batch, step, resolution, counter, changes)?;
         }
         rows::prune_sessions(tx, &batch.input.id, chain, counter)?;
     }

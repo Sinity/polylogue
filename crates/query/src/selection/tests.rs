@@ -30,7 +30,7 @@ fn clock() -> crate::time::Clock {
 fn selection_with(text: &str, fields: &[String]) -> Selection {
     prepare(text, &bindings(), |_| Ok(()))
         .unwrap()
-        .selection(fields, &clock())
+        .selection(fields, &clock(), None)
         .unwrap()
         .unwrap()
 }
@@ -38,7 +38,7 @@ fn selection_with(text: &str, fields: &[String]) -> Selection {
 fn error(text: &str) -> QueryError {
     prepare(text, &bindings(), |_| Ok(()))
         .unwrap()
-        .selection(&[], &clock())
+        .selection(&[], &clock(), None)
         .unwrap_err()
 }
 

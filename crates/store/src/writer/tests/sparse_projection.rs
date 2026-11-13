@@ -287,6 +287,7 @@ fn ordinary_primary_readings_preserve_every_known_block() {
     for input in &readings {
         for step in &input.parse {
             write_rows(
+                &crate::text_rows::TextIds::new(&tx, false).unwrap(),
                 &tx,
                 input,
                 step,

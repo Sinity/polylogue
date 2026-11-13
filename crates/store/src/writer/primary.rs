@@ -71,6 +71,7 @@ impl Inner {
                 || crate::primary::projection::replay_state(&self.index)?
                     .projection
                     .is_some();
+            self.texts.discard_cached();
             let changed = match crate::primary::scope::reset(
                 &mut self.index,
                 &self.location,
@@ -117,7 +118,8 @@ impl Inner {
         kinds: crate::completion::Committed,
     ) -> Result<crate::primary::projection::Step> {
         let before = crate::primary::projection::checkpoint(&self.index)?;
-        let result = crate::primary::projection::apply_prepared(&mut self.index, prepared);
+        let result =
+            crate::primary::projection::apply_prepared(&self.texts, &mut self.index, prepared);
         // An earlier atomic application of this staged page may already have
         // committed. A later failure must remain visible even if this step
         // itself made no progress.

@@ -54,11 +54,14 @@ pub(super) fn apply(
     let archive = Archive::on_sinex(root, &root.join("bytes"));
     let resolver = resolve::Resolver::new(&archive, index, None)?;
     resolver.batches(&mut [&mut batch])?;
+    let texts = crate::text_rows::TextIds::new(index, false)?;
+    let text_transaction = texts.transaction();
     let tx = index.transaction()?;
     let counter = bump_counter(&tx)?;
     let changes = crate::change_summary::ChangeSummary::start(&tx)?;
     let step = &batch.parse[0];
     rows::write_published_rows(
+        &texts,
         &tx,
         &batch,
         step,
@@ -70,8 +73,9 @@ pub(super) fn apply(
         step.reset && step.delivery.is_none(),
         &changes,
     )?;
-    rows::finish(&tx, &changes, false)?;
+    rows::finish(&tx, &changes, None, &texts)?;
     tx.commit()?;
+    text_transaction.commit();
     Ok(())
 }
 
@@ -173,6 +177,7 @@ fn native_parser_diagnostic_lifecycle_preserves_the_local_model_and_processed_so
         (4, ConfirmedChange::Tombstoned),
     ] {
         crate::primary::projection::apply(
+            &crate::text_rows::TextIds::new(&index, false).unwrap(),
             &mut index,
             &resolver,
             &[
@@ -235,6 +240,7 @@ fn an_archived_value_does_not_turn_a_processed_incomplete_tail_into_an_unknown_p
         (2, ConfirmedChange::Archived),
     ] {
         crate::primary::projection::apply(
+            &crate::text_rows::TextIds::new(&index, false).unwrap(),
             &mut index,
             &resolver,
             &[
@@ -394,7 +400,13 @@ pub(super) fn confirm(index: &mut Connection, archive: &Archive, batch: &Batch, 
             delivery: None,
         })),
     });
-    crate::primary::projection::apply(index, &resolver, &events).unwrap();
+    crate::primary::projection::apply(
+        &crate::text_rows::TextIds::new(index, false).unwrap(),
+        index,
+        &resolver,
+        &events,
+    )
+    .unwrap();
 }
 
 #[test]
@@ -529,7 +541,13 @@ fn native_fact_admissions_follow_identity_through_filtering_and_reordering() {
             delivery: None,
         })),
     });
-    crate::primary::projection::apply(&mut index, &resolver, &events).unwrap();
+    crate::primary::projection::apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &mut index,
+        &resolver,
+        &events,
+    )
+    .unwrap();
     original.parse[0].output.messages.swap(0, 2);
     apply(
         &mut index,

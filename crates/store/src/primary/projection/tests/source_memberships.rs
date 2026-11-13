@@ -44,6 +44,7 @@ fn complete_positions_rebuild_container_memberships_with_their_original_observat
     let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
     apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
         &[
@@ -60,6 +61,7 @@ fn complete_positions_rebuild_container_memberships_with_their_original_observat
         (6, ConfirmedChange::Tombstoned, false),
     ] {
         apply(
+            &crate::text_rows::TextIds::new(&index, false).unwrap(),
             &mut index,
             &resolver,
             &[

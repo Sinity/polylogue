@@ -78,6 +78,10 @@ impl Engine {
         let read_memory = self.config.reader_memory_per_connection()?;
         let stopped_attempt = self.stopped_attempt;
         let stop = self.stop.clone();
+        let yielding = self.requests.as_ref().map_or_else(
+            || Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            |requests| Arc::clone(&requests.yielding),
+        );
         let archive = self.archive.clone();
         let blobs = Arc::clone(&self.blobs);
         let writer = self.writer.sender()?;
@@ -93,13 +97,16 @@ impl Engine {
                 let archive = &archive;
                 let blobs = &blobs;
                 let stop = &stop;
+                let yielding = &yielding;
                 std::thread::Builder::new()
                     .name(format!("pl-reading-{worker}"))
                     .spawn_scoped(scope, move || {
                         loop {
                             // After a stop request the queue is left for the
                             // loop below to take back.
-                            if stop.requested() {
+                            if stop.requested()
+                                || yielding.load(std::sync::atomic::Ordering::Acquire)
+                            {
                                 break;
                             }
                             let plan = { waiting.lock().expect("reading queue").pop_front() };
@@ -118,6 +125,7 @@ impl Engine {
                                         &mut bytes_read,
                                         &stopped_attempt,
                                         stop,
+                                        yielding,
                                     )
                                 }))
                                 .unwrap_or_else(|_| {
@@ -126,6 +134,9 @@ impl Engine {
                                     ))
                                 });
                             let reading = reading.and_then(|reading| {
+                                if yielding.load(std::sync::atomic::Ordering::Acquire) {
+                                    return Ok(None);
+                                }
                                 reading
                                     .map(|mut reading| {
                                         polylogue_store::timing::time(
@@ -158,6 +169,7 @@ impl Engine {
                     .expect("spawn a reading worker");
             }
             drop(finished);
+            let queue_yielding = Arc::clone(&yielding);
             std::thread::Builder::new()
                 .name("pl-reading-send".into())
                 .spawn_scoped(scope, move || {
@@ -169,6 +181,9 @@ impl Engine {
                     {
                         polylogue_store::timing::reading_queue(0, -1);
                         let reply = reading.and_then(|reading| {
+                            if queue_yielding.load(std::sync::atomic::Ordering::Acquire) {
+                                return Ok(None);
+                            }
                             let Some(reading) = reading else {
                                 return Ok(None);
                             };
@@ -198,7 +213,7 @@ impl Engine {
             let every = self.config.live_every.max(Duration::from_millis(10));
             let mut stopping = false;
             while remaining > 0 {
-                if !stopping && self.stop.requested() {
+                if !stopping && (self.stop.requested() || self.poll_request()) {
                     // Readings being prepared commit; the rest are not started.
                     stopping = true;
                     let unstarted: Vec<Plan> =
@@ -405,6 +420,9 @@ impl Engine {
         checked: &mut Instant,
         pass: &mut Pass,
     ) {
+        if self.poll_request() {
+            return;
+        }
         if checked.elapsed() >= self.config.live_every {
             *checked = Instant::now();
             let result = self
@@ -435,7 +453,11 @@ fn prepare(
     bytes_read: &mut u64,
     stopped_attempt: &StoppedAttempt,
     stop: &StopRequest,
+    yielding: &std::sync::atomic::AtomicBool,
 ) -> Result<Option<ChainReading>, EngineError> {
+    if yielding.load(std::sync::atomic::Ordering::Acquire) {
+        return Ok(None);
+    }
     if let pool::Bytes::Unloaded {
         chain,
         length,
@@ -461,7 +483,7 @@ fn prepare(
         let _charge = memory.take(plan.size.min(plan.chunk));
         let read = crate::import::exports::parse_export(plan, &mut *parser, blobs, |mut item| {
             // A reading commits whole, so a stop drops what was prepared.
-            if stop.requested() {
+            if stop.requested() || yielding.load(std::sync::atomic::Ordering::Acquire) {
                 return Err(EngineError::Stopped);
             }
             let mut decoded = Vec::new();
@@ -483,7 +505,15 @@ fn prepare(
             })?;
             keep_decoded(&mut reading, plan, decoded, files);
             Ok(cursor)
-        })?;
+        });
+        let read = match read {
+            Err(EngineError::Stopped)
+                if !stop.requested() && yielding.load(std::sync::atomic::Ordering::Acquire) =>
+            {
+                return Ok(None);
+            }
+            result => result?,
+        };
         *bytes_read += read.bytes_read;
         if read.complete {
             plan.parse_pos = plan.size;
@@ -504,6 +534,9 @@ fn prepare(
             None
         };
         while !plan.finished() {
+            if yielding.load(std::sync::atomic::Ordering::Acquire) {
+                return Ok(None);
+            }
             if stop.requested() {
                 return Err(EngineError::Stopped);
             }

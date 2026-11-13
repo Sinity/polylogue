@@ -16,6 +16,7 @@ pub(crate) struct Source<'a> {
     pub route: polylogue_model::Route,
     pub counter: i64,
     pub packed: &'a HashMap<[u8; 32], Vec<u8>>,
+    pub texts: &'a crate::text_rows::TextIds,
     /// Set during a first build ([`crate::first_build`]).
     pub first_build: Option<&'a crate::first_build::FirstBuild>,
     pub keys: &'a crate::writer::resolve::ResolvedKeys,
@@ -53,8 +54,7 @@ pub(crate) fn write(
         &prepared.texts,
         crate::versions::TextRows {
             packed: source.packed,
-            first_build: source.first_build,
-            keys,
+            texts: source.texts,
         },
     )?;
     let pk = match existing {
@@ -75,6 +75,7 @@ pub(crate) fn apply_choice(
     choice: Option<&crate::writer::resolve::membership::DocumentChoice>,
     counter: i64,
     first_build: Option<&crate::first_build::FirstBuild>,
+    texts: &crate::text_rows::TextIds,
     keys: &crate::writer::resolve::ResolvedKeys,
 ) -> Result<()> {
     let Some(choice) = choice else {
@@ -93,6 +94,7 @@ pub(crate) fn apply_choice(
         counter,
         packed: &packed,
         first_build,
+        texts,
         keys,
     };
     if choice.changed {
@@ -164,6 +166,7 @@ fn insert_blocks(
     document: &Document,
     prepared: &PreparedDocument,
 ) -> Result<()> {
+    let stored_texts = crate::versions::text_ids(tx, VersionKind::Document, &prepared.hash)?;
     for (idx, ((block, body), data)) in document
         .blocks
         .iter()
@@ -173,11 +176,10 @@ fn insert_blocks(
     {
         let text = prepared.texts[idx]
             .as_ref()
-            .map(|hash| {
-                source
-                    .keys
-                    .get(crate::writer::resolve::Kind::Text, hash)
-                    .map(|key| key.pk)
+            .map(|_| {
+                stored_texts.get(&idx).copied().ok_or_else(|| {
+                    StoreError::Invalid("stored document text reference is missing".into())
+                })
             })
             .transpose()?;
         if let Some(id) = text {

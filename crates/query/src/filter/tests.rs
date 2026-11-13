@@ -24,7 +24,7 @@ fn filter(text: &str) -> Result<Filter, QueryError> {
     };
     let plan = prepare(text, &bindings, |_| Ok(()))?;
     Ok(plan
-        .selection(&[], &clock())?
+        .selection(&[], &clock(), None)?
         .expect("a unit source")
         .filter
         .expect("a condition"))
@@ -178,6 +178,7 @@ fn values_outside_the_field_are_refused() {
         text: "messages where role:robot",
         origins: &origins,
         clock: &clock,
+        provider_catalog: None,
     };
     // The declared spelling is what the column holds, however it was written.
     assert!(matches!(

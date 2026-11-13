@@ -149,7 +149,7 @@ pub(crate) fn prepare_with(
             saved: Default::default(),
             fields: Vec::new(),
             kept: Default::default(),
-            chat_pages: Vec::new(),
+            provider_catalog: None,
         };
         let program = polylogue_store::query::compile(&text, &opts)?;
         reader.visit_query_values(

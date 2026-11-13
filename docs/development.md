@@ -108,6 +108,10 @@ executable. The declared AgentCTL `compile` operation accepts those Cargo check
 arguments in the same one-slot compile queue. `fast` and the required hosted
 checks retain their complete feature matrices.
 
+The `polylogue` package is binary-only: its daemon, CLI, MCP and web unit tests
+live in `--bin polylogue`. For example, run its reference-query tests with
+`cargo xtask test -p polylogue --bin polylogue -E 'test(daemon::query::tests::references)'`.
+
 A host may queue these commands through its own job runner. AgentCTL routes
 `fast` and `focused` through the same one-slot `compile` queue. Selected tests
 therefore wait for source checks rather than long runtime proofs, and their
