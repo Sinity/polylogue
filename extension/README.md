@@ -89,11 +89,11 @@ same note ID, so a note is never saved twice. Read notes with
 
 ```bash
 npm --prefix extension ci
-npm --prefix extension test
-npm --prefix extension run lint
-npm --prefix extension run validate
+npm --prefix extension run check
 ```
 
 The tests run the background against a fake Chrome whose native messaging
 host speaks the real frames, and the page scripts in jsdom pages; inputs are
 synthetic.
+
+Packaging commands, artifact versions and source release updates are described in [Development](../docs/development.md). The build preserves source files and current provider registration.

@@ -1,224 +1,67 @@
 #!/usr/bin/env node
-// Build packed browser extension artifacts (Chrome .zip + Firefox .xpi).
-//
-// Usage:
-//   node scripts/build.mjs                  # read extension/package.json version
-//   node scripts/build.mjs --version 0.2.0  # override version explicitly
-//   node scripts/build.mjs --out ./dist     # override output directory
-//
-// Produces:
-//   <out>/polylogue-browser-capture-<version>-chrome.zip
-//   <out>/polylogue-browser-capture-<version>-firefox.xpi
-//
-// Side effect: rewrites extension/manifest.json + package.json + package-lock.json
-// "version" fields to match the resolved version so the committed source
-// stays in sync with the released artifact. The Firefox artifact uses a
-// dedicated manifest with browser_specific_settings.gecko populated.
-
+// Build Chrome ZIP and Firefox XPI artifacts from explicit runtime inputs.
 import { execFileSync } from "node:child_process";
-import { cpSync, createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { mkdtempSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { browserManifest, browserVersion, FIREFOX_GECKO_ID, runtimeFiles } from "./package.mjs";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const EXT_ROOT = resolve(__dirname, "..");
-const FIREFOX_GECKO_ID = "polylogue-browser-capture@sinity.dev";
-
-function parseArgs(argv) {
-  const args = { version: null, out: join(EXT_ROOT, "dist"), syncOnly: false, syncSource: true };
-  for (let i = 0; i < argv.length; i += 1) {
-    const a = argv[i];
-    if (a === "--version") {
-      args.version = argv[++i];
-    } else if (a === "--out") {
-      args.out = resolve(argv[++i]);
-    } else if (a === "--sync-only") {
-      args.syncOnly = true;
-    } else if (a === "--no-source-sync") {
-      args.syncSource = false;
-    } else if (a === "--help" || a === "-h") {
-      process.stdout.write(
-        "Usage: build.mjs [--version X.Y.Z] [--out DIR] [--sync-only] [--no-source-sync]\n",
-      );
-      process.exit(0);
-    } else {
-      process.stderr.write(`unknown argument: ${a}\n`);
-      process.exit(2);
+const root = fileURLToPath(new URL("../", import.meta.url));
+const args = { out: join(root, "dist"), version: null };
+for (let at = 2; at < process.argv.length; at += 1) {
+  const flag = process.argv[at];
+  if (flag === "--help" || flag === "-h") {
+    process.stdout.write("Usage: build.mjs [--version VERSION] [--out DIR]\n");
+    process.exit(0);
+  }
+  const value = process.argv[at + 1];
+  if (!["--version", "--out"].includes(flag) || !value || value.startsWith("--")) {
+    throw new Error(`invalid argument: ${flag}`);
+  }
+  args[flag.slice(2)] = value;
+  at += 1;
+}
+const out = resolve(args.out);
+const rawVersion = args.version ?? JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
+const version = browserVersion(rawVersion);
+const source = JSON.parse(readFileSync(join(root, "manifest.json"), "utf8"));
+for (const file of runtimeFiles) {
+  if (!existsSync(join(root, file))) throw new Error(`missing runtime file: ${file}`);
+}
+mkdirSync(out, { recursive: true });
+const stageRoot = mkdtempSync(join(tmpdir(), "polylogue-extension-build-"));
+try {
+  const artifacts = {};
+  for (const [browser, suffix] of [["chrome", "zip"], ["firefox", "xpi"]]) {
+    const stage = join(stageRoot, browser);
+    for (const file of runtimeFiles) {
+      mkdirSync(dirname(join(stage, file)), { recursive: true });
+      if (file === "manifest.json") {
+        writeFileSync(join(stage, file), JSON.stringify(browserManifest(source, version, browser), null, 2) + "\n");
+      } else copyFileSync(join(root, file), join(stage, file));
     }
-  }
-  return args;
-}
-
-function readPackageVersion() {
-  return JSON.parse(readFileSync(join(EXT_ROOT, "package.json"), "utf8")).version;
-}
-
-function normalizeChromeVersion(v) {
-  // Chrome Web Store requires manifest version of form 1-4 dot-separated
-  // integers, each <= 65535, no leading zeros. Strip any pre-release/dev
-  // suffix (e.g. "0.2.0.dev1+gabc" → "0.2.0").
-  const cleaned = v.replace(/[+-].*$/, "").replace(/\.dev\d*$/, "");
-  const parts = cleaned.split(".").filter((p) => /^\d+$/.test(p));
-  if (parts.length === 0) throw new Error(`cannot derive chrome version from "${v}"`);
-  return parts.slice(0, 4).join(".");
-}
-
-function syncJsonVersion(path, version) {
-  const original = readFileSync(path, "utf8");
-  const data = JSON.parse(original);
-  const lockRoot = data.packages?.[""];
-  if (data.version === version && (!lockRoot || lockRoot.version === version)) return false;
-  data.version = version;
-  if (lockRoot) lockRoot.version = version;
-  // Preserve trailing newline if present.
-  const serialized = JSON.stringify(data, null, 2) + (original.endsWith("\n") ? "\n" : "");
-  writeFileSync(path, serialized);
-  return true;
-}
-
-function buildFirefoxManifest(manifest) {
-  const fxManifest = JSON.parse(JSON.stringify(manifest));
-  // Firefox does not yet support "service_worker" in MV3; declare a
-  // scripts-array background fallback in addition.
-  if (fxManifest.background && fxManifest.background.service_worker) {
-    fxManifest.background = {
-      ...fxManifest.background,
-      scripts: [fxManifest.background.service_worker],
-    };
-  }
-  fxManifest.browser_specific_settings = {
-    gecko: {
-      id: FIREFOX_GECKO_ID,
-      strict_min_version: "121.0",
-    },
-  };
-  return fxManifest;
-}
-
-function copyTree(src, dst) {
-  // Exclude development caches before staging, not only when packing.
-  cpSync(src, dst, { recursive: true, preserveTimestamps: true,
-    filter: (path) => !relative(src, path).split(/[\\/]/).some(part => ARCHIVE_EXCLUDE_DIRS.has(part))
-      && !ARCHIVE_EXCLUDE_FILES.has(relative(src, path)),
-  });
-}
-
-const ARCHIVE_EXCLUDE_DIRS = new Set([
-  ".cache",
-  ".npm-cache",
-  ".local",
-  "node_modules",
-  "tests",
-  "scripts",
-  "dist",
-  "screenshots",
-]);
-const ARCHIVE_EXCLUDE_FILES = new Set([
-  "eslint.config.js",
-  "vitest.config.js",
-  "package-lock.json",
-  ".DS_Store",
-]);
-
-function makeArchive(srcDir, archivePath, kind) {
-  // Use zip when available, otherwise Python's zipfile module.
-  const which = (bin) => {
+    const filename = `polylogue-browser-capture-${version}-${browser}.${suffix}`;
+    const archive = join(out, filename);
+    // zip updates an existing archive, so removed inputs must not survive it.
+    rmSync(archive, { force: true });
     try {
-      execFileSync("sh", ["-c", `command -v ${bin}`], { stdio: "pipe" });
-      return true;
-    } catch {
-      return false;
+      execFileSync("zip", ["-q", archive, ...runtimeFiles], { cwd: stage, stdio: "pipe" });
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      execFileSync("python3", ["-c", `import json, sys, zipfile
+from pathlib import Path
+root, archive = Path(sys.argv[1]), sys.argv[2]
+with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as output:
+    for name in json.loads(sys.argv[3]):
+        output.write(root / name, name)
+`, stage, archive, JSON.stringify(runtimeFiles)], { stdio: "pipe" });
     }
-  };
-  if (which("zip")) {
-    const args = ["-r", "-q", archivePath, "."];
-    for (const dir of ARCHIVE_EXCLUDE_DIRS) args.push("-x", `${dir}/*`);
-    for (const file of ARCHIVE_EXCLUDE_FILES) args.push("-x", file);
-    execFileSync("zip", args, { cwd: srcDir, stdio: "inherit" });
-  } else {
-    const py = `
-import os, sys, zipfile, pathlib
-root = pathlib.Path(sys.argv[1]).resolve()
-out = pathlib.Path(sys.argv[2]).resolve()
-exclude_dirs = set(${JSON.stringify(Array.from(ARCHIVE_EXCLUDE_DIRS))})
-exclude_files = set(${JSON.stringify(Array.from(ARCHIVE_EXCLUDE_FILES))})
-with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in exclude_dirs]
-        for name in filenames:
-            if name in exclude_files:
-                continue
-            full = pathlib.Path(dirpath) / name
-            zf.write(full, full.relative_to(root).as_posix())
-`;
-    execFileSync("python3", ["-c", py, srcDir, archivePath], { stdio: "inherit" });
+    artifacts[browser] = filename;
   }
-  process.stdout.write(`built ${kind}: ${relative(EXT_ROOT, archivePath)}\n`);
+  writeFileSync(join(out, "build-manifest.json"), JSON.stringify({
+    version, raw_version: rawVersion, artifacts, firefox_gecko_id: FIREFOX_GECKO_ID,
+  }, null, 2) + "\n");
+} finally {
+  rmSync(stageRoot, { recursive: true, force: true });
 }
-
-function main() {
-  const args = parseArgs(process.argv.slice(2));
-  const rawVersion = args.version ?? readPackageVersion();
-  const version = normalizeChromeVersion(rawVersion);
-  process.stdout.write(`polylogue browser-extension build: version ${version} (raw ${rawVersion})\n`);
-
-  const manifestPath = join(EXT_ROOT, "manifest.json");
-  const packagePath = join(EXT_ROOT, "package.json");
-  if (args.syncSource) {
-    syncJsonVersion(manifestPath, version);
-    syncJsonVersion(packagePath, version);
-    syncJsonVersion(join(EXT_ROOT, "package-lock.json"), version);
-  }
-
-  if (args.syncOnly) {
-    process.stdout.write("sync-only mode — skipping archive build\n");
-    return;
-  }
-
-  if (!existsSync(args.out)) mkdirSync(args.out, { recursive: true });
-
-  const stageRoot = mkdtempSync(join(tmpdir(), "polylogue-ext-build-"));
-  try {
-    // --- Chrome artifact ---
-    const chromeDir = join(stageRoot, "chrome");
-    mkdirSync(chromeDir);
-    copyTree(EXT_ROOT, chromeDir);
-    syncJsonVersion(join(chromeDir, "manifest.json"), version);
-    syncJsonVersion(join(chromeDir, "package.json"), version);
-    const chromeArchive = join(args.out, `polylogue-browser-capture-${version}-chrome.zip`);
-    if (existsSync(chromeArchive)) rmSync(chromeArchive);
-    makeArchive(chromeDir, chromeArchive, "chrome zip");
-
-    // --- Firefox artifact ---
-    const firefoxDir = join(stageRoot, "firefox");
-    mkdirSync(firefoxDir);
-    copyTree(EXT_ROOT, firefoxDir);
-    syncJsonVersion(join(firefoxDir, "manifest.json"), version);
-    syncJsonVersion(join(firefoxDir, "package.json"), version);
-    const manifest = JSON.parse(readFileSync(join(firefoxDir, "manifest.json"), "utf8"));
-    const fxManifest = buildFirefoxManifest(manifest);
-    writeFileSync(join(firefoxDir, "manifest.json"), JSON.stringify(fxManifest, null, 2) + "\n");
-    const firefoxArchive = join(args.out, `polylogue-browser-capture-${version}-firefox.xpi`);
-    if (existsSync(firefoxArchive)) rmSync(firefoxArchive);
-    makeArchive(firefoxDir, firefoxArchive, "firefox xpi");
-
-    // --- Manifest summary for downstream upload jobs ---
-    const summary = {
-      version,
-      raw_version: rawVersion,
-      artifacts: {
-        chrome: relative(args.out, chromeArchive) || chromeArchive,
-        firefox: relative(args.out, firefoxArchive) || firefoxArchive,
-      },
-      firefox_gecko_id: FIREFOX_GECKO_ID,
-    };
-    writeFileSync(join(args.out, "build-manifest.json"), JSON.stringify(summary, null, 2) + "\n");
-    process.stdout.write("wrote build-manifest.json\n");
-  } finally {
-    rmSync(stageRoot, { recursive: true, force: true });
-  }
-}
-
-main();

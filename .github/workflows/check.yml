@@ -46,6 +46,16 @@ jobs:
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc
           sudo nohup rm -rf /usr/local/lib/android /opt/hostedtoolcache/CodeQL >/dev/null 2>&1 &
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: extension/package-lock.json
+      - name: Browser extension checks and real archives
+        run: |
+          sudo apt-get install --yes zip
+          npm --prefix extension ci
+          npm --prefix extension run check
       - name: Rust toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
       - uses: taiki-e/install-action@nextest

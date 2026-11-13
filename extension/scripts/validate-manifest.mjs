@@ -15,6 +15,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { browserVersion } from "./package.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const EXT_ROOT = resolve(__dirname, "..");
@@ -51,14 +52,12 @@ function validate(manifestPath) {
   if (manifest.manifest_version !== 3) {
     errors.push(`manifest_version must be 3, got ${manifest.manifest_version}`);
   }
-  if (typeof manifest.version !== "string" || !/^\d+(\.\d+){0,3}$/.test(manifest.version)) {
-    errors.push(`version must be 1-4 dot-separated integers, got ${JSON.stringify(manifest.version)}`);
-  } else {
-    for (const part of manifest.version.split(".")) {
-      if (Number.parseInt(part, 10) > 65535) {
-        errors.push(`version component ${part} exceeds Chrome maximum 65535`);
-      }
+  try {
+    if (browserVersion(manifest.version) !== manifest.version) {
+      errors.push("manifest version must not contain a development suffix");
     }
+  } catch (error) {
+    errors.push(error.message);
   }
   if (!manifest.name) errors.push("name is required");
   if (!manifest.description) errors.push("description is required");
