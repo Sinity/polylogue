@@ -1104,13 +1104,26 @@ fn every_payload_kind_is_encoded_and_counts_never_decode_it() {
     for (identity, relative) in [
         ("raw", "frame.zst"),
         ("raw", "body.zst"),
-        ("raw", "captured.zst"),
         ("group", "frame.zst"),
         ("group", "ack/payload.zst"),
     ] {
         let data = fs::read(spool.operation(identity).unwrap().join(relative)).unwrap();
         assert_eq!(&data[..4], &[0x28, 0xb5, 0x2f, 0xfd], "{relative}");
     }
+    assert_eq!(
+        material_facts(&spool.decode_frame("raw").unwrap())
+            .unwrap()
+            .unwrap()
+            .capture,
+        Some(capture),
+    );
+    let mut original = Vec::new();
+    spool
+        .body("raw")
+        .unwrap()
+        .read_to_end(&mut original)
+        .unwrap();
+    assert_eq!(original, bytes);
     let before = spool.counts().unwrap();
     let path = spool.operation("raw").unwrap().join("frame.zst");
     let mut data = fs::read(&path).unwrap();

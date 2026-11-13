@@ -157,7 +157,7 @@ fn capture_retries_keep_identity_but_a_b_a_is_three_observations() {
 }
 
 #[test]
-fn grouped_capture_remains_pending_until_its_confirmed_barrier() {
+fn grouped_capture_rejects_parser_values_and_waits_for_its_confirmed_barrier() {
     let root = tempfile::tempdir().unwrap();
     let sinex = client(root.path());
     let bytes = b"attachment";
@@ -178,6 +178,55 @@ fn grouped_capture_remains_pending_until_its_confirmed_barrier() {
         .unwrap();
     let pending = sinex.pending_captures().unwrap();
     let material = pending[0].material.clone().unwrap();
+    let step = polylogue_store::ParseStep::new(
+        polylogue_model::Output {
+            sessions: vec![polylogue_model::Session::new(
+                polylogue_model::SessionId::parse("claude-code:session").unwrap(),
+                polylogue_model::SessionKind::Main,
+            )],
+            ..Default::default()
+        },
+        Default::default(),
+        0..bytes.len() as u64,
+        true,
+    );
+    let mut parser_values = polylogue_store::primary::products::parse(
+        &polylogue_store::InputKey {
+            id: "source".into(),
+            format: "claude-code".into(),
+            route: polylogue_model::Route::Live,
+        },
+        1,
+        Some(bytes.len() as u64),
+        &step,
+    )
+    .unwrap();
+    let interpreted = Product::Interpreted {
+        reading: parser_values[0].reading().unwrap().clone(),
+        record: polylogue_store::primary::SourceRecord::of(&parser_values[0])
+            .unwrap()
+            .unwrap(),
+    };
+    parser_values.push(interpreted);
+    for product in parser_values {
+        let result = sinex.complete_captures(
+            std::slice::from_ref(&raw.identity),
+            &[ProductWrite {
+                product,
+                location: Some(SourceLocation {
+                    material: material.id.clone(),
+                    anchor: 0,
+                }),
+                parents: vec![],
+                machine: None,
+                output_index: 0,
+                publish: true,
+            }],
+        );
+        assert!(
+            matches!(result, Err(crate::Error::Invalid(reason)) if reason == "material completion cannot publish parser values")
+        );
+    }
     let write = ProductWrite {
         product: Product::Blob(material.clone()),
         location: Some(SourceLocation {

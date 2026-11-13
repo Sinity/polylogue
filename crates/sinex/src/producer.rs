@@ -674,9 +674,9 @@ impl Sinex {
         writes: &[ProductWrite],
     ) -> Result<PreparedWrite> {
         for write in writes {
-            if !matches!(write.product, Product::Input { .. } | Product::Blob(_)) {
+            if write.product.reading().is_some() {
                 return Err(Error::Invalid(
-                    "raw capture completion cannot publish parser values".into(),
+                    "material completion cannot publish parser values".into(),
                 ));
             }
         }
