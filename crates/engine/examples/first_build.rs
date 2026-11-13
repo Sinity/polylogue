@@ -291,6 +291,7 @@ fn main() {
         }
     };
     let io_before = fs::read_to_string("/proc/self/io").ok();
+    let cpu_before = fs::read_to_string("/proc/self/stat").ok();
     let started = Instant::now();
     let root = dir.join("archive");
     let (archive, _lock) = Archive::open_or_create(&root).unwrap();
@@ -324,8 +325,13 @@ fn main() {
     let pass = engine.run_pass().unwrap();
     drop(engine);
     let ingest_seconds = ingest_started.elapsed().as_secs_f64();
+    let engine_seconds = started.elapsed().as_secs_f64();
+    let checkpoint_started = Instant::now();
+    let databases = polylogue_store::fixture::checkpoint_first_build(&archive).unwrap();
+    let checkpoint_seconds = checkpoint_started.elapsed().as_secs_f64();
     let secs = started.elapsed().as_secs_f64();
-    // Setup, ingestion and writer shutdown; corpus generation is outside.
+    // Both arms include the same final WAL materialization. This explicit
+    // benchmark step is separate from normal engine shutdown.
 
     let io = fs::read_to_string("/proc/self/io").ok();
     let read_bytes = counter_delta(
@@ -335,6 +341,15 @@ fn main() {
     let write_bytes = counter_delta(
         io_count(io_before.as_deref(), "write_bytes:"),
         io_count(io.as_deref(), "write_bytes:"),
+    );
+    let cancelled_write_bytes = counter_delta(
+        io_count(io_before.as_deref(), "cancelled_write_bytes:"),
+        io_count(io.as_deref(), "cancelled_write_bytes:"),
+    );
+    let cpu_after = fs::read_to_string("/proc/self/stat").ok();
+    let cpu_ticks = counter_delta(
+        cpu_ticks(cpu_before.as_deref()),
+        cpu_ticks(cpu_after.as_deref()),
     );
     // Write-call bytes include tmpfs work as well as physical disk writes.
     let wchar = counter_delta(
@@ -355,6 +370,10 @@ fn main() {
             "seconds": secs,
             "setup_seconds": setup_seconds,
             "ingest_seconds": ingest_seconds,
+            "engine_seconds": engine_seconds,
+            "checkpoint_seconds": checkpoint_seconds,
+            "databases": databases,
+            "cpu_ticks": cpu_ticks,
             "mb_per_s": input as f64 / 1e6 / secs,
             "messages_written": pass.messages_written,
             "bytes_read": pass.bytes_read,
@@ -365,6 +384,7 @@ fn main() {
             "stored_mb": stored as f64 / 1e6,
             "disk_read_mb": read_bytes.map(|n|n as f64 / 1e6),
             "disk_written_mb": write_bytes.map(|n|n as f64 / 1e6),
+            "cancelled_write_mb": cancelled_write_bytes.map(|n|n as f64 / 1e6),
             "written_over_kept": write_bytes.map(|n|n as f64 / (index + stored).max(1) as f64),
             "written_mb": wchar.map(|n|n as f64 / 1e6),
             "written_over_input": wchar.map(|n|n as f64 / input.max(1) as f64),
@@ -404,6 +424,15 @@ fn io_count(contents: Option<&str>, field: &str) -> Option<u64> {
         .trim()
         .parse()
         .ok()
+}
+
+fn cpu_ticks(contents: Option<&str>) -> Option<u64> {
+    // A comm name can itself contain spaces and parentheses.
+    let (_, fields) = contents?.rsplit_once(')')?;
+    let mut fields = fields.split_whitespace().skip(11);
+    let user: u64 = fields.next()?.parse().ok()?;
+    let system: u64 = fields.next()?.parse().ok()?;
+    user.checked_add(system)
 }
 
 fn peak_memory_mb(contents: Option<&str>) -> Option<u64> {

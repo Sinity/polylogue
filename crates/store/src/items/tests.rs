@@ -8,7 +8,7 @@ fn fixture(messages: i64, successor: bool) -> (Connection, SessionChange) {
     let conn = Connection::open_in_memory().unwrap();
     conn.execute_batch("CREATE TABLE message(pk INTEGER PRIMARY KEY, session_pk INTEGER NOT NULL,
         id TEXT NOT NULL, session_order TEXT NOT NULL, duplicate_of INTEGER, at INTEGER);
-        CREATE INDEX message_session ON message(session_pk,session_order,id) WHERE duplicate_of IS NULL;
+        CREATE INDEX message_session ON message(session_pk,session_order,id);
         CREATE TABLE session_item(session_pk INTEGER NOT NULL,seq INTEGER NOT NULL,
             message_pk INTEGER,event_pk INTEGER,time_bound INTEGER,PRIMARY KEY(session_pk,seq)) WITHOUT ROWID;
         CREATE INDEX session_item_message ON session_item(message_pk) WHERE message_pk IS NOT NULL;
@@ -139,4 +139,28 @@ fn moved_and_removed_messages_keep_the_earliest_boundary() {
     ));
     change.messages.clear();
     assert!(matches!(start(&conn, 1, &change).unwrap(), Start::Links));
+}
+
+#[test]
+fn reply_parent_boundary_work_follows_the_changed_batch() {
+    let work = |messages| {
+        let (conn, mut change) = fixture(messages, false);
+        change.parents.insert("prefix".into());
+        change.parents.insert("absent-parent".into());
+        // In this reversed-PK reply chain, every parent except the retained
+        // prefix is itself a visible message in the changed batch.
+        for pk in 3..=messages + 1 {
+            change.parents.insert(format!("message-{pk}"));
+        }
+        let (boundary, steps) = counted(&conn, || start(&conn, 1, &change).unwrap());
+        assert!(matches!(boundary, Start::Whole));
+        steps
+    };
+    let small = work(64);
+    let large = work(1024);
+    eprintln!("reply-parent VM steps: 64={small}, 1024={large}");
+    assert!(
+        large <= small * 24,
+        "16 times the changed reply rows took {small} -> {large} VM steps"
+    );
 }

@@ -19,6 +19,62 @@ use crate::{ReadPool, Result};
 use rusqlite::{Connection, params};
 use std::path::Path;
 
+/// One completed build's database after its committed WAL was copied home.
+#[derive(Debug, serde::Serialize)]
+pub struct BuildDatabase {
+    pub name: &'static str,
+    pub wal_before: u64,
+    pub wal_after: u64,
+    pub bytes: u64,
+    pub page_size: u64,
+    pub pages: u64,
+}
+
+/// Count a benchmark's pending checkpoint work after its engine has stopped.
+/// A live reader is a failed measurement, rather than unpaid work omitted
+/// from one arm. This does not change the daemon's shutdown policy.
+pub fn checkpoint_first_build(archive: &Archive) -> Result<Vec<BuildDatabase>> {
+    let mut databases = Vec::new();
+    for (name, path) in [
+        ("archive", archive.archive_db()),
+        ("index", archive.index_db()),
+    ] {
+        let wal = path.with_extension("db-wal");
+        let wal_bytes = || match std::fs::metadata(&wal) {
+            Ok(metadata) => Ok(metadata.len()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
+            Err(error) => Err(error),
+        };
+        let before = wal_bytes()?;
+        let conn = crate::archive::open_runtime_writer(&path, crate::archive::cache::SETUP)?;
+        conn.busy_timeout(std::time::Duration::ZERO)?;
+        let busy: i64 = conn.query_row("PRAGMA main.wal_checkpoint(TRUNCATE)", [], |r| r.get(0))?;
+        if busy != 0 {
+            return Err(crate::StoreError::Invalid(format!(
+                "completed build still has a reader of {name}"
+            )));
+        }
+        let page_size = conn.query_row("PRAGMA main.page_size", [], |r| r.get(0))?;
+        let pages = conn.query_row("PRAGMA main.page_count", [], |r| r.get(0))?;
+        drop(conn);
+        let after = wal_bytes()?;
+        if after != 0 {
+            return Err(crate::StoreError::Invalid(format!(
+                "completed build left {after} WAL bytes in {name}"
+            )));
+        }
+        databases.push(BuildDatabase {
+            name,
+            wal_before: before,
+            wal_after: after,
+            bytes: std::fs::metadata(path)?.len(),
+            page_size,
+            pages,
+        });
+    }
+    Ok(databases)
+}
+
 /// Changes only selected test rows, since immutable payload values may be shared.
 #[cfg(test)]
 pub(crate) fn change_block_payloads(

@@ -6,6 +6,48 @@ use polylogue_model::{
 };
 
 #[test]
+fn completed_build_measurement_pays_its_wal_and_refuses_a_live_reader() {
+    let directory = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_or_create(directory.path()).unwrap();
+    let writer =
+        crate::archive::open_runtime_writer(&archive.index_db(), crate::archive::cache::SETUP)
+            .unwrap();
+    writer
+        .execute_batch("CREATE TABLE measured(value INTEGER); INSERT INTO measured VALUES(1)")
+        .unwrap();
+    let reader = Connection::open(archive.index_db()).unwrap();
+    reader.execute_batch("BEGIN").unwrap();
+    assert_eq!(
+        reader
+            .query_row("SELECT value FROM measured", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    writer.execute("UPDATE measured SET value=2", []).unwrap();
+    assert!(checkpoint_first_build(&archive).is_err());
+    assert_eq!(
+        reader
+            .query_row("SELECT value FROM measured", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    reader.execute_batch("ROLLBACK").unwrap();
+    let databases = checkpoint_first_build(&archive).unwrap();
+    let index = databases
+        .iter()
+        .find(|database| database.name == "index")
+        .unwrap();
+    assert!(index.wal_before > 0);
+    assert!(databases.iter().all(|database| database.wal_after == 0));
+    assert_eq!(
+        reader
+            .query_row("SELECT value FROM measured", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+}
+
+#[test]
 fn source_time_evidence_and_order_survive_native_fixture_storage() {
     let directory = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(&directory.path().join("archive")).unwrap();

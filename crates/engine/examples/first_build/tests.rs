@@ -22,3 +22,13 @@ fn io_deltas_exclude_earlier_work_without_guessing_missing_or_reset_counters() {
     assert_eq!(counter_delta(None, Some(4096)), None);
     assert_eq!(counter_delta(Some(4096), None), None);
 }
+
+#[test]
+fn process_cpu_counts_survive_comm_parentheses_and_missing_fields_stay_unknown() {
+    assert_eq!(
+        cpu_ticks(Some("1 (worker ) name) S 1 2 3 4 5 6 7 8 9 10 100 20")),
+        Some(120)
+    );
+    assert_eq!(cpu_ticks(Some("1 (worker) S 1")), None);
+    assert_eq!(cpu_ticks(None), None);
+}
