@@ -941,6 +941,7 @@ pub(crate) fn stage_next(index: &mut Connection, events: &[Confirmed]) -> Result
 /// source retractions and completion together. No lease wait runs on this thread.
 pub(crate) fn apply_prepared(index: &mut Connection, prepared: Preparation) -> Result<Step> {
     let tx = index.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    super::scope::require_readable(&tx)?;
     // Staged rows are immutable: redelivery compares their entire contents.
     // Applied progress + the pending row boundary therefore bind native
     // admission, live state and value hashes without another fact copy.

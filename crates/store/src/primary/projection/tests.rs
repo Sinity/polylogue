@@ -461,3 +461,37 @@ fn a_prepared_position_cannot_skip_newly_staged_native_facts() {
         2
     );
 }
+
+#[test]
+fn prepared_application_respects_a_failed_scope_reset_fence() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut index = cache(&directory.path().join("index.db"));
+    let archive = crate::Archive::on_sinex(directory.path(), &directory.path().join("bytes"));
+    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    let Step::Prepare(prepared) = stage_next(&mut index, &[input(2, "first"), barrier(2)]).unwrap()
+    else {
+        panic!("position should need application");
+    };
+    index
+        .execute(
+            "INSERT INTO meta(key,value) VALUES ('confirmed_scope_pending','replacement')",
+            [],
+        )
+        .unwrap();
+    assert!(matches!(
+        apply_prepared(&mut index, *prepared),
+        Err(StoreError::ScopeChanged)
+    ));
+    assert_eq!(checkpoint(&index).unwrap(), None);
+    assert_eq!(
+        index
+            .query_row("SELECT count(*) FROM source_input", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    index
+        .execute("DELETE FROM meta WHERE key='confirmed_scope_pending'", [])
+        .unwrap();
+    assert_eq!(apply(&mut index, &resolver, &[]).unwrap(), 2);
+}
