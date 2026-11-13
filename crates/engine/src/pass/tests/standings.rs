@@ -68,7 +68,7 @@ fn a_failed_startup_read_keeps_discovery_work_for_the_next_turn() {
     let status = Arc::new(Mutex::new(LoopStatus::default()));
     fault::clear();
     fault::arm("read.watched_inputs", "test-machine", Action::Fail, 0, 1);
-    let result = engine.run(tx, &rx, &status, Lifetime::UntilIdle, || {});
+    let result = engine.run(tx, rx, &status, Lifetime::UntilIdle, || {});
     fault::clear();
     let summary = result.unwrap();
     assert!(summary.passes >= 2, "{summary:?}");
