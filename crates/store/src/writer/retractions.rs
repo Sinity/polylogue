@@ -29,7 +29,7 @@ pub(crate) fn prepare_source_retractions(
             || !step.source_prefix_missing
             || step.delivery.is_some()
             || step.checkpoint.is_some()
-            || step.complete_output()? != Output::default()
+            || step.output != Output::default()
         {
             return Err(StoreError::Invalid(
                 "native lifecycle cannot reconstruct parser values".into(),

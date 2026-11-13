@@ -747,7 +747,7 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                             }
                             .into(),
                         }
-                    } else if *product == "attachment_binding" {
+                    } else if source || *product == "attachment_binding" {
                         TimeRule::Unknown
                     } else {
                         TimeRule::FirstPresent {

@@ -40,6 +40,7 @@ pub(super) fn apply(
     mut batch: Batch,
     publication: &PublicationReceipt,
 ) -> Result<()> {
+    batch.parse[0].prepare();
     super::super::source_eligibility::retain_source_records(
         index,
         &batch.input,
@@ -47,7 +48,12 @@ pub(super) fn apply(
         batch.length,
         &mut batch.parse[0],
     )?;
-    resolve::prepare_index(index, &mut batch, 1, false)?;
+    let root = std::path::Path::new(index.path().unwrap())
+        .parent()
+        .unwrap();
+    let archive = Archive::on_sinex(root, &root.join("bytes"));
+    let resolver = resolve::Resolver::new(&archive, index, None)?;
+    resolver.batches(&mut [&mut batch])?;
     let tx = index.transaction()?;
     let counter = bump_counter(&tx)?;
     let changes = crate::change_summary::ChangeSummary::start(&tx)?;
@@ -359,6 +365,8 @@ fn an_archived_value_does_not_turn_a_processed_incomplete_tail_into_an_unknown_p
 
 pub(super) fn confirm(index: &mut Connection, archive: &Archive, batch: &Batch, position: i64) {
     use crate::primary::{Confirmed, ConfirmedChange, Product, ReplayControl};
+    let mut batch = batch.clone();
+    batch.parse[0].prepare();
     let resolver = resolve::Resolver::new(archive, index, None).unwrap();
     let mut events =
         crate::primary::products::parse(&batch.input, 1, Some(batch.length), &batch.parse[0])
@@ -463,11 +471,21 @@ fn native_fact_admissions_follow_identity_through_filtering_and_reordering() {
     original.parse[0].output.events.push(serde_json::from_value(serde_json::json!({
         "session":"claude-code:session", "kind":"captured.event", "range":[80,81], "data":{"original":true}
     })).unwrap());
+    original.parse[0].output.messages[2]
+        .message
+        .blocks
+        .push(Block::Image(polylogue_model::Attachment {
+            blob: Some(BlobHash::of(b"unavailable original attachment")),
+            size: Some(4),
+            ..Default::default()
+        }));
+    let mut confirmed = original.clone();
+    confirmed.parse[0].prepare();
     let products = crate::primary::products::parse(
-        &original.input,
+        &confirmed.input,
         1,
-        Some(original.length),
-        &original.parse[0],
+        Some(confirmed.length),
+        &confirmed.parse[0],
     )
     .unwrap();
     let mut expected = std::collections::BTreeMap::new();
@@ -528,6 +546,13 @@ fn native_fact_admissions_follow_identity_through_filtering_and_reordering() {
             Some(expected[&format!("message:{message}:{offset}")])
         );
     }
+    let shown = reader.message_with_projection(&other).unwrap().unwrap().0;
+    assert!(
+        shown
+            .blocks
+            .iter()
+            .any(|block| matches!(block, Block::Image(attachment) if attachment.blob.is_none()))
+    );
     assert_eq!(
         reader.session_commit(&sid("session")).unwrap(),
         Some(expected[&format!("session:{}", sid("session"))])
