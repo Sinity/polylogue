@@ -2050,7 +2050,10 @@ impl Engine {
                     } else {
                         changed.clear();
                     }
-                    discover = false;
+                    // A yielded full turn may not have planned its discovered
+                    // files yet. Re-scan them after the request even without a
+                    // new watcher event; durable positions avoid recapture.
+                    discover &= yielded;
                     pass
                 }
                 Err(e) => {

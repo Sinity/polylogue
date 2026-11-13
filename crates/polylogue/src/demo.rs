@@ -105,6 +105,22 @@ fn run(directory: &Path, startup: &crate::config::Startup) -> Result<Tour, Strin
         startup.stopped_attempt,
     )
     .map_err(|e| e.to_string())?;
+    // Tour reads need the bundled SDK files as well as the explicit exports.
+    // An import answers for its own inputs, independently of background work.
+    loop {
+        let status = runtime.daemon.status.lock().map_err(|e| e.to_string())?;
+        if status.passes > 0 && !status.busy {
+            if !status.last_pass.errors.is_empty() {
+                return Err(status.last_pass.errors.join("; "));
+            }
+            break;
+        }
+        drop(status);
+        if let Some(failure) = runtime.worker_failure() {
+            return Err(failure.into());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
     let invoke = |command: &str, arguments: Value| -> Result<Value, String> {
         let declaration =
             commands::command(command).ok_or_else(|| format!("no command {command}"))?;

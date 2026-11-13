@@ -268,7 +268,7 @@ fn queued_import_yields_after_admitted_capture_or_replay_and_resumes_from_durabl
     use polylogue_model::authorship::{Author, Authorship, Channel};
     use std::sync::mpsc::sync_channel;
 
-    for retained in [false, true] {
+    for (retained, reads_sources) in [(false, true), (true, false), (true, true)] {
         for stop_after_import in [false, true] {
             let home = ClaudeHome::new();
             let first = claude_user("first", "request-turn", "first retained record");
@@ -297,10 +297,19 @@ fn queued_import_yields_after_admitted_capture_or_replay_and_resumes_from_durabl
                 polylogue_testkit::delete_index(&home.root);
                 std::fs::remove_file(&path).unwrap();
                 (engine, lock) = crate::import::tests::engine(&home, 256);
-                engine.config.reads_sources = false;
+                engine.config.reads_sources = reads_sources;
                 engine.load().unwrap();
             } else {
                 home.append("request-turn.jsonl", &suffix);
+            }
+            let undiscovered = retained && reads_sources;
+            if undiscovered {
+                // This file predates run and needs no watcher event. The held
+                // stored replay precedes planning the full scan's new files.
+                home.append(
+                    "unseen-source.jsonl",
+                    &claude_user("unseen", "unseen-source", "preexisting new file"),
+                );
             }
             engine.config.workers = 1;
             engine.config.live_every = Duration::from_millis(10);
@@ -415,11 +424,14 @@ fn queued_import_yields_after_admitted_capture_or_replay_and_resumes_from_durabl
                 drop(engine);
                 drop(lock);
                 (engine, lock) = crate::import::tests::engine(&home, 256);
-                engine.config.reads_sources = !retained;
+                engine.config.reads_sources = reads_sources;
                 let resumed = engine.run_pass().unwrap();
                 assert!(resumed.errors.is_empty(), "{resumed:?}");
             }
             assert_eq!(home.texts("request-turn").len(), 49);
+            if undiscovered {
+                assert_eq!(home.texts("unseen-source"), ["preexisting new file"]);
+            }
             let reader = engine.reads.reader().unwrap();
             let progress = reader.input_progress(&input).unwrap().unwrap();
             assert_eq!(progress.parsed_upto, complete.len() as u64);
