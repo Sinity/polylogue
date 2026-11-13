@@ -12,6 +12,7 @@ impl<'a> Compiler<'a> {
             text: self.text,
             origins: &self.opts.origins,
             clock: &self.opts.clock,
+            provider_catalog: self.opts.provider_catalog.as_deref(),
         }
     }
 
@@ -54,7 +55,6 @@ impl<'a> Compiler<'a> {
                 )?,
                 Filter::SessionWord { word, span } => self.reference_word(word, scope, *span)?,
                 Filter::Session { id, span } => self.session_ref(id, scope, *span)?,
-                Filter::Url { url, span } => self.url(url, scope, *span)?,
                 Filter::Rows { reference, span } => {
                     self.native_reference(reference, scope, *span)?
                 }
@@ -435,20 +435,6 @@ impl<'a> Compiler<'a> {
              (SELECT {column} FROM session WHERE {column}={exact} LIMIT 1),\
              (SELECT {column} FROM session WHERE {column} LIKE {prefix} ESCAPE '\\' LIMIT 1))"
         )
-    }
-
-    /// A provider URL pasted as a reference.
-    pub(super) fn url(
-        &mut self,
-        url: &str,
-        scope: &RowContext,
-        span: Span,
-    ) -> Result<String, QueryError> {
-        let id = provider_url(&self.opts.chat_pages, url).ok_or_else(|| QueryError::Invalid {
-            message: format!("{url} is not a conversation URL Polylogue recognizes"),
-            position: span.start,
-        })?;
-        self.session_ref(&id, scope, span)
     }
 
     /// `origin:native` (or a unique prefix of it) as a session condition.

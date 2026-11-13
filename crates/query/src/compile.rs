@@ -30,8 +30,8 @@ pub struct Options {
     pub fields: Vec<String>,
     /// Kept results by ID (`result:<id>`): what their stored rows hold.
     pub kept: std::collections::BTreeMap<String, Kept>,
-    /// Web chats whose conversation page URLs name sessions.
-    pub chat_pages: Vec<ChatPage>,
+    /// Declared provider conversation URLs, when this caller accepts them.
+    pub provider_catalog: Option<std::sync::Arc<references::Catalog>>,
 }
 
 /// One canonical saved-query assertion and its retained executable body.
@@ -87,15 +87,6 @@ impl SavedQuery {
 pub struct Definition {
     pub name: String,
     pub revision: String,
-}
-
-/// A web chat's conversation pages, `https://<host>/<path>/<id>`, whose
-/// conversations are sessions of `origin`.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ChatPage {
-    pub origin: String,
-    pub hosts: Vec<String>,
-    pub path: String,
 }
 
 /// A kept result's stored shape: the unit

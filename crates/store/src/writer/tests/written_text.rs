@@ -74,7 +74,7 @@ fn written_tool_text_searches_output_and_snippets_and_retracts_without_losing_in
                 saved: Default::default(),
                 kept: Default::default(),
                 fields: vec![],
-                chat_pages: vec![],
+                provider_catalog: None,
             };
             for unit in ["sessions", "messages", "tool_calls"] {
                 let program =

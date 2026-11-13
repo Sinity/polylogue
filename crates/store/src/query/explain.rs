@@ -20,7 +20,11 @@ pub fn query(expression: &str, options: &Options) -> Result<Explanation, QueryEr
         let parsed = plan.bound_query().query().clone();
         let program = crate::query::lower(&plan, options)?;
         let order = plan
-            .selection(&options.fields, &options.clock)?
+            .selection(
+                &options.fields,
+                &options.clock,
+                options.provider_catalog.as_deref(),
+            )?
             .map(|selection| selection.order);
         let mut units = selected_units(plan.expanded_query().query());
         if !units.contains(&program.unit) {

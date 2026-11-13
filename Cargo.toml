@@ -28,6 +28,7 @@ polylogue-testkit = { path = "crates/testkit" }
 hashed-blobs = { git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master" }
 git-identity = { git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master" }
 query-language = { git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master" }
+references = { git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master" }
 canonical-json = { git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master" }
 signal-delivery = { git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master" }
 shared-signals = { package = "signals", git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master" }

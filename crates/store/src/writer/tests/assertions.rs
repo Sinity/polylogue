@@ -50,7 +50,7 @@ fn selected(reader: &crate::Reader<'_>, text: &str) -> Vec<String> {
         saved: Default::default(),
         fields: vec![],
         kept: Default::default(),
-        chat_pages: vec![],
+        provider_catalog: None,
     };
     let selection = reader.prepare_selection(text, &options).unwrap();
     let program = selection.program();

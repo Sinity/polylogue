@@ -20,11 +20,7 @@ fn opts(saved: &[(&str, &str)]) -> Options {
         saved: saved_bindings(saved),
         kept: Default::default(),
         fields: vec![],
-        chat_pages: vec![ChatPage {
-            origin: "chatgpt".into(),
-            hosts: vec!["chatgpt.com".into(), "chat.openai.com".into()],
-            path: "c".into(),
-        }],
+        provider_catalog: None,
     }
 }
 
@@ -67,22 +63,6 @@ fn saved_bindings(
         }
     }
     bindings.saved
-}
-
-#[test]
-fn a_conversation_url_names_its_session_by_the_chat_pages() {
-    for url in [
-        "https://chatgpt.com/c/abc",
-        "https://www.chat.openai.com/c/abc?model=x",
-    ] {
-        let p = c(url);
-        assert!(
-            p.params.contains(&Param::Text("chatgpt:abc".into())),
-            "{url}: {:?}",
-            p.params
-        );
-    }
-    assert!(compile_err("https://claude.ai/chat/abc").contains("not a conversation URL"));
 }
 
 /// Every statement the answer reads, for a test of what the lowering

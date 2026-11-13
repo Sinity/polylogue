@@ -23,7 +23,7 @@ fn explanation_uses_the_same_closed_saved_binding_as_lowering() {
         self_session: None,
         fields: vec![],
         kept: BTreeMap::new(),
-        chat_pages: vec![],
+        provider_catalog: None,
         saved: {
             let mut bindings = polylogue_query::Bindings::default();
             let plan = polylogue_query::plan::prepare(

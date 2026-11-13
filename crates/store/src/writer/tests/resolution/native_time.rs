@@ -36,7 +36,7 @@ fn read_values(
         saved: Default::default(),
         kept: Default::default(),
         fields: vec![field.into()],
-        chat_pages: vec![],
+        provider_catalog: None,
     };
     let program =
         crate::query::compile(text, &options).unwrap_or_else(|error| panic!("{text}: {error}"));

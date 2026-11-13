@@ -343,7 +343,7 @@ fn restart_reopens_an_evicted_response_and_resolves_its_native_record_alias() {
         saved: Default::default(),
         kept: Default::default(),
         fields: vec!["id".into()],
-        chat_pages: vec![],
+        provider_catalog: None,
     };
     // Select the message grain so the row's id names the canonical message.
     let program =
