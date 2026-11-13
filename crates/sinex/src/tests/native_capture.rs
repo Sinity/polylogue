@@ -1292,23 +1292,44 @@ fn a_late_other_host_original_is_parsed_with_an_empty_local_home() {
             ),
         ])
         .unwrap();
-    let pass = engine.run_pass().unwrap();
-    assert_eq!(pass.bytes_read, bytes.len() as u64, "{pass:?}");
+    let stop = engine.stop_request();
+    let parsing = std::thread::spawn(move || engine.run_pass());
+    let started = std::time::Instant::now();
+    let publication = loop {
+        let queued = {
+            let queue = sdk.spool.lock().unwrap();
+            let parsed = queue
+                .ready(&[], 32)
+                .unwrap()
+                .into_iter()
+                .filter(|entry| entry.parsed().is_some())
+                .collect::<Vec<_>>();
+            parsed.first().map(|entry| {
+                (
+                    entry.parsed().unwrap().clone(),
+                    serde_json::to_string(&queue.decode_frame(&entry.identity).unwrap()).unwrap(),
+                    parsed.len(),
+                )
+            })
+        };
+        if queued.is_some() || started.elapsed() >= std::time::Duration::from_secs(10) {
+            break queued;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    // The ordinary writer waits for authoritative admission, which this offline
+    // planner control deliberately does not provide. Stop it after inspecting
+    // the actual immutable publication, before joining the parser thread.
+    stop.request();
+    let pass = parsing.join().unwrap();
+    let (source, frame, count) = publication.expect("the late original reached native publication");
+    assert_eq!(count, 1);
+    assert_eq!(source.reading.input.id, input);
+    assert_eq!(source.reading.parsed_upto, bytes.len() as u64);
     assert!(
-        pass.capture_pending,
-        "native publication waits for admission: {pass:?}"
+        frame.contains("confirmed original words"),
+        "{frame}; {pass:?}"
     );
-    let queue = sdk.spool.lock().unwrap();
-    let parsed = queue
-        .ready(&[], 32)
-        .unwrap()
-        .into_iter()
-        .filter(|entry| entry.parsed().is_some())
-        .collect::<Vec<_>>();
-    assert_eq!(parsed.len(), 1, "{pass:?}");
-    assert_eq!(parsed[0].parsed().unwrap().reading.input.id, input);
-    let frame = serde_json::to_string(&queue.decode_frame(&parsed[0].identity).unwrap()).unwrap();
-    assert!(frame.contains("confirmed original words"), "{frame}");
     assert!(!frame.contains("local decoy"), "{frame}");
     assert_eq!(std::fs::read_dir(&local_home).unwrap().count(), 0);
 }
