@@ -540,6 +540,11 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                     })
                 })
             } else {
+                // This published record-schema annotation is immutable wire
+                // metadata, independent of internal Product documentation.
+                facts["description"] = json!(
+                    "Complete parser and authored facts; rebuilding the cache requires no parsing."
+                );
                 json!({
                     "$schema": "https://json-schema.org/draft/2020-12/schema",
                     "type": "object", "properties": {
