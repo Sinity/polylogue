@@ -119,11 +119,15 @@ pub(crate) fn prepare_delivery(
         UserWrite::Deliver(delivery) | UserWrite::DeliveredAdvice(delivery) => delivery,
         _ => return None,
     };
+    // Delivery rows and their receipts have always stored Unix milliseconds;
+    // the original request retains its full timestamp and retry identity.
+    let at = polylogue_model::Timestamp::from_unix_ms(r.at.unix_ms())
+        .expect("a stored millisecond timestamp remains representable");
     let events = if matches!(r.write, UserWrite::DeliveredAdvice(_)) {
         vec![DeliveryEvent {
             request: r.id.clone(),
             what: polylogue_model::DeliveryOutcome::Delivered,
-            at: r.at,
+            at,
             detail: Some("written to the harness hook output".into()),
         }]
     } else {
@@ -142,7 +146,7 @@ pub(crate) fn prepare_delivery(
                     signal: None,
                     id: r.id.clone(),
                     prepared: delivery.clone(),
-                    at: r.at,
+                    at,
                     events: events.clone(),
                 },
                 added_events: events,
@@ -167,6 +171,7 @@ pub(crate) fn apply_using(
         return Ok(outcome);
     }
     if let Some(prepared) = prepare_delivery(r) {
+        crate::primary::authored::require_new_delivery(tx, &r.id)?;
         crate::primary::authored::apply(tx, &prepared, seq)?;
         return Ok(prepared.outcome);
     }

@@ -9,6 +9,9 @@ use polylogue_model::{Author, BlobHash, NewVariant, NewVariantPart, VariantKind,
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 fn prepared(write: UserWrite) -> PreparedRequest {
+    prepared_at(write, Timestamp::from_unix_ms(1).unwrap())
+}
+fn prepared_at(write: UserWrite, at: Timestamp) -> PreparedRequest {
     let archive = crate::fixture::writer::WriterArchive::new();
     let request = UserRequest {
         authorship: polylogue_model::authorship::Authorship {
@@ -17,7 +20,7 @@ fn prepared(write: UserWrite) -> PreparedRequest {
         },
         id: "original-request".into(),
         machine: "source-machine".into(),
-        at: Timestamp::from_unix_ms(1).unwrap(),
+        at,
         write,
     };
     archive.writer.user(request).unwrap();
@@ -807,11 +810,14 @@ fn literal_deliveries_keep_the_same_frozen_result_in_standalone_and_offline_prim
             refs: vec!["message:codex:future".into()],
             left_out: vec![],
         };
-        let original = prepared(if advice {
-            UserWrite::DeliveredAdvice(body)
-        } else {
-            UserWrite::Deliver(body)
-        });
+        let original = prepared_at(
+            if advice {
+                UserWrite::DeliveredAdvice(body)
+            } else {
+                UserWrite::Deliver(body)
+            },
+            Timestamp::from_unix_ns(if advice { -1_000_123 } else { 1_000_123 }).unwrap(),
+        );
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("cache");
         let bytes = directory.path().join("bytes");
@@ -871,4 +877,99 @@ fn literal_deliveries_keep_the_same_frozen_result_in_standalone_and_offline_prim
         assert_eq!(stored, vec![original.clone()]);
         assert!(writer.user(original.request.clone()).unwrap().repeat);
     }
+}
+
+#[test]
+fn literal_deliveries_preserve_variant_reads_without_rebuilding_other_work() {
+    let destination = crate::fixture::writer::WriterArchive::new();
+    let original = rendition();
+    destination
+        .writer
+        .restore_authored(original.clone())
+        .unwrap();
+    let pool = crate::ReadPool::open(&destination.archive).unwrap();
+    let read = || {
+        let mut variants = Vec::new();
+        pool.reader()
+            .unwrap()
+            .visit_variant_search("pierwszy", Some("pl"), |found| {
+                variants.push(found);
+                Ok(())
+            })
+            .unwrap();
+        variants
+    };
+    let before = serde_json::to_value(read()).unwrap();
+    assert_eq!(before.as_array().unwrap().len(), 1);
+    let conn = rusqlite::Connection::open(destination.archive.index_db()).unwrap();
+    let source_uri = format!(
+        "file:{}?mode=ro",
+        destination.archive.archive_db().display()
+    );
+    conn.execute("ATTACH DATABASE ?1 AS a", [&source_uri])
+        .unwrap();
+    crate::source::views(&conn).unwrap();
+    // A projection can lag after an interrupted prior write. Recording an
+    // unrelated delivery does not take ownership of that pending derive work.
+    conn.execute("DELETE FROM variant_indexed", []).unwrap();
+    conn.execute_batch("CREATE TABLE test_variant_writes(n INTEGER NOT NULL); INSERT INTO test_variant_writes VALUES(0); CREATE TRIGGER test_variant_write AFTER DELETE ON variant_text BEGIN UPDATE test_variant_writes SET n=n+1; END;").unwrap();
+    for advice in [false, true] {
+        let body = polylogue_model::user::Delivery {
+            recipient_kind: "operator".into(),
+            recipient_id: None,
+            sender: "hook".into(),
+            event: "advice".into(),
+            cwd: None,
+            text: "A delivery unrelated to variant history".into(),
+            refs: vec![],
+            left_out: vec![],
+        };
+        let request = crate::fixture::authored::operator_request(
+            format!("delivery-{advice}"),
+            if advice {
+                UserWrite::DeliveredAdvice(body)
+            } else {
+                UserWrite::Deliver(body)
+            },
+        );
+        destination.writer.user(request).unwrap();
+        assert_eq!(serde_json::to_value(read()).unwrap(), before);
+        assert_eq!(
+            conn.query_row("SELECT n FROM test_variant_writes", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM variant_indexed", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+    // The same projection routine remains live for the families that own it.
+    let steps = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&steps);
+    conn.progress_handler(
+        1,
+        Some(move || {
+            observed.fetch_add(1, Ordering::Relaxed);
+            false
+        }),
+    )
+    .unwrap();
+    crate::variants::project(&conn).unwrap();
+    conn.progress_handler(0, None::<fn() -> bool>).unwrap();
+    assert!(steps.load(Ordering::Relaxed) > 0);
+    assert!(
+        conn.query_row("SELECT n FROM test_variant_writes", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap()
+            > 0
+    );
+    assert_eq!(serde_json::to_value(read()).unwrap(), before);
+    println!(
+        "variant projection positive control: {} VM steps",
+        steps.load(Ordering::Relaxed)
+    );
 }

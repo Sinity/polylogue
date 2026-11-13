@@ -1049,7 +1049,8 @@ fn counted_delivery_preparation(
             observed.fetch_add(1, Ordering::Relaxed);
             false
         }),
-    );
+    )
+    .unwrap();
     let prepared = prepare(
         conn,
         request,
@@ -1058,7 +1059,7 @@ fn counted_delivery_preparation(
         |_| Ok(()),
         |_| panic!("a literal delivery has no attachment acquisition"),
     );
-    conn.progress_handler(0, None::<fn() -> bool>);
+    conn.progress_handler(0, None::<fn() -> bool>).unwrap();
     (prepared.unwrap(), instructions.load(Ordering::Relaxed))
 }
 
@@ -1075,7 +1076,9 @@ fn literal_deliveries_match_transactional_records_without_touching_history() {
         commit(&mut conn, &p, n + 1);
     }
     for advice in [false, true] {
-        let request = literal_delivery(advice);
+        let mut request = literal_delivery(advice);
+        request.at =
+            Timestamp::from_unix_ns(if advice { -42_000_123 } else { 42_000_123 }).unwrap();
         let expected = delivery_from_transaction(&conn, &request);
         let (empty, empty_steps) = counted_delivery_preparation(&cache(), &request);
         let (prepared, steps) = counted_delivery_preparation(&conn, &request);
@@ -1175,5 +1178,80 @@ fn literal_delivery_refuses_effects_that_change_content_references_or_receipts()
             assert_eq!(count(&target, "delivery"), 0);
             assert_eq!(count(&target, "client_request"), 0);
         }
+    }
+}
+
+#[test]
+fn literal_deliveries_refuse_existing_identity_in_cache_or_pending_snapshots() {
+    for advice in [false, true] {
+        let request = literal_delivery(advice);
+        let conn = cache();
+        let mut prior = delivery_from_transaction(&conn, &request);
+        prior.request = UserRequest {
+            id: "another-request".into(),
+            at: Timestamp::from_unix_ms(50).unwrap(),
+            write: UserWrite::DeliveryEvent {
+                delivery: request.id.clone(),
+                what: polylogue_model::DeliveryOutcome::Used,
+                detail: Some("synthetic receipt".into()),
+            },
+            ..request.clone()
+        };
+        prior.outcome.id = request.id.clone();
+        let event = polylogue_model::authored::DeliveryEvent {
+            request: prior.request.id.clone(),
+            what: polylogue_model::DeliveryOutcome::Used,
+            at: prior.request.at,
+            detail: Some("synthetic receipt".into()),
+        };
+        prior.effect.deliveries[0]
+            .delivery
+            .events
+            .push(event.clone());
+        prior.effect.deliveries[0].added_events = vec![event];
+        validate(&prior).unwrap();
+        for pending in [
+            polylogue_model::authored::PendingAuthored::Live {
+                prepared: prior.clone(),
+            },
+            polylogue_model::authored::PendingAuthored::Restore {
+                prepared: prior.clone(),
+            },
+        ] {
+            assert!(matches!(
+                prepare(
+                    &conn,
+                    &request,
+                    None,
+                    None,
+                    |visit| visit(&pending),
+                    |_| Ok(())
+                ),
+                Err(StoreError::Conflict(_))
+            ));
+            assert_eq!(count(&conn, "delivery"), 0);
+            assert_eq!(count(&conn, "client_request"), 0);
+        }
+        let mut cached = cache();
+        commit(&mut cached, &prior, 1);
+        assert!(matches!(
+            prepare_with(&cached, &request, &[], &[]),
+            Err(StoreError::Conflict(_))
+        ));
+        let before = cached.total_changes();
+        let tx = cached.transaction().unwrap();
+        assert!(matches!(
+            crate::user_writes::apply_resolving(
+                &tx,
+                &conn,
+                &request,
+                2,
+                crate::user_writes::Preparation::native(None, None)
+            ),
+            Err(StoreError::Conflict(_))
+        ));
+        tx.rollback().unwrap();
+        assert_eq!(cached.total_changes(), before);
+        assert!(known_request(&cached, &request).unwrap().is_none());
     }
 }

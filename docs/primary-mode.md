@@ -256,7 +256,9 @@ Literal deliveries and advice already printed by a hook freeze their body and
 receipt directly from the admitted request. They do not copy authored history or
 select targets again. Other authored writes still prepare against the confirmed
 state plus this host's durable pending effects. Both paths retain the original
-request outcome on retry and apply the same validated frozen effects.
+request outcome on retry and apply the same validated frozen effects. Recording
+these deliveries in standalone mode also leaves variant projection work to its
+own mutations and derivation.
 
 ## Write identity
 

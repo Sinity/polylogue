@@ -127,10 +127,19 @@ pub fn prepare(
     }
     if let Some(prepared) = crate::user_writes::prepare_delivery(request) {
         let mut known = None;
+        let mut delivery_exists = false;
         visit_pending(&mut |pending| {
-            let Some(original) = pending.prepared().filter(|p| p.request.id == request.id) else {
+            let Some(original) = pending.prepared() else {
                 return Ok(());
             };
+            if original.request.id != request.id {
+                delivery_exists |= original
+                    .effect
+                    .deliveries
+                    .iter()
+                    .any(|change| change.delivery.id == request.id);
+                return Ok(());
+            }
             validate(original)?;
             if request_hash(&original.request)? != request_hash(request)?
                 || known.as_ref().is_some_and(|known| known != original)
@@ -140,7 +149,15 @@ pub fn prepare(
             known = Some(original.clone());
             Ok(())
         })?;
-        return Ok(known.unwrap_or(prepared));
+        if let Some(known) = known {
+            return Ok(known);
+        }
+        if delivery_exists {
+            return Err(StoreError::Conflict(request.id.clone()));
+        }
+        require_new_delivery(index, &request.id)?;
+        validate(&prepared)?;
+        return Ok(prepared);
     }
     let mut pending_blobs = HashMap::new();
     visit_blobs(&mut |blob| {
@@ -289,6 +306,19 @@ pub fn validate(prepared: &PreparedRequest) -> Result<()> {
             &prepared.request.id,
             |e| &e.request,
         )?;
+    }
+    Ok(())
+}
+
+// A new literal delivery used to meet the delivery primary key in the
+// preparation transaction. Keep that check before durable queue admission.
+pub(crate) fn require_new_delivery(conn: &Connection, id: &str) -> Result<()> {
+    let source = Source::reading(conn)?;
+    if conn
+        .prepare_cached(&source.sql("SELECT 1 FROM @source.delivery WHERE id=?1"))?
+        .exists([id])?
+    {
+        return Err(StoreError::Conflict(id.into()));
     }
     Ok(())
 }

@@ -2134,7 +2134,13 @@ impl Inner {
             self.commits
                 .committed(crate::completion::Committed::AUTHORED);
         }
-        self.project_variant_text()?;
+        if !matches!(
+            request.write,
+            polylogue_model::user::UserWrite::Deliver(_)
+                | polylogue_model::user::UserWrite::DeliveredAdvice(_)
+        ) {
+            self.project_variant_text()?;
+        }
         Ok(outcome)
     }
 
