@@ -19,6 +19,14 @@ use crate::{ReadPool, Result};
 use rusqlite::{Connection, params};
 use std::path::Path;
 
+/// Create the exact public primary Index1 predecessor at an unused fixture path.
+/// Original bodies are not decoded by this schema-only constructor.
+pub fn primary_index_before_originals(path: &Path) -> Result<()> {
+    let conn = crate::schema::primary_before_originals()?;
+    conn.execute("VACUUM INTO ?1", [path.to_string_lossy().as_ref()])?;
+    Ok(())
+}
+
 pub struct Fixture {
     pub archive: Archive,
     _lock: ArchiveLock,

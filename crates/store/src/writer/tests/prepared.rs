@@ -384,16 +384,6 @@ fn complete_products_restore_prepared_structured_values_without_an_index_read() 
     assert_eq!(batch.parse[0].complete_output().unwrap(), original);
     let products =
         crate::primary::products::parse(&batch.input, 41, None, &batch.parse[0]).unwrap();
-    let captured = crate::primary::CapturedReading::from_step(&batch.parse[0], None).unwrap();
-    let bytes = serde_json::to_vec(&captured).unwrap();
-    let captured: crate::primary::CapturedReading = serde_json::from_slice(&bytes).unwrap();
-    let mut replay = captured.into_step();
-    assert_eq!(replay.output, original);
-    replay.prepare();
-    assert_eq!(
-        crate::primary::products::parse(&batch.input, 41, None, &replay).unwrap(),
-        products
-    );
     let restored = products
         .iter()
         .find_map(|p| match p {

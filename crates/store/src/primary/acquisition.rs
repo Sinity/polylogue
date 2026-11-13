@@ -2,7 +2,6 @@
 //! predecessors; they never assign a source revision or an admission receipt.
 use super::{CapturedInput, PendingCapture, PreparedBody};
 use crate::{Result, StoreError};
-use polylogue_model::batch::ParserCheckpoint;
 use serde::{Deserialize, Serialize};
 
 /// Receiver-minted IO evidence. Native field observation does not identify
@@ -189,16 +188,6 @@ impl CapturePlan {
     }
 }
 
-/// The actual control capture remains explicit when newer raw acquisitions
-/// have no parser state. The small header has an empty parsed vector.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct PendingCheckpoint {
-    pub capture: String,
-    pub header: CapturedInput,
-    pub checkpoint: ParserCheckpoint,
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PendingSource {
@@ -206,7 +195,6 @@ pub struct PendingSource {
     /// Latest durable acquisition of any kind, including observation-only records.
     pub head: Option<PendingCapture>,
     pub raw: Option<PendingCapture>,
-    pub continuation: Option<PendingCheckpoint>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]

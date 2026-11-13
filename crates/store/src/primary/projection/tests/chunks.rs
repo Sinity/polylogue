@@ -116,6 +116,79 @@ fn chain(archive: &crate::Archive, chain: i64, length: usize) -> Vec<u8> {
 }
 
 #[test]
+fn opaque_facts_require_the_full_material_tail_after_an_overlap() {
+    let root = tempfile::tempdir().unwrap();
+    let index = cache(&root.path().join("index.db"));
+    let bytes = varied(100, 7);
+    let mut writer = hashed_blobs::SegmentWriter::open(
+        root.path().join("bytes"),
+        "segments/overlap.hb",
+        0,
+        &[],
+        0o600,
+    )
+    .unwrap();
+    let descriptors = store(
+        &mut writer,
+        &mut BTreeMap::new(),
+        &root.path().join("scratch"),
+        &bytes,
+    );
+    let material = Material {
+        id: "overlapping-material".into(),
+        hash: BlobHash::of(&bytes),
+        length: 100,
+        extents: descriptors
+            .iter()
+            .map(hashed_blobs::Extent::encode)
+            .collect(),
+    };
+    let rows = InputRows {
+        acquisition: None,
+        input: "document".into(),
+        format: "synthetic".into(),
+        revision: None,
+        observation: None,
+        extents: vec![Extent {
+            chain: 1,
+            offset: 100,
+            length: 5,
+            blob: BlobHash::of(&bytes),
+            blob_offset: 80,
+        }],
+    };
+    assert_eq!(material.offset_of(&rows.extents).unwrap(), 80);
+    let mut product = Product::Input {
+        rows: Box::new(rows),
+        material: Some(material),
+    };
+    store_material(&index, "original", &product).unwrap();
+    let mut old = Fact::unreadable("source7-message".into(), 1, 0);
+    old.material = Some("overlapping-material".into());
+    old.native_kind = Some("polylogue.message".into());
+    old.insert(&index, "primary_fact").unwrap();
+    let bound =
+        || crate::primary::products::previous_reading_bound(&index, "document", 1, "new-parser");
+
+    // Mapping only 100..105 does not make the remaining original tail absent.
+    // A stopped reader at 105 must retain the opaque fact; a reading through
+    // 120 covers the whole material rather than the overstated end 200.
+    assert_eq!(bound().unwrap(), Some(120));
+    for frontier in [100, 105, 119] {
+        assert!(bound().unwrap().is_some_and(|required| required > frontier));
+    }
+    assert!(bound().unwrap().is_some_and(|required| required <= 120));
+    // An opaque body cannot prove coverage of a material prefix lying before
+    // this input's logical origin, even when its mapped slice is well formed.
+    let Product::Input { rows, .. } = &mut product else {
+        unreachable!()
+    };
+    rows.extents[0].offset = 10;
+    store_material(&index, "original", &product).unwrap();
+    assert!(bound().is_err());
+}
+
+#[test]
 fn chunked_materials_catalog_each_chunk_and_their_chains_read_back() {
     let root = tempfile::tempdir().unwrap();
     let mut index = cache(&root.path().join("index.db"));

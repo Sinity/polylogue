@@ -69,11 +69,7 @@ fn retained(sdk: &Sinex, generation: &SourceGeneration) -> (Vec<u8>, usize) {
 
 fn assert_complete(sdk: &Sinex, archive: &Archive, path: &Path, expected: &[u8]) -> usize {
     let count = assert_custody_complete(sdk, path, expected);
-    let raw = sdk
-        .pending_source(&selector(path), "")
-        .unwrap()
-        .raw
-        .unwrap();
+    let raw = sdk.pending_source(&selector(path)).unwrap().raw.unwrap();
     let Capture::Input(header) = &raw.captured else {
         panic!("a native raw capture must have its original input header");
     };
@@ -91,11 +87,7 @@ fn assert_complete(sdk: &Sinex, archive: &Archive, path: &Path, expected: &[u8])
 }
 
 fn assert_custody_complete(sdk: &Sinex, path: &Path, expected: &[u8]) -> usize {
-    let raw = sdk
-        .pending_source(&selector(path), "")
-        .unwrap()
-        .raw
-        .unwrap();
+    let raw = sdk.pending_source(&selector(path)).unwrap().raw.unwrap();
     let Capture::Input(header) = &raw.captured else {
         panic!("a native raw capture must have its original input header");
     };
@@ -115,7 +107,7 @@ fn assert_custody_complete(sdk: &Sinex, path: &Path, expected: &[u8]) -> usize {
         }
     );
     assert_eq!(cursor.known_total(), Some(expected.len() as u64));
-    assert!(cursor.is_complete_stream());
+    assert!(cursor.is_complete_window());
     let (bytes, count) = retained(sdk, &generation);
     assert_eq!(bytes, expected);
     count
@@ -127,7 +119,7 @@ fn assert_custody_waits_for_confirmation(
     path: &Path,
     identity: &str,
 ) {
-    let source = sdk.pending_source(&selector(path), "").unwrap();
+    let source = sdk.pending_source(&selector(path)).unwrap();
     assert_eq!(
         source.status,
         polylogue_store::primary::SourceStatus::MissingEvidence
@@ -354,11 +346,7 @@ fn restart_after_first_published_chunk_uses_immutable_sdk_bytes_before_the_next_
     assert_eq!(child.code(), Some(77));
     let path = home.file("restart.jsonl");
     let (mut engine, archive, _lock, sdk) = open(&home);
-    let first = sdk
-        .pending_source(&selector(&path), "")
-        .unwrap()
-        .raw
-        .unwrap();
+    let first = sdk.pending_source(&selector(&path)).unwrap().raw.unwrap();
     let Capture::Input(first) = first.captured else {
         panic!("the published first member is a provider capture");
     };
@@ -408,7 +396,7 @@ fn offline_empty_native_file_has_an_actual_body_and_eof_with_no_confirmed_source
     );
     assert!(pass.capture_pending);
     assert_eq!(assert_custody_complete(&sdk, &path, b""), 1);
-    let pending = sdk.pending_source(&selector(&path), "").unwrap();
+    let pending = sdk.pending_source(&selector(&path)).unwrap();
     let private_head = pending.head.as_ref().unwrap().identity.clone();
     let raw = pending.raw.unwrap();
     let Capture::Input(input) = &raw.captured else {
@@ -476,7 +464,7 @@ fn offline_empty_native_file_has_an_actual_body_and_eof_with_no_confirmed_source
     assert_eq!(paged.headers.len(), 1);
     assert_eq!(paged.headers[0].identity, identity);
     assert_eq!(paged.headers[0].material, retained.material);
-    let source = sdk.pending_source(&selector(&path), "").unwrap();
+    let source = sdk.pending_source(&selector(&path)).unwrap();
     assert_eq!(
         source.status,
         polylogue_store::primary::SourceStatus::MissingEvidence
@@ -496,7 +484,7 @@ fn acquired_file(
     };
     use std::os::unix::fs::MetadataExt;
     let source = selector(path);
-    let basis = writer.source_snapshot(source.clone(), "").unwrap().basis;
+    let basis = writer.source_snapshot(source.clone()).unwrap().basis;
     let mut file = std::fs::File::open(path).unwrap();
     let metadata = file.metadata().unwrap();
     let facts = polylogue_store::FileFacts::of(&metadata);
@@ -650,13 +638,13 @@ fn a_raw_only_file_does_not_freeze_an_independent_file_in_the_same_writer_flush(
         Err(polylogue_store::StoreError::PrimaryPending { .. })
     ));
     assert!(
-        sdk.pending_source(&selector(&home.file("file-a.jsonl")), "")
+        sdk.pending_source(&selector(&home.file("file-a.jsonl")))
             .unwrap()
             .head
             .is_none()
     );
     assert!(
-        sdk.pending_source(&selector(&home.file("file-b.jsonl")), "")
+        sdk.pending_source(&selector(&home.file("file-b.jsonl")))
             .unwrap()
             .raw
             .is_some()
@@ -726,7 +714,7 @@ fn an_explicit_package_keeps_its_member_custody_atomic() {
     );
     assert_eq!(page.headers.len(), 2);
     assert!(
-        sdk.pending_source(&selector(&home.file("package-b.jsonl")), "")
+        sdk.pending_source(&selector(&home.file("package-b.jsonl")))
             .unwrap()
             .head
             .is_none()
@@ -1200,4 +1188,148 @@ fn a_gone_observation_waits_on_the_confirmed_input_through_the_capture_route() {
     assert_eq!(next.bytes_read, 0);
     assert_eq!(next.bytes_stored, 0);
     assert_eq!(sdk.pending_captures().unwrap(), pending);
+}
+
+#[test]
+fn a_late_other_host_original_is_parsed_with_an_empty_local_home() {
+    use polylogue_model::BlobHash;
+    use polylogue_store::Writer;
+    use polylogue_store::primary::{Confirmed, ConfirmedChange, Material, Product, ReplayControl};
+
+    let home = ClaudeHome::new();
+    let store = home.dir.path().join("sdk");
+    let sdk = Arc::new(client(&store));
+    let (archive, _lock) = Archive::open_primary(&home.root, &store).unwrap();
+    let writer = Writer::start_on_sinex(&archive, sdk.clone()).unwrap();
+    let control = |position, control| Confirmed {
+        native: None,
+        position,
+        output_index: 0,
+        event: String::new(),
+        change: ConfirmedChange::Control(Box::new(control)),
+    };
+    writer
+        .apply_confirmed(vec![control(
+            1,
+            ReplayControl::Reset {
+                scope: "late-original-scope".into(),
+            },
+        )])
+        .unwrap();
+    writer
+        .apply_confirmed(vec![control(
+            1,
+            ReplayControl::Completion {
+                position: 1,
+                delivery: None,
+            },
+        )])
+        .unwrap();
+    let local_home = home.dir.path().join("empty-local-home");
+    std::fs::create_dir_all(&local_home).unwrap();
+    let mut config = home.config(4096);
+    config.home = local_home.clone();
+    let mut engine = Engine::on_sinex(
+        config,
+        archive.clone(),
+        sdk.clone(),
+        polylogue_testkit::stopped_attempt(),
+    )
+    .unwrap();
+    let initial = engine.run_pass().unwrap();
+    assert_eq!(initial.bytes_read, 0);
+    assert_eq!(std::fs::read_dir(&local_home).unwrap().count(), 0);
+
+    // This path belongs to another host. A conflicting local file must never
+    // supply the parser's bytes, even when its name happens to exist here.
+    let path = home.dir.path().join("other-host/session.jsonl");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        polylogue_testkit::claude_user("wrong", "late", "local decoy"),
+    )
+    .unwrap();
+    let bytes = polylogue_testkit::claude_user("original", "late", "confirmed original words");
+    let physical = super::extent(&store, bytes.as_bytes());
+    let hash = BlobHash::of(bytes.as_bytes());
+    let input = "late-other-host-input";
+    let rows = serde_json::from_value(serde_json::json!({
+        "input":input,"format":"claude-code",
+        "revision":{"number":1,"produced":"first","chain":1,"length":bytes.len()},
+        "extents":[{"chain":1,"offset":0,"length":bytes.len(),"blob":hash,"blob_offset":0}],
+        "observation":{
+            "id":"late-other-host-observation","machine":"other-machine","host":"other-host",
+            "path":path.to_string_lossy(),"path_bytes":path.as_os_str().as_encoded_bytes(),
+            "class":"first","revision":1,"length":bytes.len(),
+            "device":null,"inode":null,"size":null,"mtime_ns":null,"ctime_ns":null,
+            "polylogue_version":"synthetic","seen_at":1,"details_json":null
+        }
+    }))
+    .unwrap();
+    writer
+        .apply_confirmed(vec![
+            Confirmed {
+                native: None,
+                position: 2,
+                output_index: 0,
+                event: "late-original".into(),
+                change: ConfirmedChange::Live(Box::new(Product::Input {
+                    rows: Box::new(rows),
+                    material: Some(Material {
+                        id: "f26aa2e5-78c0-4541-9bba-0059b146df2e".into(),
+                        hash,
+                        length: bytes.len() as u64,
+                        extents: vec![physical.encode()],
+                    }),
+                })),
+            },
+            control(
+                2,
+                ReplayControl::Completion {
+                    position: 2,
+                    delivery: None,
+                },
+            ),
+        ])
+        .unwrap();
+    let stop = engine.stop_request();
+    let parsing = std::thread::spawn(move || engine.run_pass());
+    let started = std::time::Instant::now();
+    let publication = loop {
+        let queued = {
+            let queue = sdk.spool.lock().unwrap();
+            let parsed = queue
+                .ready(&[], 32)
+                .unwrap()
+                .into_iter()
+                .filter(|entry| entry.parsed().is_some())
+                .collect::<Vec<_>>();
+            parsed.first().map(|entry| {
+                (
+                    entry.parsed().unwrap().clone(),
+                    serde_json::to_string(&queue.decode_frame(&entry.identity).unwrap()).unwrap(),
+                    parsed.len(),
+                )
+            })
+        };
+        if queued.is_some() || started.elapsed() >= std::time::Duration::from_secs(10) {
+            break queued;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    // The ordinary writer waits for authoritative admission, which this offline
+    // planner control deliberately does not provide. Stop it after inspecting
+    // the actual immutable publication, before joining the parser thread.
+    stop.request();
+    let pass = parsing.join().unwrap();
+    let (source, frame, count) = publication.expect("the late original reached native publication");
+    assert_eq!(count, 1);
+    assert_eq!(source.reading.input.id, input);
+    assert_eq!(source.reading.parsed_upto, bytes.len() as u64);
+    assert!(
+        frame.contains("confirmed original words"),
+        "{frame}; {pass:?}"
+    );
+    assert!(!frame.contains("local decoy"), "{frame}");
+    assert_eq!(std::fs::read_dir(&local_home).unwrap().count(), 0);
 }

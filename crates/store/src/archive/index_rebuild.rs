@@ -1,5 +1,5 @@
 //! Replacing an `index.db` written in another format. An unknown current
-//! Index1 shape is refused unchanged; an index at another format version is
+//! index shape is refused unchanged; an index at another format version is
 //! renamed beside it, under its schema identity, and a new one is built in
 //! its place. The renamed file is removed once the new index has finished
 //! its first build. `archive.db` is never handled here.
@@ -58,10 +58,6 @@ fn file_name(identity: &str) -> String {
 /// "another schema". Any other error is not a reason to set it aside.
 pub(crate) fn reason(error: &StoreError) -> Option<IndexRebuildReason> {
     match error {
-        StoreError::NoMigration {
-            database: "index",
-            found,
-        } if *found != schema::INDEX_VERSION => Some(IndexRebuildReason::SchemaDiffers),
         StoreError::IndexVersion { found, wanted } => Some(IndexRebuildReason::FormatVersion {
             found: *found,
             wanted: *wanted,
@@ -112,36 +108,61 @@ pub(crate) fn record(
 }
 
 /// Whether the index has finished its first build: standalone, the build
-/// marker is cleared; primary, the confirmed stream is applied to its head.
+/// marker is cleared. Primary also needs its actual native head, admitted local
+/// parser progress for every stored chain, and no unresolved native facts.
 pub(crate) fn built(index: &Connection, primary: bool) -> Result<bool> {
     if !primary {
         return Ok(!schema::building(index)?);
     }
     let state = crate::primary::projection::replay_state(index)?;
-    Ok(matches!(
+    if !matches!(
         (state.applied_position, state.head),
         (Some(applied), Some(head)) if applied >= head
-    ))
+    ) {
+        return Ok(false);
+    }
+    let unresolved: bool = index.query_row(
+        "WITH chains AS (SELECT input,chain,max(length) AS length FROM source_revision GROUP BY input,chain)
+         SELECT EXISTS(SELECT 1 FROM chains c
+             LEFT JOIN input_ref i ON i.id=c.input
+             LEFT JOIN parse_state p ON p.input_pk=i.pk AND p.chain=c.chain
+             WHERE c.length>0 AND NOT COALESCE(p.native_publication IS NOT NULL AND (
+                 (p.reading_version IS NOT NULL AND p.reading_version<>'' AND
+                    ((p.status IN ('parsing','done') AND p.parsed_upto>=c.length) OR
+                     (p.status='waiting' AND p.at_length=c.length) OR
+                     (p.status IN ('refused','failed') AND p.at_length=c.length AND p.stopped_attempt IS NOT NULL)))
+                 OR (p.status='no_parser_yet' AND p.at_length=c.length)),0))
+         OR EXISTS(SELECT 1 FROM primary_refused r LEFT JOIN primary_fact f ON f.event=r.event
+                   WHERE f.event IS NULL OR f.state='live')",
+        [], |row| row.get(0),
+    )?;
+    Ok(!unresolved)
 }
 
 /// Removes every set-aside index beside `index.db` once the index has
 /// finished its first build. Matching by name also removes one a crash left
 /// before its record was written.
 pub(crate) fn remove_when_built(index: &Connection, path: &Path, primary: bool) -> Result<()> {
-    if !built(index, primary)? {
-        return Ok(());
-    }
     let Some(dir) = path.parent() else {
         return Ok(());
     };
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        if entry.file_name().to_string_lossy().starts_with(PREFIX) {
-            match std::fs::remove_file(entry.path()) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e.into()),
-            }
+    let retained = std::fs::read_dir(dir)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::io::Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with(PREFIX))
+        })
+        .collect::<Vec<_>>();
+    if retained.is_empty() || !built(index, primary)? {
+        return Ok(());
+    }
+    for path in retained {
+        match std::fs::remove_file(path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
         }
     }
     Ok(())

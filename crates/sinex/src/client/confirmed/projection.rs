@@ -127,7 +127,14 @@ impl Client {
                     "a projection fetch differs from its certified reference".into(),
                 ));
             }
-            let live = decode_event(&event)?;
+            let mut live = readable(
+                event.commit_seq,
+                &event.id.to_string(),
+                format!("{}@{}", event.event_type, event.kind_version),
+                Some(&event.kind_definition_hash),
+                decode_event(&event),
+            )?;
+            live.native = Some(native_context(&event));
             let archived = reference.archived.then(|| Confirmed {
                 position: reference
                     .lifecycle_position

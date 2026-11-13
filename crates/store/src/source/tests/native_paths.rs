@@ -206,9 +206,7 @@ fn queued_source_snapshot_and_reader_keep_the_same_exact_observation() {
     .unwrap();
     drop(conn);
     let writer = crate::Writer::start(&archive).unwrap();
-    let snapshot = writer
-        .source_snapshot(selector(path), "synthetic:1")
-        .unwrap();
+    let snapshot = writer.source_snapshot(selector(path)).unwrap();
     assert_eq!(snapshot.basis.status, SourceStatus::Ready);
     assert_eq!(snapshot.basis.confirmed.as_deref(), Some("native"));
     assert_eq!(snapshot.basis.pending, None);

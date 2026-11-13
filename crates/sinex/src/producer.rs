@@ -12,7 +12,6 @@ use polylogue_store::primary::{
 use sinex_model::{InputRef, Manifest, MaterialId, MaterialRole};
 use sinex_protocol::{Ingress, MaterialFrame};
 mod acquisition;
-mod exports;
 mod reading;
 mod requests;
 
@@ -34,11 +33,7 @@ impl Sinex {
     pub(crate) fn drain_pending(&self) -> Result<()> {
         let mut result = self.client_operation(async |client| client.retry_prepared().await);
         if result.is_ok() || matches!(result, Err(Error::Refused { .. })) {
-            for complete in [
-                Self::drain_requests,
-                Self::drain_observations,
-                Self::drain_readings,
-            ] {
+            for complete in [Self::drain_requests, Self::drain_observations] {
                 match complete(self) {
                     Ok(()) => {}
                     Err(error @ Error::Refused { .. }) => {
@@ -201,7 +196,7 @@ impl Sinex {
                 None,
             ),
         };
-        let header = crate::spool::capture_header(captured);
+        let header = captured;
         let observation = matches!(captured,Capture::Input(input) if input.raw_range.is_none());
         if matches!(captured, Capture::Input(input) if input.raw_range.is_none() && !input.rows.extents.is_empty())
         {
@@ -227,7 +222,7 @@ impl Sinex {
                 part_index: if observation { 0 } else { part_index },
                 previous_part: if observation { None } else { previous_part },
                 manifest: Manifest {
-                    details: [("polylogue_capture".into(), serde_json::to_value(&header)?)]
+                    details: [("polylogue_capture".into(), serde_json::to_value(header)?)]
                         .into_iter()
                         .collect(),
                     role: if observation {
@@ -333,8 +328,7 @@ impl Sinex {
     }
 
     pub(crate) fn capture(&self, identity: &str) -> Result<Capture> {
-        let pinned = self.queue()?.pin_capture(identity)?;
-        pinned.decode()
+        self.queue()?.capture(identity)
     }
 
     /// Later A→B→A observations get a new operation; retrying the most recent
@@ -379,30 +373,119 @@ impl Sinex {
         self.prepare_named_products(&identity, writes)
     }
 
+    /// Serialize interpretations of one immutable original chain. A pending
+    /// older interpretation must settle before a newer frame can be prepared.
+    pub(crate) fn prepare_parsed(
+        &self,
+        source: &polylogue_store::primary::ParsedSource,
+        writes: &[ProductWrite],
+    ) -> Result<polylogue_store::primary::ParsedPublication> {
+        use polylogue_store::primary::ParsedPublication;
+        let reading = &source.reading;
+        if source.root_material.parse::<uuid::Uuid>().is_err()
+            || reading.start > reading.parsed_upto
+            || reading
+                .source_length
+                .is_none_or(|length| reading.parsed_upto > length)
+            || reading.reading_version.is_empty()
+        {
+            return Err(Error::Invalid(
+                "interpreted source identity or range is invalid".into(),
+            ));
+        }
+        for write in writes {
+            if reading.delivery.is_none() {
+                crate::products::require_source(&write.product)?;
+            } else {
+                let key = polylogue_store::primary::ExportReadingKey {
+                    input: reading.input.clone(),
+                    chain: reading.chain,
+                    reading_version: reading.reading_version.clone(),
+                    length: reading.source_length.expect("validated source length"),
+                };
+                crate::products::require_reading(&write.product, &key)?;
+            }
+            if write.product.reading() != Some(reading) || write.location.is_none() {
+                return Err(Error::Invalid(
+                    "native fact differs from its original reading".into(),
+                ));
+            }
+        }
+        let scope = (&source.root_material, &reading.input.id, reading.chain);
+        let prefix = format!(
+            "parsed:{}:",
+            blake3::hash(&serde_json::to_vec(&scope)?).to_hex()
+        );
+        let mut original = blake3::Hasher::new();
+        serde_json::to_writer(&mut original, &(source, crate::source_reference()))?;
+        for write in writes {
+            serde_json::to_writer(
+                &mut original,
+                &(
+                    &write.product,
+                    &write.location,
+                    &write.parents,
+                    &write.machine,
+                    write.output_index,
+                ),
+            )?;
+            original.update(b"\n");
+        }
+        let desired = format!("{prefix}{}:", original.finalize().to_hex());
+        let queue = self.queue()?;
+        if let Some(entry) = queue
+            .lookup(
+                Lookup::IdentityPrefix(&prefix),
+                None,
+                None,
+                Order::NewestFirst,
+                1,
+            )?
+            .into_iter()
+            .next()
+        {
+            if entry.identity.starts_with(&desired) {
+                return queue.publication(&entry.identity, &self.config.producer);
+            }
+            if matches!(entry.phase, polylogue_store::primary::queue::Phase::Pending) {
+                return Ok(ParsedPublication::Pending {
+                    identity: entry.record.identity,
+                });
+            }
+        }
+        let identity = format!("{desired}{}", uuid::Uuid::now_v7());
+        queue.prepare_parsed(
+            Ingress::Events {
+                source: Some(crate::source_reference()),
+                coverage: None,
+                frame: identity.clone(),
+                events: crate::products::events(writes)?,
+                failures: Vec::new(),
+            },
+            source,
+        )?;
+        drop(queue);
+        self.send_pending();
+        Ok(ParsedPublication::Pending { identity })
+    }
+
     pub(crate) fn prepare_named_products(
         &self,
         identity: &str,
         writes: &[ProductWrite],
     ) -> Result<PreparedWrite> {
-        self.prepare_products_bound(identity, writes, None)
-    }
-
-    fn prepare_products_bound(
-        &self,
-        identity: &str,
-        writes: &[ProductWrite],
-        export_key: Option<&polylogue_store::primary::ExportReadingKey>,
-    ) -> Result<PreparedWrite> {
         for write in writes {
-            match export_key {
-                Some(key) => crate::products::require_export(&write.product, key)?,
-                None => crate::products::require_source(&write.product)?,
+            if write.product.reading().is_some() {
+                return Err(Error::Invalid(
+                    "parser facts need their original-source publication".into(),
+                ));
             }
+            crate::products::require_source(&write.product)?;
         }
         let queue = self.queue()?;
         if queue.get(identity)?.is_some() {
             let original = queue.decode_frame(identity)?;
-            let mut expected = crate::products::events(writes)?;
+            let expected = crate::products::events(writes)?;
             let Ingress::Events { source, events, .. } = &original else {
                 return Err(Error::Invalid(
                     "named product intent is not an event group".into(),
@@ -410,7 +493,7 @@ impl Sinex {
             };
             if source.as_ref().is_none_or(|source| {
                 source.name != "polylogue"
-                    || !matches!(source.version, 5 | 6 | crate::SOURCE_VERSION)
+                    || !matches!(source.version, 5 | 6 | 7 | crate::SOURCE_VERSION)
             }) {
                 return Err(Error::Invalid(
                     "named product intent has an unsupported source".into(),
@@ -418,11 +501,6 @@ impl Sinex {
             }
             let observation = format!("{identity}:observation");
             if queue.get(&observation)?.is_some() {
-                if queue.export_material_key(&observation)?.as_ref() != export_key {
-                    return Err(Error::Invalid(
-                        "export identity changed its immutable reading key".into(),
-                    ));
-                }
                 let retained: Vec<ProductWrite> =
                     crate::spool::decode_json(queue.body(&observation)?)?;
                 if retained != writes {
@@ -435,16 +513,6 @@ impl Sinex {
                     pending: true,
                 });
             }
-            for (new, old) in expected.iter_mut().zip(events) {
-                if source.as_ref().is_some_and(|source| source.version == 5)
-                    && old.kind.name == "polylogue.parse_progress"
-                    && old.kind.version == 5
-                    && new.kind.name == old.kind.name
-                    && new.payload == old.payload
-                {
-                    new.kind = old.kind.clone();
-                }
-            }
             if &expected != events {
                 return Err(Error::Invalid(
                     "named product identity changed immutable facts".into(),
@@ -455,24 +523,11 @@ impl Sinex {
                 pending: true,
             });
         }
-        let unlocated = export_key.is_some()
-            || writes
-                .iter()
-                .any(|write| write.location.is_none() && write.parents.is_empty());
+        let unlocated = writes
+            .iter()
+            .any(|write| write.location.is_none() && write.parents.is_empty());
         if unlocated {
             let observation = format!("{identity}:observation");
-            let frozen_key = if queue.get(&observation)?.is_some() {
-                let original = queue.export_material_key(&observation)?;
-                if original.as_ref() != export_key {
-                    return Err(Error::Invalid(
-                        "export identity changed its immutable reading key".into(),
-                    ));
-                }
-                original
-            } else {
-                export_key.cloned()
-            };
-            let export_key = frozen_key.as_ref();
             let mut writes = if queue.get(&observation)?.is_some() {
                 let previous: Vec<ProductWrite> =
                     crate::spool::decode_json(queue.body(&observation)?)?;
@@ -491,7 +546,7 @@ impl Sinex {
                     return Err(Error::Invalid("observation has no material".into()));
                 };
                 if material.source.name != "polylogue"
-                    || !matches!(material.source.version, 5 | 6 | crate::SOURCE_VERSION)
+                    || !matches!(material.source.version, 5 | 6 | 7 | crate::SOURCE_VERSION)
                 {
                     return Err(Error::Invalid(
                         "observation has an unsupported source".into(),
@@ -531,16 +586,6 @@ impl Sinex {
                         manifest: Manifest {
                             role: MaterialRole::Records,
                             media_type: Some("application/json".into()),
-                            details: export_key
-                                .map(|key| {
-                                    serde_json::to_value(key).map(|value| {
-                                        [("polylogue_export_key".into(), value)]
-                                            .into_iter()
-                                            .collect()
-                                    })
-                                })
-                                .transpose()?
-                                .unwrap_or_default(),
                             ..Default::default()
                         },
                     }),
@@ -618,8 +663,7 @@ impl Sinex {
             let identity = observation.strip_suffix(":observation").ok_or_else(|| {
                 Error::Invalid("observation identity has no product operation".into())
             })?;
-            let export_key = self.queue()?.export_material_key(&observation)?;
-            self.prepare_products_bound(identity, &writes, export_key.as_ref())?;
+            self.prepare_named_products(identity, &writes)?;
         }
         Ok(())
     }
@@ -629,92 +673,12 @@ impl Sinex {
         identities: &[String],
         writes: &[ProductWrite],
     ) -> Result<PreparedWrite> {
-        let mut retained = Vec::new();
-        if writes.iter().any(|write| {
-            write
-                .product
-                .reading()
-                .is_some_and(|reading| reading.delivery.is_some())
-        }) {
-            for identity in identities {
-                let pinned = {
-                    let queue = self.queue()?;
-                    let entry = queue
-                        .get(identity)?
-                        .ok_or_else(|| Error::Invalid("capture is not prepared".into()))?;
-                    if entry.unresolved || entry.phase.is_refused() {
-                        return Err(Error::Refused {
-                            name: identity.clone(),
-                            reason: "capture has no accepted semantic custody".into(),
-                        });
-                    }
-                    queue.pin_capture(identity)?
-                };
-                if let Capture::Input(input) = pinned.decode()? {
-                    for reading in input.parsed {
-                        if let (Some(key), Some(delivery)) =
-                            (&reading.export_key, &reading.delivery)
-                        {
-                            reading.clone().into_step().validate_export()?;
-                            retained.push((key.clone(), *delivery));
-                        }
-                    }
-                }
-            }
-        }
-        let mut group = Vec::new();
-        let mut group_key = None;
         for write in writes {
-            if let Some(reading) = write
-                .product
-                .reading()
-                .filter(|reading| reading.delivery.is_some())
-            {
-                let key = retained
-                    .iter()
-                    .find_map(|(key, delivery)| {
-                        (reading.delivery.as_ref() == Some(delivery)
-                            && reading.input.id == key.input.id
-                            && reading.input.format == key.input.format
-                            && reading.chain == key.chain
-                            && reading.reading_version == key.reading_version
-                            && reading.source_length == Some(key.length))
-                        .then_some(key)
-                    })
-                    .ok_or_else(|| {
-                        Error::Invalid(
-                            "export product is not retained by its actual capture sidecar".into(),
-                        )
-                    })?;
-                crate::products::require_export(&write.product, key)?;
-                if group_key.as_ref().is_some_and(|previous| previous != key) {
-                    return Err(Error::Invalid(
-                        "capture callback spans different reading keys".into(),
-                    ));
-                }
-                group_key = Some(key.clone());
-                group.push(&write.product);
-                if matches!(&write.product, Product::ParseProgress { .. }) {
-                    polylogue_store::primary::CapturedReading::from_product_group(
-                        key,
-                        group.iter().copied(),
-                    )?;
-                    group.clear();
-                    group_key = None;
-                }
-            } else {
-                crate::products::require_source(&write.product)?;
-                if !group.is_empty() {
-                    return Err(Error::Invalid(
-                        "capture callback is interrupted before its control".into(),
-                    ));
-                }
+            if write.product.reading().is_some() {
+                return Err(Error::Invalid(
+                    "material completion cannot publish parser values".into(),
+                ));
             }
-        }
-        if !group.is_empty() {
-            return Err(Error::Invalid(
-                "capture callback has no final control".into(),
-            ));
         }
         let queue = self.queue()?;
         if let Some(group) = queue.group_for(identities)? {
@@ -765,7 +729,7 @@ impl Sinex {
                 return Err(Error::Invalid("authored intent has no material".into()));
             };
             if material.source.name != "polylogue"
-                || !matches!(material.source.version, 5 | 6 | crate::SOURCE_VERSION)
+                || !matches!(material.source.version, 5 | 6 | 7 | crate::SOURCE_VERSION)
             {
                 return Err(Error::Invalid(
                     "authored intent belongs to an unsupported adapter source".into(),
@@ -934,7 +898,7 @@ impl Sinex {
                 return Err(Error::Invalid("authored intent has no material".into()));
             };
             if material.source.name != "polylogue"
-                || !matches!(material.source.version, 5 | 6 | crate::SOURCE_VERSION)
+                || !matches!(material.source.version, 5 | 6 | 7 | crate::SOURCE_VERSION)
             {
                 return Err(Error::Invalid(
                     "authored intent belongs to an unsupported adapter source".into(),
@@ -954,7 +918,7 @@ impl Sinex {
             self.visit_matching(Lookup::Blobs(Some(&attachment.blob.to_string())), |queue,entry|{
                     if matches!(entry.capture(),Some(Capture::Blob{hash,..}) if *hash==attachment.blob) {
                         if let Some(material)=Self::capture_material(queue,&entry)? {
-                            writes.push(ProductWrite{location:Some(SourceLocation{material:material.id.clone(),anchor:0}),product:Product::Blob(material),parents:Vec::new(),machine:Some(request.request.machine.clone()),output_index:writes.len() as u64});
+                            writes.push(ProductWrite{publish:true,location:Some(SourceLocation{material:material.id.clone(),anchor:0}),product:Product::Blob(material),parents:Vec::new(),machine:Some(request.request.machine.clone()),output_index:writes.len() as u64});
                             if queue.capture_group(&entry.identity)?.is_none() {dependencies.push(entry.record.identity);}
                         } else {waiting=true;}
                     }
@@ -975,6 +939,7 @@ impl Sinex {
             parents: Vec::new(),
             machine: Some(request.request.machine),
             output_index: writes.len() as u64,
+            publish: true,
         });
         self.complete_captures(&dependencies, &writes)?;
         Ok(())

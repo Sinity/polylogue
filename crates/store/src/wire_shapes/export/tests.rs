@@ -231,14 +231,12 @@ fn unreadable_header_keeps_diagnostics_without_a_cursor_and_new_actual_length_ca
 }
 
 #[test]
-fn semantic_seals_ignore_receiver_receipts_but_bind_original_event_identities_and_counts() {
+fn semantic_seals_bind_original_event_identities_and_counts() {
     let mut step = callback(
         0,
         ExportDeliverySource::ContainerHeader,
         ExportDelivery::seed(),
     );
-    step.output.message_receipts.insert(0, 130);
-    step.output.event_receipts.insert(0, 140);
     step.validate_export().unwrap();
     step.output.event_ids.insert(0, "original-event".into());
     assert!(step.validate_export().is_err());

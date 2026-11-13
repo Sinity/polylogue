@@ -187,7 +187,7 @@ fn known_index1_shapes_gain_only_the_declared_additions_and_keep_every_old_row()
                             ensure_index
                         };
                         ensure(&conn).unwrap();
-                        assert_eq!(version(&conn).unwrap(), 1);
+                        assert_eq!(version(&conn).unwrap(), index_version(primary));
                         assert_eq!(super::super::building(&conn).unwrap(), building);
                         unchanged(&conn, &before);
                         assert_eq!(

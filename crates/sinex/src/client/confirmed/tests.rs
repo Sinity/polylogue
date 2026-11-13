@@ -16,8 +16,6 @@ fn reading(progress: StepProgress) -> Reading {
         },
         chain: 1,
         reading_version: "reader-earlier".into(),
-        order_from: None,
-        repeats_whole_conversations: false,
         start: 0,
         parsed_upto: 8,
         progress,
@@ -138,7 +136,15 @@ fn current_readings_keep_their_progress_and_authenticated_owner_context() {
         let ConfirmedChange::Live(actual) = confirmed.change else {
             panic!("current reading did not decode as a live product");
         };
-        assert_eq!(*actual, product);
+        assert_eq!(
+            *actual,
+            Product::Interpreted {
+                reading: product.reading().unwrap().clone(),
+                record: polylogue_store::primary::SourceRecord::of(&product)
+                    .unwrap()
+                    .unwrap(),
+            }
+        );
         let native = confirmed.native.unwrap();
         assert_eq!(native.kind.name, event.event_type);
         assert_eq!(native.kind.version, event.kind_version);

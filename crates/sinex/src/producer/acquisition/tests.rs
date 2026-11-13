@@ -34,7 +34,7 @@ pub(super) fn acquire(
         mode,
     };
     let acknowledgment = sinex.prepare_input_group(&plan, &mut |emit| {
-        let mut input = capture(bytes, Vec::new());
+        let mut input = capture(bytes);
         input.raw_range = Some(RawRange {
             start: 0,
             end: bytes.len() as u64,
@@ -65,17 +65,17 @@ fn empty_local_sources_are_known_but_unattributed_custody_stays_uncertain() {
     let root = tempfile::tempdir().unwrap();
     let sinex = client(root.path());
     let state = sinex
-        .pending_source(&source(b"/synthetic/new-source.jsonl"), "reading")
+        .pending_source(&source(b"/synthetic/new-source.jsonl"))
         .unwrap();
     assert_eq!(state.status, SourceStatus::Ready);
-    assert!(state.head.is_none() && state.raw.is_none() && state.continuation.is_none());
+    assert!(state.head.is_none() && state.raw.is_none());
     let bytes = b"synthetic unattributed capture";
     sinex
-        .prepare_input(&capture(bytes, Vec::new()), body(root.path(), bytes))
+        .prepare_input(&capture(bytes), body(root.path(), bytes))
         .unwrap();
     assert_eq!(
         sinex
-            .pending_source(&source(b"/synthetic/new-source.jsonl"), "reading")
+            .pending_source(&source(b"/synthetic/new-source.jsonl"))
             .unwrap()
             .status,
         SourceStatus::MissingEvidence
@@ -97,7 +97,7 @@ fn receiver_downgrade_retains_new_bodies_and_exact_frozen_retries_keep_first_dis
     let prepare = |plan: &CapturePlan, bytes: &[u8]| {
         sinex
             .prepare_input_group(plan, &mut |emit| {
-                let mut input = capture(bytes, vec![]);
+                let mut input = capture(bytes);
                 input.basis = Some(plan.bases[0].clone());
                 emit(input, vec![body(root.path(), bytes)])
             })
@@ -105,7 +105,7 @@ fn receiver_downgrade_retains_new_bodies_and_exact_frozen_retries_keep_first_dis
     };
     let first = accepted(prepare(&plan, b"A"));
     let head = sinex
-        .pending_source(&selector, "v")
+        .pending_source(&selector)
         .unwrap()
         .head
         .unwrap()
@@ -144,7 +144,7 @@ fn receiver_downgrade_retains_new_bodies_and_exact_frozen_retries_keep_first_dis
     assert_eq!(retried, custody);
     assert_eq!(
         sinex
-            .pending_source(&selector, "v")
+            .pending_source(&selector)
             .unwrap()
             .head
             .unwrap()
@@ -167,7 +167,7 @@ fn atomic_source_cas_preserves_a_b_a_retry_restart_and_byte_identity() {
     )
     .unwrap();
     let first_head = sinex
-        .pending_source(&selector, "reading")
+        .pending_source(&selector)
         .unwrap()
         .head
         .unwrap()
@@ -203,7 +203,7 @@ fn atomic_source_cas_preserves_a_b_a_retry_restart_and_byte_identity() {
     )
     .unwrap();
     let second_head = sinex
-        .pending_source(&selector, "reading")
+        .pending_source(&selector)
         .unwrap()
         .head
         .unwrap()
@@ -219,14 +219,14 @@ fn atomic_source_cas_preserves_a_b_a_retry_restart_and_byte_identity() {
     assert_ne!(first.identity, third.identity);
     assert!(
         sinex
-            .pending_source(&source(b"/home/op/session-\xfe.jsonl"), "reading")
+            .pending_source(&source(b"/home/op/session-\xfe.jsonl"))
             .unwrap()
             .head
             .is_none()
     );
     drop(sinex);
     let sinex = client(root.path());
-    let state = sinex.pending_source(&selector, "reading").unwrap();
+    let state = sinex.pending_source(&selector).unwrap();
     let head = state.head.unwrap();
     assert_eq!(state.status, SourceStatus::MissingEvidence);
     assert_eq!(
@@ -276,7 +276,7 @@ fn failed_group_is_not_visible_and_immutable_imports_keep_content_identity() {
     assert!(
         sinex
             .prepare_input_group(&plan, &mut |emit| {
-                let mut input = capture(b"first", Vec::new());
+                let mut input = capture(b"first");
                 input.basis = Some(basis(&selector, None));
                 emit(input, vec![body(root.path(), b"first")])?;
                 Err(polylogue_store::StoreError::Invalid(
@@ -318,92 +318,6 @@ fn failed_group_is_not_visible_and_immutable_imports_keep_content_identity() {
 }
 
 #[test]
-fn older_control_capture_is_explicit_when_newer_raw_has_no_parser_state() {
-    let root = tempfile::tempdir().unwrap();
-    let sinex = client(root.path());
-    let selector = source(b"source");
-    acquire(
-        &sinex,
-        root.path(),
-        b"A",
-        basis(&selector, None),
-        CaptureMode::Mutable,
-    )
-    .unwrap();
-    let prior = sinex
-        .pending_source(&selector, "v2")
-        .unwrap()
-        .head
-        .unwrap()
-        .identity;
-    let mut step = polylogue_store::ParseStep::new(
-        polylogue_model::Output::default(),
-        polylogue_model::RecordCounts::default(),
-        0..1,
-        true,
-    );
-    step.checkpoint = Some(polylogue_model::batch::ParserCheckpoint::new(
-        "v2".into(),
-        1,
-        Some(serde_json::json!({"state":"original"})),
-    ));
-    step.prepare();
-    let reading = polylogue_store::primary::CapturedReading::from_step(&step, None).unwrap();
-    let control_basis = basis(&selector, Some(prior));
-    sinex
-        .prepare_input_group(
-            &CapturePlan {
-                required_disposition: None,
-                intent: "control".into(),
-                bases: vec![control_basis.clone()],
-                count: 1,
-                mode: CaptureMode::Mutable,
-            },
-            &mut |emit| {
-                let mut input = capture(b"{}", vec![reading.clone()]);
-                input.rows.extents.clear();
-                input.raw_range = None;
-                input.basis = Some(control_basis.clone());
-                emit(input, vec![body(root.path(), b"{}")])
-            },
-        )
-        .unwrap();
-    let control_id = sinex
-        .pending_source(&selector, "v2")
-        .unwrap()
-        .head
-        .unwrap()
-        .identity;
-    acquire(
-        &sinex,
-        root.path(),
-        b"B",
-        basis(&selector, Some(control_id.clone())),
-        CaptureMode::Mutable,
-    )
-    .unwrap();
-    drop(sinex);
-    let sinex = client(root.path());
-    let state = sinex.pending_source(&selector, "v2").unwrap();
-    assert_ne!(state.head.as_ref().unwrap().identity, control_id);
-    assert_eq!(state.raw.unwrap().identity, state.head.unwrap().identity);
-    let continuation = state.continuation.unwrap();
-    assert_eq!(continuation.capture, control_id);
-    assert!(continuation.header.parsed.is_empty());
-    assert_eq!(
-        continuation.checkpoint.parser_state,
-        Some(serde_json::json!({"state":"original"}))
-    );
-    assert!(
-        sinex
-            .pending_source(&selector, "v3")
-            .unwrap()
-            .continuation
-            .is_none()
-    );
-}
-
-#[test]
 fn private_staging_releases_custody_lock_and_rechecks_moved_source_before_publication() {
     let root = tempfile::tempdir().unwrap();
     let sinex = client(root.path());
@@ -421,7 +335,7 @@ fn private_staging_releases_custody_lock_and_rechecks_moved_source_before_public
             sinex.spool.try_lock().is_ok(),
             "body staging retained the shared custody lock"
         );
-        let mut input = capture(b"A", vec![]);
+        let mut input = capture(b"A");
         input.basis = Some(original_basis.clone());
         emit(input, vec![body(root.path(), b"A")])?;
         acquire(
@@ -498,7 +412,7 @@ fn acquisition_pages_preserve_original_siblings_and_relative_orders_after_restar
                 .into_iter()
                 .enumerate()
             {
-                let mut input = capture(bytes, vec![]);
+                let mut input = capture(bytes);
                 input.index = u32::try_from(ordinal).unwrap();
                 input.basis = Some(source_basis.clone());
                 emit(input, vec![body(root.path(), bytes)])?;
@@ -525,7 +439,6 @@ fn acquisition_pages_preserve_original_siblings_and_relative_orders_after_restar
     let Capture::Input(header) = &page.headers[0].captured else {
         panic!("input capture expected")
     };
-    assert!(header.parsed.is_empty());
     assert_eq!(header.group.as_ref().unwrap().ordinal, 0);
     let next = sinex
         .pending_group_headers(&first.identity, page.next, 1)
@@ -581,7 +494,7 @@ fn exact_retry_retains_first_capture_coordinates_after_cache_coordinates_change(
     let mut first_header = None;
     let first = sinex
         .prepare_input_group(&plan, &mut |emit| {
-            let mut input = capture(b"A", vec![]);
+            let mut input = capture(b"A");
             input.basis = Some(source_basis.clone());
             first_header = Some(input.clone());
             emit(input, vec![body(root.path(), b"A")])
@@ -621,7 +534,7 @@ fn unresolved_retry_is_stable_after_head_movement_and_keeps_provider_bytes_witho
     let stage = |bytes: &[u8], no_extent: bool| {
         sinex
             .prepare_input_group(&plan, &mut |emit| {
-                let mut input = capture(bytes, vec![]);
+                let mut input = capture(bytes);
                 input.basis = Some(frozen_basis.clone());
                 if no_extent {
                     input.rows.extents.clear();
@@ -657,7 +570,7 @@ fn unresolved_retry_is_stable_after_head_movement_and_keeps_provider_bytes_witho
         assert_ne!(material.parser, "polylogue-observation");
     }
     let a_head = sinex
-        .pending_source(&selector, "")
+        .pending_source(&selector)
         .unwrap()
         .head
         .unwrap()
@@ -671,7 +584,7 @@ fn unresolved_retry_is_stable_after_head_movement_and_keeps_provider_bytes_witho
     )
     .unwrap();
     let current = sinex
-        .pending_source(&selector, "")
+        .pending_source(&selector)
         .unwrap()
         .head
         .unwrap()
@@ -683,7 +596,7 @@ fn unresolved_retry_is_stable_after_head_movement_and_keeps_provider_bytes_witho
     assert_eq!(accepted(stage(b"A", false)).identity, accepted_a.identity);
     assert_eq!(
         sinex
-            .pending_source(&selector, "")
+            .pending_source(&selector)
             .unwrap()
             .head
             .unwrap()
@@ -695,7 +608,7 @@ fn unresolved_retry_is_stable_after_head_movement_and_keeps_provider_bytes_witho
     let sinex = client(root.path());
     assert_eq!(
         sinex
-            .pending_source(&selector, "")
+            .pending_source(&selector)
             .unwrap()
             .head
             .unwrap()

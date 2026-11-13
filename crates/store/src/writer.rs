@@ -27,6 +27,7 @@ use std::thread::JoinHandle;
 mod assertions;
 mod assets;
 mod dispatch;
+mod source_eligibility;
 pub use dispatch::ParentLifetime;
 #[cfg(any(test, feature = "fixture"))]
 pub use dispatch::{DispatchBarrier, DispatchPhase};
@@ -36,17 +37,17 @@ mod batch;
 mod bytes;
 mod chain;
 mod compose;
-mod confirmed;
 mod derive_thread;
 mod follow;
 mod primary;
 mod primary_capture;
 mod query_objects;
+mod retractions;
 pub use query_objects::HistorySlot;
 mod saved;
 mod scoped;
 mod source_snapshot;
-pub(crate) use confirmed::apply_confirmed_readings;
+pub(crate) use retractions::{apply_source_retractions, prepare_source_retractions};
 pub(crate) use rows::finish as finish_rows;
 mod native_hook_fields;
 mod older_archive;
@@ -97,14 +98,28 @@ enum Msg {
         Box<(crate::NewBlob, Option<crate::staging::PreparedBytes>)>,
         SyncSender<Result<BlobHash>>,
     ),
-    ReplaceChain(InputKey, i64, u64, ChainReading, SyncSender<Result<u64>>),
+    ReplaceChain(
+        InputKey,
+        i64,
+        u64,
+        Box<ChainReading>,
+        SyncSender<Result<u64>>,
+    ),
     /// Record older chains' readings from newer chains of the same inputs
     /// holding the same bytes.
     CopyReadings(
         Vec<crate::ReadingCopy>,
         SyncSender<Result<Vec<Result<bool>>>>,
     ),
-    Confirmed(Vec<crate::primary::Confirmed>, SyncSender<Result<i64>>),
+    StageConfirmed(
+        Vec<crate::primary::Confirmed>,
+        SyncSender<Result<crate::primary::projection::Step>>,
+    ),
+    ApplyConfirmed(
+        Box<crate::primary::projection::Preparation>,
+        crate::completion::Committed,
+        SyncSender<Result<crate::primary::projection::Step>>,
+    ),
     DrainPrimaryCaptures(SyncSender<Result<()>>),
     /// The stream follower handled a page, or failed to read one.
     StreamFollowed(Option<String>),
@@ -125,7 +140,6 @@ enum Msg {
     ),
     SourceSnapshot(
         crate::primary::SourceSelector,
-        String,
         SyncSender<Result<crate::primary::SourceSnapshot>>,
     ),
     RestoreAuthored(
@@ -182,7 +196,6 @@ pub struct Writer {
     /// The index was empty when the writer started: its first pass is a
     /// first build.
     started_empty: bool,
-    resolver: Arc<resolve::Resolver>,
     /// In primary mode, the thread that reads the confirmed stream.
     follower: Option<follow::Follower>,
 }
@@ -205,6 +218,8 @@ struct WriterQueue {
     users: Arc<user_queue::UserQueue>,
     resolver: Arc<resolve::Resolver>,
     commits: crate::completion::CommitEvents,
+    sinex: Option<Arc<dyn crate::primary::Sinex>>,
+    stop: WriterStop,
     #[cfg(any(test, feature = "fixture"))]
     dispatch: dispatch::Barriers,
 }
@@ -243,6 +258,8 @@ impl WriterQueue {
         users: Arc<user_queue::UserQueue>,
         resolver: Arc<resolve::Resolver>,
         commits: crate::completion::CommitEvents,
+        sinex: Option<Arc<dyn crate::primary::Sinex>>,
+        stop: WriterStop,
         #[cfg(any(test, feature = "fixture"))] dispatch: dispatch::Barriers,
     ) -> Self {
         Self {
@@ -251,6 +268,8 @@ impl WriterQueue {
             users,
             resolver,
             commits,
+            sinex,
+            stop,
             #[cfg(any(test, feature = "fixture"))]
             dispatch,
         }
@@ -483,6 +502,8 @@ impl Writer {
             Arc::clone(&users),
             Arc::clone(&resolver),
             commits.clone(),
+            sinex.clone(),
+            stop.clone(),
             #[cfg(any(test, feature = "fixture"))]
             dispatch.clone(),
         );
@@ -522,20 +543,17 @@ impl Writer {
             stop,
             handle: Some(handle),
             started_empty: empty,
-            resolver,
             follower,
         })
     }
 
     pub fn apply_confirmed(&self, events: Vec<crate::primary::Confirmed>) -> Result<i64> {
-        let (reply, wait) = sync_channel(1);
         self.tx
             .as_ref()
             .ok_or(StoreError::WriterGone)?
-            .send(Msg::Confirmed(events, reply))
-            .map_err(|_| StoreError::WriterGone)?;
-        wait.recv().map_err(|_| StoreError::WriterGone)?
+            .apply_confirmed(events)
     }
+
     pub fn synchronize_primary(&self) -> Result<i64> {
         let follower = self
             .follower
@@ -566,15 +584,8 @@ impl Writer {
 
     /// Queues one batch. Blocks while the writer is busy and its queue is
     /// full, which is what holds the parse pool back.
-    pub fn send(&self, mut batch: Batch) -> Result<()> {
-        if !self.resolver.location().is_primary() {
-            self.resolver.batches(&mut [&mut batch])?;
-        }
-        self.tx
-            .as_ref()
-            .ok_or(StoreError::WriterGone)?
-            .send(Msg::Batch(Box::new(batch)))
-            .map_err(|_| StoreError::WriterGone)
+    pub fn send(&self, batch: Batch) -> Result<()> {
+        self.sender()?.send(batch)
     }
 
     /// A cheap handle the parse pool's threads send through.
@@ -756,13 +767,8 @@ impl Writer {
     pub fn source_snapshot(
         &self,
         source: crate::primary::SourceSelector,
-        reading_version: &str,
     ) -> Result<crate::primary::SourceSnapshot> {
-        source_snapshot_via(
-            self.tx.as_ref().ok_or(StoreError::WriterGone)?,
-            source,
-            reading_version,
-        )
+        source_snapshot_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, source)
     }
 
     /// Installs export associations derived from committed source observations.
@@ -875,10 +881,39 @@ impl WriterSender {
         mut group: Vec<crate::staging::PreparedBatch>,
         store: std::sync::Arc<crate::blobs::Blobs>,
     ) -> Result<Receiver<Vec<Result<crate::staging::StoredInput>>>> {
-        let mut batches: Vec<_> = group.iter_mut().map(|item| &mut item.batch).collect();
-        if !self.0.resolver.location().is_primary() {
-            self.0.resolver.batches(&mut batches)?;
+        if self.0.sinex.is_some() {
+            for item in &mut group {
+                if matches!(item.batch.change, Change::Reparse { .. })
+                    && !item.batch.parse.is_empty()
+                {
+                    primary_capture::validate(item, self.0.resolver.location())?;
+                    let index = crate::archive::open_read(&self.0.resolver.location().index_db())?;
+                    primary::validate_primary_reading(&index, &item.batch)?;
+                    drop(index);
+                    let mut bodies = Vec::new();
+                    for file in &item.files {
+                        bodies.push((file.hash(), file.len()));
+                        match self
+                            .store_blob(NewBlob::whole(file.hash(), file.len()), Some(file.clone()))
+                        {
+                            Ok(_) | Err(StoreError::PrimaryPending { .. }) => {}
+                            Err(error) => return Err(error),
+                        }
+                    }
+                    self.wait_primary_blobs(&bodies)?;
+                    self.prepare_primary_batch(&mut item.batch)?;
+                    item.files.clear();
+                    item.batch.blobs.clear();
+                }
+            }
         }
+        let primary = self.0.resolver.location().is_primary();
+        let mut batches: Vec<_> = group
+            .iter_mut()
+            .filter(|item| !primary || matches!(item.batch.change, Change::Reparse { .. }))
+            .map(|item| &mut item.batch)
+            .collect();
+        self.0.resolver.batches(&mut batches)?;
         let (reply, wait) = sync_channel(1);
         self.0
             .send(Msg::StoreGroup(group, store, reply))
@@ -887,7 +922,12 @@ impl WriterSender {
     }
 
     pub fn send(&self, mut batch: Batch) -> Result<()> {
-        if !self.0.resolver.location().is_primary() {
+        if self.0.sinex.is_some() && matches!(batch.change, Change::Reparse { .. }) {
+            self.prepare_primary_batch(&mut batch)?;
+        }
+        if !self.0.resolver.location().is_primary()
+            || matches!(batch.change, Change::Reparse { .. })
+        {
             self.0.resolver.batches(&mut [&mut batch])?;
         }
         self.0
@@ -917,14 +957,21 @@ impl WriterSender {
         mut reading: ChainReading,
     ) -> Result<Receiver<Result<u64>>> {
         reading.finish()?;
-        if !self.0.resolver.location().is_primary() {
-            reading.resolve(&self.0.resolver, &input, chain, length)?;
+        if self.0.sinex.is_some() {
+            self.prepare_primary_reading(&input, chain, length, &mut reading)?;
         }
+        reading.resolve(&self.0.resolver, &input, chain, length)?;
         let (reply, wait) = sync_channel(1);
         crate::timing::reading_commit_queue(1);
         if self
             .0
-            .send(Msg::ReplaceChain(input, chain, length, reading, reply))
+            .send(Msg::ReplaceChain(
+                input,
+                chain,
+                length,
+                Box::new(reading),
+                reply,
+            ))
             .is_err()
         {
             crate::timing::reading_commit_queue(-1);
@@ -1105,9 +1152,8 @@ impl WriterSender {
     pub fn source_snapshot(
         &self,
         source: crate::primary::SourceSelector,
-        reading_version: &str,
     ) -> Result<crate::primary::SourceSnapshot> {
-        source_snapshot_via(&self.0, source, reading_version)
+        source_snapshot_via(&self.0, source)
     }
 
     /// As [`Writer::derive`].
@@ -1158,15 +1204,10 @@ fn pending_group_headers_via(
 fn source_snapshot_via(
     tx: &WriterQueue,
     source: crate::primary::SourceSelector,
-    reading_version: &str,
 ) -> Result<crate::primary::SourceSnapshot> {
     let (reply, wait) = sync_channel(1);
-    tx.send(Msg::SourceSnapshot(
-        source,
-        reading_version.to_owned(),
-        reply,
-    ))
-    .map_err(|_| StoreError::WriterGone)?;
+    tx.send(Msg::SourceSnapshot(source, reply))
+        .map_err(|_| StoreError::WriterGone)?;
     wait.recv().map_err(|_| StoreError::WriterGone)?
 }
 
@@ -1348,6 +1389,7 @@ impl Inner {
         let mut live_clock = Vec::new();
         let mut copies = Vec::new();
         let mut confirmations = Vec::new();
+        let mut prepared_confirmations = Vec::new();
         let mut capture_drains = Vec::new();
         let mut followed = Vec::new();
         let mut snapshots = Vec::new();
@@ -1411,11 +1453,15 @@ impl Inner {
                         false
                     }
                     Msg::ReplaceChain(input, chain, length, reading, reply) => {
-                        replacements.push((input, chain, length, reading, reply));
+                        replacements.push((input, chain, length, *reading, reply));
                         false
                     }
-                    Msg::Confirmed(events, reply) => {
+                    Msg::StageConfirmed(events, reply) => {
                         confirmations.push((events, reply));
+                        false
+                    }
+                    Msg::ApplyConfirmed(prepared, kinds, reply) => {
+                        prepared_confirmations.push((prepared, kinds, reply));
                         false
                     }
                     Msg::RestoreAuthored(restoration, reply) => {
@@ -1446,8 +1492,8 @@ impl Inner {
                         pending_bodies.push((identity, reply));
                         false
                     }
-                    Msg::SourceSnapshot(source, version, reply) => {
-                        snapshots.push((source, version, reply));
+                    Msg::SourceSnapshot(source, reply) => {
+                        snapshots.push((source, reply));
                         false
                     }
                     Msg::DrainPrimaryCaptures(reply) => {
@@ -1497,7 +1543,10 @@ impl Inner {
                 }
             }
             for (events, reply) in confirmations.drain(..) {
-                let _ = reply.send(self.apply_confirmed(&events));
+                let _ = reply.send(self.stage_confirmed(&events));
+            }
+            for (prepared, kinds, reply) in prepared_confirmations.drain(..) {
+                let _ = reply.send(self.apply_confirmed(*prepared, kinds));
             }
             for reply in capture_drains.drain(..) {
                 let _ = reply.send(self.drain_primary_captures());
@@ -1618,11 +1667,23 @@ impl Inner {
                     .and_then(|sinex| sinex.capture_body(&identity));
                 let _ = reply.send(result);
             }
-            for (source, version, reply) in snapshots.drain(..) {
-                let _ = reply.send(self.source_snapshot(source, &version));
+            for (source, reply) in snapshots.drain(..) {
+                let _ = reply.send(self.source_snapshot(source));
             }
             if let Err(error) = self.refresh_chain_progress() {
                 self.report.errors.push(format!("chain progress: {error}"));
+            }
+            if !flushes.is_empty()
+                && self.location.is_primary()
+                && let Err(error) = crate::archive::index_rebuild::remove_when_built(
+                    &self.index,
+                    &self.location.index_db(),
+                    true,
+                )
+            {
+                self.report
+                    .errors
+                    .push(format!("primary cache rebuild: {error}"));
             }
             for (reply, derive) in flushes.drain(..) {
                 let report = std::mem::take(&mut self.report);
@@ -1768,6 +1829,7 @@ impl Inner {
                 parents: Vec::new(),
                 machine: Some(machine),
                 output_index: 0,
+                publish: true,
             }])?;
             return Ok(());
         }
@@ -2093,8 +2155,20 @@ impl Inner {
         &mut self,
         batches: impl Iterator<Item = &'a Batch> + Clone,
     ) -> Result<()> {
-        if self.sinex.is_some() {
-            return self.primary_products(batches);
+        let primary = self.sinex.is_some();
+        if primary {
+            for batch in batches.clone() {
+                self.validate_primary_reading(batch)?;
+                if batch
+                    .parse
+                    .iter()
+                    .any(|step| step.publication.is_none() || step.source_eligibility.is_none())
+                {
+                    return Err(StoreError::Invalid(
+                        "a primary batch has no admitted original interpretation".into(),
+                    ));
+                }
+            }
         }
         for b in batches.clone() {
             if crate::container_members::container_of(b).is_some() {
@@ -2116,7 +2190,7 @@ impl Inner {
                 parsed_only = false;
                 break;
             }
-            for blob in &batch.blobs {
+            for blob in batch.blobs.iter().filter(|_| !primary) {
                 let size = i64::try_from(blob.size).map_err(|_| {
                     StoreError::Invalid("decoded body exceeds the source catalog range".into())
                 })?;
@@ -2206,17 +2280,33 @@ impl Inner {
                         chain,
                         p.parsed_upto,
                     )?;
-                    stats.1 += write_rows(
-                        &self.texts,
-                        &itx,
-                        b,
-                        p,
-                        resolution,
-                        counter,
-                        self.first_build.as_deref(),
-                        Some(&receipt),
-                        &changes,
-                    )?;
+                    stats.1 += if primary {
+                        rows::write_published_rows(
+                            &self.texts,
+                            &itx,
+                            b,
+                            p,
+                            resolution,
+                            counter,
+                            self.first_build.as_deref(),
+                            &receipt,
+                            p.publication.as_ref().expect("validated native admission"),
+                            false,
+                            &changes,
+                        )?
+                    } else {
+                        write_rows(
+                            &self.texts,
+                            &itx,
+                            b,
+                            p,
+                            resolution,
+                            counter,
+                            self.first_build.as_deref(),
+                            Some(&receipt),
+                            &changes,
+                        )?
+                    };
                 }
                 if b.parse.iter().any(|p| p.progress.reached_end()) {
                     rows::prune_sessions(&itx, &b.input.id, chain, counter)?;
@@ -2226,12 +2316,19 @@ impl Inner {
         }
         self.report.item_units_read +=
             rows::finish(&itx, &changes, self.first_build.as_deref(), &self.texts)?;
-        let source_changed = crate::chain_progress::recorded(&self.archive)?;
-        crate::chain_progress::refresh(&itx, &source_changed)?;
+        let source_changed = if !primary {
+            let changed = crate::chain_progress::recorded(&self.archive)?;
+            crate::chain_progress::refresh(&itx, &changed)?;
+            Some(changed)
+        } else {
+            None
+        };
         crate::fault::check("write.index_commit", "")?;
         itx.commit()?;
         text_transaction.commit();
-        crate::chain_progress::forget(&self.archive, &source_changed)?;
+        if let Some(changed) = source_changed {
+            crate::chain_progress::forget(&self.archive, &changed)?;
+        }
         self.commits
             .committed(crate::completion::Committed::CONTENT);
         self.search.wake();

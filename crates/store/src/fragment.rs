@@ -11,7 +11,6 @@ pub(crate) struct PreparedFragments(Vec<PreparedFragment>);
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 struct PreparedFragment {
     row: FragmentRow,
-    receipt: Option<i64>,
     hash: BlobHash,
     version: String,
     body: Vec<u8>,
@@ -34,19 +33,27 @@ pub(crate) fn receipt(value: u64) -> Result<i64> {
 }
 
 impl PreparedFragments {
+    pub(crate) fn retain(&mut self, mask: &[bool]) -> Result<()> {
+        if self.0.len() != mask.len() {
+            return Err(StoreError::Invalid(
+                "fragment eligibility differs from its prepared rows".into(),
+            ));
+        }
+        let mut index = 0;
+        self.0.retain(|_| {
+            let keep = mask[index];
+            index += 1;
+            keep
+        });
+        Ok(())
+    }
+
     /// Hashing, validation and compression happen before the serial writer.
     pub(crate) fn prepare(output: &Output) -> Result<Self> {
-        for (&index, &admitted) in &output.fragment_receipts {
-            if index >= output.fragments.len() {
-                return Err(StoreError::Invalid("fragment receipt has no record".into()));
-            }
-            receipt(admitted)?;
-        }
         output
             .fragments
             .iter()
-            .enumerate()
-            .map(|(index, row)| {
+            .map(|row| {
                 row.record.validate().map_err(invalid)?;
                 if row.offset > row.end || i64::try_from(row.end).is_err() {
                     return Err(StoreError::Invalid(
@@ -60,12 +67,6 @@ impl PreparedFragments {
                 .map_err(crate::encoding::identity_encoding)?;
                 Ok(PreparedFragment {
                     row: row.clone(),
-                    receipt: output
-                        .fragment_receipts
-                        .get(&index)
-                        .copied()
-                        .map(receipt)
-                        .transpose()?,
                     hash: BlobHash(*hash.as_bytes()),
                     version: version_key(&row.record.fragment.source_version)?,
                     body: crate::encoding::pack_json(&row.record)?,
@@ -81,27 +82,12 @@ impl PreparedFragments {
                 "fragment rows were not prepared".into(),
             ));
         }
-        for ((prepared, row), index) in self.0.iter().zip(&output.fragments).zip(0..) {
-            if &prepared.row != row
-                || prepared.receipt
-                    != output
-                        .fragment_receipts
-                        .get(&index)
-                        .copied()
-                        .map(receipt)
-                        .transpose()?
-            {
+        for (prepared, row) in self.0.iter().zip(&output.fragments) {
+            if &prepared.row != row {
                 return Err(StoreError::Invalid(
                     "prepared fragment differs from its reading".into(),
                 ));
             }
-        }
-        if output
-            .fragment_receipts
-            .keys()
-            .any(|index| *index >= self.0.len())
-        {
-            return Err(StoreError::Invalid("fragment receipt has no record".into()));
         }
         Ok(())
     }
@@ -112,7 +98,7 @@ impl PreparedFragments {
         input: i64,
         chain: i64,
         through: u64,
-        native_admitted: Option<i64>,
+        admission: impl Fn(&FragmentRow) -> Result<Option<i64>>,
     ) -> Result<()> {
         for value in &self.0 {
             if value.row.end > through {
@@ -132,7 +118,7 @@ impl PreparedFragments {
                 "INSERT INTO text_fragment_source(hash,input_pk,chain,start,end,admitted) VALUES (?1,?2,?3,?4,?5,?6)
                  ON CONFLICT(hash,input_pk,chain,start,end) DO UPDATE SET admitted=excluded.admitted
                  WHERE admitted IS NULL AND excluded.admitted IS NOT NULL",
-                params![value.hash.0.as_slice(),input,chain,value.row.offset as i64,value.row.end as i64,value.receipt.or(native_admitted)],
+                params![value.hash.0.as_slice(),input,chain,value.row.offset as i64,value.row.end as i64,admission(&value.row)?],
             )?;
         }
         Ok(())

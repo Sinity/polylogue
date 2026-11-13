@@ -2,6 +2,7 @@ use super::*;
 use crate::products;
 use polylogue_store::primary::{Product, Reading};
 use serde_json::json;
+mod ai;
 
 fn reading(input: &str, start: u64) -> Reading {
     Reading {
@@ -14,8 +15,6 @@ fn reading(input: &str, start: u64) -> Reading {
         },
         chain: 1,
         reading_version: "reader-3".into(),
-        order_from: None,
-        repeats_whole_conversations: false,
         start,
         parsed_upto: 100,
         progress: polylogue_model::batch::StepProgress::AtEnd,
@@ -23,6 +22,15 @@ fn reading(input: &str, start: u64) -> Reading {
 }
 fn message(input: &str, start: u64) -> Product {
     Product::Message {native_fields:None,declared_injections:None,declared_attachment_bindings:None,reading:reading(input,start),order:Some(6),projection:None,facts:Box::new(serde_json::from_value(json!({"offset":50,"end":100,"message":{"id":"codex:m","session":"codex:s","role":"assistant","attrs":{"nested":{"citation":["source"]}},"production":{"phase":"final","server_tool_use":{"web_search_requests":0}},"blocks":[{"type":"tool_result","call_id":"native","outcome":{"kind":"ok"},"output":"done","reported_duration_ms":17}]}})).unwrap())}
+}
+
+fn eligibility(product: &Product) -> Product {
+    Product::Interpreted {
+        reading: product.reading().unwrap().clone(),
+        record: polylogue_store::primary::SourceRecord::of(product)
+            .unwrap()
+            .unwrap(),
+    }
 }
 
 #[test]
@@ -45,7 +53,7 @@ fn source_copies_have_distinct_keys_and_chunk_boundaries_do_not_rename_a_record(
             payload.clone()
         )
         .unwrap(),
-        first
+        eligibility(&first)
     );
     let declaration = declarations("polylogue")
         .into_iter()
@@ -63,7 +71,7 @@ fn source_copies_have_distinct_keys_and_chunk_boundaries_do_not_rename_a_record(
         assert!(validator.validate(&malformed_payload).is_err(), "{field}");
     }
     let mut malformed = payload;
-    malformed["record"]["facts"]["message"]["usage"] = json!("invalid usage");
+    malformed["usage"] = json!("invalid usage");
     assert!(validator.validate(&malformed).is_err());
 }
 
@@ -93,13 +101,28 @@ fn richer_and_weaker_link_contributions_keep_their_own_retry_stable_keys() {
         products::key(&contribution(strong, 75), 0).unwrap()
     );
     for product in [rich, weak] {
+        let payload = products::payload(&product, 0).unwrap();
+        let declaration = declarations("polylogue")
+            .into_iter()
+            .find(|declaration| declaration.kind.name == "polylogue.link")
+            .unwrap();
+        assert_eq!(
+            declaration
+                .evaluate(&payload, sinex_model::Class::Open)
+                .unwrap()
+                .ts_orig,
+            sinex_model::TsOrig::unknown()
+        );
+        if let Product::Link { facts, .. } = &product {
+            assert_eq!(payload["branch_point"], json!(facts.at));
+        }
         assert_eq!(
             products::decode(
                 &crate::kinds::kind_reference("polylogue.link").unwrap(),
                 products::payload(&product, 0).unwrap()
             )
             .unwrap(),
-            product
+            eligibility(&product)
         );
     }
 }
@@ -130,40 +153,55 @@ fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
         assert_eq!(
             declaration.kind.version,
             match declaration.kind.name.as_str() {
-                "polylogue.message" => 6,
+                "polylogue.message" => 8,
                 "polylogue.kept_result"
                 | "polylogue.delivery"
                 | "polylogue.delivery_outcome"
                 | "polylogue.request"
                 | "polylogue.request_restore" => 7,
-                "polylogue.session"
-                | "polylogue.document"
+                "polylogue.session" => 7,
+                "polylogue.document"
                 | "polylogue.event"
                 | "polylogue.link"
                 | "polylogue.background"
-                | "polylogue.repository" => 5,
+                | "polylogue.repository" => 6,
                 "polylogue.assertion_restore" => 2,
-                "polylogue.parse_progress" => 6,
+                "polylogue.parse_progress" => 7,
                 "polylogue.input_observation" => 6,
                 "polylogue.query_run" => 4,
-                "polylogue.blob" | "polylogue.coverage" | "polylogue.fragment" => 3,
+                "polylogue.blob" | "polylogue.coverage" => 3,
+                "polylogue.fragment" => 4,
                 "polylogue.assertion" => 3,
                 "polylogue.query" => 2,
+                "polylogue.tool_call" | "polylogue.prefix_copy" | "polylogue.prefix_member" => 2,
                 "polylogue.historical_restore"
                 | "polylogue.attachment_binding"
-                | "polylogue.query_run_outcome"
-                | "polylogue.prefix_copy"
-                | "polylogue.prefix_member" => 1,
+                | "polylogue.query_run_outcome" => 1,
                 other => panic!("undeclared successor kind/version expectation: {other}"),
             }
         );
+        let guarded = if schema["properties"].get("source").is_some() {
+            "/source"
+        } else {
+            "/record"
+        };
         assert!(
             declaration
                 .field_hints
                 .iter()
-                .any(|hint| hint.field == "/record" && hint.class == sinex_model::Class::Guarded)
+                .any(|hint| hint.field == guarded && hint.class == sinex_model::Class::Guarded)
         );
-        assert_eq!(declaration.search, sinex_model::kinds::Search::None);
+        assert_eq!(
+            declaration.search,
+            if matches!(
+                declaration.kind.name.as_str(),
+                "polylogue.message" | "polylogue.session" | "polylogue.tool_call"
+            ) {
+                sinex_model::kinds::Search::Words
+            } else {
+                sinex_model::kinds::Search::None
+            }
+        );
     }
     assert!(kind_reference("polylogue.unknown").is_err());
 }
@@ -220,14 +258,14 @@ fn partial_fragment_has_its_own_kind_and_retains_the_receiving_record_range() {
         .into_iter()
         .find(|declaration| declaration.kind.name == "polylogue.fragment")
         .unwrap();
-    assert_eq!(declaration.kind.version, 3);
+    assert_eq!(declaration.kind.version, 4);
     jsonschema::validator_for(declaration.payload_schema.as_ref().unwrap())
         .unwrap()
         .validate(&payload)
         .unwrap();
-    assert_eq!(payload["record"]["facts"]["offset"], 12);
-    assert_eq!(payload["record"]["facts"]["end"], 47);
-    assert_eq!(payload["record"]["facts"]["record"]["commit"], 9000);
+    assert_eq!(payload["source_start"], 12);
+    assert_eq!(payload["source_end"], 47);
+    assert_eq!(payload["commit"], 9000);
     assert!(payload.get("message").is_none());
     assert_eq!(
         products::decode(
@@ -235,17 +273,16 @@ fn partial_fragment_has_its_own_kind_and_retains_the_receiving_record_range() {
             payload
         )
         .unwrap(),
-        product
+        eligibility(&product)
     );
 }
 
 #[test]
-fn message_hash_survives_sinex_round_trip() {
+fn native_message_keeps_exact_numbers_and_source_identity() {
     let facts: polylogue_model::MessageRow = serde_json::from_str(
         r#"{"offset":0,"end":10,"message":{"id":"codex:m","session":"codex:s","role":"assistant","attrs":{"x":1.50},"blocks":[{"type":"text","text":"done"}]}}"#,
     )
     .unwrap();
-    let hash = facts.message.content_hash().unwrap();
     let product = Product::Message {
         native_fields: None,
         declared_injections: None,
@@ -257,15 +294,15 @@ fn message_hash_survives_sinex_round_trip() {
     };
     let wire = serde_json::to_vec(&products::payload(&product, 0).unwrap()).unwrap();
     let returned: serde_json::Value = serde_json::from_slice(&wire).unwrap();
-    let Product::Message { facts, .. } = products::decode(
-        &crate::kinds::kind_reference("polylogue.message").unwrap(),
-        returned,
-    )
-    .unwrap() else {
-        panic!("a message product decodes as a message");
-    };
-    assert_eq!(facts.message.attrs["x"].to_string(), "1.50");
-    assert_eq!(facts.message.content_hash().unwrap(), hash);
+    assert_eq!(returned["attrs"]["x"].to_string(), "1.50");
+    assert_eq!(
+        products::decode(
+            &crate::kinds::kind_reference("polylogue.message").unwrap(),
+            returned
+        )
+        .unwrap(),
+        eligibility(&product),
+    );
 }
 
 #[test]
@@ -333,5 +370,35 @@ fn an_input_payload_at_an_earlier_kind_version_is_refused() {
             .unwrap()[0]
             .product,
         product
+    );
+}
+
+#[test]
+fn current_declarations_preserve_every_retained_source7_kind_version() {
+    let old: sinex_model::SourceDeclaration =
+        serde_json::from_str(include_str!("../../tests/rebuild/source7.json")).unwrap();
+    let mut changed = Vec::new();
+    for current in declarations("polylogue") {
+        if let Some(previous) = old
+            .kinds
+            .iter()
+            .find(|previous| previous.kind == current.kind)
+            && previous.definition_hash() != current.definition_hash()
+        {
+            let previous = serde_json::to_value(previous).unwrap();
+            let current = serde_json::to_value(&current).unwrap();
+            let fields = current
+                .as_object()
+                .unwrap()
+                .iter()
+                .filter(|(key, value)| previous.get(*key) != Some(*value))
+                .map(|(key, _)| key.clone())
+                .collect::<Vec<_>>();
+            changed.push((current["kind"].clone(), fields));
+        }
+    }
+    assert!(
+        changed.is_empty(),
+        "immutable declaration changes: {changed:?}"
     );
 }

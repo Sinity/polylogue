@@ -63,7 +63,7 @@ fn capture_rows(
     let mut bytes = serde_json::to_vec(&record).unwrap();
     let end = bytes.len() as u64;
     bytes.push(b'\n');
-    let mut output = Output {
+    let output = Output {
         fragments: vec![FragmentRow {
             offset: 0,
             end,
@@ -71,9 +71,6 @@ fn capture_rows(
         }],
         ..Output::default()
     };
-    if let Some(admitted) = admitted {
-        output.fragment_receipts.insert(0, admitted);
-    }
     let mut batch =
         crate::fixture::writer::step(input, "polylogue-bundle", "/p/bundle.jsonl", output, 0, 1);
     batch.length = bytes.len() as u64;
@@ -82,45 +79,31 @@ fn capture_rows(
     raw.parse.clear();
     let blob = w.archive.prepare_bytes(bytes.as_slice()).unwrap();
     let stored = w.writer.store_bytes(blob, raw).unwrap();
-    if historical {
-        assert!(admitted.is_none());
-        // Retained historical metadata has no original receiver receipt. Build
-        // that fixture through the codec before any parsed materialization;
-        // ordinary Writer reparsing requires a retained source prefix.
-        crate::archive::open_write(&w.archive.archive_db(), 1)
-            .unwrap()
-            .execute("DELETE FROM extent WHERE input=?1", [input])
-            .unwrap();
-        let mut index = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
-        let tx = index.transaction().unwrap();
-        tx.execute(
-            "INSERT INTO input_ref(id,format) VALUES (?1,'polylogue-bundle')",
-            [input],
-        )
-        .unwrap();
-        let input_pk = tx.last_insert_rowid();
-        crate::fragment::PreparedFragments::prepare(&batch.parse[0].output)
-            .unwrap()
-            .apply(&tx, input_pk, stored.chain, batch.length, None)
-            .unwrap();
-        let receipt: Option<i64> = tx
-            .query_row(
-                "SELECT admitted FROM text_fragment_source WHERE input_pk=?1",
-                [input_pk],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(receipt, None);
-        tx.commit().unwrap();
-        return;
-    }
+    assert!(!historical || admitted.is_none());
     batch.change = crate::Change::Reparse {
         chain: stored.chain,
     };
     batch.observation = None;
     w.writer.send(batch).unwrap();
     assert!(w.writer.flush().unwrap().errors.is_empty());
+    // Reader fixtures vary retained admission evidence after the ordinary
+    // writer has allocated the input and committed its fragment membership.
+    if historical {
+        crate::archive::open_write(&w.archive.archive_db(), 1)
+            .unwrap()
+            .execute("DELETE FROM extent WHERE input=?1", [input])
+            .unwrap();
+    }
+    if historical || admitted.is_some() {
+        let index = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
+        let changed = index.execute(
+            "UPDATE text_fragment_source SET admitted=?2 WHERE input_pk=(SELECT pk FROM input_ref WHERE id=?1)",
+            rusqlite::params![input, admitted.map(crate::fragment::receipt).transpose().unwrap()],
+        ).unwrap();
+        assert_eq!(changed, 1);
+    }
 }
+
 fn source() -> polylogue_model::Message {
     message(
         "m",

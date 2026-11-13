@@ -34,9 +34,54 @@ pub(super) fn write_rows(
             texts,
             counter,
             first_build,
-            confirmed: false,
+            retraction: false,
+            publication: None,
             replacement: false,
             receipt,
+            changes,
+        },
+    )
+}
+
+/// An original-source interpretation whose native fact frame was admitted.
+/// Its receipt and ordinary parser progress commit with the same model rows.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn write_published_rows(
+    texts: &crate::text_rows::TextIds,
+    tx: &Transaction<'_>,
+    b: &Batch,
+    p: &ParseStep,
+    resolution: &resolve::Resolution,
+    counter: i64,
+    first_build: Option<&FirstBuild>,
+    receipt: &crate::wire_shapes::ReadingReceipt,
+    publication: &crate::primary::PublicationReceipt,
+    replacement: bool,
+    changes: &ChangeSummary,
+) -> Result<u64> {
+    if publication.number <= 0
+        || publication.producer.is_empty()
+        || publication.frame.is_empty()
+        || publication.root_material.is_empty()
+    {
+        return Err(StoreError::Invalid(
+            "native publication receipt is incomplete".into(),
+        ));
+    }
+    super::source_eligibility::validate(tx, p)?;
+    apply_rows(
+        tx,
+        b,
+        p,
+        ReadingWrite {
+            resolution,
+            texts,
+            counter,
+            first_build,
+            retraction: false,
+            replacement,
+            receipt: Some(receipt),
+            publication: Some(publication),
             changes,
         },
     )
@@ -65,7 +110,8 @@ pub(super) fn write_replacement_rows(
             texts,
             counter,
             first_build,
-            confirmed: false,
+            retraction: false,
+            publication: None,
             replacement: true,
             receipt,
             changes,
@@ -73,18 +119,14 @@ pub(super) fn write_replacement_rows(
     )
 }
 
-/// Apply confirmed canonical facts to the derived cache; source byte admission
-/// was already proved by the producer and lifecycle may hide earlier facts.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn write_confirmed_rows(
+/// Retract a native source contribution and show the surviving ordinary readings.
+pub(super) fn retract_source(
     texts: &crate::text_rows::TextIds,
     tx: &Transaction<'_>,
     b: &Batch,
     p: &ParseStep,
     resolution: &resolve::Resolution,
     counter: i64,
-    first_build: Option<&FirstBuild>,
-    receipt: Option<&crate::wire_shapes::ReadingReceipt>,
     changes: &ChangeSummary,
 ) -> Result<u64> {
     apply_rows(
@@ -95,10 +137,11 @@ pub(super) fn write_confirmed_rows(
             resolution,
             texts,
             counter,
-            first_build,
-            confirmed: true,
+            first_build: None,
+            retraction: true,
+            publication: None,
             replacement: false,
-            receipt,
+            receipt: None,
             changes,
         },
     )
@@ -109,7 +152,8 @@ struct ReadingWrite<'a> {
     resolution: &'a resolve::Resolution,
     counter: i64,
     first_build: Option<&'a FirstBuild>,
-    confirmed: bool,
+    retraction: bool,
+    publication: Option<&'a crate::primary::PublicationReceipt>,
     replacement: bool,
     receipt: Option<&'a crate::wire_shapes::ReadingReceipt>,
     changes: &'a ChangeSummary,
@@ -126,7 +170,8 @@ fn apply_rows(
         texts,
         counter,
         first_build,
-        confirmed,
+        retraction,
+        publication,
         replacement,
         receipt,
         changes,
@@ -141,25 +186,27 @@ fn apply_rows(
     if !crate::wire_shapes::admit_export(tx, &b.input.id, chain, b.length, p)? {
         return Ok(0);
     }
-    let previous_checkpoint = checkpoint::read(tx, input_pk, chain)?;
-    if p.delivery.is_none() && !confirmed && !admit_step(previous_checkpoint.as_ref(), p)? {
+    let previous_checkpoint =
+        checkpoint::read(tx, input_pk, chain, retraction || publication.is_some())?;
+    if p.delivery.is_none() && !retraction && !admit_step(previous_checkpoint.as_ref(), p)? {
         return Ok(0);
     }
     tx.execute("INSERT INTO input_ref(pk,id,format) VALUES (?1,?2,?3) ON CONFLICT(pk) DO UPDATE SET format=excluded.format WHERE format IS NOT excluded.format",params![input_pk,b.input.id,b.input.format])?;
     if let Some(update) = &p.comparison {
         update.write(tx, input_pk)?;
     }
-    let rows = RowWriter {
+    let mut rows = RowWriter {
         tx,
         checkpoint: checkpoint::Update::new(
             b,
             p,
             previous_checkpoint.as_ref(),
             counter,
-            confirmed,
+            retraction,
             receipt,
+            publication,
         )?,
-        source_admitted: if confirmed {
+        source_admitted: if retraction {
             None
         } else {
             receipt
@@ -180,7 +227,7 @@ fn apply_rows(
     if p.reset {
         rows.retract()?;
     }
-    let native_admission = if confirmed {
+    let source_admission = if retraction {
         None
     } else {
         receipt
@@ -200,16 +247,13 @@ fn apply_rows(
                 texts,
             },
             version.replace,
-            version.admitted.or(native_admission),
+            version.admitted.or(source_admission),
         )?;
     }
     let mut sessions: HashMap<String, i64> = HashMap::new();
-    for (i, s) in p.output.sessions.iter().enumerate() {
+    for s in &p.output.sessions {
         let admitted = p
-            .output
-            .session_receipts
-            .get(&i)
-            .copied()
+            .native_admission(&("session", &s.id))?
             .map(|n| n as i64)
             .or(rows.source_admitted);
         let (pk, _) = rows.upsert_session(s, admitted)?;
@@ -231,17 +275,21 @@ fn apply_rows(
         }
         let prepared = &p.prepared.documents[i];
         let admitted = p
-            .output
-            .document_receipts
-            .get(&i)
-            .copied()
+            .native_admission(&("document", &row.document.id, row.offset))?
             .map(|n| n as i64)
             .or(rows.source_admitted);
         crate::documents::write(tx, &source, row, prepared, admitted)?;
     }
     p.prepared
         .fragments
-        .apply(tx, input_pk, chain, p.parsed_upto, rows.source_admitted)?;
+        .apply(tx, input_pk, chain, p.parsed_upto, |row| {
+            Ok(
+                p.native_admission(&("fragment", &row.record.reference, row.offset))?
+                    .map(crate::fragment::receipt)
+                    .transpose()?
+                    .or(rows.source_admitted),
+            )
+        })?;
     let mut written = 0;
     let mut activity: HashMap<i64, i64> = HashMap::new();
     // Messages one record holds share its offset; their order in the
@@ -322,21 +370,18 @@ fn apply_rows(
         }
         rows.write_event(i)?;
     }
-    for (index, prefix) in p.output.prefix_copies.iter().enumerate() {
+    for prefix in &p.output.prefix_copies {
         let parent = prefix.parent.to_string();
         let child = prefix.child.to_string();
         let ids = &rows.keys.identities;
         let (parent, child) = (ids.shown_session(&parent), ids.shown_session(&child));
         let admitted = p
-            .output
-            .prefix_copy_receipts
-            .get(&index)
-            .copied()
+            .native_admission(&("prefix_copy", &prefix.parent, &prefix.child))?
             .map(|n| n as i64)
             .or(rows.source_admitted);
         rows.write_prefix_copy(parent, child, prefix.explicit_members, admitted)?;
     }
-    for (index, member) in p.output.prefix_members.iter().enumerate() {
+    for member in &p.output.prefix_members {
         let parent = member.parent.to_string();
         let child = member.child.to_string();
         let message = member.message.to_string();
@@ -352,10 +397,12 @@ fn apply_rows(
                 reading_version: p.reading_version.clone(),
             });
         let admitted = p
-            .output
-            .prefix_member_receipts
-            .get(&index)
-            .copied()
+            .native_admission(&(
+                "prefix_member",
+                &member.parent,
+                &member.child,
+                &member.message,
+            ))?
             .map(|n| n as i64)
             .or(rows.source_admitted);
         tx.prepare_cached("INSERT INTO prefix_member(input_pk,chain,parent_id,child_id,message_id,source_input,source_chain,source_version,sequence,position,admitted) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT DO UPDATE SET admitted=coalesce(max(prefix_member.admitted,excluded.admitted),prefix_member.admitted,excluded.admitted)")?
@@ -364,10 +411,7 @@ fn apply_rows(
     }
     for (i, l) in p.output.links.iter().enumerate() {
         let admitted = p
-            .output
-            .link_receipts
-            .get(&i)
-            .copied()
+            .native_admission(&("link", l.selection_tag()))?
             .map(|n| n as i64)
             .or(rows.source_admitted);
         rows.write_link(l, i, admitted)?;
@@ -544,7 +588,7 @@ fn apply_rows(
         .execute(params![input_pk, chain, pk])?;
     }
     let receipt = receipt.or(p.receipt.as_ref());
-    if confirmed && receipt.is_none() {
+    if retraction && receipt.is_none() {
         crate::wire_shapes::unobserved(tx, input_pk, chain)?;
         tx.execute(
             "DELETE FROM parse_state WHERE input_pk=?1 AND chain=?2",
@@ -575,7 +619,9 @@ fn apply_rows(
         },
         p,
     )?;
-    crate::parser_context::apply(tx, input_pk, chain, p)?;
+    if !crate::parser_context::apply(tx, input_pk, chain, p)? {
+        rows.checkpoint.forget_context();
+    }
     rows.write_parse_state(b, p)?;
     Ok(written)
 }

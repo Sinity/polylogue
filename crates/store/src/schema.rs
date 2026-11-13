@@ -1,6 +1,8 @@
 //! Current table declarations. The durable register converts its exact
 //! immediate predecessor at exclusive open; other differences are refused.
-//! Known Index1 additions retain parsed progress; unknown current shapes refuse.
+//! Standalone Index1 additions retain parsed progress. Primary cache2 records
+//! native original-material admission; its exact public Index1 predecessor rebuilds.
+//! Unknown current shapes refuse.
 //! Indexes from another format are set aside and rebuilt. Paid-vector
 //! stores retain their bytes and gain declared additions at normal open.
 
@@ -80,6 +82,16 @@ pub const ARCHIVE_VERSION: u32 = 2;
 
 /// The index schema and row encoding version. Reading versions are independent.
 pub const INDEX_VERSION: u32 = 1;
+/// The primary cache indexes original materials and native admission metadata.
+pub const PRIMARY_INDEX_VERSION: u32 = 2;
+
+pub const fn index_version(primary: bool) -> u32 {
+    if primary {
+        PRIMARY_INDEX_VERSION
+    } else {
+        INDEX_VERSION
+    }
+}
 
 /// The SQLite `application_id` of an `archive.db` or `index.db` written at or
 /// after the baseline ("PLG1"). A non-empty file without it was written by an
@@ -147,7 +159,7 @@ fn create_index_in(conn: &Connection, primary: bool) -> Result<()> {
         conn.execute("INSERT INTO meta(key,value) VALUES ('building','1')", [])?;
     }
     crate::archive::generation::create(conn)?;
-    set_version(conn, INDEX_VERSION)?;
+    set_version(conn, index_version(primary))?;
     conn.pragma_update(None, "application_id", FORMAT_ID)?;
     Ok(())
 }
@@ -167,11 +179,9 @@ fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
     crate::sql_functions::register(conn)?;
     check_format(conn, "index")?;
     let found = version(conn)?;
-    if found > INDEX_VERSION {
-        return Err(StoreError::IndexVersion {
-            found,
-            wanted: INDEX_VERSION,
-        });
+    let wanted = index_version(primary);
+    if found > wanted {
+        return Err(StoreError::IndexVersion { found, wanted });
     }
     let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
     if found == 0 {
@@ -213,6 +223,12 @@ fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
                 same_index_schema_in(conn, primary)
             }
         };
+        if primary && found == 1 && index_transition::before_native(&tx)? {
+            // Its native contexts lack material location and owner record hash.
+            // The archive open preserves this exact predecessor and rebuilds
+            // the cache from the confirmed originals, spool and paid stores.
+            return Err(StoreError::IndexVersion { found, wanted });
+        }
         if !current(&tx)? {
             index_transition::apply(&tx, primary)?;
             if !current(&tx)? {
@@ -220,6 +236,9 @@ fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
                     "Index1 additions did not produce the current schema; the transaction was rolled back".into(),
                 ));
             }
+        }
+        if primary && found == 1 {
+            set_version(&tx, wanted)?;
         }
     }
     tx.commit()?;
@@ -252,9 +271,22 @@ pub(crate) fn build_index_identity(primary: bool) -> Result<String> {
     if primary {
         add_primary(&expected)?;
     }
-    set_version(&expected, INDEX_VERSION)?;
+    set_version(&expected, index_version(primary))?;
     expected.pragma_update(None, "application_id", FORMAT_ID)?;
     index_identity(&expected)
+}
+
+#[cfg(any(test, feature = "fixture"))]
+pub(crate) fn primary_before_originals() -> Result<Connection> {
+    let conn = index_transition::predecessor_in(true, true, true, false)?;
+    set_version(&conn, 1)?;
+    conn.pragma_update(None, "application_id", FORMAT_ID)?;
+    crate::archive::generation::create(&conn)?;
+    conn.execute(
+        "INSERT INTO meta VALUES ('primary_cache',?1)",
+        [uuid::Uuid::now_v7().to_string()],
+    )?;
+    Ok(conn)
 }
 
 /// Whether the first build still has search and secondary indexes to finish.

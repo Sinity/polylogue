@@ -142,7 +142,6 @@ impl crate::primary::Sinex for Producer {
     fn pending_source(
         &self,
         _: &crate::primary::SourceSelector,
-        _: &str,
     ) -> Result<crate::primary::PendingSource> {
         Ok(Default::default())
     }
@@ -184,19 +183,14 @@ impl crate::primary::Sinex for Producer {
     fn complete_captures(&self, _: &[String], _: &[ProductWrite]) -> Result<PreparedWrite> {
         Self::unavailable()
     }
-    fn prepare_export_products(
+    fn prepare_parsed(
         &self,
-        _: &crate::primary::ExportReadingKey,
+        _: &crate::primary::ParsedSource,
         _: &[crate::primary::ProductWrite],
-    ) -> Result<crate::primary::PreparedWrite> {
-        Self::unavailable()
-    }
-    fn visit_pending_export_readings(
-        &self,
-        _: &crate::primary::ExportReadingKey,
-        _: &mut dyn FnMut(&crate::primary::CapturedReading) -> Result<()>,
-    ) -> Result<()> {
-        Ok(())
+    ) -> Result<crate::primary::ParsedPublication> {
+        Err(StoreError::Invalid(
+            "this synthetic adapter does not admit source interpretations".into(),
+        ))
     }
     fn prepare_products(&self, _: &[ProductWrite]) -> Result<PreparedWrite> {
         Self::unavailable()
@@ -210,7 +204,7 @@ impl crate::primary::Sinex for Producer {
         _: &str,
         _: &crate::primary::ExportReadingKey,
         _: &mut ReadingProducts<'_>,
-    ) -> Result<PreparedWrite> {
+    ) -> Result<crate::primary::ParsedPublication> {
         Self::unavailable()
     }
     fn visit_named_products(
@@ -313,6 +307,10 @@ impl crate::primary::Sinex for Producer {
         &self,
         _: &crate::primary::ReplayState,
         _: &dyn Fn(&str) -> Result<bool>,
+        _: &dyn Fn(
+            &crate::primary::ParsedSource,
+            &crate::primary::PublicationReceipt,
+        ) -> Result<bool>,
     ) -> Result<()> {
         Ok(())
     }
@@ -632,6 +630,47 @@ fn a_failed_later_position_reports_earlier_commits_without_inventing_progress() 
         crate::primary::projection::checkpoint(&connection).unwrap(),
         Some(2)
     );
+    // Planning the next complete position can fail too: a tombstone cannot
+    // be restored. Its preceding committed position still has real progress.
+    let lifecycle = |position, change| Confirmed {
+        native: None,
+        position,
+        output_index: 0,
+        event: "erased".into(),
+        change,
+    };
+    let error = writer
+        .apply_confirmed(vec![
+            lifecycle(3, ConfirmedChange::Tombstoned),
+            control(ReplayControl::Completion {
+                position: 3,
+                delivery: None,
+            }),
+            lifecycle(4, ConfirmedChange::Restored),
+            control(ReplayControl::Completion {
+                position: 4,
+                delivery: None,
+            }),
+        ])
+        .unwrap_err();
+    assert!(matches!(error, StoreError::Invalid(_)), "{error:?}");
+    assert!(error.to_string().contains("cannot be restored"));
+    commits.try_recv().unwrap();
+    assert!(matches!(
+        commits.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
+    let report = writer.flush_rows().unwrap();
+    assert!(report.errors.iter().any(|error| error.contains("after position 3") && error.contains("cannot be restored")), "{report:?}");
+    assert_eq!(
+        crate::primary::projection::checkpoint(&connection).unwrap(),
+        Some(3)
+    );
+    assert!(writer.apply_confirmed(vec![]).is_err());
+    assert!(matches!(
+        commits.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
 }
 
 /// One imported file's bytes, prepared for `archive`.

@@ -29,9 +29,20 @@ pub struct ConfirmedOrigin {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct NativeLocation {
+    pub material: String,
+    pub anchor: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct NativeFactContext {
     pub kind: NativeKind,
     pub kind_definition_hash: String,
     pub projection: ProjectionIdentity,
+    /// Immutable owner record identity, separate from projected payload bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<NativeLocation>,
     pub origin: ConfirmedOrigin,
 }

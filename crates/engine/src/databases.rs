@@ -443,7 +443,7 @@ impl Engine {
                         polylogue_store::primary::AcquisitionRoute::NativeCapture,
                     )
                     .source;
-                let snapshot = self.writer.source_snapshot(source, "")?;
+                let snapshot = self.writer.source_snapshot(source)?;
                 pass.capture_pending |= snapshot.pending.head.is_some();
             }
         }
@@ -482,13 +482,12 @@ impl Engine {
                 .collect();
             let mut databases = Vec::with_capacity(sources.len());
             for (path, origin) in sources {
-                let declaration = polylogue_sources::origin::by_name(origin).ok_or_else(|| {
+                polylogue_sources::origin::by_name(origin).ok_or_else(|| {
                     polylogue_store::StoreError::Invalid(format!(
                         "unknown database origin {origin}"
                     ))
                 })?;
-                let acquisition =
-                    self.sampling_context(&path, origin, &declaration.reading_version())?;
+                let acquisition = self.sampling_context(&path, origin)?;
                 databases.push(databases::DatabaseInput {
                     input: InputKey {
                         id: self

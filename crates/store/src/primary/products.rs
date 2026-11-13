@@ -1,4 +1,4 @@
-//! Full product facts exchanged with the confirmed-stream adapter.
+//! Original interpretations, native eligibility and durable authored facts.
 use crate::input_rows::InputRows;
 use crate::writer::InputKey;
 use polylogue_model::authored::PreparedRequest;
@@ -7,8 +7,11 @@ use polylogue_model::{
     Session,
 };
 use serde::{Deserialize, Serialize};
-mod rebuild;
-pub(crate) use rebuild::AssembledReading;
+mod eligibility;
+pub use eligibility::SourceRecord;
+pub(crate) use eligibility::{
+    allowed, needs_publication, previous_reading_bound, scope_hash, selected,
+};
 mod export;
 pub use export::ExportReadingKey;
 
@@ -22,11 +25,75 @@ pub struct Reading {
     pub input: InputKey,
     pub chain: i64,
     pub reading_version: String,
-    pub order_from: Option<u64>,
-    pub repeats_whole_conversations: bool,
     pub start: u64,
     pub parsed_upto: u64,
     pub progress: polylogue_model::batch::StepProgress,
+}
+
+impl Reading {
+    pub(crate) fn from_step(
+        input: &InputKey,
+        chain: i64,
+        source_length: Option<u64>,
+        step: &crate::ParseStep,
+    ) -> Self {
+        Self {
+            source_length,
+            delivery: step.delivery,
+            input: input.clone(),
+            chain,
+            reading_version: step.reading_version.clone(),
+            start: step.start,
+            parsed_upto: step.parsed_upto,
+            progress: step.progress.clone(),
+        }
+    }
+}
+
+/// The immutable original chain and parser range a publication interprets.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ParsedSource {
+    pub root_material: String,
+    pub reading: Reading,
+}
+
+/// Sinex's receipt for a fact frame, saved with the local parser checkpoint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublicationReceipt {
+    pub producer: String,
+    pub frame: String,
+    pub number: i64,
+    /// Native event position when this frame changed readings; absent for a no-op.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_seq: Option<i64>,
+    pub root_material: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParsedPublication {
+    Following(super::ReadingScope),
+    Pending { identity: String },
+    Admitted(PublicationReceipt),
+}
+
+/// A tool invocation as its source stated it, independent of local block rows.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ToolCall {
+    pub session: polylogue_model::SessionId,
+    pub message: polylogue_model::MessageId,
+    pub block: u64,
+    pub source_start: u64,
+    pub source_end: u64,
+    pub at: Option<polylogue_model::Timestamp>,
+    pub at_evidence: polylogue_model::TimeEvidence,
+    pub call_id: Option<String>,
+    pub tool: Option<String>,
+    pub action: polylogue_model::ToolAction,
+    pub input: serde_json::Value,
+    pub written_text: Option<String>,
+    pub command: Option<String>,
+    pub path: Option<String>,
+    pub run_by_script: bool,
 }
 
 /// Authoritative material descriptors supplied by Sinex, never hash lookups.
@@ -105,10 +172,16 @@ impl Material {
     }
 }
 
-/// Complete parser and authored facts; rebuilding the cache requires no parsing.
+/// Interpretation writes and confirmed source or authored records.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "product", rename_all = "snake_case")]
 pub enum Product {
+    /// Reconstructible native eligibility, without a copied local model value.
+    Interpreted {
+        reading: Reading,
+        record: SourceRecord,
+    },
+
     Input {
         rows: Box<InputRows>,
         material: Option<Material>,
@@ -130,6 +203,10 @@ pub enum Product {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         declared_attachment_bindings:
             Option<Vec<polylogue_model::attachment_binding::AttachmentBinding>>,
+    },
+    ToolCall {
+        reading: Reading,
+        facts: Box<ToolCall>,
     },
     Document {
         reading: Reading,
@@ -168,14 +245,8 @@ pub enum Product {
     ParseProgress {
         reading: Reading,
         counts: RecordCounts,
-        reset: bool,
-        comparison: Option<crate::tool_databases::Comparison>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        checkpoint: Option<polylogue_model::batch::ParserCheckpoint>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         stopped_attempt: Option<polylogue_model::batch::StoppedAttempt>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        semantic_event_ids: Option<std::collections::BTreeMap<usize, String>>,
     },
     AttachmentBinding {
         record: Box<crate::assets::bindings::AttachmentBindingRecord>,
@@ -203,8 +274,10 @@ pub enum Product {
 impl Product {
     pub fn reading(&self) -> Option<&Reading> {
         match self {
-            Self::Session { reading, .. }
+            Self::Interpreted { reading, .. }
+            | Self::Session { reading, .. }
             | Self::Message { reading, .. }
+            | Self::ToolCall { reading, .. }
             | Self::Document { reading, .. }
             | Self::Fragment { reading, .. }
             | Self::Event { reading, .. }
@@ -270,7 +343,6 @@ pub struct CapturedInput {
     pub length: u64,
     pub group: Option<CaptureGroup>,
     pub route: polylogue_model::Route,
-    pub parsed: Vec<CapturedReading>,
     /// Original acquired interval, independent of tentative source coordinates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_range: Option<super::RawRange>,
@@ -284,96 +356,6 @@ pub struct CapturedInput {
     /// None is legacy unknown evidence, never a freshly observed source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub basis: Option<super::SourceBasis>,
-}
-
-/// Complete parser facts retained with an immutable source acquisition.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct CapturedReading {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub export_key: Option<ExportReadingKey>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub delivery: Option<polylogue_model::batch::ExportDelivery>,
-    pub output: polylogue_model::Output,
-    pub counts: RecordCounts,
-    pub start: u64,
-    pub parsed_upto: u64,
-    pub progress: polylogue_model::batch::StepProgress,
-    pub order_from: Option<u64>,
-    pub reading_version: String,
-    pub repeats_whole_conversations: bool,
-    pub reset: bool,
-    pub comparison: Option<crate::tool_databases::Comparison>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub checkpoint: Option<polylogue_model::batch::ParserCheckpoint>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stopped_attempt: Option<polylogue_model::batch::StoppedAttempt>,
-}
-impl CapturedReading {
-    pub fn from_step(
-        step: &crate::ParseStep,
-        export_key: Option<ExportReadingKey>,
-    ) -> crate::Result<Self> {
-        if step.delivery.is_some() {
-            let key = export_key.as_ref().ok_or_else(|| {
-                crate::StoreError::Invalid(
-                    "an export capture needs its actual stored source binding".into(),
-                )
-            })?;
-            key.validate()?;
-            if key.reading_version != step.reading_version {
-                return Err(crate::StoreError::Invalid(
-                    "export capture changed its reading version".into(),
-                ));
-            }
-        } else if export_key.is_some() {
-            return Err(crate::StoreError::Invalid(
-                "ordinary byte control cannot carry an export source binding".into(),
-            ));
-        }
-        let output = step.complete_output()?;
-        if !output.blobs.is_empty() {
-            return Err(crate::StoreError::Invalid(
-                "decoded bytes need their own durable capture before parser facts".into(),
-            ));
-        }
-        step.counts.check()?;
-        step.validate_export()?;
-        step.validate_stopped_attempt()?;
-        Ok(Self {
-            export_key,
-            delivery: step.delivery,
-            output,
-            counts: step.counts.clone(),
-            start: step.start,
-            parsed_upto: step.parsed_upto,
-            progress: step.progress.clone(),
-            order_from: step.order_from,
-            reading_version: step.reading_version.clone(),
-            repeats_whole_conversations: step.repeats_whole_conversations,
-            reset: step.reset,
-            comparison: step.comparison.clone(),
-            checkpoint: step.checkpoint.clone(),
-            stopped_attempt: step.stopped_attempt,
-        })
-    }
-    pub fn into_step(self) -> crate::ParseStep {
-        let mut step = crate::ParseStep::new(
-            self.output,
-            self.counts,
-            self.start..self.parsed_upto,
-            false,
-        );
-        step.progress = self.progress;
-        step.delivery = self.delivery;
-        step.order_from = self.order_from;
-        step.reading_version = self.reading_version;
-        step.repeats_whole_conversations = self.repeats_whole_conversations;
-        step.reset = self.reset;
-        step.comparison = self.comparison;
-        step.checkpoint = self.checkpoint;
-        step.stopped_attempt = self.stopped_attempt;
-        step
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -411,6 +393,15 @@ pub struct ProductWrite {
     pub parents: Vec<String>,
     pub machine: Option<String>,
     pub output_index: u64,
+    /// Eligibility is a local publication instruction; it is not native payload data.
+    #[serde(default = "publish_by_default", skip_serializing_if = "is_published")]
+    pub publish: bool,
+}
+fn publish_by_default() -> bool {
+    true
+}
+fn is_published(value: &bool) -> bool {
+    *value
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -439,18 +430,7 @@ pub fn parse(
         ));
     }
     step.validate_export()?;
-    let reading = Reading {
-        source_length,
-        delivery: step.delivery,
-        input: input.clone(),
-        chain,
-        reading_version: step.reading_version.clone(),
-        order_from: step.order_from,
-        repeats_whole_conversations: step.repeats_whole_conversations,
-        start: step.start,
-        parsed_upto: step.parsed_upto,
-        progress: step.progress.clone(),
-    };
+    let reading = Reading::from_step(input, chain, source_length, step);
     let mut products = Vec::new();
     products.extend(output.sessions.into_iter().map(|facts| Product::Session {
         reading: reading.clone(),
@@ -461,6 +441,44 @@ pub fn parse(
     let mut native_fields = output.native_hook_fields;
     let mut declared_injections = output.declared_injections;
     let mut declared_attachment_bindings = output.declared_attachment_bindings;
+    for (message_index, row) in output.messages.iter().enumerate() {
+        for (block, value) in row.message.blocks.iter().enumerate() {
+            if let polylogue_model::Block::ToolCall {
+                call_id,
+                tool,
+                action,
+                input,
+                written_text,
+                command,
+                path,
+                run_by_script,
+            } = value
+            {
+                products.push(Product::ToolCall {
+                    reading: reading.clone(),
+                    facts: Box::new(ToolCall {
+                        session: row.message.session.clone(),
+                        message: row.message.id.clone(),
+                        block: message_projections
+                            .get(&message_index)
+                            .map_or(block as u64, |projection| projection.block_ordinals[block]),
+                        source_start: row.offset,
+                        source_end: row.end,
+                        at: row.message.at,
+                        at_evidence: row.message.time_evidence(),
+                        call_id: call_id.clone(),
+                        tool: tool.clone(),
+                        action: *action,
+                        input: input.clone(),
+                        written_text: written_text.clone(),
+                        command: command.clone(),
+                        path: path.clone(),
+                        run_by_script: *run_by_script,
+                    }),
+                });
+            }
+        }
+    }
     products.extend(
         output
             .messages
@@ -484,7 +502,6 @@ pub fn parse(
         reading: reading.clone(),
         facts: Box::new(facts),
     }));
-    let semantic_event_ids = step.delivery.map(|_| output.event_ids.clone());
     let mut imported_events = output.imported_events;
     products.extend(
         output
@@ -541,11 +558,7 @@ pub fn parse(
     products.push(Product::ParseProgress {
         reading,
         counts: step.counts.clone(),
-        reset: step.reset,
-        comparison: step.comparison.clone(),
-        checkpoint: step.checkpoint.clone(),
         stopped_attempt: step.stopped_attempt,
-        semantic_event_ids,
     });
     Ok(products)
 }

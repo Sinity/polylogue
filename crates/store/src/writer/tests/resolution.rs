@@ -471,11 +471,11 @@ fn a_metadata_only_observation_keeps_the_following_rewrite_chain_number() {
 }
 
 #[test]
-fn confirmed_readings_resolve_and_apply_without_a_local_source_database() {
+fn original_readings_use_confirmed_blob_sizes_without_a_local_source_database() {
     let dir = tempfile::tempdir().unwrap();
-    let archive = Archive::at(dir.path());
+    let archive = Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
     let mut index = crate::archive::open_write(&archive.index_db(), 1).unwrap();
-    crate::schema::create_index(&index).unwrap();
+    crate::schema::ensure_primary_index(&index).unwrap();
     let resolver = resolve::Resolver::new(&archive, &index, None).unwrap();
     let blob = BlobHash::of(b"confirmed image");
     let mut message = text_message("confirmed", "s", Role::User, "confirmed text", None);
@@ -493,32 +493,28 @@ fn confirmed_readings_resolve_and_apply_without_a_local_source_database() {
         &["s"],
     );
     input.change = Change::Reparse { chain: 41 };
-    let available = HashMap::from([(blob, Some(15))]);
-    let mut reading = ChainReading::new().unwrap();
-    reading.push(&mut input.parse.remove(0)).unwrap();
-    let mut readings = vec![(input.input.clone(), 41, input.length, reading)];
-    resolver
-        .confirmed_readings(&mut readings, &available)
+    index
+        .execute(
+            "INSERT INTO source_blob(hash,size,stored_size,storage) VALUES (?1,15,15,x'')",
+            [blob.0.as_slice()],
+        )
         .unwrap();
-    assert!(!archive.archive_db().exists());
+    resolver.batches(&mut [&mut input]).unwrap();
+    assert!(!dir.path().join("archive.db").exists());
     let tx = index.transaction().unwrap();
-    readings[0]
-        .3
-        .visit(41, |step, resolution| {
-            rows::write_confirmed_rows(
-                &crate::text_rows::TextIds::new(&tx, false).unwrap(),
-                &tx,
-                &input,
-                step,
-                resolution,
-                1,
-                None,
-                Some(&fixture_receipt()),
-                &crate::change_summary::ChangeSummary::start(&tx).unwrap(),
-            )
-            .map(|_| ())
-        })
-        .unwrap();
+    let step = &input.parse[0];
+    write_rows(
+        &crate::text_rows::TextIds::new(&tx, false).unwrap(),
+        &tx,
+        &input,
+        step,
+        step.resolution.as_ref().unwrap(),
+        1,
+        None,
+        Some(&fixture_receipt()),
+        &crate::change_summary::ChangeSummary::start(&tx).unwrap(),
+    )
+    .unwrap();
     tx.commit().unwrap();
     let (chain, position): (i64, i64) = index
         .query_row("SELECT chain,parsed_upto FROM parse_state", [], |row| {
@@ -534,26 +530,27 @@ fn confirmed_readings_resolve_and_apply_without_a_local_source_database() {
         )
         .unwrap();
     assert_eq!(stored, (blob.0.to_vec(), 15));
-    assert!(!archive.archive_db().exists());
+    assert!(!dir.path().join("archive.db").exists());
 }
 
 #[test]
-fn confirmed_readings_require_the_confirmed_chain_identity() {
+fn source_retractions_require_the_confirmed_chain_identity() {
     let dir = tempfile::tempdir().unwrap();
-    let archive = Archive::at(dir.path());
+    let archive = Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
     let index = crate::archive::open_write(&archive.index_db(), 1).unwrap();
-    crate::schema::create_index(&index).unwrap();
+    crate::schema::ensure_primary_index(&index).unwrap();
     let resolver = resolve::Resolver::new(&archive, &index, None).unwrap();
     let mut input = batch("confirmed-input", Route::Live, 0, Vec::new(), &[]);
-    let mut reading = ChainReading::new().unwrap();
-    reading.push(&mut input.parse.remove(0)).unwrap();
-    let mut readings = vec![(input.input, 0, input.length, reading)];
+    input.change = Change::Reparse { chain: 0 };
+    input.parse[0].parsed_upto = 0;
+    input.parse[0].source_prefix_missing = true;
     assert!(matches!(
-        resolver.confirmed_readings(&mut readings, &HashMap::new()),
+        prepare_source_retractions(&resolver, &mut [input]),
         Err(StoreError::Invalid(_))
     ));
-    assert!(!archive.archive_db().exists());
+    assert!(!dir.path().join("archive.db").exists());
 }
+
 #[test]
 fn continuing_readings_require_the_committed_prefix_and_retry_once() {
     let w = test_archive();
@@ -708,7 +705,7 @@ fn imported_message_order_is_independent_of_local_byte_ranges() {
     tx.commit().unwrap();
 }
 
-fn overlapping_confirmed_readings() -> Vec<(InputKey, i64, u64, ChainReading)> {
+fn overlapping_source_batches() -> Vec<Batch> {
     [
         ("source-a", 1, Route::Live, "partial", None, "/first"),
         (
@@ -733,65 +730,48 @@ fn overlapping_confirmed_readings() -> Vec<(InputKey, i64, u64, ChainReading)> {
             &["s"],
         );
         input.parse[0].output.sessions[0].cwd.push(cwd.into());
-        let mut reading = ChainReading::new().unwrap();
-        reading.push(&mut input.parse.remove(0)).unwrap();
-        (input.input, chain, input.length, reading)
+        input.change = Change::Reparse { chain };
+        input.observation = None;
+        input
     })
     .collect()
 }
 
-fn apply_confirmed_readings(
-    index: &mut Connection,
-    readings: &mut [(InputKey, i64, u64, ChainReading)],
-) -> Result<()> {
+fn apply_source_batches(index: &mut Connection, batches: &[Batch]) -> Result<()> {
     let tx = index.transaction()?;
-    for (input, chain, length, reading) in readings {
-        let batch = Batch {
-            required_disposition: None,
-            input: input.clone(),
-            change: Change::Reparse { chain: *chain },
-            observation: None,
-            continues: false,
-            new_blob: None,
-            blobs: Vec::new(),
-            length: *length,
-            parse: Vec::new(),
-            acquisition: None,
-            basis: None,
-            release: InFlight::default(),
-        };
-        reading.visit(*chain, |step, resolution| {
+    let changes = crate::change_summary::ChangeSummary::start(&tx)?;
+    for batch in batches {
+        for step in &batch.parse {
             write_rows(
                 &crate::text_rows::TextIds::new(&tx, false).unwrap(),
                 &tx,
-                &batch,
+                batch,
                 step,
-                resolution,
+                step.resolution.as_ref().unwrap(),
                 1,
                 None,
                 Some(&fixture_receipt()),
-                &crate::change_summary::ChangeSummary::start(&tx).unwrap(),
-            )
-            .map(|_| ())
-        })?;
+                &changes,
+            )?;
+        }
     }
     tx.commit()?;
     Ok(())
 }
 
 #[test]
-fn a_streamed_position_resolves_overlapping_chains_once() {
+fn ordinary_batches_resolve_overlapping_source_chains_once() {
     let dir = tempfile::tempdir().unwrap();
-    let archive = Archive::at(dir.path());
+    let archive = Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
     let mut index = crate::archive::open_write(&archive.index_db(), 1).unwrap();
-    crate::schema::create_index(&index).unwrap();
+    crate::schema::ensure_primary_index(&index).unwrap();
     let resolver = resolve::Resolver::new(&archive, &index, None).unwrap();
-    let mut readings = overlapping_confirmed_readings();
+    let mut readings = overlapping_source_batches();
     resolver
-        .confirmed_readings(&mut readings, &HashMap::new())
+        .batches(&mut readings.iter_mut().collect::<Vec<_>>())
         .unwrap();
-    assert!(!archive.archive_db().exists());
-    apply_confirmed_readings(&mut index, &mut readings).unwrap();
+    assert!(!dir.path().join("archive.db").exists());
+    apply_source_batches(&mut index, &readings).unwrap();
     assert_eq!(
         index
             .query_row("SELECT count(*) FROM message", [], |row| row
@@ -837,18 +817,18 @@ fn a_streamed_position_resolves_overlapping_chains_once() {
 }
 
 #[test]
-fn a_refused_streamed_position_keeps_all_rows_and_positions_uncommitted() {
+fn a_refused_source_group_keeps_all_rows_and_positions_uncommitted() {
     let dir = tempfile::tempdir().unwrap();
-    let archive = Archive::at(dir.path());
+    let archive = Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
     let mut index = crate::archive::open_write(&archive.index_db(), 1).unwrap();
-    crate::schema::create_index(&index).unwrap();
+    crate::schema::ensure_primary_index(&index).unwrap();
     let resolver = resolve::Resolver::new(&archive, &index, None).unwrap();
-    let mut readings = overlapping_confirmed_readings();
+    let mut readings = overlapping_source_batches();
     resolver
-        .confirmed_readings(&mut readings, &HashMap::new())
+        .batches(&mut readings.iter_mut().collect::<Vec<_>>())
         .unwrap();
     index.execute_batch("CREATE TRIGGER refuse_second_chain BEFORE INSERT ON parse_state WHEN NEW.chain=7 BEGIN SELECT RAISE(ABORT,'synthetic position refusal'); END;").unwrap();
-    assert!(apply_confirmed_readings(&mut index, &mut readings).is_err());
+    assert!(apply_source_batches(&mut index, &readings).is_err());
     drop(readings);
     assert_eq!(
         index
@@ -867,11 +847,11 @@ fn a_refused_streamed_position_keeps_all_rows_and_positions_uncommitted() {
     index
         .execute_batch("DROP TRIGGER refuse_second_chain")
         .unwrap();
-    let mut retry = overlapping_confirmed_readings();
+    let mut retry = overlapping_source_batches();
     resolver
-        .confirmed_readings(&mut retry, &HashMap::new())
+        .batches(&mut retry.iter_mut().collect::<Vec<_>>())
         .unwrap();
-    apply_confirmed_readings(&mut index, &mut retry).unwrap();
+    apply_source_batches(&mut index, &retry).unwrap();
     assert_eq!(
         index
             .query_row("SELECT count(*) FROM parse_state", [], |row| row
@@ -879,6 +859,108 @@ fn a_refused_streamed_position_keeps_all_rows_and_positions_uncommitted() {
             .unwrap(),
         2
     );
+}
+
+#[test]
+fn native_source_retraction_reselects_remaining_claims_and_rolls_back_atomically() {
+    let directory = tempfile::tempdir().unwrap();
+    let archive = Archive::on_sinex(directory.path(), &directory.path().join("bytes"));
+    let mut index = crate::archive::open_write(&archive.index_db(), 1).unwrap();
+    crate::schema::ensure_primary_index(&index).unwrap();
+    let resolver = resolve::Resolver::new(&archive, &index, None).unwrap();
+    let mut sources = overlapping_source_batches();
+    resolver
+        .batches(&mut sources.iter_mut().collect::<Vec<_>>())
+        .unwrap();
+    apply_source_batches(&mut index, &sources).unwrap();
+    let mut retraction = batch("source-b", Route::Live, 0, Vec::new(), &[]);
+    retraction.change = Change::Reparse { chain: 7 };
+    retraction.observation = None;
+    retraction.parse = vec![ParseStep::new(
+        Default::default(),
+        Default::default(),
+        0..0,
+        false,
+    )];
+    retraction.parse[0].source_prefix_missing = true;
+    drop(sources);
+    let mut retractions = vec![retraction];
+    prepare_source_retractions(&resolver, &mut retractions).unwrap();
+    index.execute_batch("CREATE TRIGGER refuse_retraction BEFORE DELETE ON message_source WHEN OLD.chain=7 BEGIN SELECT RAISE(ABORT,'synthetic retraction refusal'); END;").unwrap();
+    {
+        let tx = index.transaction().unwrap();
+        let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
+        assert!(
+            apply_source_retractions(
+                &crate::text_rows::TextIds::new(&tx, false).unwrap(),
+                &tx,
+                &retractions,
+                2,
+                &changes
+            )
+            .is_err()
+        );
+    }
+    assert_eq!(
+        index
+            .query_row("SELECT count(*) FROM message_source", [], |row| row
+                .get::<_, u64>(0))
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        index
+            .query_row("SELECT count(*) FROM parse_state", [], |row| row
+                .get::<_, u64>(0))
+            .unwrap(),
+        2
+    );
+    index
+        .execute_batch("DROP TRIGGER refuse_retraction")
+        .unwrap();
+    let tx = index.transaction().unwrap();
+    let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
+    apply_source_retractions(
+        &crate::text_rows::TextIds::new(&tx, false).unwrap(),
+        &tx,
+        &retractions,
+        2,
+        &changes,
+    )
+    .unwrap();
+    rows::finish(
+        &tx,
+        &changes,
+        None,
+        &crate::text_rows::TextIds::new(&tx, false).unwrap(),
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    assert_eq!(
+        index
+            .query_row("SELECT count(*) FROM message_source", [], |row| row
+                .get::<_, u64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        index
+            .query_row("SELECT chain,parsed_upto FROM parse_state", [], |row| Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?
+            )))
+            .unwrap(),
+        (1, 100)
+    );
+    let text: Vec<u8> = index
+        .query_row(
+            "SELECT t.body FROM block b JOIN text t ON t.id=b.text_id",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(crate::encoding::unpack_text(&text).unwrap(), "partial");
+    assert!(!directory.path().join("archive.db").exists());
 }
 
 fn commit_event_bytes(w: &TestArchive, mut input: Batch, bytes: &[u8]) -> Batch {
@@ -1094,69 +1176,6 @@ fn imported_events_preserve_identity_claims_and_canonical_fields_across_hops() {
 }
 
 #[test]
-fn confirmed_projection_applies_live_facts_after_an_archived_byte_prefix() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut index = crate::archive::open_write(&dir.path().join("index.db"), 1).unwrap();
-    crate::schema::create_index(&index).unwrap();
-    let tx = index.transaction().unwrap();
-    let mut input = batch(
-        "confirmed-subset",
-        Route::Live,
-        100,
-        vec![row(
-            120,
-            text_message("live", "s", Role::User, "retained fact", None),
-        )],
-        &["s"],
-    );
-    resolve::prepare_index(&tx, &mut input, 1, false).unwrap();
-    assert!(
-        write_rows(
-            &crate::text_rows::TextIds::new(&tx, false).unwrap(),
-            &tx,
-            &input,
-            &input.parse[0],
-            input.parse[0].resolution.as_ref().unwrap(),
-            1,
-            None,
-            Some(&fixture_receipt()),
-            &crate::change_summary::ChangeSummary::start(&tx).unwrap()
-        )
-        .is_err()
-    );
-    assert_eq!(
-        tx.query_row("SELECT count(*) FROM message", [], |r| r.get::<_, i64>(0))
-            .unwrap(),
-        0
-    );
-    rows::write_confirmed_rows(
-        &crate::text_rows::TextIds::new(&tx, false).unwrap(),
-        &tx,
-        &input,
-        &input.parse[0],
-        input.parse[0].resolution.as_ref().unwrap(),
-        1,
-        None,
-        Some(&fixture_receipt()),
-        &crate::change_summary::ChangeSummary::start(&tx).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(
-        tx.query_row("SELECT parsed_upto FROM parse_state", [], |r| r
-            .get::<_, i64>(0))
-            .unwrap(),
-        200
-    );
-    assert_eq!(
-        tx.query_row("SELECT source_start FROM message", [], |r| r
-            .get::<_, i64>(0))
-            .unwrap(),
-        120
-    );
-    tx.commit().unwrap();
-}
-
-#[test]
 fn canonical_source_times_keep_nanoseconds_and_evidence_independently_of_query_caches() {
     use polylogue_model::{
         Document, DocumentId, DocumentPurpose, DocumentRow, Precision, TimeEvidence, TimeQuality,
@@ -1317,85 +1336,6 @@ fn a_remaining_native_event_keeps_its_original_identity_after_subset_projection(
 }
 
 #[test]
-fn retained_event_admission_precedes_raw_receipts_and_survives_missing_source_mappings() {
-    let w = test_archive();
-    let event = Event {
-        session: None,
-        kind: "retained.event".into(),
-        at: None,
-        at_quality: polylogue_model::TimeQuality::Unknown,
-        at_precision: None,
-        at_until: None,
-        after: None,
-        range: Some((0, 1000)),
-        data: serde_json::json!({"retained":true}),
-    };
-    let mut input = batch("retained-source", Route::Live, 0, Vec::new(), &[]);
-    input.parse[0].output.events.push(event);
-    input.parse[0].counts = counts(1);
-    let mut bytes = serde_json::to_vec(&input.parse[0].output.events[0]).unwrap();
-    assert!(bytes.len() <= 1000);
-    bytes.resize(1000, b' ');
-    let mut confirmed = commit_event_bytes(&w, input, &bytes);
-    confirmed.parse[0].output.event_receipts.insert(0, 41);
-    let mut conn = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
-    let tx = conn.transaction().unwrap();
-    resolve::prepare_index(&tx, &mut confirmed, 1, false).unwrap();
-    let control = crate::wire_shapes::ReadingReceipt {
-        sequence: 777,
-        id: Some("parse-progress-control".into()),
-        observation: None,
-        observed_at_ms: None,
-    };
-    rows::write_confirmed_rows(
-        &crate::text_rows::TextIds::new(&tx, false).unwrap(),
-        &tx,
-        &confirmed,
-        &confirmed.parse[0],
-        confirmed.parse[0].resolution.as_ref().unwrap(),
-        999,
-        None,
-        Some(&control),
-        &crate::change_summary::ChangeSummary::start(&tx).unwrap(),
-    )
-    .unwrap();
-    let id: String = tx
-        .query_row("SELECT id FROM event", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(
-        tx.query_row("SELECT admitted FROM event_source", [], |row| row
-            .get::<_, i64>(0))
-            .unwrap(),
-        41
-    );
-    tx.commit().unwrap();
-    let reads = ReadPool::open(&w.archive).unwrap();
-    {
-        let reader = reads.reader().unwrap();
-        assert!(
-            reader
-                .source_commit("retained-source", 1, Some(1000))
-                .unwrap()
-                .unwrap()
-                < 41
-        );
-        assert_eq!(reader.event_record(&id).unwrap().unwrap().commit, 41);
-    }
-    let source = crate::archive::open_write(&w.archive.archive_db(), 1).unwrap();
-    source
-        .execute("DELETE FROM extent WHERE input='retained-source'", [])
-        .unwrap();
-    let reader = reads.reader().unwrap();
-    assert_eq!(
-        reader
-            .source_commit("retained-source", 1, Some(1000))
-            .unwrap(),
-        None
-    );
-    assert_eq!(reader.event_record(&id).unwrap().unwrap().commit, 41);
-}
-
-#[test]
 fn checkpoint_admission_stamps_survive_duplicate_resets_and_rollback() {
     let w = test_archive();
     let mut conn = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
@@ -1447,136 +1387,6 @@ fn checkpoint_admission_stamps_survive_duplicate_resets_and_rollback() {
         50
     );
     tx.commit().unwrap();
-}
-
-#[test]
-fn canonical_fold_receipts_survive_raw_mapping_absence_and_cache_rebuild() {
-    use polylogue_model::{Document, DocumentId, DocumentPurpose, DocumentRow};
-    let w = test_archive();
-    let mut input = batch(
-        "fact-source",
-        Route::Live,
-        0,
-        Vec::new(),
-        &["receipt-session"],
-    );
-    input.parse[0].output.sessions[0].offer_cwd("/workspace/first");
-    let mut document = Document::new(
-        DocumentId::parse("claude-code:receipt-document").unwrap(),
-        DocumentPurpose::Context,
-    );
-    document.blocks = vec![Block::Text {
-        text: "retained canonical document".into(),
-    }];
-    input.parse[0].output.documents.push(DocumentRow {
-        offset: 1,
-        end: 2,
-        document: document.clone(),
-    });
-    let link = Link {
-        kind: LinkKind::Spawn,
-        copies_prefix: false,
-        how: None,
-        parent: sid("receipt-session"),
-        child: sid("receipt-child"),
-        at: None,
-        call_id: None,
-        evidence: "explicit-parent".into(),
-    };
-    input.parse[0].output.links.push(link.clone());
-    let wire = serde_json::to_vec(&input.parse[0].output).unwrap();
-    let mut confirmed = commit_event_bytes(&w, input, &wire);
-    confirmed.parse[0].output.session_receipts.insert(0, 130);
-    confirmed.parse[0].output.document_receipts.insert(0, 140);
-    confirmed.parse[0].output.link_receipts.insert(0, 150);
-    let mut conn = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
-    let control = crate::wire_shapes::ReadingReceipt {
-        sequence: 999,
-        id: Some("progress-only".into()),
-        observation: None,
-        observed_at_ms: None,
-    };
-    let apply = |conn: &mut rusqlite::Connection, batch: &mut Batch| {
-        let tx = conn.transaction().unwrap();
-        resolve::prepare_index(&tx, batch, 1, false).unwrap();
-        rows::write_confirmed_rows(
-            &crate::text_rows::TextIds::new(&tx, false).unwrap(),
-            &tx,
-            batch,
-            &batch.parse[0],
-            batch.parse[0].resolution.as_ref().unwrap(),
-            2000,
-            None,
-            Some(&control),
-            &crate::change_summary::ChangeSummary::start(&tx).unwrap(),
-        )
-        .unwrap();
-        tx.commit().unwrap();
-    };
-    apply(&mut conn, &mut confirmed);
-    let mut contributor = batch(
-        "later-fact-source",
-        Route::Live,
-        0,
-        Vec::new(),
-        &["receipt-session"],
-    );
-    contributor.parse[0].output.sessions[0].offer_cwd("/workspace/second");
-    contributor.parse[0].output.session_receipts.insert(0, 160);
-    contributor.parse[0].output.links.push(link.clone());
-    contributor.parse[0].output.link_receipts.insert(0, 170);
-    apply(&mut conn, &mut contributor);
-    let reads = ReadPool::open(&w.archive).unwrap();
-    let assert_receipts = || {
-        let reader = reads.reader().unwrap();
-        assert_eq!(
-            reader.session_commit(&sid("receipt-session")).unwrap(),
-            Some(160)
-        );
-        assert_eq!(reader.document_commit(&document.id).unwrap(), Some(140));
-        assert_eq!(reader.link_commit(&link).unwrap(), Some(170));
-    };
-    assert_receipts();
-    let source = crate::archive::open_write(&w.archive.archive_db(), 1).unwrap();
-    source
-        .execute("DELETE FROM extent WHERE input='fact-source'", [])
-        .unwrap();
-    assert_receipts();
-    // Rebuilding the projection uses original fact admissions, not its newer
-    // cache transaction or the ParseProgress control's admission.
-    apply(&mut conn, &mut confirmed);
-    assert_receipts();
-    assert_eq!(
-        reads
-            .reader()
-            .unwrap()
-            .session_commit(&sid("absent"))
-            .unwrap(),
-        None
-    );
-    // A historical fold with one unproven contributor cannot borrow the
-    // admission of its other contributor or the current cache transaction.
-    conn.execute("UPDATE session_record SET admitted=NULL WHERE input_pk=(SELECT pk FROM input_ref WHERE id='later-fact-source')",[]).unwrap();
-    conn.execute("UPDATE link_source SET admitted=NULL WHERE input_pk=(SELECT pk FROM input_ref WHERE id='later-fact-source')",[]).unwrap();
-    conn.execute("UPDATE document_source SET admitted=NULL", [])
-        .unwrap();
-    let reader = reads.reader().unwrap();
-    assert_eq!(
-        reader.session_commit(&sid("receipt-session")).unwrap(),
-        None
-    );
-    assert_eq!(reader.link_commit(&link).unwrap(), None);
-    assert_eq!(reader.document_commit(&document.id).unwrap(), None);
-    for invalid in [0, u64::MAX] {
-        let mut malformed = confirmed.clone();
-        malformed.parse[0].output.link_receipts.insert(0, invalid);
-        assert!(
-            malformed.parse[0]
-                .prepared
-                .validate(&malformed.parse[0].output)
-                .is_err()
-        );
-    }
 }
 
 #[test]

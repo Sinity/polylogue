@@ -10,7 +10,7 @@ use polylogue_model::{
 };
 
 #[test]
-fn complete_callback_product_roundtrip_preserves_all_semantic_maps_and_generated_event_ids() {
+fn complete_callback_products_keep_semantic_fields_and_source_keys() {
     let message = crate::fixture::writer::message(
         "export-message",
         "export-session",
@@ -141,14 +141,6 @@ fn complete_callback_product_roundtrip_preserves_all_semantic_maps_and_generated
             }],
         },
     );
-    output.message_receipts.insert(0, 10);
-    output.session_receipts.insert(0, 11);
-    output.document_receipts.insert(0, 12);
-    output.fragment_receipts.insert(0, 13);
-    output.event_receipts.insert(0, 14);
-    output.link_receipts.insert(0, 15);
-    output.prefix_copy_receipts.insert(0, 16);
-    output.prefix_member_receipts.insert(0, 17);
     let mut counts = RecordCounts {
         records: 1,
         ..Default::default()
@@ -176,29 +168,8 @@ fn complete_callback_product_roundtrip_preserves_all_semantic_maps_and_generated
         length: 64,
     };
     step.prepare();
-    let captured = CapturedReading::from_step(&step, Some(key.clone())).unwrap();
     let products = parse(&key.input, key.chain, Some(key.length), &step).unwrap();
     assert!(products.iter().any(|product|matches!(product,Product::Message{native_fields:Some(fields),declared_injections:Some(injections),declared_attachment_bindings:Some(bindings),..} if fields.is_empty()&&injections.is_empty()&&bindings.is_empty())));
-    let restored = CapturedReading::from_product_group(&key, products.iter()).unwrap();
-    restored.clone().into_step().validate_export().unwrap();
-    let mut expected = captured.output.clone();
-    expected.message_receipts.clear();
-    expected.session_receipts.clear();
-    expected.document_receipts.clear();
-    expected.fragment_receipts.clear();
-    expected.event_receipts.clear();
-    expected.link_receipts.clear();
-    expected.prefix_copy_receipts.clear();
-    expected.prefix_member_receipts.clear();
-    assert_eq!(restored.output, expected);
-    assert_eq!(restored.delivery, captured.delivery);
-    assert_eq!(restored.counts, captured.counts);
-    let mut replay = restored.into_step();
-    replay.prepare();
-    assert_eq!(
-        replay.event_identities(&key.input.id, key.chain).unwrap(),
-        step.event_identities(&key.input.id, key.chain).unwrap()
-    );
     let mut reranked = key.clone();
     reranked.input.route = polylogue_model::Route::Export;
     assert_eq!(key, reranked);

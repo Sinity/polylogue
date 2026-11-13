@@ -48,7 +48,7 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-pub(crate) const SOURCE_VERSION: u32 = 7;
+pub(crate) const SOURCE_VERSION: u32 = 8;
 
 /// This adapter declaration is installed by the owner, never self-registered
 /// from a producer's requested permissions.
@@ -63,6 +63,10 @@ impl From<Error> for polylogue_store::StoreError {
     fn from(error: Error) -> Self {
         match error {
             Error::Store(error) => error,
+            Error::Invalid(reason) => polylogue_store::StoreError::Invalid(reason),
+            Error::Refused { name, reason } => {
+                polylogue_store::StoreError::Invalid(format!("{name}: {reason}"))
+            }
             other => polylogue_store::StoreError::Sinex(other.to_string()),
         }
     }
@@ -389,9 +393,8 @@ impl polylogue_store::primary::Sinex for Sinex {
     fn pending_source(
         &self,
         source: &polylogue_store::primary::SourceSelector,
-        reading_version: &str,
     ) -> polylogue_store::Result<polylogue_store::primary::PendingSource> {
-        Ok(self.pending_source(source, reading_version)?)
+        Ok(self.pending_source(source)?)
     }
     fn capture_body(
         &self,
@@ -446,21 +449,12 @@ impl polylogue_store::primary::Sinex for Sinex {
     ) -> polylogue_store::Result<polylogue_store::primary::PreparedWrite> {
         Ok(self.prepare_products(products)?)
     }
-    fn prepare_export_products(
+    fn prepare_parsed(
         &self,
-        key: &polylogue_store::primary::ExportReadingKey,
+        source: &polylogue_store::primary::ParsedSource,
         products: &[polylogue_store::primary::ProductWrite],
-    ) -> polylogue_store::Result<polylogue_store::primary::PreparedWrite> {
-        Ok(self.prepare_export_products(key, products)?)
-    }
-    fn visit_pending_export_readings(
-        &self,
-        key: &polylogue_store::primary::ExportReadingKey,
-        visit: &mut dyn FnMut(
-            &polylogue_store::primary::CapturedReading,
-        ) -> polylogue_store::Result<()>,
-    ) -> polylogue_store::Result<()> {
-        Ok(self.visit_pending_export_readings(key, visit)?)
+    ) -> polylogue_store::Result<polylogue_store::primary::ParsedPublication> {
+        Ok(self.prepare_parsed(source, products)?)
     }
     fn prepare_request(
         &self,
@@ -501,7 +495,7 @@ impl polylogue_store::primary::Sinex for Sinex {
         root: &str,
         key: &polylogue_store::primary::ExportReadingKey,
         visit: &mut polylogue_store::primary::ReadingProducts<'_>,
-    ) -> polylogue_store::Result<polylogue_store::primary::PreparedWrite> {
+    ) -> polylogue_store::Result<polylogue_store::primary::ParsedPublication> {
         self.prepare_reading(root, key, visit)
     }
     fn confirmed(
@@ -517,9 +511,18 @@ impl polylogue_store::primary::Sinex for Sinex {
         &self,
         state: &polylogue_store::primary::ReplayState,
         applied: &dyn Fn(&str) -> polylogue_store::Result<bool>,
+        processed: &dyn Fn(
+            &polylogue_store::primary::ParsedSource,
+            &polylogue_store::primary::PublicationReceipt,
+        ) -> polylogue_store::Result<bool>,
     ) -> polylogue_store::Result<()> {
+        let processed =
+            |source: &polylogue_store::primary::ParsedSource,
+             receipt: &polylogue_store::primary::PublicationReceipt| {
+                Ok(processed(source, receipt)?)
+            };
         let applied = |event: &str| Ok(applied(event)?);
-        Ok(self.read_client(async |client| client.acknowledge(state, &applied).await)?)
+        Ok(self.read_client(async |client| client.acknowledge(state, &applied, &processed).await)?)
     }
 }
 

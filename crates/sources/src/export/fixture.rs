@@ -61,13 +61,7 @@ pub fn parse_input(parser: &mut Parse, input: &str, bytes: &[u8]) -> Result<Step
 // boundary. Sparse keys belong to their vector, never the global record count.
 fn append_output(output: &mut polylogue_sources::Output, next: polylogue_sources::Output) {
     let message_base = output.messages.len();
-    let session_base = output.sessions.len();
-    let document_base = output.documents.len();
-    let fragment_base = output.fragments.len();
     let event_base = output.events.len();
-    let link_base = output.links.len();
-    let prefix_copy_base = output.prefix_copies.len();
-    let prefix_member_base = output.prefix_members.len();
     let polylogue_sources::Output {
         mut sessions,
         mut messages,
@@ -76,22 +70,14 @@ fn append_output(output: &mut polylogue_sources::Output, next: polylogue_sources
         declared_attachment_bindings,
         mut documents,
         mut fragments,
-        fragment_receipts,
         mut events,
         imported_events,
         event_ids,
-        event_receipts,
-        session_receipts,
-        document_receipts,
-        link_receipts,
         message_order,
         message_projections,
-        message_receipts,
         mut links,
         mut prefix_copies,
-        prefix_copy_receipts,
         mut prefix_members,
-        prefix_member_receipts,
         mut background,
         mut blobs,
         mut repo_lookups,
@@ -126,16 +112,8 @@ fn append_output(output: &mut polylogue_sources::Output, next: polylogue_sources
     shift!(declared_attachment_bindings, message_base);
     shift!(message_order, message_base);
     shift!(message_projections, message_base);
-    shift!(message_receipts, message_base);
-    shift!(session_receipts, session_base);
-    shift!(document_receipts, document_base);
-    shift!(fragment_receipts, fragment_base);
     shift!(imported_events, event_base);
     shift!(event_ids, event_base);
-    shift!(event_receipts, event_base);
-    shift!(link_receipts, link_base);
-    shift!(prefix_copy_receipts, prefix_copy_base);
-    shift!(prefix_member_receipts, prefix_member_base);
 }
 
 type Row = (std::ops::Range<u64>, Vec<u8>, Vec<u8>);
@@ -186,7 +164,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn append_output_preserves_sparse_native_message_admission_indices() {
+    fn append_output_preserves_native_field_claim_coordinates() {
         let parser =
             polylogue_sources::claude_code::open(std::path::Path::new("projects/p/s1.jsonl"))
                 .unwrap();
@@ -199,8 +177,7 @@ mod tests {
             let (step, _) = parser
                 .step(None, &bytes, index as u64 * 1000, &Default::default())
                 .unwrap();
-            let mut output = step.output;
-            output.message_receipts.insert(0, index as u64 + 10);
+            let output = step.output;
             append_output(&mut combined, output);
         }
         assert_eq!(combined.messages.len(), 2);
@@ -209,7 +186,5 @@ mod tests {
             combined.messages[1].message.id.to_string(),
             "claude-code:second"
         );
-        assert_eq!(combined.message_receipts[&0], 10);
-        assert_eq!(combined.message_receipts[&1], 11);
     }
 }

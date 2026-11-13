@@ -245,7 +245,7 @@ fn sparse_parts_at_later_records_of_one_input_still_union() {
 }
 
 #[test]
-fn sparse_streamed_confirmed_readings_preserve_every_known_block() {
+fn ordinary_primary_readings_preserve_every_known_block() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_primary_cache(dir.path()).unwrap();
     let mut index = crate::archive::open_write(&archive.index_db(), 1).unwrap();
@@ -262,53 +262,43 @@ fn sparse_streamed_confirmed_readings_preserve_every_known_block() {
             &["s"],
         );
         input.parse[0].output.message_projections.insert(0, part.1);
-        input.parse[0]
-            .output
-            .message_receipts
-            .insert(0, [7, 13, 11][n]);
-        let mut reading = ChainReading::new().unwrap();
-        reading.push(&mut input.parse.remove(0)).unwrap();
-        readings.push((input, reading));
+        input.change = Change::Reparse { chain: 1 };
+        input.observation = None;
+        readings.push(input);
     }
-    let mut work: Vec<_> = readings
-        .into_iter()
-        .map(|(input, reading)| (input.input, 1, input.length, reading))
-        .collect();
+    for n in [0, 2, 1] {
+        super::publications::confirm(&mut index, &archive, &readings[n], [7, 13, 11][n]);
+    }
+    for input in &mut readings {
+        input.parse[0].prepare();
+        super::super::source_eligibility::retain_source_records(
+            &index,
+            &input.input,
+            1,
+            input.length,
+            &mut input.parse[0],
+        )
+        .unwrap();
+    }
     resolver
-        .confirmed_readings(&mut work, &HashMap::new())
+        .batches(&mut readings.iter_mut().collect::<Vec<_>>())
         .unwrap();
     let tx = index.transaction().unwrap();
-    for (input, chain, length, reading) in &mut work {
-        let input = Batch {
-            required_disposition: None,
-            input: input.clone(),
-            change: Change::Reparse { chain: *chain },
-            observation: None,
-            continues: false,
-            new_blob: None,
-            blobs: vec![],
-            length: *length,
-            parse: vec![],
-            acquisition: None,
-            basis: None,
-            release: InFlight::default(),
-        };
-        reading
-            .visit(*chain, |step, resolution| {
-                rows::write_confirmed_rows(
-                    &crate::text_rows::TextIds::new(&tx, false).unwrap(),
-                    &tx,
-                    &input,
-                    step,
-                    resolution,
-                    1,
-                    None,
-                    None,
-                    &crate::change_summary::ChangeSummary::start(&tx).unwrap(),
-                )
-                .map(drop)
-            })
+    for input in &readings {
+        for step in &input.parse {
+            write_rows(
+                &crate::text_rows::TextIds::new(&tx, false).unwrap(),
+                &tx,
+                input,
+                step,
+                step.resolution.as_ref().unwrap(),
+                1,
+                None,
+                Some(&fixture_receipt()),
+                &crate::change_summary::ChangeSummary::start(&tx).unwrap(),
+            )
             .unwrap();
+        }
     }
     tx.commit().unwrap();
     assert_eq!(
@@ -392,66 +382,41 @@ fn sparse_native_union_keeps_the_later_required_byte_admission() {
 }
 
 #[test]
-fn sparse_message_admission_requires_a_valid_fact_position() {
-    let w = test_archive();
-    let message = original();
-    write(
-        &w,
-        batch(
-            "proof",
-            Route::Live,
-            0,
-            vec![row(0, message.clone())],
-            &["s"],
-        ),
-    );
-    for (index, receipt) in [(0, 0), (0, u64::MAX), (1, 1)] {
-        let mut invalid = batch(
-            "proof",
-            Route::Live,
-            0,
-            vec![row(0, message.clone())],
-            &["s"],
-        );
-        invalid.change = Change::Reparse { chain: 1 };
-        invalid.parse[0]
-            .output
-            .message_receipts
-            .insert(index, receipt);
-        assert!(matches!(
-            w.writer.send(invalid),
-            Err(StoreError::Invalid(_))
-        ));
-    }
-    assert_eq!(current(&w, &message.id), selected(&message, &[0, 1, 2, 3]));
-}
-
-#[test]
 fn sparse_fact_admission_precedes_raw_bytes_and_unions_without_regression() {
-    let w = test_archive();
+    let directory = tempfile::tempdir().unwrap();
+    let archive = Archive::on_sinex(directory.path(), &directory.path().join("bytes"));
+    let mut index = crate::archive::open_write(&archive.index_db(), 1).unwrap();
+    crate::schema::ensure_primary_index(&index).unwrap();
     let message = original();
-    for (input, ordinals, admission) in [
-        ("later-fact", &[0][..], 130),
-        ("earlier-fact", &[1, 2, 3][..], 120),
-    ] {
+    let mut batches = Vec::new();
+    for (input, ordinals) in [("later-fact", &[0][..]), ("earlier-fact", &[1, 2, 3][..])] {
         let part = selected(&message, ordinals);
         let mut batch = projected_batch(input, part.0, part.1);
-        batch.parse[0].output.message_receipts.insert(0, admission);
-        write(&w, batch);
+        batch.change = Change::Reparse { chain: 1 };
+        batch.observation = None;
+        batches.push(batch);
     }
-    let pool = ReadPool::open(&w.archive).unwrap();
-    let reader = pool.reader().unwrap();
-    let bytes: i64 = reader
-        .conn()
-        .unwrap()
-        .query_row("SELECT max(commit_seq) FROM a.extent", [], |row| row.get(0))
+    super::publications::confirm(&mut index, &archive, &batches[1], 120);
+    super::publications::confirm(&mut index, &archive, &batches[0], 130);
+    for (n, batch) in batches.into_iter().enumerate() {
+        super::publications::apply(
+            &mut index,
+            batch,
+            &super::publications::publication(&format!("frame-{n}"), n as i64 + 1),
+        )
         .unwrap();
-    assert!(
-        bytes < 120,
-        "the synthetic byte admissions precede both facts"
-    );
+    }
+    let pool = ReadPool::open(&archive).unwrap();
+    let reader = pool.reader().unwrap();
+    assert!((fixture_receipt().sequence as u64) < 120);
     assert_eq!(reader.message_admission(&message.id).unwrap(), Some(130));
-    assert_eq!(current(&w, &message.id), selected(&message, &[0, 1, 2, 3]));
+    assert_eq!(
+        reader
+            .message_with_projection(&message.id)
+            .unwrap()
+            .unwrap(),
+        selected(&message, &[0, 1, 2, 3])
+    );
     let mut admissions = Vec::new();
     reader
         .select_messages(&sid("s"), false)

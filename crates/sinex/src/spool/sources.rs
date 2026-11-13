@@ -9,20 +9,18 @@ use polylogue_store::primary::{
 pub(crate) struct Heads {
     pub head: Option<Prepared>,
     pub raw: Option<Prepared>,
-    pub control: Option<Prepared>,
     pub unattributed: bool,
 }
 
-pub(super) fn get(spool: &Spool, source: &SourceSelector, version: &str) -> Result<Heads> {
+pub(super) fn get(spool: &Spool, source: &SourceSelector) -> Result<Heads> {
     let source = serde_json::to_vec(source)?;
-    let latest = |raw, reading_version| -> Result<Option<Prepared>> {
+    let latest = |raw| -> Result<Option<Prepared>> {
         spool
             .queue
             .lookup(
                 Lookup::Source {
                     source: &source,
                     raw,
-                    reading_version,
                 },
                 None,
                 None,
@@ -35,9 +33,8 @@ pub(super) fn get(spool: &Spool, source: &SourceSelector, version: &str) -> Resu
             .transpose()
     };
     Ok(Heads {
-        head: latest(false, None)?,
-        raw: latest(true, None)?,
-        control: latest(false, Some(version))?,
+        head: latest(false)?,
+        raw: latest(true)?,
         unattributed: !spool
             .queue
             .lookup(Lookup::Unattributed, None, None, Order::OldestFirst, 1)?

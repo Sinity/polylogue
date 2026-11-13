@@ -87,11 +87,11 @@ impl Engine {
             origin.name,
             polylogue_store::primary::AcquisitionRoute::NativeCapture,
         );
-        let snapshot = self.writer.source_snapshot(context.source.clone(), "")?;
+        let snapshot = self.writer.source_snapshot(context.source.clone())?;
         context.basis = Some(snapshot.basis.clone());
         context.facts = Some(facts);
         let raw_context = if compressed {
-            Some(self.sampling_context(path, found.origin.name, "")?)
+            Some(self.sampling_context(path, found.origin.name)?)
         } else {
             None
         };

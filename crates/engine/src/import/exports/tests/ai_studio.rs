@@ -318,9 +318,7 @@ fn missing_retained_export_prefix_captures_a_full_rewrite_without_repair() {
     fs::write(&path, full).unwrap();
     let facts = FileFacts::of(&fs::metadata(&path).unwrap());
     let origin = polylogue_sources::origin::by_name("ai-studio").unwrap();
-    let context = e
-        .sampling_context(&path, origin.name, &origin.reading_version())
-        .unwrap();
+    let context = e.sampling_context(&path, origin.name).unwrap();
     let mut plan = Plan::stored(
         path.clone(),
         origin,

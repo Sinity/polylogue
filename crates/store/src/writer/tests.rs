@@ -13,6 +13,7 @@ mod extent_checkpoint;
 mod input_events;
 mod items;
 mod parent_order;
+mod publications;
 mod relationships;
 mod resolution;
 mod routes;

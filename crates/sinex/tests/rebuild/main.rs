@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 #[allow(dead_code)]
 #[path = "../support/native.rs"]
 mod native;
+mod source7;
 
 struct Running {
     config: Config,
@@ -122,7 +123,7 @@ impl Running {
 fn sinex(dir: &Path) -> Running {
     let native = native::Native::start(
         dir,
-        serde_json::to_value(polylogue_sinex::kinds::source_declaration()).unwrap(),
+        vec![serde_json::to_value(polylogue_sinex::kinds::source_declaration()).unwrap()],
     );
     Running {
         config: Config {
@@ -175,10 +176,11 @@ fn confirm_capture(
     failure: impl Fn() -> String,
 ) -> polylogue_engine::Pass {
     let (archive, sinex, running) = context;
+    let mut last_pass = String::from("no pass completed");
     loop {
         assert!(
             started.elapsed() < Duration::from_secs(120),
-            "native capture/replay did not reach confirmed application: {}; {}",
+            "native capture/replay did not reach confirmed application: last pass {last_pass}; {}; {}",
             failure(),
             running.evidence(sinex, archive)
         );
@@ -197,28 +199,36 @@ fn confirm_capture(
             })();
         let interrupted = match result {
             Ok((true, pass)) => return pass,
-            Ok((false, _)) => false,
+            Ok((false, pass)) => {
+                last_pass = format!("{pass:?}");
+                false
+            }
             Err(polylogue_engine::EngineError::Store(
                 polylogue_store::StoreError::ScopeChanged,
-            )) => true,
+            )) => {
+                last_pass = "scope interrupted".into();
+                true
+            }
             Err(error) => panic!(
                 "native capture/replay failed: {error}; {}",
                 running.evidence(sinex, archive)
             ),
         };
         let remaining = Duration::from_secs(120).saturating_sub(started.elapsed());
-        // A failed reset intentionally emits no commit cue. Retain the old
-        // replay-readiness tick while fenced, so its queued error is observed.
-        let wait = if interrupted {
-            remaining.min(Duration::from_millis(200))
+        // Repeat-only ACKs need no new native or SQLite commit. Match the
+        // ordinary engine loop's retry interval; a failed reset also needs
+        // its existing readiness tick while reads are fenced.
+        let every = if interrupted {
+            engine.config.live_every.min(Duration::from_millis(200))
         } else {
-            remaining
+            engine.config.live_every
         };
+        let wait = remaining.min(every);
         match commits.recv_timeout(wait) {
             Ok(_) => {}
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) if interrupted => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             Err(error) => panic!(
-                "native capture/replay wait: {error}; {}; {}",
+                "native capture/replay wait: {error}; last pass {last_pass}; {}; {}",
                 failure(),
                 running.evidence(sinex, archive)
             ),
@@ -393,6 +403,564 @@ fn sinex_rows(socket: &Path, query: &str) -> usize {
         .as_array()
         .unwrap_or_else(|| panic!("no rows in {value}"))
         .len()
+}
+
+/// Admit captured evidence through the public producer transport. Every event
+/// cites its exact record in the original synthetic JSONL material.
+fn captured_evidence(
+    running: &Running,
+    frame: &str,
+    rows: &[(sinex_model::KindRef, serde_json::Value)],
+) {
+    let root = tempfile::tempdir().unwrap();
+    let mut bytes = Vec::new();
+    let material = sinex_model::MaterialId::new();
+    let events = rows
+        .iter()
+        .map(|(kind, payload)| {
+            let anchor = bytes.len() as u64;
+            serde_json::to_writer(&mut bytes, payload).unwrap();
+            bytes.push(b'\n');
+            sinex_protocol::ProducerEvent {
+                kind: kind.clone(),
+                payload: payload.clone(),
+                location: Some(sinex_model::RecordLocation { material, anchor }),
+                output_index: 0,
+                parents: vec![],
+                reading_order: None,
+                class: sinex_model::Class::Open,
+            }
+        })
+        .collect();
+    let blob = format!("blake3:{}", blake3::hash(&bytes).to_hex());
+    let source = sinex_model::SourceRef {
+        name: "synthetic-evidence".into(),
+        version: 1,
+    };
+    let raw = sinex_protocol::Ingress::Material {
+        frame: format!("{frame}/material"),
+        material: Box::new(sinex_protocol::MaterialFrame {
+            source: source.clone(),
+            id: material,
+            input: sinex_model::InputRef {
+                kind: "synthetic-evidence".into(),
+                locator: frame.into(),
+                host: "fixture-host".into(),
+            },
+            blob: blob.clone(),
+            length: bytes.len() as u64,
+            chunks: vec![],
+            parser: "synthetic-evidence".into(),
+            parser_version: 1,
+            part_index: 0,
+            previous_part: None,
+            manifest: Default::default(),
+        }),
+    };
+    sinex_transport::frame_bytes::write(
+        root.path(),
+        "evidence",
+        raw.frame(),
+        &blob,
+        bytes.len() as u64,
+        bytes.as_slice(),
+    )
+    .unwrap();
+    let interpreted = sinex_protocol::Ingress::Events {
+        frame: format!("{frame}/events"),
+        source: Some(source),
+        coverage: None,
+        events,
+        failures: vec![],
+    };
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let client = async_nats::connect(running.native.nats.url())
+            .await
+            .unwrap();
+        let subjects = sinex_protocol::Subjects::new("rebuild");
+        let mut acks = client.subscribe(subjects.ack("evidence")).await.unwrap();
+        client.flush().await.unwrap();
+        sinex_transport::producer::transfer_frame(
+            &client,
+            &subjects,
+            "evidence",
+            &mut acks,
+            root.path(),
+            &raw,
+            Duration::from_secs(30),
+        )
+        .await
+        .unwrap();
+        for frame in [&raw, &interpreted] {
+            let receipt = sinex_transport::producer::submit_frame(
+                &client,
+                &subjects,
+                "evidence",
+                &mut acks,
+                frame,
+                Duration::from_secs(30),
+            )
+            .await
+            .unwrap();
+            assert_eq!(receipt.refusal(), None, "{receipt:?}");
+        }
+    });
+}
+
+fn native_rows(running: &Running, query: &str) -> Vec<serde_json::Value> {
+    let answer = native::request(
+        &running.socket,
+        "read",
+        serde_json::json!({"method":"query","query":query}),
+    );
+    assert_eq!(answer["outcome"], "ok", "{query}: {answer}");
+    answer["result"]["rows"].as_array().unwrap().clone()
+}
+
+fn exact_crossdomain_evidence(running: &Running) {
+    use serde_json::json;
+    use sinex_model::EventPayload;
+    use sinex_model::event_types::{machine::FileChanged, session::TerminalReport, work::WorkAct};
+    let at = "2026-03-01T10:00:01Z";
+    let terminal = |execution: &str| {
+        json!({
+            "received_at":at,"terminal":"same-terminal","execution":execution,"event":"cmd_end",
+            "window_id":1,"cwd":"/home/op/project","cmdline":"cat /home/op/project/draft.txt",
+            "exit_status":0,"title":null,"output":"draft content"
+        })
+    };
+    let file = || {
+        json!({"received_at":at,"change":"written","path":"/home/op/project/draft.txt",
+        "path_hex":null,"to":null,"is_dir":false,"note":null})
+    };
+    captured_evidence(
+        running,
+        "external-originals",
+        &[
+            (
+                TerminalReport::declaration().kind,
+                terminal("chosen-execution"),
+            ),
+            (FileChanged::declaration().kind, file()),
+            (
+                TerminalReport::declaration().kind,
+                terminal("unrelated-execution"),
+            ),
+            (FileChanged::declaration().kind, file()),
+        ],
+    );
+    let tools = native_rows(
+        running,
+        "events where event_type = polylogue.tool_call | fields id, key, source, event_type, material, offset, output, payload",
+    );
+    assert_eq!(tools.len(), 2);
+    let chosen = tools
+        .iter()
+        .find(|row| row["payload"]["call_id"] == "call-read-draft")
+        .unwrap();
+    let other = tools
+        .iter()
+        .find(|row| row["payload"]["call_id"] == "call-unrelated")
+        .unwrap();
+    assert_eq!(chosen["payload"]["session"], other["payload"]["session"]);
+    assert_eq!(chosen["payload"]["message"], other["payload"]["message"]);
+    let mut external = native_rows(
+        running,
+        "events where event_type = terminal.reported OR event_type = file.changed | fields id, key, source, event_type, material, offset, output, payload",
+    );
+    external.sort_by_key(|row| row["offset"].as_u64().unwrap());
+    assert_eq!(external.len(), 4);
+    let evidence = |row: &serde_json::Value| {
+        let record = row["key"].as_str().map(str::to_owned).unwrap_or_else(|| {
+            format!(
+                "{}:{}:{}",
+                row["material"].as_str().unwrap(),
+                row["offset"].as_u64().unwrap(),
+                row["output"].as_u64().unwrap()
+            )
+        });
+        json!({"event":row["id"],"record":serde_json::to_string(&(&row["source"],&row["event_type"],record)).unwrap(),
+            "event_type":row["event_type"],"source":row["source"]})
+    };
+    // The association itself is explicitly captured. Ordinary terminal/file
+    // watchers supply no causal edge from a provider's tool-call identity.
+    let acts: Vec<_> = external.iter().enumerate().map(|(index, row)| {
+        let tool = if index < 2 { chosen } else { other };
+        (WorkAct::declaration().kind, json!({
+            "act":format!("explicit-{index}"),"session":"claude-code:original-session",
+            "episode":null,"objective":null,"label":null,"label_source":evidence(tool),
+            "machine":"fixture-host","at":at,"at_evidence":{"quality":"captured","precision":"instant","until":null},
+            "ended_at":null,"evidence":evidence(row),"agency":"delegated",
+            "action":"inspect","path":"/home/op/project/draft.txt"
+        }))
+    }).collect();
+    captured_evidence(running, "explicit-associations", &acts);
+    let linked = native_rows(
+        running,
+        "events where event_type = polylogue.tool_call AND payload.call_id = call-read-draft | fields text(id) as event_id, payload.call_id as call_id | join (events where event_type = work.act) on event_id = payload.label_source.event | fields call_id, match.payload.evidence.event as evidence | join (events where event_type = terminal.reported OR event_type = file.changed | fields id, text(id) as event_id, event_type) on evidence = event_id | fields call_id, evidence, match.id as id, match.event_type as event_type",
+    );
+    assert_eq!(linked.len(), 2, "{linked:?}");
+    let actual: std::collections::BTreeSet<_> = linked
+        .iter()
+        .map(|row| {
+            assert_eq!(row["call_id"], "call-read-draft");
+            assert_eq!(row["id"], row["evidence"]);
+            row["id"].as_str().unwrap().to_owned()
+        })
+        .collect();
+    let expected: std::collections::BTreeSet<_> = external[..2]
+        .iter()
+        .map(|row| row["id"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(actual, expected);
+    for unrelated in &external[2..] {
+        assert!(!actual.contains(unrelated["id"].as_str().unwrap()));
+    }
+}
+
+#[test]
+#[ignore = "needs the matching Sinex daemon; set SINEXD"]
+fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
+    use polylogue_model::SessionId;
+    use polylogue_testkit::{ClaudeHome, claude_assistant, claude_user};
+    let home = ClaudeHome::new();
+    let user = claude_user("user-1", "original-session", "Inspect the draft");
+    let action = format!(
+        "{}\n",
+        serde_json::json!({
+            "type":"assistant","uuid":"assistant-1","sessionId":"original-session",
+            "timestamp":"2026-03-01T10:00:01Z",
+            "message":{"id":"msg_action","role":"assistant","model":"synthetic-model",
+                "stop_reason":"tool_use","content":[
+                    {"type":"text","text":"I will inspect the draft."},
+                    {"type":"tool_use","id":"call-read-draft","name":"Bash",
+                        "input":{"command":"cat /home/op/project/draft.txt"}},
+                    {"type":"tool_use","id":"call-unrelated","name":"Bash",
+                        "input":{"command":"cat /home/op/project/draft.txt"}}
+                ]}
+        })
+    );
+    let original = format!("{user}{action}");
+    home.append("original-session.jsonl", &original);
+    let standalone = ClaudeHome::new();
+    standalone.append("original-session.jsonl", &original);
+    let (mut ordinary, lock) = standalone.engine(1 << 20);
+    assert!(ordinary.run_pass().unwrap().errors.is_empty());
+    drop(ordinary);
+    drop(lock);
+    let session = SessionId::parse("claude-code:original-session").unwrap();
+    let mut expected_messages = standalone
+        .reads()
+        .reader()
+        .unwrap()
+        .messages(&session, false)
+        .unwrap();
+    assert_eq!(expected_messages.len(), 2);
+
+    let running = sinex(home.dir.path());
+    let sdk = connect(&running.config);
+    let build = |phase: &str, source_home: &Path, wanted: &[polylogue_model::Message]| {
+        eprintln!("original reconstruction: {phase}");
+        let observed_length = (source_home == home.home).then(|| {
+            fs::metadata(home.file("original-session.jsonl"))
+                .unwrap()
+                .len()
+        });
+        let (archive, lock) = Archive::open_primary(&home.root, &running.config.store).unwrap();
+        let mut config = home.config(1 << 20);
+        config.home = source_home.into();
+        let mut engine = Engine::on_sinex(
+            config,
+            archive.clone(),
+            sdk.clone(),
+            polylogue_testkit::stopped_attempt(),
+        )
+        .unwrap();
+        let commits = engine.writer().unwrap().completion_commits();
+        let ready = Instant::now();
+        loop {
+            match ReadPool::open(&archive)
+                .unwrap()
+                .reader()
+                .unwrap()
+                .source_boundary()
+            {
+                Ok(Some(_)) => break,
+                Ok(None) | Err(polylogue_store::StoreError::ScopeChanged) => {}
+                Err(error) => panic!("initial source snapshot: {error}"),
+            }
+            assert!(
+                ready.elapsed() < Duration::from_secs(30),
+                "initial source snapshot did not complete"
+            );
+            let _ = commits.recv_timeout(Duration::from_millis(200));
+        }
+        confirm_capture(
+            &mut engine,
+            &commits,
+            Instant::now(),
+            (&archive, &sdk, &running),
+            |pass| {
+                let pool = ReadPool::open(&archive)?;
+                let reader = pool.reader()?;
+                let source_applied = match observed_length {
+                    None => true,
+                    Some(length) => reader.query(
+                        "SELECT EXISTS(SELECT 1 FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk JOIN source_revision r ON r.input=i.id AND r.chain=p.chain WHERE i.format='claude-code' AND r.length=?1 AND (p.parsed_upto>=r.length OR (p.status IN ('waiting','refused','failed') AND p.at_length=r.length))) AS ready", &[polylogue_store::SqlValue::Int(length.try_into().unwrap())],
+                    )?[0]["ready"] == 1,
+                };
+                Ok(!pass.capture_pending
+                    && source_applied
+                    && reader.messages(&session, false)? == wanted)
+            },
+            || {
+                let actual = ReadPool::open(&archive)
+                    .and_then(|pool| pool.reader()?.messages(&session, false));
+                let progress = ReadPool::open(&archive).and_then(|pool| pool.reader()?.query(
+                    "SELECT i.id,p.chain,p.status,p.parsed_upto,p.at_length,p.reading_version FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk", &[],
+                ));
+                format!(
+                    "phase {phase}; expected {wanted:?}; actual {actual:?}; parser progress {progress:?}"
+                )
+            },
+        );
+        engine.writer().unwrap().derive().unwrap();
+        drop(engine);
+        drop(lock);
+        archive
+    };
+    let initial = build("initial capture", &home.home, &expected_messages);
+    let source_revision = |archive: &Archive| {
+        ReadPool::open(archive).unwrap().reader().unwrap().query(
+            "SELECT r.number,r.chain,r.produced,r.length FROM source_revision r JOIN input_ref i ON i.id=r.input WHERE i.format='claude-code' ORDER BY r.number DESC LIMIT 1", &[],
+        ).unwrap().pop().unwrap()
+    };
+    let initial = source_revision(&initial);
+    assert_eq!(initial["number"], 1);
+    assert_eq!(initial["chain"], 1);
+    exact_crossdomain_evidence(&running);
+    let tails = [
+        claude_user("user-2", "original-session", "The draft is available."),
+        claude_assistant("assistant-2", "original-session", "Inspection finished."),
+    ];
+    for tail in &tails {
+        home.append("original-session.jsonl", tail);
+        standalone.append("original-session.jsonl", tail);
+        let (mut ordinary, lock) = standalone.engine(1 << 20);
+        assert!(ordinary.run_pass().unwrap().errors.is_empty());
+        drop(ordinary);
+        drop(lock);
+        expected_messages = standalone
+            .reads()
+            .reader()
+            .unwrap()
+            .messages(&session, false)
+            .unwrap();
+        let appended = build("append", &home.home, &expected_messages);
+        let revision = source_revision(&appended);
+        assert_eq!(revision["chain"], initial["chain"]);
+        assert_eq!(revision["produced"], "appended");
+        assert_eq!(
+            revision["length"].as_u64(),
+            Some(
+                fs::metadata(home.file("original-session.jsonl"))
+                    .unwrap()
+                    .len()
+            )
+        );
+    }
+    assert_eq!(expected_messages.len(), 4);
+    // The original incomplete record remains available; no message or false
+    // end-of-input conclusion can be manufactured from its missing bytes.
+    home.append("original-session.jsonl", "{\"type\":\"assistant\"");
+    let archive = build("incomplete original", &home.home, &expected_messages);
+    let partial_revision = source_revision(&archive);
+    assert_eq!(partial_revision["chain"], initial["chain"]);
+    assert_eq!(partial_revision["produced"], "appended");
+    let pool = ReadPool::open(&archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let partial = reader.query(
+        "SELECT p.status,p.parsed_upto FROM parse_state p JOIN message m ON m.input_pk=p.input_pk AND m.source_chain=p.chain WHERE m.id='claude-code:assistant-1'", &[],
+    ).unwrap();
+    assert_eq!(partial.len(), 1);
+    assert_eq!(partial[0]["status"], "waiting");
+    assert_eq!(
+        partial[0]["parsed_upto"].as_u64(),
+        Some((original.len() + tails.iter().map(String::len).sum::<usize>()) as u64)
+    );
+    let coordinates = reader.query(
+        "SELECT m.source_start AS start,m.source_end AS end,s.id AS material,s.input,m.source_chain AS chain FROM message m JOIN source_material s ON s.input=(SELECT id FROM input_ref WHERE pk=m.input_pk) AND s.chain=m.source_chain AND s.offset=0 WHERE m.id='claude-code:assistant-1'",
+        &[],
+    ).unwrap();
+    assert_eq!(coordinates.len(), 1);
+    let citation = &coordinates[0];
+    assert_eq!(citation["start"].as_u64(), Some(user.len() as u64));
+    // JSON record citations exclude their newline delimiter.
+    let end = original.len() as u64 - 1;
+    assert_eq!(citation["end"].as_u64(), Some(end));
+    let admissions = reader.query(
+        "SELECT max(f.admitted) AS fact FROM primary_fact f JOIN input_ref i ON i.id=f.input JOIN message m ON m.input_pk=i.pk AND m.source_chain=f.chain WHERE m.id='claude-code:assistant-1' AND f.state='live' AND f.reference='message:' || m.id || ':' || m.source_start",
+        &[],
+    ).unwrap();
+    let fact = admissions[0]["fact"].as_u64().unwrap();
+    let raw = reader
+        .source_commit(
+            citation["input"].as_str().unwrap(),
+            citation["chain"].as_i64().unwrap(),
+            Some(end),
+        )
+        .unwrap()
+        .unwrap();
+    assert!(fact > raw);
+    assert_eq!(
+        reader
+            .message_admission(
+                &polylogue_model::MessageId::parse("claude-code:assistant-1").unwrap()
+            )
+            .unwrap(),
+        Some(fact)
+    );
+    let material = sinex_model::MaterialId(citation["material"].as_str().unwrap().parse().unwrap());
+    let mut offset = user.len() as u64;
+    let mut quoted = Vec::new();
+    loop {
+        let page = sdk
+            .fetch_material_bytes(material, offset, Some(end), 37)
+            .unwrap();
+        quoted.extend(page.bytes);
+        match page.next_offset {
+            Some(next) => offset = next,
+            None => break,
+        }
+    }
+    assert_eq!(quoted, action.trim_end_matches('\n').as_bytes());
+    assert_eq!(
+        sinex_rows(
+            &running.socket,
+            "events where event_type = polylogue.tool_call AND payload.call_id = call-read-draft"
+        ),
+        1
+    );
+    let native_tool_ids = || {
+        native_rows(
+            &running,
+            "events where event_type = polylogue.tool_call | fields id",
+        )
+        .into_iter()
+        .map(|row| row["id"].as_str().unwrap().to_owned())
+        .collect::<std::collections::BTreeSet<_>>()
+    };
+    let original_tool_ids = native_tool_ids();
+    let before = reader.session_export(&session).unwrap().unwrap();
+    drop(reader);
+    drop(pool);
+    // Every removed path belongs to this fixture; the native originals remain.
+    fs::remove_file(home.file("original-session.jsonl")).unwrap();
+    fs::remove_dir_all(&home.root).unwrap();
+    let empty = home.dir.path().join("empty-home");
+    fs::create_dir(&empty).unwrap();
+    let rebuilt = build("independent SQLite rebuild", &empty, &expected_messages);
+    let after = ReadPool::open(&rebuilt)
+        .unwrap()
+        .reader()
+        .unwrap()
+        .session_export(&session)
+        .unwrap()
+        .unwrap();
+    assert_eq!(after, before);
+    assert_eq!(native_tool_ids(), original_tool_ids);
+
+    let selected = native::request(
+        &running.socket,
+        "read",
+        serde_json::json!({
+            "method":"query", "query":"events where event_type = polylogue.message AND payload.role = assistant"
+        }),
+    );
+    assert_eq!(selected["outcome"], "ok", "{selected}");
+    let rows = selected["result"]["rows"].as_array().unwrap();
+    let selected = rows
+        .iter()
+        .find(|row| row["payload"]["message"] == "claude-code:assistant-1")
+        .unwrap();
+    let id = selected["id"].as_str().unwrap();
+    let target = format!("sinex:ev/{id}");
+    let archived = native::request(
+        &running.socket,
+        "agent",
+        serde_json::json!({"method":"archive", "target":target}),
+    );
+    assert_eq!(archived["outcome"], "ok", "{archived}");
+    let remaining: Vec<_> = expected_messages
+        .iter()
+        .filter(|message| message.id.to_string() != "claude-code:assistant-1")
+        .cloned()
+        .collect();
+    let hidden = build("archive AI reading", &empty, &remaining);
+    assert_eq!(
+        ReadPool::open(&hidden)
+            .unwrap()
+            .reader()
+            .unwrap()
+            .messages(&session, false)
+            .unwrap(),
+        remaining
+    );
+    let restored = native::request(
+        &running.socket,
+        "agent",
+        serde_json::json!({"method":"restore", "target":target}),
+    );
+    assert_eq!(restored["outcome"], "ok", "{restored}");
+    let restored = build("restore AI reading", &empty, &expected_messages);
+    assert_eq!(
+        ReadPool::open(&restored)
+            .unwrap()
+            .reader()
+            .unwrap()
+            .session_export(&session)
+            .unwrap()
+            .unwrap(),
+        before
+    );
+    let preceding_revision = source_revision(&restored);
+    assert_eq!(preceding_revision, partial_revision);
+    let rewritten = format!(
+        "{}{}",
+        original.replace(
+            "I will inspect the draft.",
+            "I inspected the revised draft."
+        ),
+        tails.join("")
+    );
+    fs::write(home.file("original-session.jsonl"), &rewritten).unwrap();
+    fs::write(standalone.file("original-session.jsonl"), &rewritten).unwrap();
+    let (mut ordinary, lock) = standalone.engine(1 << 20);
+    assert!(ordinary.run_pass().unwrap().errors.is_empty());
+    drop(ordinary);
+    drop(lock);
+    expected_messages = standalone
+        .reads()
+        .reader()
+        .unwrap()
+        .messages(&session, false)
+        .unwrap();
+    let rewritten = build("rewrite", &home.home, &expected_messages);
+    let pool = ReadPool::open(&rewritten).unwrap();
+    let reader = pool.reader().unwrap();
+    assert_eq!(reader.messages(&session, false).unwrap(), expected_messages);
+    let chain = reader
+        .query(
+            "SELECT source_chain FROM message WHERE id='claude-code:assistant-1'",
+            &[],
+        )
+        .unwrap();
+    let revision = source_revision(&rewritten);
+    let expected_chain = preceding_revision["number"].as_u64().unwrap() + 1;
+    assert_eq!(revision["produced"], "rewritten");
+    assert_eq!(revision["number"].as_u64(), Some(expected_chain));
+    assert_eq!(revision["chain"].as_u64(), Some(expected_chain));
+    assert_eq!(chain[0]["source_chain"].as_u64(), Some(expected_chain));
 }
 
 #[test]

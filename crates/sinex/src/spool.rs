@@ -4,7 +4,9 @@ use crate::{Error, Result};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use hashed_blobs::{BlobReader, EncodedBlob, Preparation, ReadLimits};
 use polylogue_store::primary::queue::{self, Lookup, Order, Queue};
-use polylogue_store::primary::{Capture, ReplayState};
+use polylogue_store::primary::{
+    Capture, ParsedPublication, ParsedSource, PublicationReceipt, ReplayState,
+};
 use serde::{Deserialize, Serialize};
 use sinex_protocol::{Acknowledgment, FrameResult, Ingress};
 use std::cell::RefCell;
@@ -13,11 +15,10 @@ use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-mod exports;
 mod raw_ranges;
 mod sources;
 
-/// A durable body or sidecar file: its decoded identity and the encoding that
+/// An encoded file: its decoded identity and the encoding that
 /// reads it back.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Bytes {
@@ -99,9 +100,6 @@ pub(crate) struct Material {
     pub length: u64,
     pub body: Body,
     pub capture: Option<Capture>,
-    pub captured: Option<Bytes>,
-    pub control: Option<Control>,
-    pub exports: Vec<exports::ExportBinding>,
     /// Its observation is found by logical name.
     pub named: bool,
     /// Carries an authored request.
@@ -113,8 +111,16 @@ pub(crate) struct Material {
 #[serde(tag = "kind", content = "fields", rename_all = "snake_case")]
 pub(crate) enum Payload {
     Material(Box<Material>),
-    Events { group: Option<Group> },
-    ReplaySequence { group: Option<Group> },
+    Events {
+        group: Option<Group>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parsed: Option<ParsedSource>,
+    },
+    ReplaySequence {
+        group: Option<Group>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parsed: Option<ParsedSource>,
+    },
     Signals,
     RegisterKinds,
     Chunk,
@@ -154,24 +160,22 @@ impl Record {
     pub(crate) fn capture(&self) -> Option<&Capture> {
         self.material()?.capture.as_ref()
     }
-    pub(crate) fn captured(&self) -> Option<&Bytes> {
-        self.material()?.captured.as_ref()
-    }
-    pub(crate) fn control(&self) -> Option<&Control> {
-        self.material()?.control.as_ref()
-    }
-    pub(crate) fn exports(&self) -> &[exports::ExportBinding] {
-        self.material()
-            .map_or(&[], |material| material.exports.as_slice())
-    }
     pub(crate) fn group(&self) -> Option<&Group> {
         match &self.payload {
-            Payload::Events { group, .. } | Payload::ReplaySequence { group } => group.as_ref(),
+            Payload::Events { group, .. } | Payload::ReplaySequence { group, .. } => group.as_ref(),
             _ => None,
         }
     }
     pub(crate) fn is_request(&self) -> bool {
         self.material().is_some_and(|material| material.request)
+    }
+    pub(crate) fn parsed(&self) -> Option<&ParsedSource> {
+        match &self.payload {
+            Payload::Events { parsed, .. } | Payload::ReplaySequence { parsed, .. } => {
+                parsed.as_ref()
+            }
+            _ => None,
+        }
     }
     pub(crate) fn is_named(&self) -> bool {
         match &self.payload {
@@ -210,12 +214,6 @@ impl std::ops::Deref for Prepared {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Control {
-    pub reading_version: String,
-    pub parsed_upto: u64,
-}
-
 #[derive(Serialize, Deserialize)]
 struct Acquisition {
     identity: String,
@@ -235,6 +233,8 @@ struct Checked<T> {
 struct StoredAcknowledgment {
     payload: Bytes,
     phase: Phase,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    number: Option<i64>,
 }
 
 /// The file whose modification time records the last acknowledgement.
@@ -266,37 +266,6 @@ impl StagedAcquisition {
         }
         sync(self.temporary.path())?;
         Ok(())
-    }
-}
-
-/// A pinned immutable sidecar may be checked after releasing the queue lock.
-pub(crate) struct PinnedCapture {
-    header: Capture,
-    control: Option<Control>,
-    exports: Vec<exports::ExportBinding>,
-    bytes: Option<(File, EncodedBlob)>,
-}
-impl PinnedCapture {
-    pub fn decode(self) -> Result<Capture> {
-        let Some((file, descriptor)) = self.bytes else {
-            if !self.exports.is_empty() {
-                return invalid("export capture has no captured body");
-            }
-            return Ok(self.header);
-        };
-        let prepared =
-            hashed_blobs::Prepared::from_encoded(file, descriptor, None, ReadLimits::default())?;
-        let capture = decode_capture(prepared.reader(None, ReadLimits::default())?)?;
-        if capture_header(&capture) != self.header {
-            return invalid("capture sidecar differs from its queue header");
-        }
-        if exports::capture_bindings(&capture)? != self.exports {
-            return invalid("export sidecar differs from its immutable reading-key index");
-        }
-        if control(&capture) != self.control {
-            return invalid("parser control differs from its immutable capture index");
-        }
-        Ok(capture)
     }
 }
 
@@ -695,25 +664,14 @@ impl Spool {
         if matches!(&frame, Ingress::Material { .. }) {
             return invalid("material must have its immutable body prepared before sending");
         }
-        self.prepare_operation(frame, None::<std::io::Empty>, None, None, None)
+        self.prepare_operation(frame, None::<std::io::Empty>, None, None, None, None)
     }
 
     pub fn prepare_material(&self, frame: Ingress, bytes: impl Read) -> Result<Prepared> {
         if !matches!(&frame, Ingress::Material { .. }) {
             return invalid("only a material frame has captured bytes");
         }
-        self.prepare_operation(frame, Some(bytes), None, None, None)
-    }
-
-    pub fn prepare_encoded_material(
-        &self,
-        frame: Ingress,
-        bytes: polylogue_store::primary::PreparedBody,
-    ) -> Result<Prepared> {
-        if !matches!(&frame, Ingress::Material { .. }) {
-            return invalid("only a material frame can own encoded bytes");
-        }
-        self.prepare_operation(frame, None::<std::io::Empty>, None, None, Some(vec![bytes]))
+        self.prepare_operation(frame, Some(bytes), None, None, None, None)
     }
 
     /// `bytes` are the body's encodings in order: one, or one per chunk the
@@ -733,7 +691,68 @@ impl Spool {
             None,
             Some(capture),
             Some(bytes),
+            None,
         )
+    }
+
+    pub fn prepare_parsed(&self, frame: Ingress, source: &ParsedSource) -> Result<Prepared> {
+        if !matches!(
+            frame,
+            Ingress::Events { .. } | Ingress::ReplaySequence { .. }
+        ) {
+            return invalid("a parsed publication must contain admitted facts");
+        }
+        self.prepare_operation(
+            frame,
+            None::<std::io::Empty>,
+            None,
+            None,
+            None,
+            Some(source.clone()),
+        )
+    }
+
+    pub fn publication(&self, identity: &str, producer: &str) -> Result<ParsedPublication> {
+        let entry = self.required(identity)?;
+        if entry.parsed().is_none() {
+            return invalid("publication has no original source range");
+        }
+        match entry.phase {
+            Phase::Pending => Ok(ParsedPublication::Pending {
+                identity: identity.into(),
+            }),
+            Phase::Acknowledged { commit_seq } => {
+                let summary = self.stored_acknowledgment(identity)?.ok_or_else(|| {
+                    Error::Invalid("publication has no durable acknowledgment".into())
+                })?;
+                let number = summary.number.filter(|number| *number > 0).ok_or_else(|| {
+                    Error::Invalid("publication acknowledgment has no native number".into())
+                })?;
+                Ok(ParsedPublication::Admitted(PublicationReceipt {
+                    producer: producer.into(),
+                    frame: identity.into(),
+                    number,
+                    commit_seq,
+                    root_material: entry
+                        .parsed()
+                        .expect("checked parsed source")
+                        .root_material
+                        .clone(),
+                }))
+            }
+            Phase::Refused | Phase::Conflicted { .. } => {
+                let acknowledgment = self.acknowledgment(identity)?;
+                let reason = acknowledgment
+                    .as_ref()
+                    .and_then(|ack| ack.refusal())
+                    .map(|(_, reason)| reason)
+                    .unwrap_or("the publication conflicts with its immutable contents");
+                Err(Error::Refused {
+                    name: identity.into(),
+                    reason: reason.into(),
+                })
+            }
+        }
     }
 
     pub fn stage_acquisition(
@@ -811,8 +830,7 @@ impl Spool {
                 };
                 if original.frame.identity() != desired.frame.identity()
                     || original.body().map(Body::identity) != desired.body().map(Body::identity)
-                    || original.captured().map(Bytes::identity)
-                        != desired.captured().map(Bytes::identity)
+                    || original.capture() != desired.capture()
                 {
                     return Ok(None);
                 }
@@ -888,32 +906,11 @@ impl Spool {
         )
     }
 
-    pub fn pin_capture(&self, identity: &str) -> Result<PinnedCapture> {
-        let Payload::Material(material) = self.required(identity)?.record.payload else {
-            return invalid("operation has no captured facts");
-        };
-        let header = material
-            .capture
-            .ok_or_else(|| Error::Invalid("operation has no captured facts".into()))?;
-        let bytes = material
-            .captured
-            .map(|captured| -> Result<_> {
-                Ok((
-                    regular(&self.operation(identity)?.join("captured.zst"))?,
-                    captured.descriptor()?,
-                ))
-            })
-            .transpose()?;
-        Ok(PinnedCapture {
-            header,
-            control: material.control,
-            exports: material.exports,
-            bytes,
-        })
-    }
-
     pub fn capture(&self, identity: &str) -> Result<Capture> {
-        self.pin_capture(identity)?.decode()
+        self.required(identity)?
+            .capture()
+            .cloned()
+            .ok_or_else(|| Error::Invalid("operation has no capture metadata".into()))
     }
 
     /// One publication owns the complete immutable capture set. Per-capture
@@ -950,6 +947,7 @@ impl Spool {
             frame,
             None::<std::io::Empty>,
             Some((&captures, group_hash)),
+            None,
             None,
             None,
         )
@@ -1057,9 +1055,8 @@ impl Spool {
     pub fn source_heads(
         &self,
         source: &polylogue_store::primary::SourceSelector,
-        version: &str,
     ) -> Result<sources::Heads> {
-        sources::get(self, source, version)
+        sources::get(self, source)
     }
 
     pub fn acknowledge(&self, acknowledgment: Acknowledgment) -> Result<()> {
@@ -1092,6 +1089,7 @@ impl Spool {
             &StoredAcknowledgment {
                 payload,
                 phase: phase.clone(),
+                number: Some(acknowledgment.number),
             },
         )?;
         sync(temporary.path())?;
@@ -1159,6 +1157,7 @@ impl Spool {
             &StoredAcknowledgment {
                 payload,
                 phase: phase.clone(),
+                number: Some(acknowledgment.number),
             },
         )?;
         sync(temporary.path())?;
@@ -1220,6 +1219,8 @@ impl Spool {
         &self,
         state: &ReplayState,
         applied: &dyn Fn(&str) -> Result<bool>,
+        producer: &str,
+        processed: &dyn Fn(&ParsedSource, &PublicationReceipt) -> Result<bool>,
     ) -> Result<()> {
         if state.applied_position.is_some_and(|position| position < 0)
             || state.head.is_some_and(|position| position < 0)
@@ -1246,6 +1247,17 @@ impl Spool {
             for candidate in candidates {
                 if candidate.material {
                     continue;
+                }
+                let record: Record = serde_json::from_slice(&candidate.entry.metadata)?;
+                if let Some(source) = record.parsed() {
+                    let ParsedPublication::Admitted(receipt) =
+                        self.publication(&record.identity, producer)?
+                    else {
+                        continue;
+                    };
+                    if !processed(source, &receipt)? {
+                        continue;
+                    }
                 }
                 if candidate
                     .admitted
@@ -1279,9 +1291,13 @@ impl Spool {
         captures: Option<(&[&str], String)>,
         full_capture: Option<&Capture>,
         encoded_body: Option<Vec<polylogue_store::primary::PreparedBody>>,
+        parsed: Option<ParsedSource>,
     ) -> Result<Prepared> {
         let identity = frame.frame().to_owned();
         if let Some(previous) = self.get(&identity)? {
+            if previous.parsed() != parsed.as_ref() {
+                return invalid("prepared identity changed its interpreted source range");
+            }
             let desired = encoded_hash(&frame)?;
             if previous.frame.identity() != (desired.0.as_str(), desired.1) {
                 return invalid("prepared identity changed immutable frame contents");
@@ -1325,13 +1341,10 @@ impl Spool {
                     return invalid("prepared identity changed immutable encoded body contents");
                 }
             }
-            let desired_capture = full_capture.map(encoded_hash).transpose()?;
-            if previous.captured().map(Bytes::identity)
-                != desired_capture
-                    .as_ref()
-                    .map(|(blob, length)| (blob.as_str(), *length))
+            if let Some(capture) = full_capture
+                && previous.capture() != Some(capture)
             {
-                return invalid("prepared identity changed immutable captured facts");
+                return invalid("prepared identity changed immutable capture metadata");
             }
             return Ok(previous);
         }
@@ -1341,17 +1354,11 @@ impl Spool {
             .tempdir_in(self.root.join("operations"))?;
         let frame_bytes = write_encoded_json(&temporary.path().join("frame.zst"), &frame)?;
         let mut facts = material_facts(&frame)?;
-        let captured = full_capture
-            .map(|full| -> Result<Bytes> {
-                let header = capture_header(full);
-                if facts.as_ref().and_then(|facts| facts.capture.as_ref()) != Some(&header) {
-                    return invalid("capture header differs from its material manifest");
-                }
-                let bytes = write_encoded_json(&temporary.path().join("captured.zst"), full)?;
-                boundary("capture_synced");
-                Ok(bytes)
-            })
-            .transpose()?;
+        if let Some(capture) = full_capture
+            && facts.as_ref().and_then(|facts| facts.capture.as_ref()) != Some(capture)
+        {
+            return invalid("capture metadata differs from its material manifest");
+        }
         let body = if body.is_some() || encoded_body.is_some() {
             let descriptor = facts
                 .as_ref()
@@ -1414,7 +1421,6 @@ impl Spool {
         let group = captures.as_ref().map(|(_, captures_hash)| Group {
             captures_hash: captures_hash.clone(),
         });
-        let export_bindings = exports::bindings(&frame, full_capture)?;
         let payload = match (&frame, facts.take()) {
             (Ingress::Material { .. }, Some(facts)) => Payload::Material(Box::new(Material {
                 id: facts.id,
@@ -1424,14 +1430,11 @@ impl Spool {
                     Error::Invalid("material must have its immutable body prepared".into())
                 })?,
                 capture: facts.capture,
-                captured,
-                control: full_capture.and_then(control),
-                exports: export_bindings,
                 named: facts.named,
                 request: facts.request,
             })),
-            (Ingress::Events { .. }, _) => Payload::Events { group },
-            (Ingress::ReplaySequence { .. }, _) => Payload::ReplaySequence { group },
+            (Ingress::Events { .. }, _) => Payload::Events { group, parsed },
+            (Ingress::ReplaySequence { .. }, _) => Payload::ReplaySequence { group, parsed },
             (Ingress::Signals { .. }, _) => Payload::Signals,
             (Ingress::RegisterKinds { .. }, _) => Payload::RegisterKinds,
             (Ingress::Chunk { .. }, _) => Payload::Chunk,
@@ -1558,10 +1561,8 @@ fn empty_operation(
         raw_generation: None,
         raw_predecessor: None,
         raw_root: false,
-        reading_version: None,
         input: None,
         format: None,
-        export_keys: Vec::new(),
         stored_bytes: 0,
         completion: None,
         captured: false,
@@ -1613,18 +1614,6 @@ fn operation(record: &Record, directory: String, frame: &Ingress) -> Result<queu
         operation.previous_material = material.previous_part.as_ref().map(ToString::to_string);
     }
     operation.logical_name = record.logical_name().map(str::to_owned);
-    operation.reading_version = record
-        .control()
-        .map(|control| control.reading_version.clone());
-    operation.export_keys = record
-        .exports()
-        .iter()
-        .map(|binding| binding.key.identity().to_string())
-        .collect();
-    if let Some(binding) = record.exports().first() {
-        operation.input = Some(binding.key.input.id.clone());
-        operation.format = Some(binding.key.input.format.clone());
-    }
     operation.captured = record.capture().is_some();
     if let Some(Capture::Blob { hash, .. }) = record.capture() {
         operation.blob = Some(hash.to_string());
@@ -1672,48 +1661,6 @@ fn hex_name(name: &str) -> bool {
     name.len() == 64 && name.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-fn control(capture: &Capture) -> Option<Control> {
-    let Capture::Input(input) = capture else {
-        return None;
-    };
-    input
-        .parsed
-        .iter()
-        .rev()
-        .find_map(|reading| reading.checkpoint.as_ref())
-        .map(|checkpoint| Control {
-            reading_version: checkpoint.reading_version.clone(),
-            parsed_upto: checkpoint.parsed_upto,
-        })
-}
-
-pub(crate) fn capture_header(capture: &Capture) -> Capture {
-    match capture {
-        Capture::Input(input) => {
-            Capture::Input(Box::new(polylogue_store::primary::CapturedInput {
-                generation: input.generation.clone(),
-                raw_total: input.raw_total,
-                raw_predecessor: input.raw_predecessor.clone(),
-                input: input.input.clone(),
-                rows: input.rows.clone(),
-                index: input.index,
-                previous: input.previous.clone(),
-                hash: input.hash,
-                length: input.length,
-                group: input.group.clone(),
-                route: input.route,
-                parsed: Vec::new(),
-                raw_range: input.raw_range,
-                basis: input.basis.clone(),
-            }))
-        }
-        Capture::Blob { hash, length } => Capture::Blob {
-            hash: *hash,
-            length: *length,
-        },
-    }
-}
-
 /// What a material frame says about itself before its bytes are stored.
 struct MaterialFacts {
     id: String,
@@ -1739,13 +1686,6 @@ fn material_facts(frame: &Ingress) -> Result<Option<MaterialFacts>> {
         .get("polylogue_capture")
         .map(|capture| serde_json::from_value(capture.clone()))
         .transpose()?;
-    if let Some(capture) = &capture
-        && *capture != capture_header(capture)
-    {
-        return invalid(
-            "raw material manifest must keep parser facts in the private capture sidecar",
-        );
-    }
     let parser = material.parser.as_str();
     Ok(Some(MaterialFacts {
         id: material.id.to_string(),
@@ -1919,10 +1859,6 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>> {
         Err(error) => Err(error),
     }
 }
-fn decode_capture(reader: impl Read) -> Result<Capture> {
-    decode_json(reader)
-}
-
 /// The checksum covers the stored bytes of the value, so a record written by
 /// an earlier build verifies even where the current type no longer keeps one
 /// of its fields.

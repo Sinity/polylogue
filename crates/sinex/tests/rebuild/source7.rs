@@ -1,0 +1,473 @@
+//! Source7's exact owner declaration was generated from Polylogue6c70b4d9e249.
+//! These are producer inputs, never a production reader for the retired bodies.
+use super::*;
+use polylogue_model::{BlobHash, Message, MessageRow, SessionId};
+use polylogue_store::primary::{Material, Product, Reading};
+use polylogue_store::{InputKey, ParseStep};
+use sinex_protocol::{Ingress, ProducerEvent};
+
+fn declaration() -> sinex_model::SourceDeclaration {
+    let declaration: sinex_model::SourceDeclaration =
+        serde_json::from_str(include_str!("source7.json")).unwrap();
+    assert_eq!(declaration.source.version, 7);
+    for (name, version) in [
+        ("polylogue.message", 6),
+        ("polylogue.session", 5),
+        ("polylogue.parse_progress", 6),
+        ("polylogue.input_observation", 6),
+    ] {
+        assert_eq!(
+            declaration
+                .kinds
+                .iter()
+                .find(|kind| kind.kind.name == name)
+                .unwrap()
+                .kind
+                .version,
+            version
+        );
+    }
+    declaration
+}
+
+fn running(home: &polylogue_testkit::ClaudeHome) -> Running {
+    let native = native::Native::start(
+        home.dir.path(),
+        vec![
+            serde_json::to_value(declaration()).unwrap(),
+            serde_json::to_value(polylogue_sinex::kinds::source_declaration()).unwrap(),
+        ],
+    );
+    Running {
+        config: Config {
+            mode: Mode::Primary,
+            nats: native.nats.url().into(),
+            password_file: None,
+            subject_root: "rebuild".into(),
+            producer: "polylogue".into(),
+            store: native.store.clone(),
+            upload_root: None,
+        },
+        socket: native.socket.clone(),
+        native,
+    }
+}
+
+/// The old producer's immutable message envelope, validated by its exact schema
+/// at native admission. Expected local answers come from the standalone parser.
+fn old_message(input: &InputKey, message: Message, offset: u64, length: u64) -> Product {
+    Product::Message {
+        reading: Reading {
+            source_length: Some(length),
+            delivery: None,
+            input: input.clone(),
+            chain: 1,
+            reading_version: "source7-parser".into(),
+            start: 0,
+            parsed_upto: length,
+            progress: polylogue_model::batch::StepProgress::AtEnd,
+        },
+        facts: Box::new(MessageRow {
+            offset,
+            end: length - 1,
+            id_kind: Default::default(),
+            page_text: false,
+            message,
+        }),
+        order: None,
+        projection: None,
+        native_fields: None,
+        declared_injections: None,
+        declared_attachment_bindings: None,
+    }
+}
+
+// Source7's stable key algorithm is independent of its retired body schema.
+// Source8 must keep these semantic identities while changing the domain values.
+fn source7_key(kind: &str, product: &Product) -> String {
+    let natural = match product {
+        Product::Input { rows, .. } => serde_json::json!([
+            rows.input,
+            rows.revision,
+            rows.extents,
+            rows.observation.as_ref().map(|observation| &observation.id),
+        ]),
+        Product::Message { facts, .. } => serde_json::json!([facts.message.id, facts.offset]),
+        _ => unreachable!("this fixture publishes original observations and messages"),
+    };
+    let source = product
+        .reading()
+        .map(|reading| serde_json::json!([reading.input.id, reading.chain]));
+    blake3::hash(&serde_json::to_vec(&(kind, source, natural)).unwrap())
+        .to_hex()
+        .to_string()
+}
+
+fn source7_payload(kind: &str, product: &Product) -> serde_json::Value {
+    let mut record = serde_json::to_value(product).unwrap();
+    if let Some(reading) = record.get_mut("reading") {
+        // These published Source7 fields were removed from the internal reading.
+        reading["order_from"] = serde_json::Value::Null;
+        reading["repeats_whole_conversations"] = serde_json::json!(false);
+    }
+    let mut payload = match product {
+        Product::Input { rows, .. } => serde_json::json!({"input":rows.input}),
+        Product::Message { facts, .. } => {
+            let message = &facts.message;
+            let text = message
+                .blocks
+                .iter()
+                .filter_map(|block| match block {
+                    polylogue_model::Block::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            serde_json::json!({
+                "message":message.id,"session":message.session,"parent":message.parent,
+                "role":message.role,"written_by":polylogue_model::WrittenBy::of(message),
+                "prompt_kind":message.prompt_kind,"at":message.at,"model":message.model,
+                "text":text,"usage":message.usage,"stop_reason":message.stop_reason,"duration_ms":message.duration_ms,
+            })
+        }
+        _ => unreachable!("only the old input and message contracts are seeded"),
+    };
+    payload["record_key"] = source7_key(kind, product).into();
+    payload["record"] = record;
+    let declaration = declaration()
+        .kinds
+        .into_iter()
+        .find(|item| item.kind.name == kind)
+        .unwrap();
+    jsonschema::validator_for(declaration.payload_schema.as_ref().unwrap())
+        .unwrap()
+        .validate(&payload)
+        .unwrap_or_else(|error| panic!("Source7 {kind} fixture: {error}; {payload}"));
+    payload
+}
+
+#[test]
+fn source7_fixture_payloads_match_the_predecessor_serializer_and_owner_schema() {
+    // Generated by the unchanged 6c70 Product serializer and payload/key
+    // functions. Both old kinds seeded by the native controls are represented.
+    let payloads: Vec<serde_json::Value> =
+        serde_json::from_str(include_str!("source7-records.json")).unwrap();
+    assert_eq!(payloads.len(), 2);
+    for (kind, expected) in ["polylogue.input_observation", "polylogue.message"]
+        .into_iter()
+        .zip(payloads)
+    {
+        let product: Product = serde_json::from_value(expected["record"].clone()).unwrap();
+        assert_eq!(source7_payload(kind, &product), expected, "{kind}");
+    }
+}
+
+fn admit_originals(
+    running: &Running,
+    parts: &[(&str, Option<Message>)],
+) -> (InputKey, u64, Vec<(sinex_model::MaterialId, Vec<u8>)>) {
+    let declaration = declaration();
+    let source = declaration.source.clone();
+    let input = InputKey {
+        id: "source7-original".into(),
+        format: "claude-code".into(),
+        route: polylogue_model::Route::Live,
+    };
+    let root = tempfile::tempdir().unwrap();
+    let mut length = 0;
+    let mut previous = None;
+    let mut originals = Vec::new();
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let client = async_nats::connect(running.native.nats.url()).await.unwrap();
+        let subjects = sinex_protocol::Subjects::new("rebuild");
+        let started = Instant::now();
+        loop {
+            let welcome = sinex_transport::replies::request_json::<sinex_protocol::ProducerWelcome>(
+                &client,
+                subjects.connect("polylogue"),
+                "polylogue",
+                &sinex_protocol::ProducerHello::default(),
+                Duration::from_secs(2),
+            ).await;
+            match welcome {
+                Ok(sinex_protocol::ProducerWelcome::Welcome { .. }) => break,
+                Ok(refused) => panic!("Source7 producer welcome: {refused:?}"),
+                Err(error) => assert!(started.elapsed() < Duration::from_secs(60), "Source7 producer welcome: {error}"),
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        let mut acks = client.subscribe(subjects.ack("polylogue")).await.unwrap();
+        client.flush().await.unwrap();
+        // Seed retained history through the old producer's actual registration
+        // boundary before connecting the current producer and its declarations.
+        let registration = Ingress::RegisterKinds {
+            frame: "source7-kinds".into(),
+            declarations: declaration.kinds.clone(),
+        };
+        let receipt = sinex_transport::producer::submit_frame(&client,&subjects,"polylogue",&mut acks,&registration,Duration::from_secs(30)).await.unwrap();
+        assert_eq!(receipt.refusal(),None,"{receipt:?}");
+        for (index, (bytes, message)) in parts.iter().enumerate() {
+            let offset = length;
+            length += bytes.len() as u64;
+            let material = sinex_model::MaterialId::new();
+            let hash = BlobHash::of(bytes.as_bytes());
+            let blob = format!("blake3:{hash}");
+            let raw = Ingress::Material { frame:format!("source7-material-{index}"),
+                material:Box::new(sinex_protocol::MaterialFrame {
+                    source:source.clone(), id:material,
+                    input:sinex_model::InputRef {kind:"claude-code".into(),locator:"/other-host/session.jsonl".into(),host:"fixture-host".into()},
+                    blob:blob.clone(),length:bytes.len() as u64,chunks:vec![],parser:"polylogue-claude-code".into(),
+                    parser_version:3,part_index:index as u32,previous_part:previous,manifest:Default::default(),
+                }) };
+            sinex_transport::frame_bytes::write(root.path(),"polylogue",raw.frame(),&blob,bytes.len() as u64,bytes.as_bytes()).unwrap();
+            sinex_transport::producer::transfer_frame(&client,&subjects,"polylogue",&mut acks,root.path(),&raw,Duration::from_secs(30)).await.unwrap();
+            let receipt = sinex_transport::producer::submit_frame(&client,&subjects,"polylogue",&mut acks,&raw,Duration::from_secs(30)).await.unwrap();
+            assert_eq!(receipt.refusal(),None,"{receipt:?}");
+            let sinex_protocol::FrameResult::Admitted {material_extents,..} = receipt.result else { panic!("raw admission"); };
+            let rows = serde_json::from_value(serde_json::json!({
+                "input":input.id,"format":input.format,
+                "revision":{"number":index+1,"produced":if index==0 {"first"} else {"appended"},"chain":1,"length":length},
+                "extents":[{"chain":1,"offset":offset,"length":bytes.len(),"blob":hash,"blob_offset":0}],
+                "observation":{"id":format!("source7-observation-{index}"),"machine":"other-machine","host":"other-host",
+                    "path":"/other-host/session.jsonl","path_bytes":b"/other-host/session.jsonl",
+                    "class":if index==0 {"first"} else {"appended"},"revision":index+1,"length":length,
+                    "device":null,"inode":null,"size":null,"mtime_ns":null,"ctime_ns":null,
+                    "polylogue_version":"synthetic-source7","seen_at":index+1,"details_json":null}
+            })).unwrap();
+            let product = Product::Input { rows:Box::new(rows),material:Some(Material {
+                id:material.to_string(),hash,length:bytes.len() as u64,extents:material_extents,
+            }) };
+            let event = |kind: &str, record: Product, output_index| ProducerEvent {
+                kind:declaration.kinds.iter().find(|decl| decl.kind.name==kind).unwrap().kind.clone(),
+                payload:source7_payload(kind,&record),
+                location:Some(sinex_model::RecordLocation {material,anchor:0}),output_index,parents:vec![],reading_order:None,class:sinex_model::Class::Guarded,
+            };
+            let mut events = vec![event("polylogue.input_observation",product,0)];
+            if let Some(message) = message {
+                events.push(event("polylogue.message",old_message(&input,message.clone(),offset,length),1));
+            }
+            let interpreted = Ingress::Events {frame:format!("source7-facts-{index}"),source:Some(source.clone()),coverage:None,events,failures:vec![]};
+            let receipt = sinex_transport::producer::submit_frame(&client,&subjects,"polylogue",&mut acks,&interpreted,Duration::from_secs(30)).await.unwrap();
+            assert_eq!(receipt.refusal(),None,"{receipt:?}");
+            originals.push((material, bytes.as_bytes().to_vec()));
+            previous=Some(material);
+        }
+    });
+    (input, length, originals)
+}
+
+fn expected(home: &polylogue_testkit::ClaudeHome, text: &str) -> Vec<Message> {
+    home.append("session.jsonl", text);
+    let (mut engine, lock) = home.engine(1 << 20);
+    assert!(engine.run_pass().unwrap().errors.is_empty());
+    drop(engine);
+    drop(lock);
+    home.reads()
+        .reader()
+        .unwrap()
+        .messages(
+            &SessionId::parse("claude-code:source7-session").unwrap(),
+            false,
+        )
+        .unwrap()
+}
+
+fn adoption(partial: bool) {
+    let home = polylogue_testkit::ClaudeHome::new();
+    let ordinary = polylogue_testkit::ClaudeHome::new();
+    let bytes = polylogue_testkit::claude_user(
+        "source7-message",
+        "source7-session",
+        "retained original words",
+    );
+    let wanted = expected(&ordinary, &bytes);
+    assert_eq!(wanted.len(), 1);
+    let running = running(&home);
+    let mut parts = vec![(bytes.as_str(), Some(wanted[0].clone()))];
+    if partial {
+        parts.push(("{\"type\":\"assistant\"", None));
+    }
+    let (input, length, originals) = admit_originals(&running, &parts);
+    let old_identity = running.native.sql("SELECT id::text||':'||record_hash FROM core.events WHERE event_type='polylogue.message' AND kind_version=6 ORDER BY id");
+    assert!(!old_identity.trim().is_empty());
+    let sdk = connect(&running.config);
+    assert_eq!(
+        sinex_rows(
+            &running.socket,
+            "events where event_type = polylogue.message"
+        ),
+        1
+    );
+    let (archive, _lock) = Archive::open_primary(&home.root, &running.config.store).unwrap();
+    let mut config = home.config(1 << 20);
+    config.reads_sources = false;
+    let mut engine = Engine::on_sinex(
+        config,
+        archive.clone(),
+        sdk.clone(),
+        polylogue_testkit::stopped_attempt(),
+    )
+    .unwrap();
+    let commits = engine.writer().unwrap().completion_commits();
+    confirm_capture(
+        &mut engine,
+        &commits,
+        Instant::now(),
+        (&archive, &sdk, &running),
+        |pass| {
+            let pool = ReadPool::open(&archive)?;
+            let reader = pool.reader()?;
+            Ok(!pass.capture_pending
+                && reader.messages(
+                    &SessionId::parse("claude-code:source7-session").unwrap(),
+                    false,
+                )? == wanted)
+        },
+        String::new,
+    );
+    let pool = ReadPool::open(&archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let progress = reader.input_progress(&input.id).unwrap().unwrap();
+    assert_eq!(progress.length, length);
+    assert_eq!(progress.parsed_upto, bytes.len() as u64);
+    assert_eq!(progress.waiting, partial);
+    for (material, bytes) in originals {
+        let mut actual = Vec::new();
+        let mut offset = 0;
+        loop {
+            let page = sdk
+                .fetch_material_bytes(material, offset, None, 37)
+                .unwrap();
+            actual.extend(page.bytes);
+            match page.next_offset {
+                Some(next) => offset = next,
+                None => break,
+            }
+        }
+        assert_eq!(BlobHash::of(&actual), BlobHash::of(&bytes));
+        assert_eq!(actual, bytes);
+    }
+    assert_eq!(reader.confirmed_refusals().unwrap().0, 0);
+    assert_eq!(
+        sinex_rows(
+            &running.socket,
+            "events where event_type = polylogue.message"
+        ),
+        1
+    );
+    assert_eq!(running.native.sql("SELECT count(*) FROM core.events e WHERE event_type='polylogue.message' AND kind_version=8 AND source_version=8 AND NOT EXISTS(SELECT 1 FROM audit.archived a WHERE a.event_id=e.id)").trim(),"1");
+    assert_eq!(running.native.sql("SELECT count(*) FROM core.events e WHERE event_type='polylogue.message' AND kind_version=6 AND NOT EXISTS(SELECT 1 FROM audit.archived a WHERE a.event_id=e.id)").trim(),"0");
+    assert_eq!(running.native.sql("SELECT id::text||':'||record_hash FROM core.events WHERE event_type='polylogue.message' AND kind_version=6 ORDER BY id"),old_identity);
+    assert_eq!(running.native.sql("SELECT e.id::text||':'||e.record_hash FROM core.events e JOIN audit.archived a ON a.event_id=e.id WHERE e.event_type='polylogue.message' AND e.kind_version=6 ORDER BY e.id"),old_identity);
+    assert_eq!(running.native.sql("SELECT count(*) FROM core.ingress_frames WHERE frame LIKE 'source7-material-%' AND source_name='polylogue' AND source_version=7 AND material_id IS NOT NULL").trim(),parts.len().to_string());
+    assert_eq!(running.native.sql("SELECT fingerprint FROM registry.source_declarations WHERE name='polylogue' AND version=7").trim(),declaration().fingerprint());
+}
+
+#[test]
+#[ignore = "needs the matching Sinex daemon; set SINEXD"]
+fn source7_complete_original_adopts_the_current_native_output_set() {
+    adoption(false);
+}
+
+#[test]
+#[ignore = "needs the matching Sinex daemon; set SINEXD"]
+fn source7_waiting_tail_adopts_only_when_previous_outputs_fit_the_parsed_prefix() {
+    adoption(true);
+}
+
+#[test]
+#[ignore = "needs the matching Sinex daemon; set SINEXD"]
+fn source7_facts_beyond_a_refused_reading_frontier_remain_live() {
+    let home = polylogue_testkit::ClaudeHome::new();
+    let ordinary = polylogue_testkit::ClaudeHome::new();
+    let first = polylogue_testkit::claude_user("first", "source7-session", "first original");
+    let second = polylogue_testkit::claude_user("second", "source7-session", "later original");
+    let wanted = expected(&ordinary, &format!("{first}{second}"));
+    assert_eq!(wanted.len(), 2);
+    let running = running(&home);
+    let (input, length, _originals) = admit_originals(
+        &running,
+        &[
+            (&first, Some(wanted[0].clone())),
+            (&second, Some(wanted[1].clone())),
+        ],
+    );
+    let sdk = connect(&running.config);
+    let (archive, _lock) = Archive::open_primary(&home.root, &running.config.store).unwrap();
+    let engine = Engine::on_sinex(
+        home.config(1 << 20),
+        archive.clone(),
+        sdk.clone(),
+        polylogue_testkit::stopped_attempt(),
+    )
+    .unwrap();
+    let commits = engine.writer().unwrap().completion_commits();
+    let started = Instant::now();
+    loop {
+        let ready =
+            ReadPool::open(&archive).and_then(|pool| pool.reader()?.input_progress(&input.id));
+        if ready.as_ref().is_ok_and(|progress| {
+            progress
+                .as_ref()
+                .is_some_and(|progress| progress.length == length)
+        }) {
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "source7 snapshot: {ready:?}"
+        );
+        let _ = commits.recv_timeout(Duration::from_millis(20));
+    }
+    let before = native_rows(
+        &running,
+        "events where event_type = polylogue.message | fields id",
+    );
+    assert_eq!(before.len(), 2);
+    let mut step = ParseStep::new(
+        Default::default(),
+        Default::default(),
+        0..first.len() as u64,
+        false,
+    );
+    step.reading_version = "refused-new-parser".into();
+    step.progress = polylogue_model::batch::StepProgress::Refused {
+        reason: "synthetic reader stops before the later original".into(),
+    };
+    let mut reading = polylogue_store::writer::ChainReading::new().unwrap();
+    reading.push(&mut step).unwrap();
+    let error = engine
+        .writer()
+        .unwrap()
+        .replace_chain(input.clone(), 1, length, reading)
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("previous facts require source bytes"),
+        "{error}"
+    );
+    assert_eq!(
+        native_rows(
+            &running,
+            "events where event_type = polylogue.message | fields id"
+        ),
+        before
+    );
+    assert!(
+        ReadPool::open(&archive)
+            .unwrap()
+            .reader()
+            .unwrap()
+            .parser_checkpoint(&input.id, 1, "refused-new-parser")
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        running
+            .native
+            .sql("SELECT count(*) FROM core.replayed_sequences")
+            .trim(),
+        "0"
+    );
+}

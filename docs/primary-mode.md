@@ -12,7 +12,7 @@ Capture is identical in both modes ([capture.md](capture.md)); parsing, the pars
 - **Confirmed originals drive local parsing.** Polylogue reconstructs its local model from Sinex-confirmed source materials. Sinex also retains declared native AI message, tool, terminal, file and work facts with source evidence and time quality, usable independently of Polylogue. A round trip through a copy of Polylogue's parsed product is not an intermediate authority; the local SQLite index remains reconstructible.
 - **Authored records originate from request materials.** Each authored write is a request material (the write as received, with its request ID and computed author) plus its event. Its targets (sessions, messages, blocks, assertions, pages) are references in the payload with their `seen_hash`, never Sinex parents. A parser-upgrade replay of a session therefore archives the session's readings and their derived chain but never a note, judgment, highlight or page slot about it; those references resolve to the new readings by natural key. Marker assertions travel with their derived IDs, so the same marker sent from two hosts is one record.
 - **Sinex-confirmed state alone enters `index.db`.** One durable subscription supplies confirmed originals, facts and lifecycle changes in commit order. Local parsing and application save the processed position in the same transaction as their complete result. A new stream that starts at a current-state origin first supplies an owner-certified indexed snapshot; the same writer then follows its deltas. This covers this host's writes, other hosts' writes and a rebuild alike. Polylogue's consumer has its own grant under Sinex's output rules, so it receives its own payloads whole; payloads too large for a message travel as material references and are fetched through the same client.
-- **Lifecycle changes arrive on the stream** and are applied by the same consumer in commit order: an archived reading's rows leave `index.db`, so the index shows what Sinex shows as live; a restored reading's rows return; a newer reading replaces the old one's rows; a tombstoned reading keeps its reference and shows "tombstoned". Session tables recompute for the sessions touched ([measures.md#rules](measures.md#rules)).
+- **Lifecycle changes arrive on the stream** and are applied by the same consumer in commit order. An archived AI reading stops contributing to the local model. The affected source chain retracts through the ordinary writer, which selects the readings that other sources still supply; parsing the original bytes reconstructs the eligible contributions. Restoration makes the original contribution eligible again. Raw material lifecycle remains separate from the lifecycle of an interpretation. A tombstoned reading retains its reference. Session tables recompute for the sessions touched ([measures.md#rules](measures.md#rules)).
 - **Sinex's lifecycle applies to Polylogue's materials** as to any source's, through Sinex's own surfaces. Polylogue itself offers no deletion in either mode ([architecture.md#deletion](architecture.md#deletion)).
 - **Settings shared with Sinex.** The logical day, quiet hours and the interrupt budget are Sinex's settings; Polylogue has no value of its own for them, and its interrupting notices are shown by Sinex's deliverer ([operations.md#notices](operations.md#notices)).
 
@@ -49,6 +49,12 @@ applied a complete prefix in the same scope through an owner head observed
 after the acknowledgment. Sinex reads that head from its committed counter.
 A head observed before publication, or an incomplete prefix, retains the group.
 
+The producer queue retains its existing physical `reading_version` and
+`export_keys` columns so committed pending operations keep their database and
+membership. Those columns are inert: new operations write no reading version or
+export keys, and source-head lookups depend only on physical source identity.
+Parser output is not retained as a second reconstruction body in the queue.
+
 Each complete stream position applies atomically. If a later position fails,
 the earlier committed prefix stays visible and notifies readers. The writer
 reports the failure with its last applied position before sending that cue;
@@ -67,9 +73,9 @@ still consults its existing unacknowledged spool entries and scoped history. A g
 waits for the exact confirmed input and no pending predecessor, uses the ordinary
 metadata acquisition route, and changes local file facts only after confirmation.
 
-Declarations validate the complete record and describe the outer projected
-fields used by privacy hints and time rules. The complete record remains guarded;
-the outer fields let Sinex join the record to its other domains.
+Declarations validate domain fields and original-source identity and name the
+fields used by privacy hints and time rules. Native readers join those declared
+fields directly. Sensitive domain values retain guarded field classes.
 
 Each distinct typed link statement keeps its own source contribution. A later
 statement without a branch point therefore cannot replace an earlier statement
@@ -85,7 +91,13 @@ for durable partial pages and never substitutes for completed local progress.
 A replayed old barrier cannot move the completed receipt beyond unapplied data.
 
 The stream follower alone reads and acknowledges confirmed pages. It sends each
-page to the writer and acknowledges it after durable application. It drains
+page to the writer for durable staging. If a complete position retracts local
+source contributions, the follower resolves those ordinary batches outside the
+serial writer, allowing queued workers to commit and release their leases. The
+queued application rechecks the native scope, staged facts, completion evidence
+and exact affected chains before committing lifecycle metadata, local effects
+and completion together. Staging alone advances no visible completion. The
+follower acknowledges only after this application succeeds. It drains
 remaining stream or snapshot pages without an idle pause, checking stop and
 synchronization requests between bounded pages. An empty or nonadvancing page
 waits before polling again; failures retain their retry backoff. Event payload
@@ -128,16 +140,39 @@ scoped history cut. Later confirmations do not rebind that basis or turn missing
 evidence into an alias claim. Parsed facts use the acquired body's original byte
 range for their material anchors, even when those bytes add no new logical
 extent. Facts outside that range need an existing confirmed source anchor.
-Parsing an already confirmed chain prepares reading products directly, using the
-exact input, origin, chain, byte range and material anchors. It does not sample a
-new provider head; several database inputs can share one provider path. Inline
-attachments decoded by that parser retain their own blob preparation. Durable
-product preparation advances the sampler's cached parser state only after the
-matching reading version and cursor reach the confirmed index.
-Compact keyed-context changes travel inside that existing opaque checkpoint;
-private preparation retains them until confirmed application. Missing historical
-context stays unrecorded. A confirmed event whose kind definition is not the one
-Polylogue declares is refused.
+Parsing an already confirmed chain uses the exact input, origin, chain, byte
+range and material anchors. It does not sample a new provider head; several
+database inputs can share one provider path. Inline attachments decoded by that
+parser retain their own blob preparation. The sender publishes declared native
+domain facts and waits for their authoritative admission before resolving the
+ordinary local rows. One local transaction writes those rows, the actual
+publication receipt and the parser's processed source position. Broker delivery,
+native admission and local interpretation progress remain distinct.
+
+Native source kinds contain their complete domain values and original-source
+identity. Messages retain typed blocks, usage, production, provider attributes,
+source order and sparse evidence; sessions retain title provenance, aliases and
+environment facts. Documents, text fragments, events, explicit relationships,
+copied prefixes, tool outcomes and repository facts retain their own typed
+fields. The confirmed consumer records only the source identity, value hash,
+range, lifecycle and referenced blobs needed to select a contribution. It never
+turns the native body into local parser output. Native parser diagnostics retain
+counts, status and stopped-program evidence, rather than local checkpoints or
+row-comparison state. Authored and query records still use their exact durable
+operation decoders.
+
+Compact keyed-context changes belong to the local checkpoint transaction.
+Private preparation retains them until the ordinary rows commit. If native
+lifecycle hides a response needed by that optional cache, the transaction
+discards the cache and opaque continuation while retaining the actual processed
+byte position; a later parse obtains its context from the original prefix.
+Missing historical context stays unrecorded. A confirmed event whose kind
+definition is not the one Polylogue declares is refused.
+
+Tool-to-terminal or tool-to-file associations require captured exact native
+references, such as a `work.act` record naming both events. Sharing a session,
+message, command, path or time does not establish that association. Ordinary
+terminal and file watchers do not infer which AI tool action caused a change.
 A batch waits for active local database work. Deferred parsing is local work,
 not a confirmation wait: successful parsing can start a database read in the
 same batch, while a failed parse stops that attempt. Errors in that attempt do
@@ -155,13 +190,27 @@ hints describe defaults for operator-configured output rules; they impose no
 kind-wide admission class floor. Event frame names include declaration hashes.
 A producer replay selects the exact declarations and parser/build identities
 for its complete material sequence, and waits for the replacement acknowledgment
-before updating its local index.
+before updating its local index. Snapshot and live reads retain verified native
+identity, material, record hash and lifecycle even for an older domain kind
+whose body this build no longer reads. A parser upgrade replaces those output
+kinds by name across their versions, using the owner's exact material sequence,
+digests and live-set hash. It reconstructs values from original bytes.
+
+A complete replacement output set need not mean a complete original input.
+An incomplete appended tail can report waiting while replacing the outputs of
+the complete prefix. Every previous domain contribution must fit inside that
+prefix. An older opaque fact uses its whole original material extent as a
+conservative bound; its parser diagnostic claims no additional domain values.
+A refused or partial parse before that bound leaves the previous native output
+set live. The bound and live-set hash are checked together before publication,
+and Sinex revalidates that live set at admission. Archived unreadable facts
+remain historical diagnostics rather than current refusal counts.
 
 ## Local state
 
 What a host keeps locally in primary mode:
 - `meta.json`, the archive's durable storage identity, containing its mode;
-- `index.db`, a cache holding its stream position;
+- `index.db`, primary cache format2, holding native identity, local interpretation receipts and its stream position;
 - the embeddings store, local and backed up, since recomputing it costs money;
 - the producer client's spool, where bytes and prepared writes wait until Sinex acknowledges them; it sits under Sinex's store root on the same host. Material bytes are acknowledged before the events that cite them.
 
@@ -224,11 +273,19 @@ Publication and read failures remain distinct observations in that status. A suc
 
 ## Rebuild and parser upgrades
 
-**Rebuild.** A new local `index.db` (one from another schema set aside at start, [operations.md](operations.md#replacing-an-index-from-another-schema), or one moved aside by hand) resets its subscription position and reads Sinex-confirmed records, with progress in `status`. A stream with origin zero starts with its ordinary feed. When Sinex requires a current projection, Polylogue clears its reconstructible cache and stages bounded snapshot pages on disk. The original producer queue, source bytes and paid vector stores retain their own custody.
+**Rebuild.** A new local `index.db` (one from another schema set aside at start, [operations.md](operations.md#replacing-an-index-from-another-schema), or one moved aside by hand) resets its subscription position and reads Sinex-confirmed records, with progress in `status`. The exact public primary Index1 schema is set aside for the original-material cache format2. Its older native contexts lack the material location and owner record hash needed by current reconstruction. Opening never obtains those fields by decoding the retired parsed body. The producer spool, including pending authored intent, stays under the separate Sinex store root; paid vectors remain in `embeddings.db`. Both retain their original identities and bytes.
+
+The old cache remains until the native head has been applied and every stored chain has admitted local progress at its current source length. A known incomplete suffix can settle as waiting; a refused or failed attempt needs its actual program identity. Missing progress and unreadable native facts keep the cache. Retirement runs at ordinary local flush or open, rather than scanning the source catalog on each confirmed position.
+
+A stream with origin zero starts with its ordinary feed. When Sinex requires a current projection, Polylogue clears its reconstructible cache and stages bounded snapshot pages on disk. The original producer queue, source bytes and paid vector stores retain their own custody.
 
 Each snapshot page is fetched under the owner's pinned cut, scope, catalog and stream incarnation. Every fetched event must match its reference's identity, admission position, kind, definition, projection and source authority. Archived readings retain their original admission and lifecycle order. A page and its next cursor commit together; interruption resumes that cursor. Invalidated owner context discards the partial snapshot, reports the owner's reason as a failed turn, and starts again. Unavailable owner evidence leaves the staged pages and cursor intact for retry. Partial pages are invisible and advance no applied position.
 
-The last page carries the owner's certificate for the complete indexed projection at position B, at or after the stream origin. The writer makes the entire staged snapshot visible and saves that certificate with applied position B in one transaction. Every later consumer, status and resume request supplies it. Before opening the SQL cut B, Sinex captures a native prefix N and binds its exact message identity in that certificate. The snapshot covers every admitted fact published through N, so the first subscription starts at N+1 even when B lies between completion markers. N is projection coverage, not a delivered completion. An empty prefix skips nothing; a missing or changed boundary invalidates the certificate for restart and requests a new projection. The origin itself never stands in for an applied client prefix or same-incarnation delivery evidence. A changed scope or stream incarnation replaces the older cache, including facts absent from the new snapshot. This rebuild path reads stored products; it does not read materials back to re-parse them.
+The last page carries the owner's certificate for the complete indexed projection at position B, at or after the stream origin. The writer makes the entire staged snapshot visible and saves that certificate with applied position B in one transaction. Every later consumer, status and resume request supplies it. Before opening the SQL cut B, Sinex captures a native prefix N and binds its exact message identity in that certificate. The snapshot covers every admitted fact published through N, so the first subscription starts at N+1 even when B lies between completion markers. N is projection coverage, not a delivered completion. An empty prefix skips nothing; a missing or changed boundary invalidates the certificate for restart and requests a new projection. The origin itself never stands in for an applied client prefix or same-incarnation delivery evidence. A changed scope or stream incarnation replaces the older cache, including facts absent from the new snapshot. The snapshot supplies source metadata, native interpretation eligibility and authored effects. The ordinary parser reads confirmed materials to reconstruct the specialist model.
+Its due-chain query supplies the selected format and recorded path even when
+the source arrived after startup or belongs to another host. That path selects
+the parser and identifies the input; parsing reads material bytes, never the
+recorded path on the local filesystem. Rebuilding the local index does not republish already confirmed interpretations or revive covered absent readings.
 
 **Parser upgrades.** A chain whose reading version changed is re-parsed from its materials, read through the producer client, and its facts are sent again under the same stable keys as a producer replay of those materials: the new readings become live and the previous ones are archived with their derived chains, which never include authored records about the session.
 

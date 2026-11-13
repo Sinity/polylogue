@@ -512,7 +512,7 @@ impl Engine {
                             polylogue_store::primary::AcquisitionRoute::NativeCapture,
                         )
                         .source;
-                    let snapshot = self.writer.source_snapshot(source, "")?;
+                    let snapshot = self.writer.source_snapshot(source)?;
                     if snapshot.pending.head.is_some()
                         || snapshot.basis.status != polylogue_store::primary::SourceStatus::Ready
                     {
@@ -906,7 +906,7 @@ impl Engine {
                 polylogue_store::primary::AcquisitionRoute::NativeCapture,
             )
             .source;
-        let snapshot = self.writer.source_snapshot(source, "")?;
+        let snapshot = self.writer.source_snapshot(source)?;
         let pending = snapshot.pending.head.as_ref();
         if let Some(working) = &self.inputs[path].working
             && pending.is_some_and(|head| head.identity == working.capture)
@@ -1187,70 +1187,72 @@ impl Engine {
                 continue;
             }
             let state = c.progress;
-            let (path, origin) = match &c.imported {
-                Some(imported) => {
-                    let Some(origin) = polylogue_sources::origin::by_name(&imported.format)
-                        .filter(|origin| has_reading(origin))
-                    else {
-                        continue;
-                    };
-                    // The recorded path chooses the parser. Without one, this
-                    // input is refused with its reason and the pass goes on.
-                    let path = match imported.path.clone().map(PathBuf::from) {
-                        None => Err((
-                            PathBuf::new(),
-                            "the stored import has no recorded path".to_owned(),
-                        )),
-                        Some(path) => match unread_path(origin, &path) {
-                            Some(reason) => Err((path, reason)),
-                            None => Ok(path),
-                        },
-                    };
-                    match path {
-                        Ok(path) => (path, origin),
-                        Err((path, reason)) => {
-                            let mut plan = self.reparse_plan(
-                                path,
-                                origin,
-                                InputKey {
-                                    id: c.input.clone(),
-                                    format: origin.name.into(),
-                                    route: origin.route.imported(),
+            let (path, origin) = if state.imported || self.archive.is_primary() {
+                let source = &c.source;
+                let Some(origin) = polylogue_sources::origin::by_name(&source.format)
+                    .filter(|origin| has_reading(origin))
+                else {
+                    continue;
+                };
+                // The recorded path chooses the parser. Without one, this
+                // input is refused with its reason and the pass goes on.
+                let path = match source.path.clone().map(PathBuf::from) {
+                    None => Err((
+                        PathBuf::new(),
+                        "the stored input has no recorded path".to_owned(),
+                    )),
+                    Some(path) => match unread_path(origin, &path) {
+                        Some(reason) => Err((path, reason)),
+                        None => Ok(path),
+                    },
+                };
+                match path {
+                    Ok(path) => (path, origin),
+                    Err((path, reason)) => {
+                        let mut plan = self.reparse_plan(
+                            path,
+                            origin,
+                            InputKey {
+                                id: c.input.clone(),
+                                format: origin.name.into(),
+                                route: if state.imported {
+                                    origin.route.imported()
+                                } else {
+                                    origin.route
                                 },
-                                &state,
-                                None,
-                                false,
-                            )?;
-                            pass.errors
-                                .push(format!("refuse stored import {}: {reason}", c.input));
-                            self.record_stop(
-                                &mut plan,
-                                polylogue_model::batch::StepProgress::Refused { reason },
-                                pass,
-                            );
-                            continue;
-                        }
-                    }
-                }
-                None => {
-                    let Some(path) = watched.get(&c.input) else {
-                        continue;
-                    };
-                    let st = &self.inputs[path];
-                    // Current ordinary work belongs to stored_plan. The query
-                    // also selects a stopped attempt whose dependencies changed.
-                    if c.current
-                        && ((!c.reading_changed && !c.stopped_at_length) || st.unread.is_some())
-                    {
+                            },
+                            &state,
+                            None,
+                            false,
+                        )?;
+                        pass.errors
+                            .push(format!("refuse stored input {}: {reason}", c.input));
+                        self.record_stop(
+                            &mut plan,
+                            polylogue_model::batch::StepProgress::Refused { reason },
+                            pass,
+                        );
                         continue;
                     }
-                    (path.clone(), st.origin)
                 }
+            } else {
+                let Some(path) = watched.get(&c.input) else {
+                    continue;
+                };
+                let st = &self.inputs[path];
+                // Current ordinary work belongs to stored_plan. The query
+                // also selects a stopped attempt whose dependencies changed.
+                if c.current
+                    && ((!c.reading_changed && !c.stopped_at_length) || st.unread.is_some())
+                {
+                    continue;
+                }
+                (path.clone(), st.origin)
             };
             if !has_reading(origin) {
                 continue;
             }
-            let tracked = c.current && c.imported.is_none() && watched.get(&c.input) == Some(&path);
+            let tracked = c.current && !state.imported && watched.get(&c.input) == Some(&path);
             let facts = tracked
                 .then(|| self.inputs.get(&path).and_then(|st| st.facts))
                 .flatten();
@@ -1267,7 +1269,7 @@ impl Engine {
                 InputKey {
                     id: c.input,
                     format: origin.name.into(),
-                    route: if c.imported.is_some() {
+                    route: if state.imported {
                         origin.route.imported()
                     } else {
                         origin.route
@@ -1277,11 +1279,12 @@ impl Engine {
                 facts,
                 tracked,
             )?;
-            plan.input_finished = c.imported.is_some();
+            plan.input_finished = state.imported;
             if c.current && origin.arrival == polylogue_sources::Arrival::Live {
                 plan.priority = Priority::Live;
             }
-            if state.parsed && (c.reading_changed || c.stopped_at_length) {
+            if c.previous_reading || state.parsed && (c.reading_changed || c.stopped_at_length) {
+                plan.replace = true;
                 replacements.push(plan);
                 continue;
             }
@@ -1740,11 +1743,7 @@ impl Engine {
                             context.basis = plan.basis.clone();
                             context
                         } else {
-                            self.sampling_context(
-                                &job.path,
-                                &job.input.format,
-                                &job.origin.reading_version(),
-                            )?
+                            self.sampling_context(&job.path, &job.input.format)?
                         };
                     context.facts = plan.facts;
                     if let Some(raw) = &plan.raw {
@@ -1895,10 +1894,7 @@ impl Engine {
                 machine: self.config.machine.clone(),
                 path_bytes: plan.path.as_os_str().as_encoded_bytes().to_vec(),
             };
-            let snapshot = self
-                .writer
-                .source_snapshot(source, &plan.origin.reading_version())
-                .ok();
+            let snapshot = self.writer.source_snapshot(source).ok();
             let head = snapshot.and_then(|snapshot| snapshot.pending.head);
             let capture = head.and_then(|head| match head.captured {
                 polylogue_store::primary::Capture::Input(input)

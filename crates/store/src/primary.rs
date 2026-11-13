@@ -4,9 +4,9 @@ pub mod acquisition;
 pub mod authored;
 pub use acquisition::{
     AcquisitionReceipt, AcquisitionRoute, CaptureDisposition, CaptureEmitter, CaptureMembers,
-    CaptureMode, CapturePlan, CaptureReceipt, ConfirmedSource, PendingCheckpoint, PendingGroupPage,
-    PendingSource, RawCustodyReceipt, RawRange, SourceBasis, SourceSelector, SourceSnapshot,
-    SourceStatus, SourceSubject,
+    CaptureMode, CapturePlan, CaptureReceipt, ConfirmedSource, PendingGroupPage, PendingSource,
+    RawCustodyReceipt, RawRange, SourceBasis, SourceSelector, SourceSnapshot, SourceStatus,
+    SourceSubject,
 };
 pub mod products;
 pub mod queue;
@@ -24,9 +24,9 @@ pub use replay::{
 pub(crate) mod projection;
 pub(crate) mod scope;
 pub use products::{
-    Capture, CaptureGroup, CapturedInput, CapturedReading, Confirmed, ConfirmedChange,
-    ExportReadingKey, Material, PendingCapture, PreparedInput, PreparedWrite, Product,
-    ProductWrite, Reading, SourceLocation,
+    Capture, CaptureGroup, CapturedInput, Confirmed, ConfirmedChange, ExportReadingKey, Material,
+    ParsedPublication, ParsedSource, PendingCapture, PreparedInput, PreparedWrite, Product,
+    ProductWrite, PublicationReceipt, Reading, SourceLocation, SourceRecord,
 };
 
 use crate::{Result, StoreError};
@@ -36,7 +36,17 @@ use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 pub type ProductEmitter<'a> = dyn FnMut(ProductWrite) -> Result<()> + 'a;
-pub type ReadingProducts<'a> = dyn FnMut(&mut ProductEmitter<'_>) -> Result<()> + 'a;
+/// The existing native replay selection whose live set the caller interpreted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadingScope {
+    pub family: String,
+    pub materials: Vec<String>,
+    pub event_types: Vec<String>,
+    pub expected_live_hash: String,
+}
+
+pub type ReadingProducts<'a> =
+    dyn FnMut(&ReadingScope, &mut ProductEmitter<'_>) -> Result<String> + 'a;
 
 /// Logical names of immutable intents in the existing producer custody store.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,18 +72,14 @@ pub trait Sinex: Send + Sync {
         length: u64,
         body: PreparedBody,
     ) -> Result<PreparedWrite>;
-    /// Stages all member bodies and private facts before one durable group publication.
+    /// Stages member bodies and acquisition metadata before one durable group publication.
     fn prepare_input_group(
         &self,
         plan: &CapturePlan,
         members: &mut CaptureMembers<'_>,
     ) -> Result<CaptureReceipt>;
-    /// Reads only local durable source headers and one verified selected control.
-    fn pending_source(
-        &self,
-        source: &SourceSelector,
-        reading_version: &str,
-    ) -> Result<PendingSource>;
+    /// Reads local durable acquisition headers.
+    fn pending_source(&self, source: &SourceSelector) -> Result<PendingSource>;
     /// Pages immutable accepted membership; headers contain no parsed outputs.
     /// Zero limit is invalid. Missing applied members do not prove source EOF.
     fn pending_group_headers(
@@ -92,7 +98,7 @@ pub trait Sinex: Send + Sync {
     /// network I/O: its one encoding, or its chunks' in order.
     fn capture_body(&self, identity: &str) -> Result<Vec<PreparedBody>>;
     fn pending_captures(&self) -> Result<Vec<PendingCapture>>;
-    /// Loads complete private facts for one ready capture, never the whole queue.
+    /// Loads immutable acquisition metadata for one capture.
     fn capture(&self, identity: &str) -> Result<Capture>;
     fn complete_captures(
         &self,
@@ -100,17 +106,13 @@ pub trait Sinex: Send + Sync {
         products: &[ProductWrite],
     ) -> Result<PreparedWrite>;
     fn prepare_products(&self, products: &[ProductWrite]) -> Result<PreparedWrite>;
-    fn prepare_export_products(
+    /// Publishes interpreted facts before local rows. An admitted receipt is
+    /// durable Sinex custody, not a claim that the local parser committed.
+    fn prepare_parsed(
         &self,
-        key: &ExportReadingKey,
+        source: &ParsedSource,
         products: &[ProductWrite],
-    ) -> Result<PreparedWrite>;
-    fn visit_pending_export_readings(
-        &self,
-        key: &ExportReadingKey,
-        visit: &mut dyn FnMut(&CapturedReading) -> Result<()>,
-    ) -> Result<()>;
-
+    ) -> Result<ParsedPublication>;
     fn prepare_request(
         &self,
         request: &polylogue_model::authored::PreparedRequest,
@@ -135,7 +137,7 @@ pub trait Sinex: Send + Sync {
         root: &str,
         key: &ExportReadingKey,
         visit: &mut ReadingProducts<'_>,
-    ) -> Result<PreparedWrite>;
+    ) -> Result<ParsedPublication>;
     /// Products under a caller-chosen write identity, so a retry reuses it.
     fn prepare_named_products(
         &self,
@@ -150,6 +152,7 @@ pub trait Sinex: Send + Sync {
         &self,
         state: &ReplayState,
         applied: &dyn Fn(&str) -> Result<bool>,
+        processed: &dyn Fn(&ParsedSource, &PublicationReceipt) -> Result<bool>,
     ) -> Result<()>;
 }
 

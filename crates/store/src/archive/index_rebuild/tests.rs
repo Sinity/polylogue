@@ -222,3 +222,151 @@ fn an_index_this_build_wrote_has_the_build_identity() {
         schema::build_index_identity(false).unwrap()
     );
 }
+
+#[test]
+fn primary_index1_rebuild_preserves_original_cache_and_paid_and_pending_stores() {
+    for boundary in std::iter::once(None)
+        .chain(cfg!(feature = "faults").then_some(Some("index.after_set_aside")))
+        .chain(cfg!(feature = "faults").then_some(Some("index.after_creation")))
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("archive");
+        let store = dir.path().join("native");
+        let (archive, lock) = Archive::open_primary(&root, &store).unwrap();
+        let embeddings = open_write(&archive.embeddings_db(), cache::SETUP).unwrap();
+        embeddings.execute("INSERT INTO embedded(text_hash,model,dims,vector,embedded_at) VALUES(x'1234','paid/synthetic',1,x'0000803f',1)",[]).unwrap();
+        drop(embeddings);
+        drop(lock);
+        std::fs::remove_file(archive.index_db()).unwrap();
+        crate::fixture::primary_index_before_originals(&archive.index_db()).unwrap();
+        let old = open_write(&archive.index_db(), cache::SETUP).unwrap();
+        old.execute(
+            "INSERT INTO meta VALUES('original-cache-marker','retained')",
+            [],
+        )
+        .unwrap();
+        let original_schema = schema::index_identity(&old).unwrap();
+        drop(old);
+        let original_bytes = std::fs::read(archive.index_db()).unwrap();
+        let spool = store
+            .join("producer-spool")
+            .join("synthetic-producer")
+            .join("operations");
+        std::fs::create_dir_all(&spool).unwrap();
+        let pending = spool.join("authored-pending-body");
+        std::fs::write(&pending, b"synthetic immutable pending intent").unwrap();
+        #[cfg(feature = "faults")]
+        if let Some(boundary) = boundary {
+            crate::fault::arm(boundary, "", crate::fault::Action::Fail, 0, 1);
+            assert!(Archive::open_primary(&root, &store).is_err());
+            crate::fault::clear();
+        }
+        #[cfg(not(feature = "faults"))]
+        let _ = boundary;
+        let (current, lock) = Archive::open_primary(&root, &store).unwrap();
+        let retained = root.join(file_name(&original_schema));
+        assert_eq!(std::fs::read(&retained).unwrap(), original_bytes);
+        assert_eq!(
+            std::fs::read(&pending).unwrap(),
+            b"synthetic immutable pending intent"
+        );
+        let paid = open_read(&current.embeddings_db()).unwrap();
+        assert_eq!(
+            paid.query_row(
+                "SELECT vector FROM embedded WHERE model='paid/synthetic'",
+                [],
+                |row| row.get::<_, Vec<u8>>(0)
+            )
+            .unwrap(),
+            [0, 0, 128, 63]
+        );
+        let index = open_write(&current.index_db(), cache::SETUP).unwrap();
+        assert_eq!(
+            schema::version(&index).unwrap(),
+            schema::PRIMARY_INDEX_VERSION
+        );
+        assert!(!built(&index, true).unwrap());
+        let mut replay = crate::primary::projection::replay_state(&index).unwrap();
+        replay.applied_position = Some(5);
+        replay.head = Some(5);
+        crate::primary::projection::save_replay(&index, &replay).unwrap();
+        index
+            .execute_batch(
+                "INSERT INTO source_input VALUES('original','claude-code');
+            INSERT INTO source_revision VALUES('original',1,'first',1,10,1);
+            INSERT INTO input_ref(pk,id,format) VALUES(71,'original','claude-code');",
+            )
+            .unwrap();
+        assert!(
+            !built(&index, true).unwrap(),
+            "head receipt does not replace missing parser progress"
+        );
+        index.execute_batch("INSERT INTO parse_state(input_pk,chain,reading_version,status,parsed_upto) VALUES(71,1,'reader=1','parsing',5)").unwrap();
+        assert!(
+            !built(&index, true).unwrap(),
+            "an unfinished prefix remains pending"
+        );
+        index
+            .execute_batch("UPDATE parse_state SET status='waiting',at_length=9")
+            .unwrap();
+        assert!(
+            !built(&index, true).unwrap(),
+            "a waiting suffix belongs to its exact source length"
+        );
+        index
+            .execute_batch("UPDATE parse_state SET at_length=10")
+            .unwrap();
+        assert!(
+            !built(&index, true).unwrap(),
+            "a parser cursor without native admission retains the old cache"
+        );
+        index
+            .execute(
+                "UPDATE parse_state SET native_publication=?1",
+                [crate::encoding::pack_bytes(b"synthetic admitted receipt").unwrap()],
+            )
+            .unwrap();
+        assert!(
+            built(&index, true).unwrap(),
+            "waiting at the known source length is an explicit incomplete suffix"
+        );
+        index.execute_batch("INSERT INTO primary_refused VALUES('unknown',5,'unknown@1','unavailable original evidence',1)").unwrap();
+        assert!(
+            !built(&index, true).unwrap(),
+            "unknown native evidence retains the old cache"
+        );
+        index.execute_batch("DELETE FROM primary_refused").unwrap();
+        remove_when_built(&index, &current.index_db(), true).unwrap();
+        assert!(!retained.exists());
+        assert_eq!(
+            std::fs::read(&pending).unwrap(),
+            b"synthetic immutable pending intent"
+        );
+        drop(index);
+        drop(lock);
+    }
+}
+
+#[test]
+fn unknown_primary_shapes_are_refused_without_replacing_the_original_bytes() {
+    for version in [1, schema::PRIMARY_INDEX_VERSION] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("archive");
+        let store = dir.path().join("native");
+        let (archive, lock) = Archive::open_primary(&root, &store).unwrap();
+        drop(lock);
+        if version == 1 {
+            std::fs::remove_file(archive.index_db()).unwrap();
+            crate::fixture::primary_index_before_originals(&archive.index_db()).unwrap();
+        }
+        let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
+        index.execute_batch("CREATE TABLE unexplained_primary_data(value BLOB);INSERT INTO unexplained_primary_data VALUES(x'1234')").unwrap();
+        drop(index);
+        let before = std::fs::read(archive.index_db()).unwrap();
+        assert!(
+            matches!(Archive::open_primary(&root,&store),Err(StoreError::NoMigration{database:"index",found}) if found==version)
+        );
+        assert_eq!(std::fs::read(archive.index_db()).unwrap(), before);
+        assert!(set_aside_files(&root).is_empty());
+    }
+}

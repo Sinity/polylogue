@@ -50,7 +50,7 @@ fn confirmed_capture_resumes_in_the_same_engine_without_reacquiring_provider_byt
         job.end = (bytes.len() / 2) as u64;
         job.length = job.end;
         job.at_end = false;
-        let mut context = engine.sampling_context(&path, origin.name, "").unwrap();
+        let mut context = engine.sampling_context(&path, origin.name).unwrap();
         context.facts = Some(now);
         job.acquisition = Some(context);
         let (prepared, done) = crate::pool::run(job, &engine.archive, &engine.blobs, true);
@@ -186,7 +186,7 @@ fn confirmed_capture_resumes_in_the_same_engine_without_reacquiring_provider_byt
         assert!(matches!(tail.change, Change::Appended { from } if from == done.end));
         let mut job = tail.next_job(&polylogue_testkit::stopped_attempt());
         assert_eq!(job.start, done.end);
-        let mut context = engine.sampling_context(&path, origin.name, "").unwrap();
+        let mut context = engine.sampling_context(&path, origin.name).unwrap();
         context.facts = Some(now);
         job.acquisition = Some(context);
         let (prepared, last) = crate::pool::run(job, &engine.archive, &engine.blobs, true);

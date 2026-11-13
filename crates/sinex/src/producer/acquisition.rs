@@ -4,7 +4,7 @@
 use super::*;
 use polylogue_store::primary::{
     CaptureDisposition, CaptureGroup, CaptureMembers, CaptureMode, CapturePlan, CaptureReceipt,
-    PendingCheckpoint, PendingSource, RawCustodyReceipt, SourceSelector, SourceStatus,
+    PendingSource, RawCustodyReceipt, SourceSelector, SourceStatus,
 };
 use std::collections::BTreeMap;
 
@@ -37,11 +37,11 @@ fn pending(queue: &crate::spool::Spool, entry: crate::spool::Prepared) -> Result
 
 fn semantic(input: &CapturedInput, mode: CaptureMode) -> Result<serde_json::Value> {
     // Finalized cache coordinates and observer clocks are frozen by the first
-    // acceptance. Byte identity and complete parser facts still match exactly.
+    // acceptance. Byte identity still matches exactly.
     Ok(serde_json::json!({
         "hash":input.hash, "length":input.length, "raw_range":input.raw_range,
         "generation":input.generation, "raw_total":input.raw_total, "raw_predecessor":input.raw_predecessor,
-        "index":input.index, "route":input.route, "parsed":input.parsed,
+        "index":input.index, "route":input.route,
         "origin":input.input.origin,
         "source":(mode == CaptureMode::Mutable).then(|| input.basis.as_ref().map(|basis| &basis.source)),
     }))
@@ -57,7 +57,7 @@ impl Sinex {
         let queue = self.queue()?;
         let mut heads = BTreeMap::new();
         for basis in &plan.bases {
-            if let Some(entry) = queue.source_heads(&basis.source, "")?.head {
+            if let Some(entry) = queue.source_heads(&basis.source)?.head {
                 let Some(Capture::Input(input)) = entry.capture() else {
                     return Err(Error::Invalid("pending source head has no input".into()));
                 };
@@ -174,11 +174,11 @@ impl Sinex {
                     let queue = self.queue()?;
                     queue
                         .get(&member)?
-                        .map(|_| queue.pin_capture(&member))
+                        .map(|_| queue.capture(&member))
                         .transpose()?
                 };
                 if let Some(retained) = retained {
-                    let Capture::Input(original) = retained.decode()? else {
+                    let Capture::Input(original) = retained else {
                         return Err(polylogue_store::StoreError::Invalid(
                             "acquisition retry replaced a source capture".into(),
                         ));
@@ -253,7 +253,7 @@ impl Sinex {
         if plan.mode == CaptureMode::Mutable {
             for basis in &plan.bases {
                 if queue
-                    .source_heads(&basis.source, "")?
+                    .source_heads(&basis.source)?
                     .head
                     .as_ref()
                     .map(|head| &head.identity)
@@ -313,11 +313,11 @@ impl Sinex {
                     let queue = self.queue()?;
                     queue
                         .get(&member)?
-                        .map(|_| queue.pin_capture(&member))
+                        .map(|_| queue.capture(&member))
                         .transpose()?
                 };
                 if let Some(original) = original {
-                    let Capture::Input(original) = original.decode()? else {
+                    let Capture::Input(original) = original else {
                         return Err(Error::Invalid("raw custody has a non-input member".into()));
                     };
                     if semantic(&input, plan.mode)? != semantic(&original, plan.mode)?
@@ -378,13 +378,9 @@ impl Sinex {
         })
     }
 
-    pub(crate) fn pending_source(
-        &self,
-        source: &SourceSelector,
-        reading_version: &str,
-    ) -> Result<PendingSource> {
+    pub(crate) fn pending_source(&self, source: &SourceSelector) -> Result<PendingSource> {
         let queue = self.queue()?;
-        let heads = queue.source_heads(source, reading_version)?;
+        let heads = queue.source_heads(source)?;
         let mut result = PendingSource {
             status: SourceStatus::Ready,
             ..Default::default()
@@ -411,34 +407,6 @@ impl Sinex {
         }
         if heads.unattributed {
             result.status = SourceStatus::MissingEvidence;
-        }
-        if let Some(entry) = heads.control {
-            let Some(Capture::Input(header)) = entry.capture().cloned() else {
-                return Err(Error::Invalid("parser control has no source header".into()));
-            };
-            let index = entry
-                .control()
-                .cloned()
-                .ok_or_else(|| Error::Invalid("parser control index is missing".into()))?;
-            let Capture::Input(full) = queue.capture(&entry.identity)? else {
-                return Err(Error::Invalid(
-                    "parser control has no source capture".into(),
-                ));
-            };
-            let checkpoint = full
-                .parsed
-                .iter()
-                .rev()
-                .filter_map(|reading| reading.checkpoint.as_ref())
-                .find(|checkpoint| checkpoint.matches(&index.reading_version, index.parsed_upto))
-                .ok_or_else(|| {
-                    Error::Invalid("parser control index differs from its immutable capture".into())
-                })?;
-            result.continuation = Some(PendingCheckpoint {
-                capture: entry.record.identity,
-                header: *header,
-                checkpoint: checkpoint.clone(),
-            });
         }
         Ok(result)
     }

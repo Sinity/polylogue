@@ -24,7 +24,7 @@ fn every_database_starts_at_its_current_version() {
             ARCHIVE_VERSION,
         ),
         (ensure_index, INDEX_VERSION),
-        (ensure_primary_index, INDEX_VERSION),
+        (ensure_primary_index, PRIMARY_INDEX_VERSION),
         (ensure_embeddings, 1),
     ] {
         let conn = Connection::open_in_memory().unwrap();

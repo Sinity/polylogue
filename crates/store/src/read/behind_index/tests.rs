@@ -8,26 +8,28 @@ fn expected(
     chain: i64,
     length: u64,
     current: bool,
-    imported: Option<(&str, Option<&str>)>,
+    source: (&str, Option<&str>),
+    imported: bool,
     parsed_upto: Option<u64>,
 ) -> BehindChain {
     BehindChain {
         input: input.into(),
         current,
         reading_changed: false,
+        previous_reading: false,
         stopped_attempt: None,
         stopped_at_length: false,
-        imported: imported.map(|(format, path)| ImportedAs {
-            format: format.into(),
-            path: path.map(str::to_owned),
-        }),
+        source: StoredSource {
+            format: source.0.into(),
+            path: source.1.map(str::to_owned),
+        },
         progress: ChainProgress {
             chain,
             length,
             parsed_upto: parsed_upto.unwrap_or(0),
             parsed: parsed_upto.is_some(),
             waiting: false,
-            imported: imported.is_some(),
+            imported,
         },
     }
 }
@@ -76,13 +78,14 @@ fn behind_chains_preserve_revision_import_and_parser_choices() {
             .unwrap(),
         vec![
             // Live inputs first, then most recently observed inputs and newest chains.
-            expected("b", 1, 10, true, None, None),
+            expected("b", 1, 10, true, ("native", None), false, None),
             expected(
                 "a",
                 2,
                 90,
                 false,
-                Some(("codex-rollout", Some("/home/op/format"))),
+                ("codex-rollout", Some("/home/op/format")),
+                true,
                 Some(12)
             ),
             expected(
@@ -90,7 +93,8 @@ fn behind_chains_preserve_revision_import_and_parser_choices() {
                 1,
                 20,
                 true,
-                Some(("codex-rollout", Some("/home/op/format"))),
+                ("codex-rollout", Some("/home/op/format")),
+                true,
                 None
             ),
             expected(
@@ -98,7 +102,8 @@ fn behind_chains_preserve_revision_import_and_parser_choices() {
                 1,
                 10,
                 true,
-                Some(("fallback", Some("/home/op/first"))),
+                ("fallback", Some("/home/op/first")),
+                true,
                 None
             ),
             expected(
@@ -106,7 +111,8 @@ fn behind_chains_preserve_revision_import_and_parser_choices() {
                 1,
                 10,
                 true,
-                Some(("export-file", Some("/home/op/export-only"))),
+                ("export-file", Some("/home/op/export-only")),
+                true,
                 None
             ),
         ]
@@ -166,7 +172,8 @@ fn history_work(revisions: usize) -> usize {
                 chain as i64,
                 (revisions - chains + chain) as u64,
                 chain == chains,
-                None,
+                ("codex-rollout", Some("/home/op/session.jsonl")),
+                false,
                 None,
             )
         })

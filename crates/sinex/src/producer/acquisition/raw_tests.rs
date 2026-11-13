@@ -78,7 +78,7 @@ fn acquire_ranges_on(
             &mut |emit| {
                 for (ordinal, range) in ranges.iter().copied().enumerate() {
                     let bytes = vec![b'A' + (ordinal % 26) as u8; range.length()? as usize];
-                    let mut input = capture(&bytes, vec![]);
+                    let mut input = capture(&bytes);
                     // Logical NoExtent still owns the actual provider body.
                     input.rows.extents.clear();
                     input.rows.input = generation.stream().input.id.clone();
@@ -119,7 +119,7 @@ fn offline_raw_cursor_checks_many_bodies_and_restarts_without_source_or_parser_a
         .unwrap()
         .unwrap();
     assert_eq!(cursor.range(), RawRange { start: 0, end: 35 });
-    assert!(cursor.is_complete_stream());
+    assert!(cursor.is_complete_window());
     assert_eq!(cursor.disposition(), Some(CaptureDisposition::Prepared));
     let last = sinex
         .pending_group_headers(&write.identity, Some(33), 1)
@@ -128,7 +128,6 @@ fn offline_raw_cursor_checks_many_bodies_and_restarts_without_source_or_parser_a
     let Capture::Input(header) = &last.headers[0].captured else {
         panic!()
     };
-    assert!(header.parsed.is_empty());
     assert_eq!(header.generation.as_ref(), Some(&generation));
     assert!(last.headers[0].material.is_none());
     assert!(
@@ -167,7 +166,7 @@ fn unresolved_siblings_keep_actual_predecessor_body_refs_and_only_raw_custody_pr
     )
     .unwrap();
     let accepted_head = sinex
-        .pending_source(&generation.stream().source, "v")
+        .pending_source(&generation.stream().source)
         .unwrap()
         .head
         .unwrap()
@@ -201,7 +200,7 @@ fn unresolved_siblings_keep_actual_predecessor_body_refs_and_only_raw_custody_pr
         })
         .unwrap()
         .unwrap();
-    assert!(cursor.is_complete_stream());
+    assert!(cursor.is_complete_window());
     assert_eq!(
         cursor.disposition(),
         Some(CaptureDisposition::UnresolvedBasisConflict)
@@ -209,7 +208,7 @@ fn unresolved_siblings_keep_actual_predecessor_body_refs_and_only_raw_custody_pr
     assert_eq!(cursor.last_body(), page.headers[2].identity);
     assert_eq!(
         sinex
-            .pending_source(&generation.stream().source, "v")
+            .pending_source(&generation.stream().source)
             .unwrap()
             .head
             .unwrap()
@@ -328,7 +327,7 @@ fn explicit_body_anchor_keeps_equal_generation_observations_and_dispositions_sep
     )
     .unwrap();
     let head = sinex
-        .pending_source(&generation.stream().source, "v")
+        .pending_source(&generation.stream().source)
         .unwrap()
         .head
         .unwrap()
@@ -374,7 +373,7 @@ fn explicit_body_anchor_keeps_equal_generation_observations_and_dispositions_sep
             anchor: Some(anchor.clone()),
         };
         let cursor = sinex.raw_acquisition_cursor(&query).unwrap().unwrap();
-        assert!(cursor.is_complete_stream());
+        assert!(cursor.is_complete_window());
         assert_eq!(cursor.root_body(), anchor);
         assert_eq!(cursor.last_body(), anchor);
         assert_eq!(cursor.disposition(), Some(disposition));
@@ -458,7 +457,7 @@ fn an_explicit_tail_anchor_pins_its_branch_and_never_chooses_a_fork_by_queue_ord
     let cursor = sinex.raw_acquisition_cursor(&selected).unwrap().unwrap();
     assert_eq!(cursor.root_body(), start);
     assert_eq!(cursor.last_body(), end);
-    assert!(cursor.is_complete_stream());
+    assert!(cursor.is_complete_window());
     assert_eq!(cursor.disposition(), Some(CaptureDisposition::Prepared));
     drop(sinex);
     assert_eq!(
