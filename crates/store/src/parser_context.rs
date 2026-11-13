@@ -16,7 +16,7 @@ pub(crate) const VERSION_INDEX: &str = "CREATE INDEX IF NOT EXISTS parser_contex
 pub struct Overlay(Arc<Mutex<Attempt>>);
 struct Attempt {
     scratch: Connection,
-    index: Connection,
+    index: Option<Connection>,
     input: Option<i64>,
     chain: Option<i64>,
     source: String,
@@ -41,17 +41,27 @@ impl Overlay {
         let source = input.to_owned();
         let source_chain = chain;
         let sql_base = sql_cursor(base)?;
-        let index = crate::archive::open_read(&archive.index_db())?;
-        index.execute_batch("BEGIN")?;
-        let selected = match chain {
-            Some(chain) => index.query_row("SELECT i.pk,p.chain FROM input_ref i JOIN parse_state p ON p.input_pk=i.pk WHERE i.id=?1 AND p.chain=?2 AND p.reading_version=?3 AND p.parsed_upto=?4",params![input,chain,version,sql_base],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?))).optional()?,
-            None if base==0 => None,
-            None => return Err(StoreError::Invalid("parser continuation has no selected chain identity".into())),
+        // A fresh attempt gets every value from its private replay. It never
+        // consults admitted rows, so it must not hold a read snapshot that
+        // prevents the writer from restarting its WAL between transactions.
+        let index = if base == 0 {
+            None
+        } else {
+            let index = crate::archive::open_read(&archive.index_db())?;
+            index.execute_batch("BEGIN")?;
+            Some(index)
+        };
+        let selected = match (index.as_ref(), chain) {
+            (Some(index), Some(chain)) => index.query_row("SELECT i.pk,p.chain FROM input_ref i JOIN parse_state p ON p.input_pk=i.pk WHERE i.id=?1 AND p.chain=?2 AND p.reading_version=?3 AND p.parsed_upto=?4",params![input,chain,version,sql_base],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?))).optional()?,
+            (None, _) => None,
+            (_, None) => return Err(StoreError::Invalid("parser continuation has no selected chain identity".into())),
         };
         let (input, chain) = selected.map_or((None, None), |(i, c)| (Some(i), Some(c)));
         let mut replay_chain = None;
         if base > 0 {
-            let complete = if let (Some(input), Some(chain)) = (input, chain) {
+            let complete = if let (Some(index), Some(input), Some(chain)) =
+                (index.as_ref(), input, chain)
+            {
                 index.query_row("SELECT through FROM parser_context_state WHERE input_pk=?1 AND chain=?2 AND reading_version=?3",params![input,chain,version],|r|r.get::<_,i64>(0)).optional()?.map(stored_cursor).transpose()? == Some(base)
             } else {
                 false
@@ -190,8 +200,11 @@ impl Overlay {
         let (Some(input), Some(chain)) = (attempt.input, attempt.chain) else {
             return Ok(None);
         };
+        let index = attempt.index.as_ref().ok_or_else(|| {
+            StoreError::Invalid("admitted parser context has no read snapshot".into())
+        })?;
         let sql_base = sql_cursor(attempt.lookup_through)?;
-        let row=attempt.index.query_row("SELECT value,version_hash,cursor FROM parser_context WHERE input_pk=?1 AND chain=?2 AND reading_version=?3 AND key=?4 AND cursor<=?5 ORDER BY cursor DESC LIMIT 1",params![input,chain,attempt.version,key,sql_base],|r|Ok((r.get::<_,Vec<u8>>(0)?,r.get::<_,Option<Vec<u8>>>(1)?,r.get::<_,i64>(2)?))).optional()?;
+        let row=index.query_row("SELECT value,version_hash,cursor FROM parser_context WHERE input_pk=?1 AND chain=?2 AND reading_version=?3 AND key=?4 AND cursor<=?5 ORDER BY cursor DESC LIMIT 1",params![input,chain,attempt.version,key,sql_base],|r|Ok((r.get::<_,Vec<u8>>(0)?,r.get::<_,Option<Vec<u8>>>(1)?,r.get::<_,i64>(2)?))).optional()?;
         let Some((bytes, hash, cursor)) = row else {
             return Ok(None);
         };
@@ -218,8 +231,8 @@ impl Overlay {
                             "response context version differs from its mapping".into(),
                         ));
                     }
-                    let (value, _) = crate::versions::read_message(&attempt.index, &hash)?
-                        .ok_or_else(|| {
+                    let (value, _) =
+                        crate::versions::read_message(index, &hash)?.ok_or_else(|| {
                             StoreError::Invalid("response context message version is absent".into())
                         })?;
                     if value.id != message {
@@ -378,3 +391,6 @@ fn stored_cursor(value: i64) -> Result<u64> {
     u64::try_from(value)
         .map_err(|_| StoreError::Invalid("parser context cursor is negative".into()))
 }
+
+#[cfg(test)]
+mod tests;
