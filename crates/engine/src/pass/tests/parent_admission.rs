@@ -31,7 +31,7 @@ fn queued_import_checks_its_captured_parent_before_source_admission() {
             let _lock = lock;
             engine.run(
                 worker_tx,
-                &rx,
+                rx,
                 &status,
                 crate::Lifetime::UntilStopped,
                 || {

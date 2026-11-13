@@ -214,7 +214,7 @@ fn a_scope_reset_during_preparation_cannot_complete_with_stale_state_or_capture_
         let work = threads.spawn(move || {
             let (tx, rx) = channel();
             let status = Arc::new(Mutex::new(LoopStatus::default()));
-            let result = engine.run(tx, &rx, &status, Lifetime::UntilIdle, || {});
+            let result = engine.run(tx, rx, &status, Lifetime::UntilIdle, || {});
             (engine, result)
         });
         waiting

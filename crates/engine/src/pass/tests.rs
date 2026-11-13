@@ -663,7 +663,7 @@ fn idle_loop_turns_do_not_repeat_the_startup_discovery_walk() {
     let (tx, rx) = channel();
     let worker_tx = tx.clone();
     let worker = std::thread::spawn(move || {
-        engine.run(worker_tx, &rx, &shared, Lifetime::UntilStopped, || {})
+        engine.run(worker_tx, rx, &shared, Lifetime::UntilStopped, || {})
     });
     let deadline = Instant::now() + Duration::from_secs(10);
     let observed = loop {

@@ -475,7 +475,15 @@ impl StopRequest {
     }
 }
 
+struct Requests {
+    receiver: Receiver<LoopMsg>,
+    pending: Option<LoopMsg>,
+    yielding: Arc<std::sync::atomic::AtomicBool>,
+    serving: bool,
+}
+
 pub struct Engine {
+    requests: Option<Requests>,
     collectors: collectors::Collectors,
     stop: StopRequest,
     pub config: Config,
@@ -576,6 +584,7 @@ impl Engine {
             lookups: repo_lookup::Cache::default(),
             lookups_at: None,
             collectors: collectors::Collectors::default(),
+            requests: None,
             stop,
         })
     }
