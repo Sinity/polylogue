@@ -1417,6 +1417,7 @@ fn a_lifecycle_wait_leaves_its_lease_holding_queued_worker_free_to_finish() {
         let mut index = crate::archive::open_write(&archive.index_db(), 1).unwrap();
         let resolver = resolve::Resolver::new(&archive, &index, None).unwrap();
         crate::primary::projection::apply(
+            &crate::text_rows::TextIds::new(&index, false).unwrap(),
             &mut index,
             &resolver,
             &[

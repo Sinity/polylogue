@@ -519,7 +519,16 @@ fn a_prepared_position_cannot_skip_newly_staged_native_facts() {
             .unwrap(),
         0
     );
-    assert_eq!(apply(&mut index, &resolver, &[]).unwrap(), 5);
+    assert_eq!(
+        apply(
+            &crate::text_rows::TextIds::new(&index, false).unwrap(),
+            &mut index,
+            &resolver,
+            &[]
+        )
+        .unwrap(),
+        5
+    );
     assert_eq!(
         index
             .query_row("SELECT count(*) FROM source_input", [], |row| row
@@ -564,5 +573,14 @@ fn prepared_application_respects_a_failed_scope_reset_fence() {
     index
         .execute("DELETE FROM meta WHERE key='confirmed_scope_pending'", [])
         .unwrap();
-    assert_eq!(apply(&mut index, &resolver, &[]).unwrap(), 2);
+    assert_eq!(
+        apply(
+            &crate::text_rows::TextIds::new(&index, false).unwrap(),
+            &mut index,
+            &resolver,
+            &[]
+        )
+        .unwrap(),
+        2
+    );
 }

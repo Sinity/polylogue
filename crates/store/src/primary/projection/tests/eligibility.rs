@@ -76,6 +76,7 @@ fn native_lifecycle_selects_exact_original_values_and_preserves_independent_sour
         .unwrap()
     );
     apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
         &[
@@ -93,6 +94,7 @@ fn native_lifecycle_selects_exact_original_values_and_preserves_independent_sour
         (4, ConfirmedChange::Tombstoned, false),
     ] {
         apply(
+            &crate::text_rows::TextIds::new(&index, false).unwrap(),
             &mut index,
             &resolver,
             &[
@@ -140,6 +142,7 @@ fn covered_absence_does_not_hide_an_unread_tail_or_a_new_parser_interpretation()
         stopped_attempt: None,
     };
     apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
         &[live(1, "covered", progress), barrier(1)],
