@@ -121,8 +121,32 @@ fn admit_originals(
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let client = async_nats::connect(running.native.nats.url()).await.unwrap();
         let subjects = sinex_protocol::Subjects::new("rebuild");
+        let started = Instant::now();
+        loop {
+            let welcome = sinex_transport::replies::request_json::<sinex_protocol::ProducerWelcome>(
+                &client,
+                subjects.connect("polylogue"),
+                "polylogue",
+                &sinex_protocol::ProducerHello::default(),
+                Duration::from_secs(2),
+            ).await;
+            match welcome {
+                Ok(sinex_protocol::ProducerWelcome::Welcome { .. }) => break,
+                Ok(refused) => panic!("Source7 producer welcome: {refused:?}"),
+                Err(error) => assert!(started.elapsed() < Duration::from_secs(60), "Source7 producer welcome: {error}"),
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
         let mut acks = client.subscribe(subjects.ack("polylogue")).await.unwrap();
         client.flush().await.unwrap();
+        // Seed retained history through the old producer's actual registration
+        // boundary before connecting the current producer and its declarations.
+        let registration = Ingress::RegisterKinds {
+            frame: "source7-kinds".into(),
+            declarations: declaration.kinds.clone(),
+        };
+        let receipt = sinex_transport::producer::submit_frame(&client,&subjects,"polylogue",&mut acks,&registration,Duration::from_secs(30)).await.unwrap();
+        assert_eq!(receipt.refusal(),None,"{receipt:?}");
         for (index, (bytes, message)) in parts.iter().enumerate() {
             let offset = length;
             length += bytes.len() as u64;
@@ -200,12 +224,12 @@ fn adoption(partial: bool) {
     let wanted = expected(&ordinary, &bytes);
     assert_eq!(wanted.len(), 1);
     let running = running(&home);
-    let sdk = connect(&running.config);
     let mut parts = vec![(bytes.as_str(), Some(wanted[0].clone()))];
     if partial {
         parts.push(("{\"type\":\"assistant\"", None));
     }
     let (input, length, originals) = admit_originals(&running, &parts);
+    let sdk = connect(&running.config);
     assert_eq!(
         sinex_rows(
             &running.socket,
@@ -298,7 +322,6 @@ fn source7_facts_beyond_a_refused_reading_frontier_remain_live() {
     let wanted = expected(&ordinary, &format!("{first}{second}"));
     assert_eq!(wanted.len(), 2);
     let running = running(&home);
-    let sdk = connect(&running.config);
     let (input, length, _originals) = admit_originals(
         &running,
         &[
@@ -306,6 +329,7 @@ fn source7_facts_beyond_a_refused_reading_frontier_remain_live() {
             (&second, Some(wanted[1].clone())),
         ],
     );
+    let sdk = connect(&running.config);
     let (archive, _lock) = Archive::open_primary(&home.root, &running.config.store).unwrap();
     let engine = Engine::on_sinex(
         home.config(1 << 20),
