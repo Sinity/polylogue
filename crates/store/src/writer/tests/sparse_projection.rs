@@ -270,6 +270,7 @@ fn ordinary_primary_readings_preserve_every_known_block() {
         super::publications::confirm(&mut index, &archive, &readings[n], [7, 13, 11][n]);
     }
     for input in &mut readings {
+        input.parse[0].prepare();
         super::super::source_eligibility::retain_source_records(
             &index,
             &input.input,
