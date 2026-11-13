@@ -26,19 +26,27 @@ provides an unpacked Chrome extension; the overlay adds both packages. Package
 builds set `POLYLOGUE_REVISION` at compile time, and `--version` shows it.
 `--version` and `--help` load no deployment file.
 
-An explicit `-p PACKAGE` limits Cargo builds to the selected packages with all
-of their own features. Native target flags further limit what builds: use
+Extension packaging reads the committed registration in `extension/manifest.json` and the explicit runtime inputs in `extension/scripts/package.mjs`. `npm --prefix extension run build -- --out DIR` writes Chrome ZIP and Firefox XPI archives plus `build-manifest.json`; it never rewrites source versions. `--version VERSION` changes only the artifact version, stripping development suffixes while rejecting malformed browser versions. The existing Firefox background declaration and Gecko identity are preserved. Artifact checks do not qualify execution in a real browser.
+
+To change the source release version, run `npm --prefix extension version VERSION --no-git-tag-version`, update the committed manifest version to its browser version, then review the package, lock and manifest together. `npm --prefix extension run check` runs lint, manifest validation and the JS suite, including real zip/Python archive generation, exact released members and source-byte preservation. The required hosted check runs it too. The declared AgentCTL `extension` operation runs these npm commands without a Rust test build. `nix build .#polylogue-extension` checks packaging from read-only Nix source and provides the unpacked Chrome files. The declared `extension_package` operation builds that output and the Nix-format check only.
+
+An explicit `-p PACKAGE` selects tests to execute while retaining the canonical
+workspace feature graph. Native target flags limit what builds: use
 `--lib` for library unit tests, `--test NAME` for an integration target, or
 `--bin NAME` for a binary's unit tests. Without a target flag, targets marked
 `test = true` are selected, including opted-in examples. Package, exclusion,
 filterset and changed-package predicates still intersect when selecting which
 tests run.
 
-Without `-p`, or with explicit `--workspace`, tests retain the primary workspace
-feature list in `xtask/src/main.rs`. Package checks can have narrower transitive
-features than that full graph. The required check and warm command keep the
-full graph; Clippy covers all targets both with and without the Sinex client.
-Use `--workspace -p PACKAGE` to retain that graph while filtering execution.
+All test selections use the primary workspace feature list in
+`xtask/src/main.rs`, including test-only dependencies. A package filter changes
+execution rather than resolving a separate dependency feature union. Named
+`--bin` and `--test` targets build only matching targets; `--lib` builds the
+workspace's library test targets. Without a native target flag, all test
+targets are built. The required check and warm command retain that full graph;
+Clippy covers all targets both with and without the Sinex client. For an
+intentional isolated dependency investigation, invoke Cargo directly with its
+native package and feature flags; that creates a separate compilation graph.
 
 Shared dependency features are declared once in the root manifest's
 `[workspace.dependencies]`; workspace crates add no further features, except

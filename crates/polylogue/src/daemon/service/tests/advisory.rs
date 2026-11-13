@@ -6,10 +6,11 @@ use polylogue_model::{
     assertion::{AssertionKind, LinkRole, NewAssertion, NewAssertionLink},
     authorship::{Authorship, Channel},
 };
+use polylogue_store::read::limit::ReadLimit;
 use serde_json::{Value, json};
 use std::sync::atomic::Ordering;
 
-fn call(w: &TestDaemon, id: &str, session: &str) -> Value {
+fn call_with_limit(w: &TestDaemon, id: &str, session: &str, limit: &ReadLimit) -> Value {
     // This law tests persisted cooldown/history semantics, not warm latency.
     // Enter the unchanged context phase with a finite fixture budget, leaving
     // the typed operation's real 20 ms cap and hook deadline tests separate.
@@ -25,10 +26,6 @@ fn call(w: &TestDaemon, id: &str, session: &str) -> Value {
         cwd: CWD.into(),
         session: SessionId::parse(session).unwrap(),
     };
-    let limit = polylogue_store::read::limit::ReadLimit::new(
-        std::time::Duration::from_secs(5),
-        Default::default(),
-    );
     let answer = limit.scope(|| {
         super::super::context(
             &w.daemon,
@@ -44,6 +41,72 @@ fn call(w: &TestDaemon, id: &str, session: &str) -> Value {
         "advisory request {id} for {session}: {answer:?}"
     );
     crate::test_answers::ok(answer)
+}
+
+fn call(w: &TestDaemon, id: &str, session: &str) -> Value {
+    let limit = ReadLimit::new(std::time::Duration::from_secs(5), Default::default());
+    call_with_limit(w, id, session, &limit)
+}
+
+fn positive(w: &TestDaemon, id: &str, session: &str) -> Value {
+    let limit = ReadLimit::new(std::time::Duration::from_secs(5), Default::default());
+    loop {
+        limit
+            .check()
+            .expect("positive advisory fixture budget expired");
+        let answer = call_with_limit(w, id, session, &limit);
+        if answer["delivery"] == id {
+            return answer;
+        }
+        assert_eq!(answer["delivery"], Value::Null);
+        assert_eq!(answer["prepared"]["empty"], true);
+        // A commit can still be publishing scope or handing over delivery
+        // records. Wait on those existing locks before another positive attempt.
+        w.daemon
+            .scope
+            .read(limit.deadline(), |_| ())
+            .expect("fixture scope is loaded");
+        let _ = w.daemon.queued_deliveries.latest(session);
+        limit
+            .check()
+            .expect("positive advisory fixture budget expired");
+        std::thread::yield_now();
+    }
+}
+
+#[test]
+fn a_busy_scope_publication_returns_empty_without_reserving_advice() {
+    let (w, _) = fixture();
+    statement(
+        &w,
+        "locked-file",
+        AssertionKind::Decision,
+        "file:src/parser.rs@fixture-commit",
+        Some("cwd:/synthetic/repo"),
+        true,
+    );
+    w.daemon
+        .scope
+        .read(None, |_| {
+            assert!(w.daemon.scope.try_read(|_| ()).is_none());
+            let answer = call(&w, "busy-publication", "codex:advisory-test");
+            assert_eq!(answer["delivery"], Value::Null);
+            assert_eq!(answer["prepared"]["empty"], true);
+        })
+        .expect("fixture scope is loaded");
+    assert!(
+        w.daemon
+            .reads
+            .reader()
+            .unwrap()
+            .delivery("busy-publication")
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        positive(&w, "after-publication", "codex:advisory-test")["delivery"],
+        "after-publication"
+    );
 }
 
 #[test]
@@ -69,7 +132,7 @@ fn advisory_cooldown_and_once_pair_history_have_distinct_lifetimes() {
     );
     // Warm the real selection without preparing a delivery or reserving cooldown.
     assert!(!selected(&w, "Inspect src/parser.rs", CWD).empty);
-    let first = call(&w, "first-advisory", "codex:advisory-test");
+    let first = positive(&w, "first-advisory", "codex:advisory-test");
     assert_eq!(first["delivery"], "first-advisory");
     assert_eq!(
         first["prepared"]["text"].as_str().unwrap().lines().count(),
@@ -114,7 +177,7 @@ fn advisory_cooldown_and_once_pair_history_have_distinct_lifetimes() {
         .0;
     assert!(row.events.is_empty(), "preparation is not emission");
     assert_eq!(
-        call(&w, "different-prefix-recipient", "codex:advisory")["delivery"],
+        positive(&w, "different-prefix-recipient", "codex:advisory")["delivery"],
         "different-prefix-recipient",
         "a different exact identity is not a prefix alias of the original recipient"
     );
@@ -135,7 +198,7 @@ fn advisory_cooldown_and_once_pair_history_have_distinct_lifetimes() {
     );
     assert!(!selected(&w, "Inspect src/parser.rs", CWD).empty);
     assert_eq!(
-        call(&w, "after-cooldown", "codex:advisory-test")["delivery"],
+        positive(&w, "after-cooldown", "codex:advisory-test")["delivery"],
         "after-cooldown"
     );
 }

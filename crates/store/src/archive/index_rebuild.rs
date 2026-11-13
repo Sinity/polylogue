@@ -1,5 +1,5 @@
-//! Replacing an `index.db` written for another schema. The index is derived
-//! from the archive's stored bytes, so an index this build cannot open is
+//! Replacing an `index.db` written in another format. An unknown current
+//! Index1 shape is refused unchanged; an index at another format version is
 //! renamed beside it, under its schema identity, and a new one is built in
 //! its place. The renamed file is removed once the new index has finished
 //! its first build. `archive.db` is never handled here.
@@ -59,8 +59,9 @@ fn file_name(identity: &str) -> String {
 pub(crate) fn reason(error: &StoreError) -> Option<IndexRebuildReason> {
     match error {
         StoreError::NoMigration {
-            database: "index", ..
-        } => Some(IndexRebuildReason::SchemaDiffers),
+            database: "index",
+            found,
+        } if *found != schema::INDEX_VERSION => Some(IndexRebuildReason::SchemaDiffers),
         StoreError::IndexVersion { found, wanted } => Some(IndexRebuildReason::FormatVersion {
             found: *found,
             wanted: *wanted,

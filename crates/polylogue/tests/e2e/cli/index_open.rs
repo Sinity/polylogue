@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn the_daemon_rebuilds_an_index_from_another_schema_and_serves() {
+fn the_daemon_rebuilds_an_index_from_another_format_and_serves() {
     for (change, reason) in [
         (
             format!(
@@ -10,10 +10,7 @@ fn the_daemon_rebuilds_an_index_from_another_schema_and_serves() {
             ),
             "format_version",
         ),
-        (
-            "CREATE TABLE synthetic_schema(value)".into(),
-            "schema_differs",
-        ),
+        ("PRAGMA application_id=0".into(), "older_format"),
     ] {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("archive");
@@ -43,36 +40,67 @@ fn the_daemon_rebuilds_an_index_from_another_schema_and_serves() {
 }
 
 #[test]
-fn the_daemon_refuses_an_archive_in_another_format_and_leaves_it_unchanged() {
-    let dir = tempfile::tempdir().unwrap();
-    let home = dir.path().join("home");
-    std::fs::create_dir_all(&home).unwrap();
-    let (archive, lock) =
-        polylogue_store::Archive::open_or_create(&dir.path().join("archive")).unwrap();
-    drop(lock);
-    let conn = rusqlite::Connection::open(archive.archive_db()).unwrap();
-    conn.execute_batch("DROP TABLE revision").unwrap();
-    conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
-        .unwrap();
-    drop(conn);
-    let before = std::fs::read(archive.archive_db()).unwrap();
-    let mut command = crate::command(dir.path());
-    command
-        .arg("daemon")
-        .env("XDG_CONFIG_HOME", dir.path().join("config"))
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped());
-    let mut daemon = Daemon(polylogue_testkit::spawn_daemon(&mut command).unwrap());
-    let mut stderr = String::new();
-    daemon
-        .0
-        .stderr
-        .take()
-        .unwrap()
-        .read_to_string(&mut stderr)
-        .unwrap();
-    assert_eq!(daemon.0.wait().unwrap().code(), Some(78), "{stderr}");
-    assert!(stderr.contains("no migration"), "{stderr}");
-    assert!(!archive.socket().exists());
-    assert_eq!(std::fs::read(archive.archive_db()).unwrap(), before);
+fn the_daemon_refuses_unknown_current_store_shapes_and_keeps_their_bytes() {
+    use std::os::unix::fs::MetadataExt;
+
+    for database in ["archive", "index"] {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let (archive, lock) =
+            polylogue_store::Archive::open_or_create(&dir.path().join("archive")).unwrap();
+        drop(lock);
+        let path = if database == "archive" {
+            archive.archive_db()
+        } else {
+            archive.index_db()
+        };
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        if database == "archive" {
+            conn.execute_batch("DROP TABLE revision").unwrap();
+        } else {
+            conn.execute_batch("CREATE TABLE synthetic_schema(value);
+                INSERT INTO synthetic_schema VALUES('kept');
+                INSERT INTO input_ref(pk,id) VALUES(31,'retained');
+                INSERT INTO parse_state(input_pk,chain,status,parsed_upto,reading_version,checkpoint)
+                VALUES(31,7,'parsing',555,'retained-reading',x'010203');").unwrap();
+        }
+        conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
+            .unwrap();
+        drop(conn);
+        let before = std::fs::read(&path).unwrap();
+        let inode = std::fs::metadata(&path).unwrap().ino();
+        let mut command = crate::command(dir.path());
+        command
+            .arg("daemon")
+            .env("XDG_CONFIG_HOME", dir.path().join("config"))
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        let mut daemon = Daemon(polylogue_testkit::spawn_daemon(&mut command).unwrap());
+        let mut stderr = String::new();
+        daemon
+            .0
+            .stderr
+            .take()
+            .unwrap()
+            .read_to_string(&mut stderr)
+            .unwrap();
+        assert_eq!(
+            daemon.0.wait().unwrap().code(),
+            Some(78),
+            "{database}: {stderr}"
+        );
+        assert!(stderr.contains("no migration"), "{database}: {stderr}");
+        assert!(stderr.contains(database), "{database}: {stderr}");
+        assert!(!archive.socket().exists());
+        assert_eq!(std::fs::metadata(&path).unwrap().ino(), inode);
+        assert_eq!(std::fs::read(&path).unwrap(), before, "{database}");
+        assert!(!std::fs::read_dir(&archive.root).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("index-set-aside-")
+        }));
+    }
 }
