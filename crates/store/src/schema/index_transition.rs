@@ -5,6 +5,15 @@ const LINEAGE: &str = include_str!("lineage.sql");
 
 /// Construct only the known shapes that preceded the current declarations.
 fn predecessor(primary: bool, lineage: bool, current_authored: bool) -> Result<Connection> {
+    predecessor_in(primary, lineage, current_authored, true)
+}
+
+pub(super) fn predecessor_in(
+    primary: bool,
+    lineage: bool,
+    current_authored: bool,
+    native: bool,
+) -> Result<Connection> {
     let expected = Connection::open_in_memory()?;
     crate::sql_functions::register(&expected)?;
     let index = if lineage {
@@ -33,7 +42,17 @@ fn predecessor(primary: bool, lineage: bool, current_authored: bool) -> Result<C
             )
         };
         expected.execute_batch(&crate::source::from_archive(&archive)?.ddl)?;
-        expected.execute_batch(crate::primary::projection::SCHEMA)?;
+        let projection = if native {
+            crate::primary::projection::SCHEMA.to_owned()
+        } else {
+            crate::primary::projection::SCHEMA
+                .replacen("ALTER TABLE parse_state ADD COLUMN native_publication BLOB;\n", "", 1)
+                .replacen(", value_hash BLOB, material TEXT, record_hash TEXT, native_kind TEXT", "", 1)
+                .replacen("CREATE INDEX primary_fact_live_material ON primary_fact(material,event) WHERE state='live';\n", "", 1)
+                .replacen("CREATE INDEX primary_fact_value ON primary_fact(input,chain,reading_version,reference,value_hash,state);\n", "", 1)
+                .replacen("CREATE INDEX primary_fact_reading_progress ON primary_fact(input,chain,reading_version,step_start,step_end) WHERE kind='reading_progress';\n", "", 1)
+        };
+        expected.execute_batch(&projection)?;
     }
     Ok(expected)
 }
@@ -63,6 +82,18 @@ fn matches(conn: &Connection, expected: &Connection) -> Result<bool> {
         }))
 }
 
+/// Exact public primary Index1 shapes before original-material interpretation.
+pub(super) fn before_native(conn: &Connection) -> Result<bool> {
+    for lineage in [false, true] {
+        for authored in [false, true] {
+            if matches(conn, &predecessor_in(true, lineage, authored, false)?)? {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
 /// The caller's immediate transaction owns all changes. Unknown shapes are
 /// refused; their saved progress is not grounds for an automatic rebuild.
 pub(super) fn apply(conn: &Connection, primary: bool) -> Result<()> {
@@ -75,7 +106,7 @@ pub(super) fn apply(conn: &Connection, primary: bool) -> Result<()> {
     if !old_authored && !(primary && matches(conn, &predecessor(primary, lineage, true)?)?) {
         return Err(StoreError::NoMigration {
             database: "index",
-            found: INDEX_VERSION,
+            found: version(conn)?,
         });
     }
     if primary && old_authored {

@@ -82,7 +82,31 @@ fn old_message(input: &InputKey, message: Message, offset: u64, length: u64) -> 
     }
 }
 
-fn admit_originals(running: &Running, parts: &[(&str, Option<Message>)]) -> (InputKey, u64) {
+// Source7's stable key algorithm is independent of its retired body schema.
+// Source8 must keep these semantic identities while changing the domain values.
+fn source7_key(kind: &str, product: &Product) -> String {
+    let natural = match product {
+        Product::Input { rows, .. } => serde_json::json!([
+            rows.input,
+            rows.revision,
+            rows.extents,
+            rows.observation.as_ref().map(|observation| &observation.id),
+        ]),
+        Product::Message { facts, .. } => serde_json::json!([facts.message.id, facts.offset]),
+        _ => unreachable!("this fixture publishes original observations and messages"),
+    };
+    let source = product
+        .reading()
+        .map(|reading| serde_json::json!([reading.input.id, reading.chain]));
+    blake3::hash(&serde_json::to_vec(&(kind, source, natural)).unwrap())
+        .to_hex()
+        .to_string()
+}
+
+fn admit_originals(
+    running: &Running,
+    parts: &[(&str, Option<Message>)],
+) -> (InputKey, u64, Vec<(sinex_model::MaterialId, Vec<u8>)>) {
     let declaration = declaration();
     let source = declaration.source.clone();
     let input = InputKey {
@@ -93,6 +117,7 @@ fn admit_originals(running: &Running, parts: &[(&str, Option<Message>)]) -> (Inp
     let root = tempfile::tempdir().unwrap();
     let mut length = 0;
     let mut previous = None;
+    let mut originals = Vec::new();
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let client = async_nats::connect(running.native.nats.url()).await.unwrap();
         let subjects = sinex_protocol::Subjects::new("rebuild");
@@ -131,7 +156,7 @@ fn admit_originals(running: &Running, parts: &[(&str, Option<Message>)]) -> (Inp
             }) };
             let event = |kind: &str, record: Product, output_index| ProducerEvent {
                 kind:declaration.kinds.iter().find(|decl| decl.kind.name==kind).unwrap().kind.clone(),
-                payload:serde_json::json!({"record_key":format!("source7-{kind}-{index}"),"record":record}),
+                payload:serde_json::json!({"record_key":source7_key(kind,&record),"record":record}),
                 location:Some(sinex_model::RecordLocation {material,anchor:0}),output_index,parents:vec![],reading_order:None,class:sinex_model::Class::Guarded,
             };
             let mut events = vec![event("polylogue.input_observation",product,0)];
@@ -141,10 +166,11 @@ fn admit_originals(running: &Running, parts: &[(&str, Option<Message>)]) -> (Inp
             let interpreted = Ingress::Events {frame:format!("source7-facts-{index}"),source:Some(source.clone()),coverage:None,events,failures:vec![]};
             let receipt = sinex_transport::producer::submit_frame(&client,&subjects,"polylogue",&mut acks,&interpreted,Duration::from_secs(30)).await.unwrap();
             assert_eq!(receipt.refusal(),None,"{receipt:?}");
+            originals.push((material, bytes.as_bytes().to_vec()));
             previous=Some(material);
         }
     });
-    (input, length)
+    (input, length, originals)
 }
 
 fn expected(home: &polylogue_testkit::ClaudeHome, text: &str) -> Vec<Message> {
@@ -174,11 +200,12 @@ fn adoption(partial: bool) {
     let wanted = expected(&ordinary, &bytes);
     assert_eq!(wanted.len(), 1);
     let running = running(&home);
+    let sdk = connect(&running.config);
     let mut parts = vec![(bytes.as_str(), Some(wanted[0].clone()))];
     if partial {
         parts.push(("{\"type\":\"assistant\"", None));
     }
-    let (input, length) = admit_originals(&running, &parts);
+    let (input, length, originals) = admit_originals(&running, &parts);
     assert_eq!(
         sinex_rows(
             &running.socket,
@@ -186,7 +213,6 @@ fn adoption(partial: bool) {
         ),
         1
     );
-    let sdk = connect(&running.config);
     let (archive, _lock) = Archive::open_primary(&home.root, &running.config.store).unwrap();
     let mut config = home.config(1 << 20);
     config.reads_sources = false;
@@ -220,6 +246,22 @@ fn adoption(partial: bool) {
     assert_eq!(progress.length, length);
     assert_eq!(progress.parsed_upto, bytes.len() as u64);
     assert_eq!(progress.waiting, partial);
+    for (material, bytes) in originals {
+        let mut actual = Vec::new();
+        let mut offset = 0;
+        loop {
+            let page = sdk
+                .fetch_material_bytes(material, offset, None, 37)
+                .unwrap();
+            actual.extend(page.bytes);
+            match page.next_offset {
+                Some(next) => offset = next,
+                None => break,
+            }
+        }
+        assert_eq!(BlobHash::of(&actual), BlobHash::of(&bytes));
+        assert_eq!(actual, bytes);
+    }
     assert_eq!(reader.confirmed_refusals().unwrap().0, 0);
     assert_eq!(
         sinex_rows(
@@ -256,14 +298,14 @@ fn source7_facts_beyond_a_refused_reading_frontier_remain_live() {
     let wanted = expected(&ordinary, &format!("{first}{second}"));
     assert_eq!(wanted.len(), 2);
     let running = running(&home);
-    let (input, length) = admit_originals(
+    let sdk = connect(&running.config);
+    let (input, length, _originals) = admit_originals(
         &running,
         &[
             (&first, Some(wanted[0].clone())),
             (&second, Some(wanted[1].clone())),
         ],
     );
-    let sdk = connect(&running.config);
     let (archive, _lock) = Archive::open_primary(&home.root, &running.config.store).unwrap();
     let engine = Engine::on_sinex(
         home.config(1 << 20),

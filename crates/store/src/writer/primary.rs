@@ -108,13 +108,6 @@ impl Inner {
             return Ok(crate::primary::projection::Step::Complete(0));
         }
         let result = crate::primary::projection::stage_next(&mut self.index, events)?;
-        if matches!(result, crate::primary::projection::Step::Complete(_)) {
-            crate::archive::index_rebuild::remove_when_built(
-                &self.index,
-                &self.location.index_db(),
-                true,
-            )?;
-        }
         Ok(result)
     }
 
@@ -135,14 +128,6 @@ impl Inner {
             self.commits.committed(kinds);
             self.search.wake();
             self.report.transactions += 1;
-        }
-        if result.is_ok() {
-            // A head page or a completion can end the first replay.
-            crate::archive::index_rebuild::remove_when_built(
-                &self.index,
-                &self.location.index_db(),
-                true,
-            )?;
         }
         result
     }

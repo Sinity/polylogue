@@ -1658,6 +1658,18 @@ impl Inner {
             if let Err(error) = self.refresh_chain_progress() {
                 self.report.errors.push(format!("chain progress: {error}"));
             }
+            if !flushes.is_empty()
+                && self.location.is_primary()
+                && let Err(error) = crate::archive::index_rebuild::remove_when_built(
+                    &self.index,
+                    &self.location.index_db(),
+                    true,
+                )
+            {
+                self.report
+                    .errors
+                    .push(format!("primary cache rebuild: {error}"));
+            }
             for (reply, derive) in flushes.drain(..) {
                 let report = std::mem::take(&mut self.report);
                 // Whatever a flush reports written is also derived, except in

@@ -306,3 +306,5 @@ fn advisory_readiness_is_nonblocking_and_retains_pending_advice_across_restart()
         "restart must not offer the pair again from empty projected delivery history"
     );
 }
+
+mod primary_transition;

@@ -80,7 +80,7 @@ fn existing_indexes_gain_writer_reverse_lookups_without_reparse() {
                     "claude-code:parent:claude-code:context:1"
                 );
                 assert_eq!(conn.query_row("SELECT count(*) FROM sqlite_schema WHERE name IN('event_after','link_child')",[],|r|r.get::<_,i64>(0)).unwrap(),2);
-                assert_eq!(version(&conn).unwrap(), INDEX_VERSION);
+                assert_eq!(version(&conn).unwrap(), index_version(primary));
                 assert_eq!(crate::schema::building(&conn).unwrap(), building);
                 assert_eq!(conn.query_row("SELECT count(*) FROM sqlite_master WHERE type='index' AND name='parser_context_version'",[],|r|r.get::<_,i64>(0)).unwrap(),1);
                 assert_eq!(
@@ -129,7 +129,7 @@ fn repeated_source_upserts_keep_context_bodies_until_the_context_goes() {
             ).unwrap();
         let retained = snapshot(&conn);
         ensure(&conn).unwrap();
-        assert_eq!(version(&conn).unwrap(), INDEX_VERSION);
+        assert_eq!(version(&conn).unwrap(), index_version(primary));
         assert_eq!(snapshot(&conn), retained);
         // This is the same source-key UPSERT used for an assembled response.
         // Moving off a version the context keeps leaves its body.

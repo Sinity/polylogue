@@ -355,6 +355,7 @@ impl Archive {
             let previous = schema::index_identity(&index)?;
             drop(index);
             index_rebuild::set_aside(&path, &previous)?;
+            crate::fault::check("index.after_set_aside", &path.to_string_lossy())?;
             index = open_write(&path, cache::SETUP)?;
             self.ensure_index(&index)?;
             index_rebuild::record(
