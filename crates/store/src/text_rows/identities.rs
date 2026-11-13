@@ -97,7 +97,12 @@ impl TextIds {
             Ok(id)
         } else {
             Err(StoreError::Invalid(
-                "a new text has no prepared bytes".into(),
+                if body.is_some() {
+                    "allocated text identity conflicts with stored rows"
+                } else {
+                    "a new text has no prepared bytes"
+                }
+                .into(),
             ))
         }
     }

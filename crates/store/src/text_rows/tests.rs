@@ -212,7 +212,12 @@ fn first_build_texts_share_rows_without_sql_readback_or_prefix_aliasing() {
     .unwrap();
     assert_eq!(first.resolve(&conn, &one, None).unwrap(), a);
     assert_eq!(first.resolve(&conn, &two, None).unwrap(), b);
-    assert!(first.resolve(&conn, &[9; 32], None).is_err());
+    conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
+        .unwrap();
+    assert!(matches!(
+        first.resolve(&conn, &[9; 32], None),
+        Err(crate::StoreError::Invalid(_))
+    ));
 }
 
 #[test]
@@ -238,4 +243,10 @@ fn failed_text_transaction_reloads_presence_without_reassigning_known_ids() {
     texts.commit();
     assert_eq!(first.resolve(&conn, &kept, None).unwrap(), new);
     assert_eq!(count(&conn, "SELECT count(*) FROM text"), 1);
+    let transaction = first.transaction();
+    let tx = conn.transaction().unwrap();
+    assert_eq!(first.resolve(&tx, &gone, Some(b"restored")).unwrap(), old);
+    tx.commit().unwrap();
+    transaction.commit();
+    assert_eq!(count(&conn, "SELECT count(*) FROM text"), 2);
 }

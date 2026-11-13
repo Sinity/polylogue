@@ -27,6 +27,7 @@ fn admit_step(
         assert_eq!(product, original);
         *position += 1;
         apply(
+            &crate::text_rows::TextIds::new(index, false).unwrap(),
             index,
             resolver,
             &[

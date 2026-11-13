@@ -25,6 +25,7 @@ fn database(unrelated: i64) -> Connection {
 }
 
 fn cleanup_steps(conn: &Connection) -> u64 {
+    let identities = crate::text_rows::TextIds::new(conn, true).unwrap();
     conn.flush_prepared_statement_cache();
     let steps = Arc::new(AtomicU64::new(0));
     let count = Arc::clone(&steps);
@@ -36,12 +37,7 @@ fn cleanup_steps(conn: &Connection) -> u64 {
         }),
     )
     .unwrap();
-    remove_unreferenced(
-        conn,
-        Some(&FirstBuild::default()),
-        &crate::text_rows::TextIds::new(conn, true).unwrap(),
-    )
-    .unwrap();
+    remove_unreferenced(conn, Some(&FirstBuild::default()), &identities).unwrap();
     conn.progress_handler(0, None::<fn() -> bool>).unwrap();
     steps.load(Ordering::Relaxed)
 }
