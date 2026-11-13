@@ -1676,8 +1676,14 @@ impl Engine {
         let every = self.config.live_every;
         let mut stopping = false;
         let mut yielding = false;
-        loop {
-            yielding |= self.poll_request();
+        'work: loop {
+            if !yielding && self.poll_request() {
+                yielding = true;
+                waiting.clear();
+                // No worker read these jobs. The next turn revalidates them;
+                // chunks already in hand keep their normal commit and ACK.
+                outstanding -= pool.cancel_queued();
+            }
             if !stopping && self.stop.requested() {
                 // What workers are parsing commits; nothing else starts.
                 stopping = true;
@@ -1710,6 +1716,10 @@ impl Engine {
                 && outstanding < room
                 && let Some(mut plan) = waiting.pop_front()
             {
+                if self.poll_request() {
+                    waiting.push_front(plan);
+                    continue 'work;
+                }
                 if plan.finished() {
                     pass.capture_pending |= plan.pending.is_some();
                     self.finish_plan(plan);
