@@ -4,6 +4,22 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
+fn insert_version(conn: &Connection, hash: &[u8], body: &[u8]) -> i64 {
+    let pk: i64 = conn
+        .query_row(
+            "INSERT INTO message_version(version_hash) VALUES(?1) RETURNING pk",
+            [hash],
+            |r| r.get(0),
+        )
+        .unwrap();
+    conn.execute(
+        "INSERT INTO message_version_body VALUES(?1,?2)",
+        params![pk, body],
+    )
+    .unwrap();
+    pk
+}
+
 fn database(unrelated: i64) -> Connection {
     let conn = Connection::open_in_memory().unwrap();
     crate::schema::create_index(&conn).unwrap();
@@ -59,34 +75,30 @@ fn context_reference_cleanup_steps(unrelated: i64, without_index: bool) -> u64 {
     let orphan = [0u8; 32];
     let winner = [255u8; 32];
     for hash in [orphan, winner] {
-        conn.execute(
-            "INSERT INTO message_version(version_hash,body) VALUES(?1,x'00')",
-            [hash],
-        )
-        .unwrap();
+        insert_version(&conn, &hash, &[0]);
     }
     for id in 1..=unrelated + 1 {
         let mut hash = [0u8; 32];
         hash[..8].copy_from_slice(&id.to_le_bytes());
-        conn.execute(
-            "INSERT INTO message_version(version_hash,body) VALUES(?1,x'00')",
-            [hash],
-        )
-        .unwrap();
+        insert_version(&conn, &hash, &[0]);
         conn.execute(
             "INSERT INTO parser_context VALUES(1,7,'synthetic',?1,?2,x'00',?3)",
-            params![id, format!("context-{id}"), hash],
+            params![
+                id,
+                format!("context-{id}"),
+                message_key(&conn, &hash).unwrap()
+            ],
         )
         .unwrap();
     }
-    conn.execute("INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,session_pk,route,completion,version_hash) VALUES(1,1,7,0,1,'native',1,'live','finished',?1)",[orphan]).unwrap();
+    conn.execute("INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,session_pk,route,completion,version_pk) VALUES(1,1,7,0,1,'native',1,'live','finished',(SELECT pk FROM message_version WHERE version_hash=?1))",[orphan]).unwrap();
     let mut protected = [0u8; 32];
     protected[..8].copy_from_slice(&1i64.to_le_bytes());
     conn.execute_batch("SAVEPOINT reading").unwrap();
     // Actual source-reference changes queue both versions for collection.
     for hash in [protected, winner] {
         conn.execute(
-            "UPDATE message_source SET version_hash=?1 WHERE message_pk=1",
+            "UPDATE message_source SET version_pk=(SELECT pk FROM message_version WHERE version_hash=?1) WHERE message_pk=1",
             [hash],
         )
         .unwrap();
@@ -128,7 +140,7 @@ fn context_reference_cleanup_steps(unrelated: i64, without_index: bool) -> u64 {
         .unwrap();
     assert_eq!(
         conn.query_row(
-            "SELECT version_hash FROM message_source WHERE message_pk=1",
+            "SELECT v.version_hash FROM message_source s JOIN message_version v ON v.pk=s.version_pk WHERE message_pk=1",
             [],
             |r| r.get::<_, Vec<u8>>(0)
         )
@@ -145,7 +157,7 @@ fn context_reference_cleanup_steps(unrelated: i64, without_index: bool) -> u64 {
         1
     );
     assert_eq!(
-        conn.query_row("SELECT count(*) FROM temp.unreferenced_version", [], |r| {
+        conn.query_row("SELECT count(*) FROM temp.unreferenced_value", [], |r| {
             r.get::<_, i64>(0)
         })
         .unwrap(),
@@ -196,8 +208,8 @@ fn text_cleanup_checks_only_candidates_and_keeps_all_reference_kinds() {
              source_chain,source_start,source_end,fields,changed)
              VALUES(1,'synthetic','claude-code','synthetic','context','human',x'01',1,1,0,1,x'00',1);
          INSERT INTO document_block(document_pk,idx,kind,body,text_id) VALUES(1,0,'text',x'00',2);
-         INSERT INTO message_version(version_hash,body) VALUES(x'01',x'00');
-         INSERT INTO message_version_text(version_hash,idx,text_id) VALUES(x'01',0,3);
+         INSERT INTO message_version(pk,version_hash) VALUES(1,x'01'); INSERT INTO message_version_body VALUES(1,x'00');
+         INSERT INTO message_version_text(version_pk,idx,text_id) VALUES(1,0,3);
          INSERT INTO document_version(version_hash,body) VALUES(x'01',x'00');
          INSERT INTO document_version_text(version_hash,idx,text_id) VALUES(x'01',0,4);
          INSERT INTO temp.unreferenced_text VALUES(1),(2),(3),(4),(5),(9000);",
@@ -224,8 +236,8 @@ fn text_cleanup_checks_only_candidates_and_keeps_all_reference_kinds() {
 fn removing_the_last_text_reference_and_its_cleanup_roll_back_together() {
     let conn = database(1);
     conn.execute_batch(
-        "INSERT INTO message_version(version_hash,body) VALUES(x'01',x'00');
-         INSERT INTO message_version_text(version_hash,idx,text_id) VALUES(x'01',0,1);
+        "INSERT INTO message_version(pk,version_hash) VALUES(1,x'01'); INSERT INTO message_version_body VALUES(1,x'00');
+         INSERT INTO message_version_text(version_pk,idx,text_id) VALUES(1,0,1);
          SAVEPOINT reading;
          DELETE FROM message_version_text;",
     )
@@ -278,14 +290,10 @@ fn first_build_cleanup_retains_version_text_and_forgets_deleted_identity() {
     let texts = identities.transaction();
     let tx = conn.transaction().unwrap();
     let id = identities.resolve(&tx, &hash, Some(b"kept")).unwrap();
+    let version_pk = insert_version(&tx, &version, &[0]);
     tx.execute(
-        "INSERT INTO message_version(version_hash,body) VALUES(?1,X'00')",
-        [version.as_slice()],
-    )
-    .unwrap();
-    tx.execute(
-        "INSERT INTO message_version_text(version_hash,idx,text_id) VALUES(?1,0,?2)",
-        params![version.as_slice(), id],
+        "INSERT INTO message_version_text(version_pk,idx,text_id) VALUES(?1,0,?2)",
+        params![version_pk, id],
     )
     .unwrap();
     tx.execute(
@@ -315,4 +323,100 @@ fn first_build_cleanup_retains_version_text_and_forgets_deleted_identity() {
     tx.commit().unwrap();
     texts.commit();
     assert_eq!(identities.resolve(&conn, &hash, None).unwrap(), replacement);
+}
+
+#[test]
+fn exact_version_keys_and_payload_children_survive_failed_removal() {
+    let conn = database(1);
+    let mut hashes = [[42u8; 32]; 2];
+    hashes[1][31] = 43; // Same long prefix must not alias a different canonical hash.
+    let bodies = [vec![5u8; 65536], vec![6u8; 65536]];
+    let keys = [
+        insert_version(&conn, &hashes[0], &bodies[0]),
+        insert_version(&conn, &hashes[1], &bodies[1]),
+    ];
+    assert_ne!(keys[0], keys[1]);
+    assert!(
+        conn.execute(
+            "INSERT INTO message_version(version_hash) VALUES(?1)",
+            [hashes[0]]
+        )
+        .is_err()
+    );
+    conn.execute_batch("INSERT INTO input_ref(pk,id) VALUES(1,'input');
+        INSERT INTO session(pk,id,origin,native_id,kind,changed) VALUES(1,'codex:session','codex','session','main',1);
+        INSERT INTO message(pk,id,session_pk,session_order,role,written_by,input_pk) VALUES(1,'codex:message',1,'0','assistant','model',1);").unwrap();
+    conn.execute("INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,session_pk,route,completion,version_pk) VALUES(1,1,1,4,91,'native',1,'live','finished',?1)",[keys[0]]).unwrap();
+    conn.execute(
+        "INSERT INTO message_projection VALUES(?1,?2,7)",
+        params![keys[0], serde_json::to_vec(&(9u64, vec![2u64, 8])).unwrap()],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO message_version_text VALUES(?1,2,1)", [keys[0]])
+        .unwrap();
+    conn.execute(
+        "INSERT INTO message_version_blob VALUES(?1,?2)",
+        params![keys[0], [8u8; 32]],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO parser_context VALUES(1,1,'reader',91,'response',x'00',?1)",
+        [keys[0]],
+    )
+    .unwrap();
+    assert!(
+        conn.execute("INSERT INTO message_version_text VALUES(999999,0,1)", [])
+            .is_err()
+    );
+    let snapshot = || {
+        conn.query_row("SELECT v.version_hash,b.body,s.source_start,s.source_end,p.layout,p.admitted FROM message_source s JOIN message_version v ON v.pk=s.version_pk JOIN message_version_body b ON b.version_pk=v.pk JOIN message_projection p ON p.version_pk=v.pk",[],|r|Ok((r.get::<_,Vec<u8>>(0)?,r.get::<_,Vec<u8>>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,Vec<u8>>(4)?,r.get::<_,i64>(5)?))).unwrap()
+    };
+    let original = snapshot();
+    assert_eq!(original.0, hashes[0]);
+    assert_eq!(original.1, bodies[0]);
+    assert_eq!((original.2, original.3), (4, 91));
+    conn.execute_batch("SAVEPOINT change").unwrap();
+    conn.execute("UPDATE message_source SET version_pk=?1", [keys[1]])
+        .unwrap();
+    let ids = crate::text_rows::TextIds::new(&conn, true).unwrap();
+    remove_unreferenced(&conn, Some(&FirstBuild::default()), &ids).unwrap();
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM message_version_body WHERE version_pk=?1",
+            [keys[0]],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1,
+        "retained parser context owns the old payload"
+    );
+    conn.execute_batch("DELETE FROM parser_context").unwrap();
+    remove_unreferenced(&conn, Some(&FirstBuild::default()), &ids).unwrap();
+    for table in [
+        "message_version_body",
+        "message_projection",
+        "message_version_text",
+        "message_version_blob",
+    ] {
+        assert_eq!(
+            conn.query_row(
+                &format!("SELECT count(*) FROM {table} WHERE version_pk=?1"),
+                [keys[0]],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+    }
+    conn.execute_batch("ROLLBACK TO change; RELEASE change")
+        .unwrap();
+    assert_eq!(snapshot(), original);
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
 }

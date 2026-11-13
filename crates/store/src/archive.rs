@@ -340,8 +340,8 @@ impl Archive {
     }
 
     /// The caller holds the archive lock. Parse positions in the index
-    /// resume an interrupted build. Declared Index1 additions retain those
-    /// positions; unknown current shapes refuse. An index from another format
+    /// resume an interrupted build. Unknown current shapes refuse.
+    /// An index from another format
     /// is set aside under its schema identity and a new one is built from the
     /// archive's stored bytes; the set-aside file is removed once that first
     /// build ends ([`index_rebuild`]).

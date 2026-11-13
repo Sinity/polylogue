@@ -340,9 +340,9 @@ fn load_message(
 ) -> Result<(Vec<MessageMember>, Option<Shown>)> {
     let shown = index
         .query_row(
-            "SELECT s.version_hash,m.session_pk,p.layout FROM message m
+            "SELECT (SELECT version_hash FROM message_version WHERE pk=s.version_pk),m.session_pk,p.layout FROM message m
              JOIN message_source s ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain
-             LEFT JOIN message_projection p ON p.version_hash=s.version_hash WHERE m.pk=?1",
+             LEFT JOIN message_projection p ON p.version_pk=s.version_pk WHERE m.pk=?1",
             [pk],
             |r| {
                 Ok(Shown {
@@ -358,7 +358,7 @@ fn load_message(
         Some(mut shown) => {
             shown.routes = index
                 .prepare_cached(
-                    "SELECT r.field_group,r.input_pk,r.chain,s.version_hash FROM message_route r
+                    "SELECT r.field_group,r.input_pk,r.chain,(SELECT version_hash FROM message_version WHERE pk=s.version_pk) FROM message_route r
                      JOIN message_source s ON s.message_pk=r.message_pk AND s.input_pk=r.input_pk AND s.chain=r.chain
                      WHERE r.message_pk=?1 ORDER BY r.field_group",
                 )?
@@ -380,9 +380,9 @@ fn load_message(
         None => None,
     };
     let mut statement = index.prepare_cached(
-        "SELECT s.input_pk,s.chain,s.source_start,s.source_end,s.session_pk,s.main,s.completion,s.route,s.seq,s.record_position,s.version_hash,s.id_kind,p.layout,i.id,s.order_time,s.at,coalesce((SELECT json_extract(facts,'$.kind')<>'compaction' FROM session_record f WHERE f.session_pk=s.session_pk AND f.input_pk=s.input_pk AND f.chain=s.chain),0)
+        "SELECT s.input_pk,s.chain,s.source_start,s.source_end,s.session_pk,s.main,s.completion,s.route,s.seq,s.record_position,(SELECT version_hash FROM message_version WHERE pk=s.version_pk),s.id_kind,p.layout,i.id,s.order_time,s.at,coalesce((SELECT json_extract(facts,'$.kind')<>'compaction' FROM session_record f WHERE f.session_pk=s.session_pk AND f.input_pk=s.input_pk AND f.chain=s.chain),0)
          FROM message_source s JOIN input_ref i ON i.pk=s.input_pk
-         LEFT JOIN message_projection p ON p.version_hash=s.version_hash WHERE message_pk=?1",
+         LEFT JOIN message_projection p ON p.version_pk=s.version_pk WHERE message_pk=?1",
     )?;
     let rows = statement
         .query_map([pk], |r| {
@@ -1721,11 +1721,8 @@ impl<'a> Projection<'a> {
                 let value = match prior {
                     Some(value) => value,
                     None => {
-                        let document: polylogue_model::Document = crate::versions::read(
-                            index,
-                            crate::versions::VersionKind::Document,
-                            &winner.hash,
-                        )?;
+                        let document: polylogue_model::Document =
+                            crate::versions::read_document(index, &winner.hash)?;
                         let prepared = PreparedDocument::new(&document)?;
                         (document, prepared)
                     }

@@ -461,7 +461,7 @@ fn source_context(
     prefix: &str,
     context: &BindingContext,
 ) -> Result<bool> {
-    let exists: bool = index.query_row("SELECT EXISTS(SELECT 1 FROM message_source s JOIN message m ON m.pk=s.message_pk JOIN input_ref i ON i.pk=s.input_pk WHERE m.id=?1 AND s.version_hash=?2 AND i.id=?3 AND s.chain=?4)", params![context.message.to_string(),context.source_version.0.as_slice(),context.input,context.chain], |row| row.get(0))?;
+    let exists: bool = index.query_row("SELECT EXISTS(SELECT 1 FROM message_source s JOIN message m ON m.pk=s.message_pk JOIN input_ref i ON i.pk=s.input_pk WHERE m.id=?1 AND (SELECT version_hash FROM message_version WHERE pk=s.version_pk)=?2 AND i.id=?3 AND s.chain=?4)", params![context.message.to_string(),context.source_version.0.as_slice(),context.input,context.chain], |row| row.get(0))?;
     if !exists {
         return Ok(false);
     }
@@ -563,7 +563,7 @@ fn retained_bindings(
          WHERE b.message=?1 AND (?2 IS NULL OR b.source_version=?2)
            AND (?3 IS NULL OR (b.block=?3 AND b.attachment=?4))
            AND EXISTS(SELECT 1 FROM message m
-             JOIN message_source s ON s.message_pk=m.pk AND s.version_hash=b.source_version AND s.chain=b.chain
+             JOIN message_source s ON s.message_pk=m.pk AND (SELECT version_hash FROM message_version WHERE pk=s.version_pk)=b.source_version AND s.chain=b.chain
              JOIN input_ref i ON i.pk=s.input_pk AND i.id=b.input
              WHERE m.id=b.message AND (?5=0 OR (s.input_pk=m.input_pk AND s.chain=m.source_chain)))
          ORDER BY b.input,b.chain,b.import_id,b.source_version,b.declared_input,b.declared_chain,b.declared_import_id,b.claim"

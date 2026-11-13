@@ -6,11 +6,11 @@ use rusqlite::{Connection, OptionalExtension, params};
 use std::sync::{Arc, Mutex};
 
 pub(crate) const SCHEMA: &str = "CREATE TABLE parser_context_state(input_pk INTEGER NOT NULL REFERENCES input_ref(pk),chain INTEGER NOT NULL,reading_version TEXT NOT NULL,through INTEGER NOT NULL,PRIMARY KEY(input_pk,chain,reading_version)) STRICT, WITHOUT ROWID;
-CREATE TABLE parser_context(input_pk INTEGER NOT NULL REFERENCES input_ref(pk),chain INTEGER NOT NULL,reading_version TEXT NOT NULL,cursor INTEGER NOT NULL,key TEXT NOT NULL,value BLOB NOT NULL,version_hash BLOB REFERENCES message_version(version_hash),PRIMARY KEY(input_pk,chain,reading_version,key,cursor)) STRICT, WITHOUT ROWID;";
+CREATE TABLE parser_context(input_pk INTEGER NOT NULL REFERENCES input_ref(pk),chain INTEGER NOT NULL,reading_version TEXT NOT NULL,cursor INTEGER NOT NULL,key TEXT NOT NULL,value BLOB NOT NULL,version_pk INTEGER REFERENCES message_version(pk),PRIMARY KEY(input_pk,chain,reading_version,key,cursor)) STRICT, WITHOUT ROWID;";
 
 // Collection and foreign-key checks follow this reference during first build,
 // so its reverse index must remain present while query-only indexes are deferred.
-pub(crate) const VERSION_INDEX: &str = "CREATE INDEX IF NOT EXISTS parser_context_version ON parser_context(version_hash) WHERE version_hash IS NOT NULL;";
+pub(crate) const VERSION_INDEX: &str = "CREATE INDEX IF NOT EXISTS parser_context_version ON parser_context(version_pk) WHERE version_pk IS NOT NULL;";
 
 #[derive(Clone)]
 pub struct Overlay(Arc<Mutex<Attempt>>);
@@ -204,7 +204,7 @@ impl Overlay {
             StoreError::Invalid("admitted parser context has no read snapshot".into())
         })?;
         let sql_base = sql_cursor(attempt.lookup_through)?;
-        let row=index.query_row("SELECT value,version_hash,cursor FROM parser_context WHERE input_pk=?1 AND chain=?2 AND reading_version=?3 AND key=?4 AND cursor<=?5 ORDER BY cursor DESC LIMIT 1",params![input,chain,attempt.version,key,sql_base],|r|Ok((r.get::<_,Vec<u8>>(0)?,r.get::<_,Option<Vec<u8>>>(1)?,r.get::<_,i64>(2)?))).optional()?;
+        let row=index.query_row("SELECT c.value,v.version_hash,c.cursor FROM parser_context c LEFT JOIN message_version v ON v.pk=c.version_pk WHERE c.input_pk=?1 AND c.chain=?2 AND c.reading_version=?3 AND c.key=?4 AND c.cursor<=?5 ORDER BY c.cursor DESC LIMIT 1",params![input,chain,attempt.version,key,sql_base],|r|Ok((r.get::<_,Vec<u8>>(0)?,r.get::<_,Option<Vec<u8>>>(1)?,r.get::<_,i64>(2)?))).optional()?;
         let Some((bytes, hash, cursor)) = row else {
             return Ok(None);
         };
@@ -357,10 +357,12 @@ pub(crate) fn apply(
     }
     for entry in delta.entries {
         let hash = match &entry.value {
-            Reference::Response { version, .. } => Some(version.0.as_slice()),
+            Reference::Response { version, .. } => {
+                Some(crate::versions::message_key(tx, &version.0)?)
+            }
             Reference::Alias { .. } => None,
         };
-        tx.execute("INSERT INTO parser_context VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(input_pk,chain,reading_version,key,cursor) DO UPDATE SET value=excluded.value,version_hash=excluded.version_hash",params![input,chain,step.reading_version,through,serde_json::to_string(&entry.key)?,crate::encoding::pack_json(&entry.value)?,hash])?;
+        tx.execute("INSERT INTO parser_context VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(input_pk,chain,reading_version,key,cursor) DO UPDATE SET value=excluded.value,version_pk=excluded.version_pk",params![input,chain,step.reading_version,through,serde_json::to_string(&entry.key)?,crate::encoding::pack_json(&entry.value)?,hash])?;
     }
     tx.execute("INSERT INTO parser_context_state VALUES(?1,?2,?3,?4) ON CONFLICT(input_pk,chain,reading_version) DO UPDATE SET through=excluded.through",params![input,chain,step.reading_version,through])?;
     Ok(true)

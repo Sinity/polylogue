@@ -362,7 +362,7 @@ fn native_time_companions_use_evidence_and_keep_missing_relations_distinct() {
     let connection = crate::archive::open_write(&w.archive.index_db(), 64).unwrap();
     connection
         .execute_batch(
-            "UPDATE message_version SET body=X'00'; UPDATE document_version SET body=X'00'; UPDATE document SET fields=X'00';",
+            "UPDATE message_version_body SET body=X'00'; UPDATE document_version SET body=X'00'; UPDATE document SET fields=X'00';",
         )
         .unwrap();
     let metadata_reads = ReadPool::open(&w.archive).unwrap();

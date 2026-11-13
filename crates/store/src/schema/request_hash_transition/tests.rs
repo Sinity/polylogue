@@ -166,16 +166,11 @@ fn insert(conn: &Connection, request: &UserRequest) -> polylogue_model::user::Us
     outcome
 }
 
-fn source(primary: bool) -> (Connection, crate::source::Source) {
+fn source() -> (Connection, crate::source::Source) {
     let conn = Connection::open_in_memory().unwrap();
     conn.pragma_update(None, "foreign_keys", true).unwrap();
-    if primary {
-        crate::schema::ensure_primary_index(&conn).unwrap();
-    } else {
-        crate::schema::ensure_archive(&conn).unwrap();
-    }
-    let source = crate::source::Source::of(&conn).unwrap();
-    (conn, source)
+    crate::schema::ensure_archive(&conn).unwrap();
+    (conn, crate::source::Source::Ledger)
 }
 
 fn rows(conn: &Connection, source: crate::source::Source) -> Vec<Vec<Value>> {
@@ -187,30 +182,22 @@ fn rows(conn: &Connection, source: crate::source::Source) -> Vec<Vec<Value>> {
         .unwrap()
 }
 
-fn previous(conn: &Connection, primary: bool) {
+fn previous(conn: &Connection) {
     crate::schema::set_version(conn, 2).unwrap();
     assert_eq!(crate::schema::version(conn).unwrap(), 2);
-    assert_eq!(
-        matches!(
-            crate::source::Source::of(conn).unwrap(),
-            crate::source::Source::Cache
-        ),
-        primary
-    );
+    assert!(matches!(
+        crate::source::Source::of(conn).unwrap(),
+        crate::source::Source::Ledger
+    ));
 }
-
-fn reopen(conn: &Connection, primary: bool) -> Result<()> {
-    if primary {
-        crate::schema::ensure_primary_index(conn)
-    } else {
-        crate::schema::ensure_archive(conn)
-    }
+fn reopen(conn: &Connection) -> Result<()> {
+    crate::schema::ensure_archive(conn)
 }
 
 #[test]
 fn request_hash_transition_preserves_mixed_records_and_pending_bytes_and_retry() {
-    for primary in [false, true] {
-        let (conn, source) = source(primary);
+    {
+        let (conn, source) = source();
         let prior = delivery("prior");
         let current = delivery("current");
         insert(&conn, &prior);
@@ -242,21 +229,14 @@ fn request_hash_transition_preserves_mixed_records_and_pending_bytes_and_retry()
         );
         conn.execute(&source.sql("INSERT INTO @source.client_request(id,content_hash,created_at,request,commit_seq) VALUES(?1,?2,?3,?4,3)"), params![pending.id,pending_hash.as_bytes().as_slice(),pending.at.unix_ms(),crate::encoding::pack_json(&pending).unwrap()]).unwrap();
         let before = rows(&conn, source);
-        previous(&conn, primary);
+        previous(&conn);
         assert!(matches!(
             crate::primary::authored::frozen_request(&conn, &prior.id),
             Err(StoreError::Conflict(_))
         ));
-        reopen(&conn, primary).unwrap();
+        reopen(&conn).unwrap();
         assert_eq!(rows(&conn, source), before);
-        assert_eq!(
-            crate::schema::version(&conn).unwrap(),
-            if primary {
-                PRIMARY_INDEX_VERSION
-            } else {
-                ARCHIVE_VERSION
-            }
-        );
+        assert_eq!(crate::schema::version(&conn).unwrap(), ARCHIVE_VERSION);
         for request in [&prior, &current] {
             let stored = crate::primary::authored::frozen_request(&conn, &request.id)
                 .unwrap()
@@ -281,7 +261,7 @@ fn request_hash_transition_preserves_mixed_records_and_pending_bytes_and_retry()
             crate::primary::authored::request_hash(&pending).unwrap()
         );
         let changes = conn.total_changes();
-        reopen(&conn, primary).unwrap();
+        reopen(&conn).unwrap();
         assert_eq!(conn.total_changes(), changes);
         assert_eq!(rows(&conn, source), before);
     }
@@ -289,9 +269,9 @@ fn request_hash_transition_preserves_mixed_records_and_pending_bytes_and_retry()
 
 #[test]
 fn request_hash_transition_refuses_corruption_without_partial_conversion() {
-    for primary in [false, true] {
+    {
         for corrupt in ["hash", "request identity", "request body"] {
-            let (conn, source) = source(primary);
+            let (conn, source) = source();
             let first = delivery("a-valid-prior");
             let later = delivery("z-corrupt");
             insert(&conn, &first);
@@ -309,9 +289,9 @@ fn request_hash_transition_refuses_corruption_without_partial_conversion() {
                 "request identity" => conn.execute(&source.sql("UPDATE @source.client_request SET id='zz-other' WHERE id=?1"), [&later.id]).unwrap(),
                 _ => conn.execute(&source.sql("UPDATE @source.client_request SET request=x'0001' WHERE id=?1"), [&later.id]).unwrap(),
             };
-            previous(&conn, primary);
+            previous(&conn);
             let before = rows(&conn, source);
-            assert!(reopen(&conn, primary).is_err(), "{corrupt}");
+            assert!(reopen(&conn).is_err(), "{corrupt}");
             assert_eq!(crate::schema::version(&conn).unwrap(), 2);
             assert_eq!(rows(&conn, source), before);
             let retained: Vec<u8> = conn
@@ -443,13 +423,11 @@ fn register_request_hash_transition_reopens_both_predecessors_and_reads_unrelate
 #[cfg(feature = "faults")]
 #[test]
 fn request_hash_transition_fault_preserves_all_bytes_and_version_then_retries() {
-    for (primary, predecessor) in [(false, 1), (false, 2), (true, 2)] {
+    for predecessor in [1, 2] {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("request-hash-fault.db");
         let conn = Connection::open(&path).unwrap();
-        if primary {
-            crate::schema::ensure_primary_index(&conn).unwrap();
-        } else if predecessor == 1 {
+        if predecessor == 1 {
             crate::schema::tests::archive_before_unknown_time(&conn);
         } else {
             crate::schema::ensure_archive(&conn).unwrap();
@@ -475,7 +453,7 @@ fn request_hash_transition_fault_preserves_all_bytes_and_version_then_retries() 
             0,
             1,
         );
-        assert!(reopen(&conn, primary).is_err());
+        assert!(reopen(&conn).is_err());
         assert_eq!(crate::schema::version(&conn).unwrap(), predecessor);
         assert_eq!(crate::schema::shape(&conn).unwrap(), shape_before);
         assert_eq!(rows(&conn, source), before);
@@ -487,7 +465,7 @@ fn request_hash_transition_fault_preserves_all_bytes_and_version_then_retries() 
             )
             .unwrap();
         assert_eq!(retained, old_hash.as_bytes());
-        reopen(&conn, primary).unwrap();
+        reopen(&conn).unwrap();
         assert!(
             crate::primary::authored::known_request(&conn, &request)
                 .unwrap()

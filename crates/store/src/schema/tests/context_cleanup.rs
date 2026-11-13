@@ -15,9 +15,9 @@ fn existing_indexes_gain_writer_reverse_lookups_without_reparse() {
             ensure(&conn).unwrap();
             conn.execute_batch(
                 "INSERT INTO input_ref(pk,id,format) VALUES(1,'context-input','codex');
-                 INSERT INTO message_version VALUES(x'01',x'626f6479');
+                 INSERT INTO message_version VALUES(1,x'01'); INSERT INTO message_version_body VALUES(1,x'626f6479');
                  INSERT INTO parser_context_state VALUES(1,17,'synthetic',4);
-                 INSERT INTO parser_context VALUES(1,17,'synthetic',4,'retained',x'636f6e74657874',x'01');
+                 INSERT INTO parser_context VALUES(1,17,'synthetic',4,'retained',x'636f6e74657874',1);
                  INSERT INTO parser_context VALUES(1,17,'synthetic',4,'independent',x'6f74686572',NULL);
                  INSERT INTO parse_state(input_pk,chain,status,parsed_upto,reading_version,checkpoint)
                      VALUES(1,17,'partial',4,'synthetic',x'636865636b706f696e74');
@@ -119,11 +119,11 @@ fn repeated_source_upserts_keep_context_bodies_until_the_context_goes() {
                  INSERT INTO session(pk,id,origin,native_id,kind,changed) VALUES(1,'claude-code:context','claude-code','context','main',1);
                  INSERT INTO message(pk,id,session_pk,session_order,role,written_by,input_pk)
                     VALUES(1,'claude-code:response',1,'0','assistant','model',1);
-                 INSERT INTO message_version VALUES(x'01',x'616263'),(x'02',x'646566');
-                 INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,session_pk,version_hash,route,completion)
-                    VALUES(1,1,17,0,4,'native',1,x'01','live','finished');
+                 INSERT INTO message_version VALUES(1,x'01'),(2,x'02'); INSERT INTO message_version_body VALUES(1,x'616263'),(2,x'646566');
+                 INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,session_pk,version_pk,route,completion)
+                    VALUES(1,1,17,0,4,'native',1,1,'live','finished');
                  INSERT INTO parser_context_state VALUES(1,17,'reading=1',4);
-                 INSERT INTO parser_context VALUES(1,17,'reading=1',4,'retained-key',x'636f6e74657874',x'01');
+                 INSERT INTO parser_context VALUES(1,17,'reading=1',4,'retained-key',x'636f6e74657874',1);
                  INSERT INTO parse_state(input_pk,chain,status,parsed_upto,reading_version,checkpoint)
                     VALUES(1,17,'partial',4,'reading=1',x'636865636b706f696e74');",
             ).unwrap();
@@ -135,9 +135,9 @@ fn repeated_source_upserts_keep_context_bodies_until_the_context_goes() {
         // Moving off a version the context keeps leaves its body.
         for hash in [vec![2u8], vec![1], vec![2]] {
             conn.execute(
-                    "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,session_pk,version_hash,route,completion)
-                     VALUES(1,1,17,0,4,'native',1,?1,'live','finished')
-                     ON CONFLICT(message_pk,input_pk,chain) DO UPDATE SET version_hash=excluded.version_hash",
+                    "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,session_pk,version_pk,route,completion)
+                     VALUES(1,1,17,0,4,'native',1,(SELECT pk FROM message_version WHERE version_hash=?1),'live','finished')
+                     ON CONFLICT(message_pk,input_pk,chain) DO UPDATE SET version_pk=excluded.version_pk",
                     [hash],
                 ).unwrap();
         }
@@ -192,8 +192,8 @@ struct ContextSnapshot {
 
 fn snapshot(conn: &Connection) -> ContextSnapshot {
     conn.query_row(
-        "SELECT v.body,c.value,c.chain,c.cursor,p.reading_version,p.checkpoint,c.version_hash
-         FROM parser_context c JOIN message_version v ON v.version_hash=c.version_hash
+        "SELECT b.body,c.value,c.chain,c.cursor,p.reading_version,p.checkpoint,v.version_hash
+         FROM parser_context c JOIN message_version v ON v.pk=c.version_pk JOIN message_version_body b ON b.version_pk=v.pk
          JOIN parse_state p ON p.input_pk=c.input_pk AND p.chain=c.chain",
         [],
         |r| {

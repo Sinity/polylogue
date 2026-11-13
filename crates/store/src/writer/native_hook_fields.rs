@@ -60,11 +60,11 @@ pub(super) fn write(
     keys: &super::resolve::ResolvedKeys,
     step: &super::ParseStep,
     index: usize,
+    version_pk: i64,
 ) -> Result<()> {
     use polylogue_model::injection::NativeHookField;
     use rusqlite::params;
     let row = &step.output.messages[index];
-    let prepared = &step.prepared.messages[index];
     let pk = keys
         .get(
             super::resolve::Kind::Message,
@@ -72,14 +72,14 @@ pub(super) fn write(
         )?
         .pk;
     conn.execute(
-        "DELETE FROM message_injection_field WHERE message_pk=?1 AND input_pk=?2 AND chain=?3 AND source_version<>?4",
-        params![pk, source.input_pk, source.chain, prepared.hash.as_slice()],
+        "DELETE FROM message_injection_field WHERE message_pk=?1 AND input_pk=?2 AND chain=?3 AND version_pk<>?4",
+        params![pk, source.input_pk, source.chain, version_pk],
     )?;
     let insert = |block: u64, field: NativeHookField| -> Result<()> {
         field.validate()?;
         conn.execute(
-            "INSERT OR IGNORE INTO message_injection_field(message_pk,source_version,block_ordinal,input_pk,chain,field) VALUES (?1,?2,?3,?4,?5,?6)",
-            params![pk,prepared.hash.as_slice(),block.to_string(),source.input_pk,source.chain,serde_json::to_string(&field)?],
+            "INSERT OR IGNORE INTO message_injection_field(message_pk,version_pk,block_ordinal,input_pk,chain,field) VALUES (?1,?2,?3,?4,?5,?6)",
+            params![pk,version_pk,block.to_string(),source.input_pk,source.chain,serde_json::to_string(&field)?],
         )?;
         Ok(())
     };

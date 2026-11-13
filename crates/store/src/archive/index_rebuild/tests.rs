@@ -44,7 +44,7 @@ fn an_index_from_another_format_is_set_aside_and_rebuilt_without_touching_the_ar
 }
 
 #[test]
-fn unknown_index1_open_refuses_without_replacing_saved_progress() {
+fn unknown_current_index_open_refuses_without_replacing_saved_progress() {
     for building in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
@@ -73,7 +73,7 @@ fn unknown_index1_open_refuses_without_replacing_saved_progress() {
             Archive::open_or_create(dir.path()),
             Err(StoreError::NoMigration {
                 database: "index",
-                found: 1
+                found: schema::INDEX_VERSION
             })
         ));
         assert!(set_aside_files(dir.path()).is_empty());
@@ -224,7 +224,7 @@ fn an_index_this_build_wrote_has_the_build_identity() {
 }
 
 #[test]
-fn primary_index1_rebuild_preserves_original_cache_and_paid_and_pending_stores() {
+fn primary_previous_index_rebuild_preserves_original_cache_and_paid_and_pending_stores() {
     for boundary in std::iter::once(None)
         .chain(cfg!(feature = "faults").then_some(Some("index.after_set_aside")))
         .chain(cfg!(feature = "faults").then_some(Some("index.after_creation")))
@@ -238,7 +238,7 @@ fn primary_index1_rebuild_preserves_original_cache_and_paid_and_pending_stores()
         drop(embeddings);
         drop(lock);
         std::fs::remove_file(archive.index_db()).unwrap();
-        crate::fixture::primary_index_before_originals(&archive.index_db()).unwrap();
+        crate::fixture::primary_previous_index(&archive.index_db()).unwrap();
         let old = open_write(&archive.index_db(), cache::SETUP).unwrap();
         old.execute(
             "INSERT INTO meta VALUES('original-cache-marker','retained')",
@@ -248,6 +248,15 @@ fn primary_index1_rebuild_preserves_original_cache_and_paid_and_pending_stores()
         let original_schema = schema::index_identity(&old).unwrap();
         drop(old);
         let original_bytes = std::fs::read(archive.index_db()).unwrap();
+        let original_wal =
+            std::fs::read(archive.index_db().with_file_name("index.db-wal")).unwrap();
+        assert!(
+            !original_wal.is_empty(),
+            "predecessor has committed rows in its WAL"
+        );
+        let paid_before = std::fs::read(archive.embeddings_db()).unwrap();
+        let paid_wal_before =
+            std::fs::read(archive.embeddings_db().with_file_name("embeddings.db-wal")).ok();
         let spool = store
             .join("producer-spool")
             .join("synthetic-producer")
@@ -266,6 +275,17 @@ fn primary_index1_rebuild_preserves_original_cache_and_paid_and_pending_stores()
         let (current, lock) = Archive::open_primary(&root, &store).unwrap();
         let retained = root.join(file_name(&original_schema));
         assert_eq!(std::fs::read(&retained).unwrap(), original_bytes);
+        let mut retained_wal = retained.as_os_str().to_owned();
+        retained_wal.push("-wal");
+        assert_eq!(
+            std::fs::read(std::path::PathBuf::from(retained_wal)).unwrap(),
+            original_wal
+        );
+        assert_eq!(std::fs::read(current.embeddings_db()).unwrap(), paid_before);
+        assert_eq!(
+            std::fs::read(current.embeddings_db().with_file_name("embeddings.db-wal")).ok(),
+            paid_wal_before
+        );
         assert_eq!(
             std::fs::read(&pending).unwrap(),
             b"synthetic immutable pending intent"
@@ -349,16 +369,13 @@ fn primary_index1_rebuild_preserves_original_cache_and_paid_and_pending_stores()
 
 #[test]
 fn unknown_primary_shapes_are_refused_without_replacing_the_original_bytes() {
-    for version in [1, schema::PRIMARY_INDEX_VERSION] {
+    {
+        let version = schema::PRIMARY_INDEX_VERSION;
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("archive");
         let store = dir.path().join("native");
         let (archive, lock) = Archive::open_primary(&root, &store).unwrap();
         drop(lock);
-        if version == 1 {
-            std::fs::remove_file(archive.index_db()).unwrap();
-            crate::fixture::primary_index_before_originals(&archive.index_db()).unwrap();
-        }
         let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
         index.execute_batch("CREATE TABLE unexplained_primary_data(value BLOB);INSERT INTO unexplained_primary_data VALUES(x'1234')").unwrap();
         drop(index);

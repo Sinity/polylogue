@@ -97,7 +97,7 @@ fn new_messages_do_not_read_a_previous_source() {
             context.action,
             AuthAction::Read {
                 table_name: "message_source",
-                column_name: "version_hash"
+                column_name: "version_pk"
             }
         ) {
             count.fetch_add(1, Ordering::Relaxed);
@@ -399,4 +399,96 @@ fn complete_products_restore_prepared_structured_values_without_an_index_read() 
         products.last(),
         Some(crate::primary::Product::ParseProgress { .. })
     ));
+}
+
+#[test]
+fn new_versions_do_not_resolve_hashes_again_for_each_child() {
+    for blocks in [1, 32] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = open_write(&dir.path().join("index.db"), 1).unwrap();
+        crate::schema::create_index(&conn).unwrap();
+        conn.set_prepared_statement_cache_capacity(0);
+        let first = crate::first_build::FirstBuild::default();
+        let tx = conn.transaction().unwrap();
+        let prefix = batch("input1", Route::Live, 0, vec![], &[]);
+        write_test_rows(&tx, &prefix, &prefix.parse[0], 1, 0, Some(&first)).unwrap();
+        let reads = Arc::new(AtomicU64::new(0));
+        let count = reads.clone();
+        tx.authorizer(Some(move |context: AuthContext<'_>| {
+            if matches!(
+                context.action,
+                AuthAction::Read {
+                    table_name: "message_version",
+                    column_name: "version_hash"
+                }
+            ) {
+                count.fetch_add(1, Ordering::Relaxed);
+            }
+            Authorization::Allow
+        }))
+        .unwrap();
+        let mut message = text_message("new-version", "main", Role::User, "first", None);
+        message.blocks = (0..blocks)
+            .map(|n| Block::Text {
+                text: format!("exact synthetic block {n}"),
+            })
+            .collect();
+        let b = batch(
+            "input1",
+            Route::Live,
+            100,
+            vec![row(0, message.clone())],
+            &["main"],
+        );
+        assert_eq!(
+            write_test_rows(&tx, &b, &b.parse[0], 1, 1, Some(&first)).unwrap(),
+            1
+        );
+        assert_eq!(
+            reads.load(Ordering::Relaxed),
+            0,
+            "new version's returned key must serve its source, layout and block references"
+        );
+        // Positive control proves the authorizer counts a natural-key resolution.
+        let hash = message.content_hash().unwrap();
+        crate::versions::message_key(&tx, &hash.0).unwrap();
+        assert!(reads.load(Ordering::Relaxed) > 0);
+        tx.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
+            .unwrap();
+        let (stored, projection) = crate::versions::read_message(&tx, &hash.0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored, message);
+        assert_eq!(projection.source_version, hash);
+        assert_eq!(
+            projection.block_ordinals,
+            (0..blocks as u64).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            tx.query_row("SELECT count(*) FROM message_version", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            tx.query_row("SELECT count(*) FROM message_version_body", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            tx.query_row("SELECT count(*) FROM message_version_text", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            blocks
+        );
+        assert_eq!(
+            tx.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+                .get::<_, i64>(
+                0
+            ))
+            .unwrap(),
+            0
+        );
+    }
 }

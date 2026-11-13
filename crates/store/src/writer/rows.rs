@@ -4,7 +4,6 @@
 use super::*;
 use crate::change_summary::ChangeSummary;
 use crate::first_build::FirstBuild;
-use crate::versions::VersionKind;
 use polylogue_model::{Completion, Route};
 
 mod checkpoint;
@@ -223,6 +222,7 @@ fn apply_rows(
         keys,
         choices,
         changes,
+        version_pks: HashMap::new(),
     };
     if p.reset {
         rows.retract()?;
@@ -238,7 +238,7 @@ fn apply_rows(
             .transpose()?
     };
     for version in choices.message_versions.values() {
-        crate::versions::store_message(
+        let pk = crate::versions::store_message(
             tx,
             &version.message,
             &version.prepared,
@@ -249,6 +249,7 @@ fn apply_rows(
             version.replace,
             version.admitted.or(source_admission),
         )?;
+        rows.version_pks.insert(version.prepared.hash, pk);
     }
     let mut sessions: HashMap<String, i64> = HashMap::new();
     for s in &p.output.sessions {
@@ -324,6 +325,7 @@ fn apply_rows(
             keys,
             p,
             i,
+            rows.version_pk(&prepared.hash)?,
         )?;
         if let Some(at) = ms(row.message.at) {
             let last = activity.entry(session_pk).or_insert(at);
@@ -691,6 +693,8 @@ struct StoredBlock<'a> {
 }
 
 pub(super) struct RowWriter<'a, 't> {
+    /// Integer keys returned while registering this transaction's versions.
+    version_pks: HashMap<[u8; 32], i64>,
     checkpoint: checkpoint::Update,
     source_admitted: Option<i64>,
     tx: &'a Transaction<'t>,
@@ -992,23 +996,23 @@ impl RowWriter<'_, '_> {
             }
         };
         let id_kind = row.id_kind.as_str();
-        let hash = prepared.hash.as_slice();
+        let version_pk = self.version_pk(&prepared.hash)?;
         let (route, completion) = (route.as_str(), completion.as_str());
         if new {
             self.tx.prepare_cached(
-                "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,completion,version_hash,session_pk,main,route,seq,record_position,order_time,at)
+                "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,completion,version_pk,session_pk,main,route,seq,record_position,order_time,at)
                  VALUES (?1,?2,?3,?4,?5,?13,?6,?7,?8,?9,?10,?11,?12,?14,?15)"
-            )?.execute(params![pk,v.input_pk,v.chain,v.start,v.end,completion,hash,session_pk,main,route,position.0,position.1,id_kind,order_time,at])?;
+            )?.execute(params![pk,v.input_pk,v.chain,v.start,v.end,completion,version_pk,session_pk,main,route,position.0,position.1,id_kind,order_time,at])?;
             return Ok(false);
         }
         self.tx.prepare_cached(
-            "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,completion,version_hash,session_pk,main,route,seq,record_position,order_time,at)
+            "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,completion,version_pk,session_pk,main,route,seq,record_position,order_time,at)
              VALUES (?1,?2,?3,?4,?5,?13,?6,?7,?8,?9,?10,?11,?12,?14,?15)
              ON CONFLICT(message_pk,input_pk,chain) DO UPDATE SET source_start=excluded.source_start,
-             source_end=excluded.source_end,id_kind=excluded.id_kind,completion=excluded.completion,version_hash=excluded.version_hash,
+             source_end=excluded.source_end,id_kind=excluded.id_kind,completion=excluded.completion,version_pk=excluded.version_pk,
              session_pk=excluded.session_pk,main=excluded.main,route=excluded.route,
              seq=excluded.seq,record_position=excluded.record_position,order_time=excluded.order_time,at=excluded.at"
-        )?.execute(params![pk,v.input_pk,v.chain,v.start,v.end,completion,hash,session_pk,main,route,position.0,position.1,id_kind,order_time,at])?;
+        )?.execute(params![pk,v.input_pk,v.chain,v.start,v.end,completion,version_pk,session_pk,main,route,position.0,position.1,id_kind,order_time,at])?;
         Ok(false)
     }
 
@@ -1371,6 +1375,13 @@ impl RowWriter<'_, '_> {
         Ok(())
     }
 
+    fn version_pk(&self, hash: &[u8; 32]) -> Result<i64> {
+        match self.version_pks.get(hash) {
+            Some(pk) => Ok(*pk),
+            None => crate::versions::message_key(self.tx, hash),
+        }
+    }
+
     fn insert_blocks(
         &self,
         message_pk: i64,
@@ -1385,7 +1396,7 @@ impl RowWriter<'_, '_> {
         }
         prepared.projection.validate(m.blocks.len())?;
         let stored_texts =
-            crate::versions::text_ids(self.tx, VersionKind::Message, &prepared.hash)?;
+            crate::versions::message_text_ids(self.tx, self.version_pk(&prepared.hash)?)?;
         for (idx, ((block, body), data)) in m
             .blocks
             .iter()

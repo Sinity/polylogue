@@ -47,7 +47,7 @@ impl Reader<'_> {
     ) -> Result<AttachmentResolution> {
         let conn = self.conn()?;
         let (version,body,source_input,source_chain):(Vec<u8>,Vec<u8>,String,i64)=conn.query_row(
-            "SELECT ms.version_hash,b.body,i.id,ms.chain FROM message m JOIN message_source ms ON ms.message_pk=m.pk AND ms.input_pk=m.input_pk AND ms.chain=m.source_chain JOIN input_ref i ON i.pk=ms.input_pk JOIN block b ON b.message_pk=m.pk WHERE m.id=?1 AND coalesce(b.ordinal,CAST(b.idx AS TEXT))=?2",
+            "SELECT (SELECT version_hash FROM message_version WHERE pk=ms.version_pk),b.body,i.id,ms.chain FROM message m JOIN message_source ms ON ms.message_pk=m.pk AND ms.input_pk=m.input_pk AND ms.chain=m.source_chain JOIN input_ref i ON i.pk=ms.input_pk JOIN block b ON b.message_pk=m.pk WHERE m.id=?1 AND coalesce(b.ordinal,CAST(b.idx AS TEXT))=?2",
             params![message.to_string(),block.to_string()],
             |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?
             .ok_or_else(||StoreError::NotFound(format!("attachment block {message}:{block}")))?;
@@ -276,7 +276,7 @@ impl Reader<'_> {
             "SELECT i.id,s.chain FROM message m
              JOIN message_source s ON s.message_pk=m.pk
              JOIN input_ref i ON i.pk=s.input_pk
-             WHERE m.id=?1 AND s.version_hash=?2 AND s.input_pk=m.input_pk AND s.chain=m.source_chain ORDER BY i.id,s.chain",
+             WHERE m.id=?1 AND (SELECT version_hash FROM message_version WHERE pk=s.version_pk)=?2 AND s.input_pk=m.input_pk AND s.chain=m.source_chain ORDER BY i.id,s.chain",
         )?;
         let shown = shown
             .query_map(

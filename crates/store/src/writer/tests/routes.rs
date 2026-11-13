@@ -189,7 +189,7 @@ fn composed_rows(w: &TestArchive) -> Vec<String> {
          FROM message m JOIN session s ON s.pk=m.session_pk JOIN input_ref i ON i.pk=m.input_pk",
         "SELECT r.field_group,i.id,r.chain FROM message_route r JOIN input_ref i ON i.pk=r.input_pk",
         "SELECT b.idx,b.kind,hex(b.body),t.body IS NOT NULL FROM block b LEFT JOIN text t ON t.id=b.text_id",
-        "SELECT i.id,s.chain,s.route,s.completion,s.main,hex(s.version_hash) FROM message_source s
+        "SELECT i.id,s.chain,s.route,s.completion,s.main,hex((SELECT version_hash FROM message_version WHERE pk=s.version_pk)) FROM message_source s
          JOIN input_ref i ON i.pk=s.input_pk",
     ] {
         let mut statement = conn.prepare(sql).unwrap();
