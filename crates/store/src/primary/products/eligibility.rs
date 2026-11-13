@@ -254,7 +254,7 @@ pub(crate) fn previous_reading_bound(
     version: &str,
 ) -> Result<Option<u64>> {
     let mut query = index.prepare_cached(
-        "SELECT f.native_kind,f.reading_version,f.step_end,s.offset+s.length
+        "SELECT f.native_kind,f.reading_version,f.step_end,s.offset,s.length,s.blob_offset
          FROM source_material s JOIN primary_fact f ON f.material=s.id
          WHERE s.input=?1 AND s.chain=?2 AND f.state='live'",
     )?;
@@ -285,16 +285,30 @@ pub(crate) fn previous_reading_bound(
         {
             continue;
         }
+        let invalid = || {
+            crate::StoreError::Invalid(
+                "a previous native reading has an unmapped material source range".into(),
+            )
+        };
         let bound = if family == Some("parse_progress") {
             0
+        } else if let Some(end) = row.get::<_, Option<i64>>(2)? {
+            u64::try_from(end).map_err(|_| invalid())?
         } else {
-            row.get::<_, Option<i64>>(2)?.unwrap_or(row.get(3)?)
+            let offset = u64::try_from(row.get::<_, i64>(3)?).map_err(|_| invalid())?;
+            let length = u64::try_from(row.get::<_, i64>(4)?).map_err(|_| invalid())?;
+            let blob_offset = u64::try_from(row.get::<_, i64>(5)?).map_err(|_| invalid())?;
+            if blob_offset > length {
+                return Err(invalid());
+            }
+            // The mapped slice may omit the material's prefix and tail. Its
+            // logical origin is offset - blob_offset; opaque facts still need
+            // the full material's end, including any unmapped tail.
+            offset
+                .checked_sub(blob_offset)
+                .and_then(|start| start.checked_add(length))
+                .ok_or_else(invalid)?
         };
-        let bound = u64::try_from(bound).map_err(|_| {
-            crate::StoreError::Invalid(
-                "a previous native reading has a negative source bound".into(),
-            )
-        })?;
         required = Some(required.unwrap_or(0).max(bound));
     }
     Ok(required)
