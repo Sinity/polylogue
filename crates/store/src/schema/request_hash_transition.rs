@@ -3,34 +3,43 @@ use crate::{Result, StoreError};
 use polylogue_model::user::{UserRequest, UserWrite};
 use rusqlite::{Transaction, params};
 
-// The predecessor sorted assertion values, but serialized the surrounding
-// request structs in declaration order. This recipe belongs only to the
-// transition; current reads and writes use the canonical request hash.
-fn prior_hash(request: &UserRequest) -> Result<[u8; 32]> {
-    let mut intent = request.write.intent();
-    match &mut intent {
-        UserWrite::Assert { assertions } => {
-            for assertion in assertions {
-                if let Some(value) = &mut assertion.value {
-                    value.sort_all_objects();
+// The stored JSON retains the predecessor serializer's field and nested-map
+// order. Re-serializing decoded structs could introduce defaults or reorder
+// maps. Change only the fields its intent function changed. This recipe is
+// used at conversion; current reads and writes have one canonical recipe.
+fn prior_hash(request: &UserRequest, packed: &[u8]) -> Result<[u8; 32]> {
+    let mut frozen: polylogue_model::Json = crate::encoding::unpack_json(packed)?;
+    let mut intent = frozen["write"].take();
+    match &request.write {
+        UserWrite::Assert { .. } => {
+            if let Some(assertions) = intent["assertions"].as_array_mut() {
+                for assertion in assertions {
+                    if let Some(value) = assertion.get_mut("value") {
+                        value.sort_all_objects();
+                    }
                 }
             }
         }
-        UserWrite::AssertQuery { assertion, .. } => {
-            if let Some(value) = &mut assertion.value {
+        UserWrite::AssertQuery { .. } => {
+            intent["resolved"] = serde_json::json!([]);
+            if let Some(value) = intent["assertion"].get_mut("value") {
                 value.sort_all_objects();
             }
         }
         UserWrite::ReviseAssertions { patch, .. } => {
-            if let polylogue_model::assertion::Change::Set(value) = &mut patch.value {
-                value.sort_all_objects();
+            if matches!(patch.value, polylogue_model::assertion::Change::Set(_)) {
+                intent["patch"]["value"]["value"].sort_all_objects();
             }
+        }
+        UserWrite::KeepResult { .. } => {
+            intent["rows_json"] = serde_json::json!("");
+            intent["read_at"] = serde_json::json!("");
         }
         _ => {}
     }
     Ok(*blake3::hash(&serde_json::to_vec(&(
-        &request.machine,
-        &request.authorship,
+        frozen["machine"].take(),
+        frozen["authorship"].take(),
         intent,
     ))?)
     .as_bytes())
@@ -63,7 +72,7 @@ pub(super) fn apply(tx: &Transaction<'_>, primary: bool) -> Result<()> {
         if hash.as_slice() == canonical {
             continue;
         }
-        if hash.as_slice() != prior_hash(&request)? {
+        if hash.as_slice() != prior_hash(&request, &packed)? {
             return Err(StoreError::Conflict(id));
         }
         tx.execute(

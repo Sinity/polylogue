@@ -18,15 +18,128 @@ fn signal(id: &str) -> UserRequest {
     }
 }
 
+// The pre-canonical serializer and intent edits, independent of the raw-JSON
+// conversion. Its output supplies the stored digest in these controls.
+fn predecessor_bytes(request: &UserRequest) -> Vec<u8> {
+    let mut intent = request.write.intent();
+    match &mut intent {
+        UserWrite::Assert { assertions } => {
+            for assertion in assertions {
+                if let Some(value) = &mut assertion.value {
+                    value.sort_all_objects();
+                }
+            }
+        }
+        UserWrite::AssertQuery { assertion, .. } => {
+            if let Some(value) = &mut assertion.value {
+                value.sort_all_objects();
+            }
+        }
+        UserWrite::ReviseAssertions { patch, .. } => {
+            if let polylogue_model::assertion::Change::Set(value) = &mut patch.value {
+                value.sort_all_objects();
+            }
+        }
+        _ => {}
+    }
+    serde_json::to_vec(&(&request.machine, &request.authorship, intent)).unwrap()
+}
+
 #[test]
 fn request_hash_transition_recognizes_the_exact_prior_signal_encoding() {
     let request = signal("signal-fixture");
     let prior = *blake3::hash(SIGNAL_INTENT).as_bytes();
-    assert_eq!(prior_hash(&request).unwrap(), prior);
+    assert_eq!(
+        prior_hash(&request, &crate::encoding::pack_json(&request).unwrap()).unwrap(),
+        prior
+    );
     assert_ne!(
         crate::primary::authored::request_hash(&request).unwrap(),
         prior
     );
+}
+
+#[test]
+fn request_hash_transition_retains_prior_nested_map_order_escaping_and_intent_edits() {
+    use polylogue_model::assertion::{AssertionKind, AssertionPatch, Change, NewAssertion};
+    use std::collections::HashMap;
+
+    let nested = HashMap::from([
+        (
+            "z",
+            serde_json::json!({"second": "Café\n\"\\", "first": [1, 2]}),
+        ),
+        ("a", serde_json::json!({"right": true, "left": false})),
+    ]);
+    let value = serde_json::to_value(nested).unwrap();
+    let assertion = NewAssertion {
+        kind: AssertionKind::Note,
+        key: None,
+        value: Some(value.clone()),
+        links: vec![],
+        valid_until: None,
+    };
+    let writes = [
+        UserWrite::ChatEnqueue(polylogue_model::user::NewChatAction {
+            id: "chat".into(),
+            request_key: "chat-key".into(),
+            request_hash: polylogue_model::BlobHash::of(b"synthetic action"),
+            request: value.clone(),
+            stage_only: true,
+            needs_approval: false,
+            attachments: vec![],
+        }),
+        UserWrite::Assert {
+            assertions: vec![assertion.clone()],
+        },
+        UserWrite::AssertQuery {
+            query: "sessions".into(),
+            assertion,
+            resolved: vec![polylogue_model::Reference::parse("repo:resolved").unwrap()],
+        },
+        UserWrite::ReviseAssertions {
+            bases: vec![],
+            patch: AssertionPatch {
+                value: Change::Set(value),
+                ..Default::default()
+            },
+        },
+        UserWrite::KeepResult {
+            name: Some("result".into()),
+            query: "sessions".into(),
+            rows_json: "{\"resolved\":\"Café\n\\\"}".into(),
+            read_at: "{\"now\":100}".into(),
+        },
+    ];
+    let (conn, source) = source(false);
+    for (number, write) in writes.into_iter().enumerate() {
+        let request =
+            crate::fixture::authored::operator_request(format!("request-{number}"), write);
+        let original = crate::encoding::pack_json(&request).unwrap();
+        let old = *blake3::hash(&predecessor_bytes(&request)).as_bytes();
+        assert_eq!(prior_hash(&request, &original).unwrap(), old);
+        conn.execute("INSERT INTO client_request(id,content_hash,created_at,request,commit_seq) VALUES(?1,?2,1,?3,1)",params![request.id,&old[..],original]).unwrap();
+    }
+    previous(&conn, false);
+    let before = rows(&conn, source);
+    reopen(&conn, false).unwrap();
+    assert_eq!(rows(&conn, source), before);
+    let mut statement = conn
+        .prepare("SELECT request,content_hash FROM client_request ORDER BY id")
+        .unwrap();
+    for row in statement
+        .query_map([], |row| {
+            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })
+        .unwrap()
+    {
+        let (packed, hash) = row.unwrap();
+        let request: UserRequest = crate::encoding::unpack_json(&packed).unwrap();
+        assert_eq!(
+            hash,
+            crate::primary::authored::request_hash(&request).unwrap()
+        );
+    }
 }
 
 fn saved(id: &str) -> UserRequest {
