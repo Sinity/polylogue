@@ -1,4 +1,4 @@
-//! AI facts exposed to Sinex readers independently of the local row transport.
+//! Declared AI domain fields and source evidence for native Sinex readers.
 use crate::kinds::{GitIdentity, Objective, RecordRef, TerminalIdentity};
 use polylogue_model::{
     Block, MessageId, MessageRow, Production, PromptKind, Role, Session, SessionId, SessionKind,

@@ -482,7 +482,7 @@ impl Engine {
                 .collect();
             let mut databases = Vec::with_capacity(sources.len());
             for (path, origin) in sources {
-                let declaration = polylogue_sources::origin::by_name(origin).ok_or_else(|| {
+                polylogue_sources::origin::by_name(origin).ok_or_else(|| {
                     polylogue_store::StoreError::Invalid(format!(
                         "unknown database origin {origin}"
                     ))

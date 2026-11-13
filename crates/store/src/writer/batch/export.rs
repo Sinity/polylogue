@@ -39,7 +39,7 @@ impl ParseStep {
         if let Some(original) = self.original_export_body {
             return Ok(original);
         }
-        let mut output = if self.prepared.released {
+        let output = if self.prepared.released {
             self.complete_output()?
         } else {
             self.output.clone()

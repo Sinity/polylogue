@@ -426,7 +426,7 @@ struct History {
     available: HashMap<BlobHash, Option<u64>>,
 }
 impl History {
-    fn new(archive: &Connection) -> Self {
+    fn new() -> Self {
         Self {
             paths: std::cell::RefCell::new(Vec::new()),
             messages: std::cell::RefCell::new(BTreeMap::new()),

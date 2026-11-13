@@ -87,7 +87,7 @@ pub struct Output {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub imported_events: BTreeMap<usize, crate::bundle::ImportedEventIdentity>,
     /// Event identities already derived from the original complete reading.
-    /// Canonical fact subsets keep these positions when earlier facts are hidden.
+    /// Interpretations keep these identities when earlier source values are hidden.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub event_ids: BTreeMap<usize, String>,
     /// Explicit session reading order, indexed by message; byte ranges stay local.
