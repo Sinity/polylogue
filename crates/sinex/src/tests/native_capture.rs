@@ -1192,8 +1192,9 @@ fn a_gone_observation_waits_on_the_confirmed_input_through_the_capture_route() {
 
 #[test]
 fn a_late_other_host_original_is_parsed_with_an_empty_local_home() {
+    use polylogue_model::BlobHash;
+    use polylogue_store::Writer;
     use polylogue_store::primary::{Confirmed, ConfirmedChange, Material, Product, ReplayControl};
-    use polylogue_store::{BlobHash, Writer};
 
     let home = ClaudeHome::new();
     let store = home.dir.path().join("sdk");
@@ -1224,8 +1225,12 @@ fn a_late_other_host_original_is_parsed_with_an_empty_local_home() {
             ),
         ])
         .unwrap();
+    let local_home = home.dir.path().join("empty-local-home");
+    std::fs::create_dir_all(&local_home).unwrap();
+    let mut config = home.config(4096);
+    config.home = local_home.clone();
     let mut engine = Engine::on_sinex(
-        home.config(4096),
+        config,
         archive.clone(),
         sdk.clone(),
         polylogue_testkit::stopped_attempt(),
@@ -1233,7 +1238,7 @@ fn a_late_other_host_original_is_parsed_with_an_empty_local_home() {
     .unwrap();
     let initial = engine.run_pass().unwrap();
     assert_eq!(initial.bytes_read, 0);
-    assert_eq!(std::fs::read_dir(&home.home).unwrap().count(), 0);
+    assert_eq!(std::fs::read_dir(&local_home).unwrap().count(), 0);
 
     // This path belongs to another host. A conflicting local file must never
     // supply the parser's bytes, even when its name happens to exist here.
@@ -1305,5 +1310,5 @@ fn a_late_other_host_original_is_parsed_with_an_empty_local_home() {
     let frame = serde_json::to_string(&queue.decode_frame(&parsed[0].identity).unwrap()).unwrap();
     assert!(frame.contains("confirmed original words"), "{frame}");
     assert!(!frame.contains("local decoy"), "{frame}");
-    assert_eq!(std::fs::read_dir(&home.home).unwrap().count(), 0);
+    assert_eq!(std::fs::read_dir(&local_home).unwrap().count(), 0);
 }
