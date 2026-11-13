@@ -134,6 +134,7 @@ fn export_event_identities_survive_normalized_product_objects() {
     let archive = crate::Archive::on_sinex(root.path(), &root.path().join("bytes"));
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
     apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
         &[
@@ -194,7 +195,13 @@ fn export_event_identities_survive_normalized_product_objects() {
             **product = serde_json::from_value(value).unwrap();
         }
     }
-    apply(&mut index, &resolver, &changes).unwrap();
+    apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &mut index,
+        &resolver,
+        &changes,
+    )
+    .unwrap();
     let actual: Vec<(String, String)> = index
         .prepare("SELECT id,kind FROM event ORDER BY seq,id")
         .unwrap()
@@ -209,7 +216,13 @@ fn export_event_identities_survive_normalized_product_objects() {
     );
     let snapshot = shapes(&index, "target", "normalized-v1");
     assert_eq!(checkpoint(&index).unwrap(), Some(2));
-    apply(&mut index, &resolver, &changes).unwrap();
+    apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &mut index,
+        &resolver,
+        &changes,
+    )
+    .unwrap();
     assert_eq!(shapes(&index, "target", "normalized-v1"), snapshot);
     assert_eq!(
         index
@@ -259,6 +272,7 @@ fn export_completion_rebuilds_shapes_with_foreign_keys_and_original_receipts() {
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
     for (position, id) in [(1, "target"), (2, "other")] {
         apply(
+            &crate::text_rows::TextIds::new(&index, false).unwrap(),
             &mut index,
             &resolver,
             &[
@@ -276,16 +290,34 @@ fn export_completion_rebuilds_shapes_with_foreign_keys_and_original_receipts() {
     }
     let (item, complete) = callbacks("v2");
     let (other_version, _) = callbacks("v1");
-    apply(&mut index, &resolver, &callback(3, "other", &item)).unwrap();
+    apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &mut index,
+        &resolver,
+        &callback(3, "other", &item),
+    )
+    .unwrap();
     let independent = shapes(&index, "other", "v2");
     assert_eq!(independent.len(), 1);
-    apply(&mut index, &resolver, &callback(4, "target", &item)).unwrap();
+    apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &mut index,
+        &resolver,
+        &callback(4, "target", &item),
+    )
+    .unwrap();
     let before = shapes(&index, "target", "v2");
     assert_eq!(before.len(), 1);
     // The separate EOF control rematerializes a parent which already has
     // shape children. FK checks stay immediate throughout the transaction.
     index.execute_batch("CREATE TRIGGER stop_export BEFORE INSERT ON wire_reading WHEN new.reading_version='v2' BEGIN SELECT raise(ABORT,'stop'); END").unwrap();
-    let error = apply(&mut index, &resolver, &callback(5, "target", &complete)).unwrap_err();
+    let error = apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &mut index,
+        &resolver,
+        &callback(5, "target", &complete),
+    )
+    .unwrap_err();
     assert!(
         matches!(&error,
         StoreError::Sqlite(rusqlite::Error::SqliteFailure(code, Some(message)))
@@ -299,7 +331,16 @@ fn export_completion_rebuilds_shapes_with_foreign_keys_and_original_receipts() {
         "a failed rebuild rolls back both parent and dependent shape removal"
     );
     index.execute_batch("DROP TRIGGER stop_export").unwrap();
-    assert_eq!(apply(&mut index, &resolver, &[]).unwrap(), 5);
+    assert_eq!(
+        apply(
+            &crate::text_rows::TextIds::new(&index, false).unwrap(),
+            &mut index,
+            &resolver,
+            &[]
+        )
+        .unwrap(),
+        5
+    );
     assert_eq!(checkpoint(&index).unwrap(), Some(5));
     assert_eq!(shapes(&index, "other", "v2"), independent);
     let completed = shapes(&index, "target", "v2");
@@ -323,11 +364,18 @@ fn export_completion_rebuilds_shapes_with_foreign_keys_and_original_receipts() {
     let mut redelivery = callback(4, "target", &item);
     redelivery.pop().expect("callback includes its completion");
     redelivery.extend(callback(5, "target", &complete));
-    apply(&mut index, &resolver, &redelivery).unwrap();
+    apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &mut index,
+        &resolver,
+        &redelivery,
+    )
+    .unwrap();
     assert_eq!(checkpoint(&index).unwrap(), Some(5));
     assert_eq!(shapes(&index, "target", "v2"), completed);
     assert_eq!(shapes(&index, "other", "v2"), independent);
     apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
         &callback(6, "target", &other_version),
@@ -338,6 +386,7 @@ fn export_completion_rebuilds_shapes_with_foreign_keys_and_original_receipts() {
     // A later lifecycle reapplication rebuilds the same retained callback
     // sequence without accumulating counts or replacing its source receipts.
     apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
         &[

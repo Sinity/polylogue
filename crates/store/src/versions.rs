@@ -45,8 +45,7 @@ impl VersionKind {
 
 pub(crate) struct TextRows<'a> {
     pub packed: &'a HashMap<[u8; 32], Vec<u8>>,
-    pub first_build: Option<&'a FirstBuild>,
-    pub keys: &'a crate::writer::resolve::ResolvedKeys,
+    pub texts: &'a crate::text_rows::TextIds,
 }
 
 pub(crate) fn store(
@@ -93,8 +92,7 @@ fn store_value(
 ) -> Result<()> {
     let TextRows {
         packed,
-        first_build,
-        keys,
+        texts: identities,
     } = text_rows;
     let kind = kind.name();
     let sql = if replace {
@@ -115,18 +113,12 @@ fn store_value(
     }
     for (idx, text_hash) in texts.iter().enumerate() {
         if let Some(text_hash) = text_hash {
-            let key = keys.get(crate::writer::resolve::Kind::Text, text_hash)?;
-            if let Some(body) = packed.get(text_hash) {
-                crate::text_rows::store_prepared(conn, key.pk, text_hash, body, first_build)?;
-            } else if !key.existing {
-                return Err(crate::StoreError::Invalid(
-                    "a new text has no prepared bytes".into(),
-                ));
-            }
+            let text_id =
+                identities.resolve(conn, text_hash, packed.get(text_hash).map(Vec::as_slice))?;
             conn.prepare_cached(&format!(
                 "INSERT INTO {kind}_version_text(version_hash,idx,text_id) VALUES (?1,?2,?3)"
             ))?
-            .execute(params![hash, idx as i64, key.pk])?;
+            .execute(params![hash, idx as i64, text_id])?;
         }
     }
     for block in blocks {
@@ -386,7 +378,11 @@ pub(crate) fn track_unreferenced(conn: &Connection) -> Result<()> {
 /// commits. Texts go last: deleting a version removes its text references.
 /// In a first build, the search tables are built from the remaining texts
 /// when it ends, so a removed text has no search entry to remove.
-pub(crate) fn remove_unreferenced(conn: &Connection, bulk: bool) -> Result<()> {
+pub(crate) fn remove_unreferenced(
+    conn: &Connection,
+    first_build: Option<&FirstBuild>,
+    texts: &crate::text_rows::TextIds,
+) -> Result<()> {
     for kind in VersionKind::ALL {
         let name = kind.name();
         let (table, stored_key, key, candidates) = if kind.content() {
@@ -421,25 +417,43 @@ pub(crate) fn remove_unreferenced(conn: &Connection, bulk: bool) -> Result<()> {
         .execute([])?;
     // Candidates drive the lookup. An ordinary JOIN can scan every retained
     // text and its references before checking even an empty candidate table.
-    let texts = conn
+    let unused_texts = conn
         .prepare_cached(
-            "SELECT t.id,t.indexed FROM temp.unreferenced_text u CROSS JOIN text t ON t.id=u.text_id
+            "SELECT t.id,t.indexed,t.hash FROM temp.unreferenced_text u CROSS JOIN text t ON t.id=u.text_id
              WHERE NOT EXISTS(SELECT 1 FROM block b WHERE b.text_id=t.id)
              AND NOT EXISTS(SELECT 1 FROM document_block b WHERE b.text_id=t.id)
              AND NOT EXISTS(SELECT 1 FROM message_version_text v WHERE v.text_id=t.id)
              AND NOT EXISTS(SELECT 1 FROM document_version_text v WHERE v.text_id=t.id)",
         )?
-        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?
+        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, crate::encoding::Columns::hash(r, 2)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    for (id, indexed) in texts {
-        if bulk {
+    for (id, indexed, hash) in unused_texts {
+        if first_build.is_some() {
             conn.prepare_cached("DELETE FROM text WHERE id=?1")?
                 .execute([id])?;
+            texts.removed(&hash, id);
         } else {
             crate::text_rows::remove(conn, id, indexed)?;
+            texts.removed(&hash, id);
         }
     }
     conn.prepare_cached("DELETE FROM temp.unreferenced_text")?
         .execute([])?;
     Ok(())
+}
+
+/// The version already owns these references; selection need not resolve
+/// their text hashes again.
+pub(crate) fn text_ids(
+    conn: &Connection,
+    kind: VersionKind,
+    hash: &[u8],
+) -> Result<std::collections::BTreeMap<usize, i64>> {
+    Ok(conn
+        .prepare_cached(&format!(
+            "SELECT idx,text_id FROM {}_version_text WHERE version_hash=?1",
+            kind.name()
+        ))?
+        .query_map([hash], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?)
 }

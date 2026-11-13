@@ -3,6 +3,7 @@ use super::*;
 use std::collections::BTreeMap;
 
 pub(crate) fn apply_confirmed_readings(
+    texts: &crate::text_rows::TextIds,
     tx: &Transaction<'_>,
     readings: &mut [(InputKey, i64, u64, ChainReading)],
     counter: i64,
@@ -67,7 +68,9 @@ pub(crate) fn apply_confirmed_readings(
             )?;
         }
         reading.visit(*chain, |step, resolution| {
-            rows::write_confirmed_rows(tx, &batch, step, resolution, counter, None, None, changes)?;
+            rows::write_confirmed_rows(
+                texts, tx, &batch, step, resolution, counter, None, None, changes,
+            )?;
             Ok(())
         })?;
         rows::prune_sessions(tx, &input.id, *chain, counter)?;

@@ -202,13 +202,20 @@ fn sparse_canonical_receipts_survive_raw_lifecycle_message_restoration_and_reope
     let mut changes = source("a", &message, 0, 10);
     changes.extend(source("b", &message, 1, 30));
     changes.push(barrier(31));
-    apply(&mut index, &resolver, &changes).unwrap();
+    apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &mut index,
+        &resolver,
+        &changes,
+    )
+    .unwrap();
     assert_eq!(
         crate::source::Source::admitted_through(&index, "a", 1, 2).unwrap(),
         Some(1)
     );
     assert_message(&archive, &message);
     apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
         &[
@@ -224,6 +231,7 @@ fn sparse_canonical_receipts_survive_raw_lifecycle_message_restoration_and_reope
     );
     assert_message(&archive, &message);
     apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
         &[
@@ -239,6 +247,7 @@ fn sparse_canonical_receipts_survive_raw_lifecycle_message_restoration_and_reope
     );
     assert_message(&archive, &message);
     apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
         &[
@@ -258,6 +267,7 @@ fn sparse_canonical_receipts_survive_raw_lifecycle_message_restoration_and_reope
             .is_none()
     );
     apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
         &[
@@ -272,7 +282,13 @@ fn sparse_canonical_receipts_survive_raw_lifecycle_message_restoration_and_reope
     drop(index);
     let mut index = crate::archive::open_write(&archive.index_db(), 1).unwrap();
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
-    apply(&mut index, &resolver, &[]).unwrap();
+    apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &mut index,
+        &resolver,
+        &[],
+    )
+    .unwrap();
     assert_message(&archive, &message);
     assert!(!bytes.exists());
 }
@@ -347,7 +363,13 @@ fn sealed_export_callbacks_rebuild_from_confirmed_facts_without_recounting_or_re
         }
     }
     changes.push(barrier(20));
-    apply(&mut index, &resolver, &changes).unwrap();
+    apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &mut index,
+        &resolver,
+        &changes,
+    )
+    .unwrap();
     let retained: String = index
         .query_row("SELECT state FROM wire_reading", [], |row| row.get(0))
         .unwrap();
@@ -366,6 +388,7 @@ fn sealed_export_callbacks_rebuild_from_confirmed_facts_without_recounting_or_re
         2
     );
     apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
         &[
@@ -390,7 +413,13 @@ fn sealed_export_callbacks_rebuild_from_confirmed_facts_without_recounting_or_re
     let mut rebuilt = crate::archive::open_write(&rebuilt_archive.index_db(), 1).unwrap();
     let rebuilt_resolver =
         crate::writer::resolve::Resolver::new(&rebuilt_archive, &rebuilt, None).unwrap();
-    apply(&mut rebuilt, &rebuilt_resolver, &changes).unwrap();
+    apply(
+        &crate::text_rows::TextIds::new(&rebuilt, false).unwrap(),
+        &mut rebuilt,
+        &rebuilt_resolver,
+        &changes,
+    )
+    .unwrap();
     assert_eq!(
         rebuilt
             .query_row("SELECT state FROM wire_reading", [], |row| row
@@ -422,6 +451,7 @@ fn sealed_export_callbacks_rebuild_from_confirmed_facts_without_recounting_or_re
         .pop()
         .unwrap();
     let error = apply(
+        &crate::text_rows::TextIds::new(&rebuilt, false).unwrap(),
         &mut rebuilt,
         &rebuilt_resolver,
         &[fact(99, "unbound-export", control), barrier(99)],

@@ -36,6 +36,7 @@ fn write_test_rows(
     batch.parse = vec![step.clone()];
     resolve::prepare_index(tx, &mut batch, chain, first.is_some())?;
     write_rows(
+        &crate::text_rows::TextIds::new(tx, false).unwrap(),
         tx,
         &batch,
         &batch.parse[0],
@@ -1342,6 +1343,14 @@ fn parse_positions_and_rows_commit_atomically_during_first_build() {
     assert!(w.writer.flush().unwrap().errors.is_empty());
     let reader = pool.reader().unwrap();
     assert_eq!(reader.status().unwrap().messages, 1);
+    let packed: Vec<u8> = index.query_row(
+        "SELECT t.body FROM text t JOIN block b ON b.text_id=t.id JOIN message m ON m.pk=b.message_pk",
+        [], |r| r.get(0),
+    ).unwrap();
+    assert_eq!(
+        crate::encoding::unpack_text(&packed).unwrap(),
+        "committed text"
+    );
     assert_eq!(
         reader
             .input_progress("atomic-position")

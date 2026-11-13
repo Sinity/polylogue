@@ -60,6 +60,7 @@ fn narrowing_and_widening_reset_cached_payloads_and_require_a_new_barrier() {
     )
     .unwrap();
     projection::apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
         &[input(1, "private"), barrier(1), input(2, "uncommitted")],
@@ -119,14 +120,26 @@ fn narrowing_and_widening_reset_cached_payloads_and_require_a_new_barrier() {
         before
     );
     assert!(!reset(&mut index, &archive, &resolver, "narrow", false).unwrap());
-    projection::apply(&mut index, &resolver, &[barrier(0)]).unwrap();
+    projection::apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &mut index,
+        &resolver,
+        &[barrier(0)],
+    )
+    .unwrap();
     assert_eq!(projection::checkpoint(&index).unwrap(), Some(0));
     drop(index);
     let mut index = Connection::open(archive.index_db()).unwrap();
     assert_eq!(current(&index).unwrap().as_deref(), Some("narrow"));
     assert!(reset(&mut index, &archive, &resolver, "wide", false).unwrap());
     assert_eq!(projection::checkpoint(&index).unwrap(), None);
-    projection::apply(&mut index, &resolver, &[input(1, "private"), barrier(1)]).unwrap();
+    projection::apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &mut index,
+        &resolver,
+        &[input(1, "private"), barrier(1)],
+    )
+    .unwrap();
     assert_eq!(
         index
             .query_row("SELECT id FROM source_input", [], |row| row
@@ -150,7 +163,13 @@ fn a_failed_scope_transaction_keeps_readers_blocked_until_retry_commits() {
     let archive = Archive::on_sinex(root.path(), &root.path().join("sinex"));
     let mut index = cache(&archive);
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
-    projection::apply(&mut index, &resolver, &[input(1, "private"), barrier(1)]).unwrap();
+    projection::apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &mut index,
+        &resolver,
+        &[input(1, "private"), barrier(1)],
+    )
+    .unwrap();
     index.execute_batch("CREATE TRIGGER stop_reset BEFORE DELETE ON source_input BEGIN SELECT raise(ABORT,'stop'); END").unwrap();
     assert!(reset(&mut index, &archive, &resolver, "changed", false).is_err());
     assert!(matches!(
@@ -184,7 +203,13 @@ fn failure_to_persist_owner_control_blocks_current_reads_without_claiming_durabi
     let archive = Archive::on_sinex(root.path(), &root.path().join("sinex"));
     let mut index = cache(&archive);
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
-    projection::apply(&mut index, &resolver, &[input(1, "private"), barrier(1)]).unwrap();
+    projection::apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &mut index,
+        &resolver,
+        &[input(1, "private"), barrier(1)],
+    )
+    .unwrap();
     index.execute_batch("CREATE TRIGGER stop_control BEFORE INSERT ON meta WHEN new.key='confirmed_scope_pending' BEGIN SELECT raise(ABORT,'stop'); END").unwrap();
     assert!(reset(&mut index, &archive, &resolver, "changed", false).is_err());
     assert!(matches!(
@@ -209,7 +234,13 @@ fn cache_clear_cannot_commit_until_registered_outputs_are_invalidated() {
     let archive = Archive::on_sinex(root.path(), &root.path().join("sinex"));
     let mut index = cache(&archive);
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
-    projection::apply(&mut index, &resolver, &[input(1, "private"), barrier(1)]).unwrap();
+    projection::apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &mut index,
+        &resolver,
+        &[input(1, "private"), barrier(1)],
+    )
+    .unwrap();
     let pointer = root.path().join("catalog-current");
     let invalidate_path = pointer.clone();
     let fail = Arc::new(AtomicBool::new(false));

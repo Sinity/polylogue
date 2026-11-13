@@ -6,7 +6,7 @@ fn scope_discard_requires_drained_readings_and_preserves_identity_highwater() {
     let (archive, _lock) = Archive::open_or_create(&dir.path().join("archive")).unwrap();
     let index = crate::archive::open_read(&archive.index_db()).unwrap();
     let resolver = Resolver::new(&archive, &index, None).unwrap();
-    let key = Key::new(Kind::Text, b"private-text-hash".as_slice());
+    let key = Key::new(Kind::Session, b"private-session".as_slice());
     let first = resolver.identity(key.clone(), None).unwrap();
     let lease = resolver.lease(BTreeSet::from([Key::new(
         Kind::Input,

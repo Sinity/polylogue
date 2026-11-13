@@ -36,7 +36,13 @@ fn projection_pages_resume_hidden_and_install_the_certificate_with_the_complete_
     let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
     crate::primary::scope::reset(&mut index, &archive, &resolver, "scope", false).unwrap();
-    apply(&mut index, &resolver, &[input(1, "obsolete"), barrier(1)]).unwrap();
+    apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &mut index,
+        &resolver,
+        &[input(1, "obsolete"), barrier(1)],
+    )
+    .unwrap();
     // An equal scope can still need replacement at a new stream origin.
     assert!(crate::primary::scope::reset(&mut index, &archive, &resolver, "scope", true).unwrap());
     let mut state = replay_state(&index).unwrap();
@@ -54,9 +60,21 @@ fn projection_pages_resume_hidden_and_install_the_certificate_with_the_complete_
             cursor: "next-page".into(),
         }),
     ];
-    apply(&mut index, &resolver, &page).unwrap();
+    apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &mut index,
+        &resolver,
+        &page,
+    )
+    .unwrap();
     // A lost reply can repeat the same already-staged page.
-    apply(&mut index, &resolver, &page).unwrap();
+    apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &mut index,
+        &resolver,
+        &page,
+    )
+    .unwrap();
     assert_eq!(rows(&index, "SELECT count(*) FROM source_input"), 0);
     assert_eq!(checkpoint(&index).unwrap(), None);
     drop(index);
@@ -67,7 +85,15 @@ fn projection_pages_resume_hidden_and_install_the_certificate_with_the_complete_
         Some("next-page")
     );
     assert_eq!(state.basis, None);
-    assert!(apply(&mut index, &resolver, &[barrier(8)]).is_err());
+    assert!(
+        apply(
+            &crate::text_rows::TextIds::new(&index, false).unwrap(),
+            &mut index,
+            &resolver,
+            &[barrier(8)]
+        )
+        .is_err()
+    );
     let basis = ProjectionBasis {
         stamp: "owner-signature".into(),
         position: 8,
@@ -77,6 +103,7 @@ fn projection_pages_resume_hidden_and_install_the_certificate_with_the_complete_
     index.execute_batch("CREATE TRIGGER stop_snapshot BEFORE INSERT ON meta WHEN new.key='confirmed_position' BEGIN SELECT raise(ABORT,'stop snapshot'); END").unwrap();
     assert!(
         apply(
+            &crate::text_rows::TextIds::new(&index, false).unwrap(),
             &mut index,
             &resolver,
             &[
@@ -99,7 +126,13 @@ fn projection_pages_resume_hidden_and_install_the_certificate_with_the_complete_
     assert_eq!(replay_state(&index).unwrap().basis, None);
     assert_eq!(rows(&index, "SELECT count(*) FROM source_input"), 0);
     index.execute_batch("DROP TRIGGER stop_snapshot").unwrap();
-    apply(&mut index, &resolver, &[]).unwrap();
+    apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &mut index,
+        &resolver,
+        &[],
+    )
+    .unwrap();
     assert_eq!(checkpoint(&index).unwrap(), Some(8));
     let state = replay_state(&index).unwrap();
     assert_eq!(state.basis, Some(basis));
@@ -118,7 +151,13 @@ fn projection_pages_resume_hidden_and_install_the_certificate_with_the_complete_
         state.completed_delivery, None,
         "a projection certificate is not a native delivery"
     );
-    apply(&mut index, &resolver, &[completed(8, 20)]).unwrap();
+    apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &mut index,
+        &resolver,
+        &[completed(8, 20)],
+    )
+    .unwrap();
     let state = replay_state(&index).unwrap();
     assert_eq!(state.applied_position, Some(8));
     assert_eq!(
@@ -135,7 +174,13 @@ fn a_staged_delivery_survives_reopen_without_advancing_the_applied_position() {
     let mut index = cache(&path);
     let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
-    apply(&mut index, &resolver, &[input(3, "source"), delivered(7)]).unwrap();
+    apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &mut index,
+        &resolver,
+        &[input(3, "source"), delivered(7)],
+    )
+    .unwrap();
     assert_eq!(checkpoint(&index).unwrap(), None);
     drop(index);
     let mut index = Connection::open(&path).unwrap();
@@ -149,7 +194,13 @@ fn a_staged_delivery_survives_reopen_without_advancing_the_applied_position() {
         })
     );
     assert_eq!(rows(&index, "SELECT count(*) FROM source_input"), 0);
-    apply(&mut index, &resolver, &[barrier(3), delivered(8)]).unwrap();
+    apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &mut index,
+        &resolver,
+        &[barrier(3), delivered(8)],
+    )
+    .unwrap();
     assert_eq!(checkpoint(&index).unwrap(), Some(3));
     assert_eq!(replay_state(&index).unwrap().applied_position, Some(3));
     assert_eq!(rows(&index, "SELECT count(*) FROM source_input"), 1);
@@ -162,6 +213,7 @@ fn a_restarted_consumer_redelivers_applied_positions_without_changing_them() {
     let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
     apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
         &[input(2, "source"), barrier(2), delivered(9)],
@@ -170,6 +222,7 @@ fn a_restarted_consumer_redelivers_applied_positions_without_changing_them() {
     assert_eq!(checkpoint(&index).unwrap(), Some(2));
     // A native retry may repeat an already applied delivery.
     apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
         &[input(2, "source"), barrier(2), delivered(4)],
@@ -194,6 +247,7 @@ fn an_event_erased_before_this_index_read_it_is_recorded_as_tombstoned() {
     let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
     apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
         &[
@@ -220,6 +274,7 @@ fn an_event_erased_before_this_index_read_it_is_recorded_as_tombstoned() {
     assert_eq!(product, None);
     // A tombstoned event never becomes live again.
     let refused = apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
         &[
@@ -246,6 +301,7 @@ fn a_scope_reset_cannot_share_a_page_with_facts() {
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
     assert!(
         apply(
+            &crate::text_rows::TextIds::new(&index, false).unwrap(),
             &mut index,
             &resolver,
             &[
@@ -267,6 +323,7 @@ fn an_unreadable_event_in_the_middle_of_a_page_is_refused_and_later_events_apply
     let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
     apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
         &[
@@ -340,6 +397,7 @@ fn primary_source_cut_requires_completed_scope_and_survives_new_admissions() {
         fact
     };
     apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
         &[
@@ -357,12 +415,19 @@ fn primary_source_cut_requires_completed_scope_and_survives_new_admissions() {
     let mut index =
         crate::archive::open_write(&archive.index_db(), crate::archive::cache::SETUP).unwrap();
     assert!(boundary(&index).is_none());
-    apply(&mut index, &resolver, &[barrier(2)]).unwrap();
+    apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &mut index,
+        &resolver,
+        &[barrier(2)],
+    )
+    .unwrap();
     let cut = boundary(&index).unwrap();
     assert_eq!(cut.through(&index, &archive).unwrap(), 2);
     let mut append = observed(4, "later-head");
     append.event = "event-first-append".into();
     apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
         &[append, input(5, "next"), barrier(5)],
@@ -388,6 +453,7 @@ fn primary_source_cut_requires_completed_scope_and_survives_new_admissions() {
     ] {
         let previous = boundary(&index).unwrap();
         apply(
+            &crate::text_rows::TextIds::new(&index, false).unwrap(),
             &mut index,
             &resolver,
             &[
@@ -443,6 +509,7 @@ fn unreadable_input_blocks_absence_until_its_real_lifecycle_or_readable_replacem
         },
     };
     apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
         &[
@@ -455,6 +522,7 @@ fn unreadable_input_blocks_absence_until_its_real_lifecycle_or_readable_replacem
     .unwrap();
     let previous = boundary(&index).unwrap();
     apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
         &[refused(3, "possible-input", true), barrier(3)],
@@ -474,6 +542,7 @@ fn unreadable_input_blocks_absence_until_its_real_lifecycle_or_readable_replacem
         change,
     };
     apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
         &[lifecycle(4, ConfirmedChange::Archived), barrier(4)],
@@ -481,6 +550,7 @@ fn unreadable_input_blocks_absence_until_its_real_lifecycle_or_readable_replacem
     .unwrap();
     assert!(boundary(&index).is_some());
     apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
         &[lifecycle(5, ConfirmedChange::Restored), barrier(5)],
@@ -489,7 +559,13 @@ fn unreadable_input_blocks_absence_until_its_real_lifecycle_or_readable_replacem
     assert!(boundary(&index).is_none());
     let mut replacement = input(6, "recovered");
     replacement.event = "possible-input".into();
-    apply(&mut index, &resolver, &[replacement, barrier(6)]).unwrap();
+    apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &mut index,
+        &resolver,
+        &[replacement, barrier(6)],
+    )
+    .unwrap();
     assert!(boundary(&index).is_some());
     assert_eq!(
         rows(
@@ -513,6 +589,7 @@ fn unreadable_input_blocks_absence_until_its_real_lifecycle_or_readable_replacem
         1
     );
     apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
         &[refused(7, "erased-input", true), barrier(7)],
@@ -521,7 +598,13 @@ fn unreadable_input_blocks_absence_until_its_real_lifecycle_or_readable_replacem
     assert!(boundary(&index).is_none());
     let mut erased = lifecycle(8, ConfirmedChange::Tombstoned);
     erased.event = "erased-input".into();
-    apply(&mut index, &resolver, &[erased, barrier(8)]).unwrap();
+    apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &mut index,
+        &resolver,
+        &[erased, barrier(8)],
+    )
+    .unwrap();
     assert!(boundary(&index).is_some());
     assert_eq!(
         rows(
@@ -558,12 +641,19 @@ fn completed_receipt_survives_partial_pages_and_rolls_back_with_visible_progress
     let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
     apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
         &[input(2, "first"), completed(2, 5), delivered(5)],
     )
     .unwrap();
-    apply(&mut index, &resolver, &[input(3, "later"), delivered(7)]).unwrap();
+    apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &mut index,
+        &resolver,
+        &[input(3, "later"), delivered(7)],
+    )
+    .unwrap();
     drop(index);
     let mut index = Connection::open(&path).unwrap();
     let state = replay_state(&index).unwrap();
@@ -572,7 +662,13 @@ fn completed_receipt_survives_partial_pages_and_rolls_back_with_visible_progress
     assert_eq!(state.staged_delivery.unwrap().stream_sequence, 7);
     assert_eq!(rows(&index, "SELECT count(*) FROM source_input"), 1);
     // A repeated old barrier may appear after the newer partial data.
-    apply(&mut index, &resolver, &[completed(2, 8), delivered(8)]).unwrap();
+    apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &mut index,
+        &resolver,
+        &[completed(2, 8), delivered(8)],
+    )
+    .unwrap();
     assert_eq!(
         replay_state(&index)
             .unwrap()
@@ -582,7 +678,15 @@ fn completed_receipt_survives_partial_pages_and_rolls_back_with_visible_progress
         5
     );
     index.execute_batch("CREATE TRIGGER stop_progress BEFORE UPDATE ON meta WHEN new.key='confirmed_replay' AND json_extract(new.value,'$.applied_position')=3 BEGIN SELECT raise(ABORT,'stop progress'); END").unwrap();
-    assert!(apply(&mut index, &resolver, &[completed(3, 9), delivered(9)]).is_err());
+    assert!(
+        apply(
+            &crate::text_rows::TextIds::new(&index, false).unwrap(),
+            &mut index,
+            &resolver,
+            &[completed(3, 9), delivered(9)]
+        )
+        .is_err()
+    );
     drop(index);
     let mut index = Connection::open(&path).unwrap();
     let state = replay_state(&index).unwrap();
@@ -590,7 +694,13 @@ fn completed_receipt_survives_partial_pages_and_rolls_back_with_visible_progress
     assert_eq!(state.completed_delivery.unwrap().stream_sequence, 5);
     assert_eq!(rows(&index, "SELECT count(*) FROM source_input"), 1);
     index.execute_batch("DROP TRIGGER stop_progress").unwrap();
-    apply(&mut index, &resolver, &[]).unwrap();
+    apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &mut index,
+        &resolver,
+        &[],
+    )
+    .unwrap();
     let state = replay_state(&index).unwrap();
     assert_eq!(state.applied_position, Some(3));
     assert_eq!(state.completed_delivery.unwrap().stream_sequence, 9);
@@ -604,6 +714,7 @@ fn a_new_completion_after_higher_pending_data_cannot_become_a_restart_boundary()
     let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
     apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
         &[
@@ -624,7 +735,13 @@ fn a_new_completion_after_higher_pending_data_cannot_become_a_restart_boundary()
         ),
         1
     );
-    apply(&mut index, &resolver, &[completed(3, 9)]).unwrap();
+    apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &mut index,
+        &resolver,
+        &[completed(3, 9)],
+    )
+    .unwrap();
     assert_eq!(
         replay_state(&index)
             .unwrap()
@@ -641,7 +758,13 @@ fn malformed_and_wrong_kind_pending_evidence_refuse_visible_progress() {
     let mut index = cache(&dir.path().join("index.db"));
     let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
-    apply(&mut index, &resolver, &[input(2, "first"), delivered(5)]).unwrap();
+    apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &mut index,
+        &resolver,
+        &[input(2, "first"), delivered(5)],
+    )
+    .unwrap();
     let projection =
         serde_json::json!({"stamp":"certificate","position":2,"scope":"scope","catalog":"catalog"});
     for evidence in [
@@ -657,7 +780,13 @@ fn malformed_and_wrong_kind_pending_evidence_refuse_visible_progress() {
             )
             .unwrap();
         assert!(
-            apply(&mut index, &resolver, &[]).is_err(),
+            apply(
+                &crate::text_rows::TextIds::new(&index, false).unwrap(),
+                &mut index,
+                &resolver,
+                &[]
+            )
+            .is_err(),
             "invalid evidence must refuse: {evidence}"
         );
         assert_eq!(checkpoint(&index).unwrap(), None);
@@ -666,7 +795,13 @@ fn malformed_and_wrong_kind_pending_evidence_refuse_visible_progress() {
         assert_eq!(rows(&index, "SELECT count(*) FROM primary_pending"), 1);
     }
     index.execute("DELETE FROM primary_complete", []).unwrap();
-    apply(&mut index, &resolver, &[completed(2, 5)]).unwrap();
+    apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &mut index,
+        &resolver,
+        &[completed(2, 5)],
+    )
+    .unwrap();
     assert_eq!(checkpoint(&index).unwrap(), Some(2));
     assert_eq!(
         replay_state(&index)

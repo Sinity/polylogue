@@ -506,6 +506,7 @@ fn confirmed_readings_resolve_and_apply_without_a_local_source_database() {
         .3
         .visit(41, |step, resolution| {
             rows::write_confirmed_rows(
+                &crate::text_rows::TextIds::new(&tx, false).unwrap(),
                 &tx,
                 &input,
                 step,
@@ -761,6 +762,7 @@ fn apply_confirmed_readings(
         };
         reading.visit(*chain, |step, resolution| {
             write_rows(
+                &crate::text_rows::TextIds::new(&tx, false).unwrap(),
                 &tx,
                 &batch,
                 step,
@@ -1110,6 +1112,7 @@ fn confirmed_projection_applies_live_facts_after_an_archived_byte_prefix() {
     resolve::prepare_index(&tx, &mut input, 1, false).unwrap();
     assert!(
         write_rows(
+            &crate::text_rows::TextIds::new(&tx, false).unwrap(),
             &tx,
             &input,
             &input.parse[0],
@@ -1127,6 +1130,7 @@ fn confirmed_projection_applies_live_facts_after_an_archived_byte_prefix() {
         0
     );
     rows::write_confirmed_rows(
+        &crate::text_rows::TextIds::new(&tx, false).unwrap(),
         &tx,
         &input,
         &input.parse[0],
@@ -1344,6 +1348,7 @@ fn retained_event_admission_precedes_raw_receipts_and_survives_missing_source_ma
         observed_at_ms: None,
     };
     rows::write_confirmed_rows(
+        &crate::text_rows::TextIds::new(&tx, false).unwrap(),
         &tx,
         &confirmed,
         &confirmed.parse[0],
@@ -1495,6 +1500,7 @@ fn canonical_fold_receipts_survive_raw_mapping_absence_and_cache_rebuild() {
         let tx = conn.transaction().unwrap();
         resolve::prepare_index(&tx, batch, 1, false).unwrap();
         rows::write_confirmed_rows(
+            &crate::text_rows::TextIds::new(&tx, false).unwrap(),
             &tx,
             batch,
             &batch.parse[0],

@@ -75,13 +75,14 @@ fn texts_and_messages_are_found_by_their_keys() {
         [&hash[..]],
     )
     .unwrap();
-    keys.add_text(&hash, conn.last_insert_rowid());
+    let texts = crate::text_rows::TextIds::new(&conn, true).unwrap();
     assert_eq!(
-        keys.text(&conn, &hash).unwrap(),
+        texts.text(&conn, &hash).unwrap(),
         Some(conn.last_insert_rowid())
     );
     assert_eq!(
-        keys.text(&conn, blake3::hash(b"narwhal").as_bytes())
+        texts
+            .text(&conn, blake3::hash(b"narwhal").as_bytes())
             .unwrap(),
         None
     );
@@ -108,13 +109,14 @@ fn loading_committed_rows_restores_every_key_map() {
         .unwrap();
     conn.execute("INSERT INTO message(id,session_pk,session_order,role,written_by,input_pk) VALUES ('claude-code:message',1,'0','user','human',1)", []).unwrap();
     let keys = FirstBuild::load(&conn).unwrap();
+    let texts = crate::text_rows::TextIds::new(&conn, true).unwrap();
     assert!(
         keys.message(&conn, "claude-code:message")
             .unwrap()
             .is_some()
     );
     assert!(keys.event(&conn, "event").unwrap().is_some());
-    assert!(keys.text(&conn, &hash).unwrap().is_some());
+    assert!(texts.text(&conn, &hash).unwrap().is_some());
 }
 
 #[test]
@@ -143,6 +145,7 @@ fn startup_key_snapshot_never_reads_payload_columns() {
     }))
     .unwrap();
     let keys = FirstBuild::load(&conn).unwrap();
+    let texts = crate::text_rows::TextIds::new(&conn, true).unwrap();
     assert_eq!(keys.event(&conn, "kept").unwrap(), Some(pk));
-    assert!(keys.text(&conn, &hash).unwrap().is_some());
+    assert!(texts.text(&conn, &hash).unwrap().is_some());
 }

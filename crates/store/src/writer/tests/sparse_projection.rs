@@ -296,6 +296,7 @@ fn sparse_streamed_confirmed_readings_preserve_every_known_block() {
         reading
             .visit(*chain, |step, resolution| {
                 rows::write_confirmed_rows(
+                    &crate::text_rows::TextIds::new(&tx, false).unwrap(),
                     &tx,
                     &input,
                     step,

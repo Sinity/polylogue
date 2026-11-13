@@ -35,6 +35,7 @@ fn native_authored_replacement_and_query_recovery_use_only_completed_owner_posit
     crate::primary::scope::reset(&mut index, &archive, &resolver, "scope-a", false).unwrap();
     let a = setting(&index, "request-a", "drive.ai-studio");
     apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
         &[fact(10, "request-a", a), barrier(20)],
@@ -49,6 +50,7 @@ fn native_authored_replacement_and_query_recovery_use_only_completed_owner_posit
     );
     let b = setting(&index, "request-b", "browser.actions");
     apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
         &[fact(21, "request-b", b), barrier(21)],
@@ -71,6 +73,7 @@ fn native_authored_replacement_and_query_recovery_use_only_completed_owner_posit
     );
     let before = reads.reader().unwrap().change_position().unwrap();
     apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
         &[lifecycle(30, "request-a", ConfirmedChange::Archived)],
@@ -84,7 +87,13 @@ fn native_authored_replacement_and_query_recovery_use_only_completed_owner_posit
             .unwrap(),
         "staging is not publication"
     );
-    apply(&mut index, &resolver, &[barrier(30)]).unwrap();
+    apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &mut index,
+        &resolver,
+        &[barrier(30)],
+    )
+    .unwrap();
     assert!(
         reads
             .reader()
@@ -102,6 +111,7 @@ fn native_authored_replacement_and_query_recovery_use_only_completed_owner_posit
     );
     let before = reads.reader().unwrap().change_position().unwrap();
     apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
         &[
@@ -127,6 +137,7 @@ fn native_authored_replacement_and_query_recovery_use_only_completed_owner_posit
     );
     let before = reads.reader().unwrap().change_position().unwrap();
     apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
         &[
@@ -161,6 +172,7 @@ fn native_authored_replacement_and_query_recovery_use_only_completed_owner_posit
     let id = object.id.to_string();
     let before = reads.reader().unwrap().change_position().unwrap();
     apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
         &[
@@ -196,6 +208,7 @@ fn native_authored_replacement_and_query_recovery_use_only_completed_owner_posit
     let before = reads.reader().unwrap().change_position().unwrap();
     assert_eq!(before.archive, 60);
     apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
         &[
@@ -214,6 +227,7 @@ fn native_authored_replacement_and_query_recovery_use_only_completed_owner_posit
     );
     let before = reads.reader().unwrap().change_position().unwrap();
     apply(
+        &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
         &[

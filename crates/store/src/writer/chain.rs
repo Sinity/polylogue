@@ -681,6 +681,7 @@ impl Inner {
             return Ok(0);
         }
         reader.rewind()?;
+        let text_transaction = self.texts.transaction();
         let tx = self
             .index
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -729,6 +730,7 @@ impl Inner {
                 write_rows
             };
             written += write(
+                &self.texts,
                 &tx,
                 &batch,
                 &step,
@@ -745,11 +747,13 @@ impl Inner {
             ));
         }
         rows::prune_sessions(&tx, &batch.input.id, chain, counter)?;
-        self.report.item_units_read += rows::finish(&tx, &changes, self.first_build.is_some())?;
+        self.report.item_units_read +=
+            rows::finish(&tx, &changes, self.first_build.as_deref(), &self.texts)?;
         batch.parse.clear();
         crate::fault::check("write.index_commit", "")?;
         crate::fault::check("reparse.commit", &batch.input.id)?;
         crate::timing::time(crate::timing::Stage::Commit, || tx.commit())?;
+        text_transaction.commit();
         self.commits
             .committed(crate::completion::Committed::CONTENT);
         self.search.wake();

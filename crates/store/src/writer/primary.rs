@@ -68,6 +68,7 @@ impl Inner {
                 || crate::primary::projection::replay_state(&self.index)?
                     .projection
                     .is_some();
+            self.texts.discard_cached();
             let changed = match crate::primary::scope::reset(
                 &mut self.index,
                 &self.location,
@@ -105,7 +106,8 @@ impl Inner {
             return Ok(0);
         }
         let before = crate::primary::projection::checkpoint(&self.index)?;
-        let result = crate::primary::projection::apply(&mut self.index, &self.resolver, events);
+        let result =
+            crate::primary::projection::apply(&self.texts, &mut self.index, &self.resolver, events);
         if crate::primary::projection::checkpoint(&self.index)? != before {
             // A later complete position can fail after earlier positions committed.
             // Make that failure observable before notifying their real progress.
