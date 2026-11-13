@@ -136,7 +136,8 @@ struct Control {
     release: Receiver<()>,
 }
 static CONTROL: Mutex<Option<Control>> = Mutex::new(None);
-struct Held(Box<dyn StepParser>);
+static READS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+struct Held(Box<dyn StepParser>, PathBuf);
 impl StepParser for Held {
     fn step(
         &self,
@@ -146,6 +147,7 @@ impl StepParser for Held {
         finished: bool,
         context: &polylogue_model::parser_context::Handle,
     ) -> Result<(Step, Json), polylogue_sources::ParseError> {
+        READS.lock().unwrap().push(self.1.clone());
         let control = CONTROL.lock().unwrap().take();
         if let Some(control) = control {
             control.started.send(()).unwrap();
@@ -161,7 +163,7 @@ fn held(path: &Path) -> Option<Parse> {
     else {
         panic!("Claude line parser")
     };
-    Some(Parse::Lines(Box::new(Held(parser))))
+    Some(Parse::Lines(Box::new(Held(parser, path.to_path_buf()))))
 }
 fn held_origin() -> &'static OriginSpec {
     let native = polylogue_sources::origin::by_name("claude-code").unwrap();
@@ -526,4 +528,245 @@ fn a_stop_message_drains_the_admitted_capture_chunk_without_reading_the_whole_in
     let resumed = engine.run_pass().unwrap();
     assert!(resumed.errors.is_empty(), "{resumed:?}");
     assert_eq!(home.texts("stop-request").len(), 33);
+}
+
+#[test]
+fn an_import_answers_before_queued_captures_or_replays_start_and_the_next_turn_finishes_them() {
+    use polylogue_model::authorship::{Author, Authorship, Channel};
+    use std::sync::mpsc::sync_channel;
+
+    struct Input {
+        session: String,
+        path: PathBuf,
+        id: String,
+        bytes: String,
+        captured_before: u64,
+        before: Vec<Json>,
+    }
+    let queued = || polylogue_store::timing::queues()[0].1;
+    for retained in [false, true] {
+        let home = ClaudeHome::new();
+        let files: Vec<_> = (0..12)
+            .map(|n| {
+                let session = format!("queued-{n:02}");
+                let first = claude_user(&format!("first-{n:02}"), &session, "original body");
+                let tail = claude_user(&format!("tail-{n:02}"), &session, "captured body");
+                let name = format!("{session}.jsonl");
+                home.append(&name, &first);
+                if retained {
+                    home.append(&name, &tail);
+                }
+                (session, name, first, tail)
+            })
+            .collect();
+        let (mut engine, mut lock) = crate::import::tests::engine(&home, 4096);
+        assert!(engine.run_pass().unwrap().errors.is_empty());
+        if retained {
+            drop(engine);
+            drop(lock);
+            polylogue_testkit::delete_index(&home.root);
+            for (_, name, _, _) in &files {
+                std::fs::remove_file(home.file(name)).unwrap();
+            }
+            (engine, lock) = crate::import::tests::engine(&home, 4096);
+            engine.config.reads_sources = false;
+            engine.load().unwrap();
+        } else {
+            for (_, name, _, tail) in &files {
+                home.append(name, tail);
+            }
+        }
+        engine.config.workers = 1;
+        engine.config.live_every = Duration::from_millis(10);
+        let inputs: Vec<_> = files
+            .into_iter()
+            .map(|(session, name, first, tail)| {
+                let path = home.file(&name);
+                let state = engine.inputs.get_mut(&path).unwrap();
+                state.origin = held_origin();
+                let id = state.input_id.clone();
+                Input {
+                    session,
+                    path,
+                    before: source_rows(&engine, &id),
+                    id,
+                    captured_before: if retained {
+                        first.len() + tail.len()
+                    } else {
+                        first.len()
+                    } as u64,
+                    bytes: first + &tail,
+                }
+            })
+            .collect();
+        let import = home.dir.path().join("queue-request.json");
+        std::fs::write(
+            &import,
+            serde_json::to_vec(&serde_json::json!({
+                "uuid":"queue-request", "chat_messages":[{
+                    "uuid":"queue-answer", "sender":"human", "text":"ordinary import"
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        READS.lock().unwrap().clear();
+        let (entered, waiting) = channel();
+        let (release, held) = channel();
+        *CONTROL.lock().unwrap() = Some(Control {
+            started: entered,
+            release: held,
+        });
+        let stop = engine.stop_request();
+        let (tx, rx) = channel();
+        let worker_tx = tx.clone();
+        let worker = std::thread::spawn(move || {
+            let status = Arc::new(Mutex::new(LoopStatus::default()));
+            let result = engine.run(worker_tx, rx, &status, Lifetime::UntilIdle, || {});
+            (engine, result)
+        });
+        let entered = waiting.recv_timeout(Duration::from_secs(5));
+        let until = Instant::now() + Duration::from_secs(5);
+        while queued() < inputs.len() as i64 - 1 && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let filled = queued() == inputs.len() as i64 - 1;
+        let (reply, answer) = sync_channel(0);
+        let sent = tx.send(LoopMsg::Import {
+            paths: vec![import],
+            format: None,
+            from_archive: None,
+            dry_run: false,
+            authorship: Authorship {
+                author: Author::Operator,
+                via: Channel::Cli,
+            },
+            parent: None,
+            reply,
+        });
+        // Observe the existing queue to release the in-hand parser only after
+        // the loop has returned work that no worker read. No elapsed assertion
+        // or delay decides whether the import is fair.
+        let until = Instant::now() + Duration::from_secs(5);
+        while queued() != 0 && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let returned_before_release = queued() == 0;
+        let _ = release.send(());
+        let until = Instant::now() + Duration::from_secs(5);
+        while home.count("SELECT count(*) AS n FROM session WHERE native_id='queue-request'") != 1
+            && Instant::now() < until
+        {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // The synchronous reply keeps the loop at its real ACK boundary while
+        // the committed capture and untouched queued inputs are inspected.
+        let at_reply = READS.lock().unwrap().clone();
+        let before_reply = {
+            let reader = home.reads().reader().unwrap();
+            inputs.iter().map(|input| {
+                let claims = reader.query(
+                    "SELECT count(*) AS n FROM message_source m JOIN input_ref i ON i.pk=m.input_pk WHERE i.id=?1",
+                    &[polylogue_store::SqlValue::Text(input.id.clone())],
+                ).unwrap()[0]["n"].as_u64().unwrap();
+                let markers = reader.query(
+                    "SELECT count(*) AS n FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id=?1 AND p.stopped_attempt IS NOT NULL",
+                    &[polylogue_store::SqlValue::Text(input.id.clone())],
+                ).unwrap()[0]["n"].as_u64().unwrap();
+                let captured = reader.query(
+                    "SELECT max(length) AS n FROM a.revision WHERE input=?1",
+                    &[polylogue_store::SqlValue::Text(input.id.clone())],
+                ).unwrap()[0]["n"].as_u64().unwrap();
+                (input.path.clone(), claims, markers, captured)
+            }).collect::<Vec<_>>()
+        };
+        let response = answer.recv_timeout(Duration::from_secs(5));
+        drop(answer);
+        if entered.is_err() || sent.is_err() || response.is_err() {
+            stop.request();
+            let _ = tx.send(LoopMsg::Stop);
+        }
+        let (mut engine, result) = worker.join().unwrap();
+        assert!(entered.is_ok());
+        assert!(filled, "the held worker must have queued siblings");
+        assert!(sent.is_ok());
+        assert!(
+            returned_before_release,
+            "unstarted jobs stayed ahead of the request"
+        );
+        assert_eq!(
+            at_reply.len(),
+            1,
+            "the import waited for unstarted reads: {at_reply:?}"
+        );
+        let first = &at_reply[0];
+        for (path, claims, markers, captured) in before_reply {
+            assert_eq!(markers, 0, "a request is not a stopped reading: {path:?}");
+            assert_eq!(
+                claims,
+                if &path == first {
+                    2
+                } else {
+                    u64::from(!retained)
+                }
+            );
+            let input = inputs.iter().find(|input| input.path == path).unwrap();
+            assert_eq!(
+                captured,
+                if &path == first {
+                    input.bytes.len() as u64
+                } else {
+                    input.captured_before
+                }
+            );
+        }
+        let report = response.unwrap().unwrap();
+        assert!(report.pass.errors.is_empty(), "{report:?}");
+        assert!(report.refused.is_empty(), "{report:?}");
+        let summary = result.unwrap();
+        assert!(summary.work.errors.is_empty(), "{summary:?}");
+        assert_eq!(summary.imports, 1);
+        assert!(!stop.requested());
+        for input in &inputs {
+            assert_eq!(
+                home.texts(&input.session),
+                ["original body", "captured body"]
+            );
+            let reader = engine.reads.reader().unwrap();
+            let progress = reader.input_progress(&input.id).unwrap().unwrap();
+            assert_eq!(progress.parsed_upto, input.bytes.len() as u64);
+            let stored = reader
+                .stored_chain(&input.id, progress.chain, progress.length)
+                .unwrap();
+            assert_eq!(
+                stored
+                    .read_range(&engine.blobs, 0, progress.length)
+                    .unwrap(),
+                input.bytes.as_bytes()
+            );
+            drop(reader);
+            let captured = source_rows(&engine, &input.id);
+            if retained {
+                assert_eq!(captured, input.before);
+            } else {
+                assert_eq!(
+                    captured.iter().filter(|r| r["row"] == "revision").count(),
+                    2
+                );
+                assert_eq!(captured.iter().filter(|r| r["row"] == "extent").count(), 2);
+            }
+        }
+        let before_repeat: Vec<_> = inputs
+            .iter()
+            .map(|input| source_rows(&engine, &input.id))
+            .collect();
+        let repeat = engine.run_pass().unwrap();
+        assert!(repeat.errors.is_empty(), "{repeat:?}");
+        assert_eq!((repeat.bytes_read, repeat.bytes_stored), (0, 0));
+        for (input, captured) in inputs.iter().zip(before_repeat) {
+            assert_eq!(source_rows(&engine, &input.id), captured);
+        }
+        drop(engine);
+        drop(lock);
+    }
 }
