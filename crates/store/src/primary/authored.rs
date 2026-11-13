@@ -1,5 +1,6 @@
-//! Prepare authored changes once in a private overlay; confirmed records apply
-//! their frozen effects without selecting targets, families or claims again.
+//! Freeze authored changes once. Writes that resolve prior facts use a private
+//! overlay; literal deliveries come directly from their admitted body. Confirmed
+//! records apply frozen effects without selecting targets, families or claims again.
 mod records;
 pub(crate) use records::insert_kept;
 #[cfg(test)]
@@ -124,6 +125,44 @@ pub fn prepare(
     if let Some(known) = known_request(index, request)? {
         return Ok(known);
     }
+    if let Some(prepared) = crate::user_writes::prepare_delivery(request) {
+        let mut known = None;
+        let mut delivery_exists = false;
+        visit_pending(&mut |pending| {
+            let Some(original) = pending.prepared() else {
+                return Ok(());
+            };
+            if original.request.id != request.id {
+                delivery_exists |= original
+                    .effect
+                    .deliveries
+                    .iter()
+                    .any(|change| change.delivery.id == request.id);
+                return Ok(());
+            }
+            match pending {
+                PendingAuthored::Live { .. } => validate_live(original)?,
+                PendingAuthored::Restore { .. } => validate(original)?,
+                PendingAuthored::RestoreAssertion { .. } => unreachable!(),
+            }
+            if request_hash(&original.request)? != request_hash(request)?
+                || known.as_ref().is_some_and(|known| known != original)
+            {
+                return Err(StoreError::Conflict(request.id.clone()));
+            }
+            known = Some(original.clone());
+            Ok(())
+        })?;
+        if let Some(known) = known {
+            return Ok(known);
+        }
+        if delivery_exists {
+            return Err(StoreError::Conflict(request.id.clone()));
+        }
+        require_new_delivery(index, &request.id)?;
+        validate_live(&prepared)?;
+        return Ok(prepared);
+    }
     let mut pending_blobs = HashMap::new();
     visit_blobs(&mut |blob| {
         if pending_blobs
@@ -212,6 +251,22 @@ pub(crate) fn with_overlay<T>(
 
 /// Checks a frozen request's internal consistency without applying it.
 pub fn validate(prepared: &PreparedRequest) -> Result<()> {
+    // Restored records can include later events written by other requests.
+    // The request still owns its exact delivery body and its own receipt.
+    if let Some(expected) = crate::user_writes::prepare_delivery(&prepared.request) {
+        let mut effect = prepared.effect.clone();
+        for change in &mut effect.deliveries {
+            change
+                .delivery
+                .events
+                .retain(|event| event.request == prepared.request.id);
+        }
+        if effect != expected.effect || prepared.outcome != expected.outcome {
+            return Err(StoreError::Invalid(
+                "delivery effect differs from its admitted request".into(),
+            ));
+        }
+    }
     crate::signals::validate(prepared)?;
     for fact in &prepared.effect.assertions {
         fact.validate()
@@ -268,6 +323,31 @@ pub fn validate(prepared: &PreparedRequest) -> Result<()> {
     Ok(())
 }
 
+fn validate_live(prepared: &PreparedRequest) -> Result<()> {
+    validate(prepared)?;
+    if let Some(expected) = crate::user_writes::prepare_delivery(&prepared.request)
+        && prepared.effect != expected.effect
+    {
+        return Err(StoreError::Invalid(
+            "a new delivery carries events from other requests".into(),
+        ));
+    }
+    Ok(())
+}
+
+// A new literal delivery used to meet the delivery primary key in the
+// preparation transaction. Keep that check before durable queue admission.
+pub(crate) fn require_new_delivery(conn: &Connection, id: &str) -> Result<()> {
+    let source = Source::reading(conn)?;
+    if conn
+        .prepare_cached(&source.sql("SELECT 1 FROM @source.delivery WHERE id=?1"))?
+        .exists([id])?
+    {
+        return Err(StoreError::Conflict(id.into()));
+    }
+    Ok(())
+}
+
 /// Apply immutable facts only. No request selection or domain precondition is
 /// rerun after Sinex confirms the prepared body.
 pub fn apply(tx: &Transaction<'_>, prepared: &PreparedRequest, counter: i64) -> Result<()> {
@@ -283,7 +363,7 @@ pub fn apply(tx: &Transaction<'_>, prepared: &PreparedRequest, counter: i64) -> 
             "pending is not a canonical outcome".into(),
         ));
     }
-    validate(prepared)?;
+    validate_live(prepared)?;
     records::apply(tx, &prepared.effect, counter, false)?;
     insert_request(tx, prepared, counter)
 }

@@ -980,3 +980,342 @@ fn two_hosts_first_setting_show_conflict_in_primary() {
         .unwrap();
     assert_eq!(current, 1);
 }
+
+fn literal_delivery(advice: bool) -> UserRequest {
+    let body = Delivery {
+        recipient_kind: "session".into(),
+        recipient_id: Some("session:later:arrival".into()),
+        sender: "hook".into(),
+        event: "advice".into(),
+        cwd: Some("/home/op/project".into()),
+        text: "First line\nSecond line: café\u{0000}tail".into(),
+        refs: vec![
+            "message:codex:later".into(),
+            "opaque:future:reference".into(),
+        ],
+        left_out: vec![polylogue_model::user::LeftOut {
+            what: "unavailable section".into(),
+            reason: "not read".into(),
+        }],
+    };
+    request(
+        if advice {
+            "printed-advice"
+        } else {
+            "prepared-delivery"
+        },
+        42,
+        if advice {
+            UserWrite::DeliveredAdvice(body)
+        } else {
+            UserWrite::Deliver(body)
+        },
+    )
+}
+
+// The original transactional SQL is an independent oracle for this literal
+// family. Other mutation families continue to use the overlay in production.
+fn delivery_from_transaction(index: &Connection, request: &UserRequest) -> PreparedRequest {
+    with_overlay(index, |_| Ok(()), |tx| {
+        let delivery = match &request.write {
+            UserWrite::Deliver(delivery) | UserWrite::DeliveredAdvice(delivery) => delivery,
+            _ => unreachable!(),
+        };
+        tx.execute("INSERT INTO source_delivery(id,recipient_kind,recipient_id,sender,event,cwd,at,content_hash,bytes,body,refs_json,left_out_json,commit_seq) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,1)", params![request.id,delivery.recipient_kind,delivery.recipient_id,delivery.sender,delivery.event,delivery.cwd,request.at.unix_ms(),blake3::hash(delivery.text.as_bytes()).as_bytes().as_slice(),delivery.text.len() as i64,crate::encoding::pack_text(&delivery.text)?,serde_json::to_string(&delivery.refs)?,serde_json::to_string(&delivery.left_out)?])?;
+        if matches!(request.write, UserWrite::DeliveredAdvice(_)) {
+            tx.execute("INSERT INTO source_delivery_event(delivery,what,at,detail,request,commit_seq) VALUES(?1,'delivered',?2,'written to the harness hook output',?1,1)",params![request.id,request.at.unix_ms()])?;
+        }
+        Ok(PreparedRequest {
+            request: request.clone(),
+            outcome: UserOutcome { pending: false, id: request.id.clone(), repeat: false },
+            effect: capture(tx, request, 1)?,
+        })
+    }).unwrap()
+}
+
+fn counted_delivery_preparation(
+    conn: &Connection,
+    request: &UserRequest,
+) -> (PreparedRequest, usize) {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let instructions = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&instructions);
+    conn.progress_handler(
+        1,
+        Some(move || {
+            observed.fetch_add(1, Ordering::Relaxed);
+            false
+        }),
+    )
+    .unwrap();
+    let prepared = prepare(
+        conn,
+        request,
+        None,
+        None,
+        |_| Ok(()),
+        |_| panic!("a literal delivery has no attachment acquisition"),
+    );
+    conn.progress_handler(0, None::<fn() -> bool>).unwrap();
+    (prepared.unwrap(), instructions.load(Ordering::Relaxed))
+}
+
+#[test]
+fn literal_deliveries_match_transactional_records_without_touching_history() {
+    let mut conn = cache();
+    for n in 0..128 {
+        let mut old = literal_delivery(false);
+        old.id = format!("old-{n}");
+        if let UserWrite::Deliver(body) = &mut old.write {
+            body.text = "history ".repeat(512);
+        }
+        let p = prepare_with(&conn, &old, &[], &[]).unwrap();
+        commit(&mut conn, &p, n + 1);
+    }
+    for advice in [false, true] {
+        let mut request = literal_delivery(advice);
+        request.at =
+            Timestamp::from_unix_ns(if advice { -42_000_123 } else { 42_000_123 }).unwrap();
+        let expected = delivery_from_transaction(&conn, &request);
+        let (empty, empty_steps) = counted_delivery_preparation(&cache(), &request);
+        let (prepared, steps) = counted_delivery_preparation(&conn, &request);
+        assert_eq!(prepared, expected);
+        assert_eq!(prepared, empty);
+        // A keyed request lookup stays proportional to this delivery, even when
+        // the archive holds large unrelated delivery bodies and request records.
+        assert!(
+            steps <= empty_steps * 2,
+            "empty={empty_steps}, history={steps}"
+        );
+        println!("delivery preparation: empty={empty_steps} VM steps, history={steps} VM steps");
+        assert_eq!(count(&conn, "delivery"), 128);
+        assert!(known_request(&conn, &request).unwrap().is_none());
+    }
+}
+
+#[test]
+fn literal_delivery_retry_keeps_pending_body_and_refuses_changed_intent() {
+    for advice in [false, true] {
+        let request = literal_delivery(advice);
+        let conn = cache();
+        let original = prepare_with(&conn, &request, &[], &[]).unwrap();
+        let pending = polylogue_model::authored::PendingAuthored::Live {
+            prepared: original.clone(),
+        };
+        let reopened: polylogue_model::authored::PendingAuthored =
+            serde_json::from_slice(&serde_json::to_vec(&pending).unwrap()).unwrap();
+        let mut retry = request.clone();
+        retry.at = Timestamp::from_unix_ms(999).unwrap();
+        assert_eq!(
+            prepare(
+                &conn,
+                &retry,
+                None,
+                None,
+                |visit| visit(&reopened),
+                |_| Ok(())
+            )
+            .unwrap(),
+            original
+        );
+        match &mut retry.write {
+            UserWrite::Deliver(body) | UserWrite::DeliveredAdvice(body) => {
+                body.refs.push("message:codex:changed".into())
+            }
+            _ => unreachable!(),
+        }
+        assert!(matches!(
+            prepare(
+                &conn,
+                &retry,
+                None,
+                None,
+                |visit| visit(&reopened),
+                |_| Ok(())
+            ),
+            Err(StoreError::Conflict(_))
+        ));
+        assert_eq!(count(&conn, "delivery"), 0);
+    }
+}
+
+#[test]
+fn restored_literal_deliveries_keep_later_history_without_admitting_it_as_live() {
+    for advice in [false, true] {
+        let request = literal_delivery(advice);
+        let conn = cache();
+        let mut prepared = prepare_with(&conn, &request, &[], &[]).unwrap();
+        let later = polylogue_model::authored::DeliveryEvent {
+            request: "later-receipt".into(),
+            what: polylogue_model::DeliveryOutcome::Used,
+            at: Timestamp::from_unix_ms(100).unwrap(),
+            detail: Some("a later report retained by the predecessor".into()),
+        };
+        prepared.effect.deliveries[0].delivery.events.push(later);
+        validate(&prepared).unwrap();
+        let pending = PendingAuthored::Restore {
+            prepared: prepared.clone(),
+        };
+        let reopened: PendingAuthored =
+            serde_json::from_slice(&serde_json::to_vec(&pending).unwrap()).unwrap();
+        assert_eq!(
+            prepare(
+                &conn,
+                &request,
+                None,
+                None,
+                |visit| visit(&reopened),
+                |_| Ok(())
+            )
+            .unwrap(),
+            prepared
+        );
+        let live = PendingAuthored::Live {
+            prepared: prepared.clone(),
+        };
+        assert!(matches!(
+            prepare(
+                &conn,
+                &request,
+                None,
+                None,
+                |visit| visit(&live),
+                |_| Ok(())
+            ),
+            Err(StoreError::Invalid(_))
+        ));
+        let mut target = cache();
+        let tx = target.transaction().unwrap();
+        assert!(matches!(
+            apply(&tx, &prepared, 1),
+            Err(StoreError::Invalid(_))
+        ));
+        assert_eq!(count(&tx, "delivery"), 0);
+        restore(&tx, &prepared, 1).unwrap();
+        tx.commit().unwrap();
+        assert_eq!(
+            frozen_request(&target, &request.id).unwrap(),
+            Some(prepared.clone())
+        );
+        let actual = records::delivery_from(&target, Source::Cache, &request.id).unwrap();
+        assert_eq!(actual, prepared.effect.deliveries[0].delivery);
+    }
+}
+
+#[test]
+fn literal_delivery_refuses_effects_that_change_content_references_or_receipts() {
+    for advice in [false, true] {
+        let request = literal_delivery(advice);
+        let conn = cache();
+        let prepared = prepare_with(&conn, &request, &[], &[]).unwrap();
+        for mutation in 0..4 {
+            let mut changed = prepared.clone();
+            let delivery = &mut changed.effect.deliveries[0];
+            match mutation {
+                0 => delivery.delivery.prepared.text.push_str(" changed"),
+                1 => delivery
+                    .delivery
+                    .prepared
+                    .refs
+                    .push("message:codex:other".into()),
+                2 => delivery.delivery.id = "different-delivery".into(),
+                _ => delivery
+                    .added_events
+                    .push(polylogue_model::authored::DeliveryEvent {
+                        request: "different-request".into(),
+                        what: polylogue_model::DeliveryOutcome::Delivered,
+                        at: request.at,
+                        detail: None,
+                    }),
+            }
+            assert!(matches!(validate(&changed), Err(StoreError::Invalid(_))));
+            let mut target = cache();
+            let tx = target.transaction().unwrap();
+            assert!(matches!(
+                apply(&tx, &changed, 1),
+                Err(StoreError::Invalid(_))
+            ));
+            tx.rollback().unwrap();
+            assert_eq!(count(&target, "delivery"), 0);
+            assert_eq!(count(&target, "client_request"), 0);
+        }
+    }
+}
+
+#[test]
+fn literal_deliveries_refuse_existing_identity_in_cache_or_pending_snapshots() {
+    for advice in [false, true] {
+        let request = literal_delivery(advice);
+        let conn = cache();
+        let mut prior = delivery_from_transaction(&conn, &request);
+        prior.request = UserRequest {
+            id: "another-request".into(),
+            at: Timestamp::from_unix_ms(50).unwrap(),
+            write: UserWrite::DeliveryEvent {
+                delivery: request.id.clone(),
+                what: polylogue_model::DeliveryOutcome::Used,
+                detail: Some("synthetic receipt".into()),
+            },
+            ..request.clone()
+        };
+        prior.outcome.id = request.id.clone();
+        let event = polylogue_model::authored::DeliveryEvent {
+            request: prior.request.id.clone(),
+            what: polylogue_model::DeliveryOutcome::Used,
+            at: prior.request.at,
+            detail: Some("synthetic receipt".into()),
+        };
+        prior.effect.deliveries[0]
+            .delivery
+            .events
+            .push(event.clone());
+        prior.effect.deliveries[0].added_events = vec![event];
+        validate(&prior).unwrap();
+        for pending in [
+            polylogue_model::authored::PendingAuthored::Live {
+                prepared: prior.clone(),
+            },
+            polylogue_model::authored::PendingAuthored::Restore {
+                prepared: prior.clone(),
+            },
+        ] {
+            assert!(matches!(
+                prepare(
+                    &conn,
+                    &request,
+                    None,
+                    None,
+                    |visit| visit(&pending),
+                    |_| Ok(())
+                ),
+                Err(StoreError::Conflict(_))
+            ));
+            assert_eq!(count(&conn, "delivery"), 0);
+            assert_eq!(count(&conn, "client_request"), 0);
+        }
+        let mut cached = cache();
+        commit(&mut cached, &prior, 1);
+        assert!(matches!(
+            prepare_with(&cached, &request, &[], &[]),
+            Err(StoreError::Conflict(_))
+        ));
+        let before = cached.total_changes();
+        let tx = cached.transaction().unwrap();
+        assert!(matches!(
+            crate::user_writes::apply_resolving(
+                &tx,
+                &conn,
+                &request,
+                2,
+                crate::user_writes::Preparation::native(None, None)
+            ),
+            Err(StoreError::Conflict(_))
+        ));
+        tx.rollback().unwrap();
+        assert_eq!(cached.total_changes(), before);
+        assert!(known_request(&cached, &request).unwrap().is_none());
+    }
+}

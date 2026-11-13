@@ -252,6 +252,15 @@ the unacknowledged spool entries incomplete.
 
 **Reads see what Sinex committed.** A write becomes visible to queries once its record arrives on the confirmed stream and is applied. The stale-base check of an authored write is the one exception: it runs against the applied position plus this host's prepared writes not yet confirmed, so two quick revisions on one host (an MCP memory `create` followed by `str_replace`) see each other ([assertions.md#currency](assertions.md#currency)).
 
+Literal deliveries and advice already printed by a hook freeze their body and
+receipt directly from the admitted request. They do not copy authored history or
+select targets again. Other authored writes still prepare against the confirmed
+state plus this host's durable pending effects. Both paths retain the original
+request outcome on retry and apply the same validated frozen effects. Recording
+these deliveries in standalone mode also leaves variant projection work to its
+own mutations and derivation. Restored delivery snapshots keep later events from
+other requests; the original request still owns its exact body and own receipt.
+
 ## Write identity
 
 - A prepared write has a durable identity and immutable contents; a retry reuses both.
