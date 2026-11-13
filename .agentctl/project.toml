@@ -146,7 +146,7 @@ result = "exit"
 timeout_seconds = 900
 cache = "none"
 
-[operations.extension-package]
+[operations.extension_package]
 description = "Build extension artifacts and check Nix formatting"
 exec = ["nix", "build", "--no-link", "--print-build-logs", "--print-out-paths", ".#polylogue-extension", ".#checks.x86_64-linux.nix-fmt"]
 environment = { CARGO_TARGET_DIR = "target" }
