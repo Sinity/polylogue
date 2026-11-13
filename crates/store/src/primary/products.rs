@@ -9,7 +9,7 @@ use polylogue_model::{
 use serde::{Deserialize, Serialize};
 mod eligibility;
 pub use eligibility::SourceRecord;
-pub(crate) use eligibility::{allowed, needs_publication, scope_hash};
+pub(crate) use eligibility::{allowed, needs_publication, scope_hash, selected};
 mod export;
 pub use export::ExportReadingKey;
 
@@ -23,8 +23,6 @@ pub struct Reading {
     pub input: InputKey,
     pub chain: i64,
     pub reading_version: String,
-    pub order_from: Option<u64>,
-    pub repeats_whole_conversations: bool,
     pub start: u64,
     pub parsed_upto: u64,
     pub progress: polylogue_model::batch::StepProgress,
@@ -43,8 +41,6 @@ impl Reading {
             input: input.clone(),
             chain,
             reading_version: step.reading_version.clone(),
-            order_from: step.order_from,
-            repeats_whole_conversations: step.repeats_whole_conversations,
             start: step.start,
             parsed_upto: step.parsed_upto,
             progress: step.progress.clone(),
@@ -247,14 +243,8 @@ pub enum Product {
     ParseProgress {
         reading: Reading,
         counts: RecordCounts,
-        reset: bool,
-        comparison: Option<crate::tool_databases::Comparison>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        checkpoint: Option<polylogue_model::batch::ParserCheckpoint>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         stopped_attempt: Option<polylogue_model::batch::StoppedAttempt>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        semantic_event_ids: Option<std::collections::BTreeMap<usize, String>>,
     },
     AttachmentBinding {
         record: Box<crate::assets::bindings::AttachmentBindingRecord>,
@@ -510,7 +500,6 @@ pub fn parse(
         reading: reading.clone(),
         facts: Box::new(facts),
     }));
-    let semantic_event_ids = step.delivery.map(|_| output.event_ids.clone());
     let mut imported_events = output.imported_events;
     products.extend(
         output
@@ -567,11 +556,7 @@ pub fn parse(
     products.push(Product::ParseProgress {
         reading,
         counts: step.counts.clone(),
-        reset: step.reset,
-        comparison: step.comparison.clone(),
-        checkpoint: step.checkpoint.clone(),
         stopped_attempt: step.stopped_attempt,
-        semantic_event_ids,
     });
     Ok(products)
 }

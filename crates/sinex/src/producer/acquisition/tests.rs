@@ -65,7 +65,7 @@ fn empty_local_sources_are_known_but_unattributed_custody_stays_uncertain() {
     let root = tempfile::tempdir().unwrap();
     let sinex = client(root.path());
     let state = sinex
-        .pending_source(&source(b"/synthetic/new-source.jsonl"), "reading")
+        .pending_source(&source(b"/synthetic/new-source.jsonl"))
         .unwrap();
     assert_eq!(state.status, SourceStatus::Ready);
     assert!(state.head.is_none() && state.raw.is_none());
@@ -75,7 +75,7 @@ fn empty_local_sources_are_known_but_unattributed_custody_stays_uncertain() {
         .unwrap();
     assert_eq!(
         sinex
-            .pending_source(&source(b"/synthetic/new-source.jsonl"), "reading")
+            .pending_source(&source(b"/synthetic/new-source.jsonl"))
             .unwrap()
             .status,
         SourceStatus::MissingEvidence
@@ -105,7 +105,7 @@ fn receiver_downgrade_retains_new_bodies_and_exact_frozen_retries_keep_first_dis
     };
     let first = accepted(prepare(&plan, b"A"));
     let head = sinex
-        .pending_source(&selector, "v")
+        .pending_source(&selector)
         .unwrap()
         .head
         .unwrap()
@@ -144,7 +144,7 @@ fn receiver_downgrade_retains_new_bodies_and_exact_frozen_retries_keep_first_dis
     assert_eq!(retried, custody);
     assert_eq!(
         sinex
-            .pending_source(&selector, "v")
+            .pending_source(&selector)
             .unwrap()
             .head
             .unwrap()
@@ -167,7 +167,7 @@ fn atomic_source_cas_preserves_a_b_a_retry_restart_and_byte_identity() {
     )
     .unwrap();
     let first_head = sinex
-        .pending_source(&selector, "reading")
+        .pending_source(&selector)
         .unwrap()
         .head
         .unwrap()
@@ -203,7 +203,7 @@ fn atomic_source_cas_preserves_a_b_a_retry_restart_and_byte_identity() {
     )
     .unwrap();
     let second_head = sinex
-        .pending_source(&selector, "reading")
+        .pending_source(&selector)
         .unwrap()
         .head
         .unwrap()
@@ -219,14 +219,14 @@ fn atomic_source_cas_preserves_a_b_a_retry_restart_and_byte_identity() {
     assert_ne!(first.identity, third.identity);
     assert!(
         sinex
-            .pending_source(&source(b"/home/op/session-\xfe.jsonl"), "reading")
+            .pending_source(&source(b"/home/op/session-\xfe.jsonl"))
             .unwrap()
             .head
             .is_none()
     );
     drop(sinex);
     let sinex = client(root.path());
-    let state = sinex.pending_source(&selector, "reading").unwrap();
+    let state = sinex.pending_source(&selector).unwrap();
     let head = state.head.unwrap();
     assert_eq!(state.status, SourceStatus::MissingEvidence);
     assert_eq!(
@@ -570,7 +570,7 @@ fn unresolved_retry_is_stable_after_head_movement_and_keeps_provider_bytes_witho
         assert_ne!(material.parser, "polylogue-observation");
     }
     let a_head = sinex
-        .pending_source(&selector, "")
+        .pending_source(&selector)
         .unwrap()
         .head
         .unwrap()
@@ -584,7 +584,7 @@ fn unresolved_retry_is_stable_after_head_movement_and_keeps_provider_bytes_witho
     )
     .unwrap();
     let current = sinex
-        .pending_source(&selector, "")
+        .pending_source(&selector)
         .unwrap()
         .head
         .unwrap()
@@ -596,7 +596,7 @@ fn unresolved_retry_is_stable_after_head_movement_and_keeps_provider_bytes_witho
     assert_eq!(accepted(stage(b"A", false)).identity, accepted_a.identity);
     assert_eq!(
         sinex
-            .pending_source(&selector, "")
+            .pending_source(&selector)
             .unwrap()
             .head
             .unwrap()
@@ -608,7 +608,7 @@ fn unresolved_retry_is_stable_after_head_movement_and_keeps_provider_bytes_witho
     let sinex = client(root.path());
     assert_eq!(
         sinex
-            .pending_source(&selector, "")
+            .pending_source(&selector)
             .unwrap()
             .head
             .unwrap()

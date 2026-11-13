@@ -293,7 +293,6 @@ impl crate::primary::Sinex for OfflineProducer {
     fn pending_source(
         &self,
         source: &crate::primary::SourceSelector,
-        _version: &str,
     ) -> Result<crate::primary::PendingSource> {
         use crate::primary::{PendingSource, SourceSelector, SourceStatus};
         if !self.root.join("capture.json").exists() {
@@ -580,14 +579,11 @@ fn offline_writer_retains_original_source_before_releasing_preparation() {
             matches!(results.remove(0),Err(StoreError::PrimaryPending {identity}) if identity == "offline-capture")
         );
         let snapshot = writer
-            .source_snapshot(
-                crate::primary::SourceSelector {
-                    origin: "codex".into(),
-                    machine: "machine".into(),
-                    path_bytes: b"/home/op/offline".to_vec(),
-                },
-                "synthetic:1",
-            )
+            .source_snapshot(crate::primary::SourceSelector {
+                origin: "codex".into(),
+                machine: "machine".into(),
+                path_bytes: b"/home/op/offline".to_vec(),
+            })
             .unwrap();
         assert_eq!(
             snapshot.basis.status,
@@ -612,14 +608,11 @@ fn offline_writer_retains_original_source_before_releasing_preparation() {
             }])
             .unwrap();
         let after_checkpoint = writer
-            .source_snapshot(
-                crate::primary::SourceSelector {
-                    origin: "codex".into(),
-                    machine: "machine".into(),
-                    path_bytes: b"/home/op/offline".to_vec(),
-                },
-                "synthetic:1",
-            )
+            .source_snapshot(crate::primary::SourceSelector {
+                origin: "codex".into(),
+                machine: "machine".into(),
+                path_bytes: b"/home/op/offline".to_vec(),
+            })
             .unwrap();
         assert_eq!(
             after_checkpoint.basis.status,
@@ -869,7 +862,7 @@ fn frozen_unknown_empty_capture_publishes_only_after_scoped_stream_completion() 
             }),
         ])
         .unwrap();
-    let snapshot = writer.source_snapshot(source.clone(), "").unwrap();
+    let snapshot = writer.source_snapshot(source.clone()).unwrap();
     assert_eq!(snapshot.basis.status, SourceStatus::MissingEvidence);
     assert!(snapshot.basis.boundary.is_some());
     writer.synchronize_primary().unwrap();
@@ -981,7 +974,7 @@ fn original_source_basis_survives_normal_progress_and_retains_real_conflicts() {
             native: None,
             change: ConfirmedChange::Control(Box::new(control)),
         };
-        let unknown = writer.source_snapshot(selector.clone(), "").unwrap().basis;
+        let unknown = writer.source_snapshot(selector.clone()).unwrap().basis;
         writer
             .apply_confirmed(vec![control(ReplayControl::Reset {
                 scope: "original".into(),
@@ -996,7 +989,7 @@ fn original_source_basis_survives_normal_progress_and_retains_real_conflicts() {
         let mut sampled = if scenario == "unknown-to-ready" {
             unknown
         } else {
-            writer.source_snapshot(selector.clone(), "").unwrap().basis
+            writer.source_snapshot(selector.clone()).unwrap().basis
         };
         if scenario == "later-head" {
             let observation = serde_json::from_value(serde_json::json!({"id":"own-confirmation","machine":"machine","host":"host","path":"/home/op/offline","path_bytes":selector.path_bytes.clone(),"class":"seen","polylogue_version":"test","seen_at":1})).unwrap();
@@ -1065,7 +1058,7 @@ fn original_source_basis_survives_normal_progress_and_retains_real_conflicts() {
                     }),
                 ])
                 .unwrap();
-            sampled = writer.source_snapshot(selector.clone(), "").unwrap().basis;
+            sampled = writer.source_snapshot(selector.clone()).unwrap().basis;
             sampled.resolved = Some(crate::primary::SourceSubject {
                 input: "alias-target".into(),
                 observation: if scenario == "copied-alias" {

@@ -141,14 +141,6 @@ fn complete_callback_products_keep_semantic_fields_and_source_keys() {
             }],
         },
     );
-    output.message_receipts.insert(0, 10);
-    output.session_receipts.insert(0, 11);
-    output.document_receipts.insert(0, 12);
-    output.fragment_receipts.insert(0, 13);
-    output.event_receipts.insert(0, 14);
-    output.link_receipts.insert(0, 15);
-    output.prefix_copy_receipts.insert(0, 16);
-    output.prefix_member_receipts.insert(0, 17);
     let mut counts = RecordCounts {
         records: 1,
         ..Default::default()

@@ -375,11 +375,6 @@ impl Inner {
                         Some(crate::primary::CaptureDisposition::UnresolvedBasisConflict);
                 }
             } else {
-                let version = item
-                    .batch
-                    .parse
-                    .last()
-                    .map_or("", |step| step.reading_version.as_str());
                 let basis = if let Some(sampled) = &item.batch.basis {
                     if !self.sampled_basis_matches(sampled, &source, &item.batch.input.id)? {
                         required_disposition =
@@ -389,7 +384,7 @@ impl Inner {
                     // lock, after the serialized writer checks confirmed state.
                     sampled.clone()
                 } else {
-                    self.source_snapshot(source.clone(), version)?.basis
+                    self.source_snapshot(source.clone())?.basis
                 };
                 bases.insert(source, basis);
             }

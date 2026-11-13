@@ -80,7 +80,7 @@ impl Update {
         step: &ParseStep,
         previous: Option<&Stored>,
         counter: i64,
-        confirmed: bool,
+        retraction: bool,
         receipt: Option<&crate::wire_shapes::ReadingReceipt>,
         publication: Option<&crate::primary::PublicationReceipt>,
     ) -> Result<Self> {
@@ -164,7 +164,7 @@ impl Update {
                 (None, _, _) => None,
             },
         };
-        let commit = if confirmed {
+        let commit = if retraction {
             receipt
                 .or(step.receipt.as_ref())
                 .map(|r| r.sequence)
@@ -177,7 +177,7 @@ impl Update {
         Ok(Self {
             state,
             commit,
-            native: confirmed || publication.is_some(),
+            native: retraction || publication.is_some(),
         })
     }
 

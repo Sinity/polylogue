@@ -142,7 +142,6 @@ impl crate::primary::Sinex for Producer {
     fn pending_source(
         &self,
         _: &crate::primary::SourceSelector,
-        _: &str,
     ) -> Result<crate::primary::PendingSource> {
         Ok(Default::default())
     }

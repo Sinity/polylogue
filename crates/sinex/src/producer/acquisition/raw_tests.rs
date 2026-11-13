@@ -166,7 +166,7 @@ fn unresolved_siblings_keep_actual_predecessor_body_refs_and_only_raw_custody_pr
     )
     .unwrap();
     let accepted_head = sinex
-        .pending_source(&generation.stream().source, "v")
+        .pending_source(&generation.stream().source)
         .unwrap()
         .head
         .unwrap()
@@ -208,7 +208,7 @@ fn unresolved_siblings_keep_actual_predecessor_body_refs_and_only_raw_custody_pr
     assert_eq!(cursor.last_body(), page.headers[2].identity);
     assert_eq!(
         sinex
-            .pending_source(&generation.stream().source, "v")
+            .pending_source(&generation.stream().source)
             .unwrap()
             .head
             .unwrap()
@@ -327,7 +327,7 @@ fn explicit_body_anchor_keeps_equal_generation_observations_and_dispositions_sep
     )
     .unwrap();
     let head = sinex
-        .pending_source(&generation.stream().source, "v")
+        .pending_source(&generation.stream().source)
         .unwrap()
         .head
         .unwrap()

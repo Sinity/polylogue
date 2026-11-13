@@ -111,7 +111,6 @@ impl Sinex for PendingProducer {
     fn pending_source(
         &self,
         _: &crate::primary::SourceSelector,
-        _: &str,
     ) -> Result<crate::primary::PendingSource> {
         Self::unavailable()
     }

@@ -118,12 +118,20 @@ fn export_source_length_and_callback_coordinate_distinguish_native_keys() {
         payload,
     )
     .unwrap();
-    assert_eq!(decoded, header[0].product);
+    assert_eq!(
+        decoded,
+        polylogue_store::primary::Product::Interpreted {
+            reading: header[0].product.reading().unwrap().clone(),
+            record: polylogue_store::primary::SourceRecord::of(&header[0].product)
+                .unwrap()
+                .unwrap(),
+        }
+    );
     assert_eq!(
         crate::kinds::kind_reference("polylogue.parse_progress")
             .unwrap()
             .version,
-        6
+        7
     );
     assert_eq!(crate::source_reference().version, crate::SOURCE_VERSION);
     assert_eq!(

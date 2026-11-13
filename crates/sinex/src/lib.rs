@@ -393,9 +393,8 @@ impl polylogue_store::primary::Sinex for Sinex {
     fn pending_source(
         &self,
         source: &polylogue_store::primary::SourceSelector,
-        reading_version: &str,
     ) -> polylogue_store::Result<polylogue_store::primary::PendingSource> {
-        Ok(self.pending_source(source, reading_version)?)
+        Ok(self.pending_source(source)?)
     }
     fn capture_body(
         &self,

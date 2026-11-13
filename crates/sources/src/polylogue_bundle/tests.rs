@@ -104,7 +104,6 @@ fn bundle_import_keeps_hook_claims_declared_and_offsets_their_message_keys() {
         assert!(claim.observed.is_none());
     }
     assert!(step.output.native_hook_fields.is_empty());
-    assert!(step.output.message_receipts.is_empty());
 }
 
 #[test]
@@ -127,7 +126,6 @@ fn imported_text_fragment_keeps_foreign_claims_and_exact_receiving_record_range(
     assert_eq!(row.record, record);
     assert!(step.output.messages.is_empty());
     assert!(step.output.documents.is_empty());
-    assert!(step.output.fragment_receipts.is_empty());
     assert!(step.output.native_hook_fields.is_empty());
 }
 

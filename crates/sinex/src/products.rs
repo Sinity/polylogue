@@ -169,42 +169,86 @@ pub(crate) fn key(product: &Product, _occurrence: u64) -> Result<String> {
     )
 }
 
-/// The full fact is authoritative; the common fields let Sinex join AI work
-/// to its other domains without understanding Polylogue's internal model.
+/// Declared native facts retain domain values independently of the local index.
 pub(crate) fn payload(product: &Product, occurrence: u64) -> Result<Value> {
-    if let Product::ToolCall { reading, facts } = product {
-        return Ok(serde_json::to_value(ai::ToolFields {
-            record_key: key(product, occurrence)?,
-            source: reading,
-            call: facts,
-            context: Default::default(),
-        })?);
-    }
     let mut payload = match product {
         Product::Interpreted { .. } => unreachable!("eligibility is local metadata"),
-        Product::ToolCall { .. } => unreachable!("handled as a native fact"),
+        Product::ToolCall { facts, .. } => serde_json::to_value(ai::ToolFields {
+            call: facts,
+            context: Default::default(),
+        })?,
         Product::Session { facts, .. } => serde_json::to_value(ai::SessionFields::from(facts))?,
-        Product::Message { facts, .. } => {
-            serde_json::to_value(ai::MessageFields::from(&facts.message))?
-        }
+        Product::Message {
+            facts,
+            order,
+            projection,
+            native_fields,
+            declared_injections,
+            declared_attachment_bindings,
+            ..
+        } => serde_json::to_value(ai::MessageFields::new(
+            facts,
+            *order,
+            projection,
+            native_fields,
+            declared_injections,
+            declared_attachment_bindings,
+        ))?,
         Product::Document { facts, .. } => {
-            json!({"document": facts.document.id, "at": facts.document.source_time})
+            let mut value = serde_json::to_value(&facts.document)?;
+            rename_field(&mut value, "id", "document");
+            value["source_start"] = facts.offset.into();
+            value["source_end"] = facts.end.into();
+            value["at"] = serde_json::to_value(facts.document.source_time)?;
+            value["at_evidence"] = serde_json::to_value(facts.document.time_evidence())?;
+            value
         }
-        Product::Fragment { facts, .. } => json!({"fragment": facts.record.reference}),
-        Product::Event { facts, .. } => {
-            json!({"session": facts.session, "event": facts.kind, "at": facts.at})
+        Product::Fragment { facts, .. } => {
+            let mut value = serde_json::to_value(&facts.record)?;
+            value["source_start"] = facts.offset.into();
+            value["source_end"] = facts.end.into();
+            value
         }
-        Product::Link { facts, .. } => json!({"session": facts.child, "parent": facts.parent}),
+        Product::Event {
+            id,
+            facts,
+            imported,
+            ..
+        } => {
+            let mut value = serde_json::to_value(facts)?;
+            rename_field(&mut value, "kind", "event");
+            value["at"] = serde_json::to_value(facts.at)?;
+            value["at_evidence"] = serde_json::to_value(polylogue_model::TimeEvidence {
+                quality: facts.at_quality,
+                precision: facts.at_precision,
+                until: facts.at_until,
+            })?;
+            value["event_id"] = id.clone().into();
+            value["imported"] = serde_json::to_value(imported)?;
+            value
+        }
+        Product::Link { facts, .. } => {
+            let mut value = serde_json::to_value(facts)?;
+            rename_field(&mut value, "child", "session");
+            rename_field(&mut value, "at", "branch_point");
+            value
+        }
         Product::PrefixCopy { facts, .. } => {
-            json!({"session": facts.child, "parent": facts.parent})
+            let mut value = serde_json::to_value(facts)?;
+            rename_field(&mut value, "child", "session");
+            value
         }
         Product::PrefixMember { facts, .. } => {
-            json!({"session":facts.child,"parent":facts.parent,"message":facts.message})
+            let mut value = serde_json::to_value(facts)?;
+            rename_field(&mut value, "child", "session");
+            value
         }
         Product::Background { facts, .. } => {
-            json!({"session": facts.session, "task": facts.task_id})
+            let mut value = serde_json::to_value(facts)?;
+            rename_field(&mut value, "task_id", "task");
+            value
         }
-        Product::Repository { facts, .. } => json!({"path": facts.path}),
+        Product::Repository { facts, .. } => serde_json::to_value(facts)?,
         Product::RestoredRequest { prepared } => json!({
             "request": prepared.request.id,
             "at": prepared.request.at,
@@ -281,11 +325,49 @@ pub(crate) fn payload(product: &Product, occurrence: u64) -> Result<Value> {
         Product::Coverage(_) => json!({}),
         Product::Input { rows, .. } => json!({"input": rows.input}),
         Product::Blob(material) => json!({"blob": material.hash}),
-        Product::ParseProgress { reading, .. } => json!({"input": reading.input.id}),
+        Product::ParseProgress {
+            reading,
+            counts,
+            stopped_attempt,
+        } => json!({
+            "input": reading.input.id, "counts": counts, "stopped_attempt": stopped_attempt,
+        }),
     };
     payload["record_key"] = key(product, occurrence)?.into();
-    payload["record"] = serde_json::to_value(product)?;
+    if let Some(reading) = product.reading() {
+        payload["source"] = serde_json::to_value(reading)?;
+        payload["interpretation"] = serde_json::to_value(
+            polylogue_store::primary::SourceRecord::of(product)?.expect("source fact identity"),
+        )?;
+    } else {
+        payload["record"] = serde_json::to_value(product)?;
+    }
     Ok(payload)
+}
+
+fn rename_field(value: &mut Value, from: &str, to: &str) {
+    let fields = value.as_object_mut().expect("domain fact object");
+    if let Some(field) = fields.remove(from) {
+        fields.insert(to.into(), field);
+    }
+}
+
+fn source_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "polylogue.session"
+            | "polylogue.message"
+            | "polylogue.tool_call"
+            | "polylogue.document"
+            | "polylogue.fragment"
+            | "polylogue.event"
+            | "polylogue.link"
+            | "polylogue.prefix_copy"
+            | "polylogue.prefix_member"
+            | "polylogue.background"
+            | "polylogue.repository"
+            | "polylogue.parse_progress"
+    )
 }
 
 /// Reads a product payload of `kind`; a kind version Polylogue does not
@@ -298,33 +380,56 @@ pub(crate) fn decode(event_kind: &sinex_model::KindRef, payload: Value) -> Resul
         )));
     }
     let event_type = event_kind.name.as_str();
-    if event_type == "polylogue.tool_call" {
-        let reading = serde_json::from_value(payload["source"].clone())?;
-        let facts = Box::new(serde_json::from_value(payload)?);
-        return Ok(Product::ToolCall { reading, facts });
+    if source_kind(event_type) {
+        let reading: polylogue_store::primary::Reading =
+            serde_json::from_value(payload["source"].clone())?;
+        let record: polylogue_store::primary::SourceRecord =
+            serde_json::from_value(payload["interpretation"].clone())?;
+        if reading.chain < 1
+            || reading.input.id.is_empty()
+            || reading.input.format.is_empty()
+            || reading.reading_version.is_empty()
+            || reading.start > reading.parsed_upto
+            || reading
+                .source_length
+                .is_some_and(|length| reading.parsed_upto > length)
+            || record.family != event_type.trim_start_matches("polylogue.")
+            || record.reference.is_empty()
+            || record.start > record.end
+            || record.end > reading.parsed_upto
+        {
+            return Err(Error::Invalid(
+                "native interpretation differs from its original source".into(),
+            ));
+        }
+        if let Some(delivery) = &reading.delivery {
+            delivery
+                .validate()
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            if reading.source_length.is_none() {
+                return Err(Error::Invalid(
+                    "export reading has no actual source length".into(),
+                ));
+            }
+        }
+        if event_type == "polylogue.parse_progress"
+            && !payload["stopped_attempt"].is_null()
+            && !matches!(
+                reading.progress,
+                polylogue_model::batch::StepProgress::Failed { .. }
+                    | polylogue_model::batch::StepProgress::Refused { .. }
+            )
+        {
+            return Err(Error::Invalid(
+                "only stopped progress has a stopped attempt".into(),
+            ));
+        }
+        return Ok(Product::Interpreted { reading, record });
     }
     let product: Product =
         serde_json::from_value(payload.get("record").cloned().ok_or_else(|| {
             Error::Invalid(format!("confirmed {event_type} has no complete facts"))
         })?)?;
-    if let Some(reading) = product.reading()
-        && let Some(delivery) = &reading.delivery
-    {
-        delivery
-            .validate()
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        if reading.source_length.is_none() {
-            return Err(Error::Invalid(
-                "export reading has no actual source length".into(),
-            ));
-        }
-    }
-    if matches!(&product, Product::ParseProgress { stopped_attempt:Some(_),reading,.. } if !matches!(reading.progress, polylogue_model::batch::StepProgress::Failed { .. } | polylogue_model::batch::StepProgress::Refused { .. }))
-    {
-        return Err(Error::Invalid(
-            "only stopped progress has a stopped attempt".into(),
-        ));
-    }
     if kind(&product) != event_type {
         return Err(Error::Invalid(format!(
             "confirmed {event_type} carries another product kind"
@@ -373,8 +478,8 @@ fn reachable_definitions(root: &Value, definitions: &Value) -> Value {
     Value::Object(retained)
 }
 
-/// Kind declarations validate the complete serde domain model. The outer
-/// fields are the projection Sinex's cross-domain readers consume.
+/// Native source kinds declare their domain fields and source evidence.
+/// Durable authored and input records retain their exact operation decoder.
 pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> {
     use sinex_model::kinds::{FieldHint, KeyRule, Normalization, RemovedRule, Search, TimeRule};
     use sinex_model::{Class, KindDeclaration, KindRef, ReplaceRule, TimeQuality};
@@ -422,9 +527,18 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                 .expect("tagged product variants");
             variants.retain(|variant| variant["properties"]["product"]["const"] == *product);
             assert_eq!(variants.len(), 1, "one complete product schema per kind");
-            let definitions = reachable_definitions(&facts, &definitions);
-            let mut schema = if *product == "tool_call" {
-                ai::schema(product).expect("tool fact schema")
+            let source = source_kind(name);
+            let mut schema = if source {
+                ai::schema(product).unwrap_or_else(|| {
+                    assert_eq!(*product, "parse_progress");
+                    let fields = &facts["oneOf"][0]["properties"];
+                    json!({
+                        "type":"object", "properties": {
+                            "input":{"type":"string"}, "counts":fields["counts"],
+                            "stopped_attempt":fields["stopped_attempt"],
+                        }, "required":["input","counts","stopped_attempt"],
+                    })
+                })
             } else {
                 json!({
                     "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -436,42 +550,63 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                         "at": {"type":["string","null"]},
                         "started": {"type":["string","null"]},
                     },
-                    "required":["record_key","record"], "$defs":definitions,
+                    "required":["record_key","record"],
                 })
             };
-            if *product != "tool_call"
-                && let Some(fields) = ai::schema(product)
+            let mut definitions = definitions.as_object().expect("schema definitions").clone();
+            if let Some(native) = schema
+                .as_object_mut()
+                .expect("native schema object")
+                .remove("$defs")
             {
-                schema["properties"]
-                    .as_object_mut()
-                    .expect("object properties")
-                    .extend(
-                        fields["properties"]
-                            .as_object()
-                            .expect("AI properties")
-                            .clone(),
-                    );
-                if let Some(definitions) = fields.get("$defs").and_then(Value::as_object) {
-                    let retained = schema["$defs"].as_object_mut().expect("object definitions");
-                    for (name, definition) in definitions {
-                        if let Some(existing) = retained.get(name) {
-                            assert_eq!(existing, definition, "one definition for {name}");
-                        } else {
-                            retained.insert(name.clone(), definition.clone());
-                        }
+                for (name, definition) in native.as_object().expect("native definitions") {
+                    if let Some(existing) = definitions.get(name) {
+                        assert_eq!(existing, definition, "one definition for {name}");
+                    } else {
+                        definitions.insert(name.clone(), definition.clone());
                     }
                 }
-                schema["required"]
-                    .as_array_mut()
-                    .expect("required properties")
-                    .extend(
-                        fields["required"]
-                            .as_array()
-                            .expect("required AI properties")
-                            .clone(),
-                    );
             }
-            let field_hints = [
+            if source {
+                let interpreted = complete["oneOf"]
+                    .as_array()
+                    .expect("record variants")
+                    .iter()
+                    .find(|variant| variant["properties"]["product"]["const"] == "interpreted")
+                    .expect("source eligibility schema");
+                let fields = schema["properties"].as_object_mut().expect("domain fields");
+                fields.insert("record_key".into(), json!({"type":"string","minLength":1}));
+                fields.insert(
+                    "source".into(),
+                    interpreted["properties"]["reading"].clone(),
+                );
+                fields.insert(
+                    "interpretation".into(),
+                    interpreted["properties"]["record"].clone(),
+                );
+                if matches!(*product, "document" | "fragment") {
+                    fields.insert("source_start".into(), json!({"type":"integer","minimum":0}));
+                    fields.insert("source_end".into(), json!({"type":"integer","minimum":0}));
+                }
+                if *product == "document" {
+                    fields.insert("at".into(), json!({"type":["string","null"]}));
+                }
+                if *product == "event" {
+                    let variant = &facts["oneOf"][0]["properties"];
+                    fields.insert("event_id".into(), variant["id"].clone());
+                    fields.insert("imported".into(), variant["imported"].clone());
+                }
+                let required = schema["required"]
+                    .as_array_mut()
+                    .expect("required domain fields");
+                required.extend([
+                    json!("record_key"),
+                    json!("source"),
+                    json!("interpretation"),
+                ]);
+            }
+            schema["$defs"] = reachable_definitions(&schema, &Value::Object(definitions));
+            let mut guarded = [
                 "record",
                 "text",
                 "query",
@@ -487,14 +622,65 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                 "command",
                 "path",
                 "context",
+                "interpretation",
+                "field_claims",
+                "injections",
+                "attachment_bindings",
+                "projection",
+                "order",
+                "id_kind",
+                "page_text",
+                "source_start",
+                "source_end",
+                "aliases",
+                "title_source",
+                "data",
+                "imported",
+                "counts",
+                "stopped_attempt",
+                "content",
+                "provenance",
+                "coverage",
+                "source_version",
+                "root_commits",
+                "remote",
             ]
             .into_iter()
-            .filter(|field| schema["properties"].get(*field).is_some())
-            .map(|field| FieldHint {
-                field: format!("/{field}"),
-                class: Class::Guarded,
-            })
-            .collect();
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+            if source && !matches!(*product, "session" | "message" | "tool_call") {
+                for field in schema["properties"]
+                    .as_object()
+                    .expect("domain fields")
+                    .keys()
+                {
+                    if !matches!(
+                        field.as_str(),
+                        "record_key"
+                            | "document"
+                            | "at"
+                            | "session"
+                            | "event"
+                            | "parent"
+                            | "message"
+                            | "task"
+                            | "path"
+                            | "input"
+                    ) {
+                        if !guarded.contains(field) {
+                            guarded.push(field.clone());
+                        }
+                    }
+                }
+            }
+            let field_hints = guarded
+                .into_iter()
+                .filter(|field| schema["properties"].get(field).is_some())
+                .map(|field| FieldHint {
+                    field: format!("/{field}"),
+                    class: Class::Guarded,
+                })
+                .collect();
             KindDeclaration {
                 kind: KindRef {
                     name: (*name).into(),
@@ -502,21 +688,18 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                         3
                     } else {
                         match *product {
-                            // A product holding a parser reading moved to one
-                            // progress value in place of two flags.
-                            "message" => 7,
+                            "message" => 8,
                             "request" | "restored_request" => 7,
-                            "session" => 6,
-                            "document" | "event" | "link" | "background" | "repository" => 5,
-                            "parse_progress" => 6,
-                            // An input step's rows refuse fields they do not
-                            // name (version 5 moved `extent` to `extents`).
+                            "session" => 7,
+                            "document" | "event" | "link" | "background" | "repository" => 6,
+                            "parse_progress" => 7,
+                            // Input rows refuse fields outside their declared source shape.
                             "input" => 6,
-                            "fragment" => 3,
+                            "fragment" => 4,
                             "query_run" => 4,
                             "restored_assertion" => 2,
-                            "tool_call" | "restored_history" | "attachment_binding"
-                            | "query_run_outcome" | "prefix_copy" | "prefix_member" => 1,
+                            "tool_call" | "prefix_copy" | "prefix_member" => 2,
+                            "restored_history" | "attachment_binding" | "query_run_outcome" => 1,
                             "query" => 2,
                             _ => 3,
                         }
@@ -545,29 +728,34 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                         ReplaceRule::ReplaceWhenNewer
                     },
                 ),
-                time_rule: Some(if matches!(*product, "message" | "session" | "tool_call") {
-                    TimeRule::InstantEvidence {
-                        field: if *product != "session" {
-                            "at"
-                        } else {
-                            "started"
+                time_rule: Some(
+                    if matches!(
+                        *product,
+                        "message" | "session" | "tool_call" | "document" | "event"
+                    ) {
+                        TimeRule::InstantEvidence {
+                            field: if *product != "session" {
+                                "at"
+                            } else {
+                                "started"
+                            }
+                            .into(),
+                            evidence_field: if *product != "session" {
+                                "at_evidence"
+                            } else {
+                                "started_evidence"
+                            }
+                            .into(),
                         }
-                        .into(),
-                        evidence_field: if *product != "session" {
-                            "at_evidence"
-                        } else {
-                            "started_evidence"
+                    } else if *product == "attachment_binding" {
+                        TimeRule::Unknown
+                    } else {
+                        TimeRule::FirstPresent {
+                            fields: vec!["at".into(), "started".into()],
+                            quality: TimeQuality::Intrinsic,
                         }
-                        .into(),
-                    }
-                } else if *product == "attachment_binding" {
-                    TimeRule::Unknown
-                } else {
-                    TimeRule::FirstPresent {
-                        fields: vec!["at".into(), "started".into()],
-                        quality: TimeQuality::Intrinsic,
-                    }
-                }),
+                    },
+                ),
                 field_hints,
                 removed_rule: Some(RemovedRule::Never),
                 keep_known: Vec::new(),

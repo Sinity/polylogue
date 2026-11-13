@@ -432,7 +432,7 @@ impl Engine {
                             polylogue_store::primary::AcquisitionRoute::NativeCapture,
                         )
                         .source;
-                    let snapshot = self.writer.source_snapshot(source, "")?;
+                    let snapshot = self.writer.source_snapshot(source)?;
                     if snapshot.pending.head.is_some()
                         || snapshot.basis.status != polylogue_store::primary::SourceStatus::Ready
                     {
@@ -809,7 +809,7 @@ impl Engine {
                 polylogue_store::primary::AcquisitionRoute::NativeCapture,
             )
             .source;
-        let snapshot = self.writer.source_snapshot(source, "")?;
+        let snapshot = self.writer.source_snapshot(source)?;
         let pending = snapshot.pending.head.as_ref();
         if let Some(working) = &self.inputs[path].working
             && pending.is_some_and(|head| head.identity == working.capture)
@@ -1619,11 +1619,7 @@ impl Engine {
                             context.basis = plan.basis.clone();
                             context
                         } else {
-                            self.sampling_context(
-                                &job.path,
-                                &job.input.format,
-                                &job.origin.reading_version(),
-                            )?
+                            self.sampling_context(&job.path, &job.input.format)?
                         };
                     context.facts = plan.facts;
                     if let Some(raw) = &plan.raw {
@@ -1774,10 +1770,7 @@ impl Engine {
                 machine: self.config.machine.clone(),
                 path_bytes: plan.path.as_os_str().as_encoded_bytes().to_vec(),
             };
-            let snapshot = self
-                .writer
-                .source_snapshot(source, &plan.origin.reading_version())
-                .ok();
+            let snapshot = self.writer.source_snapshot(source).ok();
             let head = snapshot.and_then(|snapshot| snapshot.pending.head);
             let capture = head.and_then(|head| match head.captured {
                 polylogue_store::primary::Capture::Input(input)

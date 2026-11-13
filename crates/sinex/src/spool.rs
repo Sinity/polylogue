@@ -1055,9 +1055,8 @@ impl Spool {
     pub fn source_heads(
         &self,
         source: &polylogue_store::primary::SourceSelector,
-        version: &str,
     ) -> Result<sources::Heads> {
-        sources::get(self, source, version)
+        sources::get(self, source)
     }
 
     pub fn acknowledge(&self, acknowledgment: Acknowledgment) -> Result<()> {
@@ -1562,10 +1561,8 @@ fn empty_operation(
         raw_generation: None,
         raw_predecessor: None,
         raw_root: false,
-        reading_version: None,
         input: None,
         format: None,
-        export_keys: Vec::new(),
         stored_bytes: 0,
         completion: None,
         captured: false,

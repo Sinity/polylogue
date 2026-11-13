@@ -143,10 +143,14 @@ impl SourceRecord {
     }
 }
 
-fn known(index: &Connection, reading: &Reading, record: &SourceRecord) -> Result<Option<bool>> {
+fn known(
+    index: &Connection,
+    reading: &Reading,
+    record: &SourceRecord,
+) -> Result<(Option<bool>, Option<u64>)> {
     Ok(index.query_row(
-        "SELECT max(state='live') FROM primary_fact WHERE input=?1 AND chain=?2 AND reading_version=?3 AND reference=?4 AND value_hash=?5",
-        params![reading.input.id,reading.chain,reading.reading_version,record.reference,record.value_hash.0.as_slice()], |row| row.get(0),
+        "SELECT max(state='live'),max(CASE WHEN state='live' THEN admitted END) FROM primary_fact WHERE input=?1 AND chain=?2 AND reading_version=?3 AND reference=?4 AND value_hash=?5",
+        params![reading.input.id,reading.chain,reading.reading_version,record.reference,record.value_hash.0.as_slice()], |row| Ok((row.get(0)?, row.get(1)?)),
     )?)
 }
 
@@ -164,9 +168,19 @@ pub(crate) fn allowed(
     reading: &Reading,
     record: &SourceRecord,
 ) -> Result<bool> {
+    Ok(selected(index, reading, record)?.0)
+}
+
+/// Actual native admission belongs to the local source contribution, rather
+/// than the raw material receipt or a sender's claimed historical position.
+pub(crate) fn selected(
+    index: &Connection,
+    reading: &Reading,
+    record: &SourceRecord,
+) -> Result<(bool, Option<u64>)> {
     match known(index, reading, record)? {
-        Some(live) => Ok(live),
-        None => uncovered(index, reading, record),
+        (Some(live), admitted) => Ok((live, admitted)),
+        (None, _) => Ok((uncovered(index, reading, record)?, None)),
     }
 }
 
@@ -177,7 +191,7 @@ pub(crate) fn needs_publication(
     reading: &Reading,
     record: &SourceRecord,
 ) -> Result<bool> {
-    Ok(known(index, reading, record)?.is_none() && uncovered(index, reading, record)?)
+    Ok(known(index, reading, record)?.0.is_none() && uncovered(index, reading, record)?)
 }
 
 /// Match the owner's existing replay precondition, using only verified native

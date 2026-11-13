@@ -37,17 +37,17 @@ mod batch;
 mod bytes;
 mod chain;
 mod compose;
-mod confirmed;
 mod derive_thread;
 mod follow;
 mod primary;
 mod primary_capture;
 mod query_objects;
+mod retractions;
 pub use query_objects::HistorySlot;
 mod saved;
 mod scoped;
 mod source_snapshot;
-pub(crate) use confirmed::apply_confirmed_readings;
+pub(crate) use retractions::{apply_source_retractions, prepare_source_retractions};
 pub(crate) use rows::finish as finish_rows;
 mod native_hook_fields;
 mod older_archive;
@@ -126,7 +126,6 @@ enum Msg {
     ),
     SourceSnapshot(
         crate::primary::SourceSelector,
-        String,
         SyncSender<Result<crate::primary::SourceSnapshot>>,
     ),
     RestoreAuthored(
@@ -754,13 +753,8 @@ impl Writer {
     pub fn source_snapshot(
         &self,
         source: crate::primary::SourceSelector,
-        reading_version: &str,
     ) -> Result<crate::primary::SourceSnapshot> {
-        source_snapshot_via(
-            self.tx.as_ref().ok_or(StoreError::WriterGone)?,
-            source,
-            reading_version,
-        )
+        source_snapshot_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, source)
     }
 
     /// Installs export associations derived from committed source observations.
@@ -1138,9 +1132,8 @@ impl WriterSender {
     pub fn source_snapshot(
         &self,
         source: crate::primary::SourceSelector,
-        reading_version: &str,
     ) -> Result<crate::primary::SourceSnapshot> {
-        source_snapshot_via(&self.0, source, reading_version)
+        source_snapshot_via(&self.0, source)
     }
 
     /// As [`Writer::derive`].
@@ -1191,15 +1184,10 @@ fn pending_group_headers_via(
 fn source_snapshot_via(
     tx: &WriterQueue,
     source: crate::primary::SourceSelector,
-    reading_version: &str,
 ) -> Result<crate::primary::SourceSnapshot> {
     let (reply, wait) = sync_channel(1);
-    tx.send(Msg::SourceSnapshot(
-        source,
-        reading_version.to_owned(),
-        reply,
-    ))
-    .map_err(|_| StoreError::WriterGone)?;
+    tx.send(Msg::SourceSnapshot(source, reply))
+        .map_err(|_| StoreError::WriterGone)?;
     wait.recv().map_err(|_| StoreError::WriterGone)?
 }
 
@@ -1478,8 +1466,8 @@ impl Inner {
                         pending_bodies.push((identity, reply));
                         false
                     }
-                    Msg::SourceSnapshot(source, version, reply) => {
-                        snapshots.push((source, version, reply));
+                    Msg::SourceSnapshot(source, reply) => {
+                        snapshots.push((source, reply));
                         false
                     }
                     Msg::DrainPrimaryCaptures(reply) => {
@@ -1650,8 +1638,8 @@ impl Inner {
                     .and_then(|sinex| sinex.capture_body(&identity));
                 let _ = reply.send(result);
             }
-            for (source, version, reply) in snapshots.drain(..) {
-                let _ = reply.send(self.source_snapshot(source, &version));
+            for (source, reply) in snapshots.drain(..) {
+                let _ = reply.send(self.source_snapshot(source));
             }
             if let Err(error) = self.refresh_chain_progress() {
                 self.report.errors.push(format!("chain progress: {error}"));

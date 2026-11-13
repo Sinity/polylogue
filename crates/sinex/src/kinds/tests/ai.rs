@@ -57,7 +57,6 @@ fn native_ai_fields_bind_without_reading_the_internal_product() {
 
 #[test]
 fn source_time_quality_and_precision_are_not_promoted_to_intrinsic_instants() {
-    let declaration = declaration("polylogue.message");
     let mut product = message("input-a", 0);
     let at = polylogue_model::Timestamp::parse_rfc3339("2026-01-02T03:04:05Z").unwrap();
     for (timestamp, evidence, expected) in [
@@ -88,16 +87,50 @@ fn source_time_quality_and_precision_are_not_promoted_to_intrinsic_instants() {
             unreachable!()
         };
         facts.message.set_time(timestamp, evidence).unwrap();
-        let payload = products::payload(&product, 0).unwrap();
-        assert_eq!(payload["at"], json!(timestamp));
-        assert_eq!(payload["at_evidence"], json!(evidence));
-        assert_eq!(
-            declaration
-                .evaluate(&payload, sinex_model::Class::Open)
-                .unwrap()
-                .ts_orig,
-            expected
+        let mut document = polylogue_model::Document::new(
+            polylogue_model::DocumentId::parse("codex:document").unwrap(),
+            polylogue_model::DocumentPurpose::Context,
         );
+        document.set_time(timestamp, evidence).unwrap();
+        let event = polylogue_model::Event {
+            session: None,
+            kind: "captured".into(),
+            at: timestamp,
+            at_quality: evidence.quality,
+            at_precision: evidence.precision,
+            at_until: evidence.until,
+            after: None,
+            range: Some((0, 1)),
+            data: json!({}),
+        };
+        for product in [
+            product.clone(),
+            Product::Document {
+                reading: reading("input-a", 0),
+                facts: polylogue_model::DocumentRow {
+                    offset: 0,
+                    end: 1,
+                    document,
+                },
+            },
+            Product::Event {
+                reading: reading("input-a", 0),
+                id: "captured-event".into(),
+                facts: event,
+                imported: None,
+            },
+        ] {
+            let payload = products::payload(&product, 0).unwrap();
+            assert_eq!(payload["at"], json!(timestamp));
+            assert_eq!(payload["at_evidence"], json!(evidence));
+            assert_eq!(
+                declaration(products::kind(&product))
+                    .evaluate(&payload, sinex_model::Class::Open)
+                    .unwrap()
+                    .ts_orig,
+                expected
+            );
+        }
     }
 }
 
@@ -266,7 +299,7 @@ fn tool_facts_keep_original_coordinates_and_only_their_sessions_observed_context
         writes
             .iter()
             .find(|write| matches!(write.product, Product::ToolCall { .. }))
+            .map(|write| eligibility(&write.product))
             .unwrap()
-            .product
     );
 }

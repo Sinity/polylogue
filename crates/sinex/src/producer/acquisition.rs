@@ -57,7 +57,7 @@ impl Sinex {
         let queue = self.queue()?;
         let mut heads = BTreeMap::new();
         for basis in &plan.bases {
-            if let Some(entry) = queue.source_heads(&basis.source, "")?.head {
+            if let Some(entry) = queue.source_heads(&basis.source)?.head {
                 let Some(Capture::Input(input)) = entry.capture() else {
                     return Err(Error::Invalid("pending source head has no input".into()));
                 };
@@ -253,7 +253,7 @@ impl Sinex {
         if plan.mode == CaptureMode::Mutable {
             for basis in &plan.bases {
                 if queue
-                    .source_heads(&basis.source, "")?
+                    .source_heads(&basis.source)?
                     .head
                     .as_ref()
                     .map(|head| &head.identity)
@@ -378,13 +378,9 @@ impl Sinex {
         })
     }
 
-    pub(crate) fn pending_source(
-        &self,
-        source: &SourceSelector,
-        reading_version: &str,
-    ) -> Result<PendingSource> {
+    pub(crate) fn pending_source(&self, source: &SourceSelector) -> Result<PendingSource> {
         let queue = self.queue()?;
-        let heads = queue.source_heads(source, reading_version)?;
+        let heads = queue.source_heads(source)?;
         let mut result = PendingSource {
             status: SourceStatus::Ready,
             ..Default::default()

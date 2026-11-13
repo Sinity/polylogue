@@ -74,12 +74,11 @@ fn fragment_preparation_binds_actual_ranges_and_never_uses_sender_commit() {
         Some(6),
         BlobHash::of(b"complete provider value"),
     ));
-    output.fragment_receipts.insert(0, 130);
     let prepared = PreparedFragments::prepare(&output).unwrap();
     prepared.validate(&output).unwrap();
     {
         let tx = conn.transaction().unwrap();
-        prepared.apply(&tx, 1, 1, 9, Some(100)).unwrap();
+        prepared.apply(&tx, 1, 1, 9, |_| Ok(Some(130))).unwrap();
         tx.rollback().unwrap();
     }
     assert_eq!(
@@ -89,7 +88,7 @@ fn fragment_preparation_binds_actual_ranges_and_never_uses_sender_commit() {
         0
     );
     for _ in 0..2 {
-        prepared.apply(&conn, 1, 1, 9, Some(100)).unwrap();
+        prepared.apply(&conn, 1, 1, 9, |_| Ok(Some(130))).unwrap();
     }
     let actual: (i64, i64, i64, i64) = conn
         .query_row(
@@ -108,9 +107,8 @@ fn fragment_preparation_binds_actual_ranges_and_never_uses_sender_commit() {
     output.fragments[0].record.commit = 901;
     assert!(prepared.validate(&output).is_err());
     output.fragments[0].record.commit = 900;
-    output.fragment_receipts.insert(0, 131);
-    assert!(prepared.validate(&output).is_err());
-    assert!(prepared.apply(&conn, 1, 1, 8, None).is_err());
+    prepared.validate(&output).unwrap();
+    assert!(prepared.apply(&conn, 1, 1, 8, |_| Ok(None)).is_err());
 }
 
 #[test]
@@ -126,17 +124,17 @@ fn fragment_conflicts_remain_distinct_claims_and_retraction_is_per_source() {
         let output = output(record(0, text, Some(5), version));
         PreparedFragments::prepare(&output)
             .unwrap()
-            .apply(&conn, 1, 1, 9, None)
+            .apply(&conn, 1, 1, 9, |_| Ok(None))
             .unwrap();
     }
     let output = output(record(0, "alpha", Some(5), version));
     PreparedFragments::prepare(&output)
         .unwrap()
-        .apply(&conn, 1, 2, 9, Some(200))
+        .apply(&conn, 1, 2, 9, |_| Ok(Some(200)))
         .unwrap();
     PreparedFragments::prepare(&output)
         .unwrap()
-        .apply(&conn, 2, 1, 9, Some(300))
+        .apply(&conn, 2, 1, 9, |_| Ok(Some(300)))
         .unwrap();
     retract(&conn, 1, 1).unwrap();
     assert_eq!(
@@ -174,21 +172,15 @@ fn fragment_conflicts_remain_distinct_claims_and_retraction_is_per_source() {
 }
 
 #[test]
-fn malformed_fragments_and_receipts_fail_before_writer_apply() {
+fn malformed_fragments_fail_before_writer_apply() {
     let original = output(record(0, "valid", None, BlobHash::of(b"source")));
-    for case in 0..6 {
+    for case in 0..4 {
         let mut bad = original.clone();
         match case {
             0 => bad.fragments[0].record.fragment.text_hash = BlobHash::of(b"forged"),
             1 => bad.fragments[0].offset = 10,
             2 => bad.fragments[0].end = u64::MAX,
             3 => bad.fragments[0].record.reference = "span:message:claude-code:s-m#b=1-5".into(),
-            4 => {
-                bad.fragment_receipts.insert(0, 0);
-            }
-            5 => {
-                bad.fragment_receipts.insert(1, 100);
-            }
             _ => unreachable!(),
         }
         assert!(PreparedFragments::prepare(&bad).is_err(), "case {case}");
@@ -204,7 +196,7 @@ fn malformed_fragments_and_receipts_fail_before_writer_apply() {
     let conn = database();
     PreparedFragments::prepare(&high)
         .unwrap()
-        .apply(&conn, 1, 1, 9, None)
+        .apply(&conn, 1, 1, 9, |_| Ok(None))
         .unwrap();
     let end: Vec<u8> = conn
         .query_row("SELECT end FROM text_fragment", [], |r| r.get(0))
@@ -213,14 +205,13 @@ fn malformed_fragments_and_receipts_fail_before_writer_apply() {
 }
 
 #[test]
-fn streamed_chain_scratch_preserves_prepared_fragment_and_receiving_receipt() {
-    let mut output = output(record(
+fn streamed_chain_scratch_preserves_prepared_fragment_claims() {
+    let output = output(record(
         0,
         "selected",
         None,
         BlobHash::of(b"complete source"),
     ));
-    output.fragment_receipts.insert(0, 130);
     let expected = output.clone();
     let mut step = crate::ParseStep::new(output, Default::default(), 0..9, true);
     let mut reading = crate::writer::ChainReading::new().unwrap();

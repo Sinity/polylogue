@@ -15,13 +15,6 @@ pub(crate) struct PreparedRows {
 impl PreparedRows {
     pub(in crate::writer) fn validate(&self, output: &Output) -> Result<()> {
         self.fragments.validate(output)?;
-        for (&index, &receipt) in &output.message_receipts {
-            if index >= output.messages.len() || receipt == 0 || i64::try_from(receipt).is_err() {
-                return Err(StoreError::Invalid(
-                    "invalid message admission receipt".into(),
-                ));
-            }
-        }
         if !self.released {
             return Err(StoreError::Invalid("reading rows were not prepared".into()));
         }
@@ -58,34 +51,12 @@ impl PreparedRows {
                 ));
             }
         }
-        for (receipts, length) in [
-            (&output.session_receipts, output.sessions.len()),
-            (&output.document_receipts, output.documents.len()),
-            (&output.link_receipts, output.links.len()),
-            (&output.prefix_copy_receipts, output.prefix_copies.len()),
-            (&output.prefix_member_receipts, output.prefix_members.len()),
-        ] {
-            for (&index, &receipt) in receipts {
-                if index >= length || receipt == 0 || i64::try_from(receipt).is_err() {
-                    return Err(StoreError::Invalid(
-                        "invalid canonical admission receipt".into(),
-                    ));
-                }
-            }
-        }
         for member in &output.prefix_members {
             if member.source.as_ref().is_some_and(|source| {
                 source.input.is_empty() || source.chain < 1 || source.reading_version.is_empty()
             }) {
                 return Err(StoreError::Invalid(
                     "copied-prefix member has no exact source reading".into(),
-                ));
-            }
-        }
-        for (&index, &receipt) in &output.event_receipts {
-            if index >= output.events.len() || receipt == 0 || i64::try_from(receipt).is_err() {
-                return Err(StoreError::Invalid(
-                    "invalid canonical event admission receipt".into(),
                 ));
             }
         }

@@ -69,11 +69,7 @@ fn retained(sdk: &Sinex, generation: &SourceGeneration) -> (Vec<u8>, usize) {
 
 fn assert_complete(sdk: &Sinex, archive: &Archive, path: &Path, expected: &[u8]) -> usize {
     let count = assert_custody_complete(sdk, path, expected);
-    let raw = sdk
-        .pending_source(&selector(path), "")
-        .unwrap()
-        .raw
-        .unwrap();
+    let raw = sdk.pending_source(&selector(path)).unwrap().raw.unwrap();
     let Capture::Input(header) = &raw.captured else {
         panic!("a native raw capture must have its original input header");
     };
@@ -91,11 +87,7 @@ fn assert_complete(sdk: &Sinex, archive: &Archive, path: &Path, expected: &[u8])
 }
 
 fn assert_custody_complete(sdk: &Sinex, path: &Path, expected: &[u8]) -> usize {
-    let raw = sdk
-        .pending_source(&selector(path), "")
-        .unwrap()
-        .raw
-        .unwrap();
+    let raw = sdk.pending_source(&selector(path)).unwrap().raw.unwrap();
     let Capture::Input(header) = &raw.captured else {
         panic!("a native raw capture must have its original input header");
     };
@@ -127,7 +119,7 @@ fn assert_custody_waits_for_confirmation(
     path: &Path,
     identity: &str,
 ) {
-    let source = sdk.pending_source(&selector(path), "").unwrap();
+    let source = sdk.pending_source(&selector(path)).unwrap();
     assert_eq!(
         source.status,
         polylogue_store::primary::SourceStatus::MissingEvidence
@@ -354,11 +346,7 @@ fn restart_after_first_published_chunk_uses_immutable_sdk_bytes_before_the_next_
     assert_eq!(child.code(), Some(77));
     let path = home.file("restart.jsonl");
     let (mut engine, archive, _lock, sdk) = open(&home);
-    let first = sdk
-        .pending_source(&selector(&path), "")
-        .unwrap()
-        .raw
-        .unwrap();
+    let first = sdk.pending_source(&selector(&path)).unwrap().raw.unwrap();
     let Capture::Input(first) = first.captured else {
         panic!("the published first member is a provider capture");
     };
@@ -408,7 +396,7 @@ fn offline_empty_native_file_has_an_actual_body_and_eof_with_no_confirmed_source
     );
     assert!(pass.capture_pending);
     assert_eq!(assert_custody_complete(&sdk, &path, b""), 1);
-    let pending = sdk.pending_source(&selector(&path), "").unwrap();
+    let pending = sdk.pending_source(&selector(&path)).unwrap();
     let private_head = pending.head.as_ref().unwrap().identity.clone();
     let raw = pending.raw.unwrap();
     let Capture::Input(input) = &raw.captured else {
@@ -476,7 +464,7 @@ fn offline_empty_native_file_has_an_actual_body_and_eof_with_no_confirmed_source
     assert_eq!(paged.headers.len(), 1);
     assert_eq!(paged.headers[0].identity, identity);
     assert_eq!(paged.headers[0].material, retained.material);
-    let source = sdk.pending_source(&selector(&path), "").unwrap();
+    let source = sdk.pending_source(&selector(&path)).unwrap();
     assert_eq!(
         source.status,
         polylogue_store::primary::SourceStatus::MissingEvidence
@@ -496,7 +484,7 @@ fn acquired_file(
     };
     use std::os::unix::fs::MetadataExt;
     let source = selector(path);
-    let basis = writer.source_snapshot(source.clone(), "").unwrap().basis;
+    let basis = writer.source_snapshot(source.clone()).unwrap().basis;
     let mut file = std::fs::File::open(path).unwrap();
     let metadata = file.metadata().unwrap();
     let facts = polylogue_store::FileFacts::of(&metadata);
@@ -650,13 +638,13 @@ fn a_raw_only_file_does_not_freeze_an_independent_file_in_the_same_writer_flush(
         Err(polylogue_store::StoreError::PrimaryPending { .. })
     ));
     assert!(
-        sdk.pending_source(&selector(&home.file("file-a.jsonl")), "")
+        sdk.pending_source(&selector(&home.file("file-a.jsonl")))
             .unwrap()
             .head
             .is_none()
     );
     assert!(
-        sdk.pending_source(&selector(&home.file("file-b.jsonl")), "")
+        sdk.pending_source(&selector(&home.file("file-b.jsonl")))
             .unwrap()
             .raw
             .is_some()
@@ -726,7 +714,7 @@ fn an_explicit_package_keeps_its_member_custody_atomic() {
     );
     assert_eq!(page.headers.len(), 2);
     assert!(
-        sdk.pending_source(&selector(&home.file("package-b.jsonl")), "")
+        sdk.pending_source(&selector(&home.file("package-b.jsonl")))
             .unwrap()
             .head
             .is_none()

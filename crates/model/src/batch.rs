@@ -81,9 +81,6 @@ pub struct Output {
     /// record bytes; the payload retains foreign span and admission claims.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fragments: Vec<FragmentRow>,
-    /// Actual immutable receiver admissions, populated by confirmed projection.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub fragment_receipts: BTreeMap<usize, u64>,
     pub events: Vec<Event>,
     /// Stable exported identities and their original source claims, indexed by event.
     /// The containing input still owns the local bytes.
@@ -93,39 +90,20 @@ pub struct Output {
     /// Canonical fact subsets keep these positions when earlier facts are hidden.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub event_ids: BTreeMap<usize, String>,
-    /// Immutable admission of confirmed event facts, independent of raw source availability.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub event_receipts: BTreeMap<usize, u64>,
-    /// Immutable admissions for session facts before their metadata is merged.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub session_receipts: BTreeMap<usize, u64>,
-    /// Immutable admissions of source document readings.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub document_receipts: BTreeMap<usize, u64>,
-    /// Immutable admissions of source link facts before their evidence is merged.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub link_receipts: BTreeMap<usize, u64>,
     /// Explicit session reading order, indexed by message; byte ranges stay local.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub message_order: BTreeMap<usize, u64>,
     /// Selected original block positions retain the original source version.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub message_projections: BTreeMap<usize, crate::bundle::MessageProjection>,
-    /// Immutable admission of each confirmed message fact, indexed by message.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub message_receipts: BTreeMap<usize, u64>,
     /// Exact statements of provider relationships or references.
     pub links: Vec<Link>,
     /// Copied-prefix evidence is independent of provider relationship markers.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prefix_copies: Vec<crate::PrefixCopy>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub prefix_copy_receipts: BTreeMap<usize, u64>,
     /// Exact copied members for exports containing more than one conversation.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prefix_members: Vec<crate::PrefixMember>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub prefix_member_receipts: BTreeMap<usize, u64>,
     /// Outcomes learned after the result was written, for tool calls that
     /// ran in the background.
     pub background: Vec<BackgroundUpdate>,

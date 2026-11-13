@@ -754,7 +754,7 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
         Some((original.len() + tails.iter().map(String::len).sum::<usize>()) as u64)
     );
     let coordinates = reader.query(
-        "SELECT m.source_start AS start,m.source_end AS end,s.id AS material FROM message m JOIN source_material s ON s.input=(SELECT id FROM input_ref WHERE pk=m.input_pk) AND s.chain=m.source_chain AND s.offset=0 WHERE m.id='claude-code:assistant-1'",
+        "SELECT m.source_start AS start,m.source_end AS end,s.id AS material,s.input,m.source_chain AS chain FROM message m JOIN source_material s ON s.input=(SELECT id FROM input_ref WHERE pk=m.input_pk) AND s.chain=m.source_chain AND s.offset=0 WHERE m.id='claude-code:assistant-1'",
         &[],
     ).unwrap();
     assert_eq!(coordinates.len(), 1);
@@ -763,6 +763,28 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
     // JSON record citations exclude their newline delimiter.
     let end = original.len() as u64 - 1;
     assert_eq!(citation["end"].as_u64(), Some(end));
+    let admissions = reader.query(
+        "SELECT max(f.admitted) AS fact FROM primary_fact f JOIN input_ref i ON i.id=f.input JOIN message m ON m.input_pk=i.pk AND m.source_chain=f.chain WHERE m.id='claude-code:assistant-1' AND f.state='live' AND f.reference='message:' || m.id || ':' || m.source_start",
+        &[],
+    ).unwrap();
+    let fact = admissions[0]["fact"].as_u64().unwrap();
+    let raw = reader
+        .source_commit(
+            citation["input"].as_str().unwrap(),
+            citation["chain"].as_i64().unwrap(),
+            Some(end),
+        )
+        .unwrap()
+        .unwrap();
+    assert!(fact > raw);
+    assert_eq!(
+        reader
+            .message_admission(
+                &polylogue_model::MessageId::parse("claude-code:assistant-1").unwrap()
+            )
+            .unwrap(),
+        Some(fact)
+    );
     let material = sinex_model::MaterialId(citation["material"].as_str().unwrap().parse().unwrap());
     let mut offset = user.len() as u64;
     let mut quoted = Vec::new();

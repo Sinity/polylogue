@@ -469,9 +469,7 @@ fn a_new_empty_native_file_has_a_real_body_and_known_eof_without_parser_progress
     );
     let mut job = plan.next_job(&polylogue_testkit::stopped_attempt());
     assert_eq!(job.store_from, Some(0));
-    let mut context = engine
-        .sampling_context(&path, origin.name, &origin.reading_version())
-        .unwrap();
+    let mut context = engine.sampling_context(&path, origin.name).unwrap();
     context.facts = Some(facts);
     job.acquisition = Some(context);
     let (prepared, done) = crate::pool::run(job, &engine.archive, &engine.blobs, true);

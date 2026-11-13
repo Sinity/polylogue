@@ -3,11 +3,7 @@ use crate::Result;
 use crate::primary::{PendingSource, SourceBasis, SourceSelector, SourceSnapshot, SourceStatus};
 
 impl Inner {
-    pub(super) fn source_snapshot(
-        &mut self,
-        source: SourceSelector,
-        reading_version: &str,
-    ) -> Result<SourceSnapshot> {
+    pub(super) fn source_snapshot(&mut self, source: SourceSelector) -> Result<SourceSnapshot> {
         let token = self.location.scope_token()?;
         token.check()?;
         let conn = if self.location.is_primary() {
@@ -21,7 +17,7 @@ impl Inner {
             status = SourceStatus::MissingEvidence;
         }
         let pending = if let Some(sinex) = &self.sinex {
-            sinex.pending_source(&source, reading_version)?
+            sinex.pending_source(&source)?
         } else {
             PendingSource {
                 status: SourceStatus::Ready,

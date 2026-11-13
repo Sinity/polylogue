@@ -443,7 +443,7 @@ impl Engine {
                         polylogue_store::primary::AcquisitionRoute::NativeCapture,
                     )
                     .source;
-                let snapshot = self.writer.source_snapshot(source, "")?;
+                let snapshot = self.writer.source_snapshot(source)?;
                 pass.capture_pending |= snapshot.pending.head.is_some();
             }
         }
@@ -487,8 +487,7 @@ impl Engine {
                         "unknown database origin {origin}"
                     ))
                 })?;
-                let acquisition =
-                    self.sampling_context(&path, origin, &declaration.reading_version())?;
+                let acquisition = self.sampling_context(&path, origin)?;
                 databases.push(databases::DatabaseInput {
                     input: InputKey {
                         id: self

@@ -983,12 +983,14 @@ impl<'a> Projection<'a> {
                     message: merged.0.clone(),
                     prepared: merged.1.clone(),
                     replace,
-                    admitted: step.output.message_receipts.get(&i).copied().max(
-                        choices
-                            .message_versions
-                            .get(&BlobHash(prepared.hash))
-                            .and_then(|version| version.admitted),
-                    ),
+                    admitted: step
+                        .native_admission(&("message", &row.message.id, row.offset))?
+                        .max(
+                            choices
+                                .message_versions
+                                .get(&BlobHash(prepared.hash))
+                                .and_then(|version| version.admitted),
+                        ),
                 },
             );
             self.message_values.insert(prepared.hash.to_vec(), merged);
@@ -1448,10 +1450,7 @@ impl<'a> Projection<'a> {
             };
             let choice = EventChoice {
                 admitted: step
-                    .output
-                    .event_receipts
-                    .get(&i)
-                    .copied()
+                    .native_admission(&("event", &event_ids[i]))?
                     .map(i64::try_from)
                     .transpose()
                     .map_err(|_| {

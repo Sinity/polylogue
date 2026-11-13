@@ -41,7 +41,7 @@ pub(crate) use replay::save as save_replay;
 pub(crate) use replay::{has_fact, native_context, processed_source, replay_state};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Serialize, de::DeserializeOwned};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 fn packed(value: &impl Serialize) -> Result<Vec<u8>> {
@@ -103,16 +103,15 @@ fn stage(index: &mut Connection, events: &[Confirmed]) -> Result<()> {
             ConfirmedChange::Refused { .. } => "refused",
             ConfirmedChange::Control(_) => unreachable!(),
         };
-        let interpreted_change = match &event.change {
-            ConfirmedChange::Live(product) if product.reading().is_some() => {
-                ConfirmedChange::Live(Box::new(Product::Interpreted {
-                    reading: product.reading().expect("matched source reading").clone(),
-                    record: super::SourceRecord::of(product)?.expect("source record"),
-                }))
-            }
-            change => change.clone(),
-        };
-        let bytes = packed(&interpreted_change)?;
+        if let ConfirmedChange::Live(product) = &event.change
+            && product.reading().is_some()
+            && !matches!(product.as_ref(), Product::Interpreted { .. })
+        {
+            return Err(StoreError::Invalid(
+                "confirmed source facts need their native eligibility identity".into(),
+            ));
+        }
+        let bytes = packed(&event.change)?;
         let native = event.native.as_ref().map(packed).transpose()?;
         let source_order = i64::try_from(event.output_index).map_err(|_| {
             StoreError::Invalid(
@@ -240,10 +239,6 @@ fn metadata(product: &Product) -> (Option<String>, Option<i64>, Option<String>, 
         Product::AttachmentBinding { record } => {
             Some(format!("attachment-binding:{}", record.context().message))
         }
-        Product::Link { facts, .. } => Some(facts.selection_tag()),
-        Product::Session { facts, .. } => Some(format!("session:{}", facts.id)),
-        Product::Message { facts, .. } => Some(format!("message:{}", facts.message.id)),
-        Product::Document { facts, .. } => Some(format!("doc:{}", facts.document.id)),
         Product::Request(request) => Some(format!("request:{}", request.request.id)),
         Product::RestoredRequest { prepared, .. } => {
             Some(format!("request:{}", prepared.request.id))
@@ -257,14 +252,6 @@ fn metadata(product: &Product) -> (Option<String>, Option<i64>, Option<String>, 
         Product::QueryRunOutcome { outcome } => Some(format!("query-run-outcome:{}", outcome.run)),
         _ => None,
     };
-    if let Some(reading) = product.reading() {
-        return (
-            Some(reading.input.id.clone()),
-            Some(reading.chain),
-            reference,
-            "parsed",
-        );
-    }
     match product {
         Product::Input { rows, .. } => (
             Some(rows.input.clone()),
@@ -348,10 +335,6 @@ fn candidate(index: &Connection, through: i64) -> Result<()> {
                 let (input, chain, reference, kind) = metadata(&product);
                 let session = match product.as_ref() {
                     Product::Interpreted { record, .. } => record.session.clone(),
-                    Product::Session { facts, .. } => Some(facts.id.to_string()),
-                    Product::Message { facts, .. } => Some(facts.message.session.to_string()),
-                    Product::Event { facts, .. } => facts.session.as_ref().map(ToString::to_string),
-                    Product::Background { facts, .. } => Some(facts.session.to_string()),
                     _ => None,
                 };
                 let reading = product.reading();
@@ -468,10 +451,9 @@ pub(crate) fn material_at(
 }
 
 struct Plan {
-    readings: Vec<(crate::InputKey, i64, u64, crate::writer::ChainReading)>,
+    retractions: Vec<crate::Batch>,
     inputs: BTreeSet<String>,
     materials: BTreeSet<polylogue_model::BlobHash>,
-    available: HashMap<polylogue_model::BlobHash, Option<u64>>,
     requests: StateChange,
     queries: StateChange,
     binding_messages: BTreeSet<String>,
@@ -526,28 +508,11 @@ impl StateChange {
     }
 }
 
-fn attachments(
-    blocks: &[polylogue_model::Block],
-    hashes: &mut BTreeSet<polylogue_model::BlobHash>,
-) {
-    use polylogue_model::Block;
-    for block in blocks {
-        match block {
-            Block::Image(value) | Block::File(value) => hashes.extend(value.blob),
-            Block::ToolResult { attachments, .. } => {
-                hashes.extend(attachments.iter().filter_map(|a| a.blob))
-            }
-            _ => {}
-        }
-    }
-}
-
 fn plan(index: &Connection) -> Result<Plan> {
     let mut out = Plan {
-        readings: Vec::new(),
+        retractions: Vec::new(),
         inputs: BTreeSet::new(),
         materials: BTreeSet::new(),
-        available: HashMap::new(),
         requests: StateChange::of(index, "request")?,
         queries: StateChange::of(index, "query")?,
         binding_messages: BTreeSet::new(),
@@ -648,12 +613,22 @@ fn plan(index: &Connection) -> Result<Plan> {
         }
     }
     for ((_, chain), (input, length)) in chains {
-        let mut reading = crate::writer::ChainReading::new()?;
         let mut absent = crate::ParseStep::new(Default::default(), Default::default(), 0..0, false);
         absent.source_prefix_missing = true;
-        reading.push_confirmed(&mut absent)?;
-        reading.finish()?;
-        out.readings.push((input, chain, length, reading));
+        out.retractions.push(crate::Batch {
+            required_disposition: None,
+            input,
+            change: crate::Change::Reparse { chain },
+            observation: None,
+            continues: false,
+            new_blob: None,
+            blobs: Vec::new(),
+            length,
+            parse: vec![absent],
+            acquisition: None,
+            basis: None,
+            release: Default::default(),
+        });
     }
     Ok(out)
 }
@@ -881,8 +856,6 @@ fn remember_blobs(tx: &rusqlite::Transaction<'_>) -> Result<()> {
         let mut hashes = BTreeSet::new();
         match product {
             Product::Interpreted { record, .. } => hashes.extend(record.blobs),
-            Product::Message { facts, .. } => attachments(&facts.message.blocks, &mut hashes),
-            Product::Document { facts, .. } => attachments(&facts.document.blocks, &mut hashes),
             _ => {}
         }
         for hash in hashes {
@@ -918,7 +891,7 @@ pub(crate) fn apply(
         };
         candidate(index, next)?;
         let mut plan = plan(index)?;
-        resolver.confirmed_readings(&mut plan.readings, &plan.available)?;
+        crate::writer::prepare_source_retractions(resolver, &mut plan.retractions)?;
         let tx = index.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let counter = crate::archive::bump_counter(&tx)?;
         // Lifecycle changes can remove or restore source admissions older than
@@ -937,7 +910,7 @@ pub(crate) fn apply(
         coverage(&tx, &plan)?;
         refusals(&tx, next)?;
         let changes = crate::change_summary::ChangeSummary::start(&tx)?;
-        crate::writer::apply_confirmed_readings(&tx, &mut plan.readings, counter, &changes)?;
+        crate::writer::apply_source_retractions(&tx, &plan.retractions, counter, &changes)?;
         bindings(&tx, &plan)?;
         // Variants are authored records, so only a request can change them.
         if plan.requests != StateChange::Unchanged {

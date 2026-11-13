@@ -12,16 +12,15 @@ pub(crate) struct Heads {
     pub unattributed: bool,
 }
 
-pub(super) fn get(spool: &Spool, source: &SourceSelector, _version: &str) -> Result<Heads> {
+pub(super) fn get(spool: &Spool, source: &SourceSelector) -> Result<Heads> {
     let source = serde_json::to_vec(source)?;
-    let latest = |raw, reading_version| -> Result<Option<Prepared>> {
+    let latest = |raw| -> Result<Option<Prepared>> {
         spool
             .queue
             .lookup(
                 Lookup::Source {
                     source: &source,
                     raw,
-                    reading_version,
                 },
                 None,
                 None,
@@ -34,8 +33,8 @@ pub(super) fn get(spool: &Spool, source: &SourceSelector, _version: &str) -> Res
             .transpose()
     };
     Ok(Heads {
-        head: latest(false, None)?,
-        raw: latest(true, None)?,
+        head: latest(false)?,
+        raw: latest(true)?,
         unattributed: !spool
             .queue
             .lookup(Lookup::Unattributed, None, None, Order::OldestFirst, 1)?

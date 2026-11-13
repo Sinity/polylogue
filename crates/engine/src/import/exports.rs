@@ -210,7 +210,7 @@ impl Engine {
             context.basis = Some(basis.clone());
             context
         } else {
-            self.sampling_context(&plan.path, plan.origin.name, &plan.origin.reading_version())?
+            self.sampling_context(&plan.path, plan.origin.name)?
         };
         let mut file = std::fs::File::open(&plan.path)?;
         let before = FileFacts::of(&file.metadata()?);

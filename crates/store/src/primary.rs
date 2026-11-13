@@ -79,11 +79,7 @@ pub trait Sinex: Send + Sync {
         members: &mut CaptureMembers<'_>,
     ) -> Result<CaptureReceipt>;
     /// Reads local durable acquisition headers.
-    fn pending_source(
-        &self,
-        source: &SourceSelector,
-        reading_version: &str,
-    ) -> Result<PendingSource>;
+    fn pending_source(&self, source: &SourceSelector) -> Result<PendingSource>;
     /// Pages immutable accepted membership; headers contain no parsed outputs.
     /// Zero limit is invalid. Missing applied members do not prove source EOF.
     fn pending_group_headers(

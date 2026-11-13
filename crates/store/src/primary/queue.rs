@@ -58,10 +58,8 @@ pub struct Operation {
     pub raw_generation: Option<Vec<u8>>,
     pub raw_predecessor: Option<String>,
     pub raw_root: bool,
-    pub reading_version: Option<String>,
     pub input: Option<String>,
     pub format: Option<String>,
-    pub export_keys: Vec<String>,
     pub stored_bytes: u64,
     pub completion: Option<Completion>,
     pub captured: bool,
@@ -142,20 +140,11 @@ pub enum Lookup<'a> {
     GroupHash(&'a str),
     Members(&'a str),
     Acquisition(&'a str),
-    Source {
-        source: &'a [u8],
-        raw: bool,
-        reading_version: Option<&'a str>,
-    },
+    Source { source: &'a [u8], raw: bool },
     Unattributed,
     RawGeneration(&'a [u8]),
     RawChildren(&'a str),
     RawRoots(&'a [u8]),
-    Export {
-        input: &'a str,
-        format: &'a str,
-        key: Option<&'a str>,
-    },
 }
 
 pub enum Order {
@@ -306,7 +295,7 @@ fn refresh_ready(connection: &Connection, identity: &str) -> Result<()> {
 
 fn insert(connection: &Connection, operation: &Operation, group_hash: Option<&str>) -> Result<()> {
     connection.execute("INSERT INTO operation(identity,directory,metadata,kind,logical_name,acquisition,ordinal,unresolved,source,raw_generation,raw_predecessor,raw_root,reading_version,input,format,export_keys,stored_bytes,group_hash,material,previous_material,raw,completion,captured,blob)
-          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24)", params![operation.identity, operation.directory, operation.metadata, operation.kind.name(), operation.logical_name.as_ref().map(|name| name.as_bytes()), operation.acquisition, operation.ordinal, operation.unresolved, operation.source, operation.raw_generation, operation.raw_predecessor, operation.raw_root, operation.reading_version, operation.input, operation.format, serde_json::to_string(&operation.export_keys)?, operation.stored_bytes, group_hash, operation.material, operation.previous_material, operation.raw, operation.completion.map(Completion::name), operation.captured, operation.blob])?;
+          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,NULL,?13,?14,'[]',?15,?16,?17,?18,?19,?20,?21,?22)", params![operation.identity, operation.directory, operation.metadata, operation.kind.name(), operation.logical_name.as_ref().map(|name| name.as_bytes()), operation.acquisition, operation.ordinal, operation.unresolved, operation.source, operation.raw_generation, operation.raw_predecessor, operation.raw_root, operation.input, operation.format, operation.stored_bytes, group_hash, operation.material, operation.previous_material, operation.raw, operation.completion.map(Completion::name), operation.captured, operation.blob])?;
     Ok(())
 }
 
@@ -586,7 +575,6 @@ impl Queue {
             Lookup::Name(_)
                 | Lookup::Source { .. }
                 | Lookup::Unattributed
-                | Lookup::Export { .. }
                 | Lookup::Requests
                 | Lookup::IdentityPrefix(_)
         );
@@ -634,17 +622,9 @@ impl Queue {
             Lookup::GroupHash(hash) => ("group_hash=?1", vec![text(hash)]),
             Lookup::Members(identity) => ("confirmed_group=?1", vec![text(identity)]),
             Lookup::Acquisition(identity) => ("acquisition=?1", vec![text(identity)]),
-            Lookup::Source {
-                source,
-                raw,
-                reading_version,
-            } => (
-                "source=?1 AND (?2=0 OR raw=1) AND (?3 IS NULL OR reading_version=?3) AND unresolved=0",
-                vec![
-                    blob(source),
-                    Value::Integer(i64::from(raw)),
-                    reading_version.map(text).unwrap_or(Value::Null),
-                ],
+            Lookup::Source { source, raw } => (
+                "source=?1 AND (?2=0 OR raw=1) AND unresolved=0",
+                vec![blob(source), Value::Integer(i64::from(raw))],
             ),
             Lookup::Unattributed => (
                 "input IS NOT NULL AND source IS NULL AND unresolved=0",
@@ -655,14 +635,6 @@ impl Queue {
             Lookup::RawRoots(generation) => {
                 ("raw_generation=?1 AND raw_root=1", vec![blob(generation)])
             }
-            Lookup::Export { input, format, key } => (
-                "input=?1 AND format=?2 AND (?3 IS NULL OR EXISTS(SELECT 1 FROM json_each(export_keys) WHERE value=?3))",
-                vec![
-                    text(input),
-                    text(format),
-                    key.map(text).unwrap_or(Value::Null),
-                ],
-            ),
         };
         let base = parameters.len();
         let number = |value: u64| {

@@ -1,7 +1,7 @@
 //! AI facts exposed to Sinex readers independently of the local row transport.
 use crate::kinds::{GitIdentity, Objective, RecordRef, TerminalIdentity};
 use polylogue_model::{
-    Block, Message, MessageId, Production, PromptKind, Role, Session, SessionId, SessionKind,
+    Block, MessageId, MessageRow, Production, PromptKind, Role, Session, SessionId, SessionKind,
     TimeEvidence, Timestamp, Usage, WrittenBy,
 };
 use schemars::JsonSchema;
@@ -26,10 +26,29 @@ pub(super) struct MessageFields<'a> {
     duration_ms: Option<u64>,
     production: &'a Production,
     attrs: &'a serde_json::Map<String, serde_json::Value>,
+    source_start: u64,
+    source_end: u64,
+    id_kind: polylogue_model::IdKind,
+    page_text: bool,
+    order: Option<u64>,
+    projection: &'a Option<polylogue_model::bundle::MessageProjection>,
+    field_claims: &'a Option<Vec<polylogue_model::HookFieldClaim>>,
+    injections: &'a Option<Vec<polylogue_model::injection::InjectionEvidence>>,
+    attachment_bindings: &'a Option<Vec<polylogue_model::attachment_binding::AttachmentBinding>>,
 }
 
-impl<'a> From<&'a Message> for MessageFields<'a> {
-    fn from(message: &'a Message) -> Self {
+impl<'a> MessageFields<'a> {
+    pub(super) fn new(
+        row: &'a MessageRow,
+        order: Option<u64>,
+        projection: &'a Option<polylogue_model::bundle::MessageProjection>,
+        field_claims: &'a Option<Vec<polylogue_model::HookFieldClaim>>,
+        injections: &'a Option<Vec<polylogue_model::injection::InjectionEvidence>>,
+        attachment_bindings: &'a Option<
+            Vec<polylogue_model::attachment_binding::AttachmentBinding>,
+        >,
+    ) -> Self {
+        let message = &row.message;
         Self {
             message: &message.id,
             session: &message.session,
@@ -56,6 +75,15 @@ impl<'a> From<&'a Message> for MessageFields<'a> {
             duration_ms: message.duration_ms,
             production: &message.production,
             attrs: &message.attrs,
+            source_start: row.offset,
+            source_end: row.end,
+            id_kind: row.id_kind,
+            page_text: row.page_text,
+            order,
+            projection,
+            field_claims,
+            injections,
+            attachment_bindings,
         }
     }
 }
@@ -66,6 +94,8 @@ pub(super) struct SessionFields<'a> {
     origin: &'a str,
     kind: SessionKind,
     title: Option<&'a str>,
+    title_source: Option<polylogue_model::TitleSource>,
+    aliases: &'a [SessionId],
     cwd: &'a [String],
     repo: &'a Option<String>,
     branch: &'a Option<String>,
@@ -92,6 +122,8 @@ impl<'a> From<&'a Session> for SessionFields<'a> {
             origin: session.id.origin().as_str(),
             kind: session.kind,
             title: session.title.as_ref().map(|title| title.text.as_str()),
+            title_source: session.title.as_ref().map(|title| title.source),
+            aliases: &session.aliases,
             cwd: &session.cwd,
             repo: &session.repo,
             branch: &session.git_branch,
@@ -114,18 +146,110 @@ impl<'a> From<&'a Session> for SessionFields<'a> {
 }
 
 pub(super) fn schema(product: &str) -> Option<serde_json::Value> {
-    match product {
-        "message" => Some(serde_json::to_value(schemars::schema_for!(MessageFields)).unwrap()),
-        "session" => Some(serde_json::to_value(schemars::schema_for!(SessionFields)).unwrap()),
-        "tool_call" => Some(serde_json::to_value(schemars::schema_for!(ToolFields)).unwrap()),
-        _ => None,
+    let (mut schema, renamed) = match product {
+        "message" => (
+            serde_json::to_value(schemars::schema_for!(MessageFields)).unwrap(),
+            None,
+        ),
+        "session" => (
+            serde_json::to_value(schemars::schema_for!(SessionFields)).unwrap(),
+            None,
+        ),
+        "tool_call" => (
+            serde_json::to_value(schemars::schema_for!(ToolFields)).unwrap(),
+            None,
+        ),
+        "document" => (
+            serde_json::to_value(schemars::schema_for!(polylogue_model::Document)).unwrap(),
+            Some(("id", "document")),
+        ),
+        "fragment" => (
+            serde_json::to_value(schemars::schema_for!(
+                polylogue_model::bundle::fragments::TextFragmentRecord
+            ))
+            .unwrap(),
+            None,
+        ),
+        "event" => (
+            serde_json::to_value(schemars::schema_for!(polylogue_model::Event)).unwrap(),
+            Some(("kind", "event")),
+        ),
+        "link" => (
+            serde_json::to_value(schemars::schema_for!(polylogue_model::Link)).unwrap(),
+            Some(("child", "session")),
+        ),
+        "prefix_copy" => (
+            serde_json::to_value(schemars::schema_for!(polylogue_model::PrefixCopy)).unwrap(),
+            Some(("child", "session")),
+        ),
+        "prefix_member" => (
+            serde_json::to_value(schemars::schema_for!(polylogue_model::PrefixMember)).unwrap(),
+            Some(("child", "session")),
+        ),
+        "background" => (
+            serde_json::to_value(schemars::schema_for!(polylogue_model::BackgroundUpdate)).unwrap(),
+            Some(("task_id", "task")),
+        ),
+        "repository" => (
+            serde_json::to_value(schemars::schema_for!(polylogue_model::RepoLookup)).unwrap(),
+            None,
+        ),
+        _ => return None,
+    };
+    if let Some((from, to)) = renamed {
+        rename_schema_field(&mut schema, from, to);
+    }
+    if product == "link" {
+        rename_schema_field(&mut schema, "at", "branch_point");
+    }
+    if matches!(product, "document" | "event") {
+        let mut evidence = serde_json::to_value(schemars::schema_for!(TimeEvidence)).unwrap();
+        if let Some(definitions) = evidence
+            .as_object_mut()
+            .expect("time evidence schema")
+            .remove("$defs")
+        {
+            let fields = schema
+                .as_object_mut()
+                .expect("domain schema")
+                .entry("$defs")
+                .or_insert_with(|| serde_json::json!({}))
+                .as_object_mut()
+                .expect("domain definitions");
+            for (name, definition) in definitions.as_object().expect("time evidence definitions") {
+                if let Some(existing) = fields.get(name) {
+                    assert_eq!(existing, definition);
+                } else {
+                    fields.insert(name.clone(), definition.clone());
+                }
+            }
+        }
+        schema["properties"]["at_evidence"] = evidence;
+        schema["required"]
+            .as_array_mut()
+            .expect("required domain fields")
+            .push("at_evidence".into());
+    }
+    Some(schema)
+}
+
+fn rename_schema_field(schema: &mut serde_json::Value, from: &str, to: &str) {
+    let properties = schema["properties"]
+        .as_object_mut()
+        .expect("domain object fields");
+    let field = properties.remove(from).expect("domain identity field");
+    properties.insert(to.into(), field);
+    if let Some(required) = schema["required"].as_array_mut() {
+        for field in required {
+            if field.as_str() == Some(from) {
+                *field = to.into();
+            }
+        }
     }
 }
 
 #[derive(Serialize, JsonSchema)]
 pub(super) struct ToolFields<'a> {
-    pub record_key: String,
-    pub source: &'a polylogue_store::primary::Reading,
     #[serde(flatten)]
     pub call: &'a polylogue_store::primary::products::ToolCall,
     pub context: crate::native::Facts,

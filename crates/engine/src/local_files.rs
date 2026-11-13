@@ -203,7 +203,7 @@ impl Engine {
     ) -> Result<Option<String>, EngineError> {
         let origin =
             polylogue_sources::origin::by_name("codex-local-file").expect("declared origin");
-        let context = self.sampling_context(path, origin.name, &origin.reading_version())?;
+        let context = self.sampling_context(path, origin.name)?;
         // A FIFO can block during open, before metadata can reject it. Check
         // the opened descriptor so replacing the path cannot bypass the check.
         let mut file = match std::fs::OpenOptions::new()

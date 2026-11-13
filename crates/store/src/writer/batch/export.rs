@@ -44,14 +44,6 @@ impl ParseStep {
         } else {
             self.output.clone()
         };
-        output.message_receipts.clear();
-        output.session_receipts.clear();
-        output.document_receipts.clear();
-        output.event_receipts.clear();
-        output.link_receipts.clear();
-        output.prefix_copy_receipts.clear();
-        output.prefix_member_receipts.clear();
-        output.fragment_receipts.clear();
         let body = (
             &self.reading_version,
             output,

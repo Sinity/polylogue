@@ -1,7 +1,7 @@
 use super::*;
 use crate::primary::{ParsedSource, PublicationReceipt};
 
-fn publication(frame: &str, number: i64) -> PublicationReceipt {
+pub(super) fn publication(frame: &str, number: i64) -> PublicationReceipt {
     PublicationReceipt {
         producer: "fixture-producer".into(),
         frame: frame.into(),
@@ -35,7 +35,11 @@ fn interpretation(text: &str, version: &str) -> Batch {
     batch
 }
 
-fn apply(index: &mut Connection, mut batch: Batch, publication: &PublicationReceipt) -> Result<()> {
+pub(super) fn apply(
+    index: &mut Connection,
+    mut batch: Batch,
+    publication: &PublicationReceipt,
+) -> Result<()> {
     super::super::source_eligibility::retain_source_records(
         index,
         &batch.input,
@@ -57,7 +61,7 @@ fn apply(index: &mut Connection, mut batch: Batch, publication: &PublicationRece
         None,
         &fixture_receipt(),
         publication,
-        true,
+        step.reset && step.delivery.is_none(),
         &changes,
     )?;
     rows::finish(&tx, &changes, false)?;
@@ -146,14 +150,18 @@ fn native_parser_diagnostic_lifecycle_preserves_the_local_model_and_processed_so
     let diagnostic = Product::ParseProgress {
         reading: source(&original).reading,
         counts: Default::default(),
-        reset: true,
-        comparison: None,
-        checkpoint: None,
         stopped_attempt: None,
-        semantic_event_ids: None,
     };
     for (position, change) in [
-        (1, ConfirmedChange::Live(Box::new(diagnostic))),
+        (
+            1,
+            ConfirmedChange::Live(Box::new(crate::primary::Product::Interpreted {
+                reading: diagnostic.reading().unwrap().clone(),
+                record: crate::primary::SourceRecord::of(&diagnostic)
+                    .unwrap()
+                    .unwrap(),
+            })),
+        ),
         (2, ConfirmedChange::Archived),
         (3, ConfirmedChange::Restored),
         (4, ConfirmedChange::Tombstoned),
@@ -211,7 +219,13 @@ fn an_archived_value_does_not_turn_a_processed_incomplete_tail_into_an_unknown_p
     let archive = Archive::on_sinex(directory.path(), &directory.path().join("bytes"));
     let resolver = resolve::Resolver::new(&archive, &index, None).unwrap();
     for (position, change) in [
-        (1, ConfirmedChange::Live(Box::new(message))),
+        (
+            1,
+            ConfirmedChange::Live(Box::new(crate::primary::Product::Interpreted {
+                reading: message.reading().unwrap().clone(),
+                record: crate::primary::SourceRecord::of(&message).unwrap().unwrap(),
+            })),
+        ),
         (2, ConfirmedChange::Archived),
     ] {
         crate::primary::projection::apply(
@@ -341,4 +355,199 @@ fn an_archived_value_does_not_turn_a_processed_incomplete_tail_into_an_unknown_p
     assert!(
         crate::primary::projection::processed_source(&index, &source(&tail), &receipt).unwrap()
     );
+}
+
+pub(super) fn confirm(index: &mut Connection, archive: &Archive, batch: &Batch, position: i64) {
+    use crate::primary::{Confirmed, ConfirmedChange, Product, ReplayControl};
+    let resolver = resolve::Resolver::new(archive, index, None).unwrap();
+    let mut events =
+        crate::primary::products::parse(&batch.input, 1, Some(batch.length), &batch.parse[0])
+            .unwrap()
+            .into_iter()
+            .enumerate()
+            .map(|(ordinal, product)| Confirmed {
+                native: None,
+                position,
+                output_index: ordinal as u64,
+                event: format!("{}:{ordinal}", batch.input.id),
+                change: ConfirmedChange::Live(Box::new(Product::Interpreted {
+                    reading: product.reading().unwrap().clone(),
+                    record: crate::primary::SourceRecord::of(&product).unwrap().unwrap(),
+                })),
+            })
+            .collect::<Vec<_>>();
+    events.push(Confirmed {
+        native: None,
+        position: 0,
+        output_index: 0,
+        event: String::new(),
+        change: ConfirmedChange::Control(Box::new(ReplayControl::Completion {
+            position,
+            delivery: None,
+        })),
+    });
+    crate::primary::projection::apply(index, &resolver, &events).unwrap();
+}
+
+#[test]
+fn native_fact_admissions_follow_identity_through_filtering_and_reordering() {
+    use crate::primary::{Confirmed, ConfirmedChange, Product, ReplayControl};
+    let directory = tempfile::tempdir().unwrap();
+    let archive = Archive::on_sinex(directory.path(), &directory.path().join("bytes"));
+    let mut index = Connection::open(archive.index_db()).unwrap();
+    crate::schema::ensure_primary_index(&index).unwrap();
+    let resolver = resolve::Resolver::new(&archive, &index, None).unwrap();
+    let mut original = batch(
+        "original",
+        Route::Live,
+        0,
+        vec![
+            row(
+                12,
+                text_message(
+                    "hidden",
+                    "session",
+                    Role::Assistant,
+                    "hidden",
+                    Some("end_turn"),
+                ),
+            ),
+            row(
+                30,
+                text_message("kept", "session", Role::Assistant, "kept", Some("end_turn")),
+            ),
+            row(
+                60,
+                text_message(
+                    "other",
+                    "session",
+                    Role::Assistant,
+                    "other",
+                    Some("end_turn"),
+                ),
+            ),
+        ],
+        &["session", "child"],
+    );
+    original.change = Change::Reparse { chain: 1 };
+    original.observation = None;
+    let hidden = original.parse[0].output.messages[0].message.id.clone();
+    let kept = original.parse[0].output.messages[1].message.id.clone();
+    let other = original.parse[0].output.messages[2].message.id.clone();
+    let mut document = polylogue_model::Document::new(
+        polylogue_model::DocumentId::parse("claude-code:document").unwrap(),
+        polylogue_model::DocumentPurpose::Context,
+    );
+    document.blocks.push(Block::Text {
+        text: "document".into(),
+    });
+    original.parse[0]
+        .output
+        .documents
+        .push(polylogue_model::DocumentRow {
+            offset: 70,
+            end: 71,
+            document: document.clone(),
+        });
+    let link = Link {
+        kind: polylogue_model::LinkKind::Spawn,
+        copies_prefix: false,
+        how: None,
+        parent: sid("session"),
+        child: sid("child"),
+        at: None,
+        call_id: None,
+        evidence: "explicit".into(),
+    };
+    original.parse[0].output.links.push(link.clone());
+    original.parse[0].output.events.push(serde_json::from_value(serde_json::json!({
+        "session":"claude-code:session", "kind":"captured.event", "range":[80,81], "data":{"original":true}
+    })).unwrap());
+    let products = crate::primary::products::parse(
+        &original.input,
+        1,
+        Some(original.length),
+        &original.parse[0],
+    )
+    .unwrap();
+    let mut expected = std::collections::BTreeMap::new();
+    let hidden_reference = format!("message:{hidden}:12");
+    let mut hidden_event = String::new();
+    let mut events = Vec::new();
+    for (ordinal, product) in products.into_iter().enumerate() {
+        let position = 10 + ordinal as i64;
+        let record = crate::primary::SourceRecord::of(&product).unwrap().unwrap();
+        let event = format!("fact-{ordinal}");
+        if record.reference == hidden_reference {
+            hidden_event = event.clone();
+        }
+        expected.insert(record.reference.clone(), position as u64);
+        events.push(Confirmed {
+            native: None,
+            position,
+            output_index: 0,
+            event,
+            change: ConfirmedChange::Live(Box::new(Product::Interpreted {
+                reading: product.reading().unwrap().clone(),
+                record,
+            })),
+        });
+    }
+    let position = events.last().unwrap().position + 1;
+    events.push(Confirmed {
+        native: None,
+        position,
+        output_index: 0,
+        event: hidden_event,
+        change: ConfirmedChange::Archived,
+    });
+    events.push(Confirmed {
+        native: None,
+        position: 0,
+        output_index: 0,
+        event: String::new(),
+        change: ConfirmedChange::Control(Box::new(ReplayControl::Completion {
+            position,
+            delivery: None,
+        })),
+    });
+    crate::primary::projection::apply(&mut index, &resolver, &events).unwrap();
+    original.parse[0].output.messages.swap(0, 2);
+    apply(
+        &mut index,
+        original,
+        &publication("interpreted-original", 20),
+    )
+    .unwrap();
+    let pool = ReadPool::open(&archive).unwrap();
+    let reader = pool.reader().unwrap();
+    assert!(reader.message_with_projection(&hidden).unwrap().is_none());
+    for (message, offset) in [(&kept, 30), (&other, 60)] {
+        assert_eq!(
+            reader.message_admission(message).unwrap(),
+            Some(expected[&format!("message:{message}:{offset}")])
+        );
+    }
+    assert_eq!(
+        reader.session_commit(&sid("session")).unwrap(),
+        Some(expected[&format!("session:{}", sid("session"))])
+    );
+    assert_eq!(
+        reader.document_commit(&document.id).unwrap(),
+        Some(expected[&format!("document:{}:70", document.id)])
+    );
+    assert_eq!(
+        reader.link_commit(&link).unwrap(),
+        Some(expected[&link.selection_tag()])
+    );
+    let actual: u64 = index
+        .query_row("SELECT admitted FROM event_source", [], |row| row.get(0))
+        .unwrap();
+    let expected_event = expected
+        .iter()
+        .find(|(reference, _)| reference.starts_with("event:"))
+        .unwrap()
+        .1;
+    assert_eq!(actual, *expected_event);
+    assert_ne!(actual, fixture_receipt().sequence as u64);
 }

@@ -44,7 +44,10 @@ fn live(position: i64, event: &str, product: Product) -> Confirmed {
         position,
         output_index: 0,
         event: event.into(),
-        change: ConfirmedChange::Live(Box::new(product)),
+        change: ConfirmedChange::Live(Box::new(Product::Interpreted {
+            reading: product.reading().unwrap().clone(),
+            record: SourceRecord::of(&product).unwrap().unwrap(),
+        })),
     }
 }
 
@@ -134,11 +137,7 @@ fn covered_absence_does_not_hide_an_unread_tail_or_a_new_parser_interpretation()
     let progress = Product::ParseProgress {
         reading: reading.clone(),
         counts: Default::default(),
-        reset: false,
-        comparison: None,
-        checkpoint: None,
         stopped_attempt: None,
-        semantic_event_ids: None,
     };
     apply(
         &mut index,

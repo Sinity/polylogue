@@ -332,12 +332,9 @@ impl Engine {
         &mut self,
         path: &Path,
         origin: &str,
-        reading_version: &str,
     ) -> Result<AcquisitionContext, EngineError> {
         let mut context = self.acquisition_context(path, origin, AcquisitionRoute::NativeCapture);
-        let snapshot = self
-            .writer
-            .source_snapshot(context.source.clone(), reading_version)?;
+        let snapshot = self.writer.source_snapshot(context.source.clone())?;
         context.basis = Some(snapshot.basis);
         Ok(context)
     }
