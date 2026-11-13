@@ -258,7 +258,8 @@ select targets again. Other authored writes still prepare against the confirmed
 state plus this host's durable pending effects. Both paths retain the original
 request outcome on retry and apply the same validated frozen effects. Recording
 these deliveries in standalone mode also leaves variant projection work to its
-own mutations and derivation.
+own mutations and derivation. Restored delivery snapshots keep later events from
+other requests; the original request still owns its exact body and own receipt.
 
 ## Write identity
 

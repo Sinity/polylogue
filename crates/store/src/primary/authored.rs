@@ -140,7 +140,11 @@ pub fn prepare(
                     .any(|change| change.delivery.id == request.id);
                 return Ok(());
             }
-            validate(original)?;
+            match pending {
+                PendingAuthored::Live { .. } => validate_live(original)?,
+                PendingAuthored::Restore { .. } => validate(original)?,
+                PendingAuthored::RestoreAssertion { .. } => unreachable!(),
+            }
             if request_hash(&original.request)? != request_hash(request)?
                 || known.as_ref().is_some_and(|known| known != original)
             {
@@ -156,7 +160,7 @@ pub fn prepare(
             return Err(StoreError::Conflict(request.id.clone()));
         }
         require_new_delivery(index, &request.id)?;
-        validate(&prepared)?;
+        validate_live(&prepared)?;
         return Ok(prepared);
     }
     let mut pending_blobs = HashMap::new();
@@ -247,12 +251,21 @@ pub(crate) fn with_overlay<T>(
 
 /// Checks a frozen request's internal consistency without applying it.
 pub fn validate(prepared: &PreparedRequest) -> Result<()> {
-    if let Some(expected) = crate::user_writes::prepare_delivery(&prepared.request)
-        && (prepared.effect != expected.effect || prepared.outcome != expected.outcome)
-    {
-        return Err(StoreError::Invalid(
-            "delivery effect differs from its admitted request".into(),
-        ));
+    // Restored records can include later events written by other requests.
+    // The request still owns its exact delivery body and its own receipt.
+    if let Some(expected) = crate::user_writes::prepare_delivery(&prepared.request) {
+        let mut effect = prepared.effect.clone();
+        for change in &mut effect.deliveries {
+            change
+                .delivery
+                .events
+                .retain(|event| event.request == prepared.request.id);
+        }
+        if effect != expected.effect || prepared.outcome != expected.outcome {
+            return Err(StoreError::Invalid(
+                "delivery effect differs from its admitted request".into(),
+            ));
+        }
     }
     crate::signals::validate(prepared)?;
     for fact in &prepared.effect.assertions {
@@ -310,6 +323,18 @@ pub fn validate(prepared: &PreparedRequest) -> Result<()> {
     Ok(())
 }
 
+fn validate_live(prepared: &PreparedRequest) -> Result<()> {
+    validate(prepared)?;
+    if let Some(expected) = crate::user_writes::prepare_delivery(&prepared.request)
+        && prepared.effect != expected.effect
+    {
+        return Err(StoreError::Invalid(
+            "a new delivery carries events from other requests".into(),
+        ));
+    }
+    Ok(())
+}
+
 // A new literal delivery used to meet the delivery primary key in the
 // preparation transaction. Keep that check before durable queue admission.
 pub(crate) fn require_new_delivery(conn: &Connection, id: &str) -> Result<()> {
@@ -338,7 +363,7 @@ pub fn apply(tx: &Transaction<'_>, prepared: &PreparedRequest, counter: i64) -> 
             "pending is not a canonical outcome".into(),
         ));
     }
-    validate(prepared)?;
+    validate_live(prepared)?;
     records::apply(tx, &prepared.effect, counter, false)?;
     insert_request(tx, prepared, counter)
 }

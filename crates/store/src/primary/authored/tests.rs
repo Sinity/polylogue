@@ -1143,6 +1143,69 @@ fn literal_delivery_retry_keeps_pending_body_and_refuses_changed_intent() {
 }
 
 #[test]
+fn restored_literal_deliveries_keep_later_history_without_admitting_it_as_live() {
+    for advice in [false, true] {
+        let request = literal_delivery(advice);
+        let conn = cache();
+        let mut prepared = prepare_with(&conn, &request, &[], &[]).unwrap();
+        let later = polylogue_model::authored::DeliveryEvent {
+            request: "later-receipt".into(),
+            what: polylogue_model::DeliveryOutcome::Used,
+            at: Timestamp::from_unix_ms(100).unwrap(),
+            detail: Some("a later report retained by the predecessor".into()),
+        };
+        prepared.effect.deliveries[0].delivery.events.push(later);
+        validate(&prepared).unwrap();
+        let pending = PendingAuthored::Restore {
+            prepared: prepared.clone(),
+        };
+        let reopened: PendingAuthored =
+            serde_json::from_slice(&serde_json::to_vec(&pending).unwrap()).unwrap();
+        assert_eq!(
+            prepare(
+                &conn,
+                &request,
+                None,
+                None,
+                |visit| visit(&reopened),
+                |_| Ok(())
+            )
+            .unwrap(),
+            prepared
+        );
+        let live = PendingAuthored::Live {
+            prepared: prepared.clone(),
+        };
+        assert!(matches!(
+            prepare(
+                &conn,
+                &request,
+                None,
+                None,
+                |visit| visit(&live),
+                |_| Ok(())
+            ),
+            Err(StoreError::Invalid(_))
+        ));
+        let mut target = cache();
+        let tx = target.transaction().unwrap();
+        assert!(matches!(
+            apply(&tx, &prepared, 1),
+            Err(StoreError::Invalid(_))
+        ));
+        assert_eq!(count(&tx, "delivery"), 0);
+        restore(&tx, &prepared, 1).unwrap();
+        tx.commit().unwrap();
+        assert_eq!(
+            frozen_request(&target, &request.id).unwrap(),
+            Some(prepared.clone())
+        );
+        let actual = records::delivery_from(&target, Source::Cache, &request.id).unwrap();
+        assert_eq!(actual, prepared.effect.deliveries[0].delivery);
+    }
+}
+
+#[test]
 fn literal_delivery_refuses_effects_that_change_content_references_or_receipts() {
     for advice in [false, true] {
         let request = literal_delivery(advice);
@@ -1168,6 +1231,7 @@ fn literal_delivery_refuses_effects_that_change_content_references_or_receipts()
                         detail: None,
                     }),
             }
+            assert!(matches!(validate(&changed), Err(StoreError::Invalid(_))));
             let mut target = cache();
             let tx = target.transaction().unwrap();
             assert!(matches!(
