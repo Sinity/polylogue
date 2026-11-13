@@ -1,5 +1,7 @@
 use super::*;
+use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn batch(id: &str, length: u64) -> Batch {
     Batch {
@@ -336,9 +338,6 @@ fn an_equal_length_change_to_a_staged_file_is_refused_at_append() {
     ));
 }
 
-use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
-use std::sync::atomic::{AtomicUsize, Ordering};
-
 fn reading(input: &str, chain: i64, length: u64) -> PreparedBatch {
     PreparedBatch {
         batch: Batch {
@@ -440,12 +439,13 @@ fn validation_steps(revisions: usize) -> usize {
             steps.fetch_add(1, Ordering::Relaxed);
             false
         }),
-    );
+    )
+    .unwrap();
     let stored = stored_readings(&conn, &[reading("input", 1, revisions as u64)])
         .unwrap()
         .unwrap();
     assert_eq!(stored[0].length, revisions as u64);
-    conn.progress_handler(0, None::<fn() -> bool>);
+    conn.progress_handler(0, None::<fn() -> bool>).unwrap();
     count.load(Ordering::Relaxed)
 }
 
