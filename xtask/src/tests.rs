@@ -63,17 +63,8 @@ fn built_with(tail: &[&str]) -> Vec<String> {
         .collect()
 }
 
-fn package_build(packages: &[&str], tail: &[&str]) -> Vec<String> {
-    let mut args = vec!["--locked".into(), "--all-features".into()];
-    for package in packages {
-        args.extend(["--package".into(), (*package).into()]);
-    }
-    args.extend(tail.iter().map(|arg| (*arg).into()));
-    args
-}
-
 #[test]
-fn package_checks_build_selected_packages_and_full_checks_keep_the_workspace_graph() {
+fn package_filters_keep_the_workspace_feature_graph() {
     assert_eq!(arguments(&[], None).unwrap(), built_with(&["--tests"]));
     for flag in [
         &["-p", "polylogue-store"][..],
@@ -84,10 +75,7 @@ fn package_checks_build_selected_packages_and_full_checks_keep_the_workspace_gra
     ] {
         assert_eq!(
             arguments(flag, None).unwrap(),
-            package_build(
-                &["polylogue-store"],
-                &["-E", "((package(=polylogue-store)))", "--tests"]
-            ),
+            built_with(&["-E", "((package(=polylogue-store)))", "--tests"]),
             "{flag:?}"
         );
     }
@@ -124,16 +112,13 @@ fn packages_exclusions_filtersets_and_a_required_selection_intersect() {
             Some("rdeps(=polylogue-model)"),
         )
         .unwrap(),
-        package_build(
-            &["polylogue-store", "polylogue-engine"],
-            &[
-                "-E",
-                "(rdeps(=polylogue-model)) & ((package(=polylogue-store)) | (package(=polylogue-engine))) \
+        built_with(&[
+            "-E",
+            "(rdeps(=polylogue-model)) & ((package(=polylogue-store)) | (package(=polylogue-engine))) \
              & (not ((package(=polylogue-sinex)))) & ((test(a)) | (test(b)))",
-                "--tests",
-                "--no-capture",
-            ]
-        )
+            "--tests",
+            "--no-capture",
+        ])
     );
     assert_eq!(
         arguments(&["-E=test(rows)", "--", "-p", "--features"], None).unwrap(),
@@ -189,7 +174,7 @@ fn explicit_target_selection_is_preserved_without_adding_the_default_tests() {
 }
 
 #[test]
-fn selections_run_through_the_real_runner_with_native_package_scope() {
+fn selections_share_features_and_native_targets_through_the_real_runner() {
     let fixture = tempfile::tempdir().unwrap();
     let root = fixture.path();
     fs::write(root.join("Cargo.toml"), "[workspace]\nmembers=['polylogue-store','polylogue-engine','polylogue-sinex','polylogue','helper']\nresolver='3'\n").unwrap();
@@ -201,7 +186,7 @@ fn selections_run_through_the_real_runner_with_native_package_scope() {
         ),
         (
             "polylogue-engine",
-            "[features]\nfaults=[]\n",
+            "[features]\nfaults=[]\n[dev-dependencies]\nhelper={path='../helper',features=['shared-test']}\n",
             "#[test] fn engine_test() { assert!(cfg!(feature=\"faults\")); }\n",
         ),
         (
@@ -216,8 +201,8 @@ fn selections_run_through_the_real_runner_with_native_package_scope() {
         ),
         (
             "helper",
-            "",
-            "pub fn value() -> u32 { 42 }\n#[test] fn helper_test() {}\n",
+            "[features]\nshared-test=[]\n",
+            "pub fn value() -> u32 { if cfg!(feature=\"shared-test\") { 42 } else { 0 } }\n#[test] fn helper_test() {}\n",
         ),
     ] {
         fs::create_dir_all(root.join(name).join("src")).unwrap();
@@ -339,7 +324,7 @@ fn selections_run_through_the_real_runner_with_native_package_scope() {
     git(root, &["commit", "-qm", "baseline"]);
     fs::write(
         root.join("helper/src/lib.rs"),
-        "pub fn value() -> u32 { 40 + 2 }\n#[test] fn helper_test() {}\n",
+        "pub fn value() -> u32 { if cfg!(feature=\"shared-test\") { 40 + 2 } else { 0 } }\n#[test] fn helper_test() {}\n",
     )
     .unwrap();
     // devkit's selection reaches the store through its dependency on the
@@ -359,13 +344,25 @@ fn selections_run_through_the_real_runner_with_native_package_scope() {
         expected(&[("selected_ignored", "ignored"), ("selected_read", "passed")])
     );
 
-    // An unrelated test target must not be compiled merely to filter its
-    // tests out later. The full workspace check above still exercised it.
+    // Native library selection excludes integration binaries without dropping
+    // another workspace member's test-only feature contribution.
+    fs::create_dir(root.join("polylogue/tests")).unwrap();
     fs::write(
-        root.join("polylogue/src/lib.rs"),
-        "#[cfg(test)] compile_error!(\"unrelated application test target\");\n",
+        root.join("polylogue/tests/unrelated.rs"),
+        "compile_error!(\"unrelated application integration target\");\n",
     )
     .unwrap();
+    fs::write(
+        root.join("polylogue/src/main.rs"),
+        "fn main() {}\n#[test] fn named_application_target() { assert!(cfg!(feature=\"sinex\")); }\n",
+    )
+    .unwrap();
+    let (run, result) = execute(&["-p", "polylogue", "--bin", "polylogue"], None);
+    result.unwrap();
+    assert_eq!(
+        ran(&run),
+        expected(&[("named_application_target", "passed")])
+    );
     let (run, result) = execute(&["-p", "polylogue-store", "--lib"], None);
     result.unwrap();
     assert_eq!(
@@ -376,12 +373,12 @@ fn selections_run_through_the_real_runner_with_native_package_scope() {
             ("selected_write", "passed"),
         ])
     );
-    let (run, result) = execute(&["--workspace", "-p", "polylogue-store", "--lib"], None);
+    let (run, result) = execute(&["-p", "polylogue-store"], None);
     assert!(result.is_err());
     assert!(run.diagnostics.iter().any(|diagnostic| {
         diagnostic
             .text
-            .contains("unrelated application test target")
+            .contains("unrelated application integration target")
     }));
 }
 

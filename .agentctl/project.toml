@@ -57,7 +57,7 @@ cache = "none"
 unit_properties = ["MemoryHigh=8G"]
 
 [operations.focused]
-description = "Build selected packages with all their features and run selected tests; native target flags are supported"
+description = "Run selected tests on the canonical workspace feature graph; native target flags bound compilation"
 exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "--quiet", "-p", "xtask", "--", "test"]
 arguments = "required"
 pool = "compile"
