@@ -370,9 +370,14 @@ fn ordinary_open_keeps_originals_vectors_and_progress_across_separate_atomic_tra
 
         #[cfg(feature = "faults")]
         if fail {
+            // SQLite resolves symlinked temporary roots in its filename. Bind
+            // the fault to that filename, as the production setup connection does.
+            let index = open_read(&archive.index_db()).unwrap();
+            let filename = index.path().unwrap().to_owned();
+            drop(index);
             crate::fault::arm(
                 "index.additions_transition",
-                archive.index_db().to_str().unwrap(),
+                &filename,
                 crate::fault::Action::Fail,
                 0,
                 1,
