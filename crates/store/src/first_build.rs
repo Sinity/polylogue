@@ -4,7 +4,7 @@
 //! ([`crate::writer`]); inserting random keys into them rewrote pages all
 //! over each index in every transaction, which grew with the archive.
 //!
-//! A key maps to the row it was written as, through the first eight bytes of
+//! Message and event keys map to rows through the first eight bytes of
 //! a BLAKE3 hash of the key. Every row found this way is read back and
 //! compared with the key, so an entry left by a transaction that rolled back,
 //! a row deleted since, or two keys sharing those bytes never yield a wrong
@@ -13,15 +13,16 @@
 use crate::Result;
 use rusqlite::types::ValueRef;
 use rusqlite::{Connection, OptionalExtension};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
-use std::sync::RwLock;
+use std::ops::Deref;
+use std::sync::{Arc, RwLock};
 
 #[derive(Default)]
-pub(crate) struct FirstBuild {
+pub(crate) struct Keys {
     messages: RwLock<Rows>,
     events: RwLock<Rows>,
-    texts: RwLock<Rows>,
 }
 
 /// The rows a table's keys were written as, by key hash.
@@ -98,23 +99,18 @@ impl Rows {
     }
 }
 
-impl FirstBuild {
+impl Keys {
     pub(crate) fn load(index: &Connection) -> Result<Self> {
         let keys = Self::default();
         for (table, key, pk, rows) in [
             ("message", "id", "pk", &keys.messages),
             ("event", "id", "pk", &keys.events),
-            ("text", "hash", "id", &keys.texts),
         ] {
             let mut statement = index.prepare(&format!("SELECT {key},{pk} FROM {table}"))?;
             let mut values = statement.query([])?;
             while let Some(row) = values.next()? {
-                let hash = if table == "text" {
-                    text_key(&crate::encoding::Columns::hash(row, 0)?)
-                } else {
-                    let value: String = row.get(0)?;
-                    hash_of(value.as_bytes())
-                };
+                let value: String = row.get(0)?;
+                let hash = hash_of(value.as_bytes());
                 rows.write().expect("key map lock").add(hash, row.get(1)?);
             }
         }
@@ -152,27 +148,94 @@ impl FirstBuild {
             .expect("key map lock")
             .add(hash_of(id.as_bytes()), pk);
     }
+}
 
-    /// A text by its BLAKE3 hash, whose first bytes are already spread.
-    pub(crate) fn text(&self, conn: &Connection, hash: &[u8; 32]) -> Result<Option<i64>> {
-        self.texts.read().expect("key map lock").find(
-            conn,
-            "SELECT hash FROM text WHERE id = ?1",
-            text_key(hash),
-            hash,
-        )
-    }
+/// Message/event keys are shared with resolvers; text identities belong only
+/// to the serial writer and follow its index transaction.
+#[derive(Default)]
+pub(crate) struct FirstBuild {
+    pub keys: Arc<Keys>,
+    texts: RefCell<Option<HashMap<[u8; 32], i64>>>,
+}
 
-    pub(crate) fn add_text(&self, hash: &[u8; 32], id: i64) {
-        self.texts
-            .write()
-            .expect("key map lock")
-            .add(text_key(hash), id);
+impl Deref for FirstBuild {
+    type Target = Keys;
+    fn deref(&self) -> &Keys {
+        &self.keys
     }
 }
 
-fn text_key(hash: &[u8; 32]) -> u64 {
-    u64::from_le_bytes(hash[..8].try_into().expect("eight bytes"))
+impl FirstBuild {
+    pub(crate) fn load(index: &Connection) -> Result<Self> {
+        let first = Self {
+            keys: Arc::new(Keys::load(index)?),
+            texts: RefCell::new(None),
+        };
+        first.load_texts(index)?;
+        Ok(first)
+    }
+
+    fn load_texts(&self, conn: &Connection) -> Result<()> {
+        if self.texts.borrow().is_none() {
+            let mut statement = conn.prepare("SELECT hash,id FROM text")?;
+            let texts = statement
+                .query_map([], |r| {
+                    Ok((crate::encoding::Columns::hash(r, 0)?, r.get(1)?))
+                })?
+                .collect::<rusqlite::Result<HashMap<_, _>>>()?;
+            *self.texts.borrow_mut() = Some(texts);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn text(&self, conn: &Connection, hash: &[u8; 32]) -> Result<Option<i64>> {
+        self.load_texts(conn)?;
+        Ok(self
+            .texts
+            .borrow()
+            .as_ref()
+            .expect("loaded texts")
+            .get(hash)
+            .copied())
+    }
+
+    pub(crate) fn add_text(&self, hash: &[u8; 32], id: i64) {
+        if let Some(texts) = self.texts.borrow_mut().as_mut() {
+            texts.insert(*hash, id);
+        }
+    }
+
+    pub(crate) fn remove_text(&self, hash: &[u8; 32]) {
+        if let Some(texts) = self.texts.borrow_mut().as_mut() {
+            texts.remove(hash);
+        }
+    }
+
+    /// Discard mutations unless the owning index transaction commits. The
+    /// next lookup reloads after SQLite has rolled the failed transaction back.
+    pub(crate) fn text_transaction(&self) -> TextTransaction<'_> {
+        TextTransaction {
+            first: self,
+            committed: false,
+        }
+    }
+}
+
+pub(crate) struct TextTransaction<'a> {
+    first: &'a FirstBuild,
+    committed: bool,
+}
+impl TextTransaction<'_> {
+    pub(crate) fn commit(mut self) {
+        self.committed = true;
+    }
+}
+impl Drop for TextTransaction<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            *self.first.texts.borrow_mut() = None;
+        }
+    }
 }
 
 #[cfg(test)]

@@ -36,7 +36,7 @@ fn cleanup_steps(conn: &Connection) -> u64 {
         }),
     )
     .unwrap();
-    remove_unreferenced(conn, true).unwrap();
+    remove_unreferenced(conn, None).unwrap();
     conn.progress_handler(0, None::<fn() -> bool>).unwrap();
     steps.load(Ordering::Relaxed)
 }
@@ -235,7 +235,7 @@ fn removing_the_last_text_reference_and_its_cleanup_roll_back_together() {
             .unwrap(),
         1
     );
-    remove_unreferenced(&conn, true).unwrap();
+    remove_unreferenced(&conn, None).unwrap();
     assert_eq!(
         conn.query_row("SELECT count(*) FROM text", [], |r| r.get::<_, i64>(0))
             .unwrap(),
@@ -259,5 +259,59 @@ fn removing_the_last_text_reference_and_its_cleanup_roll_back_together() {
             .get::<_, i64>(0))
             .unwrap(),
         0
+    );
+}
+
+#[test]
+fn first_build_cleanup_retains_version_text_and_forgets_deleted_identity() {
+    let mut conn = database(0);
+    let first = FirstBuild::load(&conn).unwrap();
+    let hash = [17; 32];
+    let version = [18; 32];
+    let texts = first.text_transaction();
+    let tx = conn.transaction().unwrap();
+    let id = crate::text_rows::resolve(&tx, &hash, Some(b"kept"), Some(&first)).unwrap();
+    tx.execute(
+        "INSERT INTO message_version(version_hash,body) VALUES(?1,X'00')",
+        [version.as_slice()],
+    )
+    .unwrap();
+    tx.execute(
+        "INSERT INTO message_version_text(version_hash,idx,text_id) VALUES(?1,0,?2)",
+        params![version.as_slice(), id],
+    )
+    .unwrap();
+    tx.execute(
+        "INSERT INTO temp.unreferenced_text(text_id) VALUES(?1)",
+        [id],
+    )
+    .unwrap();
+    remove_unreferenced(&tx, Some(&first)).unwrap();
+    assert_eq!(
+        crate::text_rows::retained(&tx, &hash, Some(&first)).unwrap(),
+        id
+    );
+    tx.execute(
+        "DELETE FROM message_version WHERE version_hash=?1",
+        [version.as_slice()],
+    )
+    .unwrap();
+    remove_unreferenced(&tx, Some(&first)).unwrap();
+    assert!(crate::text_rows::retained(&tx, &hash, Some(&first)).is_err());
+    let replacement = crate::text_rows::resolve(&tx, &hash, Some(b"again"), Some(&first)).unwrap();
+    assert_eq!(
+        tx.query_row(
+            "SELECT count(*) FROM text WHERE id=?1 AND hash=?2",
+            params![replacement, hash.as_slice()],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    tx.commit().unwrap();
+    texts.commit();
+    assert_eq!(
+        crate::text_rows::retained(&conn, &hash, Some(&first)).unwrap(),
+        replacement
     );
 }

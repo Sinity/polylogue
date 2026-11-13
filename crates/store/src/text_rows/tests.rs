@@ -195,3 +195,55 @@ fn bulk_and_pending_searches_keep_ascii_unicode_and_search_kinds() {
         );
     }
 }
+
+#[test]
+fn first_build_texts_share_rows_without_sql_readback_or_prefix_aliasing() {
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+    let conn = Connection::open_in_memory().unwrap();
+    crate::schema::create_index(&conn).unwrap();
+    let first = FirstBuild::load(&conn).unwrap();
+    let one = [7; 32];
+    let mut two = one;
+    two[31] = 8;
+    let a = resolve(&conn, &one, Some(b"first"), Some(&first)).unwrap();
+    let b = resolve(&conn, &two, Some(b"second"), Some(&first)).unwrap();
+    assert_ne!(a, b);
+    // Both hits must use exact hashes in writer memory, even when the
+    // eight-byte prefixes are equal. SQLite refuses any text-table read.
+    conn.flush_prepared_statement_cache();
+    conn.authorizer(Some(|context: AuthContext<'_>| match context.action {
+        AuthAction::Read {
+            table_name: "text", ..
+        } => Authorization::Deny,
+        _ => Authorization::Allow,
+    }))
+    .unwrap();
+    assert_eq!(resolve(&conn, &one, None, Some(&first)).unwrap(), a);
+    assert_eq!(resolve(&conn, &two, None, Some(&first)).unwrap(), b);
+    assert!(resolve(&conn, &[9; 32], None, Some(&first)).is_err());
+}
+
+#[test]
+fn failed_text_transaction_reloads_after_rollback_and_row_reuse() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    crate::schema::create_index(&conn).unwrap();
+    let first = FirstBuild::load(&conn).unwrap();
+    let gone = [1; 32];
+    let kept = [2; 32];
+    let old;
+    {
+        let _texts = first.text_transaction();
+        let tx = conn.transaction().unwrap();
+        old = resolve(&tx, &gone, Some(b"rolled back"), Some(&first)).unwrap();
+        // The transaction and its text-map changes are both discarded.
+    }
+    let texts = first.text_transaction();
+    let tx = conn.transaction().unwrap();
+    let new = resolve(&tx, &kept, Some(b"committed"), Some(&first)).unwrap();
+    assert_eq!(old, new);
+    assert!(resolve(&tx, &gone, None, Some(&first)).is_err());
+    tx.commit().unwrap();
+    texts.commit();
+    assert_eq!(retained(&conn, &kept, Some(&first)).unwrap(), new);
+    assert_eq!(count(&conn, "SELECT count(*) FROM text"), 1);
+}

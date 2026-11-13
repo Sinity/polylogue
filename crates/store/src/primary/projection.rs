@@ -1066,7 +1066,7 @@ pub(crate) fn apply(
         for session in touched {
             changes.whole_session(session);
         }
-        crate::writer::finish_rows(&tx, &changes, false)?;
+        crate::writer::finish_rows(&tx, &changes, None)?;
         crate::fault::check("primary.before_commit", "")?;
         tx.commit()?;
         drop(plan);

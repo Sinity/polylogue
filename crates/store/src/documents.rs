@@ -54,7 +54,6 @@ pub(crate) fn write(
         crate::versions::TextRows {
             packed: source.packed,
             first_build: source.first_build,
-            keys,
         },
     )?;
     let pk = match existing {
@@ -173,12 +172,7 @@ fn insert_blocks(
     {
         let text = prepared.texts[idx]
             .as_ref()
-            .map(|hash| {
-                source
-                    .keys
-                    .get(crate::writer::resolve::Kind::Text, hash)
-                    .map(|key| key.pk)
-            })
+            .map(|hash| crate::text_rows::retained(tx, hash, source.first_build))
             .transpose()?;
         if let Some(id) = text {
             crate::text_rows::activate(tx, id, 1, source.first_build.is_some())?;

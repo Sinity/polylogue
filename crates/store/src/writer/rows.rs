@@ -190,7 +190,6 @@ fn apply_rows(
             crate::versions::TextRows {
                 packed: &p.prepared.texts,
                 first_build,
-                keys,
             },
             version.replace,
             version.admitted.or(native_admission),
@@ -570,13 +569,13 @@ fn apply_rows(
 pub(crate) fn finish(
     tx: &Transaction<'_>,
     changes: &ChangeSummary,
-    first_build: bool,
+    first_build: Option<&FirstBuild>,
 ) -> Result<u64> {
     changes.finish_links(tx)?;
     let read = crate::items::refresh(tx, changes)?;
     crate::session_values::refresh(tx, changes)?;
     // A first build derives every session once, when it ends.
-    if !first_build {
+    if first_build.is_none() {
         let sessions = changes.sessions(tx)?;
         crate::derive::links::fold(tx, &sessions)?;
         crate::measure::time::forget_settled(tx, changes, &sessions)?;
@@ -1330,7 +1329,7 @@ impl RowWriter<'_, '_> {
         {
             let text_id = prepared.texts[idx]
                 .as_ref()
-                .map(|hash| self.keys.get(resolve::Kind::Text, hash).map(|key| key.pk))
+                .map(|hash| crate::text_rows::retained(self.tx, hash, self.first_build))
                 .transpose()?;
             let stored = StoredBlock {
                 body,

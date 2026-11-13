@@ -681,6 +681,10 @@ impl Inner {
             return Ok(0);
         }
         reader.rewind()?;
+        let text_transaction = self
+            .first_build
+            .as_ref()
+            .map(|first| first.text_transaction());
         let tx = self
             .index
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -734,7 +738,7 @@ impl Inner {
                 &step,
                 &resolution,
                 counter,
-                self.first_build.as_deref(),
+                self.first_build.as_ref(),
                 Some(&receipt),
                 &changes,
             )?;
@@ -745,11 +749,14 @@ impl Inner {
             ));
         }
         rows::prune_sessions(&tx, &batch.input.id, chain, counter)?;
-        self.report.item_units_read += rows::finish(&tx, &changes, self.first_build.is_some())?;
+        self.report.item_units_read += rows::finish(&tx, &changes, self.first_build.as_ref())?;
         batch.parse.clear();
         crate::fault::check("write.index_commit", "")?;
         crate::fault::check("reparse.commit", &batch.input.id)?;
         crate::timing::time(crate::timing::Stage::Commit, || tx.commit())?;
+        if let Some(text_transaction) = text_transaction {
+            text_transaction.commit();
+        }
         self.commits
             .committed(crate::completion::Committed::CONTENT);
         self.search.wake();

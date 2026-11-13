@@ -176,7 +176,11 @@ Building the archive overlaps every stage:
   once, so the inputs a pass has started finish before it starts more, and
   the parser state kept between an input's ranges leaves out the keyed
   context's changes, which the next range reads from the index;
-- one writer that only appends and commits;
+- one writer that resolves text hashes to row identities, appends and commits;
+  first builds keep exact text hashes in writer-owned memory. Text insertions
+  and removals follow the index transaction; after a failed transaction the
+  writer reloads that map before using it again. Workers prepare text hashes
+  and packed bodies without reserving text rows;
 - consumers of committed positions: derived data (computed on a thread of
   its own and written by the writer only if its inputs are unchanged), the
   request-log projection and the completion catalog;

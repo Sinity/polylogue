@@ -141,13 +141,13 @@ fn repeated_source_upserts_keep_context_bodies_until_the_context_goes() {
                     [hash],
                 ).unwrap();
         }
-        crate::versions::remove_unreferenced(&conn, false).unwrap();
+        crate::versions::remove_unreferenced(&conn, None).unwrap();
         assert_eq!(snapshot(&conn), retained);
         assert_eq!(versions(&conn), ["01", "02"]);
         // Releasing the context leaves the earlier body without references.
         conn.execute_batch("DELETE FROM parser_context; DELETE FROM parser_context_state;")
             .unwrap();
-        crate::versions::remove_unreferenced(&conn, false).unwrap();
+        crate::versions::remove_unreferenced(&conn, None).unwrap();
         assert_eq!(versions(&conn), ["02"]);
         assert_eq!(
             conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {

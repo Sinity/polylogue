@@ -462,14 +462,18 @@ impl Writer {
         };
         crate::chain_progress::open(&index, !archive.is_primary())?;
         let first_build = building
-            .then(|| crate::first_build::FirstBuild::load(&index).map(Arc::new))
+            .then(|| crate::first_build::FirstBuild::load(&index))
             .transpose()?;
         let segment = if sinex.is_none() {
             Some(crate::blobs::open_writer(&archive_conn, &archive.root)?)
         } else {
             None
         };
-        let resolver = resolve::Resolver::new(archive, &index, first_build.clone())?;
+        let resolver = resolve::Resolver::new(
+            archive,
+            &index,
+            first_build.as_ref().map(|first| Arc::clone(&first.keys)),
+        )?;
         let stream_source = sinex.clone();
         let commits = crate::completion::CommitEvents::default();
         #[cfg(any(test, feature = "fixture"))]
@@ -1214,7 +1218,7 @@ struct Inner {
     report: WriteReport,
     /// Set while the index is being built from nothing, without syncs
     /// ([`Writer::start`]).
-    first_build: Option<Arc<crate::first_build::FirstBuild>>,
+    first_build: Option<crate::first_build::FirstBuild>,
     /// Secondary indexes dropped for a first build, recreated when it ends.
     deferred_indexes: Vec<String>,
     /// User requests, served between the writer's transactions.
@@ -2177,6 +2181,10 @@ impl Inner {
         }
 
         let indexed = batches.collect::<Vec<_>>();
+        let text_transaction = self
+            .first_build
+            .as_ref()
+            .map(|first| first.text_transaction());
         let itx = self
             .index
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -2208,7 +2216,7 @@ impl Inner {
                         p,
                         resolution,
                         counter,
-                        self.first_build.as_deref(),
+                        self.first_build.as_ref(),
                         Some(&receipt),
                         &changes,
                     )?;
@@ -2219,11 +2227,14 @@ impl Inner {
             }
             stats.0 += 1;
         }
-        self.report.item_units_read += rows::finish(&itx, &changes, self.first_build.is_some())?;
+        self.report.item_units_read += rows::finish(&itx, &changes, self.first_build.as_ref())?;
         let source_changed = crate::chain_progress::recorded(&self.archive)?;
         crate::chain_progress::refresh(&itx, &source_changed)?;
         crate::fault::check("write.index_commit", "")?;
         itx.commit()?;
+        if let Some(text_transaction) = text_transaction {
+            text_transaction.commit();
+        }
         crate::chain_progress::forget(&self.archive, &source_changed)?;
         self.commits
             .committed(crate::completion::Committed::CONTENT);
