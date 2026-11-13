@@ -125,12 +125,13 @@ impl Inner {
     ) -> Result<crate::primary::projection::Step> {
         let before = crate::primary::projection::checkpoint(&self.index)?;
         let result = crate::primary::projection::apply_prepared(&mut self.index, prepared);
+        // An earlier atomic application of this staged page may already have
+        // committed. A later failure must remain visible even if this step
+        // itself made no progress.
+        if let Err(error) = &result {
+            self.stream_followed(Some(error.to_string()));
+        }
         if crate::primary::projection::checkpoint(&self.index)? != before {
-            // A later complete position can fail after earlier positions committed.
-            // Make that failure observable before notifying their real progress.
-            if let Err(error) = &result {
-                self.stream_followed(Some(error.to_string()));
-            }
             self.commits.committed(kinds);
             self.search.wake();
             self.report.transactions += 1;
@@ -354,24 +355,32 @@ pub(super) fn validate_primary_reading(index: &Connection, batch: &Batch) -> Res
 
 impl WriterQueue {
     pub(super) fn apply_confirmed(&self, events: Vec<crate::primary::Confirmed>) -> Result<i64> {
-        let kinds = confirmed_kinds(&events);
-        let (reply, wait) = sync_channel(1);
-        self.send(Msg::StageConfirmed(events, reply))
-            .map_err(|_| StoreError::WriterGone)?;
-        let mut step = wait.recv().map_err(|_| StoreError::WriterGone)??;
-        loop {
-            match step {
-                crate::primary::projection::Step::Complete(position) => return Ok(position),
-                crate::primary::projection::Step::Prepare(mut prepared) => {
-                    // Ordinary queued groups can hold these leases. Waiting here
-                    // leaves the serial writer free to commit or reject them.
-                    prepare_source_retractions(&self.resolver, &mut prepared.retractions)?;
-                    let (reply, wait) = sync_channel(1);
-                    self.send(Msg::ApplyConfirmed(prepared, kinds, reply))
-                        .map_err(|_| StoreError::WriterGone)?;
-                    step = wait.recv().map_err(|_| StoreError::WriterGone)??;
+        let result = (|| {
+            let kinds = confirmed_kinds(&events);
+            let (reply, wait) = sync_channel(1);
+            self.send(Msg::StageConfirmed(events, reply))
+                .map_err(|_| StoreError::WriterGone)?;
+            let mut step = wait.recv().map_err(|_| StoreError::WriterGone)??;
+            loop {
+                match step {
+                    crate::primary::projection::Step::Complete(position) => return Ok(position),
+                    crate::primary::projection::Step::Prepare(mut prepared) => {
+                        // Ordinary queued groups can hold these leases. Waiting here
+                        // leaves the serial writer free to commit or reject them.
+                        prepare_source_retractions(&self.resolver, &mut prepared.retractions)?;
+                        let (reply, wait) = sync_channel(1);
+                        self.send(Msg::ApplyConfirmed(prepared, kinds, reply))
+                            .map_err(|_| StoreError::WriterGone)?;
+                        step = wait.recv().map_err(|_| StoreError::WriterGone)??;
+                    }
                 }
             }
+        })();
+        if let Err(error) = &result {
+            // Staging or off-writer resolution can also fail after a preceding
+            // position committed. Use the same serialized stream error owner.
+            let _ = self.send(Msg::StreamFollowed(Some(error.to_string())));
         }
+        result
     }
 }
