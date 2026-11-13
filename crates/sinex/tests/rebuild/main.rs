@@ -175,10 +175,11 @@ fn confirm_capture(
     failure: impl Fn() -> String,
 ) -> polylogue_engine::Pass {
     let (archive, sinex, running) = context;
+    let mut last_pass = String::from("no pass completed");
     loop {
         assert!(
             started.elapsed() < Duration::from_secs(120),
-            "native capture/replay did not reach confirmed application: {}; {}",
+            "native capture/replay did not reach confirmed application: last pass {last_pass}; {}; {}",
             failure(),
             running.evidence(sinex, archive)
         );
@@ -197,28 +198,36 @@ fn confirm_capture(
             })();
         let interrupted = match result {
             Ok((true, pass)) => return pass,
-            Ok((false, _)) => false,
+            Ok((false, pass)) => {
+                last_pass = format!("{pass:?}");
+                false
+            }
             Err(polylogue_engine::EngineError::Store(
                 polylogue_store::StoreError::ScopeChanged,
-            )) => true,
+            )) => {
+                last_pass = "scope interrupted".into();
+                true
+            }
             Err(error) => panic!(
                 "native capture/replay failed: {error}; {}",
                 running.evidence(sinex, archive)
             ),
         };
         let remaining = Duration::from_secs(120).saturating_sub(started.elapsed());
-        // A failed reset intentionally emits no commit cue. Retain the old
-        // replay-readiness tick while fenced, so its queued error is observed.
-        let wait = if interrupted {
-            remaining.min(Duration::from_millis(200))
+        // Repeat-only ACKs need no new native or SQLite commit. Match the
+        // ordinary engine loop's retry interval; a failed reset also needs
+        // its existing readiness tick while reads are fenced.
+        let every = if interrupted {
+            engine.config.live_every.min(Duration::from_millis(200))
         } else {
-            remaining
+            engine.config.live_every
         };
+        let wait = remaining.min(every);
         match commits.recv_timeout(wait) {
             Ok(_) => {}
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) if interrupted => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             Err(error) => panic!(
-                "native capture/replay wait: {error}; {}; {}",
+                "native capture/replay wait: {error}; last pass {last_pass}; {}; {}",
                 failure(),
                 running.evidence(sinex, archive)
             ),
@@ -649,7 +658,8 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
 
     let running = sinex(home.dir.path());
     let sdk = connect(&running.config);
-    let build = |source_home: &Path, wanted: &[polylogue_model::Message]| {
+    let build = |phase: &str, source_home: &Path, wanted: &[polylogue_model::Message]| {
+        eprintln!("original reconstruction: {phase}");
         let observed_length = (source_home == home.home).then(|| {
             fs::metadata(home.file("original-session.jsonl"))
                 .unwrap()
@@ -708,7 +718,9 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
                 let progress = ReadPool::open(&archive).and_then(|pool| pool.reader()?.query(
                     "SELECT i.id,p.chain,p.status,p.parsed_upto,p.at_length,p.reading_version FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk", &[],
                 ));
-                format!("expected {wanted:?}; actual {actual:?}; parser progress {progress:?}")
+                format!(
+                    "phase {phase}; expected {wanted:?}; actual {actual:?}; parser progress {progress:?}"
+                )
             },
         );
         engine.writer().unwrap().derive().unwrap();
@@ -716,7 +728,7 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
         drop(lock);
         archive
     };
-    let initial = build(&home.home, &expected_messages);
+    let initial = build("initial capture", &home.home, &expected_messages);
     let source_revision = |archive: &Archive| {
         ReadPool::open(archive).unwrap().reader().unwrap().query(
             "SELECT r.number,r.chain,r.produced,r.length FROM source_revision r JOIN input_ref i ON i.id=r.input WHERE i.format='claude-code' ORDER BY r.number DESC LIMIT 1", &[],
@@ -743,7 +755,7 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
             .unwrap()
             .messages(&session, false)
             .unwrap();
-        let appended = build(&home.home, &expected_messages);
+        let appended = build("append", &home.home, &expected_messages);
         let revision = source_revision(&appended);
         assert_eq!(revision["chain"], initial["chain"]);
         assert_eq!(revision["produced"], "appended");
@@ -760,7 +772,7 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
     // The original incomplete record remains available; no message or false
     // end-of-input conclusion can be manufactured from its missing bytes.
     home.append("original-session.jsonl", "{\"type\":\"assistant\"");
-    let archive = build(&home.home, &expected_messages);
+    let archive = build("incomplete original", &home.home, &expected_messages);
     let partial_revision = source_revision(&archive);
     assert_eq!(partial_revision["chain"], initial["chain"]);
     assert_eq!(partial_revision["produced"], "appended");
@@ -846,7 +858,7 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
     fs::remove_dir_all(&home.root).unwrap();
     let empty = home.dir.path().join("empty-home");
     fs::create_dir(&empty).unwrap();
-    let rebuilt = build(&empty, &expected_messages);
+    let rebuilt = build("independent SQLite rebuild", &empty, &expected_messages);
     let after = ReadPool::open(&rebuilt)
         .unwrap()
         .reader()
@@ -883,7 +895,7 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
         .filter(|message| message.id.to_string() != "claude-code:assistant-1")
         .cloned()
         .collect();
-    let hidden = build(&empty, &remaining);
+    let hidden = build("archive AI reading", &empty, &remaining);
     assert_eq!(
         ReadPool::open(&hidden)
             .unwrap()
@@ -899,7 +911,7 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
         serde_json::json!({"method":"restore", "target":target}),
     );
     assert_eq!(restored["outcome"], "ok", "{restored}");
-    let restored = build(&empty, &expected_messages);
+    let restored = build("restore AI reading", &empty, &expected_messages);
     assert_eq!(
         ReadPool::open(&restored)
             .unwrap()
@@ -932,7 +944,7 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
         .unwrap()
         .messages(&session, false)
         .unwrap();
-    let rewritten = build(&home.home, &expected_messages);
+    let rewritten = build("rewrite", &home.home, &expected_messages);
     let pool = ReadPool::open(&rewritten).unwrap();
     let reader = pool.reader().unwrap();
     assert_eq!(reader.messages(&session, false).unwrap(), expected_messages);
