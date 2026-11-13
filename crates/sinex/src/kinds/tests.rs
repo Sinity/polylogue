@@ -372,3 +372,33 @@ fn an_input_payload_at_an_earlier_kind_version_is_refused() {
         product
     );
 }
+
+#[test]
+fn current_declarations_preserve_every_retained_source7_kind_version() {
+    let old: sinex_model::SourceDeclaration =
+        serde_json::from_str(include_str!("../../tests/rebuild/source7.json")).unwrap();
+    let mut changed = Vec::new();
+    for current in declarations("polylogue") {
+        if let Some(previous) = old
+            .kinds
+            .iter()
+            .find(|previous| previous.kind == current.kind)
+            && previous.definition_hash() != current.definition_hash()
+        {
+            let previous = serde_json::to_value(previous).unwrap();
+            let current = serde_json::to_value(&current).unwrap();
+            let fields = current
+                .as_object()
+                .unwrap()
+                .iter()
+                .filter(|(key, value)| previous.get(*key) != Some(*value))
+                .map(|(key, _)| key.clone())
+                .collect::<Vec<_>>();
+            changed.push((current["kind"].clone(), fields));
+        }
+    }
+    assert!(
+        changed.is_empty(),
+        "immutable declaration changes: {changed:?}"
+    );
+}
