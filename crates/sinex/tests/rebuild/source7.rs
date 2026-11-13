@@ -288,6 +288,8 @@ fn adoption(partial: bool) {
         parts.push(("{\"type\":\"assistant\"", None));
     }
     let (input, length, originals) = admit_originals(&running, &parts);
+    let old_identity = running.native.sql("SELECT id::text||':'||record_hash FROM core.events WHERE event_type='polylogue.message' AND kind_version=6 ORDER BY id");
+    assert!(!old_identity.trim().is_empty());
     let sdk = connect(&running.config);
     assert_eq!(
         sinex_rows(
@@ -353,8 +355,10 @@ fn adoption(partial: bool) {
         ),
         1
     );
-    assert_eq!(running.native.sql("SELECT count(*) FROM core.events WHERE event_type='polylogue.message' AND kind_version=8 AND source_version=8").trim(),"1");
-    assert_eq!(running.native.sql("SELECT count(*) FROM core.events WHERE event_type='polylogue.message' AND kind_version=6").trim(),"0");
+    assert_eq!(running.native.sql("SELECT count(*) FROM core.events e WHERE event_type='polylogue.message' AND kind_version=8 AND source_version=8 AND NOT EXISTS(SELECT 1 FROM audit.archived a WHERE a.event_id=e.id)").trim(),"1");
+    assert_eq!(running.native.sql("SELECT count(*) FROM core.events e WHERE event_type='polylogue.message' AND kind_version=6 AND NOT EXISTS(SELECT 1 FROM audit.archived a WHERE a.event_id=e.id)").trim(),"0");
+    assert_eq!(running.native.sql("SELECT id::text||':'||record_hash FROM core.events WHERE event_type='polylogue.message' AND kind_version=6 ORDER BY id"),old_identity);
+    assert_eq!(running.native.sql("SELECT e.id::text||':'||e.record_hash FROM core.events e JOIN audit.archived a ON a.event_id=e.id WHERE e.event_type='polylogue.message' AND e.kind_version=6 ORDER BY e.id"),old_identity);
     assert_eq!(running.native.sql("SELECT count(*) FROM core.ingress_frames WHERE frame LIKE 'source7-material-%' AND source_name='polylogue' AND source_version=7 AND material_id IS NOT NULL").trim(),parts.len().to_string());
     assert_eq!(running.native.sql("SELECT fingerprint FROM registry.source_declarations WHERE name='polylogue' AND version=7").trim(),declaration().fingerprint());
 }
