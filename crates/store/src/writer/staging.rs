@@ -143,77 +143,85 @@ impl Inner {
             Ok(None) => {}
             Err(error) => return errors(&group, error),
         }
-        let files = group
-            .iter_mut()
-            .flat_map(|item| item.files.drain(..))
-            .collect::<Vec<_>>();
-        let synced = if !files.is_empty() {
-            if self.segment.is_none() {
-                match crate::blobs::open_writer(&self.archive, &self.location.root) {
-                    Ok(writer) => self.segment = Some(writer),
-                    Err(error) => return errors(&group, error),
-                }
-            }
-            let writer = self.segment.as_mut().expect("opened segment writer");
-            let prepared = files.into_iter().map(PreparedBytes::into_prepared);
-            let appended = writer.append_group(prepared, |hash| {
-                crate::blobs::load_extent(&self.archive, "", hash)
-                    .map_err(|error| hashed_blobs::Error::Io(std::io::Error::other(error)))
-            });
-            let pending = match appended {
-                Ok(pending) => pending,
-                Err(error) => {
-                    self.segment.take();
-                    return errors(&group, error.into());
-                }
-            };
-            if let Err(error) = crate::fault::check("segment.after_append", "") {
-                self.segment.take();
-                return errors(&group, error);
-            }
-            let synced = match pending.wait() {
-                Ok(synced) => synced,
-                Err(error) => {
-                    self.segment.take();
-                    return errors(&group, error.into());
-                }
-            };
-            if let Err(error) = crate::fault::check("segment.after_sync", "") {
-                self.segment.take();
-                return errors(&group, error);
-            }
-            Some(synced)
-        } else {
-            None
-        };
-        let stored = match self.write_rows_first(&mut group, synced.as_ref()) {
+        let stored = if let Some(stored) = match stored_readings(&self.archive, &group) {
             Ok(stored) => stored,
-            Err(error) => {
-                if synced.is_some() {
-                    self.segment.take();
+            Err(error) => return errors(&group, error),
+        } {
+            stored
+        } else {
+            let files = group
+                .iter_mut()
+                .flat_map(|item| item.files.drain(..))
+                .collect::<Vec<_>>();
+            let synced = if !files.is_empty() {
+                if self.segment.is_none() {
+                    match crate::blobs::open_writer(&self.archive, &self.location.root) {
+                        Ok(writer) => self.segment = Some(writer),
+                        Err(error) => return errors(&group, error),
+                    }
                 }
-                return errors(&group, error);
+                let writer = self.segment.as_mut().expect("opened segment writer");
+                let prepared = files.into_iter().map(PreparedBytes::into_prepared);
+                let appended = writer.append_group(prepared, |hash| {
+                    crate::blobs::load_extent(&self.archive, "", hash)
+                        .map_err(|error| hashed_blobs::Error::Io(std::io::Error::other(error)))
+                });
+                let pending = match appended {
+                    Ok(pending) => pending,
+                    Err(error) => {
+                        self.segment.take();
+                        return errors(&group, error.into());
+                    }
+                };
+                if let Err(error) = crate::fault::check("segment.after_append", "") {
+                    self.segment.take();
+                    return errors(&group, error);
+                }
+                let synced = match pending.wait() {
+                    Ok(synced) => synced,
+                    Err(error) => {
+                        self.segment.take();
+                        return errors(&group, error.into());
+                    }
+                };
+                if let Err(error) = crate::fault::check("segment.after_sync", "") {
+                    self.segment.take();
+                    return errors(&group, error);
+                }
+                Some(synced)
+            } else {
+                None
+            };
+            let stored = match self.write_rows_first(&mut group, synced.as_ref()) {
+                Ok(stored) => stored,
+                Err(error) => {
+                    if synced.is_some() {
+                        self.segment.take();
+                    }
+                    return errors(&group, error);
+                }
+            };
+            if let Some(synced) = synced {
+                if let Err(error) = crate::fault::check("segment.after_commit", "") {
+                    self.segment.take();
+                    return errors(&group, error);
+                }
+                self.report.segment_syncs += synced.metrics.syncs;
+                self.report.segment_bytes_written += synced.metrics.appended_bytes;
+                self.report.blobs_appended += synced.metrics.appended_materials;
+                self.report.blobs_deduplicated += synced.metrics.deduplicated_materials;
+                if let Err(error) = self
+                    .segment
+                    .as_mut()
+                    .expect("appended writer")
+                    .acknowledge(&synced)
+                {
+                    self.segment.take();
+                    return errors(&group, error.into());
+                }
             }
+            stored
         };
-        if let Some(synced) = synced {
-            if let Err(error) = crate::fault::check("segment.after_commit", "") {
-                self.segment.take();
-                return errors(&group, error);
-            }
-            self.report.segment_syncs += synced.metrics.syncs;
-            self.report.segment_bytes_written += synced.metrics.appended_bytes;
-            self.report.blobs_appended += synced.metrics.appended_materials;
-            self.report.blobs_deduplicated += synced.metrics.deduplicated_materials;
-            if let Err(error) = self
-                .segment
-                .as_mut()
-                .expect("appended writer")
-                .acknowledge(&synced)
-            {
-                self.segment.take();
-                return errors(&group, error.into());
-            }
-        }
         let mut parsed = Vec::new();
         for (position, (mut item, stored)) in group.into_iter().zip(&stored).enumerate() {
             if !item.batch.parse.is_empty() {
@@ -452,6 +460,38 @@ impl Inner {
         }
         Ok(())
     }
+}
+
+/// A retained reading with no new custody has only index effects. The
+/// standalone archive lock keeps its immutable chain available through the write.
+fn stored_readings(
+    archive: &Connection,
+    group: &[PreparedBatch],
+) -> Result<Option<Vec<StoredInput>>> {
+    if !group.iter().all(|item| {
+        replayed_input(&item.batch)
+            && item.files.is_empty()
+            && item.batch.blobs.is_empty()
+            && item.batch.acquisition.is_none()
+            && item.batch.basis.is_none()
+            && item.batch.required_disposition.is_none()
+    }) {
+        return Ok(None);
+    }
+    group
+        .iter()
+        .map(|item| {
+            let b = &item.batch;
+            Ok(StoredInput {
+                input: b.input.id.clone(),
+                chain: stored_reading_chain(archive, b)?,
+                length: b.length,
+                already_stored: true,
+                bytes_written: 0,
+            })
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(Some)
 }
 
 fn errors(group: &[PreparedBatch], error: StoreError) -> Vec<Result<StoredInput>> {

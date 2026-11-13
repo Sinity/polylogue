@@ -2204,7 +2204,18 @@ impl Inner {
                 }
             }
         }
+        let mut chains = Vec::new();
         if parsed_only {
+            for batch in batches.clone() {
+                let Change::Reparse { chain } = batch.change else {
+                    unreachable!()
+                };
+                chains.push(Some(if primary {
+                    chain
+                } else {
+                    stored_reading_chain(&self.archive, batch)?
+                }));
+            }
             let mut has_step = false;
             let mut all_replayed = true;
             'batches: for batch in batches.clone() {
@@ -2231,15 +2242,7 @@ impl Inner {
                 return Ok(());
             }
         }
-        let mut chains = Vec::new();
-        if parsed_only {
-            for batch in batches.clone() {
-                let Change::Reparse { chain } = batch.change else {
-                    unreachable!()
-                };
-                chains.push(Some(chain));
-            }
-        } else {
+        if !parsed_only {
             let atx = self.archive.transaction()?;
             let seq = bump_counter(&atx)?;
             for batch in batches.clone() {

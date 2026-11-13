@@ -17,19 +17,8 @@ pub(super) fn write_bytes(
     for part in b.blobs.iter().flat_map(NewBlob::parts) {
         insert_blob(tx, part)?;
     }
-    if let Change::Reparse { chain } = b.change {
-        if b.new_blob.is_some()
-            || !tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM revision WHERE input=?1 AND chain=?2 AND length>=?3)",
-                params![b.input.id, chain, b.length as i64],
-                |r| r.get::<_, bool>(0),
-            )?
-        {
-            return Err(StoreError::Invalid(
-                "a reparse must name stored bytes".into(),
-            ));
-        }
-        return Ok((Some(chain), None));
+    if matches!(b.change, Change::Reparse { .. }) {
+        return Ok((Some(stored_reading_chain(tx, b)?), None));
     }
     let (chain, rows) = input_rows(tx, b, seq)?;
     for part in b.new_blob.iter().flat_map(NewBlob::parts) {
@@ -37,6 +26,42 @@ pub(super) fn write_bytes(
     }
     rows.insert(tx, seq)?;
     Ok((chain, Some(rows)))
+}
+
+// A chain only grows. Seek the latest revision first so ordinary replay of
+// a long append history does not revisit that history for every parsed chunk.
+// Older chains keep their original existence check, including sparse inputs.
+pub(super) fn stored_reading_chain(conn: &Connection, batch: &Batch) -> Result<i64> {
+    let Change::Reparse { chain } = batch.change else {
+        return Err(StoreError::Invalid(
+            "a stored reading must name its chain".into(),
+        ));
+    };
+    let length = i64::try_from(batch.length)
+        .map_err(|_| StoreError::Invalid("input exceeds archive address space".into()))?;
+    let latest: Option<(i64, i64)> = conn
+        .prepare_cached(
+            "SELECT chain,length FROM revision WHERE input=?1 ORDER BY number DESC LIMIT 1",
+        )?
+        .query_row([&batch.input.id], |row| Ok((row.get(0)?, row.get(1)?)))
+        .optional()?;
+    let stored = match latest {
+        Some((latest_chain, stored_length)) if latest_chain == chain => stored_length >= length,
+        Some(_) => conn
+            .prepare_cached(
+                "SELECT EXISTS(SELECT 1 FROM revision WHERE input=?1 AND chain=?2 AND length>=?3)",
+            )?
+            .query_row(params![batch.input.id, chain, length], |row| {
+                row.get::<_, bool>(0)
+            })?,
+        None => false,
+    };
+    if batch.new_blob.is_some() || !stored {
+        return Err(StoreError::Invalid(
+            "a reparse must name stored bytes".into(),
+        ));
+    }
+    Ok(chain)
 }
 
 /// What one step of an input adds to the register, from the input's latest

@@ -22,6 +22,7 @@ mod scoped;
 mod session_order;
 mod sparse_projection;
 mod stopping;
+mod stored_replay;
 mod tool_durations;
 mod written_text;
 
