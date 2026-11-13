@@ -38,18 +38,21 @@ Polylogue keeps every input and every reading of it; the deletion stance is stat
 ## Evolution
 
 - **One baseline.** The segment format and the index schema reset once to version 1, with the earlier migrations collapsed; the live archive's inputs, authored state and vectors are kept across that reset. An archive written before the baseline is a declared older input format, imported once into a fresh archive with `polylogue import --from-archive PATH` ([capture.md](capture.md#an-archive-from-before-the-baseline)), never migrated in place.
-- **Current durable format.** Register version 2 makes assertion creation time
-  nullable and records physical authored-import memberships separately. At
-  exclusive archive open, the exact version-1 predecessor is converted in one
-  transaction: every row, row identity, recorded timestamp and reference is
-  retained. The source register and its WAL are preserved before a live
-  transition. Rollback leaves the predecessor intact; another open of version
-  2 changes nothing. This constraint relaxation does not change standalone
-  derived-index declarations, provider reading versions, cursors or raw storage.
-  Other schema mismatches remain refused; there is one current reader.
+- **Current durable format.** Register version 3 uses canonical authored-request
+  digests. At exclusive archive open, versions 1 and 2 convert in one transaction.
+  Each stored digest must match either the current canonical encoding or the
+  exact predecessor encoding before it changes. A mismatched request identity,
+  malformed body or unrecognized digest refuses the conversion and rolls the
+  transaction back. Packed request, outcome and effect bytes, IDs, timestamps,
+  references and commit positions are unchanged. Pending requests receive the
+  same validation without requiring a completed outcome. Version 1 also gains
+  nullable assertion creation time and physical import memberships. The source
+  register and WAL are preserved before a live transition. Reopening version 3
+  does not repeat conversion. Standalone index declarations, reading versions,
+  cursors and original storage do not change.
 
-- **One current format.** New stores use register version 2, standalone index version 1 and primary cache version 2. Ordinary open recognizes the exact declared predecessors and converts them transactionally to the current declarations; it keeps no alternate reader. A reading-version change re-parses exactly the chains it affects ([Parsing](#parsing)).
-- **Primary cache2 reads original materials.** Its native fact metadata binds the material location, owner record hash and local publication receipt. The exact public primary Index1 declarations are recognized at exclusive open and set aside intact; the current cache is reconstructed from Sinex originals. An already matching original-material schema retains its rows, generation and cursors when its format number advances. Unknown primary shapes are refused. Retained cache files are removed only after the native head and every stored chain's admitted local progress have settled, including exact-length waiting or a recorded stopped attempt. Missing progress or unresolved native evidence retains the old bytes. `embeddings.db` and the Sinex-owned producer spool are separate stores and are never set aside by this transition.
+- **One current format.** New stores use register version 3, standalone index version 1 and primary cache version 3. Ordinary open recognizes the exact declared predecessors and converts them transactionally to the current declarations; it keeps no alternate reader. A reading-version change re-parses exactly the chains it affects ([Parsing](#parsing)).
+- **Primary cache3 reads original materials.** Its native fact metadata binds the material location, owner record hash and local publication receipt. The exact public primary Index1 declarations are recognized at exclusive open and set aside intact; the current cache is reconstructed from Sinex originals. An already matching original-material schema retains its rows, generation and cursors when its format number advances; cache versions 1 and 2 with these declarations validate and canonicalize their authored-request digests in the same transaction. Unknown digests refuse unchanged. Unknown primary shapes are refused. Retained cache files are removed only after the native head and every stored chain's admitted local progress have settled, including exact-length waiting or a recorded stopped attempt. Missing progress or unresolved native evidence retains the old bytes. `embeddings.db` and the Sinex-owned producer spool are separate stores and are never set aside by this transition.
 - **`embeddings.db` gains tables in place.** It holds paid vectors, so it is never set aside or rebuilt. Its schema is the vectors and failures tables followed by an ordered list of added tables (with their indexes and triggers); a schema change appends one to the list and never edits a released one. At open, a file whose tables, indexes and triggers are those of the base and an earlier part of that list gains the rest in one transaction; the vectors table and its rows are never rewritten. Any other schema, a change to an existing table included, is refused (exit 78) with what differs from the nearest schema a build created, and the file is left as it was; such a change needs its own written plan.
 - **Declared Index1 additions preserve progress.** An index with the exact declarations before structural lineage gains the current lineage projection and queue column in one transaction. Existing queue flags and row identities are retained; sessions are queued for the ordinary lineage derivation. A primary index with the exact earlier authored namespace also gains nullable assertion time and physical import memberships. Parsed bodies, row identities, generation, cursor key and parser checkpoints remain unchanged, with no provider re-parse. Already-current indexes are unchanged. An unknown Index1 shape is refused without replacement. An index at another format version or without the Polylogue format identity follows the declared rebuild path ([operations.md](operations.md#replacing-an-index-from-another-schema)).
 

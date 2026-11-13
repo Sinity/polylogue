@@ -387,7 +387,7 @@ fn ordinary_open_keeps_originals_vectors_and_progress_across_separate_atomic_tra
         let (archive, lock) = if fail {
             assert!(first.is_err());
             let source = open_read(&archive.archive_db()).unwrap();
-            assert_eq!(version(&source).unwrap(), 2);
+            assert_eq!(version(&source).unwrap(), crate::schema::ARCHIVE_VERSION);
             unchanged(&source, &source_before);
             drop(source);
             let index = open_read(&archive.index_db()).unwrap();
@@ -426,7 +426,7 @@ fn ordinary_open_keeps_originals_vectors_and_progress_across_separate_atomic_tra
         drop(index);
         let source = open_read(&archive.archive_db()).unwrap();
         unchanged(&source, &source_before);
-        assert_eq!(version(&source).unwrap(), 2);
+        assert_eq!(version(&source).unwrap(), crate::schema::ARCHIVE_VERSION);
         drop(source);
         let mut restored = Vec::new();
         archive

@@ -1,6 +1,6 @@
 //! Current table declarations. The durable register converts its exact
 //! immediate predecessor at exclusive open; other differences are refused.
-//! Standalone Index1 additions retain parsed progress. Primary cache2 records
+//! Standalone Index1 additions retain parsed progress. Primary cache3 records
 //! native original-material admission; its exact public Index1 predecessor rebuilds.
 //! Unknown current shapes refuse.
 //! Indexes from another format are set aside and rebuilt. Paid-vector
@@ -11,6 +11,7 @@ use rusqlite::{Connection, OptionalExtension};
 use std::collections::HashSet;
 
 mod index_transition;
+mod request_hash_transition;
 
 pub const ARCHIVE: &str = concat!(
     include_str!("schema/archive.sql"),
@@ -78,12 +79,12 @@ const EMBEDDINGS_ADDITIONS: &[&str] = &[
 ];
 
 /// The current durable register version.
-pub const ARCHIVE_VERSION: u32 = 2;
+pub const ARCHIVE_VERSION: u32 = 3;
 
 /// The index schema and row encoding version. Reading versions are independent.
 pub const INDEX_VERSION: u32 = 1;
-/// The primary cache indexes original materials and native admission metadata.
-pub const PRIMARY_INDEX_VERSION: u32 = 2;
+/// The primary cache indexes original materials, native admission and canonical request hashes.
+pub const PRIMARY_INDEX_VERSION: u32 = 3;
 
 pub const fn index_version(primary: bool) -> u32 {
     if primary {
@@ -237,7 +238,8 @@ fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
                 ));
             }
         }
-        if primary && found == 1 {
+        if primary && found < wanted {
+            request_hash_transition::apply(&tx, true)?;
             set_version(&tx, wanted)?;
         }
     }
@@ -300,8 +302,8 @@ pub fn building(conn: &Connection) -> Result<bool> {
 }
 
 /// Creates the current durable register, or opens it under the archive's
-/// exclusive lock. The immediate predecessor gains unknown assertion times
-/// and source memberships in one transaction; all other shapes are refused.
+/// exclusive lock. Exact predecessors gain unknown assertion times, source
+/// memberships and validated canonical request hashes in one transaction.
 pub fn ensure_archive(conn: &Connection) -> Result<()> {
     crate::sql_functions::register(conn)?;
     check_format(conn, "archive")?;
@@ -340,6 +342,9 @@ pub fn ensure_archive(conn: &Connection) -> Result<()> {
                 found,
             });
         }
+    }
+    if found != 0 && found < ARCHIVE_VERSION {
+        request_hash_transition::apply(&tx, false)?;
     }
     if found != ARCHIVE_VERSION {
         set_version(&tx, ARCHIVE_VERSION)?;

@@ -16,7 +16,7 @@ fn every_schema_applies_to_an_empty_database() {
 
 #[test]
 fn every_database_starts_at_its_current_version() {
-    assert_eq!(ARCHIVE_VERSION, 2);
+    assert_eq!(ARCHIVE_VERSION, 3);
     assert_eq!(INDEX_VERSION, 1);
     for (create, expected) in [
         (
@@ -338,7 +338,7 @@ fn parse_standings_require_their_length_and_reason() {
 mod context_cleanup;
 mod embeddings;
 
-fn archive_before_unknown_time(conn: &Connection) {
+pub(super) fn archive_before_unknown_time(conn: &Connection) {
     let previous = ARCHIVE.replacen(
         crate::assertions::SCHEMA,
         include_str!("assertions_before_unknown_time.sql"),
@@ -389,7 +389,7 @@ fn register_transition_preserves_all_durable_rows_and_known_times_and_repeats() 
     let before = durable_rows(&conn);
     let changes = conn.total_changes();
     ensure_archive(&conn).unwrap();
-    assert_eq!(version(&conn).unwrap(), 2);
+    assert_eq!(version(&conn).unwrap(), ARCHIVE_VERSION);
     assert_eq!(conn.total_changes(), changes);
     assert_eq!(durable_rows(&conn), before);
     assert_eq!(
