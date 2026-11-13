@@ -91,7 +91,13 @@ for durable partial pages and never substitutes for completed local progress.
 A replayed old barrier cannot move the completed receipt beyond unapplied data.
 
 The stream follower alone reads and acknowledges confirmed pages. It sends each
-page to the writer and acknowledges it after durable application. It drains
+page to the writer for durable staging. If a complete position retracts local
+source contributions, the follower resolves those ordinary batches outside the
+serial writer, allowing queued workers to commit and release their leases. The
+queued application rechecks the native scope, staged facts, completion evidence
+and exact affected chains before committing lifecycle metadata, local effects
+and completion together. Staging alone advances no visible completion. The
+follower acknowledges only after this application succeeds. It drains
 remaining stream or snapshot pages without an idle pause, checking stop and
 synchronization requests between bounded pages. An empty or nonadvancing page
 waits before polling again; failures retain their retry backoff. Event payload

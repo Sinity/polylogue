@@ -716,7 +716,15 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
         drop(lock);
         archive
     };
-    build(&home.home, &expected_messages);
+    let initial = build(&home.home, &expected_messages);
+    let source_revision = |archive: &Archive| {
+        ReadPool::open(archive).unwrap().reader().unwrap().query(
+            "SELECT r.number,r.chain,r.produced,r.length FROM source_revision r JOIN input_ref i ON i.id=r.input WHERE i.format='claude-code' ORDER BY r.number DESC LIMIT 1", &[],
+        ).unwrap().pop().unwrap()
+    };
+    let initial = source_revision(&initial);
+    assert_eq!(initial["number"], 1);
+    assert_eq!(initial["chain"], 1);
     exact_crossdomain_evidence(&running);
     let tails = [
         claude_user("user-2", "original-session", "The draft is available."),
@@ -735,13 +743,27 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
             .unwrap()
             .messages(&session, false)
             .unwrap();
-        build(&home.home, &expected_messages);
+        let appended = build(&home.home, &expected_messages);
+        let revision = source_revision(&appended);
+        assert_eq!(revision["chain"], initial["chain"]);
+        assert_eq!(revision["produced"], "appended");
+        assert_eq!(
+            revision["length"].as_u64(),
+            Some(
+                fs::metadata(home.file("original-session.jsonl"))
+                    .unwrap()
+                    .len()
+            )
+        );
     }
     assert_eq!(expected_messages.len(), 4);
     // The original incomplete record remains available; no message or false
     // end-of-input conclusion can be manufactured from its missing bytes.
     home.append("original-session.jsonl", "{\"type\":\"assistant\"");
     let archive = build(&home.home, &expected_messages);
+    let partial_revision = source_revision(&archive);
+    assert_eq!(partial_revision["chain"], initial["chain"]);
+    assert_eq!(partial_revision["produced"], "appended");
     let pool = ReadPool::open(&archive).unwrap();
     let reader = pool.reader().unwrap();
     let partial = reader.query(
@@ -888,6 +910,8 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
             .unwrap(),
         before
     );
+    let preceding_revision = source_revision(&restored);
+    assert_eq!(preceding_revision, partial_revision);
     let rewritten = format!(
         "{}{}",
         original.replace(
@@ -918,7 +942,12 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
             &[],
         )
         .unwrap();
-    assert_eq!(chain[0]["source_chain"], 2);
+    let revision = source_revision(&rewritten);
+    let expected_chain = preceding_revision["number"].as_u64().unwrap() + 1;
+    assert_eq!(revision["produced"], "rewritten");
+    assert_eq!(revision["number"].as_u64(), Some(expected_chain));
+    assert_eq!(revision["chain"].as_u64(), Some(expected_chain));
+    assert_eq!(chain[0]["source_chain"].as_u64(), Some(expected_chain));
 }
 
 #[test]

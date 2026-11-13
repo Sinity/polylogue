@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::Arc;
 
 fn cache(path: &std::path::Path) -> Connection {
     let index = Connection::open(path).unwrap();
@@ -426,4 +427,37 @@ fn has_fact_follows_applied_positions_and_erasures_seen_first() {
     // An event erased before this index read it still leaves a fact.
     assert!(has_fact(&index, "event-erased").unwrap());
     assert!(!has_fact(&index, "event-never-delivered").unwrap());
+}
+
+#[test]
+fn a_prepared_position_cannot_skip_newly_staged_native_facts() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut index = cache(&directory.path().join("index.db"));
+    let archive = crate::Archive::on_sinex(directory.path(), &directory.path().join("bytes"));
+    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    let Step::Prepare(prepared) = stage_next(&mut index, &[input(2, "first"), barrier(5)]).unwrap()
+    else {
+        panic!("position should need application");
+    };
+    stage_next(&mut index, &[input(4, "second")]).unwrap();
+    assert!(matches!(
+        apply_prepared(&mut index, *prepared),
+        Err(StoreError::ScopeChanged)
+    ));
+    assert_eq!(checkpoint(&index).unwrap(), None);
+    assert_eq!(
+        index
+            .query_row("SELECT count(*) FROM source_input", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(apply(&mut index, &resolver, &[]).unwrap(), 5);
+    assert_eq!(
+        index
+            .query_row("SELECT count(*) FROM source_input", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
 }

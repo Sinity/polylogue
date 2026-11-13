@@ -1392,3 +1392,169 @@ fn a_failed_scope_reset_reports_its_original_error_before_reply_without_a_commit
         Some("changed")
     );
 }
+
+#[test]
+fn a_lifecycle_wait_leaves_its_lease_holding_queued_worker_free_to_finish() {
+    use crate::primary::{Confirmed, ConfirmedChange, Product, ReplayControl};
+    use std::time::Duration;
+    let directory = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_primary(
+        &directory.path().join("cache"),
+        &directory.path().join("bytes"),
+    )
+    .unwrap();
+    let control = |position| Confirmed {
+        position: 0,
+        event: String::new(),
+        output_index: 0,
+        native: None,
+        change: ConfirmedChange::Control(Box::new(ReplayControl::Completion {
+            position,
+            delivery: None,
+        })),
+    };
+    {
+        let mut index = crate::archive::open_write(&archive.index_db(), 1).unwrap();
+        let resolver = resolve::Resolver::new(&archive, &index, None).unwrap();
+        crate::primary::projection::apply(
+            &mut index,
+            &resolver,
+            &[
+                Confirmed {
+                    position: 1,
+                    event: "input-event".into(),
+                    output_index: 0,
+                    native: None,
+                    change: ConfirmedChange::Live(Box::new(Product::Input {
+                        rows: Box::new(crate::input_rows::InputRows {
+                            acquisition: None,
+                            input: "queued-input".into(),
+                            format: "codex".into(),
+                            revision: None,
+                            extents: Vec::new(),
+                            observation: None,
+                        }),
+                        material: None,
+                    })),
+                },
+                control(1),
+            ],
+        )
+        .unwrap();
+        index.execute_batch("INSERT INTO input_ref(id,format) VALUES ('queued-input','codex'); INSERT INTO parse_state(input_pk,chain,reading_version,status,parsed_upto) SELECT pk,1,'codex=1','done',0 FROM input_ref WHERE id='queued-input'").unwrap();
+    }
+    let writer = Writer::start_on_sinex(
+        &archive,
+        Arc::new(OfflineProducer {
+            root: directory.path().join("producer"),
+        }),
+    )
+    .unwrap();
+    let queue = writer.tx.as_ref().unwrap().clone();
+    let mut ordinary = source("queued-input", b"").batch;
+    ordinary.change = Change::Reparse { chain: 1 };
+    ordinary.observation = None;
+    ordinary.new_blob = None;
+    let mut step = ParseStep::new(Default::default(), Default::default(), 0..0, true);
+    step.reading_version = "codex=1".into();
+    step.source_prefix_missing = true;
+    ordinary.parse.push(step);
+    prepare_source_retractions(&queue.resolver, std::slice::from_mut(&mut ordinary)).unwrap();
+    // Keep only a failure-cleanup handle: normal release is still owned by
+    // the actual queued batch, after the writer accepts or rejects it.
+    let held = Arc::new(Mutex::new(Some(std::mem::take(&mut ordinary.release))));
+    let release = Arc::clone(&held);
+    ordinary.release = InFlight::new(move || {
+        release.lock().unwrap().take();
+    });
+    let (waiting, observed) = std::sync::mpsc::channel();
+    queue.resolver.observe_wait(waiting);
+    let (reply, complete) = std::sync::mpsc::channel();
+    let following = queue.clone();
+    let follower = std::thread::spawn(move || {
+        let result = following.apply_confirmed(vec![
+            Confirmed {
+                position: 2,
+                event: "input-event".into(),
+                output_index: 0,
+                native: None,
+                change: ConfirmedChange::Archived,
+            },
+            control(2),
+        ]);
+        reply.send(result).unwrap();
+    });
+    let waiting = observed.recv_timeout(Duration::from_secs(5));
+    if waiting.is_err() {
+        held.lock().unwrap().take();
+    }
+    waiting.expect("lifecycle preparation did not reach the existing worker lease");
+    let index = crate::archive::open_read(&archive.index_db()).unwrap();
+    assert_eq!(
+        crate::primary::projection::checkpoint(&index).unwrap(),
+        Some(1)
+    );
+    assert_eq!(
+        index
+            .query_row(
+                "SELECT state FROM primary_fact WHERE event='input-event'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+        "live"
+    );
+    assert_eq!(
+        index
+            .query_row(
+                "SELECT count(*) FROM primary_pending WHERE position=2",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+    // The confirmation is already waiting. Its overlapping worker queues
+    // afterwards and must be rejected without being blocked behind that wait.
+    queue.send(Msg::Batch(Box::new(ordinary))).unwrap();
+    let result = complete.recv_timeout(Duration::from_secs(5));
+    held.lock().unwrap().take();
+    follower.join().unwrap();
+    assert_eq!(
+        result
+            .expect("serial writer waited on its own queued worker")
+            .unwrap(),
+        2
+    );
+    let report = writer.flush().unwrap();
+    assert_eq!(
+        report
+            .errors
+            .iter()
+            .filter(|error| error.starts_with("input queued-input:"))
+            .count(),
+        1,
+        "{report:?}"
+    );
+    assert_eq!(
+        crate::primary::projection::checkpoint(&index).unwrap(),
+        Some(2)
+    );
+    assert_eq!(
+        index
+            .query_row(
+                "SELECT state FROM primary_fact WHERE event='input-event'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+        "archived"
+    );
+    assert_eq!(
+        index
+            .query_row("SELECT count(*) FROM parse_state", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}

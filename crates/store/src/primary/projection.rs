@@ -42,7 +42,6 @@ pub(crate) use replay::{has_fact, native_context, processed_source, replay_state
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Serialize, de::DeserializeOwned};
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
 
 fn packed(value: &impl Serialize) -> Result<Vec<u8>> {
     Ok(crate::encoding::pack_bytes(&serde_json::to_vec(value)?)?)
@@ -868,76 +867,172 @@ fn remember_blobs(tx: &rusqlite::Transaction<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Stages bounded pages and atomically applies each complete global position.
-pub(crate) fn apply(
-    index: &mut Connection,
-    resolver: &Arc<crate::writer::resolve::Resolver>,
-    events: &[Confirmed],
-) -> Result<i64> {
+/// The next complete position, prepared outside the serial writer. The pending
+/// rows remain its durable owner until application commits.
+pub(crate) struct Preparation {
+    position: i64,
+    state: super::ReplayState,
+    generation: Option<String>,
+    pending: Option<i64>,
+    completion: Option<Vec<u8>>,
+    pub(crate) retractions: Vec<crate::Batch>,
+}
+
+pub(crate) enum Step {
+    Complete(i64),
+    Prepare(Box<Preparation>),
+}
+
+fn generation(index: &Connection) -> Result<Option<String>> {
+    Ok(index
+        .query_row("SELECT value FROM meta WHERE key='generation'", [], |row| {
+            row.get(0)
+        })
+        .optional()?)
+}
+
+fn pending(index: &Connection) -> Result<Option<i64>> {
+    Ok(index.query_row("SELECT max(n) FROM primary_pending", [], |row| row.get(0))?)
+}
+
+fn next_position(index: &Connection) -> Result<Option<i64>> {
+    Ok(index.query_row(
+        "SELECT min(position) FROM primary_complete WHERE position>=?1",
+        [checkpoint(index)?.unwrap_or(-1)],
+        |row| row.get(0),
+    )?)
+}
+
+fn completion(index: &Connection, position: i64) -> Result<Option<Vec<u8>>> {
+    Ok(index.query_row(
+        "SELECT evidence FROM primary_complete WHERE position=?1",
+        [position],
+        |row| row.get(0),
+    )?)
+}
+
+fn next(index: &Connection) -> Result<Step> {
+    let position = next_position(index)?;
+    let Some(position) = position else {
+        return Ok(Step::Complete(self::position(index)?));
+    };
+    candidate(index, position)?;
+    Ok(Step::Prepare(Box::new(Preparation {
+        position,
+        state: replay_state(index)?,
+        generation: generation(index)?,
+        pending: pending(index)?,
+        completion: completion(index, position)?,
+        retractions: plan(index)?.retractions,
+    })))
+}
+
+/// Each bounded page is durable before its worker waits for overlapping leases.
+pub(crate) fn stage_next(index: &mut Connection, events: &[Confirmed]) -> Result<Step> {
     if index.pragma_query_value::<i64, _>(None, "temp_store", |row| row.get(0))? != 1 {
         index.pragma_update(None, "temp_store", "file")?;
         index.pragma_update(Some("temp"), "cache_size", -8192)?;
     }
     stage(index, events)?;
+    next(index)
+}
+
+/// Recheck the native authority and local chain set, then commit lifecycle,
+/// source retractions and completion together. No lease wait runs on this thread.
+pub(crate) fn apply_prepared(index: &mut Connection, prepared: Preparation) -> Result<Step> {
+    let tx = index.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    // Staged rows are immutable: redelivery compares their entire contents.
+    // Applied progress + the pending row boundary therefore bind native
+    // admission, live state and value hashes without another fact copy.
+    if next_position(&tx)? != Some(prepared.position)
+        || completion(&tx, prepared.position)? != prepared.completion
+        || replay_state(&tx)? != prepared.state
+        || generation(&tx)? != prepared.generation
+        || pending(&tx)? != prepared.pending
+    {
+        return Err(StoreError::ScopeChanged);
+    }
+    let next = prepared.position;
+    candidate(&tx, next)?;
+    let mut plan = plan(&tx)?;
+    if plan.retractions.len() != prepared.retractions.len()
+        || !plan
+            .retractions
+            .iter()
+            .zip(&prepared.retractions)
+            .all(|(current, prepared)| {
+                current.input == prepared.input
+                    && current.change == prepared.change
+                    && current.length == prepared.length
+            })
+    {
+        return Err(StoreError::ScopeChanged);
+    }
+    plan.retractions = prepared.retractions;
+    let counter = crate::archive::bump_counter(&tx)?;
+    // Lifecycle changes can remove or restore source admissions older than
+    // a pre-I/O cut. New admissions preserve that cut; retained-row changes do not.
+    let source_lifecycle: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM primary_candidate WHERE kind='input' AND changed!=admitted)",
+        [],
+        |row| row.get(0),
+    )?;
+    if source_lifecycle {
+        crate::archive::generation::rotate(&tx)?;
+    }
+    sources(&tx, &plan)?;
+    members(&tx, &plan)?;
+    requests(&tx, &plan)?;
+    queries(&tx, &plan)?;
+    coverage(&tx, &plan)?;
+    refusals(&tx, next)?;
+    let changes = crate::change_summary::ChangeSummary::start(&tx)?;
+    crate::writer::apply_source_retractions(&tx, &plan.retractions, counter, &changes)?;
+    bindings(&tx, &plan)?;
+    // Variants are authored records, so only a request can change them.
+    if plan.requests != StateChange::Unchanged {
+        crate::variants::project(&tx)?;
+    }
+    tx.execute(
+        "INSERT OR REPLACE INTO primary_fact SELECT * FROM primary_candidate",
+        [],
+    )?;
+    remember_blobs(&tx)?;
+    replay::complete(&tx, next)?;
+    tx.execute("INSERT INTO source_meta(key,value) VALUES ('write_counter',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[next.to_string()])?;
+    tx.execute("INSERT INTO meta(key,value) VALUES ('confirmed_position',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[next.to_string()])?;
+    tx.execute("DELETE FROM primary_pending WHERE position<=?1", [next])?;
+    tx.execute("DELETE FROM primary_complete WHERE position<=?1", [next])?;
+    // Confirmed facts also change sessions outside the row application.
+    let touched = tx
+        .prepare("SELECT pk FROM session WHERE changed = ?1")?
+        .query_map([counter], |row| row.get(0))?
+        .collect::<rusqlite::Result<Vec<i64>>>()?;
+    for session in touched {
+        changes.whole_session(session);
+    }
+    crate::writer::finish_rows(&tx, &changes, false)?;
+    crate::fault::check("primary.before_commit", "")?;
+    tx.commit()?;
+    drop(plan);
+    self::next(index)
+}
+
+#[cfg(test)]
+pub(crate) fn apply(
+    index: &mut Connection,
+    resolver: &std::sync::Arc<crate::writer::resolve::Resolver>,
+    events: &[Confirmed],
+) -> Result<i64> {
+    let mut step = stage_next(index, events)?;
     loop {
-        let applied = checkpoint(index)?.unwrap_or(-1);
-        let next: Option<i64> = index.query_row(
-            "SELECT min(position) FROM primary_complete WHERE position>=?1",
-            [applied],
-            |row| row.get(0),
-        )?;
-        let Some(next) = next else {
-            return position(index);
-        };
-        candidate(index, next)?;
-        let mut plan = plan(index)?;
-        crate::writer::prepare_source_retractions(resolver, &mut plan.retractions)?;
-        let tx = index.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let counter = crate::archive::bump_counter(&tx)?;
-        // Lifecycle changes can remove or restore source admissions older than
-        // a pre-I/O cut. New admissions preserve that cut; retained-row changes do not.
-        let source_lifecycle: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM primary_candidate WHERE kind='input' AND changed!=admitted)",
-            [], |row| row.get(0),
-        )?;
-        if source_lifecycle {
-            crate::archive::generation::rotate(&tx)?;
+        match step {
+            Step::Complete(position) => return Ok(position),
+            Step::Prepare(mut prepared) => {
+                crate::writer::prepare_source_retractions(resolver, &mut prepared.retractions)?;
+                step = apply_prepared(index, *prepared)?;
+            }
         }
-        sources(&tx, &plan)?;
-        members(&tx, &plan)?;
-        requests(&tx, &plan)?;
-        queries(&tx, &plan)?;
-        coverage(&tx, &plan)?;
-        refusals(&tx, next)?;
-        let changes = crate::change_summary::ChangeSummary::start(&tx)?;
-        crate::writer::apply_source_retractions(&tx, &plan.retractions, counter, &changes)?;
-        bindings(&tx, &plan)?;
-        // Variants are authored records, so only a request can change them.
-        if plan.requests != StateChange::Unchanged {
-            crate::variants::project(&tx)?;
-        }
-        tx.execute(
-            "INSERT OR REPLACE INTO primary_fact SELECT * FROM primary_candidate",
-            [],
-        )?;
-        remember_blobs(&tx)?;
-        replay::complete(&tx, next)?;
-        tx.execute("INSERT INTO source_meta(key,value) VALUES ('write_counter',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[next.to_string()])?;
-        tx.execute("INSERT INTO meta(key,value) VALUES ('confirmed_position',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[next.to_string()])?;
-        tx.execute("DELETE FROM primary_pending WHERE position<=?1", [next])?;
-        tx.execute("DELETE FROM primary_complete WHERE position<=?1", [next])?;
-        // Confirmed facts also change sessions outside the row application.
-        let touched = tx
-            .prepare("SELECT pk FROM session WHERE changed = ?1")?
-            .query_map([counter], |row| row.get(0))?
-            .collect::<rusqlite::Result<Vec<i64>>>()?;
-        for session in touched {
-            changes.whole_session(session);
-        }
-        crate::writer::finish_rows(&tx, &changes, false)?;
-        crate::fault::check("primary.before_commit", "")?;
-        tx.commit()?;
-        drop(plan);
     }
 }
 

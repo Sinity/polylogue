@@ -105,7 +105,15 @@ enum Msg {
         Vec<crate::ReadingCopy>,
         SyncSender<Result<Vec<Result<bool>>>>,
     ),
-    Confirmed(Vec<crate::primary::Confirmed>, SyncSender<Result<i64>>),
+    StageConfirmed(
+        Vec<crate::primary::Confirmed>,
+        SyncSender<Result<crate::primary::projection::Step>>,
+    ),
+    ApplyConfirmed(
+        Box<crate::primary::projection::Preparation>,
+        crate::completion::Committed,
+        SyncSender<Result<crate::primary::projection::Step>>,
+    ),
     DrainPrimaryCaptures(SyncSender<Result<()>>),
     /// The stream follower handled a page, or failed to read one.
     StreamFollowed(Option<String>),
@@ -532,14 +540,12 @@ impl Writer {
     }
 
     pub fn apply_confirmed(&self, events: Vec<crate::primary::Confirmed>) -> Result<i64> {
-        let (reply, wait) = sync_channel(1);
         self.tx
             .as_ref()
             .ok_or(StoreError::WriterGone)?
-            .send(Msg::Confirmed(events, reply))
-            .map_err(|_| StoreError::WriterGone)?;
-        wait.recv().map_err(|_| StoreError::WriterGone)?
+            .apply_confirmed(events)
     }
+
     pub fn synchronize_primary(&self) -> Result<i64> {
         let follower = self
             .follower
@@ -1368,6 +1374,7 @@ impl Inner {
         let mut live_clock = Vec::new();
         let mut copies = Vec::new();
         let mut confirmations = Vec::new();
+        let mut prepared_confirmations = Vec::new();
         let mut capture_drains = Vec::new();
         let mut followed = Vec::new();
         let mut snapshots = Vec::new();
@@ -1434,8 +1441,12 @@ impl Inner {
                         replacements.push((input, chain, length, reading, reply));
                         false
                     }
-                    Msg::Confirmed(events, reply) => {
+                    Msg::StageConfirmed(events, reply) => {
                         confirmations.push((events, reply));
+                        false
+                    }
+                    Msg::ApplyConfirmed(prepared, kinds, reply) => {
+                        prepared_confirmations.push((prepared, kinds, reply));
                         false
                     }
                     Msg::RestoreAuthored(restoration, reply) => {
@@ -1517,7 +1528,10 @@ impl Inner {
                 }
             }
             for (events, reply) in confirmations.drain(..) {
-                let _ = reply.send(self.apply_confirmed(&events));
+                let _ = reply.send(self.stage_confirmed(&events));
+            }
+            for (prepared, kinds, reply) in prepared_confirmations.drain(..) {
+                let _ = reply.send(self.apply_confirmed(*prepared, kinds));
             }
             for reply in capture_drains.drain(..) {
                 let _ = reply.send(self.drain_primary_captures());

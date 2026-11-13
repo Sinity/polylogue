@@ -101,11 +101,7 @@ fn follow_once(
     let state = crate::primary::projection::replay_state(index)?;
     let cache = crate::primary::cache_identity(index)?;
     let page = sinex.confirmed(&state, &cache)?;
-    let (reply, wait) = sync_channel(1);
-    queue
-        .send(Msg::Confirmed(page, reply))
-        .map_err(|_| StoreError::WriterGone)?;
-    wait.recv().map_err(|_| StoreError::WriterGone)??;
+    queue.apply_confirmed(page)?;
     let applied = crate::primary::projection::replay_state(index)?;
     sinex.acknowledge(
         &applied,
