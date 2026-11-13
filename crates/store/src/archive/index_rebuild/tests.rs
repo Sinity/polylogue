@@ -28,7 +28,7 @@ fn rebuild_status(archive: &Archive) -> Option<IndexRebuild> {
 }
 
 #[test]
-fn an_index_from_another_schema_is_set_aside_and_rebuilt_without_touching_the_archive() {
+fn an_index_from_another_format_is_set_aside_and_rebuilt_without_touching_the_archive() {
     for (change, reason) in [
         (
             "PRAGMA user_version = 26",
@@ -37,17 +37,69 @@ fn an_index_from_another_schema_is_set_aside_and_rebuilt_without_touching_the_ar
                 wanted: schema::INDEX_VERSION,
             },
         ),
-        (
-            "CREATE TABLE synthetic_older(value)",
-            IndexRebuildReason::SchemaDiffers,
-        ),
-        (
-            "UPDATE meta SET value='1' WHERE key='building'; CREATE TABLE synthetic_older(value)",
-            IndexRebuildReason::SchemaDiffers,
-        ),
         ("PRAGMA application_id = 0", IndexRebuildReason::OlderFormat),
     ] {
         set_aside_and_rebuild(change, reason);
+    }
+}
+
+#[test]
+fn unknown_index1_open_refuses_without_replacing_saved_progress() {
+    for building in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
+        let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
+        index
+            .execute_batch(
+                "CREATE TABLE unexpected(value); INSERT INTO unexpected VALUES('kept');
+            INSERT INTO input_ref(pk,id) VALUES(31,'retained');
+            INSERT INTO parse_state(input_pk,chain,status,parsed_upto,reading_version,checkpoint)
+            VALUES(31,7,'parsing',555,'retained-reading',x'010203');
+            INSERT INTO meta VALUES('previous-index-marker','present');",
+            )
+            .unwrap();
+        index
+            .execute(
+                "UPDATE meta SET value=?1 WHERE key='building'",
+                [if building { "1" } else { "0" }],
+            )
+            .unwrap();
+        let identity = schema::index_identity(&index).unwrap();
+        let generation = meta(&index, "generation");
+        let cursor_key = meta(&index, "cursor_key");
+        drop(index);
+        drop(lock);
+        assert!(matches!(
+            Archive::open_or_create(dir.path()),
+            Err(StoreError::NoMigration {
+                database: "index",
+                found: 1
+            })
+        ));
+        assert!(set_aside_files(dir.path()).is_empty());
+        let index = open_read(&archive.index_db()).unwrap();
+        assert_eq!(schema::index_identity(&index).unwrap(), identity);
+        assert_eq!(meta(&index, "generation"), generation);
+        assert_eq!(meta(&index, "cursor_key"), cursor_key);
+        assert_eq!(
+            meta(&index, "previous-index-marker").as_deref(),
+            Some("present")
+        );
+        assert_eq!(
+            index
+                .query_row(
+                    "SELECT input_pk,chain,parsed_upto,hex(checkpoint) FROM parse_state",
+                    [],
+                    |r| Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, i64>(2)?,
+                        r.get::<_, String>(3)?
+                    ))
+                )
+                .unwrap(),
+            (31, 7, 555, "010203".into())
+        );
     }
 }
 

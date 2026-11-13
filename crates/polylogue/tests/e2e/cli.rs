@@ -744,8 +744,8 @@ fn the_daemon_refuses_an_archive_it_has_no_migration_from_and_exits_with_its_cod
     std::fs::create_dir_all(&home).unwrap();
     let (opened, lock) = polylogue_store::Archive::open_or_create(&archive).unwrap();
     drop(lock);
-    // As an archive written by a build that declared version 1 with other
-    // tables.
+    // As an archive written by a build that declared the current version
+    // with other tables.
     rusqlite::Connection::open(opened.archive_db())
         .unwrap()
         .execute_batch("DROP TABLE revision")

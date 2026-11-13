@@ -1,11 +1,14 @@
 //! Current table declarations. The durable register converts its exact
 //! immediate predecessor at exclusive open; other differences are refused.
-//! Derived indexes with another schema are set aside and rebuilt. Paid-vector
+//! Known Index1 additions retain parsed progress; unknown current shapes refuse.
+//! Indexes from another format are set aside and rebuilt. Paid-vector
 //! stores retain their bytes and gain declared additions at normal open.
 
 use crate::{Result, StoreError};
 use rusqlite::{Connection, OptionalExtension};
 use std::collections::HashSet;
+
+mod index_transition;
 
 pub const ARCHIVE: &str = concat!(
     include_str!("schema/archive.sql"),
@@ -151,8 +154,8 @@ fn create_index_in(conn: &Connection, primary: bool) -> Result<()> {
 
 /// Creates the index in an empty file, or opens one at this version with the
 /// declared tables, adding any read index it lacks. Any other index is
-/// refused unchanged; the archive's open sets it aside and builds a new one
-/// ([`crate::archive::index_rebuild`]).
+/// refused unchanged. The declared Index1 additions retain parsed rows and
+/// progress; an unknown Index1 shape is never reset at archive open.
 pub fn ensure_index(conn: &Connection) -> Result<()> {
     ensure_index_in(conn, false)
 }
@@ -203,17 +206,20 @@ fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
         if primary {
             tx.execute_batch(include_str!("primary/projection/read_indexes.sql"))?;
         }
-        let matches = found == INDEX_VERSION
-            && if building(&tx)? {
-                same_build_schema_in(&tx, primary)?
+        let current = |conn: &Connection| {
+            if building(conn)? {
+                same_build_schema_in(conn, primary)
             } else {
-                same_index_schema_in(&tx, primary)?
-            };
-        if !matches {
-            return Err(StoreError::NoMigration {
-                database: "index",
-                found,
-            });
+                same_index_schema_in(conn, primary)
+            }
+        };
+        if !current(&tx)? {
+            index_transition::apply(&tx, primary)?;
+            if !current(&tx)? {
+                return Err(StoreError::Invalid(
+                    "Index1 additions did not produce the current schema; the transaction was rolled back".into(),
+                ));
+            }
         }
     }
     tx.commit()?;

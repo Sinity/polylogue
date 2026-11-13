@@ -2,6 +2,11 @@ use super::*;
 use sinex_protocol::{ConfirmedConsumerReply, FetchEventReply, Subjects};
 use std::sync::Arc;
 
+// Owner subscriptions must be processed before another connection requests them.
+// In pinned async-nats 0.47, Client::flush completes at ConnectionHandler's
+// socket poll_flush, without a server roundtrip. query_account on the same
+// connection waits for the server to process all preceding SUB commands.
+
 async fn reply(
     daemon: &async_nats::Client,
     request: async_nats::Message,
@@ -144,7 +149,10 @@ fn background_follow_drains_split_position_after_durable_staging_then_waits_when
             .subscribe(Subjects::new("auth").confirmed_consumer("polylogue"))
             .await
             .unwrap();
-        daemon.flush().await.unwrap();
+        jetstream::new(daemon.clone())
+            .query_account()
+            .await
+            .unwrap();
         (daemon, consumers)
     });
     let admin = daemon.clone();
@@ -333,7 +341,7 @@ fn confirmed_fetches_overlap_with_a_bound_and_keep_order_refusals_and_erasure() 
             let subjects = Subjects::new("auth");
             let mut consumers = daemon.subscribe(subjects.confirmed_consumer("polylogue")).await.unwrap();
             let mut fetches = daemon.subscribe(subjects.fetch_event("polylogue")).await.unwrap();
-            daemon.flush().await.unwrap();
+            jetstream::new(daemon.clone()).query_account().await.unwrap();
             for number in 1..=36 {
                 publish(&daemon, sinex_protocol::Confirmed::EventReference {
                     commit_seq: 17, event: EventId(uuid::Uuid::from_u128(number)),
@@ -447,7 +455,7 @@ fn reconnect_requests_the_completed_receipt_and_delivers_the_head_marker_without
             }).await.unwrap();
             assert_eq!(consumer.cached_info().delivered.consumer_sequence, 0);
             let mut requests = daemon.subscribe(subjects.confirmed_consumer("polylogue")).await.unwrap();
-            daemon.flush().await.unwrap();
+            jetstream::new(daemon.clone()).query_account().await.unwrap();
             let state = ReplayState {
                 applied_position: Some(17), scope: Some("test-scope".into()),
                 completed_delivery: Some(receipt.clone()),
