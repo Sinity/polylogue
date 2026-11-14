@@ -103,16 +103,13 @@ fn store_value(
     } = text_rows;
     let name = kind.name();
     let (inserted, key, column) = if matches!(kind, VersionKind::Message) {
-        let pk = conn
-            .prepare_cached(
-                "INSERT INTO message_version(version_hash) VALUES(?1)
-            ON CONFLICT(version_hash) DO NOTHING RETURNING pk",
-            )?
-            .query_row([hash], |row| row.get(0))
-            .optional()?;
-        let pk = match pk {
-            Some(pk) => pk,
-            None => message_key(conn, hash)?,
+        let inserted = conn
+            .prepare_cached("INSERT OR IGNORE INTO message_version(version_hash) VALUES(?1)")?
+            .execute([hash])?;
+        let pk = if inserted == 1 {
+            conn.last_insert_rowid()
+        } else {
+            message_key(conn, hash)?
         };
         let sql = if replace {
             "INSERT INTO message_version_body(version_pk,body) VALUES(?1,?2)

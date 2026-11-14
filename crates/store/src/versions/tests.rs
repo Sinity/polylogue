@@ -420,3 +420,17 @@ fn exact_version_keys_and_payload_children_survive_failed_removal() {
         0
     );
 }
+
+#[test]
+fn a_missing_version_payload_is_an_error_rather_than_an_absent_message() {
+    let conn = database(0);
+    let hash = [19u8; 32];
+    conn.execute(
+        "INSERT INTO message_version(version_hash) VALUES(?1)",
+        [hash],
+    )
+    .unwrap();
+    assert!(
+        matches!(read_message(&conn,&hash),Err(crate::StoreError::Invalid(reason)) if reason=="stored message version has no payload")
+    );
+}

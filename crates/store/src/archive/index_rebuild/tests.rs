@@ -239,7 +239,7 @@ fn primary_previous_index_rebuild_preserves_original_cache_and_paid_and_pending_
         drop(lock);
         std::fs::remove_file(archive.index_db()).unwrap();
         crate::fixture::primary_previous_index(&archive.index_db()).unwrap();
-        let old = open_write(&archive.index_db(), cache::SETUP).unwrap();
+        let old = crate::archive::open_runtime_writer(&archive.index_db(), cache::SETUP).unwrap();
         old.execute(
             "INSERT INTO meta VALUES('original-cache-marker','retained')",
             [],

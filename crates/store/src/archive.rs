@@ -347,7 +347,7 @@ impl Archive {
     /// build ends ([`index_rebuild`]).
     pub(crate) fn prepare_index(&self) -> Result<()> {
         let path = self.index_db();
-        let mut index = open_write(&path, cache::SETUP)?;
+        let mut index = open_runtime_writer(&path, cache::SETUP)?;
         if let Err(error) = self.ensure_index(&index) {
             let Some(reason) = index_rebuild::reason(&error) else {
                 return Err(error);
