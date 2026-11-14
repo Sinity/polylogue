@@ -5,7 +5,7 @@
 //!
 //! An argument has one name everywhere: `--name` on the command line (with
 //! `-` for `_`), the property of an MCP tool's input, the field of an HTTP
-//! request. Ordinary arguments become one checked JSON object ([`Values`]).
+//! request. Ordinary arguments become one checked JSON object by the shared parser.
 //! HTTP-only structured bodies use their owning request type; binary inputs
 //! reach the daemon directly as bytes.
 
@@ -14,37 +14,17 @@ use crate::daemon::handler::{FeedRegistration, Registration, daemon, feed, strea
 use crate::daemon::measure::{MEASURES, Measure};
 use crate::daemon::service::handlers as H;
 use crate::daemon::service::{acts, browser, feeds, follow, read};
+use command_surface::ArgumentForm;
 use serde_json::{Map, Value};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::LazyLock;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Kind {
-    Text,
-    /// A structured value checked by the owning typed operation schema.
-    Json,
-    Integer,
-    Bool,
-    /// Words given by position, joined by spaces.
-    Words,
-    /// Words given by position that take the rest of the command line,
-    /// flags included.
-    Rest,
-    /// Several values: by position, or a repeated or comma-separated option.
-    List,
-    /// One of these values.
-    Choice(&'static [&'static str]),
-}
-
 #[derive(Clone, Copy, Debug)]
 pub struct Arg {
     pub name: &'static str,
-    pub kind: Kind,
+    pub form: ArgumentForm,
     pub help: &'static str,
-    pub required: bool,
-    /// Given by position on the command line rather than as `--name`.
-    pub positional: bool,
     pub default: Option<&'static str>,
     pub short: Option<char>,
     /// Taken before or after any command on the command line.
@@ -56,13 +36,11 @@ pub struct Arg {
     pub unlisted: bool,
 }
 
-const fn arg(name: &'static str, kind: Kind, help: &'static str) -> Arg {
+const fn arg(name: &'static str, form: ArgumentForm, help: &'static str) -> Arg {
     Arg {
         name,
-        kind,
+        form,
         help,
-        required: false,
-        positional: false,
         default: None,
         short: None,
         global: false,
@@ -80,26 +58,21 @@ const fn unlisted(arg: Arg) -> Arg {
     }
 }
 
-/// A required positional argument.
-const fn pos(name: &'static str, kind: Kind, help: &'static str) -> Arg {
+/// A positional argument; its input schema owns requiredness.
+const fn pos(name: &'static str, form: ArgumentForm, help: &'static str) -> Arg {
     Arg {
-        required: true,
-        positional: true,
-        ..arg(name, kind, help)
-    }
-}
-
-/// A positional argument that may be left out.
-const fn pos_opt(name: &'static str, kind: Kind, help: &'static str) -> Arg {
-    Arg {
-        positional: true,
-        ..arg(name, kind, help)
+        form: match form {
+            ArgumentForm::Words | ArgumentForm::Rest => form,
+            ArgumentForm::Repeated => ArgumentForm::Words,
+            _ => ArgumentForm::Positional,
+        },
+        ..arg(name, form, help)
     }
 }
 
 /// A flag that may be left out.
-const fn opt(name: &'static str, kind: Kind, help: &'static str) -> Arg {
-    arg(name, kind, help)
+const fn opt(name: &'static str, form: ArgumentForm, help: &'static str) -> Arg {
+    arg(name, form, help)
 }
 
 /// An MCP tool: a family of commands offered as its operations. Every
@@ -163,17 +136,25 @@ pub enum Cli {
     NoSubcommand,
 }
 
-pub type OutputHandler =
-    fn(&Values, &command_surface::Answer<Value>, &crate::config::Startup, bool) -> ExitCode;
+pub type OutputHandler = fn(
+    &command_surface::ParsedCommand,
+    &command_surface::Answer<Value>,
+    &crate::config::Startup,
+    bool,
+) -> ExitCode;
 
 /// What the command line does in place of one request and its answer: it
 /// writes a file or a directory, or follows a stream.
-pub type Deliver =
-    fn(&Values, &crate::config::Startup, &command_surface::RunnableRequest) -> ExitCode;
+pub type Deliver = fn(
+    &command_surface::ParsedCommand,
+    &crate::config::Startup,
+    &command_surface::RunnableRequest,
+) -> ExitCode;
 
 /// Turns the command line's values into the request's arguments where
 /// they differ.
-pub type Prepare = fn(&Values, &std::path::Path, &mut Map<String, Value>) -> Result<(), String>;
+pub type Prepare =
+    fn(&Map<String, Value>, &std::path::Path, &mut Map<String, Value>) -> Result<(), String>;
 
 /// What runs a command.
 #[derive(Clone, Copy)]
@@ -192,8 +173,56 @@ pub enum Run {
         deliver: Deliver,
     },
     /// Runs in the calling process (the CLI only), with `--json`.
-    Local(fn(&Command, &Values, crate::config::OutputConfig, bool) -> ExitCode),
-    ConfiguredLocal(fn(&Command, &Values, &crate::config::Startup, bool) -> ExitCode),
+    Local(
+        fn(
+            &Command,
+            &command_surface::ParsedCommand,
+            crate::config::OutputConfig,
+            bool,
+        ) -> ExitCode,
+        fn(&mut command_surface::DeclarationsBuilder, &'static Command),
+        fn(&Value) -> Result<(), String>,
+    ),
+    ConfiguredLocal(
+        fn(&Command, &command_surface::ParsedCommand, &crate::config::Startup, bool) -> ExitCode,
+        fn(&mut command_surface::DeclarationsBuilder, &'static Command),
+        fn(&Value) -> Result<(), String>,
+    ),
+}
+
+const fn local_command<A: command_surface::JsonSchema + serde::de::DeserializeOwned>(
+    run: fn(
+        &Command,
+        &command_surface::ParsedCommand,
+        crate::config::OutputConfig,
+        bool,
+    ) -> ExitCode,
+) -> Run {
+    Run::Local(run, declare_local::<A>, validate_local::<A>)
+}
+const fn configured_local<A: command_surface::JsonSchema + serde::de::DeserializeOwned>(
+    run: fn(&Command, &command_surface::ParsedCommand, &crate::config::Startup, bool) -> ExitCode,
+) -> Run {
+    Run::ConfiguredLocal(run, declare_local::<A>, validate_local::<A>)
+}
+fn validate_local<A: serde::de::DeserializeOwned>(arguments: &Value) -> Result<(), String> {
+    A::deserialize(arguments)
+        .map(drop)
+        .map_err(|error| error.to_string())
+}
+fn declare_local<A: command_surface::JsonSchema>(
+    declarations: &mut command_surface::DeclarationsBuilder,
+    command: &'static Command,
+) {
+    let mut spec = specification(command);
+    spec.kind = command_surface::OperationKind::Local;
+    spec.http_route = None;
+    if spec.reason.is_empty() {
+        spec.reason = command.help.into();
+    }
+    declarations
+        .declare_local::<A>(spec)
+        .expect("local arguments match their declaration");
 }
 
 #[derive(Clone, Copy)]
@@ -226,7 +255,7 @@ impl Command {
     pub(crate) fn registration(&self) -> Option<&Registration> {
         match &self.run {
             Run::Daemon(registration) | Run::Delivered { registration, .. } => Some(registration),
-            Run::Feed { .. } | Run::Local(_) | Run::ConfiguredLocal(_) => None,
+            Run::Feed { .. } | Run::Local(..) | Run::ConfiguredLocal(..) => None,
         }
     }
 
@@ -297,7 +326,7 @@ const WHY: Arg = Arg {
     global: true,
     ..opt(
         "why",
-        Kind::Bool,
+        ArgumentForm::Flag,
         "Explain an empty result: how many rows each condition keeps",
     )
 };
@@ -305,7 +334,7 @@ const CURSOR: Arg = Arg {
     global: true,
     ..opt(
         "cursor",
-        Kind::Text,
+        ArgumentForm::Named,
         "Continue from a previous page's `next`",
     )
 };
@@ -313,15 +342,19 @@ const FIELDS: Arg = Arg {
     global: true,
     ..opt(
         "fields",
-        Kind::List,
+        ArgumentForm::Repeated,
         "The columns to show instead of the unit's defaults, comma-separated (`--fields id,cost,repo`)",
     )
 };
-const LIMIT: Arg = opt("limit", Kind::Integer, "Rows per page");
-const QUERY_WORDS: Arg = pos_opt("query", Kind::Words, "A query in the query language");
+const LIMIT: Arg = opt("limit", ArgumentForm::Named, "Rows per page");
+const QUERY_WORDS: Arg = pos(
+    "query",
+    ArgumentForm::Words,
+    "A query in the query language",
+);
 const CWD: Arg = opt(
     "cwd",
-    Kind::Text,
+    ArgumentForm::Named,
     "The directory (default: the caller's working directory)",
 );
 const BUDGET: Arg = Arg {
@@ -329,21 +362,18 @@ const BUDGET: Arg = Arg {
     cli_only: true,
     ..opt(
         "budget",
-        Kind::Text,
+        ArgumentForm::Named,
         "Tokens for a prepared context; defaults to its named pack",
     )
 };
-const FORMATS: &[&str] = polylogue_render::Format::NAMES;
-const VIEWS: &[&str] = polylogue_model::read::View::NAMES;
-const SHELLS: &[&str] = &["bash", "elvish", "fish", "powershell", "zsh"];
 
 /// A query over a unit with the page, cursor, explanation and columns.
 const QUERY_ARGS: &[Arg] = &[QUERY_WORDS, LIMIT, WHY, CURSOR, FIELDS];
 /// A measurement over the sessions a query selects.
 const MEASURE_ARGS: &[Arg] = &[
-    pos_opt(
+    pos(
         "query",
-        Kind::Words,
+        ArgumentForm::Words,
         "A sessions query (default: every session)",
     ),
     LIMIT,
@@ -353,27 +383,27 @@ const MEASURE_ARGS: &[Arg] = &[
 ];
 const MEASURE_ALL: &[Arg] = &[WHY, CURSOR, FIELDS];
 const EMBED_ARGS: &[Arg] = &[
-    pos_opt(
+    pos(
         "query",
-        Kind::Words,
+        ArgumentForm::Words,
         "A sessions query limiting the texts (default: every prose text)",
     ),
-    opt("limit", Kind::Integer, "At most this many texts"),
-    opt("yes", Kind::Bool, "Confirm a build with a paid provider"),
+    opt("limit", ArgumentForm::Named, "At most this many texts"),
+    opt(
+        "yes",
+        ArgumentForm::Flag,
+        "Confirm a build with a paid provider",
+    ),
 ];
 
 const HOOKS_ARGS: &[Arg] = &[
     Arg {
         default: Some("claude-code"),
-        ..opt(
-            "harness",
-            Kind::Choice(crate::hook::Harness::NAMES),
-            "Whose settings",
-        )
+        ..opt("harness", ArgumentForm::Named, "Whose settings")
     },
     opt(
         "settings",
-        Kind::Text,
+        ArgumentForm::Named,
         "Default: `$CLAUDE_CONFIG_DIR/settings.json` (or `~/.claude/settings.json`); for Codex `$CODEX_HOME/hooks.json` (or `~/.codex/hooks.json`); for Gemini CLI `~/.gemini/settings.json`",
     ),
 ];
@@ -387,7 +417,7 @@ const CLI: Command = Command {
     name: "",
     help: "",
     args: &[],
-    run: Run::Local(local::not_built),
+    run: local_command::<local::arguments::Empty>(local::not_built),
     cli: Cli::Subcommand,
     tool: None,
     http: false,
@@ -455,11 +485,11 @@ fn measure_command(m: &'static Measure) -> Command {
             } else {
                 "option"
             },
-            Kind::Text,
+            ArgumentForm::Named,
             help,
         ));
     } else if !m.metrics.is_empty() {
-        args.push(opt("metric", Kind::Choice(m.metrics), "The series"));
+        args.push(opt("metric", ArgumentForm::Named, "The series"));
     }
     args.extend_from_slice(if m.whole_archive {
         MEASURE_ALL
@@ -498,33 +528,37 @@ const WRITTEN: &[Command] = &[
         latency: command_surface::LatencyClass::Local,
         help: "Observe stored inputs at idle priority; default: latest revisions of every origin",
         args: &[
-            pos_opt("origin", Kind::Text, "One origin (default: all origins)"),
-            unlisted(opt("all", Kind::Bool, "Select every origin")),
+            pos(
+                "origin",
+                ArgumentForm::Named,
+                "One origin (default: all origins)",
+            ),
+            unlisted(opt("all", ArgumentForm::Flag, "Select every origin")),
             unlisted(opt(
                 "input",
-                Kind::List,
+                ArgumentForm::Repeated,
                 "Explicit stored input IDs (repeatable)",
             )),
             unlisted(opt(
                 "since",
-                Kind::Text,
+                ArgumentForm::Named,
                 "Observation time lower bound, RFC 3339 with an offset",
             )),
             unlisted(opt(
                 "revision",
-                Kind::Integer,
+                ArgumentForm::Named,
                 "Exact revision (default: latest for each input)",
             )),
             unlisted(opt(
                 "field",
-                Kind::List,
+                ArgumentForm::Repeated,
                 "Keep these field names instead of grouping them as dynamic keys",
             )),
             Arg {
                 cli_only: true,
                 ..opt(
                     "output",
-                    Kind::Text,
+                    ArgumentForm::Named,
                     "Write the result to this explicit local path",
                 )
             },
@@ -541,13 +575,17 @@ const WRITTEN: &[Command] = &[
         latency: command_surface::LatencyClass::Read,
         help: "Show stored wire paths neither read nor kept, with drift and coverage",
         args: &[
-            pos_opt("origin", Kind::Text, "One origin (default: all origins)"),
-            unlisted(opt("all", Kind::Bool, "Select every origin")),
+            pos(
+                "origin",
+                ArgumentForm::Named,
+                "One origin (default: all origins)",
+            ),
+            unlisted(opt("all", ArgumentForm::Flag, "Select every origin")),
             Arg {
                 cli_only: true,
                 ..opt(
                     "output",
-                    Kind::Text,
+                    ArgumentForm::Named,
                     "Write the result to this explicit local path",
                 )
             },
@@ -562,15 +600,18 @@ const WRITTEN: &[Command] = &[
         name: "schema diff",
         help: "Compare explicit inferred schema files recursively, with sample differences labeled",
         args: &[
-            pos("before", Kind::Text, "Earlier schema JSON file"),
-            pos("after", Kind::Text, "Later schema JSON file"),
-            opt(
-                "output",
-                Kind::Text,
-                "Write the result only to this explicit path (default: stdout)",
-            ),
+            pos("before", ArgumentForm::Named, "Earlier schema JSON file"),
+            pos("after", ArgumentForm::Named, "Later schema JSON file"),
+            Arg {
+                cli_only: true,
+                ..opt(
+                    "output",
+                    ArgumentForm::Named,
+                    "Write the result only to this explicit path (default: stdout)",
+                )
+            },
         ],
-        run: Run::Local(crate::cli::schema::diff),
+        run: local_command::<local::arguments::SchemaDiff>(crate::cli::schema::diff),
         ..CLI
     },
     Command {
@@ -578,10 +619,10 @@ const WRITTEN: &[Command] = &[
         help: "Prepare a separate Morrow archive and walk through search, tool outcomes, parents, costs and notes",
         args: &[pos(
             "directory",
-            Kind::Text,
+            ArgumentForm::Named,
             "A new directory for the example home, archive and transcript",
         )],
-        run: Run::ConfiguredLocal(crate::demo::tour),
+        run: configured_local::<local::arguments::Tour>(crate::demo::tour),
         ..CLI
     },
     Command {
@@ -591,15 +632,27 @@ const WRITTEN: &[Command] = &[
         args: &[
             pos(
                 "subject",
-                Kind::Choice(crate::explain::SUBJECTS),
+                ArgumentForm::Named,
                 "query, syntax, units, fields, operators or capabilities",
             ),
-            opt("session", Kind::Text, "Calling session for self references"),
-            opt("expression", Kind::Text, "Required for subject query"),
-            unlisted(opt("unit", Kind::Text, "List fields for this unit")),
+            opt(
+                "session",
+                ArgumentForm::Named,
+                "Calling session for self references",
+            ),
+            opt(
+                "expression",
+                ArgumentForm::Named,
+                "Required for subject query",
+            ),
+            unlisted(opt(
+                "unit",
+                ArgumentForm::Named,
+                "List fields for this unit",
+            )),
             unlisted(opt(
                 "page_size",
-                Kind::Integer,
+                ArgumentForm::Named,
                 "Declarations per page (default 20)",
             )),
             CURSOR,
@@ -612,7 +665,7 @@ const WRITTEN: &[Command] = &[
     Command {
         name: "manual",
         help: "The agent card and the MCP operation reference, every argument named (available without a daemon)",
-        run: Run::Local(local::manual),
+        run: local_command::<local::arguments::Empty>(local::manual),
         ..CLI
     },
     Command {
@@ -638,14 +691,18 @@ const WRITTEN: &[Command] = &[
             command_surface::FailureKind::Cancelled,
         ],
         args: &[
-            pos_opt("query", Kind::Rest, "A query, when no subcommand is given"),
+            pos(
+                "query",
+                ArgumentForm::Rest,
+                "A query, when no subcommand is given",
+            ),
             LIMIT,
             WHY,
             CURSOR,
             FIELDS,
             opt(
                 "session",
-                Kind::Text,
+                ArgumentForm::Named,
                 "The session named by self in the query",
             ),
         ],
@@ -662,7 +719,7 @@ const WRITTEN: &[Command] = &[
         latency: command_surface::LatencyClass::Status,
         args: &[opt(
             "line",
-            Kind::Bool,
+            ArgumentForm::Flag,
             "One line for status bars: running sessions and the longest wait",
         )],
         run: Run::Daemon(daemon::<H::Status>()),
@@ -677,16 +734,16 @@ const WRITTEN: &[Command] = &[
         args: &[
             opt(
                 "until_idle",
-                Kind::Bool,
+                ArgumentForm::Flag,
                 "Stop once the loop has no work, printing what it did",
             ),
             opt(
                 "no_sources",
-                Kind::Bool,
+                ArgumentForm::Flag,
                 "Read no provider locations, spools or tool databases: parse and derive only what the archive stores, and import what is given",
             ),
         ],
-        run: Run::ConfiguredLocal(local::daemon),
+        run: configured_local::<local::arguments::Daemon>(local::daemon),
         ..CLI
     },
     Command {
@@ -695,24 +752,24 @@ const WRITTEN: &[Command] = &[
         reason: "Capture explicitly selected source bytes and restore the notes and other user records a bundle carries",
         latency: command_surface::LatencyClass::Aggregate,
         args: &[
-            pos_opt(
+            pos(
                 "paths",
-                Kind::List,
+                ArgumentForm::Repeated,
                 "Files or directories on the daemon host; relative paths require a native caller working directory",
             ),
             opt(
                 "format",
-                Kind::Text,
+                ArgumentForm::Named,
                 "Read the paths as this declared structure (an origin name), or as one of the predecessor's stores: predecessor-archive (a folder with source.db and blob/), predecessor-user-db (its user.db) or predecessor-vectors (one of its vector stores)",
             ),
             opt(
                 "from_archive",
-                Kind::Text,
+                ArgumentForm::Named,
                 "The folder of an archive written before the version 1 baseline, imported once in place of paths",
             ),
             opt(
                 "dry_run",
-                Kind::Bool,
+                ArgumentForm::Flag,
                 "With --from-archive: read and check the archive, write nothing, and report counts per class",
             ),
         ],
@@ -729,7 +786,7 @@ const WRITTEN: &[Command] = &[
         help: "Check stored bytes at idle priority: every blob against its name, every extent and revision against the bytes it cites, the kept counters and each database; reports, never repairs",
         args: &[opt(
             "manifest",
-            Kind::Text,
+            ArgumentForm::Named,
             "Also write each revision's input, number, length and BLAKE3 to this new file on the daemon's host",
         )],
         run: Run::Daemon(daemon::<H::Verify>()),
@@ -753,76 +810,80 @@ const WRITTEN: &[Command] = &[
         latency: command_surface::LatencyClass::Read,
         help: "Read a query or reference; write a consistent bundle with --to DIR",
         args: &[
-            pos("target", Kind::Text, "A query or a reference"),
+            pos("target", ArgumentForm::Named, "A query or a reference"),
             Arg {
                 default: Some("transcript"),
-                ..opt("view", Kind::Choice(VIEWS), "The reading view")
+                ..opt("view", ArgumentForm::Named, "The reading view")
             },
-            unlisted(opt("format", Kind::Choice(FORMATS), "The output format")),
+            unlisted(opt("format", ArgumentForm::Named, "The output format")),
             unlisted(opt(
                 "delivery",
-                Kind::Choice(&["page", "stream"]),
+                ArgumentForm::Named,
                 "Page or finite SSE transfer",
             )),
             opt(
                 "page_tokens",
-                Kind::Integer,
+                ArgumentForm::Named,
                 "Tokens transferred in one read page",
             ),
             CURSOR,
             unlisted(opt(
                 "show",
-                Kind::List,
+                ArgumentForm::Repeated,
                 polylogue_model::read::FoldKind::HELP,
             )),
             unlisted(opt(
                 "hide",
-                Kind::List,
+                ArgumentForm::Repeated,
                 "Item kinds to hide, from the same table as show",
             )),
             unlisted(Arg {
                 default: Some("100"),
                 ..opt(
                     "output_lines",
-                    Kind::Integer,
+                    ArgumentForm::Named,
                     "Tool output head and tail lines; zero keeps all lines",
                 )
             }),
             unlisted(opt(
                 "at",
-                Kind::Text,
+                ArgumentForm::Named,
                 "The message a context reading is taken at",
             )),
             unlisted(opt(
                 "diff",
-                Kind::Text,
+                ArgumentForm::Named,
                 "With the context view: a message or compaction[:N] to compare with",
             )),
             unlisted(opt(
                 "around",
-                Kind::Integer,
+                ArgumentForm::Named,
                 "With a message: this many messages before and after",
             )),
-            unlisted(opt("latest", Kind::Bool, "Start at the last page")),
+            unlisted(opt("latest", ArgumentForm::Flag, "Start at the last page")),
             unlisted(opt(
                 "physical",
-                Kind::Bool,
+                ArgumentForm::Flag,
                 "With root:REF: read only the named physical session",
             )),
             unlisted(opt(
                 "for_others",
-                Kind::Bool,
+                ArgumentForm::Flag,
                 "Prepare a reading for another caller",
             )),
-            unlisted(opt("variant", Kind::List, "Ordered variant layers")),
+            unlisted(opt(
+                "variant",
+                ArgumentForm::Repeated,
+                "Ordered variant layers",
+            )),
             unlisted(opt(
                 "with_blobs",
-                Kind::Bool,
+                ArgumentForm::Flag,
                 "Include stored blob bytes in a stream",
             )),
             Arg {
                 cli_only: true,
-                ..opt("to", Kind::Text, "Write a bundle directory")
+                ..opt("to", ArgumentForm::Named, "Write a bundle directory")
             },
         ],
         run: Run::Delivered {
@@ -839,26 +900,38 @@ const WRITTEN: &[Command] = &[
         latency: command_surface::LatencyClass::Read,
         help: "Read a bounded range of the stored bytes for a message attachment",
         args: &[
-            pos("message", Kind::Text, "The message ID"),
-            pos("block", Kind::Integer, "Zero-based source block index"),
+            pos("message", ArgumentForm::Named, "The message ID"),
+            pos(
+                "block",
+                ArgumentForm::Named,
+                "Zero-based source block index",
+            ),
             unlisted(opt(
                 "attachment",
-                Kind::Integer,
+                ArgumentForm::Named,
                 "Zero-based attachment within a tool result (default 0)",
             )),
             unlisted(opt(
                 "input",
-                Kind::Text,
+                ArgumentForm::Named,
                 "The stored input to read when several match",
             )),
-            opt("cursor", Kind::Text, "Continue a previous byte range"),
+            opt(
+                "cursor",
+                ArgumentForm::Named,
+                "Continue a previous byte range",
+            ),
             unlisted(Arg {
                 default: Some("65536"),
-                ..opt("length", Kind::Integer, "Bytes per retrieval range")
+                ..opt("length", ArgumentForm::Named, "Bytes per retrieval range")
             }),
             Arg {
                 cli_only: true,
-                ..opt("out", Kind::Text, "Write the verified bytes to FILE")
+                ..opt(
+                    "out",
+                    ArgumentForm::Named,
+                    "Write the verified bytes to FILE",
+                )
             },
         ],
         run: Run::Daemon(daemon::<H::Attachment>()),
@@ -888,7 +961,11 @@ const WRITTEN: &[Command] = &[
             command_surface::FailureKind::Timeout,
             command_surface::FailureKind::Cancelled,
         ],
-        args: &[pos("assertions", Kind::Json, "JSON array of assertions")],
+        args: &[pos(
+            "assertions",
+            ArgumentForm::Named,
+            "JSON array of assertions",
+        )],
         run: Run::Daemon(daemon::<H::Assert>()),
         tool: Some(Tool::Note),
         http: true,
@@ -917,12 +994,16 @@ const WRITTEN: &[Command] = &[
             command_surface::FailureKind::Cancelled,
         ],
         args: &[
-            pos("query", Kind::Text, "Query selecting the assertion targets"),
+            pos(
+                "query",
+                ArgumentForm::Named,
+                "Query selecting the assertion targets",
+            ),
             Arg {
                 required: true,
                 ..opt(
                     "assertion",
-                    Kind::Json,
+                    ArgumentForm::Named,
                     "Assertion JSON without about links",
                 )
             },
@@ -957,12 +1038,12 @@ const WRITTEN: &[Command] = &[
         args: &[
             pos(
                 "bases",
-                Kind::List,
+                ArgumentForm::Repeated,
                 "Exact assertion:<root>@<revision> references",
             ),
             Arg {
                 required: true,
-                ..opt("patch", Kind::Json, "Assertion patch JSON")
+                ..opt("patch", ArgumentForm::Named, "Assertion patch JSON")
             },
         ],
         run: Run::Daemon(daemon::<H::Revise>()),
@@ -995,10 +1076,10 @@ const WRITTEN: &[Command] = &[
         args: &[
             pos(
                 "targets",
-                Kind::List,
+                ArgumentForm::Repeated,
                 "Natural assertion or variant references",
             ),
-            opt("reason", Kind::Text, "Why"),
+            opt("reason", ArgumentForm::Named, "Why"),
         ],
         run: Run::Daemon(daemon::<H::Withdraw>()),
         tool: Some(Tool::Note),
@@ -1014,18 +1095,14 @@ const WRITTEN: &[Command] = &[
         args: &[
             opt(
                 "session",
-                Kind::Text,
+                ArgumentForm::Named,
                 "The session asking, when known (`claude-code:<id>`)",
             ),
             CWD,
             BUDGET,
             Arg {
                 default: Some("startup"),
-                ..opt(
-                    "source",
-                    Kind::Choice(&["startup", "resume", "clear", "compact"]),
-                    "Why the session starts",
-                )
+                ..opt("source", ArgumentForm::Named, "Why the session starts")
             },
         ],
         run: Run::Daemon(daemon::<H::Brief>()),
@@ -1039,11 +1116,11 @@ const WRITTEN: &[Command] = &[
         latency: command_surface::LatencyClass::Read,
         help: "One current operator-judged decision or correction for a file named in a prompt; silent when unavailable within 20 ms or on cooldown",
         args: &[
-            pos("prompt", Kind::Words, "The prompt naming a file"),
+            pos("prompt", ArgumentForm::Words, "The prompt naming a file"),
             CWD,
             Arg {
                 required: true,
-                ..opt("session", Kind::Text, "The receiving session")
+                ..opt("session", ArgumentForm::Named, "The receiving session")
             },
         ],
         run: Run::Daemon(daemon::<H::Advisory>()),
@@ -1057,9 +1134,13 @@ const WRITTEN: &[Command] = &[
         latency: command_surface::LatencyClass::Search,
         help: "Context for taking over another session: its prompts, notes, what it left open and its last answer",
         args: &[
-            pos("session", Kind::Text, "`origin:native_id`"),
+            pos("session", ArgumentForm::Named, "`origin:native_id`"),
             BUDGET,
-            unlisted(opt("for_session", Kind::Text, "The receiving session")),
+            unlisted(opt(
+                "for_session",
+                ArgumentForm::Named,
+                "The receiving session",
+            )),
         ],
         run: Run::Daemon(daemon::<H::Takeover>()),
         tool: Some(Tool::Context),
@@ -1071,17 +1152,17 @@ const WRITTEN: &[Command] = &[
         reason: "Resume a session through its own tool, which no query can start",
         help: "Resume a session through its tool's own command. Without a session, the sessions in this directory that left something open (an unanswered prompt, an unfinished tool call, a todo, a handoff)",
         args: &[
-            pos_opt("session", Kind::Text, "`origin:native_id`"),
+            pos("session", ArgumentForm::Named, "`origin:native_id`"),
             Arg {
                 cli_only: true,
                 ..opt(
                     "exec",
-                    Kind::Bool,
+                    ArgumentForm::Flag,
                     "Run the native resume command instead of printing it",
                 )
             },
             CWD,
-            opt("limit", Kind::Integer, "At most this many sessions"),
+            opt("limit", ArgumentForm::Named, "At most this many sessions"),
         ],
         run: Run::Daemon(daemon::<H::Continue>()),
         output: Some(crate::cli::resume_output),
@@ -1095,10 +1176,14 @@ const WRITTEN: &[Command] = &[
         latency: command_surface::LatencyClass::Search,
         help: "Search past work for something relevant now: messages holding every word (in prose or tool output) and, when vectors exist, messages similar to the text, ranked together; grouped by session, with notes on them and a summary of how it searched. A page ends with the cursor of the next",
         args: &[
-            pos_opt("query", Kind::Words, "What to look for"),
+            pos("query", ArgumentForm::Words, "What to look for"),
             CWD,
             BUDGET,
-            unlisted(opt("for_session", Kind::Text, "The receiving session")),
+            unlisted(opt(
+                "for_session",
+                ArgumentForm::Named,
+                "The receiving session",
+            )),
             CURSOR,
         ],
         run: Run::Daemon(daemon::<H::Recall>()),
@@ -1112,19 +1197,19 @@ const WRITTEN: &[Command] = &[
         reason: "Inspect declared runtime settings and author changes at their declared scope",
         latency: command_surface::LatencyClass::Local,
         args: &[
-            pos_opt(
+            pos(
                 "key",
-                Kind::Text,
+                ArgumentForm::Named,
                 "The setting; without it, list catalog, defaults, scopes and values",
             ),
-            pos_opt(
+            pos(
                 "value",
-                Kind::Text,
+                ArgumentForm::Named,
                 "The new value; without it, read the current value",
             ),
             unlisted(opt(
                 "machine",
-                Kind::Text,
+                ArgumentForm::Named,
                 "A named host for host-scoped settings; default: the accepting machine",
             )),
         ],
@@ -1160,12 +1245,18 @@ const WRITTEN: &[Command] = &[
         args: &[
             opt(
                 "since",
-                Kind::Text,
+                ArgumentForm::Named,
                 "The last fully applied feed position (GEN:COUNTER:ARCHIVE)",
             ),
-            WHY,
+            Arg {
+                cli_only: true,
+                ..WHY
+            },
             CURSOR,
-            FIELDS,
+            Arg {
+                cli_only: true,
+                ..FIELDS
+            },
         ],
         run: Run::Feed {
             registration: feed::<feeds::Changes>(),
@@ -1179,18 +1270,35 @@ const WRITTEN: &[Command] = &[
         help: "Follow a session or a sessions query: one line per live-state change (`→ waiting: permission`) and per new message or tool call, until interrupted",
         reason: "A live stream records nothing and cannot be a query's page",
         args: &[
-            pos("target", Kind::Words, "A session reference or a query"),
-            opt("show", Kind::List, polylogue_model::read::FoldKind::HELP),
-            opt(
-                "hide",
-                Kind::List,
-                "Item kinds to hide, from the same table as show",
+            pos(
+                "target",
+                ArgumentForm::Words,
+                "A session reference or a query",
             ),
-            opt(
-                "until_idle",
-                Kind::Bool,
-                "Stop when the session's live state is no longer working",
-            ),
+            Arg {
+                cli_only: true,
+                ..opt(
+                    "show",
+                    ArgumentForm::Repeated,
+                    polylogue_model::read::FoldKind::HELP,
+                )
+            },
+            Arg {
+                cli_only: true,
+                ..opt(
+                    "hide",
+                    ArgumentForm::Repeated,
+                    "Item kinds to hide, from the same table as show",
+                )
+            },
+            Arg {
+                cli_only: true,
+                ..opt(
+                    "until_idle",
+                    ArgumentForm::Flag,
+                    "Stop when the session's live state is no longer working",
+                )
+            },
         ],
         run: Run::Feed {
             registration: feed::<follow::Follow>(),
@@ -1205,16 +1313,20 @@ const WRITTEN: &[Command] = &[
         args: &[
             pos(
                 "target",
-                Kind::Text,
+                ArgumentForm::Named,
                 "A session reference, @[role:NAME] for the role's running instance (or a new one), or @[QUERY] for every session the query selects now",
             ),
-            pos("text", Kind::Words, "The message"),
+            pos("text", ArgumentForm::Words, "The message"),
             opt(
                 "live",
-                Kind::Bool,
+                ArgumentForm::Flag,
                 "Refuse rather than resume a session that is not running",
             ),
-            opt("about", Kind::Text, "A reference the ping is about"),
+            opt(
+                "about",
+                ArgumentForm::Named,
+                "A reference the ping is about",
+            ),
         ],
         run: Run::Daemon(daemon::<acts::Ping>()),
         tool: Some(Tool::Act),
@@ -1227,16 +1339,16 @@ const WRITTEN: &[Command] = &[
         help: "Approve or deny a session's pending permission request; --standing answers the same tool and input whenever the session asks next. The first answer wins; there is no undo",
         reason: "An authored act on a request a session waits on",
         args: &[
-            pos("session", Kind::Text, "The waiting session"),
-            pos(
-                "decision",
-                Kind::Choice(&["approve", "deny"]),
-                "approve or deny",
+            pos("session", ArgumentForm::Named, "The waiting session"),
+            pos("decision", ArgumentForm::Named, "approve or deny"),
+            opt(
+                "text",
+                ArgumentForm::Named,
+                "A reason given with the answer",
             ),
-            opt("text", Kind::Text, "A reason given with the answer"),
             opt(
                 "standing",
-                Kind::Bool,
+                ArgumentForm::Flag,
                 "Answer the same tool and input next time in this session",
             ),
         ],
@@ -1250,7 +1362,7 @@ const WRITTEN: &[Command] = &[
         name: "interrupt",
         help: "Stop a session's current turn, through the control connection of a session Polylogue hosts; refused otherwise",
         reason: "An authored act that reaches a session through its harness",
-        args: &[pos("session", Kind::Text, "The session")],
+        args: &[pos("session", ArgumentForm::Named, "The session")],
         run: Run::Daemon(daemon::<acts::Interrupt>()),
         tool: Some(Tool::Act),
         http: true,
@@ -1262,14 +1374,14 @@ const WRITTEN: &[Command] = &[
         help: "Start a session Polylogue hosts on the harness's control protocol (Codex's app-server, Claude Code stream-json, Gemini CLI and Hermes ACP): its approvals, questions and turns can then be answered, steered and interrupted from anywhere, and it survives a daemon restart. With --role, an instance of that role: its harness, with its instructions",
         reason: "Starts a harness session; no query selects one that does not exist yet",
         args: &[
-            pos("text", Kind::Words, "The first turn"),
+            pos("text", ArgumentForm::Words, "The first turn"),
+            opt("harness", ArgumentForm::Named, "The harness to host"),
             opt(
-                "harness",
-                Kind::Choice(&["codex", "claude-code", "gemini-cli", "hermes"]),
-                "The harness to host",
+                "role",
+                ArgumentForm::Named,
+                "Start an instance of this role",
             ),
-            opt("role", Kind::Text, "Start an instance of this role"),
-            opt("cwd", Kind::Text, "The working directory"),
+            opt("cwd", ArgumentForm::Named, "The working directory"),
         ],
         run: Run::Daemon(daemon::<acts::Start>()),
         tool: Some(Tool::Act),
@@ -1284,28 +1396,24 @@ const WRITTEN: &[Command] = &[
         args: &[
             pos(
                 "session",
-                Kind::Text,
+                ArgumentForm::Named,
                 "The session whose work is handed off",
             ),
-            opt(
-                "to",
-                Kind::Choice(&["codex", "claude-code", "gemini-cli", "hermes"]),
-                "The harness of the new session",
-            ),
-            opt("at", Kind::Text, "The message to continue from"),
+            opt("to", ArgumentForm::Named, "The harness of the new session"),
+            opt("at", ArgumentForm::Named, "The message to continue from"),
             opt(
                 "cwd",
-                Kind::Text,
+                ArgumentForm::Named,
                 "The working directory, when not the source's",
             ),
             opt(
                 "stop_source",
-                Kind::Bool,
+                ArgumentForm::Flag,
                 "Interrupt the source session once the new one runs",
             ),
             opt(
                 "print",
-                Kind::Bool,
+                ArgumentForm::Flag,
                 "Show the pack and the channel; start nothing",
             ),
         ],
@@ -1342,17 +1450,17 @@ const WRITTEN: &[Command] = &[
                 required: true,
                 ..pos(
                     "name",
-                    Kind::Text,
+                    ArgumentForm::Named,
                     "A query name; entirely hexadecimal names are reserved",
                 )
             },
             Arg {
                 required: true,
-                ..pos("query", Kind::Rest, "The query")
+                ..pos("query", ArgumentForm::Rest, "The query")
             },
             unlisted(opt(
                 "denominator",
-                Kind::Text,
+                ArgumentForm::Named,
                 "The denominator query required for a measure or aggregate figure",
             )),
         ],
@@ -1369,22 +1477,22 @@ const WRITTEN: &[Command] = &[
         args: &[
             opt(
                 "name",
-                Kind::Text,
+                ArgumentForm::Named,
                 "What the notices are called (default: the query)",
             ),
             unlisted(opt(
                 "for",
-                Kind::Text,
+                ArgumentForm::Named,
                 "How long a row must keep matching before it is a notice, such as 20m",
             )),
             unlisted(opt(
                 "notify",
-                Kind::Bool,
+                ArgumentForm::Flag,
                 "Also show each notice as a desktop notification",
             )),
             Arg {
                 required: true,
-                ..pos("query", Kind::Rest, "The query")
+                ..pos("query", ArgumentForm::Rest, "The query")
             },
         ],
         run: Run::Daemon(daemon::<H::Watch>()),
@@ -1398,10 +1506,10 @@ const WRITTEN: &[Command] = &[
         reason: "Freeze the rows a query returned now as a result that later reads cite",
         help: "Run a query and keep the rows it returned, to read back later as `result:<id>` (or `result:<id>.matches`) exactly as they were",
         args: &[
-            opt("name", Kind::Text, "A name for the kept result"),
+            opt("name", ArgumentForm::Named, "A name for the kept result"),
             Arg {
                 required: true,
-                ..pos("query", Kind::Rest, "The query")
+                ..pos("query", ArgumentForm::Rest, "The query")
             },
         ],
         run: Run::Daemon(daemon::<H::Keep>()),
@@ -1415,7 +1523,7 @@ const WRITTEN: &[Command] = &[
         help: "Read-only SQL. Programs read the views v1_sessions, v1_messages, v1_tool_calls, v1_links and v1_assertions, whose names and columns stay; the tables change with the index format",
         reason: "Run expert read-only queries over the stable archive views",
         latency: command_surface::LatencyClass::Aggregate,
-        args: &[pos("statement", Kind::Text, "One SQL statement")],
+        args: &[pos("statement", ArgumentForm::Named, "One SQL statement")],
         run: Run::Daemon(daemon::<H::Sql>()),
         http: true,
         tool: Some(Tool::Read),
@@ -1450,39 +1558,39 @@ const WRITTEN: &[Command] = &[
         reason: "Queue a chat action the browser extension carries out in a web chat",
         help: "Ask the browser extension to draft a turn in a web chat, or with `--submit` to send it. Needs the setting `browser.actions on`; a submit into an existing conversation waits for approval in the extension's popup",
         args: &[
-            pos("provider", Kind::Text, "The web chat: chatgpt"),
-            pos("text", Kind::Words, "What to write"),
+            pos("provider", ArgumentForm::Named, "The web chat: chatgpt"),
+            pos("text", ArgumentForm::Words, "What to write"),
             Arg {
                 required: true,
                 ..opt(
                     "model",
-                    Kind::Text,
+                    ArgumentForm::Named,
                     "The model, as the provider's model menu names it",
                 )
             },
             unlisted(opt(
                 "effort",
-                Kind::Text,
+                ArgumentForm::Named,
                 "The reasoning effort, as the provider's menu names it",
             )),
             opt(
                 "conversation",
-                Kind::Text,
+                ArgumentForm::Named,
                 "Reply in this conversation (its ID); without it a new conversation starts",
             ),
             unlisted(opt(
                 "project",
-                Kind::Text,
+                ArgumentForm::Named,
                 "Start the conversation in this project",
             )),
             opt(
                 "submit",
-                Kind::Bool,
+                ArgumentForm::Flag,
                 "Send the turn instead of leaving a draft",
             ),
             Arg {
                 cli_only: true,
-                ..opt("attach", Kind::List, "Files to attach")
+                ..opt("attach", ArgumentForm::Repeated, "Files to attach")
             },
         ],
         run: Run::Daemon(daemon::<browser::ChatSend>()),
@@ -1505,7 +1613,7 @@ const WRITTEN: &[Command] = &[
         name: "chat approve",
         reason: "The operator approves a chat action waiting in the extension",
         help: "Approve a held submit into an existing conversation",
-        args: &[pos("id", Kind::Text, "The chat action")],
+        args: &[pos("id", ArgumentForm::Named, "The chat action")],
         run: Run::Daemon(daemon::<browser::ChatApprove>()),
         writes: true,
         ..CLI
@@ -1514,7 +1622,7 @@ const WRITTEN: &[Command] = &[
         name: "chat decline",
         reason: "The operator declines a chat action waiting in the extension",
         help: "Decline a held submit; the action is cancelled",
-        args: &[pos("id", Kind::Text, "The chat action")],
+        args: &[pos("id", ArgumentForm::Named, "The chat action")],
         run: Run::Daemon(daemon::<browser::ChatDecline>()),
         writes: true,
         ..CLI
@@ -1526,12 +1634,12 @@ const WRITTEN: &[Command] = &[
         args: &[
             pos(
                 "provider",
-                Kind::Text,
+                ArgumentForm::Named,
                 "The web chat: chatgpt, claude-ai or grok",
             ),
             opt(
                 "since",
-                Kind::Text,
+                ArgumentForm::Named,
                 "Only conversations changed on or after this date or time",
             ),
         ],
@@ -1554,7 +1662,7 @@ const WRITTEN: &[Command] = &[
         name: "backfill cancel",
         reason: "Stop a backfill job the browser extension is running",
         help: "Stop a backfill job",
-        args: &[pos("id", Kind::Text, "The job")],
+        args: &[pos("id", ArgumentForm::Named, "The job")],
         run: Run::Daemon(daemon::<browser::BackfillCancel>()),
         tool: Some(Tool::Chat),
         http: true,
@@ -1564,101 +1672,105 @@ const WRITTEN: &[Command] = &[
     Command {
         name: "web",
         help: "Open the web reader",
-        run: Run::ConfiguredLocal(local::web),
+        run: configured_local::<local::arguments::Empty>(local::web),
         ..CLI
     },
     Command {
         name: "install-agent",
         help: "Register Polylogue with a browser: `chrome` writes the extension's native messaging host manifest, which allows only `--extension-id`",
         args: &[
-            pos("harness", Kind::Text, "The browser"),
+            pos("harness", ArgumentForm::Named, "The browser"),
             opt(
                 "extension_id",
-                Kind::Text,
+                ArgumentForm::Named,
                 "The ID chrome://extensions shows",
             ),
-            opt("remove", Kind::Bool, "Delete the manifest instead"),
+            opt("remove", ArgumentForm::Flag, "Delete the manifest instead"),
         ],
-        run: Run::ConfiguredLocal(local::install_agent),
+        run: configured_local::<local::arguments::InstallAgent>(local::install_agent),
         ..CLI
     },
     Command {
         name: "browser-host",
         help: "The browser extension's native messaging host; Chrome starts it",
-        run: Run::ConfiguredLocal(local::browser_host),
+        run: configured_local::<local::arguments::Empty>(local::browser_host),
         cli: Cli::Hidden,
         ..CLI
     },
     Command {
         name: "mcp",
         help: "Serve MCP over stdio",
-        run: Run::ConfiguredLocal(local::mcp),
+        run: configured_local::<local::arguments::Empty>(local::mcp),
         ..CLI
     },
     Command {
         name: "hook",
         help: "Called by a harness hook; reads the event from stdin and answers with context when the event takes it: the brief at session start, takeover context for a pasted session ID or supported web link",
         args: &[
-            pos("event", Kind::Text, "The hook event's name"),
+            pos("event", ArgumentForm::Named, "The hook event's name"),
             Arg {
                 default: Some("claude-code"),
                 ..opt(
                     "harness",
-                    Kind::Choice(crate::hook::Harness::NAMES),
+                    ArgumentForm::Named,
                     "The harness calling: its payload, output and session IDs",
                 )
             },
         ],
-        run: Run::ConfiguredLocal(local::hook),
+        run: configured_local::<local::arguments::Hook>(local::hook),
         ..CLI
     },
     Command {
         name: "host",
         help: "Started by the daemon for a session it hosts over stdio (Claude Code stream-json, Gemini CLI and Hermes ACP): holds the agent's stdin and stdout so a daemon restart never ends it, and relays them to the daemon's connection",
         args: &[
-            pos(
-                "harness",
-                Kind::Choice(&["claude-code", "gemini-cli", "hermes"]),
-                "The harness to run",
+            pos("harness", ArgumentForm::Named, "The harness to run"),
+            opt(
+                "socket",
+                ArgumentForm::Named,
+                "The socket the daemon connects to",
             ),
-            opt("socket", Kind::Text, "The socket the daemon connects to"),
-            opt("cwd", Kind::Text, "The agent's working directory"),
-            opt("spool", Kind::Text, "The hook spool its status lines go to"),
+            opt("cwd", ArgumentForm::Named, "The agent's working directory"),
+            opt(
+                "spool",
+                ArgumentForm::Named,
+                "The hook spool its status lines go to",
+            ),
             opt(
                 "session_id",
-                Kind::Text,
+                ArgumentForm::Named,
                 "The session ID to start the agent with, where the harness takes one",
             ),
         ],
-        run: Run::Local(local::host),
+        run: local_command::<local::arguments::Host>(local::host),
         ..CLI
     },
     Command {
         name: "hooks install",
         help: "Merge Polylogue's hook entries into the settings file, keeping everything else. Installing twice changes nothing",
         args: HOOKS_ARGS,
-        run: Run::ConfiguredLocal(local::hooks_install),
+        run: configured_local::<local::arguments::Hooks>(local::hooks_install),
         ..CLI
     },
     Command {
         name: "hooks uninstall",
         help: "Remove Polylogue's hook entries, keeping everything else",
         args: HOOKS_ARGS,
-        run: Run::ConfiguredLocal(local::hooks_uninstall),
+        run: configured_local::<local::arguments::Hooks>(local::hooks_uninstall),
         ..CLI
     },
     Command {
         name: "completions",
         help: "The shell code that registers completion: commands and options, and while you type a query, its units, fields, values seen and recent session IDs from the daemon (`source <(polylogue completions zsh)`)",
         args: &[
-            pos("shell", Kind::Choice(SHELLS), "The shell"),
+            pos("shell", ArgumentForm::Named, "The shell"),
             opt(
                 "program",
-                Kind::Text,
+                ArgumentForm::Named,
                 "The command to complete, when a wrapper on PATH runs Polylogue (default: polylogue)",
             ),
         ],
-        run: Run::Local(local::completions),
+        run: local_command::<local::arguments::Completions>(local::completions),
         ..CLI
     },
     Command {
@@ -1668,17 +1780,17 @@ const WRITTEN: &[Command] = &[
         args: &[
             opt(
                 "date",
-                Kind::Text,
+                ArgumentForm::Named,
                 "Logical date YYYY-MM-DD (default today)",
             ),
             unlisted(opt(
                 "across_years",
-                Kind::Bool,
+                ArgumentForm::Flag,
                 "This month and day in recorded years through the chosen date",
             )),
             unlisted(opt(
                 "undated",
-                Kind::Bool,
+                ArgumentForm::Flag,
                 "Records with unknown or unrepresentable time",
             )),
             CURSOR,
@@ -1694,30 +1806,34 @@ const WRITTEN: &[Command] = &[
         reason: "Total usage and price of selected sessions with response details",
         help: "Usage of selected sessions, optionally during one logical day, and paged physical response records",
         args: &[
-            opt("query", Kind::Text, "Session query (default sessions)"),
+            opt(
+                "query",
+                ArgumentForm::Named,
+                "Session query (default sessions)",
+            ),
             opt(
                 "date",
-                Kind::Text,
+                ArgumentForm::Named,
                 "Restrict source record times to this logical date",
             ),
             unlisted(opt(
                 "model",
-                Kind::Text,
+                ArgumentForm::Named,
                 "Show response details for this model; totals include all selected models",
             )),
             unlisted(opt(
                 "undated",
-                Kind::Bool,
+                ArgumentForm::Flag,
                 "Only source records with unknown or unrepresentable times",
             )),
             unlisted(opt(
                 "unknown_model",
-                Kind::Bool,
+                ArgumentForm::Flag,
                 "Response details with no recorded model name",
             )),
             unlisted(opt(
                 "month",
-                Kind::Text,
+                ArgumentForm::Named,
                 "Calendar month for daily response subtotals, as YYYY-MM-DD (default selected day or today)",
             )),
             CURSOR,
@@ -1734,10 +1850,10 @@ const WRITTEN: &[Command] = &[
         latency: command_surface::LatencyClass::Completion,
         help: "Complete a query at a UTF-8 byte offset using its full scope and suffix",
         args: &[
-            pos_opt("text", Kind::Text, "The full query text"),
+            pos("text", ArgumentForm::Named, "The full query text"),
             opt(
                 "position",
-                Kind::Integer,
+                ArgumentForm::Named,
                 "UTF-8 byte offset of the cursor (default: end of text)",
             ),
         ],
@@ -1754,13 +1870,17 @@ const WRITTEN: &[Command] = &[
         reason: "The operator accepts or rejects one revision of an agent's note",
         help: "Accept or reject one revision of an agent's note",
         args: &[
-            pos("note", Kind::Text, "The note's natural assertion reference"),
+            pos(
+                "note",
+                ArgumentForm::Named,
+                "The note's natural assertion reference",
+            ),
             opt(
                 "accepted",
-                Kind::Bool,
+                ArgumentForm::Flag,
                 "Accept the revision; without it, reject it",
             ),
-            opt("reason", Kind::Text, "Why"),
+            opt("reason", ArgumentForm::Named, "Why"),
         ],
         run: Run::Daemon(daemon::<H::Judge>()),
         cli: Cli::Hidden,
@@ -1882,12 +2002,19 @@ pub fn command(name: &str) -> Option<&'static Command> {
 /// `chat send`: the command line reads the `--attach` files in the
 /// caller's process and sends their bytes.
 fn attach_files(
-    values: &Values,
+    values: &Map<String, Value>,
     cwd: &std::path::Path,
     arguments: &mut Map<String, Value>,
 ) -> Result<(), String> {
     let mut files = Vec::new();
-    for path in values.list("attach") {
+    for path in values
+        .get("attach")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|value| value.as_str().map(str::to_owned))
+        .collect::<Vec<_>>()
+    {
         let path = cwd.join(path);
         let bytes =
             std::fs::read(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
@@ -1924,34 +2051,6 @@ fn media_type(name: &str) -> &'static str {
         Some("csv") => "text/csv",
         Some("html") => "text/html",
         _ => "application/octet-stream",
-    }
-}
-
-/// A command's argument values as one JSON object, keyed by argument name.
-#[derive(Clone, Debug, Default)]
-pub struct Values(pub Map<String, Value>);
-
-impl Values {
-    pub fn text(&self, name: &str) -> Option<String> {
-        self.0.get(name).and_then(Value::as_str).map(str::to_owned)
-    }
-
-    pub fn flag(&self, name: &str) -> bool {
-        self.0.get(name).and_then(Value::as_bool).unwrap_or(false)
-    }
-
-    pub fn integer(&self, name: &str) -> Option<u64> {
-        self.0.get(name).and_then(Value::as_u64)
-    }
-
-    pub fn list(&self, name: &str) -> Vec<String> {
-        self.0
-            .get(name)
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|v| v.as_str().map(str::to_owned))
-            .collect()
     }
 }
 
@@ -2003,20 +2102,12 @@ pub(crate) fn specification(command: &Command) -> command_surface::OperationSpec
             .filter(|arg| !matches!(arg.name, "cursor" | "budget"))
             .map(|arg| ArgumentSpec {
                 name: arg.name.into(),
-                form: match arg.kind {
-                    Kind::Bool => ArgumentForm::Flag,
-                    Kind::Words => ArgumentForm::Words,
-                    Kind::Rest => ArgumentForm::Rest,
-                    Kind::List if arg.positional => ArgumentForm::Words,
-                    Kind::List => ArgumentForm::Repeated,
-                    _ if arg.positional => ArgumentForm::Positional,
-                    _ => ArgumentForm::Named,
-                },
+                form: arg.form,
                 help: arg.help.into(),
                 short: arg.short,
                 calling_process: arg.cli_only,
                 listed: !arg.unlisted,
-                value_delimiter: None,
+                value_delimiter: (arg.form == ArgumentForm::Repeated).then_some(','),
             })
             .collect(),
         listed: command.cli != Cli::Hidden,
@@ -2024,7 +2115,7 @@ pub(crate) fn specification(command: &Command) -> command_surface::OperationSpec
     }
 }
 
-/// The daemon rows' declarations: schemas, help, MCP tools and rendering,
+/// The operation declarations: schemas, help, MCP tools and rendering,
 /// without handlers. Clients use them without a daemon.
 pub fn declarations() -> &'static std::sync::Arc<command_surface::OperationDeclarations> {
     static DECLARATIONS: LazyLock<std::sync::Arc<command_surface::OperationDeclarations>> =
@@ -2060,8 +2151,17 @@ pub fn declarations() -> &'static std::sync::Arc<command_surface::OperationDecla
                 }
             }
             for command in COMMANDS.iter() {
-                if let Some(registration) = command.registration() {
-                    registration.declare(&mut declarations, command);
+                match command.run {
+                    Run::Local(_, declare, _) | Run::ConfiguredLocal(_, declare, _) => {
+                        declare(&mut declarations, command)
+                    }
+                    Run::Feed { registration, .. } => {
+                        registration.declare(&mut declarations, command)
+                    }
+                    _ => command
+                        .registration()
+                        .expect("request registration")
+                        .declare(&mut declarations, command),
                 }
             }
             declarations.finish()

@@ -12,7 +12,9 @@ use std::collections::BTreeMap;
 mod tests;
 
 /// How far a follower has seen each session.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, command_surface::JsonSchema,
+)]
 #[serde(deny_unknown_fields)]
 pub struct Marks {
     pub sessions: BTreeMap<String, SessionMark>,
@@ -20,7 +22,7 @@ pub struct Marks {
 
 /// The last state shown for a session and the last message and tool call
 /// row keys shown.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, command_surface::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionMark {
     pub state: State,
@@ -30,7 +32,7 @@ pub struct SessionMark {
 
 /// What a state line shows: the state, the wait, the stall and the open
 /// tool.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, command_surface::JsonSchema)]
 pub struct State {
     pub state: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -42,7 +44,7 @@ pub struct State {
 }
 
 /// One followed line.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, command_surface::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Line {
     State {

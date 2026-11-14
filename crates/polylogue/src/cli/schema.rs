@@ -1,5 +1,5 @@
 //! Local artifact comparison and explicit CLI output; inference runs in the daemon.
-use crate::commands::{Command, Values};
+use crate::commands::Command;
 use crate::daemon::schema::Inference;
 use polylogue_sources::schema;
 use std::{
@@ -10,14 +10,22 @@ use std::{
 
 pub fn diff(
     _: &Command,
-    values: &Values,
+    values: &command_surface::ParsedCommand,
     output: crate::config::OutputConfig,
     json: bool,
 ) -> ExitCode {
     run(values, json, output, || {
         let read = |name| -> Result<Inference, String> {
-            let file = File::open(values.text(name).unwrap_or_default())
-                .map_err(|_| format!("cannot read {name} schema"))?;
+            let file = File::open(
+                values
+                    .request
+                    .arguments
+                    .get(name)
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+                    .unwrap_or_default(),
+            )
+            .map_err(|_| format!("cannot read {name} schema"))?;
             serde_json::from_reader(BufReader::new(file))
                 .map_err(|_| format!("invalid {name} schema artifact"))
         };
@@ -60,7 +68,7 @@ pub fn diff(
 }
 
 pub fn output(
-    values: &Values,
+    values: &command_surface::ParsedCommand,
     answer: &command_surface::Answer<serde_json::Value>,
     startup: &crate::config::Startup,
     json: bool,
@@ -68,7 +76,14 @@ pub fn output(
     let value = answer
         .value()
         .expect("output handlers receive answers with values");
-    if json && values.text("output").is_none() {
+    if json
+        && values
+            .calling_process
+            .get("output")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .is_none()
+    {
         println!(
             "{}",
             polylogue_render::terminal::json(
@@ -82,7 +97,7 @@ pub fn output(
 }
 
 fn run(
-    values: &Values,
+    values: &command_surface::ParsedCommand,
     json: bool,
     output: crate::config::OutputConfig,
     action: impl FnOnce() -> Result<serde_json::Value, String>,
@@ -95,7 +110,12 @@ fn run(
             polylogue_render::Format::Terminal
         };
         polylogue_render::schema::render(&value, format, &mut bytes).map_err(|e| e.to_string())?;
-        match values.text("output") {
+        match values
+            .calling_process
+            .get("output")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+        {
             Some(path) => std::fs::write(path, bytes).map_err(|e| e.to_string()),
             None => io::stdout()
                 .lock()

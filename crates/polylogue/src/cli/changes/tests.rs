@@ -341,7 +341,7 @@ fn feed_refuses_query_page_and_field_flags_instead_of_ignoring_global_arguments(
     }
 }
 
-fn request(v: &crate::commands::Values) -> Result<command_surface::RunnableRequest, String> {
+fn request(v: &command_surface::ParsedCommand) -> Result<command_surface::RunnableRequest, String> {
     Ok(crate::client::request(
         "changes",
         super::arguments(v)?,

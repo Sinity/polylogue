@@ -12,10 +12,10 @@ pub(crate) mod schema;
 pub(crate) mod staged_file;
 pub(crate) mod write_out;
 
-use crate::commands::{COMMANDS, Cli, Command, GROUPS, Kind, Run, Surface, Values};
+use crate::commands::{COMMANDS, Cli, Command, GROUPS, Run, Surface};
 use clap::ArgAction;
 use clap::parser::{ArgMatches, ValueSource};
-use command_surface::Answer;
+use command_surface::{Answer, ArgumentForm, CliArgument, ParsedCommand};
 use polylogue_store::Archive;
 use serde_json::Value;
 use std::process::ExitCode;
@@ -66,14 +66,14 @@ pub fn command() -> clap::Command {
     for a in COMMANDS.iter().flat_map(|c| c.args).filter(|a| a.global) {
         if !globals.contains(&a.name) {
             globals.push(a.name);
-            root = root.arg(clap_arg(a).global(true));
+            root = root.arg(clap_arg(&projection_for(a)).global(true));
         }
     }
     for c in COMMANDS.iter() {
         match c.cli {
             Cli::NoSubcommand => {
                 for a in c.args_for(Surface::Cli).filter(|a| !a.global) {
-                    root = root.arg(clap_arg(a));
+                    root = root.arg(clap_arg(&projection(c, a)));
                 }
                 root = root.subcommand(subcommand(c).name("find"));
             }
@@ -115,7 +115,10 @@ fn subcommand(c: &Command) -> clap::Command {
         .about(c.help)
         .hide(c.cli == Cli::Hidden);
     for a in c.args_for(Surface::Cli).filter(|a| !a.global) {
-        let mut arg = clap_arg(a);
+        let mut arg = clap_arg(&projection(c, a));
+        if let Some(value) = a.default {
+            arg = arg.default_value(value);
+        }
         if c.name == "setting" && matches!(a.name, "key" | "value") {
             arg = arg.add(clap_complete::engine::ArgValueCompleter::new(
                 completion::Setting {
@@ -128,43 +131,88 @@ fn subcommand(c: &Command) -> clap::Command {
     sub
 }
 
-fn clap_arg(a: &crate::commands::Arg) -> clap::Arg {
-    let mut arg = clap::Arg::new(a.name)
-        .help(a.help)
-        .value_name(a.name.to_uppercase());
-    if !a.positional {
-        arg = arg.long(a.name.replace('_', "-"));
-        if let Some(s) = a.short {
-            arg = arg.short(s);
+/// The product keeps lexical exposure and completion on its command row;
+/// value kinds, choices and requiredness come from the shared input schema.
+fn projection(command: &Command, argument: &crate::commands::Arg) -> CliArgument {
+    if matches!(argument.name, "cursor" | "budget") {
+        return CliArgument {
+            spec: command_surface::ArgumentSpec::new(
+                argument.name,
+                ArgumentForm::Named,
+                argument.help,
+            ),
+            kind: command_surface::ValueKind::Text,
+            required: false,
+            choices: vec![],
+        };
+    }
+    let mut projected = crate::commands::declarations()
+        .cli_arguments(command.name)
+        .expect("declared CLI arguments")
+        .into_iter()
+        .find(|item| item.spec.name == argument.name)
+        .expect("CLI field belongs to its input");
+    // A named measure's series come from that measure's domain catalog;
+    // its shared request type also serves measures with free-text options.
+    if argument.name == "metric"
+        && projected.choices.is_empty()
+        && let Some(name) = command.name.strip_prefix("measure ")
+        && let Some(measure) = crate::daemon::measure::MEASURES
+            .iter()
+            .find(|measure| measure.name == name)
+    {
+        projected.choices = measure
+            .metrics
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect();
+    }
+    projected
+}
+fn projection_for(argument: &crate::commands::Arg) -> CliArgument {
+    let command = COMMANDS
+        .iter()
+        .find(|command| {
+            command
+                .args
+                .iter()
+                .any(|candidate| candidate.name == argument.name && candidate.global)
+        })
+        .expect("global argument owner");
+    projection(command, argument)
+}
+fn clap_arg(a: &CliArgument) -> clap::Arg {
+    let positional = matches!(
+        a.spec.form,
+        ArgumentForm::Positional | ArgumentForm::Words | ArgumentForm::Rest
+    );
+    let mut arg = clap::Arg::new(a.spec.name.clone())
+        .help(a.spec.help.clone())
+        .value_name(a.spec.name.to_uppercase());
+    if !positional {
+        arg = arg.long(a.spec.name.replace('_', "-"));
+        if let Some(short) = a.spec.short {
+            arg = arg.short(short);
         }
     }
-    arg = match a.kind {
-        Kind::Bool => arg.action(ArgAction::SetTrue),
-        Kind::Integer => arg.value_parser(clap::value_parser!(u64)),
-        Kind::Text => arg,
-        Kind::Json => {
-            arg.value_parser(|text: &str| serde_json::from_str::<serde_json::Value>(text))
-        }
-        Kind::Choice(choices) => arg.value_parser(clap::builder::PossibleValuesParser::new(
-            choices.iter().copied(),
-        )),
-        Kind::Words => arg.num_args(1..),
-        Kind::Rest => arg.num_args(1..),
-        Kind::List if a.positional => arg.num_args(1..),
-        Kind::List => arg.action(ArgAction::Append).value_delimiter(','),
+    arg = match a.spec.form {
+        ArgumentForm::Flag => arg.action(ArgAction::SetTrue),
+        ArgumentForm::Words | ArgumentForm::Rest => arg.num_args(1..),
+        ArgumentForm::Repeated => arg.action(ArgAction::Append),
+        _ => arg,
     };
-    if a.name == "budget" {
-        arg = arg.value_parser(|value: &str| parse_budget(Some(value)).map(|_| value.to_owned()));
+    if let Some(delimiter) = a.spec.value_delimiter {
+        arg = arg.value_delimiter(delimiter);
     }
-    if a.name == "query" && matches!(a.kind, Kind::Words | Kind::Rest) {
+    if !a.choices.is_empty() {
+        arg = arg.value_parser(clap::builder::PossibleValuesParser::new(a.choices.clone()));
+    }
+    if a.spec.name == "query" && matches!(a.spec.form, ArgumentForm::Words | ArgumentForm::Rest) {
         arg = arg.add(clap_complete::engine::ArgValueCompleter::new(
             completion::Query,
         ));
     }
-    if let Some(d) = a.default {
-        arg = arg.default_value(d);
-    }
-    if a.required && a.default.is_none() && a.kind != Kind::Bool {
+    if a.required && a.spec.form != ArgumentForm::Flag {
         arg.required_unless_present("request")
     } else {
         arg
@@ -202,37 +250,95 @@ pub(crate) fn needs_engine(
     })
 }
 
-/// A command's values from its matches.
-fn values(c: &Command, m: &ArgMatches) -> Values {
-    let mut out = serde_json::Map::new();
-    for a in c.args_for(Surface::Cli) {
-        let value = match a.kind {
-            Kind::Bool => m.get_flag(a.name).then_some(Value::Bool(true)),
-            Kind::Integer => m.get_one::<u64>(a.name).map(|n| Value::from(*n)),
-            Kind::Json => m.get_one::<Value>(a.name).cloned(),
-            Kind::Text | Kind::Choice(_) => m.get_one::<String>(a.name).cloned().map(Value::String),
-            Kind::Words | Kind::Rest => m
-                .get_many::<String>(a.name)
-                .map(|words| Value::String(words.cloned().collect::<Vec<_>>().join(" "))),
-            Kind::List => m
-                .get_many::<String>(a.name)
-                .map(|vs| Value::Array(vs.cloned().map(Value::String).collect())),
-        };
-        if let Some(v) = value {
-            out.insert(a.name.to_owned(), v);
+/// Clap owns presentation, OS-valued startup options and lexical placement.
+/// The shared parser alone turns the accepted words into values and an envelope.
+fn parsed(c: &Command, m: &ArgMatches) -> Result<ParsedCommand, String> {
+    let mut words = c.cli_words();
+    for name in [
+        "json",
+        "request",
+        "request_id",
+        "deadline",
+        "cursor",
+        "budget",
+    ] {
+        if name == "json" {
+            if m.get_flag(name) {
+                words.push("--json".into());
+            }
+        } else if let Some(value) = m.try_get_one::<String>(name).ok().flatten() {
+            words.extend([format!("--{}", name.replace('_', "-")), value.clone()]);
         }
     }
-    Values(out)
+    if m.get_one::<String>("request").is_some()
+        && c.args_for(Surface::Cli).any(|argument| {
+            !matches!(argument.name, "cursor" | "budget")
+                && m.value_source(argument.name) == Some(ValueSource::CommandLine)
+        })
+    {
+        return Err("--request cannot be mixed with operation arguments".into());
+    }
+    // Options precede positionals so a Rest field retains its literal words.
+    for positional in [false, true] {
+        for argument in c
+            .args_for(Surface::Cli)
+            .filter(|a| !matches!(a.name, "cursor" | "budget"))
+        {
+            let projected = projection(c, argument);
+            let is_positional = matches!(
+                projected.spec.form,
+                ArgumentForm::Positional | ArgumentForm::Words | ArgumentForm::Rest
+            );
+            if is_positional != positional
+                || m.value_source(argument.name) != Some(ValueSource::CommandLine)
+            {
+                continue;
+            }
+            if projected.spec.form == ArgumentForm::Flag {
+                if m.get_flag(argument.name) {
+                    words.push(projected.spec.flag());
+                }
+                continue;
+            }
+            let Some(raw) = m.get_raw(argument.name) else {
+                continue;
+            };
+            let raw: Vec<String> = raw
+                .map(|value| {
+                    value
+                        .to_str()
+                        .expect("operation arguments are UTF-8")
+                        .to_owned()
+                })
+                .collect();
+            if positional {
+                if matches!(
+                    projected.spec.form,
+                    ArgumentForm::Words | ArgumentForm::Rest
+                ) {
+                    words.push("--".into());
+                }
+                words.extend(raw);
+            } else {
+                for value in raw {
+                    words.extend([projected.spec.flag(), value]);
+                }
+            }
+        }
+    }
+    crate::commands::declarations()
+        .parse_cli(&words, polylogue_store::user_writes::new_request_id())
+        .map_err(|failure| failure.message)
 }
 
 /// The command and values a command line names, for tests.
 #[cfg(test)]
-pub fn parse(argv: &[&str]) -> Result<(&'static Command, Values), String> {
+pub fn parse(argv: &[&str]) -> Result<(&'static Command, ParsedCommand), String> {
     let matches = command()
         .try_get_matches_from(argv)
         .map_err(|e| e.to_string())?;
     let (c, m) = chosen(&matches).ok_or("no command")?;
-    Ok((c, values(c, m)))
+    Ok((c, parsed(c, m)?))
 }
 
 /// The command a command line names and the request arguments it sends,
@@ -241,15 +347,27 @@ pub fn parse(argv: &[&str]) -> Result<(&'static Command, Values), String> {
 pub fn request_arguments(
     argv: &[&str],
     cwd: &std::path::Path,
-) -> Result<(&'static Command, Values, serde_json::Map<String, Value>), String> {
+) -> Result<
+    (
+        &'static Command,
+        ParsedCommand,
+        serde_json::Map<String, Value>,
+    ),
+    String,
+> {
     let matches = command()
         .try_get_matches_from(argv)
         .map_err(|e| e.to_string())?;
     let (c, m) = chosen(&matches).ok_or("no command")?;
-    let values = values(c, m);
-    let mut arguments = arguments(c, &values, m);
+    let values = parsed(c, m)?;
+    let mut arguments = values
+        .request
+        .arguments
+        .as_object()
+        .ok_or("operation arguments must be an object")?
+        .clone();
     if let Some(prepare) = c.prepare {
-        prepare(&values, cwd, &mut arguments)?;
+        prepare(&values.calling_process, cwd, &mut arguments)?;
     }
     Ok((c, values, arguments))
 }
@@ -275,49 +393,25 @@ pub(crate) fn parse_error(error: clap::Error, output: crate::config::OutputConfi
 
 pub fn run_local(matches: &ArgMatches, output: crate::config::OutputConfig) -> Option<ExitCode> {
     let (command, matches) = chosen(matches)?;
-    let Run::Local(run) = command.run else {
+    let Run::Local(run, _, validate) = command.run else {
         return None;
     };
-    Some(run(
-        command,
-        &values(command, matches),
-        output,
-        matches.get_flag("json"),
-    ))
-}
-
-/// A request's token budget as the command line writes it.
-pub(crate) fn parse_budget(value: Option<&str>) -> Result<command_surface::TokenBudget, String> {
-    match value {
-        None => Ok(command_surface::TokenBudget::Default),
-        Some("none") => Ok(command_surface::TokenBudget::Unlimited),
-        Some(value) => value
-            .parse::<u32>()
-            .map(command_surface::TokenBudget::Tokens)
-            .map_err(|_| "budget must be a token count or none".into()),
+    let parsed = match parsed(command, matches) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            return Some(fail(
+                output,
+                matches.get_flag("json"),
+                "bad_request",
+                &error,
+                2,
+            ));
+        }
+    };
+    if let Err(error) = validate(&parsed.request.arguments) {
+        return Some(fail(output, parsed.json, "bad_request", &error, 2));
     }
-}
-
-/// The request arguments the command line names: the operation's own
-/// arguments given on it, without those that act on the calling machine.
-fn arguments(
-    command: &Command,
-    values: &Values,
-    matches: &ArgMatches,
-) -> serde_json::Map<String, Value> {
-    values
-        .0
-        .iter()
-        .filter(|(name, _)| {
-            matches.value_source(name) == Some(ValueSource::CommandLine)
-                && command.args.iter().any(|argument| {
-                    argument.name == name.as_str()
-                        && !argument.cli_only
-                        && !matches!(argument.name, "cursor" | "budget")
-                })
-        })
-        .map(|(name, value)| (name.clone(), value.clone()))
-        .collect()
+    Some(run(command, &parsed, output, parsed.json))
 }
 
 pub fn run(
@@ -330,98 +424,47 @@ pub fn run(
     let Some((cmd, m)) = chosen(matches) else {
         return fail(policy, json, "bad_request", "no such command", 2);
     };
-    let mut values = values(cmd, m);
-    values.0.insert("json".into(), Value::Bool(json));
-    match cmd.run {
-        Run::Local(run) => return run(cmd, &values, policy, json),
-        Run::ConfiguredLocal(run) => return run(cmd, &values, startup, json),
-        Run::Daemon(_) | Run::Delivered { .. } | Run::Feed { .. } => {}
-    }
-    let raw = m.get_one::<String>("request");
-    if raw.is_some()
-        && cmd.args_for(Surface::Cli).any(|argument| {
-            !matches!(argument.name, "cursor" | "budget")
-                && m.value_source(argument.name) == Some(ValueSource::CommandLine)
-        })
-    {
-        return fail(
-            policy,
-            json,
-            "bad_request",
-            "--request cannot be mixed with operation arguments",
-            2,
-        );
-    }
-    let deadline = match m.get_one::<String>("deadline").map(String::as_str) {
-        None => command_surface::Deadline::Default,
-        Some("none") => command_surface::Deadline::None,
-        Some(value) => match value.parse() {
-            Ok(milliseconds) => command_surface::Deadline::Milliseconds(milliseconds),
-            Err(_) => {
-                return fail(
-                    policy,
-                    json,
-                    "bad_request",
-                    "deadline must be milliseconds or none",
-                    2,
-                );
-            }
-        },
-    };
-    let request_id = m
-        .get_one::<String>("request_id")
-        .cloned()
-        .unwrap_or_else(polylogue_store::user_writes::new_request_id);
-    let budget_tokens = match parse_budget(m.get_one::<String>("budget").map(String::as_str)) {
-        Ok(tokens) => tokens,
+    let mut values = match parsed(cmd, m) {
+        Ok(parsed) => parsed,
         Err(error) => return fail(policy, json, "bad_request", &error, 2),
     };
-    let cursor = values.text("cursor");
-    let arguments = match raw {
-        Some(raw) => match serde_json::from_str::<Value>(raw) {
-            Ok(Value::Object(arguments)) => {
-                // Output options may read the arguments, while the request
-                // keeps exactly what the caller sent.
-                values = Values(arguments.clone());
-                values.0.insert("json".into(), Value::Bool(json));
-                arguments
-            }
-            Ok(_) => {
-                return fail(
-                    policy,
-                    json,
-                    "bad_request",
-                    "operation arguments must be an object",
-                    2,
-                );
-            }
-            Err(error) => return fail(policy, json, "bad_request", &error.to_string(), 2),
-        },
-        None => {
-            let mut arguments = arguments(cmd, &values, m);
-            if let Some(prepare) = cmd.prepare
-                && let Err(message) = prepare(&values, cwd, &mut arguments)
-            {
-                return fail(policy, json, "bad_request", &message, 2);
-            }
-            arguments
+    match cmd.run {
+        Run::Local(run, _, validate) => {
+            return match validate(&values.request.arguments) {
+                Ok(()) => run(cmd, &values, policy, json),
+                Err(error) => fail(policy, json, "bad_request", &error, 2),
+            };
         }
-    };
-    let call = command_surface::Request {
-        operation: cmd.name.into(),
-        arguments: Value::Object(arguments),
-        request_id,
-        deadline,
-        budget_tokens,
-        cursor,
-        fresh: false,
-        format: Default::default(),
-    };
+        Run::ConfiguredLocal(run, _, validate) => {
+            return match validate(&values.request.arguments) {
+                Ok(()) => run(cmd, &values, startup, json),
+                Err(error) => fail(policy, json, "bad_request", &error, 2),
+            };
+        }
+        Run::Daemon(_) | Run::Delivered { .. } | Run::Feed { .. } => {}
+    }
+    if m.get_one::<String>("request").is_none()
+        && let Some(prepare) = cmd.prepare
+    {
+        let Some(arguments) = values.request.arguments.as_object_mut() else {
+            return fail(
+                policy,
+                json,
+                "bad_request",
+                "operation arguments must be an object",
+                2,
+            );
+        };
+        if let Err(message) = prepare(&values.calling_process, cwd, arguments) {
+            return fail(policy, json, "bad_request", &message, 2);
+        }
+    }
+    let call = &values.request;
     if let Run::Delivered { deliver, .. } | Run::Feed { deliver, .. } = cmd.run {
-        return deliver(&values, startup, &call);
+        return deliver(&values, startup, call);
     }
     let root = startup.config.archive.clone();
-    let answer = match crate::client::call_ready(&Archive::at(&root), &call) {
+    let answer = match crate::client::call_ready(&Archive::at(&root), call) {
         Ok(r) => r,
         Err(e) if is_down(&e) => {
             return fail(
@@ -512,7 +555,7 @@ fn notes(notes: &[String], output: crate::config::OutputConfig) {
 /// `status`: the whole answer, or with `--line` the one line a status bar
 /// shows (`3 running · 1 waiting 7m`).
 pub fn status_output(
-    values: &Values,
+    values: &ParsedCommand,
     answer: &Answer<Value>,
     startup: &crate::config::Startup,
     json: bool,
@@ -520,7 +563,13 @@ pub fn status_output(
     let data = answer
         .value()
         .expect("output handlers receive answers with values");
-    if !values.flag("line") {
+    if !values
+        .request
+        .arguments
+        .get("line")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+    {
         if json {
             println!(
                 "{}",
@@ -553,7 +602,7 @@ pub fn status_output(
 /// `continue --exec`: replaces this process with the session's native
 /// resume command; without `--exec`, the plan is printed.
 pub fn resume_output(
-    values: &Values,
+    values: &ParsedCommand,
     answer: &Answer<Value>,
     startup: &crate::config::Startup,
     json: bool,
@@ -561,7 +610,12 @@ pub fn resume_output(
     let data = answer
         .value()
         .expect("output handlers receive answers with values");
-    if !values.flag("exec") {
+    if !values
+        .calling_process
+        .get("exec")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+    {
         if json {
             println!("{}", polylogue_render::terminal::json(data, false));
         } else {

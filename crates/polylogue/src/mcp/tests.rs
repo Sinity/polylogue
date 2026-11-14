@@ -422,7 +422,7 @@ fn every_tool_operation_is_reachable_from_exactly_one_tool() {
     for command in COMMANDS.iter().filter(|c| {
         !matches!(
             c.run,
-            crate::commands::Run::Local(_) | crate::commands::Run::ConfiguredLocal(_)
+            crate::commands::Run::Local(..) | crate::commands::Run::ConfiguredLocal(..)
         ) && c.http
     }) {
         assert!(

@@ -19,7 +19,7 @@ const MARKS_MARGIN: Duration = Duration::from_millis(500);
 pub(crate) struct Follow;
 
 /// What to follow; `marks` continues a previous follow.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, command_surface::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Arguments {
     pub target: String,

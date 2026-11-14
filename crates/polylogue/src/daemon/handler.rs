@@ -175,7 +175,7 @@ pub(crate) trait Streams: Handler {
 
 /// A stream the command line follows over the socket; it has no finite answer.
 pub(crate) trait Feed: Send + Sync + 'static {
-    type Arguments: DeserializeOwned + Send + 'static;
+    type Arguments: Serialize + DeserializeOwned + JsonSchema + Send + 'static;
     fn produce(
         arguments: Self::Arguments,
         daemon: &Daemon,
@@ -249,10 +249,11 @@ pub(crate) const fn streams<H: Streams>() -> Registration {
     }
 }
 
-/// A stream-only row; the shared declarations do not hold it.
+/// A stream-only row, with shared argument declarations and product stream delivery.
 #[derive(Clone, Copy)]
 pub struct FeedRegistration {
     produce: ProduceFeed,
+    declare: fn(&mut DeclarationsBuilder, &'static Command),
 }
 
 type ProduceFeed = fn(&Value, &Daemon, &Arc<Context>, &mut dyn Write) -> Result<(), Failure>;
@@ -260,6 +261,25 @@ type ProduceFeed = fn(&Value, &Daemon, &Arc<Context>, &mut dyn Write) -> Result<
 pub(crate) const fn feed<F: Feed>() -> FeedRegistration {
     FeedRegistration {
         produce: produce_feed::<F>,
+        declare: declare_feed::<F>,
+    }
+}
+
+fn declare_feed<F: Feed>(declarations: &mut DeclarationsBuilder, row: &'static Command) {
+    let mut spec = crate::commands::specification(row);
+    spec.kind = command_surface::OperationKind::Stream;
+    if spec.reason.is_empty() {
+        spec.reason = row.help.into();
+    }
+    declarations
+        .declare_stream::<F::Arguments, Value>(spec, |value, _| {
+            crate::cli::print::json(value, false)
+        })
+        .expect("feed arguments match their declaration");
+}
+impl FeedRegistration {
+    pub(crate) fn declare(&self, declarations: &mut DeclarationsBuilder, row: &'static Command) {
+        (self.declare)(declarations, row);
     }
 }
 

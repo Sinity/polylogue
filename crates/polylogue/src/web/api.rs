@@ -156,7 +156,7 @@ async fn answer(
             )
             .await;
         }
-        Run::Local(_) | Run::ConfiguredLocal(_) => return StatusCode::NOT_FOUND.into_response(),
+        Run::Local(..) | Run::ConfiguredLocal(..) => return StatusCode::NOT_FOUND.into_response(),
     };
     let policy = match registration.admit(&request.arguments, c, &caller) {
         Ok(policy) => policy,

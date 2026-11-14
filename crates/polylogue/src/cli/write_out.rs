@@ -2,7 +2,7 @@
 //! only after a validated completion; staged failures retain their diagnosis.
 pub(crate) mod bundle;
 
-use super::{Archive, Values, fail};
+use super::{Archive, fail};
 use base64::Engine as _;
 use polylogue_model::{Reference, bundle::Counts, read::*};
 use polylogue_store::export_items::ExportItems;
@@ -29,22 +29,18 @@ impl From<&str> for DeliveryError {
 }
 
 pub(crate) fn run(
-    values: &Values,
+    values: &command_surface::ParsedCommand,
     startup: &crate::config::Startup,
     accepted: &command_surface::RunnableRequest,
 ) -> ExitCode {
     match deliver(values, startup, accepted) {
         Ok(code) => ExitCode::from(code),
-        Err(DeliveryError::Text(error)) => fail(
-            startup.output,
-            values.flag("json"),
-            "read_output",
-            &error,
-            1,
-        ),
+        Err(DeliveryError::Text(error)) => {
+            fail(startup.output, values.json, "read_output", &error, 1)
+        }
         Err(DeliveryError::Answer(answer)) => {
             let code = answer.exit_code();
-            if values.flag("json") {
+            if values.json {
                 println!(
                     "{}",
                     polylogue_render::terminal::json(
@@ -268,14 +264,19 @@ fn invalid(message: impl ToString) -> io::Error {
 }
 
 fn deliver(
-    values: &Values,
+    values: &command_surface::ParsedCommand,
     startup: &crate::config::Startup,
     accepted: &command_surface::RunnableRequest,
 ) -> Result<u8, DeliveryError> {
     let archive = Archive::at(&startup.config.archive);
     let arguments: crate::protocol::read::Arguments =
         serde_json::from_value(accepted.arguments.clone()).map_err(|e| e.to_string())?;
-    let destination = values.text("to").map(PathBuf::from);
+    let destination = values
+        .calling_process
+        .get("to")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .map(PathBuf::from);
     // Writing to a destination streams the reading; a terminal shows
     // the terminal form unless JSON was asked for.
     let delivery = if destination.is_some() {
@@ -283,7 +284,7 @@ fn deliver(
     } else {
         arguments.delivery
     };
-    let format = arguments.format.unwrap_or(if values.flag("json") {
+    let format = arguments.format.unwrap_or(if values.json {
         Format::Json
     } else {
         Format::Terminal
@@ -291,7 +292,7 @@ fn deliver(
     if destination.is_none() && delivery == ReadDelivery::Page {
         let answer = crate::client::call_ready(&archive, accepted).map_err(|e| e.to_string())?;
         let code = answer.exit_code();
-        if values.flag("json") {
+        if values.json {
             println!(
                 "{}",
                 polylogue_render::terminal::json(
@@ -335,7 +336,15 @@ fn deliver(
             .iter()
             .any(|word| word.split(':').next() == Some("inherited"))
         {
-            let mut show = values.list("show");
+            let mut show = values
+                .request
+                .arguments
+                .get("show")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|value| value.as_str().map(str::to_owned))
+                .collect::<Vec<_>>();
             if !show
                 .iter()
                 .any(|word| word.split(':').next() == Some("inherited"))
@@ -351,7 +360,7 @@ fn deliver(
         format,
         package_format,
         with_blobs,
-        values.flag("json"),
+        values.json,
         |callback| {
             crate::client::stream::run_call(
                 &archive,

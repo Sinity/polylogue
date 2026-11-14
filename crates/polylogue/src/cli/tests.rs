@@ -49,7 +49,7 @@ fn a_starting_daemon_is_waited_for() {
 #[test]
 fn manual_is_an_offline_topic() {
     let manual = COMMANDS.iter().find(|c| c.name == "manual").unwrap();
-    assert!(matches!(manual.run, crate::commands::Run::Local(_)));
+    assert!(matches!(manual.run, crate::commands::Run::Local(..)));
     let matches = command()
         .try_get_matches_from(["polylogue", "manual"])
         .unwrap();
@@ -150,12 +150,12 @@ fn query_options_work_after_words_and_the_separator_keeps_literal_options() {
         assert_eq!(selected.name, "query");
         assert!(matches.get_flag("json"));
         assert_eq!(
-            values(selected, arguments).text("query").as_deref(),
+            parsed(selected, arguments).unwrap().request.arguments["query"].as_str(),
             Some("sessions where parser")
         );
     }
     let (_, literal) = parse(&["polylogue", "find", "--", "--json"]).unwrap();
-    assert_eq!(literal.text("query").as_deref(), Some("--json"));
+    assert_eq!(literal.request.arguments["query"].as_str(), Some("--json"));
 }
 
 #[test]
@@ -163,7 +163,7 @@ fn raw_cli_arguments_replace_required_positionals() {
     let (selected, values) =
         parse(&["polylogue", "find", "--request", "{}", "--deadline", "none"]).unwrap();
     assert_eq!(selected.name, "query");
-    assert!(values.text("query").is_none());
+    assert!(values.request.arguments.get("query").is_none());
     assert!(
         command()
             .try_get_matches_from(["polylogue", "read", "--request", r#"{"target":"sessions"}"#])
@@ -644,10 +644,12 @@ fn status_exit_code_is_degraded_when_answer_is_degraded() {
     let degraded =
         command_surface::Answer::degraded(data.clone(), vec!["the index is behind".into()]);
     for line in [false, true] {
-        let values = crate::commands::Values(serde_json::Map::from_iter([(
-            "line".into(),
-            serde_json::json!(line),
-        )]));
+        let argv = if line {
+            vec!["polylogue", "status", "--line"]
+        } else {
+            vec!["polylogue", "status"]
+        };
+        let (_, values) = parse(&argv).unwrap();
         assert_eq!(
             status_output(&values, &degraded, &startup, true),
             ExitCode::from(degraded.exit_code()),
@@ -664,4 +666,89 @@ fn status_exit_code_is_degraded_when_answer_is_degraded() {
             ExitCode::SUCCESS
         );
     }
+}
+
+#[test]
+fn shared_cli_values_keep_request_options_and_calling_process_separate() {
+    let (_, parsed) = parse(&[
+        "polylogue",
+        "read",
+        "session:test:one",
+        "--page-tokens",
+        "256",
+        "--out",
+        "/synthetic/page.txt",
+        "--request-id",
+        "stable-read",
+        "--cursor",
+        "sealed",
+        "--budget",
+        "none",
+        "--deadline",
+        "none",
+        "--json",
+    ])
+    .unwrap();
+    assert_eq!(parsed.request.arguments["target"], "session:test:one");
+    assert_eq!(parsed.request.arguments["page_tokens"], 256);
+    assert!(parsed.request.arguments.get("to").is_none());
+    assert_eq!(parsed.calling_process["to"], "/synthetic/page.txt");
+    assert_eq!(parsed.request.request_id, "stable-read");
+    assert_eq!(parsed.request.cursor.as_deref(), Some("sealed"));
+    assert_eq!(parsed.request.deadline, command_surface::Deadline::None);
+    assert_eq!(
+        parsed.request.budget_tokens,
+        command_surface::TokenBudget::Unlimited
+    );
+    assert!(parsed.json);
+    assert!(
+        parse(&[
+            "polylogue",
+            "read",
+            "session:test:one",
+            "--page-tokens",
+            "not-a-number"
+        ])
+        .is_err()
+    );
+}
+
+#[test]
+fn local_and_stream_cli_use_their_declared_argument_types() {
+    let (_, completion) = parse(&[
+        "polylogue",
+        "completions",
+        "zsh",
+        "--program",
+        "archive-view",
+    ])
+    .unwrap();
+    assert_eq!(
+        completion.request.arguments,
+        serde_json::json!({"shell":"zsh", "program":"archive-view"})
+    );
+    assert!(parse(&["polylogue", "completions", "unknown-shell"]).is_err());
+    let (_, daemon) = parse(&["polylogue", "daemon", "--no-sources", "--until-idle"]).unwrap();
+    assert_eq!(
+        daemon.request.arguments,
+        serde_json::json!({"no_sources":true,"until_idle":true})
+    );
+    let (_, follow) = parse(&[
+        "polylogue",
+        "follow",
+        "session:test:one",
+        "--show",
+        "user,assistant",
+        "--until-idle",
+    ])
+    .unwrap();
+    assert_eq!(
+        follow.request.arguments,
+        serde_json::json!({"target":"session:test:one"})
+    );
+    assert_eq!(
+        follow.calling_process["show"],
+        serde_json::json!(["user", "assistant"])
+    );
+    assert_eq!(follow.calling_process["until_idle"], true);
 }
