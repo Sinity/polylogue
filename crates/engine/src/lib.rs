@@ -431,6 +431,9 @@ pub struct StopRequest(Arc<StopState>);
 #[derive(Default)]
 struct StopState {
     requested: std::sync::atomic::AtomicBool,
+    /// Background planning reads have their own cancellation, separate from
+    /// admitted writes and the ordinary reader-pool lifetime.
+    reads: polylogue_store::read::limit::ReadCancellation,
     /// Parse pools whose submitters wait for room; a request wakes them.
     pools: Mutex<Vec<std::sync::Weak<pool::Shared>>>,
     writer: polylogue_store::writer::WriterStop,
@@ -449,6 +452,7 @@ impl StopRequest {
             .requested
             .store(true, std::sync::atomic::Ordering::Release);
         self.0.writer.request();
+        self.0.reads.cancel();
         let pools = self
             .0
             .pools

@@ -74,7 +74,7 @@ fn behind_chains_preserve_revision_import_and_parser_choices() {
     assert_eq!(
         pool.reader()
             .unwrap()
-            .chains_behind_index(&[], crate::StoppedChains::Settled)
+            .chains_behind_index(&[], crate::StoppedChains::Settled, None)
             .unwrap(),
         vec![
             // Live inputs first, then most recently observed inputs and newest chains.
@@ -157,7 +157,7 @@ fn history_work(revisions: usize) -> usize {
         )
         .unwrap();
     let found = reader
-        .chains_behind_index(&[], crate::StoppedChains::Settled)
+        .chains_behind_index(&[], crate::StoppedChains::Settled, None)
         .unwrap();
     reader
         .conn()
@@ -215,7 +215,7 @@ fn incomplete_metadata_readings_wait_until_the_stored_length_changes() {
     let reader = pool.reader().unwrap();
     assert!(
         reader
-            .chains_behind_index(&[], crate::StoppedChains::Settled)
+            .chains_behind_index(&[], crate::StoppedChains::Settled, None)
             .unwrap()
             .is_empty()
     );
@@ -228,14 +228,14 @@ fn incomplete_metadata_readings_wait_until_the_stored_length_changes() {
         .unwrap();
     assert!(
         reader
-            .chains_behind_index(&[], crate::StoppedChains::Settled)
+            .chains_behind_index(&[], crate::StoppedChains::Settled, None)
             .unwrap()
             .is_empty()
     );
     assert!(reader.input_progress("metadata").unwrap().unwrap().waiting);
     let fresh = pool.reader().unwrap();
     let behind = fresh
-        .chains_behind_index(&[], crate::StoppedChains::Settled)
+        .chains_behind_index(&[], crate::StoppedChains::Settled, None)
         .unwrap();
     assert_eq!(behind.len(), 1);
     assert_eq!(
@@ -272,7 +272,7 @@ fn stopped_selection_uses_actual_attempt_even_after_a_full_length_refusal() {
         reads
             .reader()
             .unwrap()
-            .chains_behind_index(&[], crate::StoppedChains::ForAttempt(attempt))
+            .chains_behind_index(&[], crate::StoppedChains::ForAttempt(attempt), None)
             .unwrap()
     };
     let first = select(attempt);
@@ -293,4 +293,133 @@ fn stopped_selection_uses_actual_attempt_even_after_a_full_length_refusal() {
         parser_settings: None,
     };
     assert_eq!(select(next).len(), 2);
+}
+
+#[test]
+fn selected_chains_keep_order_parser_upgrades_and_empty_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(dir.path()).unwrap();
+    let archive = Connection::open(fixture.archive.archive_db()).unwrap();
+    archive.execute_batch(
+        "INSERT INTO input VALUES ('a','native'),('b','native'),('c','native');
+         INSERT INTO revision VALUES ('a',1,'first',1,10,1),('a',2,'rewritten',2,20,2),('b',1,'first',1,30,3),('c',1,'first',1,40,4);
+         INSERT INTO observation(id,input,machine,path,class,polylogue_version,seen_at) VALUES
+         ('a','a','m','/home/op/a','first','test',30),('b','b','m','/home/op/b','first','test',40),('c','c','m','/home/op/c','first','test',20);"
+    ).unwrap();
+    let index = Connection::open(fixture.archive.index_db()).unwrap();
+    index
+        .execute_batch(
+            "INSERT INTO input_ref(id) VALUES ('a');
+         INSERT INTO parse_state(input_pk,chain,reading_version,status,parsed_upto)
+         SELECT pk,2,'old','done',20 FROM input_ref WHERE id='a';",
+        )
+        .unwrap();
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let versions = [("native".into(), "new".into())];
+    let all = reader
+        .chains_behind_index(&versions, StoppedChains::Settled, None)
+        .unwrap();
+    assert_eq!(
+        all.iter()
+            .map(|c| (&*c.input, c.progress.chain, c.current, c.reading_changed))
+            .collect::<Vec<_>>(),
+        vec![
+            ("b", 1, true, true),
+            ("a", 2, true, true),
+            ("a", 1, false, true),
+            ("c", 1, true, true)
+        ]
+    );
+    let selected = vec!["c".into(), "a".into(), "a".into(), "missing".into()];
+    assert_eq!(
+        reader
+            .chains_behind_index(&versions, StoppedChains::Settled, Some(&selected))
+            .unwrap(),
+        all.into_iter()
+            .filter(|c| c.input != "b")
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        reader
+            .chains_behind_index(&versions, StoppedChains::Settled, Some(&[]))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+fn selected_history_work(unselected: usize) -> usize {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(dir.path()).unwrap();
+    let mut archive = Connection::open(fixture.archive.archive_db()).unwrap();
+    let tx = archive.transaction().unwrap();
+    for n in 0..=unselected {
+        let input = if n == 0 {
+            "selected".to_owned()
+        } else {
+            format!("other-{n}")
+        };
+        tx.execute("INSERT INTO input VALUES (?1,'native')", [&input])
+            .unwrap();
+        for revision in 1..=4 {
+            tx.execute(
+                "INSERT INTO revision VALUES (?1,?2,'appended',1,?2,?2)",
+                params![input, revision],
+            )
+            .unwrap();
+            tx.execute(
+                "INSERT INTO observation(id,input,machine,path,class,polylogue_version,seen_at)
+                VALUES (?1,?2,'m','/home/op/input','first','test',?3)",
+                params![format!("{input}-{revision}"), input, revision],
+            )
+            .unwrap();
+        }
+    }
+    tx.commit().unwrap();
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let steps = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&steps);
+    reader
+        .conn()
+        .unwrap()
+        .progress_handler(
+            100,
+            Some(move || {
+                observed.fetch_add(100, Ordering::Relaxed);
+                false
+            }),
+        )
+        .unwrap();
+    let found = reader
+        .chains_behind_index(&[], StoppedChains::Settled, Some(&["selected".into()]))
+        .unwrap();
+    reader
+        .conn()
+        .unwrap()
+        .progress_handler(0, None::<fn() -> bool>)
+        .unwrap();
+    assert_eq!(
+        found,
+        vec![expected(
+            "selected",
+            1,
+            4,
+            true,
+            ("native", Some("/home/op/input")),
+            false,
+            None
+        )]
+    );
+    steps.load(Ordering::Relaxed)
+}
+
+#[test]
+fn selected_chain_planning_does_not_scan_unselected_history() {
+    let small = selected_history_work(32);
+    let large = selected_history_work(512);
+    assert!(
+        large <= small * 2,
+        "same selected input, 32 unrelated inputs: {small} VM steps; 512 unrelated inputs: {large}"
+    );
 }

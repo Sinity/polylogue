@@ -777,3 +777,112 @@ fn an_import_answers_before_queued_captures_or_replays_start_and_the_next_turn_f
         drop(lock);
     }
 }
+
+#[cfg(feature = "faults")]
+#[test]
+fn stopping_at_chain_planning_cancels_the_engine_read_and_keeps_committed_progress() {
+    use polylogue_store::fault::{self, Action};
+    use polylogue_store::read::limit::ReadLimit;
+
+    let home = ClaudeHome::new();
+    home.append(
+        "planning-stop.jsonl",
+        &claude_user("one", "planning-stop", "retained body"),
+    );
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
+    assert!(engine.run_pass().unwrap().errors.is_empty());
+    let input = engine.inputs[&home.file("planning-stop.jsonl")]
+        .input_id
+        .clone();
+    let before = source_rows(&engine, &input);
+    let checkpoint = |engine: &Engine| {
+        engine.reads.reader().unwrap().query(
+            "SELECT p.chain,p.reading_version,p.status,p.parsed_upto,p.at_length,p.records,p.used,p.skipped,p.unreadable,CASE WHEN p.checkpoint IS NULL THEN NULL ELSE hex(p.checkpoint) END AS checkpoint,p.reason FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id=?1 ORDER BY p.chain",
+            &[polylogue_store::SqlValue::Text(input.clone())],
+        ).unwrap()
+    };
+    let before_checkpoint = checkpoint(&engine);
+    let parent = ReadLimit::without_deadline(Default::default());
+    let stop = engine.stop_request();
+    fault::clear();
+    fault::arm("read.chains_behind_index", "", Action::Hold, 0, 1);
+    let worker_parent = parent.clone();
+    let work = std::thread::spawn(move || {
+        let result = worker_parent.scope(|| {
+            let result = engine.run_pass();
+            assert!(ReadLimit::current().unwrap().check().is_ok());
+            result
+        });
+        (engine, result)
+    });
+    let until = Instant::now() + Duration::from_secs(10);
+    while !fault::held() && !work.is_finished() && Instant::now() < until {
+        std::thread::yield_now();
+    }
+    let reached = fault::held();
+    stop.request();
+    fault::release();
+    let (engine, result) = work.join().unwrap();
+    fault::clear();
+    assert!(
+        reached,
+        "pass did not reach the retained-chain planning reader"
+    );
+    assert!(matches!(result, Err(EngineError::Stopped)), "{result:?}");
+    assert!(
+        parent.check().is_ok(),
+        "engine stop cancelled an independent caller"
+    );
+    assert_eq!(source_rows(&engine, &input), before);
+    assert_eq!(checkpoint(&engine), before_checkpoint);
+    assert!(
+        engine
+            .reads
+            .reader()
+            .unwrap()
+            .query("SELECT 1", &[])
+            .is_ok()
+    );
+}
+
+#[test]
+fn engine_stop_interrupts_a_running_statement_without_closing_other_readers() {
+    use polylogue_store::read::limit::ReadLimit;
+    let home = ClaudeHome::new();
+    let (engine, _lock) = crate::import::tests::engine(&home, 4096);
+    let stop = engine.stop_request();
+    let limit = ReadLimit::without_deadline(stop.0.reads.clone());
+    let reads = &engine.reads;
+    std::thread::scope(|threads| {
+        let read_limit = &limit;
+        let (started, ready) = channel();
+        let work = threads.spawn(move || read_limit.scope(|| {
+            let reader = reads.reader()?;
+            reader.query("SELECT 1", &[])?;
+            started.send(read_limit.sqlite_steps()).unwrap();
+            reader.query("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2000000000) SELECT count(*) FROM n", &[])
+        }));
+        let before = ready.recv().unwrap();
+        let until = Instant::now() + Duration::from_secs(10);
+        while limit.sqlite_steps() == before && Instant::now() < until {
+            std::thread::yield_now();
+        }
+        let running = limit.sqlite_steps() > before;
+        stop.request();
+        let result = work.join().unwrap();
+        assert!(running, "statement did not reach SQLite");
+        assert!(
+            matches!(result, Err(polylogue_store::StoreError::ReadCancelled)),
+            "{result:?}"
+        );
+    });
+    assert_eq!(
+        engine
+            .reads
+            .reader()
+            .unwrap()
+            .query("SELECT 7 AS n", &[])
+            .unwrap()[0]["n"],
+        7
+    );
+}
