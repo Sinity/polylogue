@@ -5,7 +5,7 @@ use super::*;
 use crate::change_summary::ChangeSummary;
 use crate::first_build::FirstBuild;
 use polylogue_model::{Completion, Route};
-use std::cell::Cell;
+use std::{cell::Cell, collections::BTreeMap};
 
 mod checkpoint;
 mod events_links;
