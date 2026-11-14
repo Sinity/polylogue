@@ -1622,6 +1622,11 @@ impl<'a> Projection<'a> {
                 let (version, mut prepared) = message_values[&main.hash].clone();
                 let message = composed.unwrap_or(version);
                 prepared.time = crate::encoding::time_bytes(message.at, message.time_evidence())?;
+                polylogue_model::read::update_message_entries(
+                    &mut prepared.items,
+                    &message,
+                    polylogue_model::read::MessagePlace::default(),
+                );
                 (Some(message), Some(prepared))
             } else {
                 (None, None)

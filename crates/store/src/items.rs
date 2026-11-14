@@ -19,10 +19,14 @@
 //! (`time_bound`): the events placed at or after a timed message are exactly
 //! those whose time is at least its bound.
 use crate::change_summary::{ChangeSummary, SessionChange};
-use crate::encoding::{Columns, restore_text, unpack_block, unpack_text};
+use crate::encoding::Columns;
+#[cfg(any(test, feature = "fixture"))]
+use crate::encoding::{restore_text, unpack_block, unpack_text};
 use crate::{Reader, Result, StoreError};
+#[cfg(any(test, feature = "fixture"))]
+use polylogue_model::{Message, Usage};
 use polylogue_model::{
-    Message, MessageId, PromptKind, Role, SessionId, Usage,
+    MessageId, PromptKind, Role, SessionId,
     read::{
         EntryClass, IndexEntry, ItemCounts, MessagePlace, entry_classes, event_entry,
         message_entries,
@@ -87,6 +91,8 @@ pub struct ItemVersions {
 enum Unit {
     Message {
         pk: i64,
+        id: String,
+        at: Option<i64>,
         version: Vec<u8>,
         place: MessagePlace,
         time_bound: Option<i64>,
@@ -333,6 +339,8 @@ fn units_from(
         }
         out.push(Unit::Message {
             pk: row.pk,
+            id: row.id.clone(),
+            at: row.at,
             version: row.version.clone(),
             place: MessagePlace {
                 // Unknown and on the path read the same; only off the path
@@ -442,7 +450,22 @@ fn events_from(
 pub(crate) fn computed_entries(conn: &Connection, session_pk: i64) -> Result<Vec<IndexEntry>> {
     let mut out = Vec::new();
     for unit in units_from(conn, session_pk, None, &BTreeSet::new())? {
-        out.extend(unit_entries(conn, &unit)?);
+        match unit {
+            Unit::Message { pk, place, .. } => {
+                let (message, ordinals) = message_body(conn, pk)?;
+                out.extend(message_entries(&message, &ordinals, place));
+            }
+            Unit::Event {
+                id,
+                kind,
+                at,
+                data_bytes,
+                data,
+                ..
+            } => {
+                out.push(event_item(&id, &kind, at, data_bytes, data.as_deref())?);
+            }
+        }
     }
     Ok(out)
 }
@@ -488,7 +511,7 @@ pub(crate) fn refresh(conn: &Connection, changes: &ChangeSummary) -> Result<u64>
     let mut exists = conn.prepare_cached("SELECT EXISTS(SELECT 1 FROM session WHERE pk = ?1)")?;
     for (session_pk, change) in changes.sessions(conn)? {
         if exists.query_row([session_pk], |row| row.get::<_, bool>(0))? {
-            read += refresh_session(conn, session_pk, &change)?;
+            read += refresh_session(conn, session_pk, &change, changes)?;
         }
     }
     Ok(read)
@@ -512,7 +535,10 @@ pub(crate) fn refresh_stale(conn: &Connection) -> Result<()> {
     for pk in sessions {
         crate::session_values::rebuild(conn, pk, counter)?;
         conn.execute_batch("SAVEPOINT fixture_items")?;
-        match rebuild(conn, pk, None, &BTreeSet::new()) {
+        let prepared = ChangeSummary::start(conn)?;
+        let result = prepare_fixture_items(conn, pk, &prepared)
+            .and_then(|()| rebuild(conn, pk, None, &BTreeSet::new(), &prepared));
+        match result {
             Ok(_) => conn.execute_batch("RELEASE fixture_items")?,
             Err(error) => {
                 conn.execute_batch("ROLLBACK TO fixture_items; RELEASE fixture_items")?;
@@ -536,7 +562,12 @@ enum Start {
     From(Anchor),
 }
 
-fn refresh_session(conn: &Connection, session_pk: i64, change: &SessionChange) -> Result<u64> {
+fn refresh_session(
+    conn: &Connection,
+    session_pk: i64,
+    change: &SessionChange,
+    prepared: &ChangeSummary,
+) -> Result<u64> {
     let indexed: bool = conn
         .prepare_cached("SELECT EXISTS(SELECT 1 FROM session_item_state WHERE session_pk = ?1)")?
         .query_row([session_pk], |row| row.get(0))?;
@@ -553,8 +584,8 @@ fn refresh_session(conn: &Connection, session_pk: i64, change: &SessionChange) -
             Ok(0)
         }
         // A rebuild compares the links itself.
-        Start::Whole => rebuild(conn, session_pk, None, &change.events),
-        Start::From(anchor) => rebuild(conn, session_pk, Some(anchor), &change.events),
+        Start::Whole => rebuild(conn, session_pk, None, &change.events, prepared),
+        Start::From(anchor) => rebuild(conn, session_pk, Some(anchor), &change.events, prepared),
     }
 }
 
@@ -726,6 +757,7 @@ fn rebuild(
     session_pk: i64,
     anchor: Option<Anchor>,
     changed_events: &BTreeSet<i64>,
+    prepared: &ChangeSummary,
 ) -> Result<u64> {
     let changed: i64 = conn
         .prepare_cached("SELECT changed FROM session WHERE pk = ?1")?
@@ -752,11 +784,26 @@ fn rebuild(
         })
         .optional()?;
     let links = links_identity(conn, session_pk)?;
-    let mut same = indexed
+    let mut same = 0;
+    for (((_, stored), identity), unit) in indexed.iter().zip(&identities).zip(&units) {
+        if stored != identity {
+            break;
+        }
+        if let Unit::Message { pk, .. } = unit
+            && prepared.has_prepared_items(*pk)
+            && stored_message_entries(conn, *pk)? != unit_entries(conn, unit, prepared)?
+        {
+            break;
+        }
+        same += 1;
+    }
+    // Capture retained metadata before deleting a rewritten suffix. New content
+    // comes from worker preparation; placement-only changes reuse stored entries.
+    let pending = units
         .iter()
-        .zip(&identities)
-        .take_while(|((_, stored), current)| stored == *current)
-        .count();
+        .skip(same)
+        .map(|unit| unit_entries(conn, unit, prepared))
+        .collect::<Result<Vec<_>>>()?;
     let links_moved = state
         .as_ref()
         .is_some_and(|(_, _, stored, _)| stored.as_slice() != links.as_slice());
@@ -779,16 +826,17 @@ fn rebuild(
         .query_row([session_pk], |row| row.get(0))?;
     let mut grown = false;
     let mut header_moved = false;
+    let mut extended = false;
     // A live session's last message grows block by block. When the only
     // difference is new blocks after the last indexed message's entries,
     // that is an append; outstanding cursors stay valid.
     if same + 1 == indexed.len() && same < units.len() {
         let (first_seq, _) = indexed[same];
         let stored = stored_entries(conn, session_pk, first_seq)?;
-        let current = unit_entries(conn, &units[same])?;
-        if extends(&stored, &current) {
+        let current = &pending[0];
+        if extends(&stored, current) {
             let (_, _, time_bound) = units[same].columns();
-            let classes = entry_classes(&current);
+            let classes = entry_classes(current);
             // A new block can change what its header's class says.
             conn.prepare_cached(
                 "UPDATE session_item SET unit = ?3, time_bound = ?4, entry = ?5, class = ?6
@@ -824,6 +872,7 @@ fn rebuild(
             grown = current.len() > stored.len();
             header_moved = current[0] != stored[0];
             same += 1;
+            extended = true;
         }
     }
     let rewritten = same < indexed.len() || links_moved;
@@ -834,11 +883,15 @@ fn rebuild(
             .execute(params![session_pk, seq])?;
         next = *seq;
     }
-    for (unit, identity) in units.iter().zip(&identities).skip(same) {
+    for ((unit, identity), entries) in units
+        .iter()
+        .zip(&identities)
+        .skip(same)
+        .zip(pending.iter().skip(usize::from(extended)))
+    {
         let (message_pk, event_pk, time_bound) = unit.columns();
-        let entries = unit_entries(conn, unit)?;
         let before = encode_counts(&running);
-        for (offset, (entry, class)) in entries.iter().zip(entry_classes(&entries)).enumerate() {
+        for (offset, (entry, class)) in entries.iter().zip(entry_classes(entries)).enumerate() {
             let first = offset == 0;
             insert.execute(params![
                 session_pk,
@@ -891,11 +944,39 @@ fn rebuild(
     Ok(units.len() as u64)
 }
 
-fn unit_entries(conn: &Connection, unit: &Unit) -> Result<Vec<IndexEntry>> {
+fn unit_entries(
+    conn: &Connection,
+    unit: &Unit,
+    prepared: &ChangeSummary,
+) -> Result<Vec<IndexEntry>> {
     match unit {
-        Unit::Message { pk, place, .. } => {
-            let (message, ordinals) = message_body(conn, *pk)?;
-            Ok(message_entries(&message, &ordinals, *place))
+        Unit::Message {
+            pk, id, at, place, ..
+        } => {
+            let mut entries = match prepared.prepared_items(*pk) {
+                Some(entries) => entries,
+                None if prepared.reuses_items(*pk) => stored_message_entries(conn, *pk)?,
+                None => {
+                    return Err(StoreError::Invalid(
+                        "changed message items were not prepared".into(),
+                    ));
+                }
+            };
+            if entries.is_empty() {
+                return Err(StoreError::Invalid(
+                    "changed message items were not prepared".into(),
+                ));
+            }
+            let id = MessageId::parse(id).map_err(StoreError::Invalid)?;
+            for entry in &mut entries {
+                if let polylogue_model::read::EntryKey::Message { message, .. } = &mut entry.key {
+                    *message = id.clone();
+                }
+                entry.at = *at;
+                entry.active_path = place.active_path;
+                entry.branch_point = place.branch_point;
+            }
+            Ok(entries)
         }
         Unit::Event {
             id,
@@ -947,8 +1028,95 @@ fn event_identity(pk: i64, entry: &IndexEntry) -> Result<Vec<u8>> {
     Ok(digest.finalize().as_bytes().to_vec())
 }
 
+/// Item metadata retained for one current unit, without visiting payload rows.
+fn stored_message_entries(conn: &Connection, pk: i64) -> Result<Vec<IndexEntry>> {
+    let bounds: Option<(i64, i64, Option<i64>)> = conn
+        .prepare_cached(
+            "SELECT head.session_pk,head.seq,
+           (SELECT next.seq FROM session_item next WHERE next.session_pk=head.session_pk
+             AND next.seq>head.seq AND next.unit IS NOT NULL ORDER BY next.seq LIMIT 1)
+         FROM session_item head WHERE head.message_pk=?1",
+        )?
+        .query_row([pk], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .optional()?;
+    let Some((session, from, until)) = bounds else {
+        return Ok(Vec::new());
+    };
+    let (sql, values) = match until {
+        Some(until) => (
+            "SELECT entry FROM session_item WHERE session_pk=?1 AND seq>=?2 AND seq<?3 ORDER BY seq",
+            vec![session, from, until],
+        ),
+        None => (
+            "SELECT entry FROM session_item WHERE session_pk=?1 AND seq>=?2 ORDER BY seq",
+            vec![session, from],
+        ),
+    };
+    let mut statement = conn.prepare_cached(sql)?;
+    statement
+        .query_map(rusqlite::params_from_iter(values), |row| {
+            row.get::<_, Vec<u8>>(0)
+        })?
+        .map(|row| decode(&row?))
+        .collect()
+}
+
+/// A visibility derivation may reveal content whose item rows are no longer
+/// present. Its worker prepares the retained canonical value under its snapshot;
+/// the existing derive token protects these entries when the writer applies it.
+pub(crate) fn prepare_retained_message(conn: &Connection, pk: i64) -> Result<Vec<IndexEntry>> {
+    let hash: Vec<u8> = conn
+        .prepare_cached(
+            "SELECT v.version_hash FROM message m JOIN message_source s
+           ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain
+         JOIN message_version v ON v.pk=s.version_pk WHERE m.pk=?1",
+        )?
+        .query_row([pk], |row| row.get(0))?;
+    let (mut message, projection) =
+        crate::versions::read_message(conn, &hash)?.ok_or_else(|| {
+            StoreError::Invalid("revealed message has no retained selected version".into())
+        })?;
+    conn.prepare_cached(
+        "SELECT m.id,s.id,m.role,m.prompt_kind,m.model,m.at,m.input_tokens,m.cache_read_tokens,m.cache_write_tokens
+         FROM message m JOIN session s ON s.pk=m.session_pk WHERE m.pk=?1"
+    )?.query_row([pk], |row| {
+        message.id = row.id::<MessageId>(0)?;
+        message.session = row.id::<SessionId>(1)?;
+        message.role = row.name::<Role>(2)?;
+        message.prompt_kind = row.optional_name::<PromptKind>(3)?;
+        message.model = row.get(4)?;
+        message.at = row.optional_time_ms(5)?;
+        message.usage.input = row.get(6)?;
+        message.usage.cached_input = row.get(7)?;
+        message.usage.cache_write = row.get(8)?;
+        Ok(())
+    })?;
+    Ok(message_entries(
+        &message,
+        &projection.block_ordinals,
+        MessagePlace::default(),
+    ))
+}
+
+#[cfg(any(test, feature = "fixture"))]
+fn prepare_fixture_items(conn: &Connection, session: i64, prepared: &ChangeSummary) -> Result<()> {
+    let messages = conn
+        .prepare_cached("SELECT pk FROM message WHERE session_pk=?1")?
+        .query_map([session], |row| row.get::<_, i64>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for pk in messages {
+        let (message, ordinals) = message_body(conn, pk)?;
+        prepared.prepare_items(
+            pk,
+            message_entries(&message, &ordinals, MessagePlace::default()),
+        );
+    }
+    Ok(())
+}
+
 /// A message's row and its blocks with their original ordinals: the fields
 /// the index estimates from. Structured tool data is not read.
+#[cfg(any(test, feature = "fixture"))]
 fn message_body(conn: &Connection, pk: i64) -> Result<(Message, Vec<u64>)> {
     let (id, session, role, prompt_kind, model, at, tokens) = conn
         .prepare_cached(

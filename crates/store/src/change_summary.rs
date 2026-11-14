@@ -28,6 +28,8 @@ struct Before {
 
 #[derive(Default)]
 struct Changed {
+    /// Entries prepared from the selected typed content, kept only until commit.
+    items: BTreeMap<i64, MessageItems>,
     /// Messages whose row, blocks, place or visibility changed, with the
     /// session, parent and place each had before the change (none for a
     /// new one).
@@ -39,6 +41,11 @@ struct Changed {
     /// Sessions to bring up to date from their first unit: a change the
     /// writer does not describe row by row.
     whole: BTreeSet<i64>,
+}
+
+enum MessageItems {
+    Metadata,
+    Prepared(Vec<polylogue_model::read::IndexEntry>),
 }
 
 /// One session's part of a summary.
@@ -58,6 +65,33 @@ pub(crate) struct SessionChange {
 }
 
 impl ChangeSummary {
+    pub(crate) fn prepare_items(&self, pk: i64, entries: Vec<polylogue_model::read::IndexEntry>) {
+        self.changed
+            .borrow_mut()
+            .items
+            .insert(pk, MessageItems::Prepared(entries));
+    }
+
+    pub(crate) fn has_prepared_items(&self, pk: i64) -> bool {
+        matches!(
+            self.changed.borrow().items.get(&pk),
+            Some(MessageItems::Prepared(_))
+        )
+    }
+
+    pub(crate) fn prepared_items(&self, pk: i64) -> Option<Vec<polylogue_model::read::IndexEntry>> {
+        match self.changed.borrow().items.get(&pk) {
+            Some(MessageItems::Prepared(entries)) => Some(entries.clone()),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn reuses_items(&self, pk: i64) -> bool {
+        let changed = self.changed.borrow();
+        !changed.messages.contains_key(&pk)
+            || matches!(changed.items.get(&pk), Some(MessageItems::Metadata))
+    }
+
     /// Starts the summary of a transaction on `conn`, which from now on
     /// also records the version bodies, values and texts whose references
     /// it removes ([`crate::versions::remove_unreferenced`]).
@@ -70,6 +104,23 @@ impl ChangeSummary {
 
     /// Records a message before its row changes or is inserted.
     pub(crate) fn message(&self, conn: &Connection, pk: i64) -> Result<()> {
+        self.record_message(conn, pk)?;
+        self.changed.borrow_mut().items.remove(&pk);
+        Ok(())
+    }
+
+    /// Placement and visibility change without changing the selected content.
+    pub(crate) fn message_metadata(&self, conn: &Connection, pk: i64) -> Result<()> {
+        self.record_message(conn, pk)?;
+        self.changed
+            .borrow_mut()
+            .items
+            .entry(pk)
+            .or_insert(MessageItems::Metadata);
+        Ok(())
+    }
+
+    fn record_message(&self, conn: &Connection, pk: i64) -> Result<()> {
         if self.changed.borrow().messages.contains_key(&pk) {
             return Ok(());
         }

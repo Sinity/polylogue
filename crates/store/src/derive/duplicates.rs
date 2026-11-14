@@ -83,7 +83,7 @@ pub(super) fn apply(
         "UPDATE message SET duplicate_of = ?2, duplicate_reason = ?3 WHERE pk = ?1",
     )?;
     for (pk, of) in marks {
-        changes.message(tx, *pk)?;
+        changes.message_metadata(tx, *pk)?;
         mark.execute(params![pk, of, of.as_ref().map(|_| REASON)])?;
     }
     Ok(())

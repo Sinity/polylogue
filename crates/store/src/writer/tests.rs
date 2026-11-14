@@ -1147,6 +1147,7 @@ mod statement_cache;
 
 #[cfg(test)]
 mod prepared;
+mod prepared_items;
 
 mod observation_order;
 

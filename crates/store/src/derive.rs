@@ -464,11 +464,25 @@ impl<'a> Pass<'a> {
                         });
                     }
                 }
+                let mut items = Vec::new();
+                for derived in &outputs {
+                    if let Output::Duplicates(marks) = &derived.output {
+                        for (message, duplicate) in marks {
+                            if duplicate.is_none() {
+                                items.push((
+                                    *message,
+                                    crate::items::prepare_retained_message(&snapshot, *message)?,
+                                ));
+                            }
+                        }
+                    }
+                }
                 drop(snapshot);
                 sessions.push(SessionWrite {
                     pk: t.pk,
                     token,
                     outputs,
+                    items,
                 });
                 at.push(i);
             }
@@ -605,6 +619,7 @@ struct SessionWrite {
     pk: i64,
     token: Token,
     outputs: Vec<Derived>,
+    items: Vec<(i64, Vec<polylogue_model::read::IndexEntry>)>,
 }
 
 struct Derived {
@@ -632,6 +647,9 @@ pub(crate) fn apply(index: &Connection, write: &Write) -> Result<Vec<bool>> {
         if Token::read(&tx, session.pk)?.map(|(token, _)| token) != Some(session.token) {
             applied.push(false);
             continue;
+        }
+        for (message, entries) in &session.items {
+            changes.prepare_items(*message, entries.clone());
         }
         for derived in &session.outputs {
             derived.output.apply(&tx, session.pk, &changes)?;

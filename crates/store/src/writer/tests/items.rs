@@ -1072,8 +1072,11 @@ fn indexing_errors_abort_the_changed_rows_transaction() {
                 tx.execute("UPDATE block SET idx = -1, ordinal = NULL", [])
                     .unwrap();
             }
-            let error = crate::items::refresh(&tx, &changes)
-                .expect_err("a transaction cannot commit rows whose item index did not refresh");
+            // The independent row reader still diagnoses malformed bodies and
+            // ordinals. Item maintenance refuses an unprepared content change
+            // rather than reconstructing that content inside the writer.
+            let error = crate::items::computed_entries(&tx, before.session_pk)
+                .expect_err("malformed natural rows must not become readable items");
             if invalid_json {
                 assert!(
                     matches!(
@@ -1088,6 +1091,13 @@ fn indexing_errors_abort_the_changed_rows_transaction() {
                     "{error}"
                 );
             }
+            let error = crate::items::refresh(&tx, &changes)
+                .expect_err("a transaction cannot commit unprepared content changes");
+            assert!(
+                matches!(&error, crate::StoreError::Invalid(reason)
+                if reason == "changed message items were not prepared"),
+                "{error}"
+            );
             // Dropping the same transaction production callers own rolls all
             // changed rows back together with any attempted index updates.
         }

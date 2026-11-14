@@ -143,16 +143,15 @@ pub struct MessagePlace {
 
 const TARGET_CHARACTERS: usize = 120;
 
-/// The entries of one stored message, header first, blocks in their original
-/// order. `ordinals` are the stored blocks' original positions.
-pub fn message_entries(
+fn message_base(
     message: &Message,
-    ordinals: &[u64],
     place: MessagePlace,
-) -> Vec<IndexEntry> {
-    let written_by = WrittenBy::of(message);
+    written_by: WrittenBy,
+    key: EntryKey,
+    kind: EntryKind,
+) -> IndexEntry {
     let at = message.at.map(|at| at.unix_ms());
-    let base = |key: EntryKey, kind: EntryKind| IndexEntry {
+    IndexEntry {
         key,
         kind,
         written_by,
@@ -172,9 +171,19 @@ pub fn message_entries(
         compaction: None,
         context_tokens: None,
         cleared: Vec::new(),
-    };
+    }
+}
+
+/// The header facts shared by prepared items and stored message rows.
+fn message_header(message: &Message, place: MessagePlace, written_by: WrittenBy) -> IndexEntry {
     let header_line = header_tokens(message);
-    let mut header = base(EntryKey::header(&message.id), EntryKind::Header);
+    let mut header = message_base(
+        message,
+        place,
+        written_by,
+        EntryKey::header(&message.id),
+        EntryKind::Header,
+    );
     header.tokens_line = header_line;
     header.tokens_full = header_line;
     if message.prompt_kind == Some(crate::PromptKind::CompactionSummary) {
@@ -190,7 +199,39 @@ pub fn message_entries(
             );
         }
     }
-    let mut entries = vec![header];
+    header
+}
+
+/// Rebind prepared content entries to the selected message and current placement.
+/// Body lengths, estimates, tool targets and original ordinals stay prepared.
+pub fn update_message_entries(entries: &mut [IndexEntry], message: &Message, place: MessagePlace) {
+    let Some((first, blocks)) = entries.split_first_mut() else {
+        return;
+    };
+    let header = message_header(message, place, WrittenBy::of(message));
+    for entry in blocks {
+        if let EntryKey::Message { message: id, .. } = &mut entry.key {
+            *id = message.id.clone();
+        }
+        entry.written_by = header.written_by;
+        entry.prompt_kind = header.prompt_kind;
+        entry.active_path = place.active_path;
+        entry.branch_point = place.branch_point;
+        entry.at = header.at;
+    }
+    *first = header;
+}
+
+/// The entries of one stored message, header first, blocks in their original
+/// order. `ordinals` are the stored blocks' original positions.
+pub fn message_entries(
+    message: &Message,
+    ordinals: &[u64],
+    place: MessagePlace,
+) -> Vec<IndexEntry> {
+    let written_by = WrittenBy::of(message);
+    let base = |key, kind| message_base(message, place, written_by, key, kind);
+    let mut entries = vec![message_header(message, place, written_by)];
     for (ordinal, block) in ordinals.iter().zip(&message.blocks) {
         let key = EntryKey::Message {
             message: message.id.clone(),

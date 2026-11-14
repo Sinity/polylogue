@@ -1121,3 +1121,5 @@ fn a_stop_reaches_the_derive_worker_before_writer_teardown() {
         0
     );
 }
+
+mod prepared_items;
