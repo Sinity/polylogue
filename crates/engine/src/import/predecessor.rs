@@ -17,9 +17,9 @@
 use super::older_archive::{ClassCount, RefusedRow, keep, refusal, restored, tally};
 use super::*;
 use polylogue_store::predecessor::user_db::{self, UserDb};
+pub use polylogue_store::predecessor::vectors::request_address as address;
 use polylogue_store::predecessor::vectors::{Layout, VectorStore};
 use polylogue_store::writer::Restored;
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap};
 use unicode_normalization::UnicodeNormalization;
 
@@ -64,20 +64,6 @@ pub struct PredecessorReport {
     /// text here, in hex.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unmatched_addresses: Vec<String>,
-}
-
-/// The predecessor's address of an embedding request: SHA-256 over its
-/// domain and the model and NFC text, each prefixed by its length as eight
-/// big-endian bytes. Only requests of its default shape (input type
-/// `document`, 1024 dimensions, no options) were addressed this way.
-pub fn address(model: &str, nfc_text: &str) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(b"polylogue.embedding-input.v1\0");
-    for segment in [model.as_bytes(), nfc_text.as_bytes()] {
-        hasher.update((segment.len() as u64).to_be_bytes());
-        hasher.update(segment);
-    }
-    hasher.finalize().into()
 }
 
 /// The embedding key here of a predecessor vector: the predecessor embedded
@@ -279,21 +265,43 @@ impl Engine {
         let mut texts: HashMap<[u8; 32], Vec<(Vec<u8>, bool)>> = HashMap::new();
         {
             let reader = self.reads.reader()?;
-            let mut after = 0;
-            loop {
-                let page = reader.prose_texts(after, TEXTS_PER_PAGE, None)?;
-                let Some(last) = page.last() else { break };
-                after = last.id;
-                for text in page {
-                    let nfc: String = text.text.nfc().collect();
-                    let chunked = nfc.chars().count() > polylogue_store::vectors::CHUNK_CHARS;
-                    for model in &models {
-                        let address = address(model, &nfc);
-                        if by_address.contains_key(&address) {
-                            texts
-                                .entry(address)
-                                .or_default()
-                                .push((text.hash.clone(), chunked));
+            let prepared = identities
+                .iter()
+                .all(|identity| identity.normalized_hash.is_some());
+            let lookups: Vec<_> = if prepared {
+                identities.iter().map(Some).collect()
+            } else {
+                vec![None]
+            };
+            for lookup in lookups {
+                let mut after = 0;
+                loop {
+                    let page = match lookup {
+                        Some(identity) => reader.prose_texts_by_normalized_hash(
+                            &identity
+                                .normalized_hash
+                                .expect("validated prepared request"),
+                            after,
+                            TEXTS_PER_PAGE,
+                        )?,
+                        None => reader.prose_texts(after, TEXTS_PER_PAGE, None)?,
+                    };
+                    let Some(last) = page.last() else { break };
+                    after = last.id;
+                    for text in page {
+                        let nfc: String = text.text.nfc().collect();
+                        let chunked = nfc.chars().count() > polylogue_store::vectors::CHUNK_CHARS;
+                        for model in &models {
+                            let address = address(model, &nfc);
+                            if lookup.is_some_and(|identity| identity.address != address) {
+                                continue;
+                            }
+                            if by_address.contains_key(&address) {
+                                texts
+                                    .entry(address)
+                                    .or_default()
+                                    .push((text.hash.clone(), chunked));
+                            }
                         }
                     }
                 }

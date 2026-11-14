@@ -37,6 +37,32 @@ pub(crate) fn pack_text(text: &str) -> std::io::Result<Vec<u8>> {
     pack_bytes(text.as_bytes())
 }
 
+/// Raw bytes and their request-text identity are prepared together, before
+/// the serial writer loses access to the original text.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct PreparedText {
+    pub body: Vec<u8>,
+    pub normalized_hash: [u8; 32],
+}
+
+pub(crate) fn normalized_text_hash(text: &str) -> [u8; 32] {
+    use unicode_normalization::UnicodeNormalization;
+    if unicode_normalization::is_nfc(text) {
+        *blake3::hash(text.as_bytes()).as_bytes()
+    } else {
+        *blake3::hash(text.nfc().collect::<String>().as_bytes()).as_bytes()
+    }
+}
+
+impl PreparedText {
+    pub(crate) fn new(text: &str, body: Vec<u8>) -> Self {
+        Self {
+            body,
+            normalized_hash: normalized_text_hash(text),
+        }
+    }
+}
+
 pub(crate) fn unpack_text(packed: &[u8]) -> Result<String> {
     String::from_utf8(unpack_bytes(packed)?).map_err(|e| StoreError::Io(std::io::Error::other(e)))
 }

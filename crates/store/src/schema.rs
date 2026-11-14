@@ -1,6 +1,6 @@
 //! Current table declarations. The durable register converts its exact
 //! immediate predecessor at exclusive open; other differences are refused.
-//! Index2 and primary cache4 use narrow message-version references.
+//! Index3 and primary cache5 store normalized request-text identities alongside raw text hashes.
 //! Earlier parsed formats rebuild from retained originals.
 //! Unknown current shapes refuse.
 //! Indexes from another format are set aside and rebuilt. Paid-vector
@@ -81,9 +81,9 @@ const EMBEDDINGS_ADDITIONS: &[&str] = &[
 pub const ARCHIVE_VERSION: u32 = 3;
 
 /// The index schema and row encoding version. Reading versions are independent.
-pub const INDEX_VERSION: u32 = 2;
+pub const INDEX_VERSION: u32 = 3;
 /// The primary cache indexes original materials, native admission and canonical request hashes.
-pub const PRIMARY_INDEX_VERSION: u32 = 4;
+pub const PRIMARY_INDEX_VERSION: u32 = 5;
 
 pub const fn index_version(primary: bool) -> u32 {
     if primary {

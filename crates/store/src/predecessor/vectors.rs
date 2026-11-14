@@ -12,6 +12,7 @@
 use crate::older_archive::{open_source, tables_of};
 use crate::{Result, StoreError};
 use rusqlite::Connection;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -30,11 +31,14 @@ pub struct Addressed {
     pub model: String,
     pub dims: usize,
     pub embedded_at: Option<i64>,
+    /// Validated NFC request identity, available only in a marked prepared source.
+    pub normalized_hash: Option<[u8; 32]>,
 }
 
 pub struct VectorStore {
     conn: Connection,
     layout: Layout,
+    prepared: bool,
     _copies: Option<tempfile::TempDir>,
 }
 
@@ -51,6 +55,18 @@ const BY_MESSAGE: [&str; 5] = [
     "content_hash",
     "embedded_at_ms",
 ];
+
+/// The predecessor's document request address. The caller supplies NFC text;
+/// prepared sources validate that normalization before accepting its evidence.
+pub fn request_address(model: &str, nfc_text: &str) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"polylogue.embedding-input.v1\0");
+    for segment in [model.as_bytes(), nfc_text.as_bytes()] {
+        hasher.update((segment.len() as u64).to_be_bytes());
+        hasher.update(segment);
+    }
+    hasher.finalize().into()
+}
 
 impl VectorStore {
     pub fn open(path: &Path, scratch: &Path) -> Result<Self> {
@@ -85,10 +101,23 @@ impl VectorStore {
                 path.display()
             )));
         };
+        let application: i64 = conn.pragma_query_value(None, "application_id", |r| r.get(0))?;
+        let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        let prepared = application == 0x504c5650;
+        if prepared
+            && (version != 1
+                || layout != Layout::Addressed
+                || !has("message_embeddings_meta", &["request_text"]))
+        {
+            return Err(StoreError::Invalid(
+                "unsupported prepared vector source format".into(),
+            ));
+        }
         conn.execute_batch("BEGIN")?;
         Ok(Self {
             conn,
             layout,
+            prepared,
             _copies: copies,
         })
     }
@@ -104,20 +133,23 @@ impl VectorStore {
                 "a store by message names no addresses".into(),
             ));
         }
-        let mut statement = self.conn.prepare(
-            "SELECT embedding_input_hash, model, dimension, embedded_at_ms FROM message_embeddings_meta",
-        )?;
+        let mut statement = self.conn.prepare(if self.prepared {
+            "SELECT embedding_input_hash, model, dimension, embedded_at_ms, request_text FROM message_embeddings_meta"
+        } else {
+            "SELECT embedding_input_hash, model, dimension, embedded_at_ms, NULL FROM message_embeddings_meta"
+        })?;
         let rows = statement.query_map([], |r| {
             Ok((
                 r.get::<_, Vec<u8>>(0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, i64>(2)?,
                 r.get::<_, Option<i64>>(3)?,
+                r.get::<_, Option<String>>(4)?,
             ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (address, model, dims, embedded_at) = row?;
+            let (address, model, dims, embedded_at, request) = row?;
             let address: [u8; 32] = address
                 .try_into()
                 .map_err(|_| StoreError::Invalid("a vector address is not 32 bytes".into()))?;
@@ -125,11 +157,27 @@ impl VectorStore {
                 .ok()
                 .filter(|dims| *dims > 0)
                 .ok_or_else(|| StoreError::Invalid(format!("dimension {dims} is not a size")))?;
+            let normalized_hash = if self.prepared {
+                let request = request.ok_or_else(|| {
+                    StoreError::Invalid("prepared vector has no request text".into())
+                })?;
+                if !unicode_normalization::is_nfc(&request)
+                    || address != request_address(&model, &request)
+                {
+                    return Err(StoreError::Invalid(
+                        "prepared vector request does not prove its address".into(),
+                    ));
+                }
+                Some(crate::encoding::normalized_text_hash(&request))
+            } else {
+                None
+            };
             out.push(Addressed {
                 address,
                 model,
                 dims,
                 embedded_at,
+                normalized_hash,
             });
         }
         Ok(out)

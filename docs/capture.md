@@ -205,3 +205,15 @@ Gemini activity times keep their original text and zone. Explicit offsets are re
 Its figures and verdicts use the shared status format of [command-surface](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/command-surface/README.md); the rest of status is in [operations.md](operations.md#status). The health report raises an item for every non-empty `unrecognized` class, every refusal, every unwired hook event, and every origin silent for longer than its own usual gap. Status is computed on request from stored facts; nothing is checked on a schedule.
 
 The explicitly named predecessor catalog is imported one member at a time. Each member's bytes are checked, committed and parsed before the next is staged. A missing or changed later blob stops the command with an error while earlier committed members remain readable; repeating the import resumes through ordinary content deduplication. Other containers are checked as whole packages before writing.
+
+### Prepared predecessor vector sources
+
+A prepared addressed SQLite vector store uses `application_id = 0x504c5650`
+and `user_version = 1`. Its existing `message_embeddings_meta` address, model,
+dimension and purchase-time columns retain their meaning. Every row additionally
+has `request_text TEXT`, the exact NFC UTF-8 preimage of its historical request.
+The reader validates the domain-separated SHA-256 request address against the
+model and preimage before deriving its NFC text lookup identity. Null, non-NFC,
+mismatched or unsupported prepared evidence is refused. Unmarked original
+predecessor stores remain supported without inferring a text hash from an address.
+Unknown purchase times remain unmatched under either source layout.

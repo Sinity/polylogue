@@ -232,86 +232,164 @@ fn bytes(values: &[f32]) -> String {
 
 #[test]
 fn predecessor_vectors_import_by_recipe_and_text_hash() {
-    let w = ClaudeHome::new();
-    let long = "x".repeat(polylogue_store::vectors::CHUNK_CHARS + 1);
-    indexed_texts(&w, &long);
-    let (mut engine, _lock) = crate::import::tests::engine(&w, 64);
-    let pass = engine.run_pass().unwrap();
-    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    for prepared in [false, true] {
+        let w = ClaudeHome::new();
+        let long = "x".repeat(polylogue_store::vectors::CHUNK_CHARS + 1);
+        indexed_texts(&w, &long);
+        let (mut engine, _lock) = crate::import::tests::engine(&w, 64);
+        let pass = engine.run_pass().unwrap();
+        assert!(pass.errors.is_empty(), "{:?}", pass.errors);
 
-    let store = w.dir.path().join("embeddings.db");
-    fixture::vector_store(
-        &store,
-        MODEL,
-        &[
-            (
-                addressed("the first text that was embedded"),
-                vec![1.0, 0.0, 0.0, 0.0],
-            ),
-            (
-                addressed("a reply that was embedded too"),
-                vec![0.0, 1.0, 0.0, 0.0],
-            ),
-            (addressed(&long), vec![0.0, 0.0, 1.0, 0.0]),
-            (
-                addressed("a text this archive never held"),
-                vec![0.0, 0.0, 0.0, 1.0],
-            ),
-        ],
-        1_783_000_000_000,
-    );
-    let report = engine
-        .import_with_options(std::slice::from_ref(&store), &options(VECTORS))
-        .unwrap()
-        .predecessor
-        .unwrap();
-    assert_eq!((report.vectors, report.vectors_matched), (4, 2));
-    assert_eq!(report.classes["text key"].stored, 2);
-    assert_eq!(
-        report.unmatched,
-        BTreeMap::from([
-            (
-                "its text is longer than one chunk here, so it is embedded in parts".to_owned(),
-                1
-            ),
-            ("no text here has this request's address".to_owned(), 1),
-        ])
-    );
-    let mut unmatched = report.unmatched_addresses.clone();
-    unmatched.sort();
-    let mut expected = vec![
-        hex(&address(MODEL, &long)),
-        hex(&address(MODEL, "a text this archive never held")),
-    ];
-    expected.sort();
-    assert_eq!(unmatched, expected);
+        let store = w.dir.path().join("embeddings.db");
+        fixture::vector_store(
+            &store,
+            MODEL,
+            &[
+                (
+                    addressed("the first text that was embedded"),
+                    vec![1.0, 0.0, 0.0, 0.0],
+                ),
+                (
+                    addressed("a reply that was embedded too"),
+                    vec![0.0, 1.0, 0.0, 0.0],
+                ),
+                (addressed(&long), vec![0.0, 0.0, 1.0, 0.0]),
+                (
+                    addressed("a text this archive never held"),
+                    vec![0.0, 0.0, 0.0, 1.0],
+                ),
+            ],
+            1_783_000_000_000,
+        );
+        if prepared {
+            let conn = rusqlite::Connection::open(&store).unwrap();
+            conn.execute_batch("PRAGMA application_id=0x504c5650; PRAGMA user_version=1; ALTER TABLE message_embeddings_meta ADD COLUMN request_text TEXT;").unwrap();
+            for text in [
+                "the first text that was embedded",
+                "a reply that was embedded too",
+                &long,
+                "a text this archive never held",
+            ] {
+                conn.execute("UPDATE message_embeddings_meta SET request_text=?1 WHERE embedding_input_hash=?2", rusqlite::params![text,address(MODEL,text).as_slice()]).unwrap();
+            }
+        }
+        let report = engine
+            .import_with_options(std::slice::from_ref(&store), &options(VECTORS))
+            .unwrap()
+            .predecessor
+            .unwrap();
+        assert_eq!((report.vectors, report.vectors_matched), (4, 2));
+        assert_eq!(report.classes["text key"].stored, 2);
+        assert_eq!(
+            report.unmatched,
+            BTreeMap::from([
+                (
+                    "its text is longer than one chunk here, so it is embedded in parts".to_owned(),
+                    1
+                ),
+                ("no text here has this request's address".to_owned(), 1),
+            ])
+        );
+        let mut unmatched = report.unmatched_addresses.clone();
+        unmatched.sort();
+        let mut expected = vec![
+            hex(&address(MODEL, &long)),
+            hex(&address(MODEL, "a text this archive never held")),
+        ];
+        expected.sort();
+        assert_eq!(unmatched, expected);
 
-    // Each vector is stored under the raw text's hash, the full embedding
-    // key, chunk 0, with its values and purchase time unchanged.
-    let mut want = vec![
-        vec![
-            blake3::hash(b"the first text that was embedded")
-                .to_hex()
-                .to_string(),
-            KEY.to_owned(),
-            "0".into(),
-            "4".into(),
-            bytes(&[1.0, 0.0, 0.0, 0.0]),
-            "1783000000000".into(),
-        ],
-        vec![
-            blake3::hash(b"a reply that was embedded too")
-                .to_hex()
-                .to_string(),
-            KEY.to_owned(),
-            "0".into(),
-            "4".into(),
-            bytes(&[0.0, 1.0, 0.0, 0.0]),
-            "1783000000000".into(),
-        ],
-    ];
-    want.sort();
-    assert_eq!(embedded(&engine), want);
+        // Each vector is stored under the raw text's hash, the full embedding
+        // key, chunk 0, with its values and purchase time unchanged.
+        let mut want = vec![
+            vec![
+                blake3::hash(b"the first text that was embedded")
+                    .to_hex()
+                    .to_string(),
+                KEY.to_owned(),
+                "0".into(),
+                "4".into(),
+                bytes(&[1.0, 0.0, 0.0, 0.0]),
+                "1783000000000".into(),
+            ],
+            vec![
+                blake3::hash(b"a reply that was embedded too")
+                    .to_hex()
+                    .to_string(),
+                KEY.to_owned(),
+                "0".into(),
+                "4".into(),
+                bytes(&[0.0, 1.0, 0.0, 0.0]),
+                "1783000000000".into(),
+            ],
+        ];
+        want.sort();
+        assert_eq!(embedded(&engine), want);
+    }
+}
+#[test]
+fn vector_addresses_match_all_current_raw_unicode_spellings_and_repeat() {
+    for prepared in [false, true] {
+        let w = ClaudeHome::new();
+        let nfc = "Café";
+        let decomposed = "Cafe\u{301}";
+        w.append("unicode.jsonl", &claude_user("composed", "unicode", nfc));
+        w.append(
+            "unicode.jsonl",
+            &claude_user("decomposed", "unicode", decomposed),
+        );
+        let (mut engine, _lock) = crate::import::tests::engine(&w, 64);
+        assert!(engine.run_pass().unwrap().errors.is_empty());
+        let store = w.dir.path().join("unicode-vectors.db");
+        fixture::vector_store(
+            &store,
+            MODEL,
+            &[(addressed(nfc), vec![1.0, 0.0, 0.0, 0.0])],
+            1_783_000_000_000,
+        );
+        if prepared {
+            let conn = rusqlite::Connection::open(&store).unwrap();
+            conn.execute_batch("PRAGMA application_id=0x504c5650; PRAGMA user_version=1; ALTER TABLE message_embeddings_meta ADD COLUMN request_text TEXT;").unwrap();
+            conn.execute("UPDATE message_embeddings_meta SET request_text=?1", [nfc])
+                .unwrap();
+        }
+        let source = std::fs::read(&store).unwrap();
+        let report = engine
+            .import_with_options(std::slice::from_ref(&store), &options(VECTORS))
+            .unwrap()
+            .predecessor
+            .unwrap();
+        assert_eq!((report.vectors, report.vectors_matched), (1, 1));
+        assert_eq!(report.classes["text key"].stored, 2);
+        let mut hashes = embedded(&engine)
+            .into_iter()
+            .map(|row| row[0].clone())
+            .collect::<Vec<_>>();
+        hashes.sort();
+        let mut expected = [nfc, decomposed]
+            .map(|text| blake3::hash(text.as_bytes()).to_hex().to_string())
+            .to_vec();
+        expected.sort();
+        assert_eq!(
+            hashes, expected,
+            "one normalized request can own two exact raw text keys"
+        );
+        let before = embedded(&engine);
+        let repeat = engine
+            .import_with_options(std::slice::from_ref(&store), &options(VECTORS))
+            .unwrap()
+            .predecessor
+            .unwrap();
+        assert_eq!(
+            (
+                repeat.classes["text key"].stored,
+                repeat.classes["text key"].present
+            ),
+            (0, 2)
+        );
+        assert_eq!(embedded(&engine), before);
+        assert_eq!(std::fs::read(&store).unwrap(), source);
+    }
 }
 
 #[test]

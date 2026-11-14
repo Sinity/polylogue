@@ -14,7 +14,10 @@ fn texts(archive: &Archive, hashes: &[&[u8]]) {
         crate::archive::open_write(&archive.index_db(), crate::archive::cache::SETUP).unwrap();
     for hash in hashes {
         index
-            .execute("INSERT INTO text(hash, body) VALUES (?1, x'00')", [hash])
+            .execute(
+                "INSERT INTO text(hash, normalized_hash, body) VALUES (?1,?1, x'00')",
+                [hash],
+            )
             .unwrap();
     }
 }
@@ -603,3 +606,74 @@ fn query_vectors_are_stored_once_by_key_and_text() {
 }
 
 mod restore;
+
+#[test]
+fn proven_request_lookup_ignores_unrelated_current_texts() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let dir = tempfile::tempdir().unwrap();
+    let mut fixture = crate::fixture::Fixture::new(dir.path()).unwrap();
+    fixture
+        .many_sessions(crate::fixture::ManySessions {
+            prefix: "/home/op/work",
+            sessions: 256,
+            messages: 3,
+            answered: 256,
+            last: 1_800_000_000_000,
+        })
+        .unwrap();
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let all = reader.prose_texts(0, 4096, None).unwrap();
+    assert_eq!(all.len(), 256);
+    let normalized = crate::encoding::normalized_text_hash(&all[0].text);
+    let expected: Vec<_> = all
+        .iter()
+        .filter(|text| crate::encoding::normalized_text_hash(&text.text) == normalized)
+        .map(|text| (text.id, text.hash.clone(), text.text.clone()))
+        .collect();
+    let work = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&work);
+    let conn = reader.conn().unwrap();
+    conn.progress_handler(
+        1,
+        Some(move || {
+            observed.fetch_add(1, Ordering::Relaxed);
+            false
+        }),
+    )
+    .unwrap();
+    let selected = reader
+        .prose_texts_by_normalized_hash(&normalized, 0, 4096)
+        .unwrap();
+    let narrow_work = work.swap(0, Ordering::Relaxed);
+    let _ = reader.prose_texts(0, 4096, None).unwrap();
+    let global_work = work.load(Ordering::Relaxed);
+    conn.progress_handler(0, None::<fn() -> bool>).unwrap();
+    assert_eq!(
+        selected
+            .into_iter()
+            .map(|text| (text.id, text.hash, text.text))
+            .collect::<Vec<_>>(),
+        expected
+    );
+    assert!(
+        narrow_work * 8 < global_work,
+        "indexed request {narrow_work}, full current prose {global_work}"
+    );
+    assert!(
+        reader
+            .prose_texts_by_normalized_hash(&[0; 32], 0, 4096)
+            .unwrap()
+            .is_empty()
+    );
+    let first = reader
+        .prose_texts_by_normalized_hash(&normalized, 0, 1)
+        .unwrap();
+    assert_eq!(first.len(), 1);
+    assert!(
+        reader
+            .prose_texts_by_normalized_hash(&normalized, first[0].id, 1)
+            .unwrap()
+            .is_empty()
+    );
+}

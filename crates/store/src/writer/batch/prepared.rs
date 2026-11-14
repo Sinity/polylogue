@@ -7,7 +7,7 @@ pub(crate) struct PreparedRows {
     pub(in crate::writer) messages: Vec<PreparedMessage>,
     pub(in crate::writer) documents: Vec<PreparedDocument>,
     pub(in crate::writer) fragments: crate::fragment::PreparedFragments,
-    pub(in crate::writer) texts: HashMap<[u8; 32], Vec<u8>>,
+    pub(in crate::writer) texts: HashMap<[u8; 32], crate::encoding::PreparedText>,
     pub(in crate::writer) events: Vec<(String, Vec<u8>)>,
     pub(in crate::writer) released: bool,
 }
@@ -177,7 +177,7 @@ impl ParseStep {
                 if let std::collections::hash_map::Entry::Vacant(slot) = texts.entry(hash)
                     && let Ok(bytes) = packer.pack_text(text)
                 {
-                    slot.insert(bytes);
+                    slot.insert(crate::encoding::PreparedText::new(text, bytes));
                 }
             }
         }

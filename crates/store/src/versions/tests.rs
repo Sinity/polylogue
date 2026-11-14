@@ -28,7 +28,7 @@ fn database(unrelated: i64) -> Connection {
     for id in 1..=unrelated {
         let text = format!("retained synthetic text {id}");
         conn.execute(
-            "INSERT INTO text(id,hash,body) VALUES(?1,?2,?3)",
+            "INSERT INTO text(id,hash,normalized_hash,body) VALUES(?1,?2,?2,?3)",
             params![
                 id,
                 blake3::hash(text.as_bytes()).as_bytes(),
@@ -289,7 +289,16 @@ fn first_build_cleanup_retains_version_text_and_forgets_deleted_identity() {
     let version = [18; 32];
     let texts = identities.transaction();
     let tx = conn.transaction().unwrap();
-    let id = identities.resolve(&tx, &hash, Some(b"kept")).unwrap();
+    let id = identities
+        .resolve(
+            &tx,
+            &hash,
+            Some(&crate::encoding::PreparedText::new(
+                "kept",
+                b"kept".to_vec(),
+            )),
+        )
+        .unwrap();
     let version_pk = insert_version(&tx, &version, &[0]);
     tx.execute(
         "INSERT INTO message_version_text(version_pk,idx,text_id) VALUES(?1,0,?2)",
@@ -310,7 +319,16 @@ fn first_build_cleanup_retains_version_text_and_forgets_deleted_identity() {
     .unwrap();
     remove_unreferenced(&tx, Some(&first), &identities).unwrap();
     assert!(identities.resolve(&tx, &hash, None).is_err());
-    let replacement = identities.resolve(&tx, &hash, Some(b"again")).unwrap();
+    let replacement = identities
+        .resolve(
+            &tx,
+            &hash,
+            Some(&crate::encoding::PreparedText::new(
+                "again",
+                b"again".to_vec(),
+            )),
+        )
+        .unwrap();
     assert_eq!(
         tx.query_row(
             "SELECT count(*) FROM text WHERE id=?1 AND hash=?2",

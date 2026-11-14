@@ -27,6 +27,7 @@ fn an_addressed_store_yields_every_vector_from_its_chunk() {
             model: "voyage-4".into(),
             dims: 4,
             embedded_at: Some(7_000),
+            normalized_hash: None,
         }
     );
     let mut seen = Vec::new();
@@ -107,4 +108,57 @@ fn a_database_that_is_not_a_vector_store_is_refused() {
         error.contains("not one of the predecessor's vector stores"),
         "{error}"
     );
+}
+
+#[test]
+fn prepared_requests_validate_preimages_before_returning_lookup_keys() {
+    for request in [Some("Café"), Some("Cafe\u{301}"), Some("different"), None] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prepared.db");
+        fixture::vector_store(
+            &path,
+            "voyage-4",
+            &[(
+                VectorKey::Address(request_address("voyage-4", "Café")),
+                vec![1., 0., 0., 0.],
+            )],
+            42,
+        );
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch("PRAGMA application_id=0x504c5650; PRAGMA user_version=1; ALTER TABLE message_embeddings_meta ADD COLUMN request_text TEXT;").unwrap();
+        conn.execute(
+            "UPDATE message_embeddings_meta SET request_text=?1",
+            [request],
+        )
+        .unwrap();
+        drop(conn);
+        let before = std::fs::read(&path).unwrap();
+        let source = VectorStore::open(&path, dir.path()).unwrap();
+        match request {
+            Some("Café") => {
+                let rows = source.addressed().unwrap();
+                assert_eq!(
+                    rows[0].normalized_hash,
+                    Some(*blake3::hash("Café".as_bytes()).as_bytes())
+                );
+            }
+            _ => assert!(
+                source.addressed().is_err(),
+                "unproven request must not imply target absence"
+            ),
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+}
+
+#[test]
+fn prepared_marker_requires_its_complete_supported_schema() {
+    let (dir, source) = store(vec![(VectorKey::Address([1; 32]), vec![1., 0., 0., 0.])]);
+    drop(source);
+    let path = dir.path().join("embeddings.db");
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch("PRAGMA application_id=0x504c5650; PRAGMA user_version=1;")
+        .unwrap();
+    drop(conn);
+    assert!(VectorStore::open(&path, dir.path()).is_err());
 }

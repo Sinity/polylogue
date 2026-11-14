@@ -974,7 +974,10 @@ impl<'a> Projection<'a> {
                     && let std::collections::hash_map::Entry::Vacant(slot) =
                         step.prepared.texts.entry(*hash)
                 {
-                    slot.insert(crate::encoding::pack_text(text)?);
+                    slot.insert(crate::encoding::PreparedText::new(
+                        text,
+                        crate::encoding::pack_text(text)?,
+                    ));
                 }
             }
             choices.message_versions.insert(
