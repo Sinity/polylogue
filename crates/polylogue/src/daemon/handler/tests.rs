@@ -423,6 +423,14 @@ fn measurement_answers_retain_the_actual_resolved_context_on_the_shared_socket()
                     measure.resolved.context.ran_at.to_string(),
                     "2026-03-01T12:00:00Z"
                 );
+                for field in ["count", "next"] {
+                    let mut missing = value.clone();
+                    missing.as_object_mut().unwrap().remove(field);
+                    assert!(
+                        serde_json::from_value::<crate::protocol::query::Answer>(missing).is_err(),
+                        "paged measurement requires {field}, even when null"
+                    );
+                }
             }
             _ => panic!("actual measurement answer: {typed:?}"),
         }
@@ -446,6 +454,21 @@ fn measurement_answers_retain_the_actual_resolved_context_on_the_shared_socket()
                 .contains(&json!("resolved"))
         );
         assert_eq!(schema["additionalProperties"], false);
+    }
+    let paged = schemars::schema_for!(crate::protocol::query::PagedMeasure).to_value();
+    for field in ["count", "next"] {
+        assert!(
+            paged["required"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(field))
+        );
+        assert!(
+            paged["properties"][field]["type"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("null"))
+        );
     }
 }
 

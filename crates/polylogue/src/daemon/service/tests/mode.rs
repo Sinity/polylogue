@@ -290,6 +290,7 @@ fn offline_settings_and_chat_preparation_keep_distinct_durable_receipts() {
     };
     assert!(receipt.pending);
     assert!(!receipt.id.is_empty());
+    let pending_before_retry = pending_requests(&runtime);
     let repeated = primary_table_call(
         &runtime,
         "setting",
@@ -303,6 +304,7 @@ fn offline_settings_and_chat_preparation_keep_distinct_durable_receipts() {
     };
     assert_eq!(repeat.id, receipt.id);
     assert!(repeat.pending && repeat.repeat);
+    assert_eq!(pending_requests(&runtime), pending_before_retry);
 
     let bytes = b"Synthetic attachment awaiting owner confirmation";
     let args = serde_json::json!({"provider":"chatgpt","model":"example","text":"A synthetic draft","files":[{"name":"attachment.txt","media_type":"text/plain","bytes":bytes.to_vec()}]});
