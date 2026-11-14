@@ -134,3 +134,40 @@ pub struct SelectionNote {
     pub page_url: String,
     pub selected_at: String,
 }
+
+/// A blob is durable in the local primary spool, before a chat action exists.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PendingCapture {
+    pub identity: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ChatCurrent {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    pub action: Option<serde_json::Value>,
+}
+
+/// Confirmed state, a durable authored receipt, or file custody before enqueue.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum ChatAnswer {
+    Current(ChatCurrent),
+    Receipt(polylogue_model::user::UserOutcome),
+    Capture(PendingCapture),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BackfillCurrent {
+    pub job: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum BackfillAnswer {
+    Current(BackfillCurrent),
+    Receipt(polylogue_model::user::UserOutcome),
+}

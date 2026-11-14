@@ -42,7 +42,7 @@ impl Reader<'_> {
         &self,
         sql: &str,
         params: &[SqlValue],
-        visit: impl FnMut(serde_json::Value) -> std::result::Result<(), E>,
+        mut visit: impl FnMut(serde_json::Value) -> std::result::Result<(), E>,
     ) -> std::result::Result<(), E>
     where
         E: From<StoreError>,
@@ -50,7 +50,9 @@ impl Reader<'_> {
         crate::fault::check("read.query", sql).map_err(E::from)?;
         let conn = self.conn().map_err(E::from)?;
         let mut stmt = conn.prepare_cached(sql).map_err(StoreError::from)?;
-        visit_rows(&mut stmt, params, visit)
+        visit_rows(&mut stmt, params, |row| {
+            visit(serde_json::Value::Object(row))
+        })
     }
 
     /// Collect a statement written by a caller. It may only read: the
@@ -58,7 +60,10 @@ impl Reader<'_> {
     /// recursive queries and functions and refuses everything else, so it
     /// cannot create temporary objects, attach databases or set pragmas on
     /// the shared reader connection that later reads would see.
-    pub fn query_untrusted(&self, sql: &str) -> Result<Vec<serde_json::Value>> {
+    pub fn query_untrusted(
+        &self,
+        sql: &str,
+    ) -> Result<Vec<serde_json::Map<String, serde_json::Value>>> {
         use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
         crate::fault::check("read.query", sql)?;
         let conn = self.conn()?;
@@ -85,7 +90,7 @@ impl Reader<'_> {
 fn visit_rows<E>(
     stmt: &mut rusqlite::Statement<'_>,
     params: &[SqlValue],
-    mut visit: impl FnMut(serde_json::Value) -> std::result::Result<(), E>,
+    mut visit: impl FnMut(serde_json::Map<String, serde_json::Value>) -> std::result::Result<(), E>,
 ) -> std::result::Result<(), E>
 where
     E: From<StoreError>,
@@ -117,7 +122,7 @@ where
             };
             obj.insert(name.clone(), v);
         }
-        visit(serde_json::Value::Object(obj))?;
+        visit(obj)?;
     }
     Ok(())
 }

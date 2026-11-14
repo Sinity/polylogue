@@ -109,7 +109,11 @@ pub struct PagedMeasure {
     pub data: Value,
     pub read_at: Position,
     pub resolved: Resolved,
+    #[serde(deserialize_with = "Option::deserialize")]
+    #[schemars(required, schema_with = "Option::<u64>::json_schema")]
     pub count: Option<u64>,
+    #[serde(deserialize_with = "Option::deserialize")]
+    #[schemars(required, schema_with = "Option::<String>::json_schema")]
     pub next: Option<String>,
 }
 

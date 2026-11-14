@@ -1,12 +1,11 @@
 //! One typed status constructor over current archive and runtime observations.
 use super::{Daemon, error, now_ms, store_error};
-use serde_json::Value;
 
 /// Status over an index that is not current is a degraded answer.
 pub(super) fn answer(
     d: &Daemon,
     reader: &polylogue_store::Reader<'_>,
-) -> command_surface::Answer<Value> {
+) -> command_surface::Answer<crate::protocol::status::Answer> {
     // Totals are counters the writer keeps with the rows they count: reading
     // them costs the same at any archive size.
     let (store, totals_error) = match reader.status() {
@@ -43,9 +42,19 @@ pub(super) fn answer(
             error: error.to_string(),
         },
     };
-    let mode = match serde_json::to_value(&d.mode).and_then(serde_json::from_value) {
-        Ok(mode) => mode,
-        Err(problem) => return error("internal", problem),
+    let mode = match &d.mode {
+        super::ModeState::Standalone => crate::protocol::status::Mode::Standalone,
+        #[cfg(feature = "sinex")]
+        super::ModeState::Primary { .. } => crate::protocol::status::Mode::Primary,
+        super::ModeState::Blocked {
+            configured,
+            path,
+            error,
+        } => crate::protocol::status::Mode::Blocked {
+            configured: configured.map(str::to_owned),
+            path: path.clone(),
+            error: error.clone(),
+        },
     };
     let freshness = match d.freshness(reader) {
         Ok(freshness) => freshness,
@@ -67,21 +76,12 @@ pub(super) fn answer(
         #[cfg(feature = "sinex")]
         primary: primary(d, reader),
     };
-    match serde_json::to_value(status) {
-        Ok(value) => {
-            let super::ModeState::Blocked { path, error, .. } = &d.mode else {
-                return crate::protocol::read(value, &freshness);
-            };
-            let mut missing: Vec<String> =
-                freshness.notes().into_iter().map(str::to_owned).collect();
-            missing.push(format!("{}: {error}", path.display()));
-            command_surface::Answer {
-                outcome: command_surface::Outcome::Degraded { value, missing },
-                envelope: command_surface::Envelope::default(),
-            }
-        }
-        Err(problem) => error("internal", problem),
-    }
+    let super::ModeState::Blocked { path, error, .. } = &d.mode else {
+        return crate::protocol::read(status, &freshness);
+    };
+    let mut missing: Vec<String> = freshness.notes().into_iter().map(str::to_owned).collect();
+    missing.push(format!("{}: {error}", path.display()));
+    command_surface::Answer::degraded(status, missing)
 }
 
 #[cfg(feature = "sinex")]

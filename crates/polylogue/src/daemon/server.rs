@@ -64,8 +64,8 @@ fn send_answer(
     let unscoped = crate::protocol::ReadScopes::default();
     if let Err(error) = scopes.check() {
         // The safe failure carries nothing from the old scope.
-        let mut failure =
-            serde_json::to_vec(&service::store_error(&error)).map_err(std::io::Error::other)?;
+        let mut failure = serde_json::to_vec(&service::store_error::<()>(&error))
+            .map_err(std::io::Error::other)?;
         failure.push(b'\n');
         bytes = failure;
         scopes = &unscoped;

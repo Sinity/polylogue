@@ -423,6 +423,14 @@ fn measurement_answers_retain_the_actual_resolved_context_on_the_shared_socket()
                     measure.resolved.context.ran_at.to_string(),
                     "2026-03-01T12:00:00Z"
                 );
+                for field in ["count", "next"] {
+                    let mut missing = value.clone();
+                    missing.as_object_mut().unwrap().remove(field);
+                    assert!(
+                        serde_json::from_value::<crate::protocol::query::Answer>(missing).is_err(),
+                        "paged measurement requires {field}, even when null"
+                    );
+                }
             }
             _ => panic!("actual measurement answer: {typed:?}"),
         }
@@ -446,6 +454,21 @@ fn measurement_answers_retain_the_actual_resolved_context_on_the_shared_socket()
                 .contains(&json!("resolved"))
         );
         assert_eq!(schema["additionalProperties"], false);
+    }
+    let paged = schemars::schema_for!(crate::protocol::query::PagedMeasure).to_value();
+    for field in ["count", "next"] {
+        assert!(
+            paged["required"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(field))
+        );
+        assert!(
+            paged["properties"][field]["type"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("null"))
+        );
     }
 }
 
@@ -557,4 +580,47 @@ fn answer_errors_keep_credential_shaped_messages_and_hints() {
     let encoded = serde_json::to_value(response).unwrap();
     assert_eq!(encoded["error"]["message"], token);
     assert_eq!(encoded["error"]["hint"], token);
+}
+
+#[test]
+fn setting_cli_arguments_and_socket_keep_the_declared_receipt_and_current_value() {
+    let daemon = crate::test_daemon::start("setting transport example");
+    let (_, _, arguments) = crate::cli::request_arguments(
+        &["polylogue", "setting", "reading.variants", "[]"],
+        std::path::Path::new("/"),
+    )
+    .unwrap();
+    let ready = request("setting", Value::Object(arguments), "setting-cli-socket");
+    let first = crate::client::call_ready(&daemon.daemon.archive, &ready).unwrap();
+    let crate::protocol::setting::Answer::Receipt(receipt) =
+        serde_json::from_value(first.value().unwrap().clone()).unwrap()
+    else {
+        panic!("write must return a receipt: {first:?}")
+    };
+    assert!(!receipt.pending);
+    assert!(!receipt.repeat);
+    let repeated = crate::client::call_ready(&daemon.daemon.archive, &ready).unwrap();
+    let crate::protocol::setting::Answer::Receipt(repeat) =
+        serde_json::from_value(repeated.value().unwrap().clone()).unwrap()
+    else {
+        panic!("repeat must return a receipt: {repeated:?}")
+    };
+    assert_eq!(repeat.id, receipt.id);
+    assert!(repeat.repeat);
+    assert!(!repeat.pending);
+    let shown = crate::client::call_ready(
+        &daemon.daemon.archive,
+        &request(
+            "setting",
+            json!({"key":"reading.variants"}),
+            "setting-socket-read",
+        ),
+    )
+    .unwrap();
+    let crate::protocol::setting::Answer::Current(current) =
+        serde_json::from_value(shown.value().unwrap().clone()).unwrap()
+    else {
+        panic!("read must return its current setting: {shown:?}")
+    };
+    assert_eq!(current.key, "reading.variants");
 }

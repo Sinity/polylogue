@@ -848,3 +848,39 @@ fn generated_mcp_follow_up_preserves_the_accepted_request() {
     assert!(text.contains("synthetic refusal"), "{text}");
     peer.join().unwrap();
 }
+
+#[test]
+fn setting_mcp_keeps_typed_write_repeat_and_read_results() {
+    let daemon = test_daemon::start("MCP settings example");
+    let mut session = Session {
+        initialized: true,
+        ..Default::default()
+    };
+    let mut invoke = |id, arguments| {
+        session.prepare(json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":tool_call("setting", arguments,"mcp-setting-receipt")})).answer(&daemon.daemon.archive).unwrap()
+    };
+    let first = invoke(1, json!({"key":"reading.variants","value":"[]"}));
+    assert_eq!(first["result"]["isError"], false, "{first}");
+    let first: crate::protocol::setting::Answer =
+        serde_json::from_value(first["result"]["structuredContent"]["value"].clone()).unwrap();
+    let crate::protocol::setting::Answer::Receipt(first) = first else {
+        panic!("write must return a receipt")
+    };
+    assert!(!first.pending);
+    let repeat = invoke(2, json!({"key":"reading.variants","value":"[]"}));
+    let repeat: crate::protocol::setting::Answer =
+        serde_json::from_value(repeat["result"]["structuredContent"]["value"].clone()).unwrap();
+    let crate::protocol::setting::Answer::Receipt(repeat) = repeat else {
+        panic!("repeat must return a receipt")
+    };
+    assert_eq!(first.id, repeat.id);
+    assert!(repeat.repeat);
+    assert!(!repeat.pending);
+    let shown = session.prepare(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":tool_call("setting",json!({"key":"reading.variants"}),"mcp-setting-current")})).answer(&daemon.daemon.archive).unwrap();
+    assert_eq!(shown["result"]["isError"], false, "{shown}");
+    let current: crate::protocol::setting::Answer =
+        serde_json::from_value(shown["result"]["structuredContent"]["value"].clone()).unwrap();
+    assert!(
+        matches!(current, crate::protocol::setting::Answer::Current(value) if value.key=="reading.variants")
+    );
+}

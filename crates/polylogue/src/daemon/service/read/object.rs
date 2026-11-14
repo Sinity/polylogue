@@ -172,7 +172,7 @@ pub(super) fn page(
     d: &Daemon,
     request: &ReadRequest,
     operation: &Arc<crate::operation::Context>,
-) -> Option<Answer<Value>> {
+) -> Option<Answer<polylogue_model::read::ReadPage>> {
     let reference = match target(request)? {
         Ok(reference) => reference,
         Err(failure) => return Some(failure.answer()),
@@ -246,10 +246,10 @@ pub(super) fn page(
         },
     );
     Some(match result {
-        Ok(page) => match serde_json::to_value(&page) {
-            Ok(value) => crate::protocol::read(value, &page.snapshot.freshness),
-            Err(problem) => error("internal", problem),
-        },
+        Ok(page) => {
+            let freshness = page.snapshot.freshness.clone();
+            crate::protocol::read(page, &freshness)
+        }
         Err(failure) => failure.answer(),
     })
 }

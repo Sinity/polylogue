@@ -230,3 +230,198 @@ fn primary_outage_preserves_raw_custody_without_standalone_fallback_or_owner_day
         );
     }
 }
+
+fn primary_table_call(
+    runtime: &Runtime,
+    operation: &str,
+    arguments: serde_json::Value,
+    id: &str,
+) -> command_surface::Answer<serde_json::Value> {
+    let table = crate::commands::table(std::sync::Arc::clone(&runtime.daemon));
+    let mut request = crate::client::request(operation, arguments, id.into());
+    request.deadline = command_surface::Deadline::None;
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(table.call_as(
+            request,
+            command_surface::Via::Cli,
+            command_surface::Caller::default().with_access(command_surface::Access::Write),
+            Default::default(),
+        ))
+}
+
+fn pending_requests(runtime: &Runtime) -> Vec<polylogue_model::authored::PreparedRequest> {
+    let ModeState::Primary { connection } = &runtime.daemon.mode else {
+        panic!("primary required")
+    };
+    let mut requests = Vec::new();
+    polylogue_store::primary::Sinex::visit_pending_requests(connection.as_ref(), &mut |pending| {
+        if let Some(prepared) = pending.prepared() {
+            requests.push(prepared.clone());
+        }
+        Ok(())
+    })
+    .unwrap();
+    requests
+}
+
+#[test]
+fn offline_settings_and_chat_preparation_keep_distinct_durable_receipts() {
+    let home = ClaudeHome::new();
+    let runtime = launch(primary(&home)).unwrap();
+    let setting = primary_table_call(
+        &runtime,
+        "setting",
+        serde_json::json!({"key":"browser.actions","value":"on"}),
+        "enable-offline-chat",
+    );
+    assert_eq!(setting.exit_code(), 5, "{setting:?}");
+    let (value, notes) = crate::test_answers::degraded(setting);
+    assert!(
+        notes
+            .iter()
+            .any(|note| note == crate::protocol::AWAITING_CONFIRMATION)
+    );
+    let crate::protocol::setting::Answer::Receipt(receipt) = serde_json::from_value(value).unwrap()
+    else {
+        panic!("setting write must retain its user receipt")
+    };
+    assert!(receipt.pending);
+    assert!(!receipt.id.is_empty());
+    let pending_before_retry = pending_requests(&runtime);
+    let repeated = primary_table_call(
+        &runtime,
+        "setting",
+        serde_json::json!({"key":"browser.actions","value":"on"}),
+        "enable-offline-chat",
+    );
+    let (value, _) = crate::test_answers::degraded(repeated);
+    let crate::protocol::setting::Answer::Receipt(repeat) = serde_json::from_value(value).unwrap()
+    else {
+        panic!("repeat must retain its user receipt")
+    };
+    assert_eq!(repeat.id, receipt.id);
+    assert!(repeat.pending && repeat.repeat);
+    assert_eq!(pending_requests(&runtime), pending_before_retry);
+
+    let bytes = b"Synthetic attachment awaiting owner confirmation";
+    let args = serde_json::json!({"provider":"chatgpt","model":"example","text":"A synthetic draft","files":[{"name":"attachment.txt","media_type":"text/plain","bytes":bytes.to_vec()}]});
+    let unconfirmed =
+        primary_table_call(&runtime, "chat send", args.clone(), "pending-file-action");
+    assert!(
+        matches!(unconfirmed.outcome, command_surface::Outcome::Error(ref error)
+        if error.code.as_deref() == Some("browser_actions_off")),
+        "{unconfirmed:?}"
+    );
+    assert_eq!(pending_requests(&runtime), pending_before_retry);
+
+    // Pending policy cannot authorize a browser action. Install the same
+    // immutable setting through the normal confirmed writer before testing
+    // either browser preparation boundary during a later transport outage.
+    let ModeState::Primary { connection } = &runtime.daemon.mode else {
+        panic!("primary mode required")
+    };
+    let connection = connection.clone();
+    let prepared = pending_before_retry
+        .into_iter()
+        .find(|prepared| {
+            prepared.outcome.id == receipt.id
+                && matches!(&prepared.request.write,
+            polylogue_model::user::UserWrite::SetSetting { key, .. } if key == "browser.actions")
+        })
+        .unwrap();
+    assert!(!prepared.outcome.pending);
+    drop(runtime);
+    {
+        use polylogue_store::primary::{Confirmed, ConfirmedChange, Product, ReplayControl};
+        let (archive, _lock) =
+            Archive::open_primary(&home.root, &home.dir.path().join("sinex-store")).unwrap();
+        let writer = polylogue_store::writer::Writer::start_on_sinex(&archive, connection).unwrap();
+        writer
+            .apply_confirmed(vec![
+                Confirmed {
+                    native: None,
+                    position: 1,
+                    output_index: 0,
+                    event: "synthetic-confirmed-browser-policy".into(),
+                    change: ConfirmedChange::Live(Box::new(Product::Request(prepared))),
+                },
+                Confirmed {
+                    native: None,
+                    position: 1,
+                    output_index: 0,
+                    event: String::new(),
+                    change: ConfirmedChange::Control(Box::new(ReplayControl::Completion {
+                        position: 1,
+                        delivery: None,
+                    })),
+                },
+            ])
+            .unwrap();
+    }
+    let runtime = launch(primary(&home)).unwrap();
+    assert_eq!(
+        runtime
+            .daemon
+            .reads
+            .reader()
+            .unwrap()
+            .setting_value("browser.actions", "synthetic-machine")
+            .unwrap(),
+        Some(polylogue_model::settings::Value::Boolean(true))
+    );
+    let capture = primary_table_call(&runtime, "chat send", args.clone(), "pending-file-action");
+    assert_eq!(capture.http_status(), Some(200), "{capture:?}");
+    let (value, _) = crate::test_answers::degraded(capture);
+    assert!(value.get("queued").is_none() && value.get("action").is_none());
+    let crate::protocol::browser::ChatAnswer::Capture(capture) =
+        serde_json::from_value(value).unwrap()
+    else {
+        panic!("file custody is not a queued action")
+    };
+    assert!(!capture.identity.is_empty());
+    assert!(!pending_requests(&runtime).iter().any(|prepared| matches!(
+        &prepared.request.write,
+        polylogue_model::user::UserWrite::ChatEnqueue(_)
+    )));
+    let retry = primary_table_call(&runtime, "chat send", args, "pending-file-action");
+    let (value, _) = crate::test_answers::degraded(retry);
+    let crate::protocol::browser::ChatAnswer::Capture(retry) =
+        serde_json::from_value(value).unwrap()
+    else {
+        panic!("retry must retain capture custody")
+    };
+    assert_eq!(retry.identity, capture.identity);
+
+    let action = primary_table_call(
+        &runtime,
+        "chat send",
+        serde_json::json!({"provider":"chatgpt","model":"example","text":"A synthetic draft without files"}),
+        "pending-authored-action",
+    );
+    assert_eq!(action.http_status(), Some(200), "{action:?}");
+    let (value, _) = crate::test_answers::degraded(action);
+    assert!(value.get("queued").is_none() && value.get("action").is_none());
+    let crate::protocol::browser::ChatAnswer::Receipt(receipt) =
+        serde_json::from_value(value).unwrap()
+    else {
+        panic!("authored custody must retain its user receipt")
+    };
+    assert!(receipt.pending);
+    let prepared = pending_requests(&runtime);
+    let action=prepared.iter().find(|prepared|matches!(&prepared.request.write,polylogue_model::user::UserWrite::ChatEnqueue(action) if action.id==receipt.id)).expect("the exact authored action is durable in the outbox");
+    assert_eq!(action.outcome.id, receipt.id);
+    assert!(
+        runtime
+            .daemon
+            .reads
+            .reader()
+            .unwrap()
+            .chat_actions()
+            .unwrap()
+            .is_empty(),
+        "unconfirmed actions must not be presented as queued current rows"
+    );
+}

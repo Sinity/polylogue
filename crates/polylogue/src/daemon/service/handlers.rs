@@ -26,7 +26,10 @@ struct QueryInput<'a> {
 }
 
 /// Runs one query with the ranking the archive's settings allow.
-fn run_query(call: &Call<'_>, input: QueryInput<'_>) -> Result<Answer<Value>, Failure> {
+fn run_query(
+    call: &Call<'_>,
+    input: QueryInput<'_>,
+) -> Result<Answer<protocol::query::Answer>, Failure> {
     let reader = call.reader()?;
     let context = call.context()?;
     let d = call.daemon;
@@ -59,6 +62,24 @@ fn run_query(call: &Call<'_>, input: QueryInput<'_>) -> Result<Answer<Value>, Fa
     ))
 }
 
+fn run_rows(
+    call: &Call<'_>,
+    input: QueryInput<'_>,
+) -> Result<Answer<protocol::query::Rows>, Failure> {
+    let answer = run_query(call, input)?;
+    let mut problem = None;
+    let rows = answer.map(|value| {
+        value
+            .into_rows()
+            .map_err(|error| problem = Some(error))
+            .ok()
+    });
+    Ok(match problem {
+        Some(failure) => failure.answer(),
+        None => rows.map(|value| value.expect("row query returned rows")),
+    })
+}
+
 pub(crate) struct Query;
 impl Handler for Query {
     type Arguments = protocol::query::Arguments;
@@ -71,7 +92,7 @@ impl Handler for Query {
     fn ranking_query(arguments: &Self::Arguments, _row: &Command) -> Option<String> {
         Some(arguments.query.clone())
     }
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         run_query(
             call,
             QueryInput {
@@ -105,7 +126,7 @@ impl Handler for List {
                 .to_owned(),
         )
     }
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         let text = arguments
             .query
             .as_deref()
@@ -131,8 +152,8 @@ impl Handler for Live {
     type Answer = protocol::query::Rows;
     const PAGES: bool = true;
     const PRINT: fn(&Value, bool) -> String = print::query;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
-        run_query(
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
+        run_rows(
             call,
             QueryInput {
                 text: LIVE,
@@ -152,8 +173,8 @@ impl Handler for Waiting {
     type Answer = protocol::query::Rows;
     const PAGES: bool = true;
     const PRINT: fn(&Value, bool) -> String = print::query;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
-        run_query(
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
+        run_rows(
             call,
             QueryInput {
                 text: WAITING,
@@ -173,8 +194,8 @@ impl Handler for Notices {
     type Answer = protocol::query::Rows;
     const PAGES: bool = true;
     const PRINT: fn(&Value, bool) -> String = print::query;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
-        run_query(
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
+        run_rows(
             call,
             QueryInput {
                 text: NOTICES,
@@ -200,7 +221,7 @@ impl Handler for Measure {
     fn ranking_query(arguments: &Self::Arguments, row: &Command) -> Option<String> {
         Some(measure_query(row.name, arguments))
     }
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         let text = measure_query(call.row.name, &arguments);
         run_query(
             call,
@@ -233,14 +254,15 @@ pub(crate) struct Sql;
 impl Handler for Sql {
     type Arguments = protocol::query_aliases::Sql;
     type Answer = protocol::query_aliases::SqlRows;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         let reader = call.reader()?;
         Ok(
             // Compiled under a read-only authorizer: a statement that writes,
             // creates temporary objects, attaches databases or sets pragmas is
             // refused before it runs.
             match reader.query_untrusted(&arguments.statement) {
-                Ok(rows) => listed(rows),
+                Ok(rows) if rows.is_empty() => Answer::empty(rows),
+                Ok(rows) => Answer::ok(rows),
                 Err(e) => error("sql", e),
             },
         )
@@ -253,7 +275,7 @@ impl Handler for Complete {
     type Arguments = protocol::complete::Arguments;
     type Answer = protocol::complete::Answer;
     const CLASS: crate::daemon::executor::Class = crate::daemon::executor::Class::Interactive;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         let text = arguments.text;
         let position = match arguments.position.map(usize::try_from).transpose() {
             Ok(position) => position.unwrap_or(text.len()),
@@ -284,7 +306,11 @@ impl Handler for Complete {
         if let Err(error) = token.check() {
             return Ok(store_error(&error));
         }
-        Ok(listed(candidates))
+        Ok(if candidates.is_empty() {
+            Answer::empty(candidates)
+        } else {
+            Answer::ok(candidates)
+        })
     }
 }
 
@@ -293,7 +319,7 @@ impl Handler for Status {
     type Arguments = protocol::status::Arguments;
     type Answer = protocol::status::Answer;
     const CLASS: crate::daemon::executor::Class = crate::daemon::executor::Class::Interactive;
-    fn run(_: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
+    fn run(_: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         Ok(match call.reader() {
             Ok(reader) => status::answer(call.daemon, &reader),
             Err(failure) => failure.answer(),
@@ -311,7 +337,7 @@ impl Handler for Explain {
     fn query_text(arguments: &Self::Arguments) -> Option<&str> {
         arguments.expression.as_deref()
     }
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         let protocol::explain::Arguments {
             subject,
             expression,
@@ -376,7 +402,7 @@ impl Handler for Timeline {
     type Arguments = protocol::calendar::Timeline;
     type Answer = Value;
     const PAGES: bool = true;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         let reader = call.reader()?;
         let context = call.context()?;
         Ok(
@@ -411,7 +437,7 @@ impl Handler for Cost {
     fn ranking_query(arguments: &Self::Arguments, _row: &Command) -> Option<String> {
         Some(arguments.query.clone().unwrap_or_else(|| "sessions".into()))
     }
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         let reader = call.reader()?;
         let context = call.context()?;
         let d = call.daemon;
@@ -459,7 +485,7 @@ impl Handler for SchemaInfer {
     fn default_deadline(_: &Self::Arguments) -> bool {
         false
     }
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         let protocol::schema::Infer {
             origin,
             all,
@@ -492,7 +518,7 @@ pub(crate) struct SchemaUnread;
 impl Handler for SchemaUnread {
     type Arguments = protocol::schema::Unread;
     type Answer = polylogue_store::wire_shapes::Report;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         if arguments.origin.is_some() && arguments.all {
             return Ok(error("bad_request", "choose an origin or --all"));
         }
@@ -513,7 +539,7 @@ impl Handler for Verify {
         false
     }
     const PRINT: fn(&Value, bool) -> String = print::verify;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         let manifest = arguments
             .manifest
             .as_deref()
@@ -529,7 +555,7 @@ impl Handler for Attachment {
     type Arguments = protocol::attachment::Arguments;
     type Answer = protocol::attachment::Answer;
     const PAGES: bool = true;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         let index = |value: u64, key: &str| {
             usize::try_from(value).map_err(|_| format!("{key} exceeds address space"))
         };
@@ -565,7 +591,7 @@ impl Handler for Import {
     fn read_phase(_: &Self::Arguments, _: &Command, _: &Caller) -> bool {
         false
     }
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         let paths = arguments
             .paths
             .iter()
@@ -630,7 +656,7 @@ pub(crate) struct Assert;
 impl Handler for Assert {
     type Arguments = protocol::assertion::Assert;
     type Answer = polylogue_model::user::UserOutcome;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         if arguments.assertions.is_empty() {
             return Ok(error("bad_request", "assertions must not be empty"));
         }
@@ -653,7 +679,7 @@ impl Handler for AssertQuery {
     fn query_text(arguments: &Self::Arguments) -> Option<&str> {
         Some(&arguments.query)
     }
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         let protocol::assertion::AssertQuery { query, assertion } = arguments;
         if query.trim().is_empty() {
             return Ok(error("bad_request", "query must not be empty"));
@@ -708,7 +734,7 @@ pub(crate) struct Revise;
 impl Handler for Revise {
     type Arguments = protocol::assertion::Revise;
     type Answer = polylogue_model::user::UserOutcome;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         if arguments.bases.is_empty() {
             return Ok(error("bad_request", "bases must not be empty"));
         }
@@ -728,7 +754,7 @@ pub(crate) struct Withdraw;
 impl Handler for Withdraw {
     type Arguments = protocol::assertion::Withdraw;
     type Answer = polylogue_model::user::UserOutcome;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         if arguments.targets.is_empty() {
             return Ok(error("bad_request", "targets must not be empty"));
         }
@@ -749,7 +775,7 @@ pub(crate) struct Judge;
 impl Handler for Judge {
     type Arguments = protocol::assertion::Judge;
     type Answer = polylogue_model::user::UserOutcome;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         let protocol::assertion::Judge {
             note,
             accepted,
@@ -812,7 +838,7 @@ pub(crate) struct Save;
 impl Handler for Save {
     type Arguments = protocol::saved::Save;
     type Answer = polylogue_model::user::UserOutcome;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         let reader = call.reader()?;
         let intended = UserWrite::SaveQuery {
             name: arguments.name,
@@ -841,7 +867,7 @@ pub(crate) struct Watch;
 impl Handler for Watch {
     type Arguments = protocol::saved::Watch;
     type Answer = polylogue_model::user::UserOutcome;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         let protocol::saved::Watch {
             name,
             hold,
@@ -914,7 +940,7 @@ impl Handler for Keep {
     fn ranking_query(arguments: &Self::Arguments, _row: &Command) -> Option<String> {
         Some(arguments.query.clone())
     }
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         let protocol::saved::Keep { name, query } = arguments;
         let (d, invocation) = (call.daemon, call.invocation);
         let request_id: String = call.request_id.into();
@@ -994,7 +1020,7 @@ impl Handler for Setting {
             Access::Read
         }
     }
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         let protocol::setting::Arguments {
             key,
             value,
@@ -1015,7 +1041,8 @@ impl Handler for Setting {
                     value,
                     machine,
                 },
-            ));
+            )
+            .map(protocol::setting::Answer::Receipt));
         }
         let reader = call.reader()?;
         let selected = machine.as_deref().unwrap_or(&invocation.machine);
@@ -1028,7 +1055,7 @@ impl Handler for Setting {
                 return Ok(error("bad_value", e));
             }
             return Ok(match reader.setting_current(&key, selected) {
-                Ok(current) => ok(current),
+                Ok(current) => Answer::ok(protocol::setting::Answer::Current(Box::new(current))),
                 Err(e) => store_error(&e),
             });
         }
@@ -1045,7 +1072,7 @@ impl Handler for Setting {
             }
         }
         Ok(match reader.settings_catalog(selected) {
-            Ok(catalog) => ok(catalog),
+            Ok(catalog) => Answer::ok(protocol::setting::Answer::Catalog(catalog)),
             Err(e) => store_error(&e),
         })
     }
@@ -1058,7 +1085,7 @@ impl Handler for Continue {
     type Arguments = protocol::resume::Arguments;
     type Answer = Value;
     const PRINT: fn(&Value, bool) -> String = print::resume;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         let reader = call.reader()?;
         if let Some(session) = arguments.session {
             return Ok(match crate::resume::plan(&reader, &session) {
@@ -1089,7 +1116,7 @@ pub(crate) struct Embed;
 impl Handler for Embed {
     type Arguments = protocol::embed::Arguments;
     type Answer = Value;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         let what = call.row.name.trim_start_matches("embed ");
         embed(
             call,
@@ -1106,7 +1133,7 @@ pub(crate) struct EmbedStatus;
 impl Handler for EmbedStatus {
     type Arguments = protocol::embed::Status;
     type Answer = Value;
-    fn run(_: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
+    fn run(_: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         embed(call, "status", None, None, false)
     }
 }
@@ -1140,7 +1167,10 @@ fn embed(
 }
 
 /// The context rows: a request with a sender is recorded as a delivery.
-fn prepare_context(call: &Call<'_>, ask: Ask) -> Result<Answer<Value>, Failure> {
+fn prepare_context(
+    call: &Call<'_>,
+    ask: Ask,
+) -> Result<Answer<protocol::context::Answer>, Failure> {
     let advisory = matches!(ask, Ask::Advisory { .. });
     match call.reader() {
         Ok(reader) => drop(reader),
@@ -1169,7 +1199,7 @@ impl Handler for Brief {
     const RECORDS_DELIVERY: bool = true;
     const READS_FIRST: bool = true;
     const PRINT: fn(&Value, bool) -> String = print::context;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         let cwd = call.directory(arguments.cwd.as_deref())?;
         prepare_context(
             call,
@@ -1194,7 +1224,7 @@ impl Handler for Advisory {
         Some(crate::advisory::BUDGET)
     }
     const PRINT: fn(&Value, bool) -> String = print::context;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         let cwd = call.directory(arguments.cwd.as_deref())?;
         prepare_context(
             call,
@@ -1215,7 +1245,7 @@ impl Handler for Takeover {
     const RECORDS_DELIVERY: bool = true;
     const READS_FIRST: bool = true;
     const PRINT: fn(&Value, bool) -> String = print::context;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         prepare_context(
             call,
             Ask::Takeover {
@@ -1238,7 +1268,7 @@ impl Handler for Recall {
         Some(&arguments.query)
     }
     const PRINT: fn(&Value, bool) -> String = print::context;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         prepare_context(
             call,
             Ask::Recall {
@@ -1256,7 +1286,7 @@ pub(crate) struct DeliveryEvent;
 impl Handler for DeliveryEvent {
     type Arguments = protocol::act::DeliveryEvent;
     type Answer = Value;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         Ok(delivery_event(
             call.daemon,
             call.invocation,
@@ -1276,7 +1306,7 @@ impl Handler for SelectionNote {
     type Arguments = protocol::browser::SelectionNote;
     type Answer = polylogue_model::user::UserOutcome;
     const READS_FIRST: bool = true;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         let (d, invocation) = (call.daemon, call.invocation);
         let input = crate::browser::notes::SelectionNote {
             request_id: call.request_id.into(),

@@ -97,6 +97,7 @@ pub(crate) fn pending_outcome(
             }
             let mut original = prepared.outcome.clone();
             original.pending = true;
+            original.repeat = true;
             outcome = Some(original);
         }
         Ok(())

@@ -158,7 +158,7 @@ pub(crate) trait Handler: Send + Sync + 'static {
     fn read_cap() -> Option<std::time::Duration> {
         None
     }
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure>;
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure>;
 }
 
 /// A daemon operation that may also deliver its answer as a stream of
@@ -364,7 +364,7 @@ fn answer_local<H: Handler>(
         Ok(arguments) => arguments,
         Err(failure) => return failure.answer(),
     };
-    answer::<H>(
+    let answer = answer::<H>(
         arguments,
         local.daemon,
         row,
@@ -374,7 +374,18 @@ fn answer_local<H: Handler>(
         local.request_id,
         local.cursor,
         TokenBudget::Default,
-    )
+    );
+    // The local caller consumes a wire value, just as a transport does.
+    let mut problem = None;
+    let serialized = answer.map(|value| {
+        serde_json::to_value(value)
+            .map_err(|error| problem = Some(error))
+            .ok()
+    });
+    match problem {
+        Some(error) => Failure::new("internal", error).answer(),
+        None => serialized.map(|value| value.expect("serialized without a problem")),
+    }
 }
 
 fn admit<H: Handler>(
@@ -611,7 +622,7 @@ impl<H: Handler> Operation for Row<H> {
                 return Answer::error(super::service::shutting_down().error);
             };
             drop(guard);
-            typed(answer, self.row.name)
+            answer
         })
     }
 }
@@ -628,7 +639,7 @@ fn answer<H: Handler>(
     request_id: &str,
     cursor: Option<&str>,
     budget: TokenBudget,
-) -> Answer<Value> {
+) -> Answer<H::Answer> {
     if let Err(failure) = super::service::accepting(daemon) {
         return failure.answer();
     }
@@ -699,14 +710,14 @@ fn answer<H: Handler>(
 /// Runs `work` under the request's read limit. A read phase that has
 /// already run out is refused before the work starts and, unless the row
 /// fails open, after it ends; a write without a read phase runs outside.
-pub(crate) fn within_limit(
+pub(crate) fn within_limit<T>(
     limit: &ReadLimit,
     read_phase: bool,
     fails_open: bool,
     stage: &str,
     text: Option<&str>,
-    work: impl FnOnce() -> Answer<Value>,
-) -> Answer<Value> {
+    work: impl FnOnce() -> Answer<T>,
+) -> Answer<T> {
     if !read_phase {
         return work();
     }
@@ -761,21 +772,6 @@ pub(crate) fn finish_read_phase(stage: &'static str) -> Result<(), Failure> {
     })
 }
 
-/// The daemon's answer decoded into the operation's declared answer type;
-/// the outcome, notes and next actions pass through unchanged.
-fn typed<T: DeserializeOwned>(answer: Answer<Value>, name: &str) -> Answer<T> {
-    let mut problem = None;
-    let decoded = answer.map(|value| {
-        serde_json::from_value::<T>(value)
-            .map_err(|error| problem = Some(error))
-            .ok()
-    });
-    match problem {
-        Some(error) => Answer::error(crate::protocol::protocol_mismatch(name, error)),
-        None => decoded.map(|value| value.expect("decoded without a problem")),
-    }
-}
-
 /// Answers one request on the calling thread as the socket would, for the
 /// daemon's own pages and for tests.
 pub(crate) fn local(operation: &str, arguments: Value, local: &Local<'_>) -> Answer<Value> {
@@ -791,3 +787,6 @@ pub(crate) fn local(operation: &str, arguments: Value, local: &Local<'_>) -> Ans
     };
     registration.answer(&arguments, row, local)
 }
+
+#[cfg(test)]
+mod tests;

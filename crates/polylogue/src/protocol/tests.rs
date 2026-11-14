@@ -66,23 +66,6 @@ fn a_degraded_answer_keeps_its_outcome_and_notes_on_the_socket_wire() {
 }
 
 #[test]
-fn pending_capture_returns_receipt_instead_of_storage_failure() {
-    let answer =
-        crate::daemon::service::store_error(&polylogue_store::StoreError::PrimaryPending {
-            identity: "capture:pending".into(),
-        });
-    assert!(matches!(
-        answer,
-        command_surface::Answer {
-            outcome: command_surface::Outcome::Degraded { .. },
-            ..
-        }
-    ));
-    assert_eq!(answer.value().unwrap()["identity"], "capture:pending");
-    assert_eq!(answer.http_status(), Some(200));
-}
-
-#[test]
 fn projection_failures_distinguish_conflicts_from_invalid_input() {
     use polylogue_model::bundle::BundleError;
     for (issue, kind) in [
@@ -90,8 +73,9 @@ fn projection_failures_distinguish_conflicts_from_invalid_input() {
         (BundleError::SourceVersionMismatch, FailureKind::Conflict),
         (BundleError::InvalidBlockSelection, FailureKind::BadRequest),
     ] {
-        let answer =
-            crate::daemon::service::store_error(&polylogue_store::StoreError::Projection(issue));
+        let answer = crate::daemon::service::store_error::<()>(
+            &polylogue_store::StoreError::Projection(issue),
+        );
         let command_surface::Answer {
             outcome: command_surface::Outcome::Error(error),
             ..
@@ -163,4 +147,34 @@ fn noncurrent_primary_reads_keep_their_data_and_say_why() {
             ..
         }
     ));
+}
+
+#[test]
+fn pending_browser_receipts_keep_their_declared_kind_on_the_wire() {
+    use crate::protocol::browser::{ChatAnswer, PendingCapture};
+    let capture = written(
+        ChatAnswer::Capture(PendingCapture {
+            identity: "capture:synthetic".into(),
+        }),
+        true,
+    );
+    let bytes = serde_json::to_vec(&capture).unwrap();
+    let decoded: command_surface::Answer<ChatAnswer> = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(decoded.exit_code(), 5);
+    assert!(
+        matches!(decoded.value(),Some(ChatAnswer::Capture(receipt)) if receipt.identity=="capture:synthetic")
+    );
+    let outcome = polylogue_model::user::UserOutcome {
+        id: "action:synthetic".into(),
+        repeat: true,
+        pending: true,
+    };
+    let authored = written(ChatAnswer::Receipt(outcome.clone()), outcome.pending);
+    let bytes = serde_json::to_vec(&authored).unwrap();
+    let decoded: command_surface::Answer<ChatAnswer> = serde_json::from_slice(&bytes).unwrap();
+    assert!(matches!(decoded.value(),Some(ChatAnswer::Receipt(receipt)) if receipt==&outcome));
+    assert!(
+        serde_json::from_value::<ChatAnswer>(json!({"identity":"capture:synthetic","action":null}))
+            .is_err()
+    );
 }

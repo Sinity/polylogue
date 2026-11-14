@@ -204,14 +204,13 @@ impl Daemon {
 fn query_outcome(
     answer: super::query::QueryAnswer,
     freshness: &polylogue_model::currency::ReadFreshness,
-) -> Answer<Value> {
+) -> Answer<crate::protocol::query::Answer> {
     let super::query::QueryAnswer {
         mut value,
         outcome,
         notes,
     } = answer;
     value.read_at_mut().freshness = Some(freshness.clone());
-    let value = serde_json::to_value(value).expect("a query result serializes");
     let mut notes = notes;
     notes.extend(freshness.notes().into_iter().map(str::to_owned));
     let degraded = !freshness.up_to_date() || outcome == super::query::Outcome::Incomplete;
@@ -249,27 +248,19 @@ fn query_outcome(
 
 /// An import whose restored user state Sinex has not confirmed yet is
 /// degraded, with the awaiting-confirmation note.
-fn import_answer(report: polylogue_engine::ImportReport) -> Answer<Value> {
+fn import_answer(report: polylogue_engine::ImportReport) -> Answer<polylogue_engine::ImportReport> {
     let pending = report.user_state.pending > 0;
-    match serde_json::to_value(report) {
-        Ok(value) => crate::protocol::written(value, pending),
-        Err(problem) => error("internal", problem),
-    }
+    crate::protocol::written(report, pending)
 }
 
-pub(crate) fn error(code: &str, message: impl ToString) -> Answer<Value> {
+pub(crate) fn error<T>(code: &str, message: impl ToString) -> Answer<T> {
     Failure::new(code, message).answer()
 }
 
-/// A store failure. A capture waiting for Sinex is not a failure: it is the
-/// degraded answer naming the durable capture.
-pub(crate) fn store_error(e: &StoreError) -> Answer<Value> {
-    match e {
-        StoreError::PrimaryPending { identity } => {
-            crate::protocol::written(serde_json::json!({ "identity": identity }), true)
-        }
-        e => Failure::store(e).answer(),
-    }
+/// A failed store operation. Durable preparations have their operation's
+/// own declared receipt and are handled where that preparation is made.
+pub(crate) fn store_error<T>(e: &StoreError) -> Answer<T> {
+    Failure::store(e).answer()
 }
 
 /// How much of a session-start brief's remaining time its sections leave
@@ -286,9 +277,12 @@ fn answer_reserve(left: std::time::Duration) -> std::time::Duration {
 /// its sections early enough to answer before the request's deadline.
 /// The answer of an advisory that has nothing to offer: also its answer
 /// when preparation cannot finish within its cap, on every surface.
-fn advisory_silence() -> Answer<Value> {
+fn advisory_silence() -> Answer<crate::protocol::context::Answer> {
     crate::protocol::written(
-        serde_json::json!({"delivery":null,"prepared":crate::advisory::empty()}),
+        crate::protocol::context::Answer {
+            delivery: None,
+            prepared: crate::advisory::empty(),
+        },
         false,
     )
 }
@@ -300,7 +294,7 @@ fn context(
     sender: Option<String>,
     budget_tokens: command_surface::TokenBudget,
     operation: &Arc<Context>,
-) -> Answer<Value> {
+) -> Answer<crate::protocol::context::Answer> {
     use polylogue_store::read::limit::ReadLimit;
     let is_advisory = matches!(ask, Ask::Advisory { .. });
     #[cfg(feature = "sinex")]
@@ -309,7 +303,10 @@ fn context(
         && !connection.advisory_history_ready()
     {
         return crate::protocol::written(
-            serde_json::json!({"delivery":null,"prepared":crate::advisory::empty()}),
+            crate::protocol::context::Answer {
+                delivery: None,
+                prepared: crate::advisory::empty(),
+            },
             false,
         );
     }
@@ -321,7 +318,10 @@ fn context(
             Some(cooldown) => Some(cooldown),
             None => {
                 return crate::protocol::written(
-                    serde_json::json!({"delivery":null,"prepared":crate::advisory::empty()}),
+                    crate::protocol::context::Answer {
+                        delivery: None,
+                        prepared: crate::advisory::empty(),
+                    },
                     false,
                 );
             }
@@ -334,7 +334,10 @@ fn context(
             Some(pending) => pending,
             None => {
                 return crate::protocol::written(
-                    serde_json::json!({"delivery":null,"prepared":crate::advisory::empty()}),
+                    crate::protocol::context::Answer {
+                        delivery: None,
+                        prepared: crate::advisory::empty(),
+                    },
                     false,
                 );
             }
@@ -361,7 +364,7 @@ fn context(
                 .and_then(|recipient| d.queued_deliveries.latest(&recipient.to_string()))
         })
         .flatten();
-    let prepare = || -> Result<_, Box<Answer<Value>>> {
+    let prepare = || -> Result<_, Box<Answer<crate::protocol::context::Answer>>> {
         let reader = d.reads.reader().map_err(|e| Box::new(store_error(&e)))?;
         let mut applied_advice = Vec::new();
         for (id, _) in &pending_advice {
@@ -502,7 +505,10 @@ fn context(
                 Ok(false) => {
                     recent.remove(&session.to_string());
                     return crate::protocol::written(
-                        serde_json::json!({"delivery":null,"prepared":crate::advisory::empty()}),
+                        crate::protocol::context::Answer {
+                            delivery: None,
+                            prepared: crate::advisory::empty(),
+                        },
                         false,
                     );
                 }
@@ -520,7 +526,7 @@ fn context(
         delivery = Some(request_id);
     }
     crate::protocol::written(
-        serde_json::json!({ "delivery": delivery, "prepared": prepared }),
+        crate::protocol::context::Answer { delivery, prepared },
         false,
     )
 }
@@ -587,7 +593,7 @@ fn submit<T: serde::Serialize>(
     w: UserWrite,
     selected_scope: Option<polylogue_store::ReadScopeToken>,
     present: impl FnOnce(polylogue_model::user::UserOutcome) -> T,
-) -> Answer<Value> {
+) -> Answer<T> {
     let accepted = || -> Result<_, Failure> {
         let writes = writer(d)?;
         invocation.check_parent_lifetime()?;
@@ -609,16 +615,18 @@ fn submit<T: serde::Serialize>(
     match result {
         Ok(outcome) => {
             let pending = outcome.pending;
-            match serde_json::to_value(present(outcome)) {
-                Ok(value) => crate::protocol::written(value, pending),
-                Err(cause) => error("internal", cause),
-            }
+            crate::protocol::written(present(outcome), pending)
         }
         Err(error) => store_error(&error),
     }
 }
 
-fn write(d: &Daemon, invocation: &Invocation, request_id: String, w: UserWrite) -> Answer<Value> {
+fn write(
+    d: &Daemon,
+    invocation: &Invocation,
+    request_id: String,
+    w: UserWrite,
+) -> Answer<polylogue_model::user::UserOutcome> {
     submit(d, invocation, request_id, w, None, |outcome| outcome)
 }
 
@@ -628,7 +636,7 @@ fn write_from_read(
     request_id: String,
     w: UserWrite,
     selected_scope: polylogue_store::ReadScopeToken,
-) -> Answer<Value> {
+) -> Answer<polylogue_model::user::UserOutcome> {
     submit(
         d,
         invocation,
@@ -639,7 +647,7 @@ fn write_from_read(
     )
 }
 
-pub(crate) fn browser_refusal(refused: crate::browser::actions::Refused) -> Answer<Value> {
+pub(crate) fn browser_refusal<T>(refused: crate::browser::actions::Refused) -> Answer<T> {
     error(refused.0, refused.0)
 }
 
