@@ -236,6 +236,91 @@ fn shutdown_cancels_a_started_socket_read_before_joining_its_transport() {
 }
 
 #[test]
+fn shutdown_cancels_reads_without_revoking_a_handed_over_write() {
+    use polylogue_store::writer::DispatchPhase;
+    for phase in [DispatchPhase::BeforeAdmission, DispatchPhase::Owned] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = crate::test_daemon::engine_config(dir.path().to_owned());
+        config.tool_dirs.clear();
+        config.workers = 2;
+        let root = dir.path().join("archive");
+        let mut runtime =
+            crate::test_daemon::start_runtime(&root, config, service::ArchiveMode::Standalone)
+                .unwrap();
+        let mut server =
+            Server::start(Arc::clone(&runtime.daemon), Arc::clone(&runtime.operations)).unwrap();
+        let (observed, reads) = std::sync::mpsc::channel();
+        *runtime.daemon.read_limits.lock().unwrap() = Some(observed);
+        let mut reading = UnixStream::connect(runtime.daemon.archive.socket()).unwrap();
+        let request = command_surface::Request {
+            operation: "sql".into(),
+            arguments: serde_json::json!({"statement":"WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2000000000) SELECT count(*) FROM n"}),
+            request_id: "read-beside-write".into(),
+            deadline: command_surface::Deadline::None,
+            budget_tokens: Default::default(),
+            cursor: None,
+            fresh: false,
+            format: Default::default(),
+        };
+        writeln!(reading, "{}", serde_json::to_string(&request).unwrap()).unwrap();
+        let read = reads.recv_timeout(Duration::from_secs(5)).unwrap();
+        crate::test_daemon::TestDaemon::wait_for_sql(&read);
+        let barrier = runtime
+            .daemon
+            .writes
+            .as_ref()
+            .unwrap()
+            .pause_user_dispatch_for_test("handed-over-setting", phase);
+        let mut writing = UnixStream::connect(runtime.daemon.archive.socket()).unwrap();
+        writing
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let request = command_surface::Request {
+            operation: "setting".into(),
+            arguments: serde_json::json!({"key":"browser.actions","value":"on"}),
+            request_id: "handed-over-setting".into(),
+            deadline: command_surface::Deadline::None,
+            budget_tokens: Default::default(),
+            cursor: None,
+            fresh: false,
+            format: Default::default(),
+        };
+        let outgoing = crate::protocol::wire::Outgoing {
+            request: &request,
+            caller: Default::default(),
+            parent_deadline_ms: Some(service::now_ms() + 60_000),
+        };
+        writeln!(writing, "{}", serde_json::to_string(&outgoing).unwrap()).unwrap();
+        barrier.wait().unwrap();
+        runtime.stop_accepting();
+        assert!(read.cancellation.is_cancelled());
+        barrier.release();
+        let mut response = String::new();
+        BufReader::new(writing).read_line(&mut response).unwrap();
+        let answer: command_surface::Answer<serde_json::Value> =
+            serde_json::from_str(&response).unwrap();
+        assert!(
+            answer.value().is_some(),
+            "handed-over write lost its outcome: {answer:?}"
+        );
+        server.shutdown().unwrap();
+        runtime.shutdown().unwrap();
+        let pool = polylogue_store::ReadPool::open(&Archive::at(&root)).unwrap();
+        let reader = pool.reader().unwrap();
+        assert_eq!(
+            reader.setting_value("browser.actions", "").unwrap(),
+            Some(polylogue_model::settings::Value::Boolean(true))
+        );
+        assert!(
+            reader
+                .user_request("handed-over-setting")
+                .unwrap()
+                .is_some()
+        );
+    }
+}
+
+#[test]
 fn socket_honours_the_client_deadline_without_closing_the_connection() {
     let daemon = crate::test_daemon::start("socket deadline");
     let mut stream = UnixStream::connect(daemon.daemon.archive.socket()).unwrap();

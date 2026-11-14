@@ -557,6 +557,41 @@ fn application_shutdown_joins_http_handlers_while_all_reader_slots_remain_held()
 }
 
 #[test]
+fn shutdown_cancels_a_started_http_read_before_joining_its_transport() {
+    use std::io::Write;
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = crate::test_daemon::engine_config(dir.path().to_owned());
+    config.tool_dirs.clear();
+    config.workers = 1;
+    let mut runtime = crate::test_daemon::start_runtime(
+        &dir.path().join("archive"),
+        config,
+        crate::daemon::service::ArchiveMode::Standalone,
+    )
+    .unwrap();
+    let mut server = start_on(
+        Arc::clone(&runtime.daemon),
+        Arc::clone(&runtime.operations),
+        0,
+    )
+    .unwrap();
+    let (observed, reads) = std::sync::mpsc::channel();
+    *runtime.daemon.read_limits.lock().unwrap() = Some(observed);
+    let mut peer = std::net::TcpStream::connect(("127.0.0.1", server.port)).unwrap();
+    let sql = "WITH%20RECURSIVE%20n(x)%20AS%20(SELECT%201%20UNION%20ALL%20SELECT%20x%2B1%20FROM%20n%20WHERE%20x%3C2000000000)%20SELECT%20count(*)%20FROM%20n";
+    write!(peer, "GET /api/v1/sql?statement={sql} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAuthorization: Bearer {}\r\n\r\n", server.port, server.token).unwrap();
+    let read = reads
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    crate::test_daemon::TestDaemon::wait_for_sql(&read);
+    runtime.stop_accepting();
+    assert!(read.cancellation.is_cancelled());
+    server.shutdown().unwrap();
+    runtime.shutdown().unwrap();
+    assert_eq!(runtime.daemon.reads.checked_out(), 0);
+}
+
+#[test]
 fn session_html_and_json_read_routes_preserve_stored_titles_and_message_content() {
     use std::io::Write;
     let r = reader();

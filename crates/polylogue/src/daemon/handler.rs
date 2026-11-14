@@ -570,6 +570,10 @@ impl<H: Handler> Operation for Row<H> {
                 )
                 && H::default_deadline(&arguments)
                 && H::read_phase(&arguments, self.row, &caller);
+            // This child stops reads without revoking the producing parent
+            // that already handed a durable write to the writer.
+            let _stopping_read = H::read_phase(&arguments, self.row, &caller)
+                .then(|| self.daemon.cancel_read_on_stop(&cancellation));
             let guard = CancelRead(cancellation.clone());
             let daemon = Arc::clone(&self.daemon);
             let row = self.row;
