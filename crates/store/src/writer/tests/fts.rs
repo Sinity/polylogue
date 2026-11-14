@@ -12,7 +12,7 @@ const WORDS: usize = 64;
 fn body(n: usize) -> String {
     use std::fmt::Write;
     let mut text = String::from("anchor cedar birch ");
-    if n % 5 == 0 {
+    if n.is_multiple_of(5) {
         text.push_str("Łódź Straße ");
     }
     for word in 0..WORDS {
