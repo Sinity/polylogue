@@ -72,8 +72,8 @@ fn history(fixture: &Fixture, chains: usize, appends: usize) {
         ('a-format','a','m','/home/op/chosen','imported','{\"import_format\":\"native\"}','test',2),
         ('a-export','a','m','/home/op/export','imported','{\"import_format\":\"export-file\"}','test',99);").unwrap();
     let mut number = 0;
-    for chain in 1..=chains {
-        for append in 1..=appends {
+    for append in 1..=appends {
+        for chain in 1..=chains {
             number += 1;
             tx.execute(
                 "INSERT INTO revision VALUES ('a',?1,?2,?3,?4,?1)",
