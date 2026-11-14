@@ -174,6 +174,7 @@ enum Msg {
 /// statement in progress. What committed stays; the rest is done at the next
 /// start. Capture and authored writes are not affected. Replaying retained bytes may
 /// roll back its unfinished index transaction; its earlier cursor remains.
+/// Copying identical-chain readings follows the same reconstruction boundary.
 #[derive(Clone, Default)]
 pub struct WriterStop(Arc<std::sync::atomic::AtomicBool>);
 
@@ -1112,7 +1113,9 @@ impl WriterSender {
     /// holds the same bytes and was read under the copy's reading version,
     /// in one transaction. Each answer is `false` when that copy would not
     /// equal parsing the chain (and always in primary mode, where the index
-    /// follows Sinex); the caller then parses it.
+    /// follows Sinex); the caller then parses it. A process stop can interrupt
+    /// and roll back this reconstructible group as `WriteCancelled`; it must
+    /// not become an individual refusal followed by parsing.
     pub fn copy_readings(&self, copies: Vec<crate::ReadingCopy>) -> Result<Vec<Result<bool>>> {
         let (reply, wait) = sync_channel(1);
         self.0
@@ -1808,6 +1811,14 @@ impl Inner {
         if self.sinex.is_some() {
             return Ok(copies.iter().map(|_| Ok(false)).collect());
         }
+        self.until_stopped(|inner| inner.copy_readings_uninterrupted(copies))?
+            .ok_or(StoreError::WriteCancelled)
+    }
+
+    fn copy_readings_uninterrupted(
+        &mut self,
+        copies: &[crate::ReadingCopy],
+    ) -> Result<Vec<Result<bool>>> {
         let mut tx = self.index.transaction()?;
         let counter = bump_counter(&tx)?;
         let mut answers = Vec::with_capacity(copies.len());
@@ -1816,6 +1827,17 @@ impl Inner {
             let point = tx.savepoint()?;
             let answer = crate::fault::check("write.copy_reading", &copy.input)
                 .and_then(|()| crate::same_bytes::copy_reading(&point, copy, counter));
+            let answer = match answer {
+                Err(StoreError::Sqlite(error))
+                    if error.sqlite_error_code()
+                        == Some(rusqlite::ErrorCode::OperationInterrupted) =>
+                {
+                    // SQLite has rolled back the interrupted transaction. Do not
+                    // turn cancellation into an individual copy refusal or parse.
+                    return Err(StoreError::Sqlite(error));
+                }
+                answer => answer,
+            };
             if matches!(answer, Ok(true)) {
                 point.commit()?;
             }

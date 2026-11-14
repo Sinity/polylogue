@@ -170,9 +170,14 @@ pub(crate) fn copy_reading(tx: &Connection, copy: &ReadingCopy, counter: i64) ->
         let mut statement = tx.prepare_cached(&sql)?;
         let parameters = statement.parameter_count();
         let values: [&dyn rusqlite::ToSql; 5] = [&input_pk, &from, &to, &input, &counter];
-        statement
-            .execute(&values[..parameters])
-            .map_err(|error| StoreError::Invalid(format!("copy {table}: {error}")))?;
+        crate::fault::check("write.copy_table", table)?;
+        statement.execute(&values[..parameters]).map_err(|error| {
+            if error.sqlite_error_code() == Some(rusqlite::ErrorCode::OperationInterrupted) {
+                StoreError::Sqlite(error)
+            } else {
+                StoreError::Invalid(format!("copy {table}: {error}"))
+            }
+        })?;
     }
     let mut receipts = std::collections::HashMap::new();
     for (table, column, key) in [

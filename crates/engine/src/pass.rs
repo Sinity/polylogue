@@ -342,7 +342,10 @@ impl Engine {
             if self.stop.requested()
                 && matches!(
                     error,
-                    EngineError::Store(polylogue_store::StoreError::ReadCancelled)
+                    EngineError::Store(
+                        polylogue_store::StoreError::ReadCancelled
+                            | polylogue_store::StoreError::WriteCancelled
+                    )
                 )
             {
                 EngineError::Stopped
