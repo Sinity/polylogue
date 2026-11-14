@@ -308,6 +308,70 @@ fn offline_settings_and_chat_preparation_keep_distinct_durable_receipts() {
 
     let bytes = b"Synthetic attachment awaiting owner confirmation";
     let args = serde_json::json!({"provider":"chatgpt","model":"example","text":"A synthetic draft","files":[{"name":"attachment.txt","media_type":"text/plain","bytes":bytes.to_vec()}]});
+    let unconfirmed =
+        primary_table_call(&runtime, "chat send", args.clone(), "pending-file-action");
+    assert!(
+        matches!(unconfirmed.outcome, command_surface::Outcome::Error(ref error)
+        if error.code.as_deref() == Some("browser_actions_off")),
+        "{unconfirmed:?}"
+    );
+    assert_eq!(pending_requests(&runtime), pending_before_retry);
+
+    // Pending policy cannot authorize a browser action. Install the same
+    // immutable setting through the normal confirmed writer before testing
+    // either browser preparation boundary during a later transport outage.
+    let ModeState::Primary { connection } = &runtime.daemon.mode else {
+        panic!("primary mode required")
+    };
+    let connection = connection.clone();
+    let prepared = pending_before_retry
+        .into_iter()
+        .find(|prepared| {
+            prepared.outcome.id == receipt.id
+                && matches!(&prepared.request.write,
+            polylogue_model::user::UserWrite::SetSetting { key, .. } if key == "browser.actions")
+        })
+        .unwrap();
+    assert!(!prepared.outcome.pending);
+    drop(runtime);
+    {
+        use polylogue_store::primary::{Confirmed, ConfirmedChange, Product, ReplayControl};
+        let (archive, _lock) =
+            Archive::open_primary(&home.root, &home.dir.path().join("sinex-store")).unwrap();
+        let writer = polylogue_store::writer::Writer::start_on_sinex(&archive, connection).unwrap();
+        writer
+            .apply_confirmed(vec![
+                Confirmed {
+                    native: None,
+                    position: 1,
+                    output_index: 0,
+                    event: "synthetic-confirmed-browser-policy".into(),
+                    change: ConfirmedChange::Live(Box::new(Product::Request(prepared))),
+                },
+                Confirmed {
+                    native: None,
+                    position: 1,
+                    output_index: 0,
+                    event: String::new(),
+                    change: ConfirmedChange::Control(Box::new(ReplayControl::Completion {
+                        position: 1,
+                        delivery: None,
+                    })),
+                },
+            ])
+            .unwrap();
+    }
+    let runtime = launch(primary(&home)).unwrap();
+    assert_eq!(
+        runtime
+            .daemon
+            .reads
+            .reader()
+            .unwrap()
+            .setting_value("browser.actions", "synthetic-machine")
+            .unwrap(),
+        Some(polylogue_model::settings::Value::Boolean(true))
+    );
     let capture = primary_table_call(&runtime, "chat send", args.clone(), "pending-file-action");
     assert_eq!(capture.http_status(), Some(200), "{capture:?}");
     let (value, _) = crate::test_answers::degraded(capture);
