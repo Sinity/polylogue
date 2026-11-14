@@ -274,6 +274,7 @@ pub(crate) fn apply(
     input: i64,
     chain: i64,
     step: &crate::ParseStep,
+    registered: &std::collections::HashMap<[u8; 32], crate::versions::RegisteredMessage<'_>>,
 ) -> Result<bool> {
     let Some(state) = step
         .checkpoint
@@ -301,6 +302,20 @@ pub(crate) fn apply(
     if delta.base != 0 && prior != Some(delta.base) {
         return Ok(true);
     }
+    let response_key = |entry: &polylogue_model::parser_context::Entry| {
+        let (
+            Key::Response { session, .. },
+            Reference::Response {
+                message, version, ..
+            },
+        ) = (&entry.key, &entry.value)
+        else {
+            return None;
+        };
+        registered
+            .get(&version.0)?
+            .response_key(&version.0, message, session)
+    };
     let mut unavailable = false;
     let mut seen = std::collections::BTreeSet::new();
     for entry in &delta.entries {
@@ -329,6 +344,12 @@ pub(crate) fn apply(
                 return Err(StoreError::Invalid(
                     "response context range exceeds its reading".into(),
                 ));
+            }
+            // Registration already validated and wrote this exact payload in
+            // this transaction. Old or mismatched references retain the full
+            // stored-message integrity and identity checks below.
+            if response_key(entry).is_some() {
+                continue;
             }
             let Some((body, _)) = crate::versions::read_message(tx, &version.0)? else {
                 if step.source_eligibility.is_some() {
@@ -370,9 +391,10 @@ pub(crate) fn apply(
     }
     for entry in delta.entries {
         let hash = match &entry.value {
-            Reference::Response { version, .. } => {
-                Some(crate::versions::message_key(tx, &version.0)?)
-            }
+            Reference::Response { version, .. } => Some(match response_key(&entry) {
+                Some(pk) => pk,
+                None => crate::versions::message_key(tx, &version.0)?,
+            }),
             Reference::Alias { .. } => None,
         };
         tx.execute("INSERT INTO parser_context VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(input_pk,chain,reading_version,key,cursor) DO UPDATE SET value=excluded.value,version_pk=excluded.version_pk",params![input,chain,step.reading_version,through,serde_json::to_string(&entry.key)?,crate::encoding::pack_json(&entry.value)?,hash])?;
