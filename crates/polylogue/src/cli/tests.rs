@@ -676,7 +676,7 @@ fn shared_cli_values_keep_request_options_and_calling_process_separate() {
         "session:test:one",
         "--page-tokens",
         "256",
-        "--out",
+        "--to",
         "/synthetic/page.txt",
         "--request-id",
         "stable-read",

@@ -7,16 +7,12 @@ fn argv(c: &Command) -> Vec<&'static str> {
     if c.cli != Cli::NoSubcommand {
         argv.extend(c.name.split(' '));
     }
-    for a in declarations()
-        .cli_arguments(c.name)
-        .unwrap()
+    for a in c
+        .args
         .iter()
-        .filter(|a| {
-            a.required
-                && c.args
-                    .iter()
-                    .any(|arg| arg.name == a.spec.name && arg.default.is_none())
-        })
+        .filter(|argument| argument.default.is_none())
+        .map(|argument| crate::cli::projection(c, argument))
+        .filter(|argument| argument.required)
     {
         if !matches!(
             a.spec.form,

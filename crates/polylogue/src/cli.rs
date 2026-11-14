@@ -133,7 +133,7 @@ fn subcommand(c: &Command) -> clap::Command {
 
 /// The product keeps lexical exposure and completion on its command row;
 /// value kinds, choices and requiredness come from the shared input schema.
-fn projection(command: &Command, argument: &crate::commands::Arg) -> CliArgument {
+pub(crate) fn projection(command: &Command, argument: &crate::commands::Arg) -> CliArgument {
     if matches!(argument.name, "cursor" | "budget") {
         return CliArgument {
             spec: command_surface::ArgumentSpec::new(
