@@ -3,7 +3,6 @@ use super::service::{Daemon, error, store_error};
 use base64::Engine as _;
 use command_surface::Answer;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 pub(crate) const PAGE_BYTES: usize = 64 * 1024;
 
@@ -55,7 +54,7 @@ pub(crate) struct Range {
     pub cursor: Option<String>,
 }
 
-pub(crate) fn read(range: Range, d: &Daemon) -> Answer<Value> {
+pub(crate) fn read(range: Range, d: &Daemon) -> Answer<BytePage> {
     if let Err(failure) = super::service::accepting(d) {
         return failure.answer();
     }
@@ -213,15 +212,10 @@ pub(crate) fn read(range: Range, d: &Daemon) -> Answer<Value> {
         content_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
         next,
     };
-    match serde_json::to_value(page) {
-        Ok(data) => {
-            if let Err(error) = scope.check() {
-                return store_error(&error);
-            }
-            Answer::ok(data)
-        }
-        Err(e) => error("internal", e),
+    if let Err(error) = scope.check() {
+        return store_error(&error);
     }
+    Answer::ok(page)
 }
 
 fn inline_page(
@@ -231,7 +225,7 @@ fn inline_page(
     cursor: Option<Cursor>,
     length: usize,
     source: CursorSource,
-) -> Answer<Value> {
+) -> Answer<BytePage> {
     use std::io::{Read, Seek, SeekFrom};
     let result = (|| -> polylogue_store::Result<BytePage> {
         reader.check()?;
@@ -335,15 +329,12 @@ fn inline_page(
         })
     })();
     match result {
-        Ok(page) => match serde_json::to_value(page) {
-            Ok(data) => {
-                if let Err(e) = reader.check() {
-                    return store_error(&e);
-                }
-                Answer::ok(data)
+        Ok(page) => {
+            if let Err(e) = reader.check() {
+                return store_error(&e);
             }
-            Err(e) => error("internal", e),
-        },
+            Answer::ok(page)
+        }
         Err(e) => store_error(&e),
     }
 }

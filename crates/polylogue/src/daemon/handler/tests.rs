@@ -558,3 +558,46 @@ fn answer_errors_keep_credential_shaped_messages_and_hints() {
     assert_eq!(encoded["error"]["message"], token);
     assert_eq!(encoded["error"]["hint"], token);
 }
+
+#[test]
+fn setting_cli_arguments_and_socket_keep_the_declared_receipt_and_current_value() {
+    let daemon = crate::test_daemon::start("setting transport example");
+    let (_, _, arguments) = crate::cli::request_arguments(
+        &["polylogue", "setting", "reading.variants", "[]"],
+        std::path::Path::new("/"),
+    )
+    .unwrap();
+    let ready = request("setting", Value::Object(arguments), "setting-cli-socket");
+    let first = crate::client::call_ready(&daemon.daemon.archive, &ready).unwrap();
+    let crate::protocol::setting::Answer::Receipt(receipt) =
+        serde_json::from_value(first.value().unwrap().clone()).unwrap()
+    else {
+        panic!("write must return a receipt: {first:?}")
+    };
+    assert!(!receipt.pending);
+    assert!(!receipt.repeat);
+    let repeated = crate::client::call_ready(&daemon.daemon.archive, &ready).unwrap();
+    let crate::protocol::setting::Answer::Receipt(repeat) =
+        serde_json::from_value(repeated.value().unwrap().clone()).unwrap()
+    else {
+        panic!("repeat must return a receipt: {repeated:?}")
+    };
+    assert_eq!(repeat.id, receipt.id);
+    assert!(repeat.repeat);
+    assert!(!repeat.pending);
+    let shown = crate::client::call_ready(
+        &daemon.daemon.archive,
+        &request(
+            "setting",
+            json!({"key":"reading.variants"}),
+            "setting-socket-read",
+        ),
+    )
+    .unwrap();
+    let crate::protocol::setting::Answer::Current(current) =
+        serde_json::from_value(shown.value().unwrap().clone()).unwrap()
+    else {
+        panic!("read must return its current setting: {shown:?}")
+    };
+    assert_eq!(current.key, "reading.variants");
+}

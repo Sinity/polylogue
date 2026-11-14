@@ -116,7 +116,7 @@ impl crate::daemon::handler::Handler for Read {
     fn run(
         arguments: Self::Arguments,
         call: &crate::daemon::handler::Call<'_>,
-    ) -> Result<Answer<Value>, Failure> {
+    ) -> Result<Answer<Self::Answer>, Failure> {
         let request = match ReadRequest::from_arguments(arguments, call.cursor.map(str::to_owned)) {
             Ok(request) => request,
             Err(message) => return Ok(error("bad_request", message)),
@@ -823,7 +823,7 @@ pub(crate) fn page(
     request: &ReadRequest,
     operation: &Arc<crate::operation::Context>,
     history: Option<polylogue_store::writer::HistorySlot>,
-) -> Answer<Value> {
+) -> Answer<crate::protocol::read::Answer> {
     if matches!(
         request,
         ReadRequest {
@@ -866,10 +866,10 @@ pub(crate) fn page(
         Ok(session_page)
     })();
     match result {
-        Ok(page) => match serde_json::to_value(&page) {
-            Ok(value) => crate::protocol::read(value, &page.snapshot.freshness),
-            Err(problem) => error("internal", problem),
-        },
+        Ok(page) => {
+            let freshness = page.snapshot.freshness.clone();
+            crate::protocol::read(page, &freshness)
+        }
         Err(failure) => failure.answer(),
     }
 }

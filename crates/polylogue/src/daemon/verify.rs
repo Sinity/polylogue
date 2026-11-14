@@ -3,12 +3,11 @@
 //! file and appears complete or not at all (not when a revision is unreadable).
 use super::service::{Daemon, error, store_error};
 use command_surface::Answer;
-use serde_json::Value;
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 
-pub(super) fn run(d: &Daemon, manifest: Option<&Path>) -> Answer<Value> {
+pub(super) fn run(d: &Daemon, manifest: Option<&Path>) -> Answer<crate::protocol::verify::Answer> {
     let _lease = match d.idle_admission.background() {
         Ok(lease) => lease,
         Err(e) => return store_error(&e),
@@ -48,26 +47,14 @@ pub(super) fn run(d: &Daemon, manifest: Option<&Path>) -> Answer<Value> {
         }
     };
     match found {
-        Ok(found) if found.problems.is_empty() => super::service::ok(found),
+        Ok(found) if found.problems.is_empty() => Answer::ok(found),
         Ok(found) => {
             let note = format!(
                 "{} problem{} found; recovery is a restore from backup",
                 found.problems.len(),
                 if found.problems.len() == 1 { "" } else { "s" }
             );
-            match serde_json::to_value(found) {
-                Ok(value) => command_surface::Answer {
-                    outcome: command_surface::Outcome::Degraded {
-                        value,
-                        missing: vec![note],
-                    },
-                    envelope: command_surface::Envelope {
-                        next: vec![],
-                        ..Default::default()
-                    },
-                },
-                Err(cause) => error("internal", cause),
-            }
+            Answer::degraded(found, vec![note])
         }
         Err(e) => store_error(&e),
     }

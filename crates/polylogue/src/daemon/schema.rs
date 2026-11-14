@@ -1,6 +1,6 @@
 //! Read-only schema operations over pinned stored revisions. Selection and
 //! payload observation release their SQL readers independently.
-use super::service::{Daemon, error, ok, store_error};
+use super::service::{Daemon, error, store_error};
 use command_surface::Answer;
 use polylogue_sources::{
     Capture, Parse,
@@ -205,7 +205,7 @@ impl<B: PlainBlobs> Read for IdleRead<'_, B> {
     }
 }
 
-pub(super) fn infer(d: &Daemon, selection: Infer) -> Answer<Value> {
+pub(super) fn infer(d: &Daemon, selection: Infer) -> Answer<Inference> {
     if let Err(message) = selection.validate() {
         return error("bad_request", message);
     }
@@ -214,7 +214,7 @@ pub(super) fn infer(d: &Daemon, selection: Infer) -> Answer<Value> {
         Err(e) => return store_error(&e),
     };
     match observe(&d.reads, &d.idle_admission, selection) {
-        Ok(report) => ok(report),
+        Ok(report) => Answer::ok(report),
         Err(e) => store_error(&e),
     }
 }
@@ -422,11 +422,14 @@ fn observe_bytes(
         .map_err(|_| "unreadable_input")
 }
 
-pub(super) fn unread(reader: &polylogue_store::Reader<'_>, origin: Option<&str>) -> Answer<Value> {
+pub(super) fn unread(
+    reader: &polylogue_store::Reader<'_>,
+    origin: Option<&str>,
+) -> Answer<polylogue_store::wire_shapes::Report> {
     match reader.wire_shapes(polylogue_store::wire_shapes::Scope::current(origin)) {
         Ok(mut report) => {
             report.shapes.retain(|shape| shape.unused_count > 0);
-            ok(report)
+            Answer::ok(report)
         }
         Err(e) => store_error(&e),
     }

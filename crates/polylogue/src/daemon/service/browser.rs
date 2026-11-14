@@ -14,7 +14,7 @@ use crate::operation::Invocation;
 use crate::protocol::browser as protocol;
 use base64::Engine as _;
 use command_surface::Answer;
-use polylogue_model::user::UserWrite;
+use polylogue_model::user::{UserOutcome, UserWrite};
 use polylogue_store::{Reader, StoreError, user_writes};
 use serde_json::Value;
 use serde_json::json;
@@ -43,7 +43,11 @@ fn enabled(invocation: &Invocation, reader: &Reader<'_>) -> Result<bool, Failure
 /// Writes `write`; `None` when it found nothing to claim. Chat actions and
 /// backfill jobs carry their own retry keys, so each write gets a new
 /// request ID.
-fn apply(d: &Daemon, invocation: &Invocation, write: UserWrite) -> Result<Option<String>, Failure> {
+fn apply(
+    d: &Daemon,
+    invocation: &Invocation,
+    write: UserWrite,
+) -> Result<Option<UserOutcome>, Failure> {
     let writes = writer(d)?;
     invocation.check_parent_lifetime()?;
     let request = invocation.request(user_writes::new_request_id(), write);
@@ -52,76 +56,114 @@ fn apply(d: &Daemon, invocation: &Invocation, write: UserWrite) -> Result<Option
         None => writes.user(request),
     };
     match result {
-        Ok(outcome) => Ok(Some(outcome.id)),
+        Ok(outcome) => Ok(Some(outcome)),
         Err(StoreError::NotFound(_)) => Ok(None),
         Err(e) => Err(refused(&e)),
     }
 }
 
 /// Writes `write`, then answers with the chat action it names.
-fn chat_then_view(d: &Daemon, invocation: &Invocation, write: UserWrite) -> Answer<Value> {
-    let id = match apply(d, invocation, write) {
-        Ok(Some(id)) => id,
-        Ok(None) => return ok(json!({ "action": null })),
+fn chat_then_view(
+    d: &Daemon,
+    invocation: &Invocation,
+    write: UserWrite,
+) -> Answer<protocol::ChatAnswer> {
+    let outcome = match apply(d, invocation, write) {
+        Ok(Some(outcome)) => outcome,
+        Ok(None) => {
+            return Answer::ok(protocol::ChatAnswer::Current(protocol::ChatCurrent {
+                enabled: None,
+                action: None,
+            }));
+        }
         Err(failure) => return failure.answer(),
     };
+    if outcome.pending {
+        return crate::protocol::written(protocol::ChatAnswer::Receipt(outcome), true);
+    }
     let reader = match d.reads.reader() {
         Ok(reader) => reader,
         Err(e) => return store_error(&e),
     };
-    match reader.chat_action(&id) {
-        Ok(Some(a)) => ok(json!({ "action": actions::view(&a, invocation.at.unix_ms()) })),
+    match reader.chat_action(&outcome.id) {
+        Ok(Some(action)) => Answer::ok(protocol::ChatAnswer::Current(protocol::ChatCurrent {
+            enabled: None,
+            action: Some(actions::view(&action, invocation.at.unix_ms())),
+        })),
         Ok(None) => browser_refusal(actions::refusal("unknown_chat_action")),
         Err(e) => store_error(&e),
     }
 }
 
-/// Writes `write`, then answers with the backfill job it names.
-fn backfill_then_view(d: &Daemon, invocation: &Invocation, write: UserWrite) -> Answer<Value> {
-    let id = match apply(d, invocation, write) {
-        Ok(Some(id)) => id,
-        Ok(None) => return ok(json!({ "job": null })),
+fn backfill_then_view(
+    d: &Daemon,
+    invocation: &Invocation,
+    write: UserWrite,
+) -> Answer<protocol::BackfillAnswer> {
+    let outcome = match apply(d, invocation, write) {
+        Ok(Some(outcome)) => outcome,
+        Ok(None) => {
+            return Answer::ok(protocol::BackfillAnswer::Current(
+                protocol::BackfillCurrent { job: None },
+            ));
+        }
         Err(failure) => return failure.answer(),
     };
+    if outcome.pending {
+        return crate::protocol::written(protocol::BackfillAnswer::Receipt(outcome), true);
+    }
     let reader = match d.reads.reader() {
         Ok(reader) => reader,
         Err(e) => return store_error(&e),
     };
-    match reader.backfill_job(&id) {
-        Ok(Some(job)) => ok(json!({ "job": backfill::view(&job, invocation.at.unix_ms()) })),
+    match reader.backfill_job(&outcome.id) {
+        Ok(Some(job)) => Answer::ok(protocol::BackfillAnswer::Current(
+            protocol::BackfillCurrent {
+                job: Some(backfill::view(&job, invocation.at.unix_ms())),
+            },
+        )),
         Ok(None) => browser_refusal(actions::refusal("unknown_backfill_job")),
         Err(e) => store_error(&e),
     }
 }
 
+enum PreparedFiles {
+    Complete(Vec<polylogue_model::user::ChatAttachment>),
+    Pending(protocol::PendingCapture),
+}
+
 /// Stores each file's bytes as a blob and makes its attachment row.
-fn store_files(
-    d: &Daemon,
-    files: &[actions::ChatFile],
-) -> Result<Vec<polylogue_model::user::ChatAttachment>, Failure> {
+fn store_files(d: &Daemon, files: &[actions::ChatFile]) -> Result<PreparedFiles, Failure> {
     let writes = writer(d)?;
-    files
-        .iter()
-        .map(|file| {
-            d.archive
-                .prepare_decoded(&file.bytes)
-                .and_then(|(new_blob, prepared)| writes.store_blob(new_blob, prepared))
-                .map(|blob| actions::attachment(file, blob))
-                .map_err(Failure::from)
-        })
-        .collect()
+    let mut attachments = Vec::with_capacity(files.len());
+    for file in files {
+        let result = d
+            .archive
+            .prepare_decoded(&file.bytes)
+            .and_then(|(new_blob, prepared)| writes.store_blob(new_blob, prepared));
+        match result {
+            Ok(blob) => attachments.push(actions::attachment(file, blob)),
+            Err(StoreError::PrimaryPending { identity }) => {
+                return Ok(PreparedFiles::Pending(protocol::PendingCapture {
+                    identity,
+                }));
+            }
+            Err(error) => return Err(Failure::from(error)),
+        }
+    }
+    Ok(PreparedFiles::Complete(attachments))
 }
 
 /// The browser handlers: each answers with the JSON view the extension reads.
 macro_rules! browser {
-    ($(#[$doc:meta])* $name:ident, $arguments:ty, $print:expr, |$args:ident, $call:ident| $body:expr) => {
+    ($(#[$doc:meta])* $name:ident, $arguments:ty, $answer:ty, $print:expr, |$args:ident, $call:ident| $body:expr) => {
         $(#[$doc])*
         pub(crate) struct $name;
         impl Handler for $name {
             type Arguments = $arguments;
-            type Answer = Value;
+            type Answer = $answer;
             const PRINT: fn(&Value, bool) -> String = $print;
-            fn run($args: Self::Arguments, $call: &Call<'_>) -> Result<Answer<Value>, Failure> {
+            fn run($args: Self::Arguments, $call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
                 Ok($body)
             }
         }
@@ -132,38 +174,53 @@ fn reader<'a>(call: &'a Call<'_>) -> Result<Reader<'a>, Failure> {
     call.reader()
 }
 
-browser!(ChatSend, protocol::ChatSend, print::json, |a, call| {
-    let (d, invocation) = (call.daemon, call.invocation);
-    let reader = reader(call)?;
-    match enabled(invocation, &reader) {
-        Ok(true) => {}
-        Ok(false) => return Ok(browser_refusal(actions::Refused("browser_actions_off"))),
-        Err(failure) => return Err(failure),
+browser!(
+    ChatSend,
+    protocol::ChatSend,
+    protocol::ChatAnswer,
+    print::json,
+    |a, call| {
+        let (d, invocation) = (call.daemon, call.invocation);
+        let reader = reader(call)?;
+        match enabled(invocation, &reader) {
+            Ok(true) => {}
+            Ok(false) => return Ok(browser_refusal(actions::Refused("browser_actions_off"))),
+            Err(failure) => return Err(failure),
+        }
+        drop(reader);
+        let action = actions::ChatRequest {
+            provider: a.provider,
+            conversation: a.conversation,
+            project: a.project,
+            text: a.text,
+            model: a.model,
+            effort: a.effort,
+            submit: a.submit,
+        };
+        // Checked before any file is stored.
+        if let Err(r) = actions::new_action(call.request_id, &action, vec![]) {
+            return Ok(browser_refusal(r));
+        }
+        let stored = match store_files(d, &a.files)? {
+            PreparedFiles::Complete(files) => files,
+            PreparedFiles::Pending(receipt) => {
+                return Ok(crate::protocol::written(
+                    protocol::ChatAnswer::Capture(receipt),
+                    true,
+                ));
+            }
+        };
+        match actions::new_action(call.request_id, &action, stored) {
+            Ok(new) => chat_then_view(d, invocation, UserWrite::ChatEnqueue(new)),
+            Err(r) => browser_refusal(r),
+        }
     }
-    drop(reader);
-    let action = actions::ChatRequest {
-        provider: a.provider,
-        conversation: a.conversation,
-        project: a.project,
-        text: a.text,
-        model: a.model,
-        effort: a.effort,
-        submit: a.submit,
-    };
-    // Checked before any file is stored.
-    if let Err(r) = actions::new_action(call.request_id, &action, vec![]) {
-        return Ok(browser_refusal(r));
-    }
-    let stored = store_files(d, &a.files)?;
-    match actions::new_action(call.request_id, &action, stored) {
-        Ok(new) => chat_then_view(d, invocation, UserWrite::ChatEnqueue(new)),
-        Err(r) => browser_refusal(r),
-    }
-});
+);
 
 browser!(
     ChatList,
     protocol::ChatList,
+    Value,
     print::chat_actions,
     |_a, call| {
         let reader = reader(call)?;
@@ -181,13 +238,14 @@ browser!(
     /// The extension instance `by` takes the oldest queued chat action.
     ChatClaim,
     protocol::ChatClaim,
+    protocol::ChatAnswer,
     print::json,
     |a, call| {
         let reader = reader(call)?;
         let on = enabled(call.invocation, &reader)?;
         drop(reader);
         if !on {
-            return Ok(ok(json!({ "enabled": false, "action": null })));
+            return Ok(Answer::ok(protocol::ChatAnswer::Current(protocol::ChatCurrent {enabled: Some(false), action: None})));
         }
         chat_then_view(
             call.daemon,
@@ -197,21 +255,27 @@ browser!(
     }
 );
 
-browser!(ChatReport, protocol::ChatReport, print::json, |a, call| {
-    let update = a.update;
-    chat_then_view(
-        call.daemon,
-        call.invocation,
-        UserWrite::ChatReport {
-            action: a.id,
-            by: update.by,
-            outcome: update.outcome,
-            phase: update.phase,
-            detail: update.detail,
-            receipt: update.receipt,
-        },
-    )
-});
+browser!(
+    ChatReport,
+    protocol::ChatReport,
+    protocol::ChatAnswer,
+    print::json,
+    |a, call| {
+        let update = a.update;
+        chat_then_view(
+            call.daemon,
+            call.invocation,
+            UserWrite::ChatReport {
+                action: a.id,
+                by: update.by,
+                outcome: update.outcome,
+                phase: update.phase,
+                detail: update.detail,
+                receipt: update.receipt,
+            },
+        )
+    }
+);
 
 fn decide(
     call: &Call<'_>,
@@ -219,7 +283,7 @@ fn decide(
     approve: bool,
     by: String,
     detail: Option<String>,
-) -> Answer<Value> {
+) -> Answer<protocol::ChatAnswer> {
     chat_then_view(
         call.daemon,
         call.invocation,
@@ -232,16 +296,25 @@ fn decide(
     )
 }
 
-browser!(ChatApprove, protocol::ChatDecide, print::json, |a, call| {
-    decide(call, a.id, true, "operator".into(), None)
-});
-browser!(ChatDecline, protocol::ChatDecide, print::json, |a, call| {
-    decide(call, a.id, false, "operator".into(), None)
-});
+browser!(
+    ChatApprove,
+    protocol::ChatDecide,
+    protocol::ChatAnswer,
+    print::json,
+    |a, call| { decide(call, a.id, true, "operator".into(), None) }
+);
+browser!(
+    ChatDecline,
+    protocol::ChatDecide,
+    protocol::ChatAnswer,
+    print::json,
+    |a, call| { decide(call, a.id, false, "operator".into(), None) }
+);
 browser!(
     /// A decision the extension's page reports for the operator.
     ChatDecision,
     protocol::ChatDecision,
+    protocol::ChatAnswer,
     print::json,
     |a, call| decide(call, a.id, a.approve, a.by, a.detail)
 );
@@ -249,6 +322,7 @@ browser!(
 browser!(
     ChatAttachment,
     protocol::ChatAttachment,
+    Value,
     print::json,
     |a, call| {
         let reader = reader(call)?;
@@ -265,6 +339,7 @@ browser!(
 browser!(
     BackfillStart,
     protocol::BackfillStart,
+    protocol::BackfillAnswer,
     print::backfill_jobs,
     |a, call| {
         match backfill::new_job(&a.provider, a.since.as_deref()) {
@@ -279,6 +354,7 @@ browser!(
 browser!(
     BackfillList,
     protocol::BackfillList,
+    Value,
     print::backfill_jobs,
     |_a, call| {
         let reader = reader(call)?;
@@ -295,6 +371,7 @@ browser!(
 browser!(
     BackfillCancel,
     protocol::BackfillCancel,
+    protocol::BackfillAnswer,
     print::backfill_jobs,
     |a, call| {
         backfill_then_view(
@@ -308,6 +385,7 @@ browser!(
 browser!(
     BackfillClaim,
     protocol::BackfillClaim,
+    protocol::BackfillAnswer,
     print::json,
     |a, call| {
         backfill_then_view(
@@ -321,6 +399,7 @@ browser!(
 browser!(
     BackfillReport,
     protocol::BackfillReport,
+    protocol::BackfillAnswer,
     print::json,
     |a, call| {
         backfill_then_view(
@@ -338,6 +417,7 @@ browser!(
 browser!(
     Conversations,
     protocol::Conversations,
+    Value,
     print::json,
     |a, call| {
         let reader = reader(call)?;
@@ -373,6 +453,7 @@ browser!(
 browser!(
     StoredFiles,
     protocol::StoredFiles,
+    Value,
     print::json,
     |a, call| {
         let Some(session) =

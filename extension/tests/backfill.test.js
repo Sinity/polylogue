@@ -143,3 +143,14 @@ it("observes cancellation within an unchanged page", async () => {
   expect(reports.at(-1).counts.unchanged).toBe(10);
   expect(reports.some((report) => report.kind === "finished")).toBe(false);
 });
+
+
+it("does not run an unconfirmed authored job receipt", async () => {
+  const receipt = { id: "job-pending", repeat: false, pending: true };
+  const chrome = fakeChrome({ routes: { "POST /v1/backfill/claim": () => ({ json: receipt }) } });
+  const host = new Host(chrome.runtime);
+  expect(await host.claimBackfill("ext-1")).toEqual(receipt);
+  const backfill = new Backfill({ chrome, host, capturer: {}, instance: async () => "ext-1" });
+  await backfill.step();
+  expect(chrome.tabs.list).toHaveLength(0);
+});

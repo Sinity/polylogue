@@ -982,3 +982,54 @@ async fn read_items(
     assert!(partial.is_empty(), "delivery ended within an encoded item");
     values
 }
+
+#[test]
+fn setting_http_keeps_typed_write_repeat_and_current_results() {
+    let reader = reader();
+    rt().block_on(async {
+        let invoke = || {
+            authed(own_origin(post("/api/v1/setting")))
+                .body(Body::from(setting_envelope("http-setting-receipt")))
+                .unwrap()
+        };
+        let (status, _, first) = send(&reader, invoke()).await;
+        assert_eq!(status, StatusCode::OK, "{first}");
+        let crate::protocol::setting::Answer::Receipt(first) =
+            serde_json::from_str(&first).unwrap()
+        else {
+            panic!("write must return a receipt")
+        };
+        assert!(!first.pending);
+        let (status, _, repeat) = send(&reader, invoke()).await;
+        assert_eq!(status, StatusCode::OK, "{repeat}");
+        let crate::protocol::setting::Answer::Receipt(repeat) =
+            serde_json::from_str(&repeat).unwrap()
+        else {
+            panic!("repeat must return a receipt")
+        };
+        assert_eq!(repeat.id, first.id);
+        assert!(repeat.repeat);
+        assert!(!repeat.pending);
+        let request = command_surface::Request {
+            operation: "setting".into(),
+            arguments: serde_json::json!({"key":"reading.variants"}),
+            request_id: "http-setting-current".into(),
+            deadline: command_surface::Deadline::None,
+            budget_tokens: Default::default(),
+            cursor: None,
+            fresh: false,
+            format: Default::default(),
+        };
+        let call = authed(own_origin(post("/api/v1/setting")))
+            .body(Body::from(serde_json::to_vec(&request).unwrap()))
+            .unwrap();
+        let (status, _, shown) = send(&reader, call).await;
+        assert_eq!(status, StatusCode::OK, "{shown}");
+        let crate::protocol::setting::Answer::Current(current) =
+            serde_json::from_str(&shown).unwrap()
+        else {
+            panic!("read must return a current setting")
+        };
+        assert_eq!(current.key, "reading.variants");
+    });
+}

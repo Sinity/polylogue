@@ -76,7 +76,7 @@ fn a_query_that_matched_nothing_is_empty_with_exit_one() {
     assert_eq!(answer.exit_code(), 1);
     assert_eq!(answer.http_status(), Some(200));
     let value = test_answers::empty(answer);
-    assert_eq!(value["count"], 0);
+    assert!(matches!(value,crate::protocol::query::Answer::Rows(rows) if rows.count==Some(0)));
 }
 
 #[test]
@@ -111,12 +111,9 @@ fn a_query_over_an_index_that_is_behind_is_degraded_even_with_rows_or_none() {
     for outcome in [Outcome::Rows, Outcome::Empty, Outcome::Measure] {
         let answer = query_outcome(query(outcome, &[]), &behind());
         assert_eq!(answer.exit_code(), 5, "{outcome:?}");
-        let (value, notes) = test_answers::degraded(answer);
+        let (mut value, notes) = test_answers::degraded(answer);
         assert_eq!(notes, behind().notes(), "{outcome:?}");
-        assert_eq!(
-            value["read_at"]["freshness"],
-            serde_json::to_value(behind()).unwrap()
-        );
+        assert_eq!(value.read_at_mut().freshness.as_ref(), Some(&behind()));
     }
 }
 
@@ -128,7 +125,7 @@ fn an_import_with_pending_user_state_is_degraded_with_its_note() {
     assert_eq!(answer.exit_code(), 5);
     assert_eq!(answer.http_status(), Some(200));
     let (value, notes) = test_answers::degraded(answer);
-    assert_eq!(value["user_state"]["pending"], 1);
+    assert_eq!(value.user_state.pending, 1);
     assert_eq!(notes, [crate::protocol::AWAITING_CONFIRMATION]);
 
     report.user_state = polylogue_engine::UserStateReport {
@@ -156,7 +153,7 @@ fn answer_reports_pending_search_text_and_parse_lag() {
         CompletenessDimension::Incomplete(vec![CompletenessReason::ParserBehind]);
     let answer = query_outcome(query(Outcome::Rows, &[]), &freshness);
     assert_eq!(answer.exit_code(), 5);
-    let (value, notes) = test_answers::degraded(answer);
+    let (mut value, notes) = test_answers::degraded(answer);
     assert_eq!(
         notes,
         [
@@ -164,12 +161,12 @@ fn answer_reports_pending_search_text_and_parse_lag() {
             "search text is pending"
         ]
     );
-    assert_eq!(
-        value["read_at"]["freshness"],
-        serde_json::to_value(&freshness).unwrap()
-    );
+    assert_eq!(value.read_at_mut().freshness.as_ref(), Some(&freshness));
     let answer = crate::protocol::read(value.clone(), &freshness);
     let (same_value, same_notes) = test_answers::degraded(answer);
-    assert_eq!(same_value, value);
+    assert_eq!(
+        serde_json::to_value(same_value).unwrap(),
+        serde_json::to_value(value).unwrap()
+    );
     assert_eq!(same_notes, notes);
 }

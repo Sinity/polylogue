@@ -2,7 +2,6 @@
 //! a committed write keeps its ordinary result.
 use command_surface::Answer;
 use polylogue_store::read::limit::{ReadCancellation, ReadLimit};
-use serde_json::Value;
 use std::time::Duration;
 
 pub const DEFAULT_READ_TIMEOUT_MS: u64 = 30_000;
@@ -27,12 +26,12 @@ pub fn limit(deadline_ms: Option<i64>, cancellation: ReadCancellation) -> ReadLi
 
 /// A read stopped by its deadline or a cancellation names the stage it
 /// reached and, for a query, a narrower query that can finish in time.
-pub fn refusal(
+pub fn refusal<T>(
     error: &polylogue_store::StoreError,
     stage: &str,
     text: Option<&str>,
     limit: &ReadLimit,
-) -> Answer<Value> {
+) -> Answer<T> {
     let mut failure = crate::protocol::store_failure(error);
     if let Some(query) = text.and_then(narrower) {
         failure = failure.with_suggestion(command_surface::Suggestion::Query(query));

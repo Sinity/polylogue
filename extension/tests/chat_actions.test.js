@@ -120,3 +120,14 @@ it("revokes only the owned page run after a claim is lost", () => {
   expect(globalThis.__polylogueChatAttachments.cancelled).toBe(true);
   delete globalThis.__polylogueChatAttachments;
 });
+
+
+it("keeps an unconfirmed authored receipt without treating it as a claimed action", async () => {
+  const receipt = { id: "action-pending", repeat: true, pending: true };
+  const chrome = fakeChrome({ routes: { "GET /v1/chat-actions": () => ({ json: receipt }) } });
+  const host = new Host(chrome.runtime);
+  expect(await host.claimChatAction("ext-1")).toEqual(receipt);
+  const actions = new ChatActions({ chrome, host, instance: async () => "ext-1", capture: async () => { throw new Error("no action was claimed"); } });
+  await actions.step();
+  expect(chrome.tabs.list).toHaveLength(0);
+});

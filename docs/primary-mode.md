@@ -273,7 +273,7 @@ other requests; the original request still owns its exact body and own receipt.
 When Sinex is unreachable or refuses this producer:
 - reads answer from `index.db`, marked with the stream position they reflect and its lag;
 - capture keeps collecting into the producer client's spool, and the sender retries with the same write identities;
-- an authored write is prepared in the spool and answered with its identity and the state `pending` (exit 5, degraded); it becomes visible when Sinex commits it;
+- an authored write is prepared in the spool and answered with its identity and the state `pending` (exit 5, degraded); it becomes visible when Sinex commits it; setting writes retain their exact user receipt, including `id`, `repeat` and `pending`;
 - the verdict is `degraded` with the reason `sinex blocked` and the error in plain words, and the shipped `Sinex blocked` rule fires after 10 minutes;
 - Polylogue never falls back to standalone, whatever the cause, a broken configuration file included.
 
@@ -281,6 +281,8 @@ When Sinex is unreachable or refuses this producer:
 Publication and read failures remain distinct observations in that status. A successful confirmed read does not clear an outstanding publication failure; only a successful publication retry clears it. Both reasons remain visible when both operations fail.
 
 ## Rebuild and parser upgrades
+
+Browser writes distinguish preparation from enqueue. If attached bytes are durable but unconfirmed, the reply is degraded with their capture `identity`; no action has been enqueued. If the authored chat action or backfill job is durable but unconfirmed, the reply carries its exact user receipt with `pending: true`, without looking up or claiming a confirmed queued action. A confirmed write returns the current action or job as before. Retries retain the corresponding capture or authored identity.
 
 **Rebuild.** A new local `index.db` (one from another schema set aside at start, [operations.md](operations.md#replacing-an-index-from-another-schema), or one moved aside by hand) resets its subscription position and reads Sinex-confirmed records, with progress in `status`. Earlier primary cache formats are set aside for cache5, which stores NFC request-text identities alongside raw text hashes and uses narrow integer message-version references and separate payload storage. Reconstruction reads the retained originals and confirmed records; opening does not decode an earlier derived row format. The producer spool, including pending authored intent, stays under the separate Sinex store root; paid vectors remain in `embeddings.db`. Both retain their original identities and bytes.
 
