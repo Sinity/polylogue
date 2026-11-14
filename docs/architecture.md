@@ -186,7 +186,13 @@ Building the archive overlaps every stage:
   key and the text references it just wrote; selected blocks consume those
   references. When that call also wrote every text payload, parser continuation
   checks consume its prepared identity rather than reading and decoding its
-  body again. Older, unchanged or reused-text versions retain full payload,
+  body again. Resolver preparation and version registration share one immutable
+  message value. An uncomplicated complete selection refers to that version
+  entry in the same prepared unit instead of copying its body and encoded rows;
+  the reference survives a staged reading's disk roundtrip. Composition and
+  sparse enrichment keep their owned selected value and time/item overlays.
+  Missing or mismatched selected references refuse the transaction normally.
+  Older, unchanged or reused-text versions retain full payload,
   hash and layout validation. A new message is inserted with its resolved
   selected metadata before source claims refer to it; its first body installation
   consumes that creation result. Later installations replace the existing

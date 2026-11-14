@@ -542,12 +542,15 @@ impl resolve::membership::ValueSource for History {
             return Ok(None);
         };
         let (step, choices) = self.step(location)?;
-        if let Some(value) = choices.as_ref().and_then(|choices| {
-            choices
-                .message_versions
-                .get(&BlobHash(hash.try_into().ok()?))
-        }) {
-            return Ok(Some((value.message.clone(), value.prepared.clone())));
+        if let Some(mut choices) = choices {
+            let hash = BlobHash(hash.try_into().map_err(|_| {
+                StoreError::Invalid("a recorded message version has an invalid hash".into())
+            })?);
+            if let Some(value) = choices.message_versions.remove(&hash) {
+                let resolve::membership::MessageValue { message, prepared } =
+                    Arc::unwrap_or_clone(value.value);
+                return Ok(Some((message, prepared)));
+            }
         }
         Ok(step
             .output

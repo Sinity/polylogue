@@ -228,15 +228,21 @@ fn apply_rows(
             .messages
             .iter()
             .map(|(&pk, choice)| {
-                (
+                let value = choice
+                    .as_ref()
+                    .map(|choice| choices.selected_message(choice))
+                    .transpose()?
+                    .flatten();
+                Ok((
                     pk,
                     MessageWrite {
                         choice: choice.as_ref(),
+                        value,
                         created: Cell::new(None),
                     },
-                )
+                ))
             })
-            .collect(),
+            .collect::<Result<_>>()?,
     };
     if p.reset {
         rows.retract()?;
@@ -254,8 +260,8 @@ fn apply_rows(
     for version in choices.message_versions.values() {
         let registered = crate::versions::store_message(
             tx,
-            &version.message,
-            &version.prepared,
+            &version.value.message,
+            &version.value.prepared,
             crate::versions::TextRows {
                 packed: &p.prepared.texts,
                 texts,
@@ -263,7 +269,8 @@ fn apply_rows(
             version.replace,
             version.admitted.or(source_admission),
         )?;
-        rows.versions.insert(version.prepared.hash, registered);
+        rows.versions
+            .insert(version.value.prepared.hash, registered);
     }
     let mut sessions: HashMap<String, i64> = HashMap::new();
     for s in &p.output.sessions {
@@ -740,6 +747,7 @@ pub(super) struct RowWriter<'a, 't> {
 /// consumed by its first body installation, including early copy moves.
 struct MessageWrite<'a> {
     choice: Option<&'a resolve::membership::MessageChoice>,
+    value: Option<&'a resolve::membership::MessageValue>,
     created: Cell<Option<CreatedMessage>>,
 }
 
@@ -755,12 +763,13 @@ pub(super) struct Version {
     in_progress: bool,
 }
 
-fn selected_version(choice: &resolve::membership::MessageChoice) -> Version {
+fn selected_version(
+    choice: &resolve::membership::MessageChoice,
+    value: Option<&resolve::membership::MessageValue>,
+) -> Version {
     Version {
-        time: choice
-            .prepared
-            .as_ref()
-            .map(|prepared| prepared.time.clone())
+        time: value
+            .map(|value| value.prepared.time.clone())
             .unwrap_or_default(),
         input_pk: choice.input,
         chain: choice.chain,
@@ -1035,14 +1044,14 @@ impl RowWriter<'_, '_> {
                     .get(&self.keys.get(resolve::Kind::Message, id.as_bytes())?.pk)
                     .ok_or_else(|| StoreError::Invalid("unresolved message version".into()))?;
                 let pk = if let Some(choice) = write.choice.filter(|choice| choice.changed) {
-                    let selected = choice.message.as_ref().ok_or_else(|| {
+                    let selected = write.value.map(|value| &value.message).ok_or_else(|| {
                         StoreError::Invalid("a changed version has no prepared message".into())
                     })?;
                     self.session_pk(sessions, &selected.session)?;
                     let pk = self.insert_message(
                         selected,
                         choice.session,
-                        &selected_version(choice),
+                        &selected_version(choice, write.value),
                         &choice.order,
                     )?;
                     write.created.set(Some(CreatedMessage));
@@ -1089,8 +1098,9 @@ impl RowWriter<'_, '_> {
             .get(&pk)
             .ok_or_else(|| StoreError::Invalid("unresolved message version".into()))?;
         let choice = write.choice;
+        let value = write.value;
         let created = write.created.take();
-        let winner = choice.map(|choice| (selected_version(choice), choice.session));
+        let winner = choice.map(|choice| (selected_version(choice, value), choice.session));
         let Some((v, session_pk)) = winner else {
             if !self.tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM message WHERE pk=?1)",
@@ -1162,13 +1172,11 @@ impl RowWriter<'_, '_> {
             return Ok(false);
         }
         self.changes.message(self.tx, pk)?;
-        let m = choice.message.as_ref().ok_or_else(|| {
+        let value = value.ok_or_else(|| {
             StoreError::Invalid("a changed version has no prepared message".into())
         })?;
-        let prepared = choice
-            .prepared
-            .as_ref()
-            .ok_or_else(|| StoreError::Invalid("a changed version has no prepared body".into()))?;
+        let m = &value.message;
+        let prepared = &value.prepared;
         self.changes.prepare_items(pk, prepared.items.clone());
         self.tx.execute("UPDATE session SET changed=?2 WHERE pk IN (SELECT session_pk FROM message WHERE pk=?1) OR pk=?3",params![pk,self.counter,session_pk])?;
         if created.is_some() {

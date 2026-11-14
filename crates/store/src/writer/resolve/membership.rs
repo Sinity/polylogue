@@ -25,10 +25,9 @@ pub(crate) struct MessageChoice {
     /// Each field group taken from another input chain than the main route.
     pub routes: Vec<(FieldGroup, i64, i64)>,
     pub changed: bool,
-    /// The composed message and the main version's prepared rows, when
-    /// changed.
-    pub message: Option<Message>,
-    pub prepared: Option<PreparedMessage>,
+    /// The changed selection, either a reference to this unit's version entry
+    /// or an owned composed/enriched value.
+    pub value: Option<SelectedMessage>,
 }
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct DocumentChoice {
@@ -96,10 +95,88 @@ pub(crate) struct ReleasedSession {
 }
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct MessageVersion {
-    pub message: Message,
-    pub prepared: PreparedMessage,
+    #[serde(with = "shared_message_value")]
+    pub value: Arc<MessageValue>,
     pub replace: bool,
     pub admitted: Option<u64>,
+    /// This step supplied a complete unmerged value. This controls selection
+    /// ownership, never payload validation or transaction authority.
+    complete_source: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct MessageValue {
+    pub message: Message,
+    pub prepared: PreparedMessage,
+}
+
+impl From<(Message, PreparedMessage)> for MessageValue {
+    fn from((message, prepared): (Message, PreparedMessage)) -> Self {
+        Self { message, prepared }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum SelectedMessage {
+    /// The matching complete entry in this Choices owns the payload.
+    Version { message: MessageId },
+    /// Composition and enrichment keep their selected time and item overlays.
+    Value(Box<MessageValue>),
+}
+
+impl Choices {
+    pub(in crate::writer) fn selected_message<'a>(
+        &'a self,
+        choice: &'a MessageChoice,
+    ) -> Result<Option<&'a MessageValue>> {
+        match (&choice.value, choice.changed) {
+            (None, false) => Ok(None),
+            (Some(SelectedMessage::Value(value)), true) => Ok(Some(value.as_ref())),
+            (Some(SelectedMessage::Version { message }), true) => {
+                let hash = BlobHash(choice.hash.as_slice().try_into().map_err(|_| {
+                    StoreError::Invalid("a selected version has an invalid hash".into())
+                })?);
+                let version = self.message_versions.get(&hash).ok_or_else(|| {
+                    StoreError::Invalid("a selected version has no prepared value".into())
+                })?;
+                let value = version.value.as_ref();
+                if value.prepared.hash != hash.0
+                    || value.prepared.projection.source_version != hash
+                    || value.prepared.id != value.message.id
+                    || value.message.id != *message
+                    || value.prepared.projection.block_count != value.message.blocks.len() as u64
+                    || value.prepared.blocks.len() != value.message.blocks.len()
+                    || version.replace
+                    || !version.complete_source
+                {
+                    return Err(StoreError::Invalid(
+                        "a selected version does not match its complete prepared value".into(),
+                    ));
+                }
+                Ok(Some(value))
+            }
+            _ => Err(StoreError::Invalid(
+                "a changed version has no matching prepared message".into(),
+            )),
+        }
+    }
+}
+
+mod shared_message_value {
+    use super::*;
+
+    pub fn serialize<S: serde::Serializer>(
+        value: &Arc<MessageValue>,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serde::Serialize::serialize(value.as_ref(), serializer)
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Arc<MessageValue>, D::Error> {
+        Ok(Arc::new(serde::Deserialize::deserialize(deserializer)?))
+    }
 }
 
 /// One input chain's reading of an item.
@@ -498,7 +575,7 @@ pub(in crate::writer) struct Projection<'a> {
     links: Table<ValueMember>,
     shown_messages: BTreeMap<i64, Option<Shown>>,
     shown_documents: BTreeMap<i64, Option<Vec<u8>>>,
-    message_values: BTreeMap<Vec<u8>, (Message, PreparedMessage)>,
+    message_values: BTreeMap<Vec<u8>, Arc<MessageValue>>,
     message_layouts: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
     document_values: BTreeMap<Vec<u8>, (polylogue_model::Document, PreparedDocument)>,
     session_facts: BTreeMap<(i64, i64, i64), Session>,
@@ -950,16 +1027,21 @@ impl<'a> Projection<'a> {
                 None
             } else {
                 match self.message_values.get(prepared.hash.as_slice()) {
-                    Some(value) => Some(value.clone()),
-                    None => known_message(self.index, self.values, &prepared.hash)?,
+                    Some(value) => Some(Arc::clone(value)),
+                    None => known_message(self.index, self.values, &prepared.hash)?
+                        .map(|value| Arc::new(MessageValue::from(value))),
                 }
             };
+            let complete_source = complete && previous_value.is_none();
             let incoming = (row.message.clone(), prepared.clone());
-            let merged = match previous_value {
-                Some(previous) => merge_message(previous, incoming)?,
+            let merged = Arc::new(MessageValue::from(match previous_value {
+                Some(previous) => {
+                    let MessageValue { message, prepared } = Arc::unwrap_or_clone(previous);
+                    merge_message((message, prepared), incoming)?
+                }
                 None => incoming,
-            };
-            let layout = crate::versions::message_layout(&merged.1.projection)?;
+            }));
+            let layout = crate::versions::message_layout(&merged.prepared.projection)?;
             let replace = prior_layout
                 .and_then(Option::as_ref)
                 .is_some_and(|before| before != &layout)
@@ -969,7 +1051,7 @@ impl<'a> Projection<'a> {
                     .is_some_and(|previous| previous.replace);
             self.message_layouts
                 .insert(prepared.hash.to_vec(), Some(layout));
-            for (block, hash) in merged.0.blocks.iter().zip(&merged.1.texts) {
+            for (block, hash) in merged.message.blocks.iter().zip(&merged.prepared.texts) {
                 if let (Some(text), Some(hash)) = (crate::encoding::block_text(block), hash)
                     && let std::collections::hash_map::Entry::Vacant(slot) =
                         step.prepared.texts.entry(*hash)
@@ -983,9 +1065,9 @@ impl<'a> Projection<'a> {
             choices.message_versions.insert(
                 BlobHash(prepared.hash),
                 MessageVersion {
-                    message: merged.0.clone(),
-                    prepared: merged.1.clone(),
+                    value: Arc::clone(&merged),
                     replace,
+                    complete_source,
                     admitted: step
                         .native_admission(&("message", &row.message.id, row.offset))?
                         .max(
@@ -1562,7 +1644,8 @@ impl<'a> Projection<'a> {
                             known_message(index, *values, &member.hash)?.ok_or_else(|| {
                                 StoreError::Invalid("a message reading has no value".into())
                             })?;
-                        message_values.insert(member.hash.clone(), value);
+                        message_values
+                            .insert(member.hash.clone(), Arc::new(MessageValue::from(value)));
                     }
                 }
             }
@@ -1576,7 +1659,7 @@ impl<'a> Projection<'a> {
                         explicit_owner: m.explicit_owner,
                         completion: m.completion,
                         hash: &m.hash,
-                        message: &message_values[&m.hash].0,
+                        message: &message_values[&m.hash].message,
                     })
                     .collect();
                 compose::message(&readings)
@@ -1603,7 +1686,7 @@ impl<'a> Projection<'a> {
             let shown = shown_messages.get(&pk).and_then(Option::as_ref);
             let layout = message_values
                 .get(&main.hash)
-                .map(|(_, prepared)| crate::versions::message_layout(&prepared.projection))
+                .map(|value| crate::versions::message_layout(&value.prepared.projection))
                 .transpose()?;
             let changed = shown.is_none_or(|shown| {
                 shown.hash != main.hash
@@ -1619,24 +1702,54 @@ impl<'a> Projection<'a> {
                 let value = known_message(index, *values, &main.hash)?.ok_or_else(|| {
                     StoreError::Invalid("a selected message version has no value".into())
                 })?;
-                message_values.insert(main.hash.clone(), value);
+                message_values.insert(main.hash.clone(), Arc::new(MessageValue::from(value)));
             }
-            let (message, prepared) = if changed {
-                let (version, mut prepared) = message_values[&main.hash].clone();
-                let message = composed.unwrap_or(version);
-                prepared.time = crate::encoding::time_bytes(message.at, message.time_evidence())?;
-                polylogue_model::read::update_message_entries(
-                    &mut prepared.items,
-                    &message,
-                    polylogue_model::read::MessagePlace::default(),
-                );
-                (Some(message), Some(prepared))
+            let value = if changed {
+                let source = message_values.get(&main.hash).ok_or_else(|| {
+                    StoreError::Invalid("a selected message version has no value".into())
+                })?;
+                let reference = current.len() == 1
+                    && composed.is_none()
+                    && choices
+                        .message_versions
+                        .get(&BlobHash(main.hash.as_slice().try_into().map_err(
+                            |_| {
+                                StoreError::Invalid("a selected version has an invalid hash".into())
+                            },
+                        )?))
+                        .is_some_and(|version| {
+                            version.complete_source
+                                && !version.replace
+                                && Arc::ptr_eq(source, &version.value)
+                        });
+                if reference {
+                    Some(SelectedMessage::Version {
+                        message: source.message.id.clone(),
+                    })
+                } else {
+                    let MessageValue {
+                        message: version,
+                        mut prepared,
+                    } = source.as_ref().clone();
+                    let message = composed.unwrap_or(version);
+                    prepared.time =
+                        crate::encoding::time_bytes(message.at, message.time_evidence())?;
+                    polylogue_model::read::update_message_entries(
+                        &mut prepared.items,
+                        &message,
+                        polylogue_model::read::MessagePlace::default(),
+                    );
+                    Some(SelectedMessage::Value(Box::new(MessageValue {
+                        message,
+                        prepared,
+                    })))
+                }
             } else {
-                (None, None)
+                None
             };
             let layout = message_values
                 .get(&main.hash)
-                .map(|(_, prepared)| crate::versions::message_layout(&prepared.projection))
+                .map(|value| crate::versions::message_layout(&value.prepared.projection))
                 .transpose()?
                 .or_else(|| shown.and_then(|shown| shown.layout.clone()));
             shown_messages.insert(
@@ -1688,8 +1801,7 @@ impl<'a> Projection<'a> {
                         .map(|(group, input, chain, _)| (group, input, chain))
                         .collect(),
                     changed,
-                    message,
-                    prepared,
+                    value,
                 }),
             );
         }
