@@ -63,15 +63,14 @@ jobs:
         run: |
           curl -sSfL https://github.com/nats-io/nats-server/releases/download/v2.10.22/nats-server-v2.10.22-linux-amd64.tar.gz | tar xz
           sudo mv nats-server-v2.10.22-linux-amd64/nats-server /usr/local/bin/
-      # Master builds from scratch and saves its whole target directory, the
-      # exact build of that commit; a pull request starts from it. Cargo
-      # decides freshness by file times, and a fresh checkout makes every
-      # source newer than the saved build, so every source is dated before
+      # Every event may reuse master's whole target directory, whose source
+      # commit is recorded alongside it. Full test selection on master is
+      # independent of compiler reuse. A fresh checkout makes source files
+      # newer than the saved build. Cargo uses file times, so sources are dated before
       # the build and the files that differ from the saved commit are dated
       # now: Cargo rebuilds the packages those files belong to and the ones
       # depending on them, and reuses the rest.
       - name: Restore master's build
-        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
         uses: actions/cache/restore@v4
         with:
           path: |
@@ -81,7 +80,6 @@ jobs:
           key: check-${{ hashFiles('rust-toolchain.toml') }}-${{ github.sha }}
           restore-keys: check-${{ hashFiles('rust-toolchain.toml') }}-
       - name: Date sources against the restored build
-        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
         run: |
           built=$(cat target/source-commit 2>/dev/null) || exit 0
           git fetch --no-tags --depth=1 origin "$built" || exit 0
