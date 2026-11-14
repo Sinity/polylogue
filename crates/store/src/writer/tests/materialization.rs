@@ -149,10 +149,12 @@ fn registered_responses_and_selected_blocks_consume_the_written_keys() {
                 &format!("response-{i}"),
                 "s",
                 Role::Assistant,
-                &body,
+                &format!("{i:02} first {body}"),
                 Some("end_turn"),
             );
-            message.blocks.push(Block::Text { text: body.clone() });
+            message.blocks.push(Block::Text {
+                text: format!("{i:02} second {body}"),
+            });
             message
         })
         .collect();
@@ -207,7 +209,12 @@ fn registered_responses_and_selected_blocks_consume_the_written_keys() {
     );
     println!(
         "registered materialization: fresh={fresh:?} duplicate={duplicate:?} fallback_decoded_text_bytes={}",
-        32 * body.len()
+        messages
+            .iter()
+            .flat_map(|m| &m.blocks)
+            .filter_map(crate::encoding::block_text)
+            .map(str::len)
+            .sum::<usize>()
     );
 }
 
@@ -410,7 +417,12 @@ fn sparse_registered_context_keeps_full_hash_and_enriches_block_positions() {
         );
         let (result, work) = apply(&mut conn, b);
         result.unwrap();
-        assert_eq!((work.message_reads, work.text_key_queries), (0, 0));
+        // Enrichment reuses the first block's older text row, so its
+        // context takes full validation while still consuming returned IDs.
+        assert_eq!(
+            (work.message_reads, work.text_key_queries),
+            (u64::from(ordinal != 0), 0)
+        );
     }
     let (stored, projection) = crate::versions::read_message(&conn, &hash.0)
         .unwrap()
@@ -418,4 +430,68 @@ fn sparse_registered_context_keeps_full_hash_and_enriches_block_positions() {
     assert_eq!(stored, full);
     assert_eq!(projection.block_ordinals, [0, 1]);
     assert_eq!(projection.source_version, hash);
+}
+
+#[test]
+fn a_new_version_with_reused_text_keeps_stored_payload_validation() {
+    for corrupt in [false, true] {
+        let mut conn = database();
+        let original = text_message(
+            "original",
+            "s",
+            Role::Assistant,
+            "shared response text",
+            Some("end_turn"),
+        );
+        apply(
+            &mut conn,
+            reading(
+                "original",
+                vec![original.clone()],
+                vec![reference(&original, "original")],
+            ),
+        )
+        .0
+        .unwrap();
+        if corrupt {
+            conn.execute(
+                "UPDATE text SET body=?1",
+                [crate::encoding::pack_text("corrupt reused text").unwrap()],
+            )
+            .unwrap();
+        }
+        let next = text_message(
+            "next",
+            "s",
+            Role::Assistant,
+            "shared response text",
+            Some("end_turn"),
+        );
+        let (result, work) = apply(
+            &mut conn,
+            reading("next", vec![next.clone()], vec![reference(&next, "next")]),
+        );
+        assert_eq!(
+            (work.message_reads, work.text_queries, work.text_rows),
+            (1, 1, 1)
+        );
+        if corrupt {
+            assert!(result.is_err());
+            assert_eq!(
+                conn.query_row(
+                    "SELECT count(*) FROM message WHERE id='claude-code:next'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                0
+            );
+        } else {
+            assert_eq!(result.unwrap(), 1);
+            let (stored, _) = crate::versions::read_message(&conn, &next.content_hash().unwrap().0)
+                .unwrap()
+                .unwrap();
+            assert_eq!(stored, next);
+        }
+    }
 }

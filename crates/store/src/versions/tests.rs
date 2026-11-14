@@ -298,7 +298,8 @@ fn first_build_cleanup_retains_version_text_and_forgets_deleted_identity() {
                 b"kept".to_vec(),
             )),
         )
-        .unwrap();
+        .unwrap()
+        .id;
     let version_pk = insert_version(&tx, &version, &[0]);
     tx.execute(
         "INSERT INTO message_version_text(version_pk,idx,text_id) VALUES(?1,0,?2)",
@@ -311,7 +312,7 @@ fn first_build_cleanup_retains_version_text_and_forgets_deleted_identity() {
     )
     .unwrap();
     remove_unreferenced(&tx, Some(&first), &identities).unwrap();
-    assert_eq!(identities.resolve(&tx, &hash, None).unwrap(), id);
+    assert_eq!(identities.resolve(&tx, &hash, None).unwrap().id, id);
     tx.execute(
         "DELETE FROM message_version WHERE version_hash=?1",
         [version.as_slice()],
@@ -328,7 +329,8 @@ fn first_build_cleanup_retains_version_text_and_forgets_deleted_identity() {
                 b"again".to_vec(),
             )),
         )
-        .unwrap();
+        .unwrap()
+        .id;
     assert_eq!(
         tx.query_row(
             "SELECT count(*) FROM text WHERE id=?1 AND hash=?2",
@@ -340,7 +342,10 @@ fn first_build_cleanup_retains_version_text_and_forgets_deleted_identity() {
     );
     tx.commit().unwrap();
     texts.commit();
-    assert_eq!(identities.resolve(&conn, &hash, None).unwrap(), replacement);
+    assert_eq!(
+        identities.resolve(&conn, &hash, None).unwrap().id,
+        replacement
+    );
 }
 
 #[test]

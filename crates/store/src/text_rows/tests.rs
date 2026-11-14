@@ -209,7 +209,8 @@ fn first_build_texts_share_rows_without_sql_readback_or_prefix_aliasing() {
                 b"first".to_vec(),
             )),
         )
-        .unwrap();
+        .unwrap()
+        .id;
     let b = first
         .resolve(
             &conn,
@@ -219,7 +220,8 @@ fn first_build_texts_share_rows_without_sql_readback_or_prefix_aliasing() {
                 b"second".to_vec(),
             )),
         )
-        .unwrap();
+        .unwrap()
+        .id;
     assert_ne!(a, b);
     // Both hits must use exact hashes in writer memory, even when the
     // eight-byte prefixes are equal. SQLite refuses any text-table read.
@@ -231,8 +233,8 @@ fn first_build_texts_share_rows_without_sql_readback_or_prefix_aliasing() {
         _ => Authorization::Allow,
     }))
     .unwrap();
-    assert_eq!(first.resolve(&conn, &one, None).unwrap(), a);
-    assert_eq!(first.resolve(&conn, &two, None).unwrap(), b);
+    assert_eq!(first.resolve(&conn, &one, None).unwrap().id, a);
+    assert_eq!(first.resolve(&conn, &two, None).unwrap().id, b);
     conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
         .unwrap();
     assert!(matches!(
@@ -261,7 +263,8 @@ fn failed_text_transaction_reloads_presence_without_reassigning_known_ids() {
                     b"rolled back".to_vec(),
                 )),
             )
-            .unwrap();
+            .unwrap()
+            .id;
         // The transaction and its text-map changes are both discarded.
     }
     let texts = first.transaction();
@@ -275,12 +278,13 @@ fn failed_text_transaction_reloads_presence_without_reassigning_known_ids() {
                 b"committed".to_vec(),
             )),
         )
-        .unwrap();
+        .unwrap()
+        .id;
     assert_ne!(old, new);
     assert!(first.resolve(&tx, &gone, None).is_err());
     tx.commit().unwrap();
     texts.commit();
-    assert_eq!(first.resolve(&conn, &kept, None).unwrap(), new);
+    assert_eq!(first.resolve(&conn, &kept, None).unwrap().id, new);
     assert_eq!(count(&conn, "SELECT count(*) FROM text"), 1);
     let transaction = first.transaction();
     let tx = conn.transaction().unwrap();
@@ -294,7 +298,8 @@ fn failed_text_transaction_reloads_presence_without_reassigning_known_ids() {
                     b"restored".to_vec()
                 ))
             )
-            .unwrap(),
+            .unwrap()
+            .id,
         old
     );
     tx.commit().unwrap();
@@ -309,4 +314,31 @@ fn failed_text_transaction_reloads_presence_without_reassigning_known_ids() {
         normalized,
         crate::encoding::normalized_text_hash("restored")
     );
+}
+
+#[test]
+fn cached_text_identity_does_not_claim_a_payload_write() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    crate::schema::create_index(&conn).unwrap();
+    let identities = TextIds::new(&conn, true).unwrap();
+    let text = "shared synthetic text";
+    let hash = *blake3::hash(text.as_bytes()).as_bytes();
+    let prepared =
+        crate::encoding::PreparedText::new(text, crate::encoding::pack_text(text).unwrap());
+    let tx = conn.transaction().unwrap();
+    let written = identities.resolve(&tx, &hash, Some(&prepared)).unwrap();
+    assert!(written.written);
+    let reused = identities.resolve(&tx, &hash, Some(&prepared)).unwrap();
+    assert_eq!(reused.id, written.id);
+    assert!(!reused.written);
+    tx.commit().unwrap();
+    let cached = identities.resolve(&conn, &hash, Some(&prepared)).unwrap();
+    assert_eq!(cached.id, written.id);
+    assert!(!cached.written);
+    let preloaded = TextIds::new(&conn, true)
+        .unwrap()
+        .resolve(&conn, &hash, None)
+        .unwrap();
+    assert_eq!(preloaded.id, written.id);
+    assert!(!preloaded.written);
 }
