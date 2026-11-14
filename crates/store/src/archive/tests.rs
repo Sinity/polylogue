@@ -120,9 +120,9 @@ fn reopening_a_first_build_does_not_build_its_deferred_indexes() {
             .execute_batch(&format!("DROP INDEX IF EXISTS {name}"))
             .unwrap();
     }
-    // A read index the build does not defer, missing, is completed at open.
+    // These read paths are used by derivation during the first build too.
     index
-        .execute_batch("DROP INDEX block_original_ordinal")
+        .execute_batch("DROP INDEX block_original_ordinal; DROP INDEX message_duplicate")
         .unwrap();
     drop(index);
     drop(lock);
@@ -140,6 +140,7 @@ fn reopening_a_first_build_does_not_build_its_deferred_indexes() {
         .collect();
     assert_eq!(rebuilt, Vec::<&str>::new());
     assert!(present.iter().any(|p| p == "block_original_ordinal"));
+    assert!(present.iter().any(|p| p == "message_duplicate"));
 }
 
 #[test]
