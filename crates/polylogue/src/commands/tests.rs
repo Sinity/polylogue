@@ -24,9 +24,28 @@ fn argv(c: &Command) -> Vec<&'static str> {
                 format!("--{}", a.spec.name.replace('_', "-")).into_boxed_str(),
             ));
         }
-        let value = a.choices.first().cloned().unwrap_or_else(|| match &a.kind {
-            command_surface::ValueKind::Json => "1".into(),
-            _ => "claude-code:s1".into(),
+        if a.spec.form == command_surface::ArgumentForm::Flag {
+            continue;
+        }
+        let value = a.choices.first().cloned().unwrap_or_else(|| {
+            if matches!(&a.kind, command_surface::ValueKind::List(_))
+                && matches!(
+                    a.spec.form,
+                    command_surface::ArgumentForm::Positional
+                        | command_surface::ArgumentForm::Named
+                )
+            {
+                return "[]".into();
+            }
+            fn sample(kind: &command_surface::ValueKind) -> &'static str {
+                match kind {
+                    command_surface::ValueKind::Text => "claude-code:s1",
+                    command_surface::ValueKind::Boolean => "true",
+                    command_surface::ValueKind::Json => "1",
+                    command_surface::ValueKind::List(item) => sample(item),
+                }
+            }
+            sample(&a.kind).into()
         });
         argv.push(Box::leak(value.into_boxed_str()));
     }
