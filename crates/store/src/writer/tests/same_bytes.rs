@@ -251,58 +251,40 @@ fn stopping_a_copy_interrupts_its_insert_and_rolls_back_the_complete_reading() {
     let w = test_archive();
     chain(&w, 1, b'a', false);
     chain(&w, 2, b'a', true);
+    chain(&w, 3, b'b', false);
+    chain(&w, 4, b'b', true);
     // The copy reaches SQLite's progress handler inside this INSERT SELECT,
     // after earlier tables have already copied their rows in the savepoint.
     let conn = rusqlite::Connection::open(w.archive.index_db()).unwrap();
     conn.execute_batch(
         "WITH RECURSIVE n(value) AS (VALUES(1) UNION ALL SELECT value+1 FROM n WHERE value<256)
          INSERT INTO unused(input_pk,chain,format,what,count)
-         SELECT (SELECT pk FROM input_ref WHERE id='doc'),2,'synthetic','field:'||value,1 FROM n",
+         SELECT (SELECT pk FROM input_ref WHERE id='doc'),4,'synthetic','field:'||value,1 FROM n",
     )
     .unwrap();
     drop(conn);
     let before = dump(&w);
-    let copy = crate::ReadingCopy {
-        input: "doc".into(),
-        from: 2,
-        to: 1,
-        reading_version: "synthetic=1".into(),
-    };
-    crate::fault::arm(
-        "write.copy_table",
-        "unused",
-        crate::fault::Action::Fail,
-        0,
-        1,
-    );
-    let failed = w
-        .writer
-        .sender()
-        .unwrap()
-        .copy_readings(vec![copy.clone()])
-        .unwrap();
-    assert!(
-        matches!(failed.as_slice(), [Err(StoreError::Io(_))]),
-        "{failed:?}"
-    );
-    assert_eq!(
-        dump(&w),
-        before,
-        "an ordinary copy failure retains its cause and rolls back its savepoint"
-    );
-    crate::fault::clear();
+    let copies: Vec<_> = [(2, 1), (4, 3)]
+        .into_iter()
+        .map(|(from, to)| crate::ReadingCopy {
+            input: "doc".into(),
+            from,
+            to,
+            reading_version: "synthetic=1".into(),
+        })
+        .collect();
     crate::fault::arm(
         "write.copy_table",
         "unused",
         crate::fault::Action::Hold,
-        0,
+        1,
         1,
     );
     let sender = w.writer.sender().unwrap();
     let (done, result) = sync_channel(1);
     let worker = std::thread::spawn({
-        let copy = copy.clone();
-        move || done.send(sender.copy_readings(vec![copy])).unwrap()
+        let copies = copies.clone();
+        move || done.send(sender.copy_readings(copies)).unwrap()
     });
     let started = std::time::Instant::now();
     while !crate::fault::held() {
@@ -364,8 +346,11 @@ fn stopping_a_copy_interrupts_its_insert_and_rolls_back_the_complete_reading() {
     } = w;
     drop(writer);
     let writer = Writer::start(&archive).unwrap();
-    let copied = writer.sender().unwrap().copy_readings(vec![copy]).unwrap();
-    assert!(matches!(copied.as_slice(), [Ok(true)]), "{copied:?}");
+    let copied = writer.sender().unwrap().copy_readings(copies).unwrap();
+    assert!(
+        matches!(copied.as_slice(), [Ok(true), Ok(true)]),
+        "{copied:?}"
+    );
     let reads = ReadPool::open(&archive).unwrap();
     let reader = reads.reader().unwrap();
     assert_eq!(
@@ -378,6 +363,8 @@ fn stopping_a_copy_interrupts_its_insert_and_rolls_back_the_complete_reading() {
         vec![
             serde_json::json!({"chain":1,"parsed_upto":100,"status":"done"}),
             serde_json::json!({"chain":2,"parsed_upto":100,"status":"done"}),
+            serde_json::json!({"chain":3,"parsed_upto":100,"status":"done"}),
+            serde_json::json!({"chain":4,"parsed_upto":100,"status":"done"}),
         ]
     );
     assert_eq!(
@@ -388,8 +375,42 @@ fn stopping_a_copy_interrupts_its_insert_and_rolls_back_the_complete_reading() {
             )
             .unwrap(),
         vec![
-            serde_json::json!({"chain":1,"n":256}),
-            serde_json::json!({"chain":2,"n":256}),
+            serde_json::json!({"chain":3,"n":256}),
+            serde_json::json!({"chain":4,"n":256}),
         ]
     );
+}
+
+#[cfg(feature = "faults")]
+#[test]
+fn an_ordinary_copy_failure_keeps_its_cause_and_rolls_back_its_savepoint() {
+    crate::fault::clear();
+    let w = test_archive();
+    chain(&w, 1, b'a', false);
+    chain(&w, 2, b'a', true);
+    let before = dump(&w);
+    crate::fault::arm(
+        "write.copy_table",
+        "unused",
+        crate::fault::Action::Fail,
+        0,
+        1,
+    );
+    let answers = w
+        .writer
+        .sender()
+        .unwrap()
+        .copy_readings(vec![crate::ReadingCopy {
+            input: "doc".into(),
+            from: 2,
+            to: 1,
+            reading_version: "synthetic=1".into(),
+        }])
+        .unwrap();
+    crate::fault::clear();
+    assert!(
+        matches!(answers.as_slice(), [Err(StoreError::Io(_))]),
+        "{answers:?}"
+    );
+    assert_eq!(dump(&w), before);
 }
