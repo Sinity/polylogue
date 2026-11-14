@@ -321,7 +321,9 @@ impl Engine {
         {
             self.discard_confirmed_state();
         }
-        let result = (|| {
+        let reads =
+            polylogue_store::read::limit::ReadLimit::without_deadline(self.stop.0.reads.clone());
+        let result = reads.scope(|| {
             let scope = self.cached_scope()?;
             let result = self.read_turn(discover || !self.loaded, paths)?;
             // A completed reset can race the last SQL read. Its cached progress
@@ -335,8 +337,19 @@ impl Engine {
                 return Err(error.into());
             }
             Ok(result)
-        })();
-        result.map_err(|error| self.failed_read_turn(error))
+        });
+        result.map_err(|error| {
+            if self.stop.requested()
+                && matches!(
+                    error,
+                    EngineError::Store(polylogue_store::StoreError::ReadCancelled)
+                )
+            {
+                EngineError::Stopped
+            } else {
+                self.failed_read_turn(error)
+            }
+        })
     }
 
     fn failed_read_turn(&mut self, error: EngineError) -> EngineError {
@@ -1167,6 +1180,7 @@ impl Engine {
                 })
                 .collect::<Vec<_>>(),
             polylogue_store::StoppedChains::ForAttempt(self.stopped_attempt),
+            selected,
         )?;
         // Chains set aside by an earlier pass that ended early are found again.
         self.same_bytes.clear();
@@ -1181,9 +1195,7 @@ impl Engine {
             if self.poll_request() {
                 break;
             }
-            if selected.is_some_and(|ids| !ids.contains(&c.input))
-                || c.current != (chains == Chains::Newest)
-            {
+            if c.current != (chains == Chains::Newest) {
                 continue;
             }
             let state = c.progress;

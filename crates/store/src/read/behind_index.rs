@@ -34,21 +34,21 @@ pub enum StoppedChains {
     ForAttempt(polylogue_model::batch::StoppedAttempt),
 }
 
-const CHAINS_BEHIND: &str = r#"WITH inputs AS MATERIALIZED (
+const CHAINS_BEHIND: &str = r#"inputs AS MATERIALIZED (
                 SELECT input, max(number) AS number, max(produced = 'imported') AS imported
-                FROM source_revision GROUP BY input
+                FROM revisions GROUP BY input
             ), chains AS (
                 SELECT input, chain, max(length) AS length
-                FROM source_revision GROUP BY input, chain
+                FROM revisions GROUP BY input, chain
             ), first_paths AS MATERIALIZED (
                 SELECT input, min(rowid) AS observation
-                FROM source_observation GROUP BY input
+                FROM observations GROUP BY input
             ), formats AS (
                 SELECT o.input, o.path, json_extract(o.details_json, '$.import_format') AS format,
                     row_number() OVER (PARTITION BY o.input
                         ORDER BY (json_extract(o.details_json, '$.import_format') = 'export-file'),
                                  o.rowid DESC) AS choice
-                FROM source_observation o WHERE o.class = 'imported' AND json_valid(o.details_json)
+                FROM observations o WHERE o.class = 'imported' AND json_valid(o.details_json)
                     AND json_type(o.details_json, '$.import_format') = 'text'
             )
             SELECT c.input, c.chain, c.length, l.chain = c.chain,
@@ -58,10 +58,10 @@ const CHAINS_BEHIND: &str = r#"WITH inputs AS MATERIALIZED (
                 COALESCE(p.parsed_upto, 0), p.input_pk IS NOT NULL, COALESCE(p.status = 'waiting' AND p.at_length = c.length, 0), p.reading_version, p.status, p.at_length, p.reason, p.stopped_attempt
             FROM chains c JOIN source_input i ON i.id = c.input
             JOIN inputs s ON s.input = c.input
-            JOIN source_revision l ON l.input = c.input AND l.number = s.number
+            JOIN revisions l ON l.input = c.input AND l.number = s.number
             LEFT JOIN formats f ON f.input = c.input AND f.choice = 1
             LEFT JOIN first_paths fp ON fp.input = c.input
-            LEFT JOIN source_observation o ON o.rowid = fp.observation
+            LEFT JOIN observations o ON o.rowid = fp.observation
             LEFT JOIN input_ref ir ON ir.id = c.input
             LEFT JOIN parse_state p ON p.input_pk = ir.pk AND p.chain = c.chain
             WHERE (c.length > 0
@@ -72,19 +72,21 @@ const CHAINS_BEHIND: &str = r#"WITH inputs AS MATERIALIZED (
                 OR EXISTS(SELECT 1 FROM json_each(?1) expected
                     WHERE json_extract(expected.value, '$[0]') = COALESCE(f.format, i.format)
                       AND json_extract(expected.value, '$[1]') IS NOT p.reading_version)))
-            ORDER BY 5,(SELECT max(o.seen_at) FROM source_observation o WHERE o.input=c.input) DESC,c.input,c.chain DESC"#;
+            ORDER BY 5,(SELECT max(o.seen_at) FROM observations o WHERE o.input=c.input) DESC,c.input,c.chain DESC"#;
 
 impl Reader<'_> {
     /// Every chain whose index is behind its stored bytes. Waiting at the exact
     /// recorded source length is current for that reading version; a refusal
     /// or failure recorded there is too, unless `stopped` asks for it again.
+    /// `selected=None` visits all inputs; an empty selection visits none.
     pub fn chains_behind_index(
         &self,
         versions: &[(String, String)],
         stopped: StoppedChains,
+        selected: Option<&[String]>,
     ) -> Result<Vec<BehindChain>> {
         let mut chains = Vec::new();
-        self.visit_chains_behind_index(versions, stopped, &mut |chain| {
+        self.visit_chains_behind_index(versions, stopped, selected, &mut |chain| {
             chains.push(chain);
             Ok(std::ops::ControlFlow::Continue(()))
         })?;
@@ -96,13 +98,35 @@ impl Reader<'_> {
         &self,
         versions: &[(String, String)],
         stopped: StoppedChains,
+        selected: Option<&[String]>,
         visit: &mut dyn FnMut(BehindChain) -> Result<std::ops::ControlFlow<()>>,
     ) -> Result<()> {
         let token = self.scope_token();
-        let mut statement = self.conn()?.prepare(CHAINS_BEHIND)?;
+        crate::fault::check("read.chains_behind_index", "")?;
+        let connection = self.conn()?;
+        // Restrict histories before aggregating them. All-input planning
+        // keeps its existing source-view access.
+        let (revisions, observations) = if selected.is_some() {
+            (
+                "SELECT r.* FROM chosen CROSS JOIN source_revision r ON r.input=chosen.input",
+                "SELECT o.rowid,o.* FROM chosen CROSS JOIN source_observation o ON o.input=chosen.input",
+            )
+        } else {
+            (
+                "SELECT * FROM source_revision",
+                "SELECT rowid,* FROM source_observation",
+            )
+        };
+        let sql = format!(
+            "WITH chosen AS MATERIALIZED (SELECT DISTINCT value AS input FROM json_each(?3)),
+             revisions AS NOT MATERIALIZED ({revisions}),
+             observations AS NOT MATERIALIZED ({observations}), {CHAINS_BEHIND}"
+        );
+        let mut statement = connection.prepare(&sql)?;
         let mut rows = statement.query(params![
             serde_json::to_string(versions)?,
-            matches!(stopped, StoppedChains::ForAttempt(_))
+            matches!(stopped, StoppedChains::ForAttempt(_)),
+            selected.map(serde_json::to_string).transpose()?,
         ])?;
         while let Some(row) = rows.next()? {
             token.check()?;
