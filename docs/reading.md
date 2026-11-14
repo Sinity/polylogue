@@ -51,6 +51,7 @@ Footer = ReferencedBy[], Continue(ReadyCall)?
 ```
 
 - A `Call` holds its result. Pairing happens once, in layout, by the stored call/result relationship, never by serialization order; a result whose call is on another page is paired by reading the call's row by key.
+- Copied-message evidence is resolved within the selected message's physical owner before the prefix relation is expanded; unrelated session edges add no per-message graph walk. Explicit copied members retain their original source coordinates, and anchored prefixes keep their branch-point bounds.
 - Every item carries its source reference (message and block), so the pager can cut between items and resume. Pages carry no other state. A message header's reference is its `message:` reference; the separate containing-message and block fields are set only on block items.
 - A `ReadyCall` stores one complete typed request: operation, arguments, request identity, deadline, token budget, cursor, freshness and format. Each `next`, `previous` or other action carries that request once. Clients dispatch it directly; the command table derives CLI text, structured MCP calls and HTTP links only where those forms are presented. Every read ends with ready follow-up calls.
 - Indicator kinds are a closed set: `continues`, `branches`, `compacted`, `microcompacted`, `rate_limited`, `model_switch`, `away_summary`, `harness`, `turn`, `link_issue`, `stale`, `variant`.
