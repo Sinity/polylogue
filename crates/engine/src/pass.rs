@@ -1370,13 +1370,17 @@ impl Engine {
         let report = self.flush_writes()?;
         pass.messages_written += report.messages;
         pass.errors.extend(report.errors);
-        let (plans, copies): (Vec<Plan>, Vec<_>) =
-            std::mem::take(&mut self.same_bytes).into_iter().unzip();
-        let answers = self.writer.sender()?.copy_readings(copies)?;
         let mut parse = Vec::new();
-        for (plan, answer) in plans.into_iter().zip(answers) {
+        for (plan, copy) in std::mem::take(&mut self.same_bytes) {
+            // Each answer commits one complete chain. A request between
+            // copies yields now; uncopied chains are selected next pass.
+            if self.poll_request() {
+                break;
+            }
+            let answer = self.writer.sender()?.copy_reading(copy)?;
             // A copy that would not be exact, or failed, is parsed instead,
-            // which gives the same reading.
+            // which gives the same reading. Transaction and stop errors
+            // propagate rather than becoming another parse attempt.
             if matches!(answer, Ok(true)) {
                 pass.readings_copied += 1;
             } else {
