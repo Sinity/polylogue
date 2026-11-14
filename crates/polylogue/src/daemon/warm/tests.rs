@@ -638,3 +638,117 @@ fn ranking_with_model_calls_off_uses_stored_vectors() {
         assert_eq!(calls.load(Ordering::Acquire), 1, "calls off");
     });
 }
+
+fn restored_vector(
+    hash: u8,
+    at: i64,
+    values: [f32; 2],
+) -> polylogue_store::older_archive::StoredVector {
+    polylogue_store::older_archive::StoredVector {
+        text_hash: vec![hash],
+        model: "synthetic/model/2/document/unit".into(),
+        chunk: 0,
+        dims: 2,
+        vector: values.iter().flat_map(|v| v.to_le_bytes()).collect(),
+        embedded_at: at,
+    }
+}
+
+#[test]
+fn restore_without_vector_demand_never_starts_a_model_reload_per_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, _lock) = polylogue_store::Archive::open_or_create(dir.path()).unwrap();
+    let warm = Warm::new(&archive);
+    let mut store = polylogue_store::vectors::Vectors::writer(&archive, 256).unwrap();
+    // Provider-off startup never asks Warm for a model. Six hundred mixed
+    // restore transactions therefore do not subscribe a vectors worker.
+    for at in 1..=600 {
+        let mut batch = vec![restored_vector(
+            1,
+            at,
+            if at % 2 == 0 { [1., 0.] } else { [0., 1.] },
+        )];
+        if at % 100 == 0 {
+            batch.push(restored_vector((at / 100 + 1) as u8, at, [0., 1.]));
+        }
+        store.restore(&batch).unwrap();
+    }
+    assert!(warm.worker.lock().unwrap().is_none());
+    assert!(warm.summary().vectors.is_none());
+    assert_eq!(warm.summary().vector_loads, 0);
+    let reads = polylogue_store::ReadPool::open(&archive).unwrap();
+    let reader = reads.reader().unwrap();
+    let loaded = warm
+        .vectors_of(&reader, "synthetic/model/2/document/unit")
+        .unwrap();
+    assert_eq!(
+        (loaded.vectors(), loaded.rows_read),
+        (7, 7),
+        "one initial demand reads only the final authoritative rows"
+    );
+    assert_eq!(warm.summary().vector_loads, 1);
+    let revision = loaded.revision;
+    store.restore(&[restored_vector(1, 600, [1., 0.])]).unwrap();
+    let next = reads.reader().unwrap();
+    let repeated = warm
+        .vectors_of(&next, "synthetic/model/2/document/unit")
+        .unwrap();
+    assert_eq!(repeated.revision, revision);
+    assert!(Arc::ptr_eq(&loaded, &repeated));
+}
+
+#[test]
+fn a_warmed_model_refreshes_mixed_restore_and_preserves_old_reader_values() {
+    let daemon = crate::test_daemon::start("paid vector restore");
+    let key = "synthetic/model/2/document/unit";
+    let mut store = polylogue_store::vectors::Vectors::writer(&daemon.daemon.archive, 256).unwrap();
+    store
+        .restore(&[
+            restored_vector(1, 10, [1., 0.]),
+            restored_vector(2, 10, [0., 1.]),
+        ])
+        .unwrap();
+    let warm = Warm::new(&daemon.daemon.archive);
+    let old_reader = daemon.daemon.reads.reader().unwrap();
+    let old = warm.vectors_of(&old_reader, key).unwrap();
+    store
+        .restore(&[
+            restored_vector(1, 20, [0., 1.]),
+            restored_vector(3, 20, [-1., 0.]),
+            restored_vector(2, 30, [0., 1.]),
+        ])
+        .unwrap();
+    let reader = daemon.daemon.reads.reader().unwrap();
+    let current = warm.vectors_of(&reader, key).unwrap();
+    assert_eq!(
+        current.revision,
+        old.revision + 3,
+        "row triggers count all three writes, not one transaction"
+    );
+    assert_eq!(
+        (current.vectors(), current.rows_read),
+        (3, 4),
+        "one appended-row probe plus one full model refresh"
+    );
+    assert_eq!(current.similarity(&[1., 0.]).unwrap().of(&[1]), Some(0.));
+    assert_eq!(old.similarity(&[1., 0.]).unwrap().of(&[1]), Some(1.));
+    assert!(Arc::ptr_eq(
+        &warm.vectors_of(&old_reader, key).unwrap(),
+        &old
+    ));
+    // A paid-time-only change still creates a truthful new snapshot.
+    store.restore(&[restored_vector(1, 40, [0., 1.])]).unwrap();
+    let newer_reader = daemon.daemon.reads.reader().unwrap();
+    let newer = warm.vectors_of(&newer_reader, key).unwrap();
+    assert_eq!(newer.revision, current.revision + 1);
+    assert_eq!(newer.rows_read, 3);
+    assert_eq!(newer.similarity(&[1., 0.]).unwrap().of(&[1]), Some(0.));
+    assert_eq!(
+        warm.vectors_of(&old_reader, key)
+            .unwrap()
+            .similarity(&[1., 0.])
+            .unwrap()
+            .of(&[1]),
+        Some(1.)
+    );
+}

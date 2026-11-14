@@ -31,7 +31,8 @@ pub struct GroupOutcome {
 pub enum Restored {
     /// Its rows were written.
     Stored,
-    /// This archive already holds every row of it, from an earlier import.
+    /// No write is needed: the data is present, or a paid-vector address
+    /// already has an authoritative newer purchase.
     Present,
     /// Not written, for the reason given.
     Refused(String),
