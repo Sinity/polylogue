@@ -182,9 +182,13 @@ Building the archive overlaps every stage:
   First builds preload hashes; ordinary writes learn identities as needed.
   After a failed index transaction the writer reloads row presence without
   forgetting allocated identities. Workers prepare text hashes and packed
-  bodies without reserving text rows. Selected blocks use their version's
-  stored text references. A new message is inserted with its resolved selected
-  metadata before source claims refer to it; its first body installation
+  bodies without reserving text rows. Registering a version returns its row
+  key and the text references it just wrote; selected blocks consume those
+  references. When that call also wrote every text payload, parser continuation
+  checks consume its prepared identity rather than reading and decoding its
+  body again. Older, unchanged or reused-text versions retain full payload,
+  hash and layout validation. A new message is inserted with its resolved
+  selected metadata before source claims refer to it; its first body installation
   consumes that creation result. Later installations replace the existing
   blocks and routes, including multiple changes within one transaction;
 - consumers of committed positions: derived data (computed on a thread of
