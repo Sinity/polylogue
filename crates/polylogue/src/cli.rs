@@ -62,23 +62,36 @@ pub fn command() -> clap::Command {
                 .value_name("MS|none")
                 .help("Milliseconds from when the daemon accepts the request, or none to lift the deadline"),
         );
+    // Each continuation starts a client: project each command once, not once per flag.
+    let projected: Vec<_> = COMMANDS.iter().map(projections).collect();
     let mut globals: Vec<&str> = Vec::new();
-    for a in COMMANDS.iter().flat_map(|c| c.args).filter(|a| a.global) {
-        if !globals.contains(&a.name) {
-            globals.push(a.name);
-            root = root.arg(clap_arg(&projection_for(a)).global(true));
+    for (command, arguments) in COMMANDS.iter().zip(&projected) {
+        for a in command.args.iter().filter(|a| a.global) {
+            if !globals.contains(&a.name) {
+                globals.push(a.name);
+                let argument = arguments
+                    .iter()
+                    .find(|argument| argument.spec.name == a.name)
+                    .expect("global argument is projected");
+                root = root.arg(clap_arg(argument).global(true));
+            }
         }
     }
-    for c in COMMANDS.iter() {
+    for (c, arguments) in COMMANDS.iter().zip(&projected) {
         match c.cli {
             Cli::NoSubcommand => {
                 for a in c.args_for(Surface::Cli).filter(|a| !a.global) {
-                    root = root.arg(clap_arg(&projection(c, a)));
+                    root = root.arg(clap_arg(
+                        arguments
+                            .iter()
+                            .find(|argument| argument.spec.name == a.name)
+                            .expect("root argument is projected"),
+                    ));
                 }
-                root = root.subcommand(subcommand(c).name("find"));
+                root = root.subcommand(subcommand(c, arguments).name("find"));
             }
             Cli::Subcommand | Cli::Hidden => {
-                let sub = subcommand(c);
+                let sub = subcommand(c, arguments);
                 root = match c.name.split_once(' ') {
                     None => root.subcommand(sub),
                     Some((group, _)) => {
@@ -109,13 +122,18 @@ pub fn command() -> clap::Command {
     crate::config::augment_command(root)
 }
 
-fn subcommand(c: &Command) -> clap::Command {
+fn subcommand(c: &Command, arguments: &[CliArgument]) -> clap::Command {
     let word = c.name.rsplit(' ').next().unwrap_or(c.name);
     let mut sub = clap::Command::new(word)
         .about(c.help)
         .hide(c.cli == Cli::Hidden);
     for a in c.args_for(Surface::Cli).filter(|a| !a.global) {
-        let mut arg = clap_arg(&projection(c, a));
+        let mut arg = clap_arg(
+            arguments
+                .iter()
+                .find(|argument| argument.spec.name == a.name)
+                .expect("command argument is projected"),
+        );
         if let Some(value) = a.default {
             arg = arg.default_value(value);
         }
@@ -133,70 +151,67 @@ fn subcommand(c: &Command) -> clap::Command {
 
 /// The product keeps lexical exposure and completion on its command row;
 /// value kinds, choices and requiredness come from the shared input schema.
-pub(crate) fn projection(command: &Command, argument: &crate::commands::Arg) -> CliArgument {
-    if matches!(argument.name, "cursor" | "budget") {
-        return CliArgument {
-            spec: command_surface::ArgumentSpec::new(
-                argument.name,
-                ArgumentForm::Named,
-                argument.help,
-            ),
-            kind: command_surface::ValueKind::Text,
-            required: false,
-            choices: vec![],
-        };
-    }
-    let mut projected = crate::commands::declarations()
+pub(crate) fn projections(command: &Command) -> Vec<CliArgument> {
+    let declared = crate::commands::declarations()
         .cli_arguments(command.name)
-        .expect("declared CLI arguments")
-        .into_iter()
-        .find(|item| item.spec.name == argument.name)
-        .expect("CLI field belongs to its input");
-    // A named measure's series come from that measure's domain catalog;
-    // its shared request type also serves measures with free-text options.
-    if argument.name == "metric"
-        && projected.choices.is_empty()
-        && let Some(name) = command.name.strip_prefix("measure ")
-        && let Some(measure) = crate::daemon::measure::MEASURES
-            .iter()
-            .find(|measure| measure.name == name)
-    {
-        projected.choices = measure
-            .metrics
-            .iter()
-            .map(|name| (*name).to_owned())
-            .collect();
-    }
-    if projected.choices.is_empty() {
-        if command.name == "explain" && argument.name == "subject" {
-            projected.choices = crate::explain::SUBJECTS
-                .iter()
-                .map(|subject| (*subject).to_owned())
-                .collect();
-        } else if (command.name == "start" && argument.name == "harness")
-            || (command.name == "hand-off" && argument.name == "to")
-        {
-            projected.choices = polylogue_model::live::channel::HARNESSES
-                .iter()
-                .filter(|harness| harness.host.is_some())
-                .map(|harness| harness.name.to_owned())
-                .collect();
-        }
-    }
-    projected
-}
-fn projection_for(argument: &crate::commands::Arg) -> CliArgument {
-    let command = COMMANDS
+        .expect("declared CLI arguments");
+    command
+        .args
         .iter()
-        .find(|command| {
-            command
-                .args
+        .map(|argument| {
+            if matches!(argument.name, "cursor" | "budget") {
+                return CliArgument {
+                    spec: command_surface::ArgumentSpec::new(
+                        argument.name,
+                        ArgumentForm::Named,
+                        argument.help,
+                    ),
+                    kind: command_surface::ValueKind::Text,
+                    required: false,
+                    choices: vec![],
+                };
+            }
+            let mut projected = declared
                 .iter()
-                .any(|candidate| candidate.name == argument.name && candidate.global)
+                .find(|item| item.spec.name == argument.name)
+                .expect("CLI field belongs to its input")
+                .clone();
+            // A named measure's series come from that measure's domain catalog;
+            // its shared request type also serves measures with free-text options.
+            if argument.name == "metric"
+                && projected.choices.is_empty()
+                && let Some(name) = command.name.strip_prefix("measure ")
+                && let Some(measure) = crate::daemon::measure::MEASURES
+                    .iter()
+                    .find(|measure| measure.name == name)
+            {
+                projected.choices = measure
+                    .metrics
+                    .iter()
+                    .map(|name| (*name).to_owned())
+                    .collect();
+            }
+            if projected.choices.is_empty() {
+                if command.name == "explain" && argument.name == "subject" {
+                    projected.choices = crate::explain::SUBJECTS
+                        .iter()
+                        .map(|subject| (*subject).to_owned())
+                        .collect();
+                } else if (command.name == "start" && argument.name == "harness")
+                    || (command.name == "hand-off" && argument.name == "to")
+                {
+                    projected.choices = polylogue_model::live::channel::HARNESSES
+                        .iter()
+                        .filter(|harness| harness.host.is_some())
+                        .map(|harness| harness.name.to_owned())
+                        .collect();
+                }
+            }
+            projected
         })
-        .expect("global argument owner");
-    projection(command, argument)
+        .collect()
 }
+
 fn clap_arg(a: &CliArgument) -> clap::Arg {
     let positional = matches!(
         a.spec.form,
@@ -294,29 +309,29 @@ fn parsed(c: &Command, m: &ArgMatches) -> Result<ParsedCommand, String> {
     {
         return Err("--request cannot be mixed with operation arguments".into());
     }
+    let arguments = projections(c);
     // Options precede positionals so a Rest field retains its literal words.
     for positional in [false, true] {
-        for argument in c
-            .args_for(Surface::Cli)
-            .filter(|a| !matches!(a.name, "cursor" | "budget"))
+        for projected in arguments
+            .iter()
+            .filter(|argument| !matches!(argument.spec.name.as_str(), "cursor" | "budget"))
         {
-            let projected = projection(c, argument);
+            let name = projected.spec.name.as_str();
             let is_positional = matches!(
                 projected.spec.form,
                 ArgumentForm::Positional | ArgumentForm::Words | ArgumentForm::Rest
             );
-            if is_positional != positional
-                || m.value_source(argument.name) != Some(ValueSource::CommandLine)
+            if is_positional != positional || m.value_source(name) != Some(ValueSource::CommandLine)
             {
                 continue;
             }
             if projected.spec.form == ArgumentForm::Flag {
-                if m.get_flag(argument.name) {
+                if m.get_flag(name) {
                     words.push(format!("--{}", projected.spec.name.replace('_', "-")));
                 }
                 continue;
             }
-            let Some(raw) = m.get_raw(argument.name) else {
+            let Some(raw) = m.get_raw(name) else {
                 continue;
             };
             let raw: Vec<String> = raw
