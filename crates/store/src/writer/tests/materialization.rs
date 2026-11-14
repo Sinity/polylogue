@@ -3,6 +3,8 @@ use polylogue_model::parser_context::{Delta, Entry, Key, Reference};
 use rusqlite::trace::{TraceEvent, TraceEventCodes};
 use std::cell::Cell;
 
+mod ownership;
+
 #[derive(Clone, Copy, Debug, Default)]
 struct Work {
     message_reads: u64,
@@ -108,6 +110,10 @@ fn reading(input: &str, messages: Vec<Message>, entries: Vec<Entry>) -> Batch {
 
 fn apply(conn: &mut Connection, mut b: Batch) -> (Result<u64>, Work) {
     resolve::prepare_index(conn, &mut b, 1, false).unwrap();
+    apply_prepared(conn, b)
+}
+
+fn apply_prepared(conn: &mut Connection, b: Batch) -> (Result<u64>, Work) {
     let tx = conn.transaction().unwrap();
     let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
     let texts = crate::text_rows::TextIds::new(&tx, false).unwrap();
