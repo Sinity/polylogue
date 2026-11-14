@@ -30,6 +30,8 @@ pub struct Tour {
 pub struct InstallAgent {
     pub harness: String,
     pub extension_id: Option<String>,
+    #[serde(default)]
+    pub remove: bool,
 }
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

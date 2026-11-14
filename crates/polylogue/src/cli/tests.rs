@@ -728,6 +728,19 @@ fn local_and_stream_cli_use_their_declared_argument_types() {
         serde_json::json!({"shell":"zsh", "program":"archive-view"})
     );
     assert!(parse(&["polylogue", "completions", "unknown-shell"]).is_err());
+    let (_, installer) = parse(&[
+        "polylogue",
+        "install-agent",
+        "chrome",
+        "--extension-id",
+        "synthetic-id",
+        "--remove",
+    ])
+    .unwrap();
+    assert_eq!(
+        installer.request.arguments,
+        serde_json::json!({"harness":"chrome","extension_id":"synthetic-id","remove":true})
+    );
     let (_, daemon) = parse(&["polylogue", "daemon", "--no-sources", "--until-idle"]).unwrap();
     assert_eq!(
         daemon.request.arguments,
