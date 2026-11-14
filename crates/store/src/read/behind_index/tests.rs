@@ -74,7 +74,12 @@ fn behind_chains_preserve_revision_import_and_parser_choices() {
     assert_eq!(
         pool.reader()
             .unwrap()
-            .chains_behind_index(&[], crate::StoppedChains::Settled, None)
+            .chains_behind_index(
+                &[],
+                crate::StoppedChains::Settled,
+                crate::RevisionChains::All,
+                None
+            )
             .unwrap(),
         vec![
             // Live inputs first, then most recently observed inputs and newest chains.
@@ -157,7 +162,12 @@ fn history_work(revisions: usize) -> usize {
         )
         .unwrap();
     let found = reader
-        .chains_behind_index(&[], crate::StoppedChains::Settled, None)
+        .chains_behind_index(
+            &[],
+            crate::StoppedChains::Settled,
+            crate::RevisionChains::All,
+            None,
+        )
         .unwrap();
     reader
         .conn()
@@ -215,7 +225,12 @@ fn incomplete_metadata_readings_wait_until_the_stored_length_changes() {
     let reader = pool.reader().unwrap();
     assert!(
         reader
-            .chains_behind_index(&[], crate::StoppedChains::Settled, None)
+            .chains_behind_index(
+                &[],
+                crate::StoppedChains::Settled,
+                crate::RevisionChains::All,
+                None
+            )
             .unwrap()
             .is_empty()
     );
@@ -228,14 +243,24 @@ fn incomplete_metadata_readings_wait_until_the_stored_length_changes() {
         .unwrap();
     assert!(
         reader
-            .chains_behind_index(&[], crate::StoppedChains::Settled, None)
+            .chains_behind_index(
+                &[],
+                crate::StoppedChains::Settled,
+                crate::RevisionChains::All,
+                None
+            )
             .unwrap()
             .is_empty()
     );
     assert!(reader.input_progress("metadata").unwrap().unwrap().waiting);
     let fresh = pool.reader().unwrap();
     let behind = fresh
-        .chains_behind_index(&[], crate::StoppedChains::Settled, None)
+        .chains_behind_index(
+            &[],
+            crate::StoppedChains::Settled,
+            crate::RevisionChains::All,
+            None,
+        )
         .unwrap();
     assert_eq!(behind.len(), 1);
     assert_eq!(
@@ -272,7 +297,12 @@ fn stopped_selection_uses_actual_attempt_even_after_a_full_length_refusal() {
         reads
             .reader()
             .unwrap()
-            .chains_behind_index(&[], crate::StoppedChains::ForAttempt(attempt), None)
+            .chains_behind_index(
+                &[],
+                crate::StoppedChains::ForAttempt(attempt),
+                crate::RevisionChains::All,
+                None,
+            )
             .unwrap()
     };
     let first = select(attempt);
@@ -318,7 +348,12 @@ fn selected_chains_keep_order_parser_upgrades_and_empty_selection() {
     let reader = pool.reader().unwrap();
     let versions = [("native".into(), "new".into())];
     let all = reader
-        .chains_behind_index(&versions, StoppedChains::Settled, None)
+        .chains_behind_index(
+            &versions,
+            StoppedChains::Settled,
+            crate::RevisionChains::All,
+            None,
+        )
         .unwrap();
     assert_eq!(
         all.iter()
@@ -334,7 +369,12 @@ fn selected_chains_keep_order_parser_upgrades_and_empty_selection() {
     let selected = vec!["c".into(), "a".into(), "a".into(), "missing".into()];
     assert_eq!(
         reader
-            .chains_behind_index(&versions, StoppedChains::Settled, Some(&selected))
+            .chains_behind_index(
+                &versions,
+                StoppedChains::Settled,
+                crate::RevisionChains::All,
+                Some(&selected)
+            )
             .unwrap(),
         all.into_iter()
             .filter(|c| c.input != "b")
@@ -342,7 +382,12 @@ fn selected_chains_keep_order_parser_upgrades_and_empty_selection() {
     );
     assert!(
         reader
-            .chains_behind_index(&versions, StoppedChains::Settled, Some(&[]))
+            .chains_behind_index(
+                &versions,
+                StoppedChains::Settled,
+                crate::RevisionChains::All,
+                Some(&[])
+            )
             .unwrap()
             .is_empty()
     );
@@ -392,7 +437,12 @@ fn selected_history_work(unselected: usize) -> usize {
         )
         .unwrap();
     let found = reader
-        .chains_behind_index(&[], StoppedChains::Settled, Some(&["selected".into()]))
+        .chains_behind_index(
+            &[],
+            StoppedChains::Settled,
+            crate::RevisionChains::All,
+            Some(&["selected".into()]),
+        )
         .unwrap();
     reader
         .conn()
@@ -423,3 +473,5 @@ fn selected_chain_planning_does_not_scan_unselected_history() {
         "same selected input, 32 unrelated inputs: {small} VM steps; 512 unrelated inputs: {large}"
     );
 }
+
+mod selection;

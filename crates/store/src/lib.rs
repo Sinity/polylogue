@@ -87,8 +87,8 @@ pub use archive::{Archive, ArchiveLock};
 pub use blobs::{Change, Chunk, FileFacts, NewBlob};
 pub use context::{DeliveryRow, OpenItems, Prompt, SessionSummary};
 pub use read::{
-    BehindChain, CapturedSession, KnownInput, ReadPool, Reader, ReadingContract, SqlValue, Status,
-    StoppedChains, StoredSource, reserved_reads,
+    BehindChain, CapturedSession, KnownInput, ReadPool, Reader, ReadingContract, RevisionChains,
+    SqlValue, Status, StoppedChains, StoredSource, reserved_reads,
     scope::{ReadScopeToken, ScopeInvalidation},
 };
 pub use scope_index::{

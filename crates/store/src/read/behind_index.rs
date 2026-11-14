@@ -34,13 +34,16 @@ pub enum StoppedChains {
     ForAttempt(polylogue_model::batch::StoppedAttempt),
 }
 
-const CHAINS_BEHIND: &str = r#"inputs AS MATERIALIZED (
-                SELECT input, max(number) AS number, max(produced = 'imported') AS imported
-                FROM revisions GROUP BY input
-            ), chains AS (
-                SELECT input, chain, max(length) AS length
-                FROM revisions GROUP BY input, chain
-            ), first_paths AS MATERIALIZED (
+/// Which chains of each input participate in planning, before reading parser state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RevisionChains {
+    All,
+    /// The chain containing the greatest revision number, even if an older chain resumes.
+    Newest,
+    Older,
+}
+
+const CHAINS_BEHIND: &str = r#"first_paths AS MATERIALIZED (
                 SELECT input, min(rowid) AS observation
                 FROM observations GROUP BY input
             ), formats AS (
@@ -74,6 +77,45 @@ const CHAINS_BEHIND: &str = r#"inputs AS MATERIALIZED (
                       AND json_extract(expected.value, '$[1]') IS NOT p.reading_version)))
             ORDER BY 5,(SELECT max(o.seen_at) FROM observations o WHERE o.input=c.input) DESC,c.input,c.chain DESC"#;
 
+fn planning_sql(selected: bool, chains: RevisionChains) -> String {
+    // Restrict histories before aggregating them. All-input planning
+    // keeps its existing source-view access.
+    let (revisions, observations) = if selected {
+        (
+            "SELECT r.* FROM chosen CROSS JOIN source_revision r ON r.input=chosen.input",
+            "SELECT o.rowid,o.* FROM chosen CROSS JOIN source_observation o ON o.input=chosen.input",
+        )
+    } else {
+        (
+            "SELECT * FROM source_revision",
+            "SELECT rowid,* FROM source_observation",
+        )
+    };
+    // Keep the selected chain lengths once: flattening the current-chain MAX
+    // would evaluate it again for each progress predicate and result column.
+    let chain_rows = match chains {
+        RevisionChains::All => "SELECT input,chain,max(length) AS length FROM revisions GROUP BY input,chain",
+        // Retained histories may resume an earlier chain with a shorter revision.
+        // Its planned length remains the maximum, not the latest revision length.
+        RevisionChains::Newest => "SELECT s.input,l.chain,
+            (SELECT max(r.length) FROM revisions r WHERE r.input=s.input AND r.chain=l.chain) AS length
+            FROM inputs s JOIN revisions l ON l.input=s.input AND l.number=s.number",
+        RevisionChains::Older => "SELECT r.input,r.chain,max(r.length) AS length
+            FROM inputs s JOIN revisions l ON l.input=s.input AND l.number=s.number
+            CROSS JOIN revisions r ON r.input=s.input WHERE r.chain<>l.chain
+            GROUP BY r.input,r.chain",
+    };
+    format!(
+        "WITH chosen AS MATERIALIZED (SELECT DISTINCT value AS input FROM json_each(?3)),
+         revisions AS NOT MATERIALIZED ({revisions}),
+         observations AS NOT MATERIALIZED ({observations}),
+         inputs AS MATERIALIZED (
+             SELECT input,max(number) AS number,max(produced='imported') AS imported
+             FROM revisions GROUP BY input
+         ), chains AS MATERIALIZED ({chain_rows}), {CHAINS_BEHIND}"
+    )
+}
+
 impl Reader<'_> {
     /// Every chain whose index is behind its stored bytes. Waiting at the exact
     /// recorded source length is current for that reading version; a refusal
@@ -83,14 +125,15 @@ impl Reader<'_> {
         &self,
         versions: &[(String, String)],
         stopped: StoppedChains,
+        chains: RevisionChains,
         selected: Option<&[String]>,
     ) -> Result<Vec<BehindChain>> {
-        let mut chains = Vec::new();
-        self.visit_chains_behind_index(versions, stopped, selected, &mut |chain| {
-            chains.push(chain);
+        let mut found = Vec::new();
+        self.visit_chains_behind_index(versions, stopped, chains, selected, &mut |chain| {
+            found.push(chain);
             Ok(std::ops::ControlFlow::Continue(()))
         })?;
-        Ok(chains)
+        Ok(found)
     }
 
     /// Streams lagging chains without collecting the source backlog.
@@ -98,30 +141,14 @@ impl Reader<'_> {
         &self,
         versions: &[(String, String)],
         stopped: StoppedChains,
+        chains: RevisionChains,
         selected: Option<&[String]>,
         visit: &mut dyn FnMut(BehindChain) -> Result<std::ops::ControlFlow<()>>,
     ) -> Result<()> {
         let token = self.scope_token();
         crate::fault::check("read.chains_behind_index", "")?;
         let connection = self.conn()?;
-        // Restrict histories before aggregating them. All-input planning
-        // keeps its existing source-view access.
-        let (revisions, observations) = if selected.is_some() {
-            (
-                "SELECT r.* FROM chosen CROSS JOIN source_revision r ON r.input=chosen.input",
-                "SELECT o.rowid,o.* FROM chosen CROSS JOIN source_observation o ON o.input=chosen.input",
-            )
-        } else {
-            (
-                "SELECT * FROM source_revision",
-                "SELECT rowid,* FROM source_observation",
-            )
-        };
-        let sql = format!(
-            "WITH chosen AS MATERIALIZED (SELECT DISTINCT value AS input FROM json_each(?3)),
-             revisions AS NOT MATERIALIZED ({revisions}),
-             observations AS NOT MATERIALIZED ({observations}), {CHAINS_BEHIND}"
-        );
+        let sql = planning_sql(selected.is_some(), chains);
         let mut statement = connection.prepare(&sql)?;
         let mut rows = statement.query(params![
             serde_json::to_string(versions)?,

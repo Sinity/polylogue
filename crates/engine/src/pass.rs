@@ -3,6 +3,7 @@
 
 use crate::plan::{InputState, Plan, span, whole};
 use crate::*;
+use polylogue_store::RevisionChains;
 
 /// Parser state stays in memory for inputs written within this long.
 const KEEP_STATE_NS: i128 = 6 * 3600 * 1_000_000_000;
@@ -16,15 +17,6 @@ const COALESCE: Duration = Duration::from_secs(2);
 const IN_POOL_PER_WORKER: usize = 64;
 /// A known file written this recently is live: the session being written.
 const RECENT_NS: i128 = 10 * 60 * 1_000_000_000;
-
-/// Which revision chains of each input [`Engine::reparse_behind`] reads.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Chains {
-    /// The chain holding the input's latest revision.
-    Newest,
-    /// Every earlier chain.
-    Older,
-}
 
 /// Why `origin`'s parser does not read the bytes recorded at `path`, when
 /// it does not.
@@ -491,7 +483,7 @@ impl Engine {
             self.refresh_import_assets(&mut pass)?;
         }
         if discover {
-            self.reparse_behind(None, Chains::Newest, &mut pass)?;
+            self.reparse_behind(None, RevisionChains::Newest, &mut pass)?;
         }
         if self.yielding() {
             pass.capture_pending = true;
@@ -626,7 +618,7 @@ impl Engine {
                 pass.sessions_derived += self.derive()?;
             }
             if !self.poll_request() {
-                self.reparse_behind(None, Chains::Older, &mut pass)?;
+                self.reparse_behind(None, RevisionChains::Older, &mut pass)?;
             }
         }
         if self.yielding() {
@@ -1165,7 +1157,7 @@ impl Engine {
     pub(crate) fn reparse_behind(
         &mut self,
         selected: Option<&[String]>,
-        chains: Chains,
+        chains: RevisionChains,
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
         let behind = self.reads.reader()?.chains_behind_index(
@@ -1180,6 +1172,7 @@ impl Engine {
                 })
                 .collect::<Vec<_>>(),
             polylogue_store::StoppedChains::ForAttempt(self.stopped_attempt),
+            chains,
             selected,
         )?;
         // Chains set aside by an earlier pass that ended early are found again.
@@ -1194,9 +1187,6 @@ impl Engine {
         for c in behind {
             if self.poll_request() {
                 break;
-            }
-            if c.current != (chains == Chains::Newest) {
-                continue;
             }
             let state = c.progress;
             let (path, origin) = if state.imported || self.archive.is_primary() {
