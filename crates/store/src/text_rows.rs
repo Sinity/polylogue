@@ -87,6 +87,16 @@ pub(crate) fn index_marked(conn: &Connection) -> Result<()> {
     let mut after = 0;
     loop {
         let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+        if after == 0 {
+            // Retry starts from ID zero, including after a later deferred index
+            // fails. Replace prior derived postings and statistics together;
+            // inserting the same contentless row IDs again counts words twice.
+            tx.execute("INSERT INTO text_fts(text_fts) VALUES ('delete-all')", [])?;
+            tx.execute(
+                "INSERT INTO output_fts(output_fts) VALUES ('delete-all')",
+                [],
+            )?;
+        }
         let mut bytes = 0;
         let mut last = after;
         {
@@ -103,6 +113,8 @@ pub(crate) fn index_marked(conn: &Connection) -> Result<()> {
                 for bit in [1, 2].into_iter().filter(|bit| indexed & bit != 0) {
                     insert_entry(&tx, last, bit, &folded)?;
                 }
+                #[cfg(feature = "faults")]
+                crate::fault::check("search.indexed", conn.path().unwrap_or_default())?;
                 bytes += length;
                 if bytes >= SEARCH_BYTES {
                     break;
