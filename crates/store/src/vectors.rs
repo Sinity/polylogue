@@ -504,7 +504,9 @@ impl Vectors {
         if base.through > 0
             && revision.checked_sub(base.revision) != i64::try_from(loaded.rows_read).ok()
         {
-            return self.read_after(&Loaded::empty(&base.key), revision);
+            let mut full = self.read_after(&Loaded::empty(&base.key), revision)?;
+            full.rows_read += loaded.rows_read;
+            return Ok(full);
         }
         Ok(loaded)
     }

@@ -727,8 +727,8 @@ fn a_warmed_model_refreshes_mixed_restore_and_preserves_old_reader_values() {
     );
     assert_eq!(
         (current.vectors(), current.rows_read),
-        (3, 3),
-        "one mixed batch refreshes the model once"
+        (3, 4),
+        "one appended-row probe plus one full model refresh"
     );
     assert_eq!(current.similarity(&[1., 0.]).unwrap().of(&[1]), Some(0.));
     assert_eq!(old.similarity(&[1., 0.]).unwrap().of(&[1]), Some(1.));

@@ -155,8 +155,8 @@ fn mixed_restore_uses_row_revisions_and_refreshes_replacements_in_the_same_snaps
     let refreshed = Arc::new(fresh.append(&base).unwrap());
     assert_eq!(refreshed.vectors(), 3);
     assert_eq!(
-        refreshed.rows_read, 3,
-        "mixed writes reload once, not only the appended row"
+        refreshed.rows_read, 4,
+        "one appended-row probe plus one three-row reload"
     );
     assert_eq!(refreshed.revision, after.2);
     let ranked = refreshed.similarity(&[1., 0.]).unwrap();
