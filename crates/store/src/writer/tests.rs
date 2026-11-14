@@ -10,6 +10,7 @@ mod assertions;
 mod empty_source;
 mod event_fk;
 mod extent_checkpoint;
+mod fresh_messages;
 mod input_events;
 mod items;
 mod parent_order;

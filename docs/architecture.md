@@ -183,7 +183,10 @@ Building the archive overlaps every stage:
   After a failed index transaction the writer reloads row presence without
   forgetting allocated identities. Workers prepare text hashes and packed
   bodies without reserving text rows. Selected blocks use their version's
-  stored text references;
+  stored text references. A new message is inserted with its resolved selected
+  metadata before source claims refer to it; its first body installation
+  consumes that creation result. Later installations replace the existing
+  blocks and routes, including multiple changes within one transaction;
 - consumers of committed positions: derived data (computed on a thread of
   its own and written by the writer only if its inputs are unchanged), the
   request-log projection and the completion catalog;
