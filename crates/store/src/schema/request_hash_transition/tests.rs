@@ -1,5 +1,5 @@
 use super::*;
-use crate::schema::{ARCHIVE_VERSION, PRIMARY_INDEX_VERSION};
+use crate::schema::ARCHIVE_VERSION;
 use polylogue_model::user::UserWrite;
 use rusqlite::{Connection, types::Value};
 
@@ -111,7 +111,7 @@ fn request_hash_transition_retains_prior_nested_map_order_escaping_and_intent_ed
             read_at: "{\"now\":100}".into(),
         },
     ];
-    let (conn, source) = source(false);
+    let (conn, source) = source();
     for (number, write) in writes.into_iter().enumerate() {
         let request =
             crate::fixture::authored::operator_request(format!("request-{number}"), write);
@@ -120,9 +120,9 @@ fn request_hash_transition_retains_prior_nested_map_order_escaping_and_intent_ed
         assert_eq!(prior_hash(&request, &original).unwrap(), old);
         conn.execute("INSERT INTO client_request(id,content_hash,created_at,request,commit_seq) VALUES(?1,?2,1,?3,1)",params![request.id,&old[..],original]).unwrap();
     }
-    previous(&conn, false);
+    previous(&conn);
     let before = rows(&conn, source);
-    reopen(&conn, false).unwrap();
+    reopen(&conn).unwrap();
     assert_eq!(rows(&conn, source), before);
     let mut statement = conn
         .prepare("SELECT request,content_hash FROM client_request ORDER BY id")
