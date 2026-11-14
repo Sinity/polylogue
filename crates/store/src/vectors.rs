@@ -9,8 +9,9 @@
 //! [`RESCORED`] of them from their stored f32 values ([`Similarity`]). The
 //! daemon keeps loaded vectors by model revision read from the same SQLite
 //! snapshot as their rows, and brings them to a newer revision by reading
-//! only the rows stored since ([`Vectors::append`]), on a cue from
-//! [`write_events`]. [`writes`] is a coarse process-local invalidation
+//! only appended rows when the revision proves an append-only change
+//! ([`Vectors::append`]), and reloading the snapshot after a replacement,
+//! on a cue from [`write_events`]. [`writes`] is a coarse process-local invalidation
 //! counter for query continuations, not the identity of a loaded snapshot.
 //! Query vectors the provider answered are stored too
 //! ([`Vectors::query_vector`]), so a query text is paid for once and ranks
@@ -315,10 +316,12 @@ impl Vectors {
     }
 
     /// Stores vectors bought for another archive exactly as they were: the
-    /// same text hash, key, chunk, values and time. A vector this archive
-    /// already holds identically is present; a different vector for the
-    /// same text, key and chunk is refused rather than replaced, since both
-    /// were paid for.
+    /// same text hash, key, chunk, values and known purchase time. At one
+    /// address the newest known purchase wins, including a newer time for
+    /// identical values. Older imports leave that authoritative value in
+    /// place. Conflicting dimensions are refused; equal-time conflicting
+    /// values cannot be ordered and are also refused.
+    /// Original source stores retain the earlier paid values.
     pub fn restore(
         &mut self,
         vectors: &[crate::older_archive::StoredVector],
@@ -331,14 +334,18 @@ impl Vectors {
         let mut stored = false;
         {
             let mut find = tx.prepare_cached(
-                "SELECT dims, vector FROM embedded WHERE text_hash = ?1 AND model = ?2 AND chunk = ?3",
+                "SELECT id,dims,vector,embedded_at FROM embedded WHERE text_hash = ?1 AND model = ?2 AND chunk = ?3",
             )?;
             let mut insert = tx.prepare_cached(
                 "INSERT INTO embedded(text_hash, model, chunk, dims, vector, embedded_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             )?;
+            let mut update =
+                tx.prepare_cached("UPDATE embedded SET vector=?2,embedded_at=?3 WHERE id=?1")?;
             for v in vectors {
-                if v.dims < 1 || v.vector.len() as i64 != v.dims * 4 {
+                if v.dims.checked_mul(4).filter(|_| v.dims > 0)
+                    != i64::try_from(v.vector.len()).ok()
+                {
                     out.push(Restored::Refused(format!(
                         "it holds {} bytes, not {} four-byte values",
                         v.vector.len(),
@@ -346,19 +353,28 @@ impl Vectors {
                     )));
                     continue;
                 }
-                let known: Option<(i64, Vec<u8>)> = find
+                let known: Option<(i64, i64, Vec<u8>, i64)> = find
                     .query_row(params![v.text_hash, v.model, v.chunk], |r| {
-                        Ok((r.get(0)?, r.get(1)?))
+                        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
                     })
                     .optional()?;
                 out.push(match known {
-                    Some((dims, vector)) if dims == v.dims && vector == v.vector => {
-                        Restored::Present
-                    }
-                    Some(_) => Restored::Refused(
-                        "this archive holds a different vector for the same text, key and chunk"
-                            .into(),
+                    Some((_, dims, _, _)) if dims != v.dims => Restored::Refused(
+                        "this address has another vector dimension under the same embedding key".into(),
                     ),
+                    Some((_, _, _, paid_at)) if paid_at > v.embedded_at => Restored::Present,
+                    Some((_, _, vector, paid_at)) if paid_at == v.embedded_at => {
+                        if vector == v.vector {
+                            Restored::Present
+                        } else {
+                            Restored::Refused("this address holds different vector values with the same purchase time".into())
+                        }
+                    }
+                    Some((id, _, _, _)) => {
+                        update.execute(params![id,v.vector,v.embedded_at])?;
+                        stored = true;
+                        Restored::Stored
+                    },
                     None => {
                         insert.execute(params![
                             v.text_hash,
@@ -476,16 +492,28 @@ impl Vectors {
         self.append(&Loaded::empty(key))
     }
 
-    /// `base` with the vectors of its key stored since it was read. Stored
-    /// vectors are never changed or removed, so the rows after the last one
-    /// `base` holds are everything it lacks; `base`'s runs are shared, not
-    /// copied.
+    /// Refreshes `base` from this handle's snapshot. Row-level revision
+    /// triggers increment once per changed row. When the revision moved by
+    /// exactly the number of appended rows, sharing the earlier runs is
+    /// valid. Any other change, including replacement or paid-time update,
+    /// reloads the snapshot instead of retaining stale values below `through`.
     pub fn append(&self, base: &Loaded) -> Result<Loaded> {
         let _read = self.read_transaction()?;
+        let revision = self.revision(&base.key)?;
+        let loaded = self.read_after(base, revision)?;
+        if base.through > 0
+            && revision.checked_sub(base.revision) != i64::try_from(loaded.rows_read).ok()
+        {
+            return self.read_after(&Loaded::empty(&base.key), revision);
+        }
+        Ok(loaded)
+    }
+
+    fn read_after(&self, base: &Loaded, revision: i64) -> Result<Loaded> {
         let key = base.key.as_str();
         let mut loaded = Loaded {
             key: key.to_owned(),
-            revision: self.revision(key)?,
+            revision,
             dims: base.dims,
             through: base.through,
             rows_read: 0,

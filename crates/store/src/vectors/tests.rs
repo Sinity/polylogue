@@ -601,3 +601,5 @@ fn query_vectors_are_stored_once_by_key_and_text() {
         None
     );
 }
+
+mod restore;

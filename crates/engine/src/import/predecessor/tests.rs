@@ -387,8 +387,8 @@ fn repeat_vector_import_adds_nothing() {
     assert_eq!(again.classes["text key"].stored, 0);
     assert_eq!(embedded(&engine), held);
 
-    // A different vector bought for the same text is refused, never
-    // replacing the one held.
+    // Equal purchase times cannot order conflicting paid values.
+    // Restore refuses the conflict rather than choosing an arrival order.
     let other = w.dir.path().join("other.db");
     fixture::vector_store(
         &other,
@@ -397,7 +397,7 @@ fn repeat_vector_import_adds_nothing() {
             addressed("the first text that was embedded"),
             vec![0.0, 1.0, 0.0, 0.0],
         )],
-        6,
+        5,
     );
     let different = engine
         .import_with_options(std::slice::from_ref(&other), &options(VECTORS))
@@ -723,4 +723,125 @@ fn undated_same_schema_key_cannot_replace_recorded_registration() {
             .is_some()
     );
     assert_eq!(std::fs::read(undated).unwrap(), original);
+}
+
+#[test]
+fn newer_paid_vectors_win_through_normal_import_in_both_orders_and_repeat_is_exact() {
+    for newest_first in [false, true] {
+        let home = ClaudeHome::new();
+        indexed_texts(&home, "short");
+        let (mut engine, _lock) = crate::import::tests::engine(&home, 64);
+        assert!(engine.run_pass().unwrap().errors.is_empty());
+        let old = home.dir.path().join("old-paid.db");
+        let new = home.dir.path().join("new-paid.db");
+        let text = "the first text that was embedded";
+        fixture::vector_store(&old, MODEL, &[(addressed(text), vec![1., 0., 0., 0.])], 10);
+        fixture::vector_store(&new, MODEL, &[(addressed(text), vec![0., 1., 0., 0.])], 20);
+        let source_bytes = [std::fs::read(&old).unwrap(), std::fs::read(&new).unwrap()];
+        let paths = if newest_first {
+            [&new, &old]
+        } else {
+            [&old, &new]
+        };
+        for path in paths {
+            let report = engine
+                .import_with_options(std::slice::from_ref(path), &options(VECTORS))
+                .unwrap()
+                .predecessor
+                .unwrap();
+            assert!(report.refused.is_empty(), "{report:?}");
+            assert_eq!(report.vectors_matched, 1);
+        }
+        assert_eq!(
+            embedded(&engine),
+            vec![vec![
+                blake3::hash(text.as_bytes()).to_hex().to_string(),
+                KEY.into(),
+                "0".into(),
+                "4".into(),
+                bytes(&[0., 1., 0., 0.]),
+                "20".into(),
+            ]]
+        );
+        let target = read_only(&engine.archive.embeddings_db());
+        let before = strings(
+            &target,
+            "SELECT id,text_hash,model,chunk,dims,vector,embedded_at FROM embedded ORDER BY id",
+        );
+        let revision = strings(
+            &target,
+            "SELECT model,revision FROM embedding_revision ORDER BY model",
+        );
+        let sequence = strings(
+            &target,
+            "SELECT name,seq FROM sqlite_sequence ORDER BY name",
+        );
+        for path in [&new, &old] {
+            let report = engine
+                .import_with_options(std::slice::from_ref(path), &options(VECTORS))
+                .unwrap()
+                .predecessor
+                .unwrap();
+            let count = report.classes["text key"];
+            assert_eq!((count.stored, count.present, count.refused), (0, 1, 0));
+        }
+        assert_eq!(
+            strings(
+                &target,
+                "SELECT id,text_hash,model,chunk,dims,vector,embedded_at FROM embedded ORDER BY id"
+            ),
+            before
+        );
+        assert_eq!(
+            strings(
+                &target,
+                "SELECT model,revision FROM embedding_revision ORDER BY model"
+            ),
+            revision
+        );
+        assert_eq!(
+            strings(
+                &target,
+                "SELECT name,seq FROM sqlite_sequence ORDER BY name"
+            ),
+            sequence
+        );
+        assert_eq!(std::fs::read(&old).unwrap(), source_bytes[0]);
+        assert_eq!(std::fs::read(&new).unwrap(), source_bytes[1]);
+    }
+}
+
+#[test]
+fn unknown_vector_purchase_time_is_explicitly_unmatched_and_never_given_an_order() {
+    let home = ClaudeHome::new();
+    indexed_texts(&home, "short");
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 64);
+    assert!(engine.run_pass().unwrap().errors.is_empty());
+    let path = home.dir.path().join("unknown-paid.db");
+    fixture::vector_store(
+        &path,
+        MODEL,
+        &[(
+            addressed("the first text that was embedded"),
+            vec![1., 0., 0., 0.],
+        )],
+        10,
+    );
+    let source = rusqlite::Connection::open(&path).unwrap();
+    source
+        .execute("UPDATE message_embeddings_meta SET embedded_at_ms=NULL", [])
+        .unwrap();
+    drop(source);
+    let before = std::fs::read(&path).unwrap();
+    let report = engine
+        .import_with_options(std::slice::from_ref(&path), &options(VECTORS))
+        .unwrap()
+        .predecessor
+        .unwrap();
+    assert_eq!(
+        report.unmatched.get("its purchase time is not recorded"),
+        Some(&1)
+    );
+    assert!(embedded(&engine).is_empty());
+    assert_eq!(std::fs::read(&path).unwrap(), before);
 }

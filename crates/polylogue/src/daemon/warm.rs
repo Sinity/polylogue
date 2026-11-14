@@ -3,7 +3,8 @@
 //!
 //! - **Vectors**: every vector of the embedding key `similar:` ranks by, in
 //!   memory. One worker thread loads them, extends them with the vectors
-//!   stored since whenever a vector write commits, and publishes each set
+//!   stored since whenever an append commits (or reloads after replacement),
+//!   and publishes each set
 //!   with the model revision of the snapshot it read. A read uses the set
 //!   of its own snapshot's revision, waiting for the worker when that set is
 //!   not published yet; it neither loads nor extends vectors itself, except
@@ -503,14 +504,14 @@ fn wait_for(flight: &Arc<Flight>) -> Result<Arc<Vec<f32>>, String> {
 
 /// The vectors worker: on each cue (a vector write committed, or a read
 /// asked), brings the wanted key's set to the revision of a fresh snapshot,
-/// extending the newest set held, and publishes it.
+/// extending pure appends or reloading replacements, and publishes it.
 fn run_worker(
     archive: &polylogue_store::Archive,
     share: &VectorShare,
     counts: &Counts,
     events: &polylogue_store::completion::CommitSubscription,
 ) {
-    // A small page cache: the worker reads each stored row once.
+    // Appends read only new rows; an in-place replacement reloads the snapshot.
     const CACHE_KIB: i64 = 2048;
     while events.recv().is_ok() {
         let (key, held, invalidation) = {
