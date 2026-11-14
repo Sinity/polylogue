@@ -48,6 +48,14 @@ Counting ordinary rows applies the query's filters and stage selections without 
 
 The full-text indexes are contentless, keyed by text ID, with contentless delete. A text enters an index when its first block of that kind is written and leaves with its last. Ranking after re-parse retractions equals a fresh build's: whenever retracted rows exceed 10% of an index's rows, the writer rebuilds that index's statistics in the same pass. This is part of the ordinary write path, not a command.
 
+A deferred first build replays marked texts from the beginning in bounded
+transactions. Its first transaction clears earlier derived postings and
+statistics, so retry after interruption or a later deferred-index failure has
+the same ranking and vocabulary as a fresh build. Parsed rows, source progress
+and original bytes remain committed. Ordinary reopen repeats this work while
+the build is incomplete; search becomes ready after deferred finalization
+succeeds.
+
 ## Semantic ranking
 
 `similar:` orders a query's rows by meaning, using embeddings. Direction, 2026-01-24: "Not as a filter, but as a scoring criteria, to rank order items" (cc:1d6c0b33-94c7-4a2a-9957-347e5383f5c5:0bdc45a3-7aca-41a6-9b70-6f6fb086bbbe).
