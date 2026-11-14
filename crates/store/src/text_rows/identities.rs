@@ -12,6 +12,12 @@ struct Identity {
     present: bool,
 }
 
+/// The row key and whether this call wrote its prepared payload.
+pub(crate) struct ResolvedText {
+    pub id: i64,
+    pub written: bool,
+}
+
 pub(crate) struct TextIds {
     known: RefCell<HashMap<[u8; 32], Identity>>,
     next: Cell<i64>,
@@ -60,11 +66,11 @@ impl TextIds {
         conn: &Connection,
         hash: &[u8; 32],
         body: Option<&crate::encoding::PreparedText>,
-    ) -> Result<i64> {
+    ) -> Result<ResolvedText> {
         self.refresh(conn)?;
         let known = self.known.borrow().get(hash).copied();
         if let Some(Identity { id, present: true }) = known {
-            return Ok(id);
+            return Ok(ResolvedText { id, written: false });
         }
         let allocated = known.map(|identity| identity.id);
         if let Some(body) = body {
@@ -77,7 +83,7 @@ impl TextIds {
                 self.known
                     .borrow_mut()
                     .insert(*hash, Identity { id, present: true });
-                return Ok(id);
+                return Ok(ResolvedText { id, written: true });
             }
         }
         let stored = conn
@@ -94,7 +100,7 @@ impl TextIds {
                 .borrow_mut()
                 .insert(*hash, Identity { id, present: true });
             self.next.set(self.next.get().max(next(id)?));
-            Ok(id)
+            Ok(ResolvedText { id, written: false })
         } else {
             Err(StoreError::Invalid(
                 if body.is_some() {

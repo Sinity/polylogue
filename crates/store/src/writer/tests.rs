@@ -15,6 +15,7 @@ mod fresh_messages;
 mod fts;
 mod input_events;
 mod items;
+mod materialization;
 mod parent_order;
 mod publications;
 mod relationships;

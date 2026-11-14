@@ -3,7 +3,7 @@ use crate::{Result, encoding, first_build::FirstBuild};
 use polylogue_model::{BlobHash, Block, Message, bundle::MessageProjection};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::de::DeserializeOwned;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 #[cfg(test)]
 mod tests;
@@ -85,6 +85,49 @@ pub(crate) fn message_key(conn: &Connection, hash: &[u8]) -> Result<i64> {
         .query_row([hash], |row| row.get(0))?)
 }
 
+/// The body and text references written by this registration, if it changed
+/// the stored payload. An ignored duplicate has no new validation authority.
+struct StoredValue {
+    message_pk: Option<i64>,
+    text_ids: Option<BTreeMap<usize, i64>>,
+    written_payload: bool,
+}
+
+/// Keys and identity from this registration. Context can trust the prepared
+/// payload only when this call wrote both its body and every text payload.
+/// Reused text IDs, including cached IDs from another transaction, retain
+/// full stored-message validation.
+pub(crate) struct RegisteredMessage<'a> {
+    pk: i64,
+    message: &'a Message,
+    hash: &'a [u8; 32],
+    text_ids: Option<BTreeMap<usize, i64>>,
+    written_payload: bool,
+}
+
+impl RegisteredMessage<'_> {
+    pub fn pk(&self) -> i64 {
+        self.pk
+    }
+
+    pub fn response_key(
+        &self,
+        hash: &[u8; 32],
+        message: &polylogue_model::MessageId,
+        session: &str,
+    ) -> Option<i64> {
+        (self.written_payload
+            && self.hash == hash
+            && &self.message.id == message
+            && self.message.session.to_string() == session)
+            .then_some(self.pk)
+    }
+
+    pub fn text_ids(&self) -> Option<&BTreeMap<usize, i64>> {
+        self.text_ids.as_ref()
+    }
+}
+
 fn store_value(
     conn: &Connection,
     kind: VersionKind,
@@ -96,7 +139,7 @@ fn store_value(
     }: ValueRows<'_>,
     text_rows: TextRows<'_>,
     replace: bool,
-) -> Result<Option<i64>> {
+) -> Result<StoredValue> {
     let TextRows {
         packed,
         texts: identities,
@@ -142,8 +185,14 @@ fn store_value(
         _ => None,
     };
     if inserted == 0 {
-        return Ok(pk);
+        return Ok(StoredValue {
+            message_pk: pk,
+            text_ids: None,
+            written_payload: false,
+        });
     }
+    let mut text_ids = pk.map(|_| BTreeMap::new());
+    let mut written_payload = true;
     if replace {
         conn.prepare_cached(&format!(
             "DELETE FROM {name}_version_text WHERE {column}=?1"
@@ -155,8 +204,13 @@ fn store_value(
     ))?;
     for (idx, hash) in texts.iter().enumerate() {
         if let Some(hash) = hash {
-            let id = identities.resolve(conn, hash, packed.get(hash))?;
+            let resolved = identities.resolve(conn, hash, packed.get(hash))?;
+            let id = resolved.id;
+            written_payload &= resolved.written;
             text.execute(params![key, idx as i64, id])?;
+            if let Some(ids) = &mut text_ids {
+                ids.insert(idx, id);
+            }
         }
     }
     let mut blob = conn.prepare_cached(&format!(
@@ -174,22 +228,31 @@ fn store_value(
             }
         }
     }
-    Ok(pk)
+    Ok(StoredValue {
+        message_pk: pk,
+        text_ids,
+        written_payload,
+    })
 }
 
-pub(crate) fn store_message(
-    conn: &Connection,
-    message: &Message,
-    prepared: &encoding::PreparedMessage,
+pub(crate) fn store_message<'a>(
+    conn: &'a Connection,
+    message: &'a Message,
+    prepared: &'a encoding::PreparedMessage,
     text_rows: TextRows<'_>,
     replace: bool,
     admitted: Option<u64>,
-) -> Result<i64> {
+) -> Result<RegisteredMessage<'a>> {
+    if prepared.id != message.id {
+        return Err(crate::StoreError::Invalid(
+            "prepared version has another message identity".into(),
+        ));
+    }
     prepared.projection.validate(message.blocks.len())?;
     if prepared.hash != prepared.projection.source_version.0 {
         return Err(polylogue_model::bundle::BundleError::SourceVersionMismatch.into());
     }
-    let pk = store_value(
+    let stored = store_value(
         conn,
         VersionKind::Message,
         ValueRows {
@@ -200,8 +263,10 @@ pub(crate) fn store_message(
         },
         text_rows,
         replace,
-    )?
-    .expect("message versions have integer keys");
+    )?;
+    let pk = stored
+        .message_pk
+        .expect("message versions have integer keys");
     // A stored version no source row chose is deleted before the commit.
     conn.prepare_cached(
         "INSERT OR IGNORE INTO temp.unreferenced_value(kind,value_pk) VALUES ('message',?1)",
@@ -227,7 +292,13 @@ pub(crate) fn store_message(
                 ))?
         ],
     )?;
-    Ok(pk)
+    Ok(RegisteredMessage {
+        pk,
+        message,
+        hash: &prepared.hash,
+        text_ids: stored.text_ids,
+        written_payload: stored.written_payload,
+    })
 }
 
 pub(crate) fn message_layout(projection: &MessageProjection) -> Result<Vec<u8>> {

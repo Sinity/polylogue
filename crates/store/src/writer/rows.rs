@@ -223,7 +223,7 @@ fn apply_rows(
         keys,
         choices,
         changes,
-        version_pks: HashMap::new(),
+        versions: HashMap::new(),
         messages: choices
             .messages
             .iter()
@@ -252,7 +252,7 @@ fn apply_rows(
             .transpose()?
     };
     for version in choices.message_versions.values() {
-        let pk = crate::versions::store_message(
+        let registered = crate::versions::store_message(
             tx,
             &version.message,
             &version.prepared,
@@ -263,7 +263,7 @@ fn apply_rows(
             version.replace,
             version.admitted.or(source_admission),
         )?;
-        rows.version_pks.insert(version.prepared.hash, pk);
+        rows.versions.insert(version.prepared.hash, registered);
     }
     let mut sessions: HashMap<String, i64> = HashMap::new();
     for s in &p.output.sessions {
@@ -642,7 +642,7 @@ fn apply_rows(
         },
         p,
     )?;
-    if !crate::parser_context::apply(tx, input_pk, chain, p)? {
+    if !crate::parser_context::apply(tx, input_pk, chain, p, &rows.versions)? {
         rows.checkpoint.forget_context();
     }
     rows.write_parse_state(b, p)?;
@@ -715,8 +715,8 @@ struct StoredBlock<'a> {
 
 pub(super) struct RowWriter<'a, 't> {
     messages: BTreeMap<i64, MessageWrite<'a>>,
-    /// Integer keys returned while registering this transaction's versions.
-    version_pks: HashMap<[u8; 32], i64>,
+    /// Results of registering this transaction's message payloads.
+    versions: HashMap<[u8; 32], crate::versions::RegisteredMessage<'a>>,
     checkpoint: checkpoint::Update,
     source_admitted: Option<i64>,
     tx: &'a Transaction<'t>,
@@ -1433,8 +1433,8 @@ impl RowWriter<'_, '_> {
     }
 
     fn version_pk(&self, hash: &[u8; 32]) -> Result<i64> {
-        match self.version_pks.get(hash) {
-            Some(pk) => Ok(*pk),
+        match self.versions.get(hash) {
+            Some(version) => Ok(version.pk()),
             None => crate::versions::message_key(self.tx, hash),
         }
     }
@@ -1452,8 +1452,15 @@ impl RowWriter<'_, '_> {
             ));
         }
         prepared.projection.validate(m.blocks.len())?;
-        let stored_texts =
-            crate::versions::message_text_ids(self.tx, self.version_pk(&prepared.hash)?)?;
+        let stored;
+        let stored_texts = match self.versions.get(&prepared.hash).and_then(|v| v.text_ids()) {
+            Some(ids) => ids,
+            None => {
+                stored =
+                    crate::versions::message_text_ids(self.tx, self.version_pk(&prepared.hash)?)?;
+                &stored
+            }
+        };
         for (idx, ((block, body), data)) in m
             .blocks
             .iter()
