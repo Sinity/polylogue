@@ -134,7 +134,12 @@ fn set_aside_and_rebuild(change: &str, reason: IndexRebuildReason) {
     let build = schema::build_index_identity(false).unwrap();
     assert_ne!(previous, build, "{change}");
     let name = format!("index-set-aside-{previous}.db");
-    assert_eq!(set_aside_files(dir.path()), vec![name.clone()], "{change}");
+    // Inspection preserves the old index and every write-ahead file it left.
+    assert_eq!(
+        set_aside_files(dir.path()),
+        vec![name.clone(), format!("{name}-shm"), format!("{name}-wal")],
+        "{change}"
+    );
     let old = open_read(&dir.path().join(&name)).unwrap();
     assert_eq!(
         meta(&old, "previous-index-marker").as_deref(),
