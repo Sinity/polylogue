@@ -91,6 +91,8 @@ fn planning_sql(selected: bool, chains: RevisionChains) -> String {
             "SELECT rowid,* FROM source_observation",
         )
     };
+    // Keep the selected chain lengths once: flattening the current-chain MAX
+    // would evaluate it again for each progress predicate and result column.
     let chain_rows = match chains {
         RevisionChains::All => "SELECT input,chain,max(length) AS length FROM revisions GROUP BY input,chain",
         // Retained histories may resume an earlier chain with a shorter revision.
@@ -110,7 +112,7 @@ fn planning_sql(selected: bool, chains: RevisionChains) -> String {
          inputs AS MATERIALIZED (
              SELECT input,max(number) AS number,max(produced='imported') AS imported
              FROM revisions GROUP BY input
-         ), chains AS ({chain_rows}), {CHAINS_BEHIND}"
+         ), chains AS MATERIALIZED ({chain_rows}), {CHAINS_BEHIND}"
     )
 }
 

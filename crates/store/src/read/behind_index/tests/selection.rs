@@ -99,10 +99,12 @@ fn history(fixture: &Fixture, chains: usize, appends: usize) {
     tx.execute("INSERT INTO input_ref(id) VALUES ('a')", [])
         .unwrap();
     for chain in 1..=chains {
-        tx.execute("INSERT INTO parse_state(input_pk,chain,status,parsed_upto,at_length,reading_version,checkpoint)
-            SELECT pk,?1,?2,?3,?4,'old',zeroblob(16384) FROM input_ref WHERE id='a'",
+        tx.execute("INSERT INTO parse_state(input_pk,chain,status,parsed_upto,at_length,reading_version,checkpoint,reason)
+            SELECT pk,?1,?2,?3,?4,'old',zeroblob(16384),?5 FROM input_ref WHERE id='a'",
             params![chain, match chain%4 {0=>"waiting",1=>"parsing",2=>"refused",_=>"done"},
-                if chain%4==3 {100+appends} else {0}, 100+appends]).unwrap();
+                if chain%4==3 {100+appends} else {0},
+                matches!(chain%4,0|2).then_some(100+appends),
+                (chain%4==2).then_some("synthetic refusal")]).unwrap();
     }
     tx.commit().unwrap();
 }
