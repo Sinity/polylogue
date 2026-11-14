@@ -193,6 +193,49 @@ fn disconnect_interrupts_sql_and_releases_the_reader_slot() {
 }
 
 #[test]
+fn shutdown_cancels_a_started_socket_read_before_joining_its_transport() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = crate::test_daemon::engine_config(dir.path().to_owned());
+    config.tool_dirs.clear();
+    config.workers = 1;
+    let mut runtime = crate::test_daemon::start_runtime(
+        &dir.path().join("archive"),
+        config,
+        service::ArchiveMode::Standalone,
+    )
+    .unwrap();
+    let mut server =
+        Server::start(Arc::clone(&runtime.daemon), Arc::clone(&runtime.operations)).unwrap();
+    let (observed, reads) = std::sync::mpsc::channel();
+    *runtime.daemon.read_limits.lock().unwrap() = Some(observed);
+    let mut stream = UnixStream::connect(runtime.daemon.archive.socket()).unwrap();
+    let request = command_surface::Request {
+        operation: "sql".into(),
+        arguments: serde_json::json!({"statement":"WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2000000000) SELECT count(*) FROM n"}),
+        request_id: "read-started-before-stop".into(),
+        deadline: command_surface::Deadline::None,
+        budget_tokens: Default::default(),
+        cursor: None,
+        fresh: false,
+        format: Default::default(),
+    };
+    writeln!(stream, "{}", serde_json::to_string(&request).unwrap()).unwrap();
+    let read = reads.recv_timeout(Duration::from_secs(5)).unwrap();
+    crate::test_daemon::TestDaemon::wait_for_sql(&read);
+    assert!(!read.cancellation.is_cancelled());
+    runtime.stop_accepting();
+    // The peer stays connected, and the transport has not been asked to stop.
+    // Read cancellation must precede a transport join that waits on this job.
+    assert!(
+        read.cancellation.is_cancelled(),
+        "process stop must cancel started reads before joining clients"
+    );
+    server.shutdown().unwrap();
+    runtime.shutdown().unwrap();
+    assert_eq!(runtime.daemon.reads.checked_out(), 0);
+}
+
+#[test]
 fn socket_honours_the_client_deadline_without_closing_the_connection() {
     let daemon = crate::test_daemon::start("socket deadline");
     let mut stream = UnixStream::connect(daemon.daemon.archive.socket()).unwrap();
