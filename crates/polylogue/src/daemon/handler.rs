@@ -629,6 +629,9 @@ fn answer<H: Handler>(
     cursor: Option<&str>,
     budget: TokenBudget,
 ) -> Answer<Value> {
+    if let Err(failure) = super::service::accepting(daemon) {
+        return failure.answer();
+    }
     let capped = H::read_cap().map(|cap| {
         let cap = std::time::Instant::now() + cap;
         ReadLimit::at(
@@ -653,9 +656,6 @@ fn answer<H: Handler>(
     let read_phase = H::read_phase(&arguments, row, caller);
     let text = H::query_text(&arguments).map(str::to_owned);
     let work = || {
-        if let Err(failure) = super::service::accepting(daemon) {
-            return failure.answer();
-        }
         if daemon.blocked() && !read_only {
             return daemon.write_refusal().answer();
         }
