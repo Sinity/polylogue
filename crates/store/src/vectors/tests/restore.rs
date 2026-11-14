@@ -15,12 +15,32 @@ fn paid(hash: u8, at: i64, values: &[f32]) -> StoredVector {
     }
 }
 
-fn state(v: &Vectors) -> (Vec<(i64, Vec<u8>, i64)>, i64, i64) {
+#[derive(Debug, PartialEq)]
+struct PaidRow {
+    id: i64,
+    vector: Vec<u8>,
+    paid_at: i64,
+}
+
+#[derive(Debug, PartialEq)]
+struct State {
+    rows: Vec<PaidRow>,
+    sequence: i64,
+    revision: i64,
+}
+
+fn state(v: &Vectors) -> State {
     let rows = v
         .conn
         .prepare("SELECT id,vector,embedded_at FROM embedded ORDER BY id")
         .unwrap()
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .query_map([], |r| {
+            Ok(PaidRow {
+                id: r.get(0)?,
+                vector: r.get(1)?,
+                paid_at: r.get(2)?,
+            })
+        })
         .unwrap()
         .collect::<rusqlite::Result<_>>()
         .unwrap();
@@ -32,7 +52,11 @@ fn state(v: &Vectors) -> (Vec<(i64, Vec<u8>, i64)>, i64, i64) {
             |r| r.get(0),
         )
         .unwrap();
-    (rows, sequence, v.revision(KEY).unwrap())
+    State {
+        rows,
+        sequence,
+        revision: v.revision(KEY).unwrap(),
+    }
 }
 
 #[test]
@@ -60,7 +84,14 @@ fn every_restore_order_keeps_the_newest_purchase_and_strict_repeat_writes_nothin
                 .iter()
                 .all(|r| !matches!(r, Restored::Refused(_)))
         );
-        assert_eq!(state(&v).0, vec![(1, versions[2].vector.clone(), 30)]);
+        assert_eq!(
+            state(&v).rows,
+            vec![PaidRow {
+                id: 1,
+                vector: versions[2].vector.clone(),
+                paid_at: 30
+            }]
+        );
         let before = state(&v);
         let changes = v.conn.total_changes();
         assert_eq!(
@@ -94,9 +125,20 @@ fn paid_time_only_changes_are_written_and_ambiguous_or_dimension_conflicts_are_r
         vec![Restored::Stored]
     );
     let after = state(&v);
-    assert_eq!(after.0, vec![(before.0[0].0, original.vector, 20)]);
-    assert_eq!(after.1, before.1);
-    assert_eq!(after.2, before.2 + 1, "actual row trigger advances once");
+    assert_eq!(
+        after.rows,
+        vec![PaidRow {
+            id: before.rows[0].id,
+            vector: original.vector,
+            paid_at: 20
+        }]
+    );
+    assert_eq!(after.sequence, before.sequence);
+    assert_eq!(
+        after.revision,
+        before.revision + 1,
+        "actual row trigger advances once"
+    );
     for invalid in [paid(1, 20, &[0., 1.]), paid(1, 30, &[1., 0., 0.])] {
         assert!(matches!(
             v.restore(&[invalid]).unwrap().as_slice(),
@@ -119,7 +161,7 @@ fn paid_time_only_changes_are_written_and_ambiguous_or_dimension_conflicts_are_r
         vec![Restored::Stored; 2]
     );
     assert_eq!(
-        state(&v).0.len(),
+        state(&v).rows.len(),
         3,
         "full model and chunk stay in the address"
     );
@@ -146,11 +188,15 @@ fn mixed_restore_uses_row_revisions_and_refreshes_replacements_in_the_same_snaps
     );
     let after = state(&v);
     assert_eq!(
-        after.2,
-        before.2 + 3,
+        after.revision,
+        before.revision + 3,
         "UPDATE + INSERT + paid-time UPDATE each advance the actual model trigger"
     );
-    assert_eq!(after.1, before.1 + 1, "updates keep their IDs");
+    assert_eq!(
+        after.sequence,
+        before.sequence + 1,
+        "updates keep their IDs"
+    );
     let fresh = Vectors::snapshot(&archive, 256).unwrap();
     let refreshed = Arc::new(fresh.append(&base).unwrap());
     assert_eq!(refreshed.vectors(), 3);
@@ -158,7 +204,7 @@ fn mixed_restore_uses_row_revisions_and_refreshes_replacements_in_the_same_snaps
         refreshed.rows_read, 4,
         "one appended-row probe plus one three-row reload"
     );
-    assert_eq!(refreshed.revision, after.2);
+    assert_eq!(refreshed.revision, after.revision);
     let ranked = refreshed.similarity(&[1., 0.]).unwrap();
     assert_eq!(ranked.of(&[1]), Some(0.));
     assert_eq!(ranked.of(&[2]), Some(1.));
@@ -173,7 +219,7 @@ fn mixed_restore_uses_row_revisions_and_refreshes_replacements_in_the_same_snaps
     let metadata = newest.append(&refreshed).unwrap();
     assert_eq!(metadata.revision, refreshed.revision + 1);
     assert_eq!(metadata.rows_read, 3);
-    assert_eq!(state(&v).1, after.1);
+    assert_eq!(state(&v).sequence, after.sequence);
     let held = newest.append(&metadata).unwrap();
     assert_eq!(
         held.rows_read, 0,
