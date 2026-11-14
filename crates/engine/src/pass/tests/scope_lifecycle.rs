@@ -934,7 +934,7 @@ fn stopping_started_context_replay_keeps_the_checkpoint_and_new_raw_bytes() {
         reached,
         "started parser did not reach context reconstruction"
     );
-    assert!(result.unwrap().errors.is_empty());
+    assert!(matches!(result, Err(EngineError::Stopped)), "{result:?}");
     let reader = engine.reads.reader().unwrap();
     let after=reader.query(
         "SELECT p.parsed_upto,hex(p.checkpoint) AS checkpoint,p.status FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id=?1",
