@@ -105,12 +105,9 @@ enum Msg {
         Box<ChainReading>,
         SyncSender<Result<u64>>,
     ),
-    /// Record older chains' readings from newer chains of the same inputs
-    /// holding the same bytes.
-    CopyReadings(
-        Vec<crate::ReadingCopy>,
-        SyncSender<Result<Vec<Result<bool>>>>,
-    ),
+    /// Record one older chain's reading from a newer chain of the same
+    /// input holding the same bytes.
+    CopyReading(crate::ReadingCopy, SyncSender<Result<Result<bool>>>),
     StageConfirmed(
         Vec<crate::primary::Confirmed>,
         SyncSender<Result<crate::primary::projection::Step>>,
@@ -1110,17 +1107,18 @@ impl WriterSender {
         coverage_via(&self.0, coverage)
     }
 
-    /// Records each copy's older chain reading from its newer chain, which
-    /// holds the same bytes and was read under the copy's reading version,
-    /// in one transaction. Each answer is `false` when that copy would not
-    /// equal parsing the chain (and always in primary mode, where the index
-    /// follows Sinex); the caller then parses it. A process stop can interrupt
-    /// and roll back this reconstructible group as `WriteCancelled`; it must
-    /// not become an individual refusal followed by parsing.
-    pub fn copy_readings(&self, copies: Vec<crate::ReadingCopy>) -> Result<Vec<Result<bool>>> {
+    /// Records one older chain's complete reading from its newer chain of
+    /// the same bytes. A successful copy commits all its rows and receipts
+    /// before answering. The inner answer is `false` when copying would not
+    /// equal parsing (always in primary mode), or an error from the copy;
+    /// both leave the chain unchanged and let the caller parse it instead.
+    /// Transaction, transport and stop failures are outer errors. A stop
+    /// interrupts only this reconstructible copy as `WriteCancelled`;
+    /// copies already committed remain recorded.
+    pub fn copy_reading(&self, copy: crate::ReadingCopy) -> Result<Result<bool>> {
         let (reply, wait) = sync_channel(1);
         self.0
-            .send(Msg::CopyReadings(copies, reply))
+            .send(Msg::CopyReading(copy, reply))
             .map_err(|_| StoreError::WriterGone)?;
         wait.recv().map_err(|_| StoreError::WriterGone)?
     }
@@ -1459,8 +1457,8 @@ impl Inner {
                         live_clock.push((sessions, reply));
                         false
                     }
-                    Msg::CopyReadings(group, reply) => {
-                        copies.push((group, reply));
+                    Msg::CopyReading(copy, reply) => {
+                        copies.push((copy, reply));
                         false
                     }
                     Msg::StoreBlob(blob, reply) => {
@@ -1634,8 +1632,8 @@ impl Inner {
             for (sessions, reply) in live_clock.drain(..) {
                 let _ = reply.send(self.write_live_clock(&sessions));
             }
-            for (group, reply) in copies.drain(..) {
-                let _ = reply.send(self.write_copy_readings(&group));
+            for (copy, reply) in copies.drain(..) {
+                let _ = reply.send(self.write_copy_reading(&copy));
             }
             for (query, reply) in raw_cursors.drain(..) {
                 let result = query.validate().and_then(|()| {
@@ -1808,47 +1806,40 @@ impl Inner {
         Ok(())
     }
 
-    fn write_copy_readings(&mut self, copies: &[crate::ReadingCopy]) -> Result<Vec<Result<bool>>> {
+    fn write_copy_reading(&mut self, copy: &crate::ReadingCopy) -> Result<Result<bool>> {
         if self.sinex.is_some() {
-            return Ok(copies.iter().map(|_| Ok(false)).collect());
+            return Ok(Ok(false));
         }
-        self.until_stopped(|inner| inner.copy_readings_uninterrupted(copies))?
+        self.until_stopped(|inner| inner.copy_reading_uninterrupted(copy))?
             .ok_or(StoreError::WriteCancelled)
     }
 
-    fn copy_readings_uninterrupted(
-        &mut self,
-        copies: &[crate::ReadingCopy],
-    ) -> Result<Vec<Result<bool>>> {
-        let mut tx = self.index.transaction()?;
+    fn copy_reading_uninterrupted(&mut self, copy: &crate::ReadingCopy) -> Result<Result<bool>> {
+        let tx = self.index.transaction()?;
         let counter = bump_counter(&tx)?;
-        let mut answers = Vec::with_capacity(copies.len());
-        for copy in copies {
-            // A copy that cannot be exact leaves nothing behind.
-            let point = tx.savepoint()?;
-            let answer = crate::fault::check("write.copy_reading", &copy.input)
-                .and_then(|()| crate::same_bytes::copy_reading(&point, copy, counter));
-            let answer = match answer {
-                Err(StoreError::Sqlite(error))
-                    if error.sqlite_error_code()
-                        == Some(rusqlite::ErrorCode::OperationInterrupted) =>
-                {
-                    // SQLite has rolled back the interrupted transaction. Do not
-                    // turn cancellation into an individual copy refusal or parse.
-                    return Err(StoreError::Sqlite(error));
-                }
-                answer => answer,
-            };
-            if matches!(answer, Ok(true)) {
-                point.commit()?;
+        let answer = crate::fault::check("write.copy_reading", &copy.input)
+            .and_then(|()| crate::same_bytes::copy_reading(&tx, copy, counter));
+        let answer = match answer {
+            Err(StoreError::Sqlite(error))
+                if error.sqlite_error_code() == Some(rusqlite::ErrorCode::OperationInterrupted) =>
+            {
+                // SQLite has rolled back the interrupted transaction. Do not
+                // turn cancellation into a refusal followed by parsing.
+                return Err(StoreError::Sqlite(error));
             }
-            answers.push(answer);
+            answer => answer,
+        };
+        if matches!(answer, Ok(true)) {
+            crate::write_lock::commit(tx)?;
+            self.commits
+                .committed(crate::completion::Committed::CONTENT);
+            self.report.transactions += 1;
+        } else {
+            // A refusal or ordinary copy error leaves no rows, receipts or
+            // write-counter change from this attempt.
+            tx.rollback()?;
         }
-        crate::write_lock::commit(tx)?;
-        self.commits
-            .committed(crate::completion::Committed::CONTENT);
-        self.report.transactions += 1;
-        Ok(answers)
+        Ok(answer)
     }
 
     fn write_coverage(&mut self, coverage: polylogue_model::capture::Coverage) -> Result<()> {

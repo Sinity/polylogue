@@ -11,6 +11,8 @@ use std::os::unix::fs::{FileExt, MetadataExt};
 #[cfg(feature = "faults")]
 mod live_queue;
 #[cfg(feature = "faults")]
+mod same_bytes;
+#[cfg(feature = "faults")]
 mod standings;
 
 #[test]
