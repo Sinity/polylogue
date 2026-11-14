@@ -510,7 +510,7 @@ fn complete_repeated_readings_do_not_reload_historical_message_bodies() {
     let tx = index.transaction().unwrap();
     tx.authorizer(Some(|context: AuthContext<'_>| match context.action {
         AuthAction::Read {
-            table_name: "message_version",
+            table_name: "message_version_body",
             column_name: "body",
         } => Authorization::Deny,
         _ => Authorization::Allow,

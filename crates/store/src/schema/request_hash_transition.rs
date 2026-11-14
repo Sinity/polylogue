@@ -45,12 +45,8 @@ fn prior_hash(request: &UserRequest, packed: &[u8]) -> Result<[u8; 32]> {
     .as_bytes())
 }
 
-pub(super) fn apply(tx: &Transaction<'_>, primary: bool) -> Result<()> {
-    let source = if primary {
-        crate::source::Source::Cache
-    } else {
-        crate::source::Source::Ledger
-    };
+pub(super) fn apply(tx: &Transaction<'_>) -> Result<()> {
+    let source = crate::source::Source::Ledger;
     let mut statement = tx.prepare(
         &source.sql("SELECT id,content_hash,request FROM @source.client_request ORDER BY id"),
     )?;

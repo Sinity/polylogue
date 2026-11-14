@@ -48,9 +48,8 @@ pub(crate) struct TextRows<'a> {
     pub texts: &'a crate::text_rows::TextIds,
 }
 
-pub(crate) fn store(
+pub(crate) fn store_document(
     conn: &Connection,
-    kind: VersionKind,
     hash: &[u8],
     body: &[u8],
     blocks: &[Block],
@@ -59,7 +58,7 @@ pub(crate) fn store(
 ) -> Result<()> {
     store_value(
         conn,
-        kind,
+        VersionKind::Document,
         ValueRows {
             hash,
             body,
@@ -69,6 +68,7 @@ pub(crate) fn store(
         text_rows,
         false,
     )
+    .map(drop)
 }
 
 struct ValueRows<'a> {
@@ -76,6 +76,13 @@ struct ValueRows<'a> {
     body: &'a [u8],
     blocks: &'a [Block],
     texts: &'a [Option<[u8; 32]>],
+}
+
+/// Resolve a canonical hash once at the boundary of the internal row graph.
+pub(crate) fn message_key(conn: &Connection, hash: &[u8]) -> Result<i64> {
+    Ok(conn
+        .prepare_cached("SELECT pk FROM message_version WHERE version_hash=?1")?
+        .query_row([hash], |row| row.get(0))?)
 }
 
 fn store_value(
@@ -89,38 +96,72 @@ fn store_value(
     }: ValueRows<'_>,
     text_rows: TextRows<'_>,
     replace: bool,
-) -> Result<()> {
+) -> Result<Option<i64>> {
     let TextRows {
         packed,
         texts: identities,
     } = text_rows;
-    let kind = kind.name();
-    let sql = if replace {
-        format!("INSERT INTO {kind}_version(version_hash,body) VALUES (?1,?2)
-            ON CONFLICT(version_hash) DO UPDATE SET body=excluded.body WHERE body IS NOT excluded.body")
+    let name = kind.name();
+    let (inserted, key, column) = if matches!(kind, VersionKind::Message) {
+        let inserted = conn
+            .prepare_cached("INSERT OR IGNORE INTO message_version(version_hash) VALUES(?1)")?
+            .execute([hash])?;
+        // execute reports this statement's changes, excluding trigger writes.
+        // This connection has one writer; capture its row ID before another statement.
+        let pk = if inserted == 1 {
+            conn.last_insert_rowid()
+        } else {
+            message_key(conn, hash)?
+        };
+        let sql = if replace {
+            "INSERT INTO message_version_body(version_pk,body) VALUES(?1,?2)
+             ON CONFLICT(version_pk) DO UPDATE SET body=excluded.body WHERE body IS NOT excluded.body"
+        } else {
+            "INSERT OR IGNORE INTO message_version_body(version_pk,body) VALUES(?1,?2)"
+        };
+        (
+            conn.prepare_cached(sql)?.execute(params![pk, body])?,
+            rusqlite::types::Value::Integer(pk),
+            "version_pk",
+        )
     } else {
-        format!("INSERT OR IGNORE INTO {kind}_version(version_hash,body) VALUES (?1,?2)")
+        let sql = if replace {
+            format!("INSERT INTO {name}_version(version_hash,body) VALUES(?1,?2)
+                ON CONFLICT(version_hash) DO UPDATE SET body=excluded.body WHERE body IS NOT excluded.body")
+        } else {
+            format!("INSERT OR IGNORE INTO {name}_version(version_hash,body) VALUES(?1,?2)")
+        };
+        (
+            conn.prepare_cached(&sql)?.execute(params![hash, body])?,
+            rusqlite::types::Value::Blob(hash.to_vec()),
+            "version_hash",
+        )
     };
-    let inserted = conn.prepare_cached(&sql)?.execute(params![hash, body])?;
+    let pk = match key {
+        rusqlite::types::Value::Integer(pk) => Some(pk),
+        _ => None,
+    };
     if inserted == 0 {
-        return Ok(());
+        return Ok(pk);
     }
     if replace {
-        conn.execute(
-            &format!("DELETE FROM {kind}_version_text WHERE version_hash=?1"),
-            [hash],
-        )?;
+        conn.prepare_cached(&format!(
+            "DELETE FROM {name}_version_text WHERE {column}=?1"
+        ))?
+        .execute([&key])?;
     }
-    for (idx, text_hash) in texts.iter().enumerate() {
-        if let Some(text_hash) = text_hash {
-            let text_id =
-                identities.resolve(conn, text_hash, packed.get(text_hash).map(Vec::as_slice))?;
-            conn.prepare_cached(&format!(
-                "INSERT INTO {kind}_version_text(version_hash,idx,text_id) VALUES (?1,?2,?3)"
-            ))?
-            .execute(params![hash, idx as i64, text_id])?;
+    let mut text = conn.prepare_cached(&format!(
+        "INSERT INTO {name}_version_text({column},idx,text_id) VALUES(?1,?2,?3)"
+    ))?;
+    for (idx, hash) in texts.iter().enumerate() {
+        if let Some(hash) = hash {
+            let id = identities.resolve(conn, hash, packed.get(hash).map(Vec::as_slice))?;
+            text.execute(params![key, idx as i64, id])?;
         }
     }
+    let mut blob = conn.prepare_cached(&format!(
+        "INSERT OR IGNORE INTO {name}_version_blob({column},blob_hash) VALUES(?1,?2)"
+    ))?;
     for block in blocks {
         let attachments: &[polylogue_model::Attachment] = match block {
             Block::Image(a) | Block::File(a) => std::slice::from_ref(a),
@@ -128,12 +169,12 @@ fn store_value(
             _ => &[],
         };
         for attachment in attachments {
-            if let Some(blob) = attachment.blob {
-                conn.prepare_cached(&format!("INSERT OR IGNORE INTO {kind}_version_blob(version_hash,blob_hash) VALUES (?1,?2)"))?.execute(params![hash,blob.0.as_slice()])?;
+            if let Some(hash) = attachment.blob {
+                blob.execute(params![key, hash.0.as_slice()])?;
             }
         }
     }
-    Ok(())
+    Ok(pk)
 }
 
 pub(crate) fn store_message(
@@ -143,12 +184,12 @@ pub(crate) fn store_message(
     text_rows: TextRows<'_>,
     replace: bool,
     admitted: Option<u64>,
-) -> Result<()> {
+) -> Result<i64> {
     prepared.projection.validate(message.blocks.len())?;
     if prepared.hash != prepared.projection.source_version.0 {
         return Err(polylogue_model::bundle::BundleError::SourceVersionMismatch.into());
     }
-    store_value(
+    let pk = store_value(
         conn,
         VersionKind::Message,
         ValueRows {
@@ -159,23 +200,24 @@ pub(crate) fn store_message(
         },
         text_rows,
         replace,
-    )?;
+    )?
+    .expect("message versions have integer keys");
     // A stored version no source row chose is deleted before the commit.
     conn.prepare_cached(
-        "INSERT OR IGNORE INTO temp.unreferenced_version(kind,version_hash) VALUES ('message',?1)",
+        "INSERT OR IGNORE INTO temp.unreferenced_value(kind,value_pk) VALUES ('message',?1)",
     )?
-    .execute([prepared.hash.as_slice()])?;
+    .execute([pk])?;
     let layout = message_layout(&prepared.projection)?;
     conn.execute(
-        "INSERT INTO message_projection(version_hash,layout,admitted) VALUES (?1,?2,?3)
-         ON CONFLICT(version_hash) DO UPDATE SET layout=excluded.layout,
+        "INSERT INTO message_projection(version_pk,layout,admitted) VALUES (?1,?2,?3)
+         ON CONFLICT(version_pk) DO UPDATE SET layout=excluded.layout,
          admitted=CASE WHEN message_projection.admitted IS NULL THEN excluded.admitted
              WHEN excluded.admitted IS NULL THEN message_projection.admitted
              ELSE max(message_projection.admitted,excluded.admitted) END
          WHERE layout IS NOT excluded.layout OR (excluded.admitted IS NOT NULL
              AND (message_projection.admitted IS NULL OR excluded.admitted>message_projection.admitted))",
         params![
-            prepared.hash.as_slice(),
+            pk,
             layout,
             admitted
                 .map(i64::try_from)
@@ -185,7 +227,7 @@ pub(crate) fn store_message(
                 ))?
         ],
     )?;
-    Ok(())
+    Ok(pk)
 }
 
 pub(crate) fn message_layout(projection: &MessageProjection) -> Result<Vec<u8>> {
@@ -195,31 +237,29 @@ pub(crate) fn message_layout(projection: &MessageProjection) -> Result<Vec<u8>> 
     ))?)
 }
 
-pub(crate) fn read<T: DeserializeOwned>(
-    conn: &Connection,
-    kind: VersionKind,
-    hash: &[u8],
-) -> Result<T> {
-    let kind = kind.name();
+pub(crate) fn read_document(conn: &Connection, hash: &[u8]) -> Result<polylogue_model::Document> {
     let body: Vec<u8> = conn
-        .prepare_cached(&format!(
-            "SELECT body FROM {kind}_version WHERE version_hash=?1"
-        ))?
-        .query_row([hash], |r| r.get(0))?;
-    read_body(conn, kind, hash, &body)
+        .prepare_cached("SELECT body FROM document_version WHERE version_hash=?1")?
+        .query_row([hash], |row| row.get(0))?;
+    read_body(conn, "document", &hash, &body)
 }
 
 fn read_body<T: DeserializeOwned>(
     conn: &Connection,
     kind: &str,
-    hash: &[u8],
+    key: &dyn rusqlite::ToSql,
     body: &[u8],
 ) -> Result<T> {
     let mut value: serde_json::Value = encoding::unpack_json(body)?;
+    let column = if kind == "message" {
+        "version_pk"
+    } else {
+        "version_hash"
+    };
     let mut statement = conn.prepare_cached(&format!(
-        "SELECT v.idx,t.body FROM {kind}_version_text v JOIN text t ON t.id=v.text_id WHERE v.version_hash=?1 ORDER BY v.idx"
+        "SELECT v.idx,t.body FROM {kind}_version_text v JOIN text t ON t.id=v.text_id WHERE v.{column}=?1 ORDER BY v.idx"
     ))?;
-    let mut rows = statement.query([hash])?;
+    let mut rows = statement.query([key])?;
     while let Some(row) = rows.next()? {
         let idx: i64 = row.get(0)?;
         let packed: Vec<u8> = row.get(1)?;
@@ -243,16 +283,26 @@ pub(crate) fn read_message(
 ) -> Result<Option<(Message, MessageProjection)>> {
     let stored = conn
         .query_row(
-            "SELECT v.body,p.layout FROM message_version v
-         LEFT JOIN message_projection p USING(version_hash) WHERE v.version_hash=?1",
+            "SELECT b.body,p.layout,v.pk FROM message_version v
+         LEFT JOIN message_version_body b ON b.version_pk=v.pk
+         LEFT JOIN message_projection p ON p.version_pk=v.pk WHERE v.version_hash=?1",
             [hash],
-            |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Option<Vec<u8>>>(1)?)),
+            |row| {
+                Ok((
+                    row.get::<_, Option<Vec<u8>>>(0)?,
+                    row.get::<_, Option<Vec<u8>>>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
         )
         .optional()?;
-    let Some((body, layout)) = stored else {
+    let Some((body, layout, pk)) = stored else {
         return Ok(None);
     };
-    let message: Message = read_body(conn, "message", hash, &body)?;
+    let body = body.ok_or_else(|| {
+        crate::StoreError::Invalid("stored message version has no payload".into())
+    })?;
+    let message: Message = read_body(conn, "message", &pk, &body)?;
     let projection = message_projection(hash, layout.as_deref(), message.blocks.len())?;
     projection.validate(message.blocks.len())?;
     if projection.block_count == message.blocks.len() as u64
@@ -321,22 +371,27 @@ fn reference_triggers() -> String {
              WHEN OLD.{column} IS NOT NEW.{column} BEGIN {insert} END;\n"
         ));
     };
-    for (name, kind) in [("message", "message"), ("document", "document")] {
-        trigger(
-            &format!("{name}_source"),
-            &format!("{name}_source"),
-            "version_hash",
-            "unreferenced_version",
-            Some(kind),
-        );
-    }
+    trigger(
+        "document_source",
+        "document_source",
+        "version_hash",
+        "unreferenced_version",
+        Some("document"),
+    );
+    trigger(
+        "message_source",
+        "message_source",
+        "version_pk",
+        "unreferenced_value",
+        Some("message"),
+    );
     // Context a parser keeps holds an earlier message body after the shown
     // source moved on; releasing the context makes the body a candidate.
     trigger(
         "parser_context",
         "parser_context",
-        "version_hash",
-        "unreferenced_version",
+        "version_pk",
+        "unreferenced_value",
         Some("message"),
     );
     for name in ["event", "link"] {
@@ -385,7 +440,14 @@ pub(crate) fn remove_unreferenced(
 ) -> Result<()> {
     for kind in VersionKind::ALL {
         let name = kind.name();
-        let (table, stored_key, key, candidates) = if kind.content() {
+        let (table, stored_key, key, candidates) = if matches!(kind, VersionKind::Message) {
+            (
+                "message_version".to_owned(),
+                "pk",
+                "version_pk",
+                "unreferenced_value",
+            )
+        } else if kind.content() {
             (
                 format!("{name}_version"),
                 "version_hash",
@@ -401,12 +463,17 @@ pub(crate) fn remove_unreferenced(
             )
         };
         let context = if matches!(kind, VersionKind::Message) {
-            " AND NOT EXISTS(SELECT 1 FROM parser_context c WHERE c.version_hash=t.version_hash)"
+            " AND NOT EXISTS(SELECT 1 FROM parser_context c WHERE c.version_pk=t.pk)"
         } else {
             ""
         };
+        let candidate_key = if candidates == "unreferenced_value" {
+            "value_pk"
+        } else {
+            "version_hash"
+        };
         conn.prepare_cached(&format!(
-            "DELETE FROM {table} AS t WHERE {stored_key} IN (SELECT {key} FROM temp.{candidates} WHERE kind=?1)
+            "DELETE FROM {table} AS t WHERE {stored_key} IN (SELECT {candidate_key} FROM temp.{candidates} WHERE kind=?1)
              AND NOT EXISTS(SELECT 1 FROM {name}_source s WHERE s.{key}=t.{stored_key}){context}"
         ))?
         .execute([name])?;
@@ -444,16 +511,23 @@ pub(crate) fn remove_unreferenced(
 
 /// The version already owns these references; selection need not resolve
 /// their text hashes again.
-pub(crate) fn text_ids(
+pub(crate) fn document_text_ids(
     conn: &Connection,
-    kind: VersionKind,
     hash: &[u8],
 ) -> Result<std::collections::BTreeMap<usize, i64>> {
     Ok(conn
-        .prepare_cached(&format!(
-            "SELECT idx,text_id FROM {}_version_text WHERE version_hash=?1",
-            kind.name()
-        ))?
-        .query_map([hash], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .prepare_cached("SELECT idx,text_id FROM document_version_text WHERE version_hash=?1")?
+        .query_map([hash], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?)
+}
+
+/// Text references already registered by the writer; no natural-key lookup.
+pub(crate) fn message_text_ids(
+    conn: &Connection,
+    pk: i64,
+) -> Result<std::collections::BTreeMap<usize, i64>> {
+    Ok(conn
+        .prepare_cached("SELECT idx,text_id FROM message_version_text WHERE version_pk=?1")?
+        .query_map([pk], |row| Ok((row.get(0)?, row.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?)
 }

@@ -37,13 +37,21 @@ fn capture_log(captures: &[&[&str]]) -> Vec<u8> {
     log
 }
 
-/// Every row of every table of `index.db`, as text, sorted per table.
+/// Every row of every table, sorted, with local version keys named by their
+/// canonical hashes. The full payload and every reference remain compared.
 fn dump(w: &ClaudeHome) -> BTreeMap<String, Vec<String>> {
     let conn = rusqlite::Connection::open_with_flags(
         w.root.join("index.db"),
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     )
     .unwrap();
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap(),
+        0
+    );
     let tables: Vec<String> = conn
         .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
         .unwrap()
@@ -53,12 +61,22 @@ fn dump(w: &ClaudeHome) -> BTreeMap<String, Vec<String>> {
         .unwrap();
     let mut out = BTreeMap::new();
     for table in tables {
-        let mut statement = conn.prepare(&format!("SELECT * FROM \"{table}\"")).unwrap();
+        let statement = conn.prepare(&format!("SELECT * FROM \"{table}\"")).unwrap();
         let names: Vec<String> = statement
             .column_names()
             .into_iter()
             .map(str::to_owned)
             .collect();
+        // Version row keys follow insertion order. Translate them, rather than
+        // dropping them: a wrong payload/reference still names the wrong hash.
+        let columns = names.iter().map(|name| {
+            if name == "version_pk" || (table == "message_version" && name == "pk") {
+                format!("(SELECT v.version_hash FROM message_version v WHERE v.pk=t.\"{name}\") AS \"{name}\"")
+            } else { format!("t.\"{name}\"") }
+        }).collect::<Vec<_>>().join(",");
+        let mut statement = conn
+            .prepare(&format!("SELECT {columns} FROM \"{table}\" t"))
+            .unwrap();
         let mut rows: Vec<String> = statement
             .query_map([], |row| {
                 let mut text = String::new();

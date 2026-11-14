@@ -93,7 +93,7 @@ fn source(batch: &Batch) -> ParsedSource {
 
 fn text(index: &Connection) -> String {
     let hash: Vec<u8> = index
-        .query_row("SELECT version_hash FROM message_source", [], |row| {
+        .query_row("SELECT v.version_hash FROM message_source s JOIN message_version v ON v.pk=s.version_pk", [], |row| {
             row.get(0)
         })
         .unwrap();

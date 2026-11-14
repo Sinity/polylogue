@@ -62,7 +62,7 @@ fn rebuilding_the_source7_cache_preserves_actual_pending_authored_intent() {
     let (archive, lock) = Archive::open_primary(&root, &store).unwrap();
     drop(lock);
     std::fs::remove_file(archive.index_db()).unwrap();
-    polylogue_store::fixture::primary_index_before_originals(&archive.index_db()).unwrap();
+    polylogue_store::fixture::primary_previous_index(&archive.index_db()).unwrap();
     let (archive, _lock) = Archive::open_primary(&root, &store).unwrap();
     assert_eq!(queued(), before);
     sdk.prepare_request(&request).unwrap();

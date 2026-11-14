@@ -911,7 +911,7 @@ impl Reader<'_> {
         let conn = self.conn()?;
         let id = crate::parser_context::canonical_message(conn, id)?;
         let hash = conn.query_row(
-            "SELECT s.version_hash FROM message m LEFT JOIN message_source s ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain
+            "SELECT (SELECT version_hash FROM message_version WHERE pk=s.version_pk) FROM message m LEFT JOIN message_source s ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain
              WHERE m.id=?1",
             [id.to_string()], |row| row.get::<_, Option<Vec<u8>>>(0),
         ).optional()?;
@@ -935,7 +935,7 @@ impl Reader<'_> {
                 "SELECT p.admitted,i.id,s.chain,s.source_end FROM message m
              JOIN message_source s ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain
              JOIN input_ref i ON i.pk=s.input_pk
-             LEFT JOIN message_projection p ON p.version_hash=s.version_hash WHERE m.id=?1",
+             LEFT JOIN message_projection p ON p.version_pk=s.version_pk WHERE m.id=?1",
                 [id.to_string()],
                 |row| {
                     Ok(MessageEvidence {
@@ -1056,12 +1056,12 @@ impl Reader<'_> {
         const COLUMNS: &str = "m.pk, m.id, m.role, m.prompt_kind, m.model, m.at_time, m.parent_id,
             m.input_tokens, m.cache_read_tokens, m.cache_write_tokens, m.output_tokens,
             m.reasoning_tokens, m.service_tier, m.stop_reason, m.duration_ms, m.attrs_json,
-            m.cache_write_1h_tokens, m.speed, shown.version_hash, projection.layout,
+            m.cache_write_1h_tokens, m.speed, (SELECT version_hash FROM message_version WHERE pk=shown.version_pk), projection.layout,
             CASE WHEN projection.layout IS NULL THEN
                 (SELECT count(*) FROM block WHERE message_pk=m.pk) ELSE 0 END,
             projection.admitted, source_input.id, shown.chain, shown.source_end";
         const SOURCE: &str = "FROM message m LEFT JOIN message_source shown ON shown.message_pk=m.pk AND shown.input_pk=m.input_pk AND shown.chain=m.source_chain
-            LEFT JOIN message_projection projection ON projection.version_hash=shown.version_hash
+            LEFT JOIN message_projection projection ON projection.version_pk=shown.version_pk
             LEFT JOIN input_ref source_input ON source_input.pk=shown.input_pk";
         const ORDER: &str = "ORDER BY m.session_order, m.id";
         let start: Option<(String, String)> = match from {

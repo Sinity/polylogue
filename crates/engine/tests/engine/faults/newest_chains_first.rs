@@ -47,7 +47,7 @@ fn readings(
     let rows = serde_json::json!({
         "sources": reader.query(
             "SELECT m.id AS message, i.id AS input, s.chain, s.source_start, s.source_end,
-                    s.main, s.completion, hex(s.version_hash) AS version
+                    s.main, s.completion, hex((SELECT version_hash FROM message_version WHERE pk=s.version_pk)) AS version
              FROM message_source s JOIN message m ON m.pk = s.message_pk
              JOIN input_ref i ON i.pk = s.input_pk
              ORDER BY m.id, i.id, s.chain, s.source_start",

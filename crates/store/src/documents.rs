@@ -2,7 +2,6 @@
 //! precedence, and reads in the reader's read transaction.
 use crate::encoding::hex;
 use crate::encoding::{PreparedDocument, restore_text, unpack_block, unpack_json, unpack_text};
-use crate::versions::VersionKind;
 use crate::{Reader, Result, StoreError};
 use polylogue_model::{Block, Document, DocumentId, DocumentRow, Json};
 use rusqlite::{OptionalExtension, Transaction, params};
@@ -45,9 +44,8 @@ pub(crate) fn write(
         .prepare_cached("SELECT pk FROM document WHERE pk=?1")?
         .query_row([reserved.pk], |row| row.get::<_, i64>(0))
         .optional()?;
-    crate::versions::store(
+    crate::versions::store_document(
         tx,
-        VersionKind::Document,
         &prepared.hash,
         &prepared.body,
         &doc.blocks,
@@ -166,7 +164,7 @@ fn insert_blocks(
     document: &Document,
     prepared: &PreparedDocument,
 ) -> Result<()> {
-    let stored_texts = crate::versions::text_ids(tx, VersionKind::Document, &prepared.hash)?;
+    let stored_texts = crate::versions::document_text_ids(tx, &prepared.hash)?;
     for (idx, ((block, body), data)) in document
         .blocks
         .iter()

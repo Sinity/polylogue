@@ -1,7 +1,7 @@
 //! Current table declarations. The durable register converts its exact
 //! immediate predecessor at exclusive open; other differences are refused.
-//! Standalone Index1 additions retain parsed progress. Primary cache3 records
-//! native original-material admission; its exact public Index1 predecessor rebuilds.
+//! Index2 and primary cache4 use narrow message-version references.
+//! Earlier parsed formats rebuild from retained originals.
 //! Unknown current shapes refuse.
 //! Indexes from another format are set aside and rebuilt. Paid-vector
 //! stores retain their bytes and gain declared additions at normal open.
@@ -10,7 +10,6 @@ use crate::{Result, StoreError};
 use rusqlite::{Connection, OptionalExtension};
 use std::collections::HashSet;
 
-mod index_transition;
 mod request_hash_transition;
 
 pub const ARCHIVE: &str = concat!(
@@ -82,9 +81,9 @@ const EMBEDDINGS_ADDITIONS: &[&str] = &[
 pub const ARCHIVE_VERSION: u32 = 3;
 
 /// The index schema and row encoding version. Reading versions are independent.
-pub const INDEX_VERSION: u32 = 1;
+pub const INDEX_VERSION: u32 = 2;
 /// The primary cache indexes original materials, native admission and canonical request hashes.
-pub const PRIMARY_INDEX_VERSION: u32 = 3;
+pub const PRIMARY_INDEX_VERSION: u32 = 4;
 
 pub const fn index_version(primary: bool) -> u32 {
     if primary {
@@ -167,8 +166,8 @@ fn create_index_in(conn: &Connection, primary: bool) -> Result<()> {
 
 /// Creates the index in an empty file, or opens one at this version with the
 /// declared tables, adding any read index it lacks. Any other index is
-/// refused unchanged. The declared Index1 additions retain parsed rows and
-/// progress; an unknown Index1 shape is never reset at archive open.
+/// refused unchanged. Earlier versions rebuild through archive open; an
+/// unknown current-format shape is never reset.
 pub fn ensure_index(conn: &Connection) -> Result<()> {
     ensure_index_in(conn, false)
 }
@@ -181,7 +180,7 @@ fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
     check_format(conn, "index")?;
     let found = version(conn)?;
     let wanted = index_version(primary);
-    if found > wanted {
+    if found != 0 && found != wanted {
         return Err(StoreError::IndexVersion { found, wanted });
     }
     let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
@@ -224,23 +223,11 @@ fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
                 same_index_schema_in(conn, primary)
             }
         };
-        if primary && found == 1 && index_transition::before_native(&tx)? {
-            // Its native contexts lack material location and owner record hash.
-            // The archive open preserves this exact predecessor and rebuilds
-            // the cache from the confirmed originals, spool and paid stores.
-            return Err(StoreError::IndexVersion { found, wanted });
-        }
         if !current(&tx)? {
-            index_transition::apply(&tx, primary)?;
-            if !current(&tx)? {
-                return Err(StoreError::Invalid(
-                    "Index1 additions did not produce the current schema; the transaction was rolled back".into(),
-                ));
-            }
-        }
-        if primary && found < wanted {
-            request_hash_transition::apply(&tx, true)?;
-            set_version(&tx, wanted)?;
+            return Err(StoreError::NoMigration {
+                database: "index",
+                found,
+            });
         }
     }
     tx.commit()?;
@@ -279,15 +266,16 @@ pub(crate) fn build_index_identity(primary: bool) -> Result<String> {
 }
 
 #[cfg(any(test, feature = "fixture"))]
-pub(crate) fn primary_before_originals() -> Result<Connection> {
-    let conn = index_transition::predecessor_in(true, true, true, false)?;
-    set_version(&conn, 1)?;
+pub(crate) fn primary_previous_index() -> Result<Connection> {
+    let conn = Connection::open_in_memory()?;
+    conn.execute_batch(
+        "CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT NOT NULL) STRICT;
+        CREATE TABLE message_version(version_hash BLOB NOT NULL UNIQUE,body BLOB NOT NULL) STRICT;
+        INSERT INTO message_version VALUES(x'010203',x'040506');",
+    )?;
+    set_version(&conn, 3)?;
     conn.pragma_update(None, "application_id", FORMAT_ID)?;
     crate::archive::generation::create(&conn)?;
-    conn.execute(
-        "INSERT INTO meta VALUES ('primary_cache',?1)",
-        [uuid::Uuid::now_v7().to_string()],
-    )?;
     Ok(conn)
 }
 
@@ -344,7 +332,7 @@ pub fn ensure_archive(conn: &Connection) -> Result<()> {
         }
     }
     if found != 0 && found < ARCHIVE_VERSION {
-        request_hash_transition::apply(&tx, false)?;
+        request_hash_transition::apply(&tx)?;
     }
     if found != ARCHIVE_VERSION {
         set_version(&tx, ARCHIVE_VERSION)?;

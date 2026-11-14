@@ -212,7 +212,7 @@ impl EventRow {
 }
 
 const MESSAGE_COLUMNS: &str = "m.pk, m.id,
-    coalesce(s.version_hash, (SELECT CAST(count(*) || ':' || coalesce(max(b.pk), 0) AS BLOB)
+    coalesce((SELECT version_hash FROM message_version WHERE pk=s.version_pk), (SELECT CAST(count(*) || ':' || coalesce(max(b.pk), 0) AS BLOB)
                               FROM block b WHERE b.message_pk = m.pk)),
     m.on_active_path, m.at,
     EXISTS(SELECT 1 FROM message c WHERE c.session_pk = m.session_pk AND c.parent_id = m.id

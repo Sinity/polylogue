@@ -340,14 +340,14 @@ impl Archive {
     }
 
     /// The caller holds the archive lock. Parse positions in the index
-    /// resume an interrupted build. Declared Index1 additions retain those
-    /// positions; unknown current shapes refuse. An index from another format
+    /// resume an interrupted build. Unknown current shapes refuse.
+    /// An index from another format
     /// is set aside under its schema identity and a new one is built from the
     /// archive's stored bytes; the set-aside file is removed once that first
     /// build ends ([`index_rebuild`]).
     pub(crate) fn prepare_index(&self) -> Result<()> {
         let path = self.index_db();
-        let mut index = open_write(&path, cache::SETUP)?;
+        let mut index = open_runtime_writer(&path, cache::SETUP)?;
         if let Err(error) = self.ensure_index(&index) {
             let Some(reason) = index_rebuild::reason(&error) else {
                 return Err(error);

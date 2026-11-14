@@ -148,7 +148,7 @@ CREATE TABLE message_source (
   at                INTEGER,                -- this reading's own source time (ms), from which order times are
                                             --   computed again when an earlier reading's time changes
   completion        TEXT NOT NULL CHECK (completion IN ('finished','unknown','in_progress')),
-  version_hash      BLOB NOT NULL REFERENCES message_version(version_hash), -- BLAKE3 of the version's canonical JSON: the last tie-break
+  version_pk        INTEGER NOT NULL REFERENCES message_version(pk), -- canonical hash lives in the narrow version row
   PRIMARY KEY (message_pk, input_pk, chain)
 ) STRICT;
 CREATE INDEX message_source_input ON message_source(input_pk, chain, source_start);   -- foreign-key check; the next record's start
@@ -951,27 +951,28 @@ CREATE TRIGGER unused_changed AFTER UPDATE OF what, count ON unused BEGIN
   INSERT INTO unused_count(what, n) VALUES (NEW.what, NEW.count) ON CONFLICT(what) DO UPDATE SET n = n + excluded.n;
 END;
 
--- Packed readings are shared across input chains. Text stays interned separately.
--- A rowid table: a version body averages about 1.7 KB, and a WITHOUT ROWID
--- row over about 1 KB spills to an overflow page, which left 40% of this
--- table's pages unused; a rowid row stays on its leaf page up to about 4 KB.
+-- Referenced metadata stays narrow; payload pages are read only for content.
 CREATE TABLE message_version (
-  version_hash BLOB NOT NULL UNIQUE,
+  pk INTEGER PRIMARY KEY,
+  version_hash BLOB NOT NULL UNIQUE
+) STRICT;
+CREATE TABLE message_version_body (
+  version_pk INTEGER PRIMARY KEY REFERENCES message_version(pk) ON DELETE CASCADE,
   body BLOB NOT NULL
 ) STRICT;
 CREATE TABLE message_projection (
-  version_hash BLOB PRIMARY KEY REFERENCES message_version(version_hash) ON DELETE CASCADE,
+  version_pk INTEGER PRIMARY KEY REFERENCES message_version(pk) ON DELETE CASCADE,
   layout BLOB NOT NULL, -- original u64 block count and aligned original ordinals
   admitted INTEGER CHECK(admitted > 0) -- latest immutable admission contributing these facts
 ) STRICT, WITHOUT ROWID;
 CREATE TABLE message_version_text (
-  version_hash BLOB NOT NULL REFERENCES message_version(version_hash) ON DELETE CASCADE,
+  version_pk INTEGER NOT NULL REFERENCES message_version(pk) ON DELETE CASCADE,
   idx INTEGER NOT NULL,
   text_id INTEGER NOT NULL REFERENCES text(id),
-  PRIMARY KEY(version_hash, idx)
+  PRIMARY KEY(version_pk, idx)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX message_version_text_id ON message_version_text(text_id);
--- A rowid table, as message_version is.
+-- Document payloads retain their own hash-addressed format.
 CREATE TABLE document_version (
   version_hash BLOB NOT NULL UNIQUE,
   body BLOB NOT NULL
@@ -1024,14 +1025,14 @@ CREATE TABLE link_source (
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX link_source_input ON link_source(input_pk, chain);
 
-CREATE INDEX message_source_version ON message_source(version_hash);
+CREATE INDEX message_source_version ON message_source(version_pk);
 CREATE INDEX document_source_version ON document_source(version_hash);
 CREATE INDEX event_source_value ON event_source(value_pk);
 CREATE INDEX link_source_value ON link_source(value_pk);
 CREATE TABLE message_version_blob (
-  version_hash BLOB NOT NULL REFERENCES message_version(version_hash) ON DELETE CASCADE,
+  version_pk INTEGER NOT NULL REFERENCES message_version(pk) ON DELETE CASCADE,
   blob_hash BLOB NOT NULL,
-  PRIMARY KEY(version_hash,blob_hash)
+  PRIMARY KEY(version_pk,blob_hash)
 ) STRICT, WITHOUT ROWID;
 CREATE TABLE document_version_blob (
   version_hash BLOB NOT NULL REFERENCES document_version(version_hash) ON DELETE CASCADE,

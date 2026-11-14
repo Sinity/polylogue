@@ -275,7 +275,7 @@ fn natural_rows(w: &TestArchive) -> Json {
     for (name, sql) in [
         (
             "sources",
-            "SELECT m.id,i.id AS input,s.chain,s.source_start,s.source_end,(s.input_pk=m.input_pk AND s.chain=m.source_chain) AS shown,hex(s.version_hash) AS version FROM message_source s JOIN message m ON m.pk=s.message_pk JOIN input_ref i ON i.pk=s.input_pk ORDER BY m.id,i.id,s.chain",
+            "SELECT m.id,i.id AS input,s.chain,s.source_start,s.source_end,(s.input_pk=m.input_pk AND s.chain=m.source_chain) AS shown,hex((SELECT version_hash FROM message_version WHERE pk=s.version_pk)) AS version FROM message_source s JOIN message m ON m.pk=s.message_pk JOIN input_ref i ON i.pk=s.input_pk ORDER BY m.id,i.id,s.chain",
         ),
         (
             "order",
@@ -1054,8 +1054,8 @@ fn unreferenced(w: &TestArchive) -> Json {
         r.query(
             "SELECT
            (SELECT count(*) FROM message_version v
-            WHERE NOT EXISTS(SELECT 1 FROM message_source s WHERE s.version_hash = v.version_hash)
-              AND NOT EXISTS(SELECT 1 FROM parser_context c WHERE c.version_hash = v.version_hash))
+            WHERE NOT EXISTS(SELECT 1 FROM message_source s WHERE s.version_pk = v.pk)
+              AND NOT EXISTS(SELECT 1 FROM parser_context c WHERE c.version_pk = v.pk))
              AS message_versions,
            (SELECT count(*) FROM document_version v
             WHERE NOT EXISTS(SELECT 1 FROM document_source s WHERE s.version_hash = v.version_hash))
