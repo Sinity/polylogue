@@ -70,6 +70,10 @@ impl Cursor {
         extents: Option<&ExtentList>,
         store: &impl super::super::PlainBlobs,
     ) -> Result<usize> {
+        let limit = crate::read::limit::ReadLimit::current();
+        if let Some(limit) = &limit {
+            limit.check()?;
+        }
         if out.is_empty() || self.position == self.end {
             return Ok(0);
         }
@@ -86,6 +90,11 @@ impl Cursor {
             self.current = Some(reader);
         }
         let want = out.len().min(self.left.try_into().unwrap_or(usize::MAX));
+        let want = if limit.is_some() {
+            want.min(65536)
+        } else {
+            want
+        };
         let count = self
             .current
             .as_mut()

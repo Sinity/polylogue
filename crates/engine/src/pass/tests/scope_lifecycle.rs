@@ -886,3 +886,67 @@ fn engine_stop_interrupts_a_running_statement_without_closing_other_readers() {
         7
     );
 }
+
+#[test]
+fn stopping_started_context_replay_keeps_the_checkpoint_and_new_raw_bytes() {
+    use polylogue_store::fault::{self, Action};
+    let home = ClaudeHome::new();
+    home.append(
+        "parser-stop.jsonl",
+        &claude_user("one", "parser-stop", &"retained ".repeat(9000)),
+    );
+    let path = home.file("parser-stop.jsonl");
+    let (mut first, lock) = crate::import::tests::engine(&home, 4096);
+    assert!(first.run_pass().unwrap().errors.is_empty());
+    let input = first.inputs[&path].input_id.clone();
+    let before = first.reads.reader().unwrap().query(
+        "SELECT p.parsed_upto,hex(p.checkpoint) AS checkpoint,p.status FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id=?1",
+        &[polylogue_store::SqlValue::Text(input.clone())]).unwrap();
+    let length = std::fs::metadata(&path).unwrap().len();
+    let archive = first.archive.clone();
+    drop(first);
+    drop(lock);
+    let index = rusqlite::Connection::open(archive.index_db()).unwrap();
+    index.execute("DELETE FROM parser_context_state WHERE input_pk=(SELECT pk FROM input_ref WHERE id=?1)",[&input]).unwrap();
+    drop(index);
+    home.append(
+        "parser-stop.jsonl",
+        &claude_user("two", "parser-stop", "new acquired bytes"),
+    );
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
+    let stop = engine.stop_request();
+    fault::clear();
+    fault::arm("parse.context_prefix", &input, Action::Hold, 0, 1);
+    let work = std::thread::spawn(move || {
+        let result = engine.run_pass();
+        (engine, result)
+    });
+    let until = Instant::now() + Duration::from_secs(10);
+    while !fault::held() && !work.is_finished() && Instant::now() < until {
+        std::thread::yield_now();
+    }
+    let reached = fault::held();
+    stop.request();
+    fault::release();
+    let (engine, result) = work.join().unwrap();
+    fault::clear();
+    assert!(
+        reached,
+        "started parser did not reach context reconstruction"
+    );
+    assert!(matches!(result, Err(EngineError::Stopped)), "{result:?}");
+    let reader = engine.reads.reader().unwrap();
+    let after=reader.query(
+        "SELECT p.parsed_upto,hex(p.checkpoint) AS checkpoint,p.status FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id=?1",
+        &[polylogue_store::SqlValue::Text(input.clone())]).unwrap();
+    assert_eq!(
+        after, before,
+        "cancelled private parse advanced or failed its checkpoint"
+    );
+    let progress = reader.input_progress(&input).unwrap().unwrap();
+    assert_eq!(progress.parsed_upto, length);
+    assert!(
+        progress.length > length,
+        "acquired bytes were not kept through ordinary writer custody"
+    );
+}
