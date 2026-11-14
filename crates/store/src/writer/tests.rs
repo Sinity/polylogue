@@ -407,6 +407,7 @@ fn a_tool_result_pairs_with_its_call_in_either_order() {
             )
             .unwrap();
         assert_eq!(hits[0]["n"], 1);
+        items::assert_matches_rows(&w, "s");
     }
 }
 

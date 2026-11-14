@@ -135,6 +135,7 @@ fn compatible_partials_union_without_downgrading_full_or_pinned_readings() {
         pinned.message_with_projection(&message.id).unwrap(),
         Some(first.clone())
     );
+    super::items::assert_matches_rows(&w, "s");
     let second = selected(&message, &[0, 1, 3]);
     write(
         &w,
@@ -147,10 +148,12 @@ fn compatible_partials_union_without_downgrading_full_or_pinned_readings() {
     drop(pinned);
     let full = selected(&message, &[0, 1, 2, 3]);
     assert_eq!(current(&w, &message.id), full);
+    super::items::assert_matches_rows(&w, "s");
     let mut replay = projected_batch("second", second.0, second.1);
     replay.change = Change::Reparse { chain: 1 };
     write(&w, replay);
     assert_eq!(current(&w, &message.id), full);
+    super::items::assert_matches_rows(&w, "s");
     let reader = pool.reader().unwrap();
     assert_eq!(
         reader

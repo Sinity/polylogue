@@ -117,6 +117,7 @@ fn routes_merge_by_field() {
     for order in [[0, 1], [1, 0]] {
         let w = store(&readings, &order);
         assert_eq!(shown(&w), expected, "order {order:?}");
+        super::items::assert_matches_rows(&w, "s");
         assert_eq!(
             routes(&w),
             (

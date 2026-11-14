@@ -399,6 +399,7 @@ fn retracting_the_winner_restores_complete_structured_payloads_without_parsing_s
     let pool = ReadPool::open(&w.archive).unwrap();
     let r = pool.reader().unwrap();
     assert_eq!(r.messages(&sid("hash-order"), false).unwrap(), [original]);
+    super::items::assert_matches_rows(&w, "hash-order");
 }
 
 #[test]

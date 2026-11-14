@@ -7,7 +7,7 @@ fn stored(w: &TestArchive, session: &str) -> crate::items::StoredItems {
 }
 
 /// The stored index equals entries computed from the rows alone.
-fn assert_matches_rows(w: &TestArchive, session: &str) {
+pub(super) fn assert_matches_rows(w: &TestArchive, session: &str) {
     let pool = ReadPool::open(&w.archive).unwrap();
     let reader = pool.reader().unwrap();
     let index = reader.item_index(&sid(session)).unwrap().expect("indexed");
