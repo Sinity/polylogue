@@ -158,7 +158,7 @@ fn newest_and_older_match_the_original_query_for_retained_histories() {
     assert_eq!(a.source.path.as_deref(), Some("/home/op/chosen"));
 }
 
-fn compare_work(chains: usize, appends: usize) -> (u64, u64) {
+fn compare_work(chains: usize, appends: usize) -> (usize, usize) {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(dir.path()).unwrap();
     history(&fixture, chains, appends);
@@ -206,7 +206,13 @@ fn compare_work(chains: usize, appends: usize) -> (u64, u64) {
         after < before,
         "split discovery reads {after} pages, original reads {before}"
     );
-    (before, after)
+    let before_steps = old_newest.steps + old_older.steps;
+    let after_steps = newest.steps + older.steps;
+    assert!(
+        after_steps < before_steps,
+        "split discovery must reduce VM work too"
+    );
+    (before_steps, after_steps)
 }
 
 #[test]
@@ -215,6 +221,6 @@ fn discovery_does_not_read_both_chain_sets_parser_states_twice() {
     let large = compare_work(256, 8);
     assert!(
         large.0 - large.1 > small.0 - small.1,
-        "historical parser-state read saving must grow with history"
+        "historical parser-state VM work saving must grow with history"
     );
 }
