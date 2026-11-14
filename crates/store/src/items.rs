@@ -967,7 +967,8 @@ fn unit_entries(
                     "changed message items were not prepared".into(),
                 ));
             }
-            let id = MessageId::parse(id).map_err(StoreError::Invalid)?;
+            let id =
+                MessageId::parse(id).map_err(|error| StoreError::Invalid(error.to_string()))?;
             for entry in &mut entries {
                 if let polylogue_model::read::EntryKey::Message { message, .. } = &mut entry.key {
                     *message = id.clone();
