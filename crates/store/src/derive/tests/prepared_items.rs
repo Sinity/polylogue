@@ -1,5 +1,6 @@
 use super::*;
 use crate::derive::{Derived, Output, SessionWrite, Token, Write};
+use crate::writer::{ChainReading, InputKey, ParseStep};
 use rusqlite::{Connection, params};
 
 fn duplicate_write(
@@ -97,14 +98,45 @@ fn stale_reveal_cannot_restore_an_old_version_or_retracted_message() {
     for retract in [false, true] {
         let (mut world, conn, session, message) = hidden();
         let reveal = duplicate_write(&conn, session, message, None);
-        world.write_snapshot(
-            "session",
-            if retract {
-                Vec::new()
-            } else {
-                prose("session", 1, 2000, "newer selected content")
-            },
-        );
+        if retract {
+            let mut reading = ChainReading::new().unwrap();
+            reading
+                .push(&mut ParseStep::new(
+                    polylogue_model::Output::default(),
+                    polylogue_model::RecordCounts::default(),
+                    0..world.offset(),
+                    true,
+                ))
+                .unwrap();
+            world
+                .writer
+                .sender()
+                .unwrap()
+                .replace_chain(
+                    InputKey {
+                        id: "input-session".into(),
+                        format: "claude-code".into(),
+                        route: polylogue_model::Route::Live,
+                    },
+                    1,
+                    world.offset(),
+                    reading,
+                )
+                .unwrap();
+            world.writer.derive().unwrap();
+            assert_eq!(
+                conn.query_row("SELECT count(*) FROM message", [], |row| row
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                0,
+                "the replacement must retract the message before the stale reveal arrives"
+            );
+        } else {
+            world.write_snapshot(
+                "session",
+                prose("session", 1, 2000, "newer selected content"),
+            );
+        }
         let before: Vec<Vec<u8>> = conn
             .prepare("SELECT entry FROM session_item ORDER BY seq")
             .unwrap()
