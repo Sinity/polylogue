@@ -570,6 +570,10 @@ impl<H: Handler> Operation for Row<H> {
                 )
                 && H::default_deadline(&arguments)
                 && H::read_phase(&arguments, self.row, &caller);
+            // This child stops reads without revoking the producing parent
+            // that already handed a durable write to the writer.
+            let _stopping_read = H::read_phase(&arguments, self.row, &caller)
+                .then(|| self.daemon.cancel_read_on_stop(&cancellation));
             let guard = CancelRead(cancellation.clone());
             let daemon = Arc::clone(&self.daemon);
             let row = self.row;
@@ -625,6 +629,9 @@ fn answer<H: Handler>(
     cursor: Option<&str>,
     budget: TokenBudget,
 ) -> Answer<Value> {
+    if let Err(failure) = super::service::accepting(daemon) {
+        return failure.answer();
+    }
     let capped = H::read_cap().map(|cap| {
         let cap = std::time::Instant::now() + cap;
         ReadLimit::at(
@@ -649,9 +656,6 @@ fn answer<H: Handler>(
     let read_phase = H::read_phase(&arguments, row, caller);
     let text = H::query_text(&arguments).map(str::to_owned);
     let work = || {
-        if let Err(failure) = super::service::accepting(daemon) {
-            return failure.answer();
-        }
         if daemon.blocked() && !read_only {
             return daemon.write_refusal().answer();
         }

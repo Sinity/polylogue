@@ -816,6 +816,11 @@ impl Writer {
     /// Ends the writer thread after what it was sent; later calls fail with
     /// [`StoreError::WriterGone`].
     pub fn stop(&mut self) {
+        let started =
+            (self.handle.is_some() && self.stop.requested()).then(std::time::Instant::now);
+        if started.is_some() {
+            eprintln!("polylogue: shutdown writer drain started");
+        }
         if let Some(mut follower) = self.follower.take() {
             follower.stop();
         }
@@ -824,6 +829,12 @@ impl Writer {
         }
         if let Some(h) = self.handle.take() {
             let _ = h.join();
+        }
+        if let Some(started) = started {
+            eprintln!(
+                "polylogue: shutdown writer drain finished in {:?}",
+                started.elapsed()
+            );
         }
     }
 }

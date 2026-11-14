@@ -485,16 +485,37 @@ async fn probe(archive: &polylogue_store::Archive, budget: Duration) -> bool {
 }
 
 fn drain(mut app: Started) -> io::Result<()> {
+    let started = std::time::Instant::now();
+    eprintln!(
+        "polylogue: shutdown started at {} ms since Unix epoch",
+        super::service::now_ms()
+    );
     app.runtime.stop_accepting();
+    eprintln!(
+        "polylogue: shutdown admission stopped at {:?}",
+        started.elapsed()
+    );
     let mut failure = app.socket.shutdown().err();
+    eprintln!(
+        "polylogue: shutdown socket drain finished at {:?}",
+        started.elapsed()
+    );
     if let Some(web) = &mut app.web
         && let Err(error) = web.shutdown()
     {
         failure.get_or_insert(error);
     }
+    eprintln!(
+        "polylogue: shutdown HTTP drain finished at {:?}",
+        started.elapsed()
+    );
     if let Err(error) = app.runtime.shutdown() {
         failure.get_or_insert(error);
     }
+    eprintln!(
+        "polylogue: shutdown runtime drain finished at {:?}",
+        started.elapsed()
+    );
     failure.map_or(Ok(()), Err)
 }
 

@@ -50,12 +50,27 @@ pub struct Daemon {
     #[cfg(test)]
     pub(crate) signal_trace: Mutex<Option<Sender<crate::signals::observations::Phase>>>,
     stopping: AtomicBool,
+    /// Process shutdown cancels request reads, separately from write ownership.
+    read_stop: polylogue_store::read::limit::ReadCancellation,
     pub(super) idle_admission: super::schema::Admission,
     #[cfg(test)]
     pub(crate) read_limits: Mutex<Option<Sender<crate::test_daemon::ReadObservation>>>,
 }
 
 impl Daemon {
+    pub(crate) fn cancel_read_on_stop(
+        &self,
+        read: &polylogue_store::read::limit::ReadCancellation,
+    ) -> polylogue_store::read::limit::CancellationWake {
+        let cancelled = read.clone();
+        let wake = self.read_stop.on_cancel(move || cancelled.cancel());
+        // Registration can race a stop that already copied its callbacks.
+        if self.read_stop.is_cancelled() {
+            read.cancel();
+        }
+        wake
+    }
+
     pub(crate) fn invocation(
         &self,
         authorship: &polylogue_model::authorship::Authorship,
@@ -924,6 +939,7 @@ impl Runtime {
         if let Some(stop) = &self.engine_stop {
             stop.request();
         }
+        self.daemon.read_stop.cancel();
         self.daemon.warm.clear();
         self.daemon.reads.close();
     }
@@ -977,7 +993,14 @@ impl Runtime {
         // ones end (the closed reader pool ends any still waiting for a read).
         // Work that ignores its cancellation is left behind after the bound,
         // so a stop never hangs on it.
+        let executor_started = self.engine.as_ref().map(|_| Instant::now());
         let running = self.daemon.executor.stop(super::executor::STOP_WAIT);
+        if let Some(started) = executor_started {
+            eprintln!(
+                "polylogue: shutdown executor drain finished in {:?}",
+                started.elapsed()
+            );
+        }
         if running > 0 {
             eprintln!(
                 "polylogue: {running} request(s) did not stop within {} s; stopping without them",
@@ -1023,6 +1046,8 @@ impl Runtime {
             let _ = tx.send(LoopMsg::Stop);
         }
         if let Some(engine) = self.engine.take() {
+            let started = Instant::now();
+            eprintln!("polylogue: shutdown engine drain started");
             match engine.join() {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => {
@@ -1032,6 +1057,10 @@ impl Runtime {
                     failure.get_or_insert_with(|| std::io::Error::other("loop thread panicked"));
                 }
             }
+            eprintln!(
+                "polylogue: shutdown engine drain finished in {:?}",
+                started.elapsed()
+            );
         }
         self.daemon.reads.close();
         self.completion_scope.take();
@@ -1247,6 +1276,7 @@ pub fn start(
         #[cfg(test)]
         signal_trace: Mutex::new(None),
         stopping: AtomicBool::new(false),
+        read_stop: Default::default(),
         idle_admission: super::schema::Admission::default(),
         #[cfg(test)]
         read_limits: Mutex::new(None),

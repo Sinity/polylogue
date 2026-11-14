@@ -20,15 +20,18 @@ pub(crate) type Produce = Box<
 pub(crate) fn start(
     daemon: &Arc<Daemon>,
     class: Class,
-    limit: ReadLimit,
+    mut limit: ReadLimit,
     invocation: Invocation,
     produce: Produce,
 ) -> Result<StreamInput, Failure> {
+    // The producing parent's token remains live for any admitted write.
+    limit.cancellation = limit.cancellation.child();
     let scope = daemon.reads.scope_token()?;
     let (output, input) = super::stream_buffer::buffer(daemon.archive.staging_dir());
     let worker = Arc::clone(daemon);
     let deadline = limit.deadline();
     let job = move || {
+        let _stopping_read = worker.cancel_read_on_stop(&limit.cancellation);
         let mut output = output;
         let result = limit.scope(|| {
             limit.check()?;
