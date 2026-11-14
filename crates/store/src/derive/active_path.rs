@@ -65,7 +65,7 @@ pub(super) fn apply(
     let mut set = tx.prepare_cached("UPDATE message SET on_active_path = ?2 WHERE pk = ?1")?;
     for (pk, place) in moved {
         // The session and parent stay as they were; only the place changed.
-        changes.message(tx, *pk)?;
+        changes.message_metadata(tx, *pk)?;
         set.execute(rusqlite::params![pk, place])?;
     }
     Ok(())

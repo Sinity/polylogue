@@ -1082,7 +1082,7 @@ impl RowWriter<'_, '_> {
                 // Items and completion use the selected body and placement;
                 // record citations are read from the current message row.
                 if !items_unchanged {
-                    self.changes.message(self.tx, pk)?;
+                    self.changes.message_metadata(self.tx, pk)?;
                 }
                 self.tx.execute(
                     "UPDATE message SET input_pk=?2,source_chain=?3,source_start=?4,source_end=?5,
@@ -1117,6 +1117,7 @@ impl RowWriter<'_, '_> {
             .prepared
             .as_ref()
             .ok_or_else(|| StoreError::Invalid("a changed version has no prepared body".into()))?;
+        self.changes.prepare_items(pk, prepared.items.clone());
         self.tx.execute("UPDATE session SET changed=?2 WHERE pk IN (SELECT session_pk FROM message WHERE pk=?1) OR pk=?3",params![pk,self.counter,session_pk])?;
         self.clear_blocks(pk)?;
         // A copy's message joining its session may have no row of its own yet.

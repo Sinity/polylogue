@@ -200,6 +200,8 @@ pub(crate) struct PreparedMessage {
     pub(crate) projection: MessageProjection,
     pub(crate) time: Vec<u8>,
     pub(crate) body: Vec<u8>,
+    /// Item estimates from the typed content, before payloads are released.
+    pub(crate) items: Vec<polylogue_model::read::IndexEntry>,
     content: PreparedContent,
 }
 
@@ -342,6 +344,11 @@ impl RowPacker {
             projection: projection.clone(),
             time: time_bytes(message.at, message.time_evidence())?,
             body: self.pack_version(message, &message.blocks)?,
+            items: polylogue_model::read::message_entries(
+                message,
+                &projection.block_ordinals,
+                polylogue_model::read::MessagePlace::default(),
+            ),
             content: self.pack_content(&message.blocks, projection.source_version.0)?,
         })
     }
