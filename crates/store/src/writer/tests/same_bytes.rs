@@ -243,3 +243,153 @@ fn reading_copies_preserve_portable_members_and_reparse_chain_owned_members() {
         }
     }
 }
+
+#[cfg(feature = "faults")]
+#[test]
+fn stopping_a_copy_interrupts_its_insert_and_rolls_back_the_complete_reading() {
+    crate::fault::clear();
+    let w = test_archive();
+    chain(&w, 1, b'a', false);
+    chain(&w, 2, b'a', true);
+    // The copy reaches SQLite's progress handler inside this INSERT SELECT,
+    // after earlier tables have already copied their rows in the savepoint.
+    let conn = rusqlite::Connection::open(w.archive.index_db()).unwrap();
+    conn.execute_batch(
+        "WITH RECURSIVE n(value) AS (VALUES(1) UNION ALL SELECT value+1 FROM n WHERE value<256)
+         INSERT INTO unused(input_pk,chain,format,what,count)
+         SELECT (SELECT pk FROM input_ref WHERE id='doc'),2,'synthetic','field:'||value,1 FROM n",
+    )
+    .unwrap();
+    drop(conn);
+    let before = dump(&w);
+    let copy = crate::ReadingCopy {
+        input: "doc".into(),
+        from: 2,
+        to: 1,
+        reading_version: "synthetic=1".into(),
+    };
+    crate::fault::arm(
+        "write.copy_table",
+        "unused",
+        crate::fault::Action::Fail,
+        0,
+        1,
+    );
+    let failed = w
+        .writer
+        .sender()
+        .unwrap()
+        .copy_readings(vec![copy.clone()])
+        .unwrap();
+    assert!(
+        matches!(failed.as_slice(), [Err(StoreError::Io(_))]),
+        "{failed:?}"
+    );
+    assert_eq!(
+        dump(&w),
+        before,
+        "an ordinary copy failure retains its cause and rolls back its savepoint"
+    );
+    crate::fault::clear();
+    crate::fault::arm(
+        "write.copy_table",
+        "unused",
+        crate::fault::Action::Hold,
+        0,
+        1,
+    );
+    let sender = w.writer.sender().unwrap();
+    let (done, result) = sync_channel(1);
+    let worker = std::thread::spawn({
+        let copy = copy.clone();
+        move || done.send(sender.copy_readings(vec![copy])).unwrap()
+    });
+    let started = std::time::Instant::now();
+    while !crate::fault::held() {
+        assert!(started.elapsed() < std::time::Duration::from_secs(30));
+        std::thread::yield_now();
+    }
+    // Admit a user write while the copy owns the writer. Its durable
+    // archive transaction must still run after the index copy rolls back.
+    let request = crate::fixture::authored::operator_request(
+        crate::user_writes::new_request_id(),
+        polylogue_model::user::UserWrite::SetSetting {
+            key: "browser.actions".into(),
+            value: "on".into(),
+            machine: None,
+        },
+    );
+    let (reply, admitted) = sync_channel(1);
+    w.writer
+        .sender()
+        .unwrap()
+        .0
+        .send_user(UserMsg::Request(
+            Box::new(request.clone()),
+            None,
+            None,
+            None,
+            reply,
+        ))
+        .unwrap();
+    w.writer.stop_handle().request();
+    crate::fault::release();
+    assert!(matches!(
+        result
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap(),
+        Err(StoreError::WriteCancelled)
+    ));
+    worker.join().unwrap();
+    crate::fault::clear();
+    assert_eq!(
+        dump(&w),
+        before,
+        "the whole transaction, including earlier copied tables, rolls back"
+    );
+
+    let first = admitted
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap()
+        .unwrap();
+    let repeat = w.writer.user(request).unwrap();
+    assert_eq!(repeat.id, first.id);
+    assert!(repeat.repeat && !repeat.pending);
+
+    let TestArchive {
+        writer,
+        archive,
+        _lock,
+        _dir,
+    } = w;
+    drop(writer);
+    let writer = Writer::start(&archive).unwrap();
+    let copied = writer.sender().unwrap().copy_readings(vec![copy]).unwrap();
+    assert!(matches!(copied.as_slice(), [Ok(true)]), "{copied:?}");
+    let reads = ReadPool::open(&archive).unwrap();
+    let reader = reads.reader().unwrap();
+    assert_eq!(
+        reader
+            .query(
+                "SELECT chain,parsed_upto,status FROM parse_state ORDER BY chain",
+                &[]
+            )
+            .unwrap(),
+        vec![
+            serde_json::json!({"chain":1,"parsed_upto":100,"status":"done"}),
+            serde_json::json!({"chain":2,"parsed_upto":100,"status":"done"}),
+        ]
+    );
+    assert_eq!(
+        reader
+            .query(
+                "SELECT chain,count(*) AS n FROM unused GROUP BY chain ORDER BY chain",
+                &[]
+            )
+            .unwrap(),
+        vec![
+            serde_json::json!({"chain":1,"n":256}),
+            serde_json::json!({"chain":2,"n":256}),
+        ]
+    );
+}
