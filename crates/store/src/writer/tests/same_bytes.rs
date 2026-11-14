@@ -49,6 +49,10 @@ fn chain_with_member(
 
 /// Every row of the index, apart from write-counter values.
 fn dump(w: &TestArchive) -> BTreeMap<String, Vec<String>> {
+    index_rows(w, false)
+}
+
+fn index_rows(w: &TestArchive, exact: bool) -> BTreeMap<String, Vec<String>> {
     let conn = rusqlite::Connection::open(w.archive.index_db()).unwrap();
     let tables: Vec<String> = conn
         .prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'")
@@ -77,7 +81,7 @@ fn dump(w: &TestArchive) -> BTreeMap<String, Vec<String>> {
                 .query_map([], |row| {
                     let mut text = String::new();
                     for (n, name) in names.iter().enumerate() {
-                        if !counters.contains(&name.as_str()) {
+                        if exact || !counters.contains(&name.as_str()) {
                             let value: rusqlite::types::Value = row.get(n)?;
                             text.push_str(&format!("{name}={value:?};"));
                         }
@@ -88,10 +92,12 @@ fn dump(w: &TestArchive) -> BTreeMap<String, Vec<String>> {
                 .collect::<rusqlite::Result<_>>()
                 .unwrap();
             // Observation IDs carry a random UUID that tells archives apart.
-            for row in &mut rows {
-                *row = without_uuids(row);
+            if !exact {
+                for row in &mut rows {
+                    *row = without_uuids(row);
+                }
             }
-            if table == "meta" {
+            if !exact && table == "meta" {
                 rows.retain(|row| row.starts_with("key=Text(\"building\")"));
             }
             rows.sort();
@@ -138,22 +144,22 @@ fn a_copied_document_source_equals_its_parse_and_is_not_shown() {
     for (number, fill) in [(1, b'a'), (2, b'b'), (3, b'a'), (4, b'b')] {
         chain(&copied, number, fill, number > 2);
     }
-    let answers = copied
-        .writer
-        .sender()
-        .unwrap()
-        .copy_readings(
-            [(3, 1), (4, 2)]
-                .map(|(from, to)| crate::ReadingCopy {
+    for (from, to) in [(3, 1), (4, 2)] {
+        assert!(
+            copied
+                .writer
+                .sender()
+                .unwrap()
+                .copy_reading(crate::ReadingCopy {
                     input: "doc".into(),
                     from,
                     to,
                     reading_version: "synthetic=1".into(),
                 })
-                .into(),
-        )
-        .unwrap();
-    assert!(answers.iter().all(|a| matches!(a, Ok(true))), "{answers:?}");
+                .unwrap()
+                .unwrap()
+        );
+    }
 
     let (parsed_rows, copied_rows) = (dump(&parsed), dump(&copied));
     for (table, rows) in &parsed_rows {
@@ -209,21 +215,29 @@ fn reading_copies_preserve_portable_members_and_reparse_chain_owned_members() {
             position: [u64::MAX, 2],
         };
         chain_with_member(&w, 2, b'a', true, Some(member));
+        let before = index_rows(&w, true);
         let result = w
             .writer
             .sender()
             .unwrap()
-            .copy_readings(vec![crate::ReadingCopy {
+            .copy_reading(crate::ReadingCopy {
                 input: "doc".into(),
                 from: 2,
                 to: 1,
                 reading_version: "synthetic=1".into(),
-            }])
+            })
             .unwrap();
         assert!(
-            matches!(result.as_slice(), [Ok(copied)] if *copied != native),
+            matches!(result, Ok(copied) if copied != native),
             "{result:?}"
         );
+        if native {
+            assert_eq!(
+                index_rows(&w, true),
+                before,
+                "a refused copy changes nothing"
+            );
+        }
         let pool = ReadPool::open(&w.archive).unwrap();
         let reader = pool.reader().unwrap();
         let members = reader
@@ -246,53 +260,97 @@ fn reading_copies_preserve_portable_members_and_reparse_chain_owned_members() {
 
 #[cfg(feature = "faults")]
 #[test]
-fn stopping_a_copy_interrupts_its_insert_and_rolls_back_the_complete_reading() {
+fn stopping_a_later_copy_keeps_the_completed_chain_and_rolls_back_its_own_reading() {
     crate::fault::clear();
     let w = test_archive();
     chain(&w, 1, b'a', false);
     chain(&w, 2, b'a', true);
     chain(&w, 3, b'b', false);
     chain(&w, 4, b'b', true);
-    // The copy reaches SQLite's progress handler inside this INSERT SELECT,
-    // after earlier tables have already copied their rows in the savepoint.
+    let copies = [(2, 1), (4, 3)].map(|(from, to)| crate::ReadingCopy {
+        input: "doc".into(),
+        from,
+        to,
+        reading_version: "synthetic=1".into(),
+    });
+    // The later copy stops inside the last table's INSERT SELECT. All
+    // preceding tables, including its cursor and wire receipts, have copied.
     let conn = rusqlite::Connection::open(w.archive.index_db()).unwrap();
     conn.execute_batch(
         "WITH RECURSIVE n(value) AS (VALUES(1) UNION ALL SELECT value+1 FROM n WHERE value<256)
-         INSERT INTO unused(input_pk,chain,format,what,count)
-         SELECT (SELECT pk FROM input_ref WHERE id='doc'),4,'synthetic','field:'||value,1 FROM n",
-    )
-    .unwrap();
+         INSERT INTO prefix_member(input_pk,chain,parent_id,child_id,message_id,source_input,source_chain,source_version,sequence,position)
+         SELECT (SELECT pk FROM input_ref WHERE id='doc'),4,'parent','child','message:'||value,'original',7,'original=1','1','2' FROM n"
+    ).unwrap();
     drop(conn);
-    let before = dump(&w);
-    let copies: Vec<_> = [(2, 1), (4, 3)]
-        .into_iter()
-        .map(|(from, to)| crate::ReadingCopy {
-            input: "doc".into(),
-            from,
-            to,
-            reading_version: "synthetic=1".into(),
-        })
-        .collect();
+    let sender = w.writer.sender().unwrap();
+    assert!(sender.copy_reading(copies[0].clone()).unwrap().unwrap());
+    let completed = index_rows(&w, true);
+    let reads = ReadPool::open(&w.archive).unwrap();
+    let reader = reads.reader().unwrap();
+    let behind = || {
+        reader
+            .chains_behind_index(
+                &[],
+                crate::StoppedChains::Settled,
+                crate::RevisionChains::Older,
+                None,
+            )
+            .unwrap()
+            .into_iter()
+            .map(|chain| chain.progress.chain)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        behind(),
+        vec![3],
+        "the committed first chain is no longer selected"
+    );
+    let receipts = reader
+        .query("SELECT receipt FROM wire_receipt WHERE chain=1", &[])
+        .unwrap();
+    assert!(
+        !receipts.is_empty(),
+        "the completed copy retakes real source receipts"
+    );
+    let source = rusqlite::Connection::open(w.archive.archive_db()).unwrap();
+    let expected_receipt = crate::source::Source::reading_receipt(&source, "doc", 1, 100).unwrap();
+    drop(source);
+    for row in receipts {
+        let receipt: serde_json::Value =
+            serde_json::from_str(row["receipt"].as_str().unwrap()).unwrap();
+        assert_eq!(receipt["input"], "doc");
+        assert_eq!(receipt["chain"], 1);
+        assert_eq!(receipt["sequence"], expected_receipt.sequence);
+        assert_eq!(receipt["id"], serde_json::json!(expected_receipt.id));
+        assert_eq!(
+            receipt["observation"],
+            serde_json::json!(expected_receipt.observation)
+        );
+        assert_eq!(
+            receipt["observed_at_ms"],
+            serde_json::json!(expected_receipt.observed_at_ms)
+        );
+    }
+    drop(reader);
+    drop(reads);
     crate::fault::arm(
         "write.copy_table",
-        "unused",
+        "prefix_member",
         crate::fault::Action::Hold,
-        1,
+        0,
         1,
     );
-    let sender = w.writer.sender().unwrap();
     let (done, result) = sync_channel(1);
-    let worker = std::thread::spawn({
-        let copies = copies.clone();
-        move || done.send(sender.copy_readings(copies)).unwrap()
-    });
+    let second = copies[1].clone();
+    let worker = std::thread::spawn(move || done.send(sender.copy_reading(second)).unwrap());
     let started = std::time::Instant::now();
     while !crate::fault::held() {
         assert!(started.elapsed() < std::time::Duration::from_secs(30));
         std::thread::yield_now();
     }
-    // Admit a user write while the copy owns the writer. Its durable
-    // archive transaction must still run after the index copy rolls back.
+    let while_copying = index_rows(&w, true);
+    // Already-admitted authored work retains custody while reconstructible
+    // copy work rolls back.
     let request = crate::fixture::authored::operator_request(
         crate::user_writes::new_request_id(),
         polylogue_model::user::UserWrite::SetSetting {
@@ -325,11 +383,14 @@ fn stopping_a_copy_interrupts_its_insert_and_rolls_back_the_complete_reading() {
     worker.join().unwrap();
     crate::fault::clear();
     assert_eq!(
-        dump(&w),
-        before,
-        "the whole transaction, including earlier copied tables, rolls back"
+        while_copying, completed,
+        "the in-progress copy is invisible"
     );
-
+    assert_eq!(
+        index_rows(&w, true),
+        completed,
+        "every copied table, receipt, cursor and counter of only the interrupted chain rolls back"
+    );
     let first = admitted
         .recv_timeout(std::time::Duration::from_secs(5))
         .unwrap()
@@ -346,13 +407,64 @@ fn stopping_a_copy_interrupts_its_insert_and_rolls_back_the_complete_reading() {
     } = w;
     drop(writer);
     let writer = Writer::start(&archive).unwrap();
-    let copied = writer.sender().unwrap().copy_readings(copies).unwrap();
-    assert!(
-        matches!(copied.as_slice(), [Ok(true), Ok(true)]),
-        "{copied:?}"
-    );
     let reads = ReadPool::open(&archive).unwrap();
     let reader = reads.reader().unwrap();
+    let remaining = reader
+        .chains_behind_index(
+            &[],
+            crate::StoppedChains::Settled,
+            crate::RevisionChains::Older,
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        remaining
+            .iter()
+            .map(|chain| chain.progress.chain)
+            .collect::<Vec<_>>(),
+        vec![3]
+    );
+    drop(reader);
+    assert!(
+        writer
+            .sender()
+            .unwrap()
+            .copy_reading(copies[1].clone())
+            .unwrap()
+            .unwrap()
+    );
+    let reader = reads.reader().unwrap();
+    let committed = reader
+        .query("SELECT value FROM meta WHERE key='write_counter'", &[])
+        .unwrap();
+    drop(reader);
+    assert!(
+        !writer
+            .sender()
+            .unwrap()
+            .copy_reading(copies[1].clone())
+            .unwrap()
+            .unwrap()
+    );
+    let reader = reads.reader().unwrap();
+    assert_eq!(
+        reader
+            .query("SELECT value FROM meta WHERE key='write_counter'", &[])
+            .unwrap(),
+        committed,
+        "an exact retry refuses the already-recorded chain without a write"
+    );
+    assert!(
+        reader
+            .chains_behind_index(
+                &[],
+                crate::StoppedChains::Settled,
+                crate::RevisionChains::Older,
+                None
+            )
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
         reader
             .query(
@@ -370,7 +482,7 @@ fn stopping_a_copy_interrupts_its_insert_and_rolls_back_the_complete_reading() {
     assert_eq!(
         reader
             .query(
-                "SELECT chain,count(*) AS n FROM unused GROUP BY chain ORDER BY chain",
+                "SELECT chain,count(*) AS n FROM prefix_member GROUP BY chain ORDER BY chain",
                 &[]
             )
             .unwrap(),
@@ -383,12 +495,12 @@ fn stopping_a_copy_interrupts_its_insert_and_rolls_back_the_complete_reading() {
 
 #[cfg(feature = "faults")]
 #[test]
-fn an_ordinary_copy_failure_keeps_its_cause_and_rolls_back_its_savepoint() {
+fn an_ordinary_copy_failure_keeps_its_cause_and_rolls_back_its_transaction() {
     crate::fault::clear();
     let w = test_archive();
     chain(&w, 1, b'a', false);
     chain(&w, 2, b'a', true);
-    let before = dump(&w);
+    let before = index_rows(&w, true);
     crate::fault::arm(
         "write.copy_table",
         "unused",
@@ -396,21 +508,18 @@ fn an_ordinary_copy_failure_keeps_its_cause_and_rolls_back_its_savepoint() {
         0,
         1,
     );
-    let answers = w
+    let answer = w
         .writer
         .sender()
         .unwrap()
-        .copy_readings(vec![crate::ReadingCopy {
+        .copy_reading(crate::ReadingCopy {
             input: "doc".into(),
             from: 2,
             to: 1,
             reading_version: "synthetic=1".into(),
-        }])
+        })
         .unwrap();
     crate::fault::clear();
-    assert!(
-        matches!(answers.as_slice(), [Err(StoreError::Io(_))]),
-        "{answers:?}"
-    );
-    assert_eq!(dump(&w), before);
+    assert!(matches!(answer, Err(StoreError::Io(_))), "{answer:?}");
+    assert_eq!(index_rows(&w, true), before);
 }
