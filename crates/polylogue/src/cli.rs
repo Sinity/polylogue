@@ -167,6 +167,22 @@ fn projection(command: &Command, argument: &crate::commands::Arg) -> CliArgument
             .map(|name| (*name).to_owned())
             .collect();
     }
+    if projected.choices.is_empty() {
+        if command.name == "explain" && argument.name == "subject" {
+            projected.choices = crate::explain::SUBJECTS
+                .iter()
+                .map(|subject| (*subject).to_owned())
+                .collect();
+        } else if (command.name == "start" && argument.name == "harness")
+            || (command.name == "hand-off" && argument.name == "to")
+        {
+            projected.choices = polylogue_model::live::channel::HARNESSES
+                .iter()
+                .filter(|harness| harness.host.is_some())
+                .map(|harness| harness.name.to_owned())
+                .collect();
+        }
+    }
     projected
 }
 fn projection_for(argument: &crate::commands::Arg) -> CliArgument {
@@ -296,7 +312,7 @@ fn parsed(c: &Command, m: &ArgMatches) -> Result<ParsedCommand, String> {
             }
             if projected.spec.form == ArgumentForm::Flag {
                 if m.get_flag(argument.name) {
-                    words.push(projected.spec.flag());
+                    words.push(format!("--{}", projected.spec.name.replace('_', "-")));
                 }
                 continue;
             }
@@ -321,7 +337,10 @@ fn parsed(c: &Command, m: &ArgMatches) -> Result<ParsedCommand, String> {
                 words.extend(raw);
             } else {
                 for value in raw {
-                    words.extend([projected.spec.flag(), value]);
+                    words.extend([
+                        format!("--{}", projected.spec.name.replace('_', "-")),
+                        value,
+                    ]);
                 }
             }
         }

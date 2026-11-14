@@ -752,3 +752,41 @@ fn local_and_stream_cli_use_their_declared_argument_types() {
     );
     assert_eq!(follow.calling_process["until_idle"], true);
 }
+
+#[test]
+fn cli_domain_choices_keep_their_existing_operation_authority() {
+    for subject in crate::explain::SUBJECTS {
+        assert!(parse(&["polylogue", "explain", subject]).is_ok());
+    }
+    assert!(parse(&["polylogue", "explain", "unsupported-subject"]).is_err());
+    for harness in polylogue_model::live::channel::HARNESSES
+        .iter()
+        .filter(|harness| harness.host.is_some())
+    {
+        assert!(
+            parse(&[
+                "polylogue",
+                "start",
+                "hello",
+                "--cwd",
+                "/synthetic",
+                "--harness",
+                harness.name
+            ])
+            .is_ok()
+        );
+        assert!(parse(&["polylogue", "hand-off", "test:one", "--to", harness.name]).is_ok());
+    }
+    assert!(
+        parse(&[
+            "polylogue",
+            "start",
+            "hello",
+            "--cwd",
+            "/synthetic",
+            "--harness",
+            "unsupported-harness"
+        ])
+        .is_err()
+    );
+}

@@ -24,7 +24,9 @@ fn argv(c: &Command) -> Vec<&'static str> {
                 | command_surface::ArgumentForm::Words
                 | command_surface::ArgumentForm::Rest
         ) {
-            argv.push(Box::leak(a.spec.flag().into_boxed_str()));
+            argv.push(Box::leak(
+                format!("--{}", a.spec.name.replace('_', "-")).into_boxed_str(),
+            ));
         }
         let value = a.choices.first().cloned().unwrap_or_else(|| match &a.kind {
             command_surface::ValueKind::Json => "1".into(),

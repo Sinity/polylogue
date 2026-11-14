@@ -999,14 +999,11 @@ const WRITTEN: &[Command] = &[
                 ArgumentForm::Named,
                 "Query selecting the assertion targets",
             ),
-            Arg {
-                required: true,
-                ..opt(
-                    "assertion",
-                    ArgumentForm::Named,
-                    "Assertion JSON without about links",
-                )
-            },
+            opt(
+                "assertion",
+                ArgumentForm::Named,
+                "Assertion JSON without about links",
+            ),
         ],
         run: Run::Daemon(daemon::<H::AssertQuery>()),
         tool: Some(Tool::Note),
@@ -1041,10 +1038,7 @@ const WRITTEN: &[Command] = &[
                 ArgumentForm::Repeated,
                 "Exact assertion:<root>@<revision> references",
             ),
-            Arg {
-                required: true,
-                ..opt("patch", ArgumentForm::Named, "Assertion patch JSON")
-            },
+            opt("patch", ArgumentForm::Named, "Assertion patch JSON"),
         ],
         run: Run::Daemon(daemon::<H::Revise>()),
         tool: Some(Tool::Note),
@@ -1118,10 +1112,7 @@ const WRITTEN: &[Command] = &[
         args: &[
             pos("prompt", ArgumentForm::Words, "The prompt naming a file"),
             CWD,
-            Arg {
-                required: true,
-                ..opt("session", ArgumentForm::Named, "The receiving session")
-            },
+            opt("session", ArgumentForm::Named, "The receiving session"),
         ],
         run: Run::Daemon(daemon::<H::Advisory>()),
         tool: Some(Tool::Context),
@@ -1446,18 +1437,12 @@ const WRITTEN: &[Command] = &[
         reason: "Record a named query as the operator's authored definition",
         help: "Save a query under a name, to run as `query:NAME`, alone or among other conditions. A `$word` standing for a value is a parameter, given when it runs: `query:NAME(word=VALUE)`. Saving a name again revises it",
         args: &[
-            Arg {
-                required: true,
-                ..pos(
-                    "name",
-                    ArgumentForm::Named,
-                    "A query name; entirely hexadecimal names are reserved",
-                )
-            },
-            Arg {
-                required: true,
-                ..pos("query", ArgumentForm::Rest, "The query")
-            },
+            pos(
+                "name",
+                ArgumentForm::Named,
+                "A query name; entirely hexadecimal names are reserved",
+            ),
+            pos("query", ArgumentForm::Rest, "The query"),
             unlisted(opt(
                 "denominator",
                 ArgumentForm::Named,
@@ -1490,10 +1475,7 @@ const WRITTEN: &[Command] = &[
                 ArgumentForm::Flag,
                 "Also show each notice as a desktop notification",
             )),
-            Arg {
-                required: true,
-                ..pos("query", ArgumentForm::Rest, "The query")
-            },
+            pos("query", ArgumentForm::Rest, "The query"),
         ],
         run: Run::Daemon(daemon::<H::Watch>()),
         tool: Some(Tool::Note),
@@ -1507,10 +1489,7 @@ const WRITTEN: &[Command] = &[
         help: "Run a query and keep the rows it returned, to read back later as `result:<id>` (or `result:<id>.matches`) exactly as they were",
         args: &[
             opt("name", ArgumentForm::Named, "A name for the kept result"),
-            Arg {
-                required: true,
-                ..pos("query", ArgumentForm::Rest, "The query")
-            },
+            pos("query", ArgumentForm::Rest, "The query"),
         ],
         run: Run::Daemon(daemon::<H::Keep>()),
         tool: Some(Tool::Note),
@@ -1560,14 +1539,11 @@ const WRITTEN: &[Command] = &[
         args: &[
             pos("provider", ArgumentForm::Named, "The web chat: chatgpt"),
             pos("text", ArgumentForm::Words, "What to write"),
-            Arg {
-                required: true,
-                ..opt(
-                    "model",
-                    ArgumentForm::Named,
-                    "The model, as the provider's model menu names it",
-                )
-            },
+            opt(
+                "model",
+                ArgumentForm::Named,
+                "The model, as the provider's model menu names it",
+            ),
             unlisted(opt(
                 "effort",
                 ArgumentForm::Named,

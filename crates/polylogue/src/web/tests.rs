@@ -439,18 +439,30 @@ fn backfill_jobs_start_and_list_over_http() {
 
 #[test]
 fn every_http_command_is_served_and_nothing_else() {
-    use crate::commands::{COMMANDS, Kind};
+    use crate::commands::COMMANDS;
     let r = reader();
     rt().block_on(async {
         for c in COMMANDS.iter() {
             let path = format!("/api/v1{}", c.http_path());
             let mut object = serde_json::Map::new();
-            for a in c.args.iter().filter(|a| a.required && a.default.is_none()) {
-                let value = match a.kind {
-                    Kind::List => serde_json::json!(["session:claude-code:s1"]),
+            for argument in crate::commands::declarations()
+                .cli_arguments(c.name)
+                .unwrap()
+                .into_iter()
+                .filter(|argument| {
+                    argument.required
+                        && c.args
+                            .iter()
+                            .any(|a| a.name == argument.spec.name && a.default.is_none())
+                })
+            {
+                let value = match argument.kind {
+                    command_surface::ValueKind::List(_) => {
+                        serde_json::json!(["session:claude-code:s1"])
+                    }
                     _ => serde_json::json!("claude-code:s1"),
                 };
-                object.insert(a.name.into(), value);
+                object.insert(argument.spec.name, value);
             }
             let req = if c.writes {
                 own_origin(authed(post(&path)))

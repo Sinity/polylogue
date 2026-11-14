@@ -70,7 +70,8 @@ fn write(
             .into_iter()
             .filter_map(|name| {
                 values
-                    .0
+                    .request
+                    .arguments
                     .get(name)
                     .map(|value| (name.to_owned(), value.clone()))
             })
