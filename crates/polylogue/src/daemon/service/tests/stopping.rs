@@ -5,10 +5,10 @@ use polylogue_store::fault::{self, Action};
 use std::time::{Duration, Instant};
 
 /// Six sessions written together reach one pass, whose one parse worker
-/// takes them largest first. A stop while the second is being parsed lets
-/// that parse commit whole and starts none of the rest (plnext-vn6t).
+/// takes them largest first. A stop before the second provider call discards
+/// its private reading, keeps its acquired bytes and starts no queued work.
 #[test]
-fn a_stop_during_a_pass_commits_the_parse_in_hand_and_starts_no_more() {
+fn a_stop_during_a_pass_keeps_admitted_rows_and_cancels_private_parsing() {
     let mut daemon = crate::test_daemon::start_with_workers("before the pass", 1);
     let project = daemon.home.join(".claude/projects/-p");
     let names = ["stop-1", "stop-2", "stop-3", "stop-4", "stop-5", "stop-6"];
@@ -47,13 +47,63 @@ fn a_stop_during_a_pass_commits_the_parse_in_hand_and_starts_no_more() {
     for (i, name) in names.iter().enumerate() {
         let session = SessionId::parse(&format!("claude-code:{name}")).unwrap();
         let messages = reader.messages(&session, false).unwrap();
-        let expected = if i < 2 { 3 } else { 0 };
+        let expected = if i == 0 { 3 } else { 0 };
         assert_eq!(
             messages.len(),
             expected,
-            "{name}: the parse in hand and the one before it commit whole; none after starts"
+            "{name}: only the earlier admitted parse is published"
         );
     }
+    let held_path = project.join("stop-2.jsonl");
+    let held = reader
+        .known_input_at(
+            "synthetic-machine",
+            held_path.as_os_str().as_encoded_bytes(),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(held.parsed_upto, 0, "private parsing did not advance");
+    assert!(!held.parsed);
+    let original = std::fs::read(&held_path).unwrap();
+    assert_eq!(held.stored, original.len() as u64);
+    let source = reader
+        .stored_chain(&held.input_id, held.chain.unwrap(), held.stored)
+        .unwrap();
+    assert_eq!(
+        source
+            .read_range(&archive.blobs().unwrap(), 0, held.stored)
+            .unwrap(),
+        original,
+        "the held parser's acquired bytes retain exact custody"
+    );
+    drop(reader);
+    drop(reads);
+    drop(_lock);
+    let mut resumed = crate::test_daemon::start_runtime(
+        &daemon._dir.path().join("archive"),
+        daemon.config.clone(),
+        crate::daemon::service::ArchiveMode::Standalone,
+    )
+    .unwrap();
+    let until = Instant::now() + Duration::from_secs(30);
+    loop {
+        let reader = resumed.daemon.reads.reader().unwrap();
+        let all_complete = names.iter().enumerate().all(|(i, name)| {
+            let session = SessionId::parse(&format!("claude-code:{name}")).unwrap();
+            let messages = reader.messages(&session, false).unwrap();
+            let text = format!("{name} ").repeat(60 - 5 * i);
+            messages.len() == 3 && messages.iter().all(|message| message.text() == text)
+        });
+        if all_complete {
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "restart did not complete each source exactly once"
+        );
+        std::thread::yield_now();
+    }
+    resumed.shutdown().unwrap();
 }
 
 #[test]
