@@ -73,8 +73,9 @@ fn projection_failures_distinguish_conflicts_from_invalid_input() {
         (BundleError::SourceVersionMismatch, FailureKind::Conflict),
         (BundleError::InvalidBlockSelection, FailureKind::BadRequest),
     ] {
-        let answer =
-            crate::daemon::service::store_error(&polylogue_store::StoreError::Projection(issue));
+        let answer = crate::daemon::service::store_error::<()>(
+            &polylogue_store::StoreError::Projection(issue),
+        );
         let command_surface::Answer {
             outcome: command_surface::Outcome::Error(error),
             ..

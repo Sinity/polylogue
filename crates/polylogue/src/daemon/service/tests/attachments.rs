@@ -43,10 +43,7 @@ fn attachment_pages_bound_each_transfer_and_keep_every_requested_byte_reachable(
             },
             &daemon.daemon,
         );
-        let Some(data) = response.value().cloned() else {
-            panic!("{response:?}")
-        };
-        let page: crate::daemon::attachment::BytePage = serde_json::from_value(data).unwrap();
+        let page = crate::test_answers::ok(response);
         assert_eq!(page.offset, actual.len() as u64);
         let part = base64::engine::general_purpose::STANDARD
             .decode(page.content_base64)

@@ -13,7 +13,6 @@ use polylogue_store::{
     schema_inputs::InputRevision,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::{self, BufRead, BufReader, Read},

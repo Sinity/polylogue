@@ -62,7 +62,7 @@ fn caller_sql_may_only_read() {
         reader
             .query_untrusted("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<3) SELECT count(*) AS c, upper('a') AS u FROM n")
             .unwrap(),
-        vec![serde_json::json!({"c": 3, "u": "A"})]
+        vec![serde_json::Map::from_iter([("c".into(), 3.into()), ("u".into(), "A".into())])]
     );
     let temp_objects = |reader: &crate::read::Reader<'_>| {
         reader

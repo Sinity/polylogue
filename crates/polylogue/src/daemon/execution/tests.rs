@@ -152,7 +152,7 @@ fn streamed_read_has_no_default_deadline_and_explicit_deadlines_still_apply() {
     );
     let policy = policy(&request);
     assert!(policy.read_phase && policy.streaming && !policy.default_deadline);
-    let response = within_limit(
+    let response = within_limit::<()>(
         &ReadLimit::new(Duration::ZERO, Default::default()),
         policy.read_phase,
         false,

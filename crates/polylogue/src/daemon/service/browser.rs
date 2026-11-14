@@ -301,14 +301,14 @@ browser!(
     protocol::ChatDecide,
     protocol::ChatAnswer,
     print::json,
-    |a, call| { decide(call, a.id, true, "operator".into(), None) }
+    |a, call| decide(call, a.id, true, "operator".into(), None)
 );
 browser!(
     ChatDecline,
     protocol::ChatDecide,
     protocol::ChatAnswer,
     print::json,
-    |a, call| { decide(call, a.id, false, "operator".into(), None) }
+    |a, call| decide(call, a.id, false, "operator".into(), None)
 );
 browser!(
     /// A decision the extension's page reports for the operator.

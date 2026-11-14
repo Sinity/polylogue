@@ -40,7 +40,7 @@ fn call_with_limit(w: &TestDaemon, id: &str, session: &str, limit: &ReadLimit) -
         answer.failure().is_none(),
         "advisory request {id} for {session}: {answer:?}"
     );
-    crate::test_answers::ok(answer)
+    serde_json::to_value(crate::test_answers::ok(answer)).unwrap()
 }
 
 fn call(w: &TestDaemon, id: &str, session: &str) -> Value {

@@ -28,11 +28,8 @@ fn request(
         cursor,
     }
 }
-fn page(response: command_surface::Answer<serde_json::Value>) -> BytePage {
-    let Some(data) = response.value().cloned() else {
-        panic!("{response:?}")
-    };
-    serde_json::from_value(data).unwrap()
+fn page(response: command_surface::Answer<BytePage>) -> BytePage {
+    crate::test_answers::ok(response)
 }
 
 #[test]

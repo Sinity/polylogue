@@ -3,8 +3,10 @@ use serde_json::json;
 
 #[test]
 fn held_signal_observations_preserve_reasons_without_inventing_available_rules() {
-    let failure =
-        crate::daemon::service::error("not_yet_available", "owner context has not been obtained");
+    let failure = crate::daemon::service::error::<()>(
+        "not_yet_available",
+        "owner context has not been obtained",
+    );
     let observed =
         json!({"held":[{"reason":"the operation clock is unavailable","detail":failure}]});
     let typed: Signals = serde_json::from_value(observed.clone()).unwrap();

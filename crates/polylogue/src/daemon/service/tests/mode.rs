@@ -244,10 +244,11 @@ fn primary_table_call(
         .enable_all()
         .build()
         .unwrap()
-        .block_on(table.call(
+        .block_on(table.call_as(
             request,
             command_surface::Via::Cli,
             command_surface::Caller::default().with_access(command_surface::Access::Write),
+            Default::default(),
         ))
 }
 
