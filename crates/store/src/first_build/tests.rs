@@ -71,7 +71,7 @@ fn texts_and_messages_are_found_by_their_keys() {
     let keys = FirstBuild::default();
     let hash = *blake3::hash(b"walrus").as_bytes();
     conn.execute(
-        "INSERT INTO text(hash, body) VALUES (?1, X'00')",
+        "INSERT INTO text(hash, normalized_hash, body) VALUES (?1,?1, X'00')",
         [&hash[..]],
     )
     .unwrap();
@@ -105,8 +105,11 @@ fn loading_committed_rows_restores_every_key_map() {
     let conn = index();
     insert_event(&conn, "event");
     let hash = *blake3::hash(b"kept text").as_bytes();
-    conn.execute("INSERT INTO text(hash,body) VALUES (?1,X'00')", [&hash[..]])
-        .unwrap();
+    conn.execute(
+        "INSERT INTO text(hash,normalized_hash,body) VALUES (?1,?1,X'00')",
+        [&hash[..]],
+    )
+    .unwrap();
     conn.execute("INSERT INTO message(id,session_pk,session_order,role,written_by,input_pk) VALUES ('claude-code:message',1,'0','user','human',1)", []).unwrap();
     let keys = FirstBuild::load(&conn).unwrap();
     let texts = crate::text_rows::TextIds::new(&conn, true).unwrap();
@@ -132,7 +135,7 @@ fn startup_key_snapshot_never_reads_payload_columns() {
     .unwrap();
     let hash = *blake3::hash(b"text key").as_bytes();
     conn.execute(
-        "INSERT INTO text(hash,body) VALUES (?1,?2)",
+        "INSERT INTO text(hash,normalized_hash,body) VALUES (?1,?1,?2)",
         params![hash.as_slice(), vec![8u8; 1024 * 1024]],
     )
     .unwrap();

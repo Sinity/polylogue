@@ -59,7 +59,7 @@ impl TextIds {
         &self,
         conn: &Connection,
         hash: &[u8; 32],
-        body: Option<&[u8]>,
+        body: Option<&crate::encoding::PreparedText>,
     ) -> Result<i64> {
         self.refresh(conn)?;
         let known = self.known.borrow().get(hash).copied();
@@ -70,8 +70,8 @@ impl TextIds {
         if let Some(body) = body {
             let id = allocated.unwrap_or(self.next.get());
             let after = next(id)?;
-            let inserted = conn.prepare_cached("INSERT OR IGNORE INTO text(id,hash,body,indexed) VALUES (?1,?2,?3,0) RETURNING id")?
-                .query_row(params![id,hash.as_slice(),body], |r| r.get::<_,i64>(0)).optional()?;
+            let inserted = conn.prepare_cached("INSERT OR IGNORE INTO text(id,hash,body,normalized_hash,indexed) VALUES (?1,?2,?3,?4,0) RETURNING id")?
+                .query_row(params![id,hash.as_slice(),body.body,body.normalized_hash.as_slice()], |r| r.get::<_,i64>(0)).optional()?;
             if inserted.is_some() {
                 self.next.set(self.next.get().max(after));
                 self.known

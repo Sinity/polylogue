@@ -63,7 +63,10 @@ fn a_failed_decode_keeps_the_pending_entry() {
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let conn = open_write(&fixture.archive.index_db(), cache::SETUP).unwrap();
     let mut prepared = HashMap::new();
-    prepared.insert(*blake3::hash(b"walrus").as_bytes(), b"damaged".to_vec());
+    prepared.insert(
+        *blake3::hash(b"walrus").as_bytes(),
+        crate::encoding::PreparedText::new("walrus", b"damaged".to_vec()),
+    );
     intern(&conn, "walrus", 1, Some(&prepared), None).unwrap();
     assert!(index_pending(&conn, || ()).is_err());
     assert_eq!(count(&conn, "SELECT count(*) FROM search_pending"), 1);
@@ -197,8 +200,26 @@ fn first_build_texts_share_rows_without_sql_readback_or_prefix_aliasing() {
     let one = [7; 32];
     let mut two = one;
     two[31] = 8;
-    let a = first.resolve(&conn, &one, Some(b"first")).unwrap();
-    let b = first.resolve(&conn, &two, Some(b"second")).unwrap();
+    let a = first
+        .resolve(
+            &conn,
+            &one,
+            Some(&crate::encoding::PreparedText::new(
+                "first",
+                b"first".to_vec(),
+            )),
+        )
+        .unwrap();
+    let b = first
+        .resolve(
+            &conn,
+            &two,
+            Some(&crate::encoding::PreparedText::new(
+                "second",
+                b"second".to_vec(),
+            )),
+        )
+        .unwrap();
     assert_ne!(a, b);
     // Both hits must use exact hashes in writer memory, even when the
     // eight-byte prefixes are equal. SQLite refuses any text-table read.
@@ -231,12 +252,30 @@ fn failed_text_transaction_reloads_presence_without_reassigning_known_ids() {
     {
         let _texts = first.transaction();
         let tx = conn.transaction().unwrap();
-        old = first.resolve(&tx, &gone, Some(b"rolled back")).unwrap();
+        old = first
+            .resolve(
+                &tx,
+                &gone,
+                Some(&crate::encoding::PreparedText::new(
+                    "rolled back",
+                    b"rolled back".to_vec(),
+                )),
+            )
+            .unwrap();
         // The transaction and its text-map changes are both discarded.
     }
     let texts = first.transaction();
     let tx = conn.transaction().unwrap();
-    let new = first.resolve(&tx, &kept, Some(b"committed")).unwrap();
+    let new = first
+        .resolve(
+            &tx,
+            &kept,
+            Some(&crate::encoding::PreparedText::new(
+                "committed",
+                b"committed".to_vec(),
+            )),
+        )
+        .unwrap();
     assert_ne!(old, new);
     assert!(first.resolve(&tx, &gone, None).is_err());
     tx.commit().unwrap();
@@ -245,8 +284,29 @@ fn failed_text_transaction_reloads_presence_without_reassigning_known_ids() {
     assert_eq!(count(&conn, "SELECT count(*) FROM text"), 1);
     let transaction = first.transaction();
     let tx = conn.transaction().unwrap();
-    assert_eq!(first.resolve(&tx, &gone, Some(b"restored")).unwrap(), old);
+    assert_eq!(
+        first
+            .resolve(
+                &tx,
+                &gone,
+                Some(&crate::encoding::PreparedText::new(
+                    "restored",
+                    b"restored".to_vec()
+                ))
+            )
+            .unwrap(),
+        old
+    );
     tx.commit().unwrap();
     transaction.commit();
     assert_eq!(count(&conn, "SELECT count(*) FROM text"), 2);
+    let normalized: Vec<u8> = conn
+        .query_row("SELECT normalized_hash FROM text WHERE id=?1", [old], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        normalized,
+        crate::encoding::normalized_text_hash("restored")
+    );
 }

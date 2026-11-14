@@ -181,6 +181,7 @@ CREATE INDEX message_route_input ON message_route(input_pk, chain);
 -- Text is stored once per distinct content; `id` is the rowid of its search entries.
 CREATE TABLE text (
   id                INTEGER PRIMARY KEY,
+  normalized_hash   BLOB NOT NULL,          -- BLAKE3 of NFC UTF-8; raw spellings may share this identity
   hash              BLOB NOT NULL,          -- unique: text_hash. BLAKE3 of the UTF-8 text; embeddings are keyed by it
   -- Keep membership before the body: testing it must not read body overflow pages.
   indexed           INTEGER NOT NULL DEFAULT 0, -- bit 1: in text_fts (prose); bit 2: in output_fts (tool output)

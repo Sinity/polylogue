@@ -2201,9 +2201,11 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "sha2",
  "signals",
  "tempfile",
  "thiserror 2.0.21",
+ "unicode-normalization",
  "uuid",
  "zstd",
 ]

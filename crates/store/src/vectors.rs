@@ -591,6 +591,40 @@ pub struct ProseText {
 }
 
 impl Reader<'_> {
+    /// Current prose spellings of one normalized request, bounded by the
+    /// request index before body decoding. Raw hashes remain vector keys.
+    pub fn prose_texts_by_normalized_hash(
+        &self,
+        hash: &[u8; 32],
+        after: i64,
+        limit: u64,
+    ) -> Result<Vec<ProseText>> {
+        let conn = self.conn()?;
+        let mut statement = conn.prepare_cached(
+            "SELECT t.id,t.hash,t.body FROM text t WHERE t.normalized_hash=?1 AND t.id>?2 AND t.indexed & 1
+             AND EXISTS(SELECT 1 FROM block b JOIN message m ON m.pk=b.message_pk WHERE b.text_id=t.id)
+             ORDER BY t.id LIMIT ?3")?;
+        let mut rows = statement.query(params![hash.as_slice(), after, limit as i64])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            let text = crate::encoding::unpack_text(&row.get::<_, Vec<u8>>(2)?)?;
+            let raw: Vec<u8> = row.get(1)?;
+            if raw.as_slice() != blake3::hash(text.as_bytes()).as_bytes()
+                || crate::encoding::normalized_text_hash(&text) != *hash
+            {
+                return Err(StoreError::Invalid(
+                    "stored text does not match its request identity".into(),
+                ));
+            }
+            out.push(ProseText {
+                id: row.get(0)?,
+                hash: raw,
+                text,
+            });
+        }
+        Ok(out)
+    }
+
     /// Indexed prose texts with current message membership, with IDs above
     /// `after`, in ID order, at most `limit`. With
     /// `sessions`, only texts of those sessions' blocks.

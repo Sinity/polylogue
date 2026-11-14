@@ -21,7 +21,7 @@ pub(crate) fn intern(
     conn: &Connection,
     body: &str,
     bit: i64,
-    prepared: Option<&HashMap<[u8; 32], Vec<u8>>>,
+    prepared: Option<&HashMap<[u8; 32], crate::encoding::PreparedText>>,
     first_build: Option<&FirstBuild>,
 ) -> Result<i64> {
     let hash = blake3::hash(body.as_bytes());
@@ -38,14 +38,21 @@ pub(crate) fn intern(
         ),
         None => {
             let packed = match prepared.and_then(|p| p.get(hash.as_bytes())) {
-                Some(p) => std::borrow::Cow::Borrowed(p.as_slice()),
+                Some(p) => std::borrow::Cow::Borrowed(p.body.as_slice()),
                 None => pack_text(body)?.into(),
             };
             // A first build marks the text for its search index now and
             // writes the entry when the build ends.
             let claimed = if bulk { bit } else { 0 };
-            conn.prepare_cached("INSERT INTO text(hash, body, indexed) VALUES (?1, ?2, ?3)")?
-                .execute(params![&hash.as_bytes()[..], &*packed, claimed])?;
+            conn.prepare_cached(
+                "INSERT INTO text(hash, body, indexed, normalized_hash) VALUES (?1, ?2, ?3, ?4)",
+            )?
+            .execute(params![
+                &hash.as_bytes()[..],
+                &*packed,
+                claimed,
+                crate::encoding::normalized_text_hash(body).as_slice()
+            ])?;
             let id = conn.last_insert_rowid();
             (id, claimed)
         }

@@ -405,7 +405,7 @@ struct StoredStep(
     Vec<PreparedDocument>,
     crate::fragment::PreparedFragments,
     Vec<(String, Vec<u8>)>,
-    Vec<([u8; 32], Vec<u8>)>,
+    Vec<([u8; 32], crate::encoding::PreparedText)>,
     bool,
     Option<super::source_eligibility::Snapshot>,
     Option<BlobHash>,

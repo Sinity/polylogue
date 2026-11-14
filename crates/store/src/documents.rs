@@ -14,7 +14,7 @@ pub(crate) struct Source<'a> {
     pub chain: i64,
     pub route: polylogue_model::Route,
     pub counter: i64,
-    pub packed: &'a HashMap<[u8; 32], Vec<u8>>,
+    pub packed: &'a HashMap<[u8; 32], crate::encoding::PreparedText>,
     pub texts: &'a crate::text_rows::TextIds,
     /// Set during a first build ([`crate::first_build`]).
     pub first_build: Option<&'a crate::first_build::FirstBuild>,

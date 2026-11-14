@@ -44,7 +44,7 @@ impl VersionKind {
 }
 
 pub(crate) struct TextRows<'a> {
-    pub packed: &'a HashMap<[u8; 32], Vec<u8>>,
+    pub packed: &'a HashMap<[u8; 32], crate::encoding::PreparedText>,
     pub texts: &'a crate::text_rows::TextIds,
 }
 
@@ -155,7 +155,7 @@ fn store_value(
     ))?;
     for (idx, hash) in texts.iter().enumerate() {
         if let Some(hash) = hash {
-            let id = identities.resolve(conn, hash, packed.get(hash).map(Vec::as_slice))?;
+            let id = identities.resolve(conn, hash, packed.get(hash))?;
             text.execute(params![key, idx as i64, id])?;
         }
     }

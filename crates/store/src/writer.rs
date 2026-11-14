@@ -342,6 +342,7 @@ const ROWS_PER_TRANSACTION: usize = 50_000;
 /// Checked with `EXPLAIN QUERY PLAN` over the store's statements
 /// (2026-10-19).
 const READ_ONLY_INDEXES: &[&str] = &[
+    "text_normalized",
     "message_order",
     "tool_call_order",
     "event_order",

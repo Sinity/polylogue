@@ -60,12 +60,13 @@ fn corpus(texts: usize) -> TestArchive {
     for n in 0..texts {
         let text = body(n);
         tx.execute(
-            "INSERT INTO text(id, hash, body, indexed) VALUES(?1,?2,?3,?4)",
+            "INSERT INTO text(id, hash, body, indexed, normalized_hash) VALUES(?1,?2,?3,?4,?5)",
             params![
                 1000 + n as i64,
                 blake3::hash(text.as_bytes()).as_bytes().as_slice(),
                 crate::encoding::pack_text(&text).unwrap(),
-                membership(n)
+                membership(n),
+                crate::encoding::normalized_text_hash(&text).as_slice()
             ],
         )
         .unwrap();

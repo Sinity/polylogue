@@ -269,7 +269,7 @@ An upgrade is a version change in `status` and, when a parser changed, a while i
 
 ### Replacing an index from another schema
 
-`index.db` holds parsed and derived data in standalone Index2 or primary cache4. A matching current schema retains its generation, cursors, readings and saved parser checkpoints. An unknown shape at the current format number refuses with exit 78 and leaves its file and progress unchanged. Earlier format numbers use reconstruction, rather than an in-place conversion or a second reader.
+`index.db` holds parsed and derived data in standalone Index3 or primary cache5. A matching current schema retains its generation, cursors, readings and saved parser checkpoints. An unknown shape at the current format number refuses with exit 78 and leaves its file and progress unchanged. Earlier format numbers use reconstruction, rather than an in-place conversion or a second reader.
 
 An index at another format version, or without the Polylogue format identity, is closed and renamed beside it as `index-set-aside-<schema identity>.db` (with any write-ahead files it left), and a new index is created in its place. The schema identity is a short hash of the file's version, format identity and its tables, views and triggers; indexes are left out of it, since read indexes are added at open and a first build defers some.
 
