@@ -64,8 +64,6 @@ pub enum Harness {
 }
 
 impl Harness {
-    pub const NAMES: &[&str] = &["claude-code", "codex", "hermes", "gemini-cli"];
-
     pub fn parse(name: &str) -> Option<Self> {
         match name {
             "claude-code" => Some(Self::ClaudeCode),
