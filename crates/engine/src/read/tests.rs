@@ -414,7 +414,35 @@ fn a_submit_waiting_for_room_returns_when_a_stop_is_requested() {
     assert_eq!(completed.len(), 1, "only the started parse reports");
     assert!(completed[0].error.is_none(), "{:?}", completed[0].error);
     assert_eq!(completed[0].path, paths[0]);
-    assert!(completed[0].chain.is_some(), "the started parse commits");
+    assert!(
+        completed[0].cancelled,
+        "the started private parse is cancelled"
+    );
+    assert!(
+        completed[0].chain.is_none(),
+        "no private parse was admitted"
+    );
+    assert_eq!(completed[0].parsed_upto, 0);
+    assert!(completed[0].parser_state.is_none());
+    let reader = engine.reads.reader().unwrap();
+    let input = engine.location_id(&paths[0]);
+    let progress = reader.input_progress(&input).unwrap().unwrap();
+    assert_eq!(progress.parsed_upto, 0);
+    assert!(!progress.parsed);
+    let source = reader
+        .stored_chain(&input, progress.chain, progress.length)
+        .unwrap();
+    let bytes = source
+        .read_range(&engine.blobs, 0, progress.length)
+        .unwrap();
+    let body = "x".repeat(CHUNK);
+    let original = polylogue_testkit::claude_user("first-0", "room-0", &body)
+        + &polylogue_testkit::claude_user("last-0", "room-0", "last");
+    assert_eq!(
+        bytes,
+        original.as_bytes(),
+        "retained import bytes remain exact"
+    );
 }
 
 #[test]
