@@ -88,6 +88,25 @@ pub struct ItemVersions {
     pub rewrite_version: u64,
 }
 
+/// Production uses worker entries. Raw-row fixtures decode only units that
+/// actually need rebuilding, rather than preparing every prior message again.
+#[derive(Clone, Copy)]
+enum MessageEntries<'a> {
+    Prepared(&'a ChangeSummary),
+    #[cfg(any(test, feature = "fixture"))]
+    Fixture,
+}
+
+impl MessageEntries<'_> {
+    fn has_prepared_items(self, pk: i64) -> bool {
+        match self {
+            Self::Prepared(changes) => changes.has_prepared_items(pk),
+            #[cfg(any(test, feature = "fixture"))]
+            Self::Fixture => false,
+        }
+    }
+}
+
 enum Unit {
     Message {
         pk: i64,
@@ -535,9 +554,7 @@ pub(crate) fn refresh_stale(conn: &Connection) -> Result<()> {
     for pk in sessions {
         crate::session_values::rebuild(conn, pk, counter)?;
         conn.execute_batch("SAVEPOINT fixture_items")?;
-        let prepared = ChangeSummary::start(conn)?;
-        let result = prepare_fixture_items(conn, pk, &prepared)
-            .and_then(|()| rebuild(conn, pk, None, &BTreeSet::new(), &prepared));
+        let result = rebuild(conn, pk, None, &BTreeSet::new(), MessageEntries::Fixture);
         match result {
             Ok(_) => conn.execute_batch("RELEASE fixture_items")?,
             Err(error) => {
@@ -584,8 +601,20 @@ fn refresh_session(
             Ok(0)
         }
         // A rebuild compares the links itself.
-        Start::Whole => rebuild(conn, session_pk, None, &change.events, prepared),
-        Start::From(anchor) => rebuild(conn, session_pk, Some(anchor), &change.events, prepared),
+        Start::Whole => rebuild(
+            conn,
+            session_pk,
+            None,
+            &change.events,
+            MessageEntries::Prepared(prepared),
+        ),
+        Start::From(anchor) => rebuild(
+            conn,
+            session_pk,
+            Some(anchor),
+            &change.events,
+            MessageEntries::Prepared(prepared),
+        ),
     }
 }
 
@@ -757,7 +786,7 @@ fn rebuild(
     session_pk: i64,
     anchor: Option<Anchor>,
     changed_events: &BTreeSet<i64>,
-    prepared: &ChangeSummary,
+    prepared: MessageEntries<'_>,
 ) -> Result<u64> {
     let changed: i64 = conn
         .prepare_cached("SELECT changed FROM session WHERE pk = ?1")?
@@ -947,19 +976,26 @@ fn rebuild(
 fn unit_entries(
     conn: &Connection,
     unit: &Unit,
-    prepared: &ChangeSummary,
+    prepared: MessageEntries<'_>,
 ) -> Result<Vec<IndexEntry>> {
     match unit {
         Unit::Message {
             pk, id, at, place, ..
         } => {
-            let mut entries = match prepared.prepared_items(*pk) {
-                Some(entries) => entries,
-                None if prepared.reuses_items(*pk) => stored_message_entries(conn, *pk)?,
-                None => {
-                    return Err(StoreError::Invalid(
-                        "changed message items were not prepared".into(),
-                    ));
+            let mut entries = match prepared {
+                MessageEntries::Prepared(changes) => match changes.prepared_items(*pk) {
+                    Some(entries) => entries,
+                    None if changes.reuses_items(*pk) => stored_message_entries(conn, *pk)?,
+                    None => {
+                        return Err(StoreError::Invalid(
+                            "changed message items were not prepared".into(),
+                        ));
+                    }
+                },
+                #[cfg(any(test, feature = "fixture"))]
+                MessageEntries::Fixture => {
+                    let (message, ordinals) = message_body(conn, *pk)?;
+                    message_entries(&message, &ordinals, MessagePlace::default())
                 }
             };
             if entries.is_empty() {
@@ -1097,22 +1133,6 @@ pub(crate) fn prepare_retained_message(conn: &Connection, pk: i64) -> Result<Vec
         &projection.block_ordinals,
         MessagePlace::default(),
     ))
-}
-
-#[cfg(any(test, feature = "fixture"))]
-fn prepare_fixture_items(conn: &Connection, session: i64, prepared: &ChangeSummary) -> Result<()> {
-    let messages = conn
-        .prepare_cached("SELECT pk FROM message WHERE session_pk=?1")?
-        .query_map([session], |row| row.get::<_, i64>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    for pk in messages {
-        let (message, ordinals) = message_body(conn, pk)?;
-        prepared.prepare_items(
-            pk,
-            message_entries(&message, &ordinals, MessagePlace::default()),
-        );
-    }
-    Ok(())
 }
 
 /// A message's row and its blocks with their original ordinals: the fields
