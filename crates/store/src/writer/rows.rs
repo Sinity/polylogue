@@ -5,6 +5,7 @@ use super::*;
 use crate::change_summary::ChangeSummary;
 use crate::first_build::FirstBuild;
 use polylogue_model::{Completion, Route};
+use std::cell::Cell;
 
 mod checkpoint;
 mod events_links;
@@ -223,6 +224,19 @@ fn apply_rows(
         choices,
         changes,
         version_pks: HashMap::new(),
+        messages: choices
+            .messages
+            .iter()
+            .map(|(&pk, choice)| {
+                (
+                    pk,
+                    MessageWrite {
+                        choice: choice.as_ref(),
+                        created: Cell::new(None),
+                    },
+                )
+            })
+            .collect(),
     };
     if p.reset {
         rows.retract()?;
@@ -313,8 +327,15 @@ fn apply_rows(
         // A kind this step states needs no lookup.
         let main = choices.message_mains[i];
         let order_time = choices.message_order_times[i];
-        written +=
-            u64::from(rows.write_message(row, session_pk, prepared, position, order_time, main)?);
+        written += u64::from(rows.write_message(
+            row,
+            session_pk,
+            prepared,
+            position,
+            order_time,
+            main,
+            &mut sessions,
+        )?);
         super::native_hook_fields::write(
             tx,
             super::native_hook_fields::Source {
@@ -693,6 +714,7 @@ struct StoredBlock<'a> {
 }
 
 pub(super) struct RowWriter<'a, 't> {
+    messages: BTreeMap<i64, MessageWrite<'a>>,
     /// Integer keys returned while registering this transaction's versions.
     version_pks: HashMap<[u8; 32], i64>,
     checkpoint: checkpoint::Update,
@@ -714,6 +736,15 @@ pub(super) struct RowWriter<'a, 't> {
     changes: &'a ChangeSummary,
 }
 
+/// One selected message's application in this step. The creation result is
+/// consumed by its first body installation, including early copy moves.
+struct MessageWrite<'a> {
+    choice: Option<&'a resolve::membership::MessageChoice>,
+    created: Cell<Option<CreatedMessage>>,
+}
+
+struct CreatedMessage;
+
 /// The main route's reading of a shown message.
 pub(super) struct Version {
     time: Vec<u8>,
@@ -722,6 +753,21 @@ pub(super) struct Version {
     start: i64,
     end: i64,
     in_progress: bool,
+}
+
+fn selected_version(choice: &resolve::membership::MessageChoice) -> Version {
+    Version {
+        time: choice
+            .prepared
+            .as_ref()
+            .map(|prepared| prepared.time.clone())
+            .unwrap_or_default(),
+        input_pk: choice.input,
+        chain: choice.chain,
+        start: choice.start,
+        end: choice.end,
+        in_progress: choice.in_progress,
+    }
 }
 
 pub(super) fn ms(t: Option<Timestamp>) -> Option<i64> {
@@ -950,7 +996,8 @@ impl RowWriter<'_, '_> {
         Ok(pk)
     }
 
-    /// Stores a chain's reading before choosing across inputs.
+    /// Stores a chain's reading beneath the resolved selected value.
+    #[allow(clippy::too_many_arguments)]
     fn write_message(
         &self,
         row: &MessageRow,
@@ -959,6 +1006,7 @@ impl RowWriter<'_, '_> {
         position: (i64, i64),
         order_time: Option<i64>,
         main: bool,
+        sessions: &mut HashMap<String, i64>,
     ) -> Result<bool> {
         let m = &row.message;
         let id = m.id.to_string();
@@ -982,13 +1030,32 @@ impl RowWriter<'_, '_> {
                     self.tx,
                     self.keys.get(resolve::Kind::Message, id.as_bytes())?.pk,
                 )?;
-                let order = crate::encoding::session_order(
-                    order_time,
-                    self.input_id,
-                    position.0,
-                    position.1,
-                );
-                let pk = self.insert_message(m, session_pk, &v, &order)?;
+                let write = self
+                    .messages
+                    .get(&self.keys.get(resolve::Kind::Message, id.as_bytes())?.pk)
+                    .ok_or_else(|| StoreError::Invalid("unresolved message version".into()))?;
+                let pk = if let Some(choice) = write.choice.filter(|choice| choice.changed) {
+                    let selected = choice.message.as_ref().ok_or_else(|| {
+                        StoreError::Invalid("a changed version has no prepared message".into())
+                    })?;
+                    self.session_pk(sessions, &selected.session)?;
+                    let pk = self.insert_message(
+                        selected,
+                        choice.session,
+                        &selected_version(choice),
+                        &choice.order,
+                    )?;
+                    write.created.set(Some(CreatedMessage));
+                    pk
+                } else {
+                    let order = crate::encoding::session_order(
+                        order_time,
+                        self.input_id,
+                        position.0,
+                        position.1,
+                    );
+                    self.insert_message(m, session_pk, &v, &order)?
+                };
                 if let Some(first) = self.first_build {
                     first.add_message(&self.keys.identities.shown_message(&id), pk);
                 }
@@ -1017,28 +1084,13 @@ impl RowWriter<'_, '_> {
     }
 
     fn refresh_message(&self, pk: i64) -> Result<bool> {
-        let choice = self
-            .choices
+        let write = self
             .messages
             .get(&pk)
             .ok_or_else(|| StoreError::Invalid("unresolved message version".into()))?;
-        let winner = choice.as_ref().map(|choice| {
-            (
-                Version {
-                    time: choice
-                        .prepared
-                        .as_ref()
-                        .map(|prepared| prepared.time.clone())
-                        .unwrap_or_default(),
-                    input_pk: choice.input,
-                    chain: choice.chain,
-                    start: choice.start,
-                    end: choice.end,
-                    in_progress: choice.in_progress,
-                },
-                choice.session,
-            )
-        });
+        let choice = write.choice;
+        let created = write.created.take();
+        let winner = choice.map(|choice| (selected_version(choice), choice.session));
         let Some((v, session_pk)) = winner else {
             if !self.tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM message WHERE pk=?1)",
@@ -1055,7 +1107,7 @@ impl RowWriter<'_, '_> {
             self.tx.execute("DELETE FROM message WHERE pk=?1", [pk])?;
             return Ok(true);
         };
-        let choice = choice.as_ref().expect("selected message");
+        let choice = choice.expect("selected message");
         let order = &choice.order;
         if !choice.changed {
             let (unchanged, items_unchanged) = self
@@ -1119,21 +1171,25 @@ impl RowWriter<'_, '_> {
             .ok_or_else(|| StoreError::Invalid("a changed version has no prepared body".into()))?;
         self.changes.prepare_items(pk, prepared.items.clone());
         self.tx.execute("UPDATE session SET changed=?2 WHERE pk IN (SELECT session_pk FROM message WHERE pk=?1) OR pk=?3",params![pk,self.counter,session_pk])?;
-        self.clear_blocks(pk)?;
-        // A copy's message joining its session may have no row of its own yet.
-        if self
+        if created.is_some() {
+            // Source claims now exist, so events can take the main reading's
+            // real sequence rather than the insert's provisional sequence.
+            self.update_event_anchors(pk, true)?;
+        } else if self
             .tx
             .prepare_cached("SELECT EXISTS(SELECT 1 FROM message WHERE pk=?1)")?
             .query_row([pk], |r| r.get::<_, bool>(0))?
         {
+            self.clear_blocks(pk)?;
             self.update_message(pk, m, session_pk, &v, order)?;
+            self.tx
+                .prepare_cached("DELETE FROM message_route WHERE message_pk=?1")?
+                .execute([pk])?;
         } else {
+            // A copy joining its session can first materialize here.
             self.insert_message(m, session_pk, &v, order)?;
         }
         self.insert_blocks(pk, session_pk, m, prepared)?;
-        self.tx
-            .prepare_cached("DELETE FROM message_route WHERE message_pk=?1")?
-            .execute([pk])?;
         for (group, input, chain) in &choice.routes {
             self.tx
                 .prepare_cached(
