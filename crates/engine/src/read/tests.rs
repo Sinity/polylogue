@@ -472,7 +472,8 @@ fn a_new_empty_native_file_has_a_real_body_and_known_eof_without_parser_progress
     let mut context = engine.sampling_context(&path, origin.name).unwrap();
     context.facts = Some(facts);
     job.acquisition = Some(context);
-    let (prepared, done) = crate::pool::run(job, &engine.archive, &engine.blobs, true);
+    let (prepared, done) =
+        crate::pool::run(job, &engine.archive, &engine.blobs, true, &engine.stop);
     assert!(done.error.is_none(), "{:?}", done.error);
     let prepared = prepared.unwrap();
     assert!(prepared.batch.parse.is_empty());
@@ -713,5 +714,54 @@ fn parser_error_keeps_last_checkpoint_and_quiet_native_raw_eof_across_reopen() {
         );
         drop(engine);
         drop(lock);
+    }
+}
+
+#[test]
+fn source_read_cancellation_stops_before_the_next_buffer_without_masking_io_errors() {
+    use polylogue_store::read::limit::ReadLimit;
+    struct Stops {
+        stop: crate::StopRequest,
+        reads: usize,
+        fail: bool,
+    }
+    impl Read for Stops {
+        fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+            self.reads += 1;
+            self.stop.request();
+            if self.fail {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "ordinary I/O failure",
+                ));
+            }
+            bytes.fill(b'x');
+            Ok(bytes.len())
+        }
+    }
+    for fail in [false, true] {
+        let home = polylogue_testkit::ClaudeHome::new();
+        let (engine, _lock) = crate::import::tests::engine(&home, 4096);
+        let stop = engine.stop_request();
+        let limit = ReadLimit::without_deadline(stop.0.reads.clone());
+        let mut source = Stops {
+            stop,
+            reads: 0,
+            fail,
+        };
+        let error = limit
+            .scope(|| read_exact_scoped(&mut source, &mut vec![0; 131072]))
+            .unwrap_err();
+        assert_eq!(source.reads, 1);
+        if fail {
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        } else {
+            assert!(
+                error
+                    .get_ref()
+                    .and_then(|e| e.downcast_ref::<polylogue_store::StoreError>())
+                    .is_some_and(|e| matches!(e, polylogue_store::StoreError::ReadCancelled))
+            );
+        }
     }
 }

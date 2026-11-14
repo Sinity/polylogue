@@ -1805,6 +1805,11 @@ impl Engine {
             let Some(mut plan) = running.remove(&d.path) else {
                 continue;
             };
+            if d.cancelled {
+                pass.bytes_stored += d.stored;
+                pass.errors.extend(d.error);
+                continue;
+            }
             if d.raw_custody.is_some()
                 || plan.raw.is_some()
                 || d.pending.is_some()

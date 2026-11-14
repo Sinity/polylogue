@@ -169,10 +169,20 @@ impl Overlay {
     }
 }
 impl Context for Overlay {
-    fn get(&mut self, key: &Key) -> std::result::Result<Option<Value>, String> {
-        self.lookup(key).map_err(|e| e.to_string())
+    fn get(
+        &mut self,
+        key: &Key,
+    ) -> std::result::Result<Option<Value>, polylogue_model::parser_context::Error> {
+        self.lookup(key).map_err(|e| match e {
+            StoreError::ReadCancelled => polylogue_model::parser_context::Error::Cancelled,
+            other => polylogue_model::parser_context::Error::Failed(other.to_string()),
+        })
     }
-    fn put(&mut self, key: Key, value: Value) -> std::result::Result<(), String> {
+    fn put(
+        &mut self,
+        key: Key,
+        value: Value,
+    ) -> std::result::Result<(), polylogue_model::parser_context::Error> {
         let attempt = self
             .0
             .lock()
@@ -185,6 +195,9 @@ impl Context for Overlay {
 }
 impl Overlay {
     fn lookup(&self, key: &Key) -> Result<Option<Value>> {
+        if let Some(limit) = crate::read::limit::ReadLimit::current() {
+            limit.check()?;
+        }
         let attempt = self
             .0
             .lock()

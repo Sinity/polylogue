@@ -16,8 +16,18 @@ pub fn read_range(path: &Path, start: u64, end: u64) -> io::Result<Vec<u8>> {
     let mut f = File::open(path)?;
     f.seek(SeekFrom::Start(start))?;
     let mut buf = vec![0u8; (end - start) as usize];
-    f.read_exact(&mut buf)?;
+    read_exact_scoped(&mut f, &mut buf)?;
     Ok(buf)
+}
+
+fn read_exact_scoped(reader: &mut impl Read, bytes: &mut [u8]) -> io::Result<()> {
+    for part in bytes.chunks_mut(65536) {
+        if let Some(limit) = polylogue_store::read::limit::ReadLimit::current() {
+            limit.check().map_err(io::Error::other)?;
+        }
+        reader.read_exact(part)?;
+    }
+    Ok(())
 }
 
 /// Native byte proof uses one opened file and verifies the sampled generation
@@ -37,7 +47,7 @@ pub(crate) fn read_native_range(
     }
     file.seek(SeekFrom::Start(start))?;
     let mut bytes = vec![0; (end - start) as usize];
-    file.read_exact(&mut bytes)?;
+    read_exact_scoped(&mut file, &mut bytes)?;
     if polylogue_store::FileFacts::of(&file.metadata()?) != before
         || polylogue_store::FileFacts::of(&std::fs::metadata(path)?) != before
     {
