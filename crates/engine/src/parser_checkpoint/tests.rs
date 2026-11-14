@@ -113,7 +113,8 @@ fn missing_same_version_state_defers_parse_while_every_raw_suffix_chunk_commits(
         let origin = polylogue_sources::origin::by_name("claude-code").unwrap();
         let first = job(&engine, &path, origin, prefix);
         input = first.input.id.clone();
-        let (batch, done) = crate::pool::run(first, &engine.archive, &engine.blobs, true);
+        let (batch, done) =
+            crate::pool::run(first, &engine.archive, &engine.blobs, true, &engine.stop);
         assert!(done.error.is_none());
         let mut batch = batch.unwrap();
         // A retained source reading whose parser control is unavailable.
@@ -183,6 +184,7 @@ fn one_call_multiple_capture_steps_only_checkpoints_its_final_cursor() {
         &engine.archive,
         &engine.blobs,
         false,
+        &engine.stop,
     );
     assert!(done.error.is_none(), "{done:?}");
     let steps = batch.unwrap().batch.parse;

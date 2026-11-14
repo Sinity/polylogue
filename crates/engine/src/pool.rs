@@ -100,6 +100,7 @@ pub struct Done {
     /// Bytes the job added to the archive, as the writer reports them.
     pub stored: u64,
     pub error: Option<String>,
+    pub cancelled: bool,
     pub write_failed: bool,
     /// The writer refused the batch's content, so the same range is refused
     /// again; any other failed write is retried. When the bytes were stored
@@ -354,7 +355,7 @@ fn work(
         };
         let size = job.bytes();
         let live = job.priority == Priority::Live;
-        let (batch, result) = run(job, archive, store, true);
+        let (batch, result) = run(job, archive, store, true, &shared.stop);
         group.waiting.push((batch, result, size));
         group.bytes += size;
         if (live || group.bytes >= GROUP_BYTES)
@@ -496,10 +497,22 @@ fn failed_step(job: &Job, error: String, prepare: bool) -> ParseStep {
 }
 
 pub(crate) fn run(
+    job: Job,
+    archive: &polylogue_store::Archive,
+    store: &polylogue_store::blobs::Blobs,
+    prepare: bool,
+    stop: &crate::StopRequest,
+) -> (Option<PreparedBatch>, Done) {
+    polylogue_store::read::limit::ReadLimit::without_deadline(stop.0.reads.clone())
+        .scope(|| run_scoped(job, archive, store, prepare, stop))
+}
+
+fn run_scoped(
     mut job: Job,
     archive: &polylogue_store::Archive,
     store: &polylogue_store::blobs::Blobs,
     prepare: bool,
+    stop: &crate::StopRequest,
 ) -> (Option<PreparedBatch>, Done) {
     use polylogue_store::timing::{Stage, add, time};
     let mut out = Done {
@@ -512,6 +525,7 @@ pub(crate) fn run(
         tail: Vec::new(),
         stored: 0,
         error: None,
+        cancelled: false,
         write_failed: false,
         content_refused: false,
         failure_recorded: false,
@@ -521,6 +535,10 @@ pub(crate) fn run(
         raw_custody: None,
         raw_acquisition: None,
     };
+    if stop.requested() {
+        out.cancelled = true;
+        return (None, out);
+    }
     let started = std::time::Instant::now();
     let mut file_snapshot = None;
     let read = match &job.source {
@@ -530,7 +548,7 @@ pub(crate) fn run(
             .read_range(job.start, job.end),
         Bytes::Stored(chain) => chain
             .read_range(store, job.start, job.end)
-            .map_err(|e| std::io::Error::other(e.to_string())),
+            .map_err(std::io::Error::other),
         Bytes::File => match &job.acquisition {
             Some(context) => read::read_native_range(&job.path, job.start, job.end, context.facts)
                 .map(|(bytes, observed)| {
@@ -547,6 +565,14 @@ pub(crate) fn run(
     let bytes = match read {
         Ok(b) => b,
         Err(e) => {
+            if stop.requested()
+                && e.get_ref()
+                    .and_then(|e| e.downcast_ref::<polylogue_store::StoreError>())
+                    .is_some_and(|e| matches!(e, polylogue_store::StoreError::ReadCancelled))
+            {
+                out.cancelled = true;
+                return (None, out);
+            }
             out.error = Some(format!("read {}: {e}", job.path.display()));
             return (None, out);
         }
@@ -614,7 +640,10 @@ pub(crate) fn run(
             receipt
         });
     out.raw_acquisition = acquisition.clone();
-    let context_overlay = if let Some(context) = job.parser_context.take() {
+    out.cancelled = stop.requested();
+    let context_overlay = if out.cancelled {
+        None
+    } else if let Some(context) = job.parser_context.take() {
         match context.check_source(
             &job.input.id,
             job.parser_chain,
@@ -622,6 +651,13 @@ pub(crate) fn run(
             job.start,
         ) {
             Ok(()) => Some(context),
+            Err(error)
+                if stop.requested()
+                    && matches!(error, polylogue_store::StoreError::ReadCancelled) =>
+            {
+                out.cancelled = true;
+                None
+            }
             Err(error) => {
                 out.error = Some(error.to_string());
                 out.continuation_missing = true;
@@ -644,6 +680,13 @@ pub(crate) fn run(
             job.start,
         ) {
             Ok(context) => Some(context),
+            Err(error)
+                if stop.requested()
+                    && matches!(error, polylogue_store::StoreError::ReadCancelled) =>
+            {
+                out.cancelled = true;
+                None
+            }
             Err(error) => {
                 out.error = Some(error.to_string());
                 out.continuation_missing = true;
@@ -661,7 +704,7 @@ pub(crate) fn run(
         .as_ref()
         .and_then(|overlay| overlay.replay_chain())
     {
-        match rebuild_context(&job, archive, store, chain, &context) {
+        match rebuild_context(&job, archive, store, chain, &context, stop) {
             Ok(state) => {
                 let mut expected = out.parser_state.clone().unwrap_or(Json::Null);
                 if let Some(object) = expected.as_object_mut() {
@@ -676,8 +719,18 @@ pub(crate) fn run(
                     out.parser_state = Some(state);
                 }
             }
+            Err(error)
+                if stop.requested()
+                    && (matches!(
+                        error,
+                        crate::EngineError::Stopped
+                            | crate::EngineError::Store(polylogue_store::StoreError::ReadCancelled)
+                    ) || context.is_cancelled()) =>
+            {
+                out.cancelled = true;
+            }
             Err(error) => {
-                out.error = Some(error);
+                out.error = Some(error.to_string());
                 out.continuation_missing = true;
             }
         }
@@ -688,8 +741,9 @@ pub(crate) fn run(
             .is_row_dump(&job.path)
             .then(polylogue_sources::row_dump::open)
     });
-    let parse = parser
+    let mut parse = parser
         .map(|parser| {
+            if out.cancelled || stop.requested() && out.error.is_none() { out.cancelled = true; return Vec::new(); }
             if job.origin.support == polylogue_sources::Support::Parsed
                 && (job.parser_deferred || out.continuation_missing || job.start > 0 && out.parser_state.is_none()) {
                 out.continuation_missing = true;
@@ -715,9 +769,11 @@ pub(crate) fn run(
             });
             match step {
                 Ok((steps, parser_state)) => {
+                    if context.is_cancelled() && stop.requested() { out.cancelled = true; return Vec::new(); }
                     out.parser_state = Some(parser_state);
                     let mut parsed = Vec::new();
                     for mut step in steps {
+                        if stop.requested() && out.error.is_none() { out.cancelled = true; return Vec::new(); }
                         if step.consumed == step.start && !job.at_end {
                             continue;
                         }
@@ -780,6 +836,10 @@ pub(crate) fn run(
                             };
                             match overlay.checkpoint_delta(out.parsed_upto).and_then(|delta| serde_json::to_value(delta).map_err(Into::into)) {
                                 Ok(delta) => { state.insert(polylogue_model::parser_context::FIELD.into(), delta); }
+                                Err(error) if stop.requested() && matches!(error, polylogue_store::StoreError::ReadCancelled) => {
+                                    out.cancelled = true;
+                                    return Vec::new();
+                                }
                                 Err(error) => {
                                     out.error = Some(error.to_string());
                                     out.failure_recorded = true;
@@ -793,6 +853,7 @@ pub(crate) fn run(
                     parsed
                 }
                 Err(e) => {
+                    if context.is_cancelled() && stop.requested() { out.cancelled = true; return Vec::new(); }
                     out.error = Some(format!("parse {}: {e}", job.path.display()));
                     out.failure_recorded = true;
                     vec![failed_step(&job, e, prepare)]
@@ -820,13 +881,25 @@ pub(crate) fn run(
             }
             vec![step]
         });
-    if let Bytes::Import(source) = &job.source {
+    if !out.cancelled
+        && let Bytes::Import(source) = &job.source
+    {
         let upto = if job.origin.support != polylogue_sources::Support::Kept {
             out.parsed_upto
         } else {
             job.end
         };
         source.lock().expect("import reader lock").consume(upto);
+    }
+    if out.cancelled {
+        parse.clear();
+        out.parsed_upto = job.start;
+        out.parser_state = None;
+        out.failure_recorded = false;
+        out.continuation_missing = false;
+        if new_blob.is_none() && extra.is_empty() {
+            return (None, out);
+        }
     }
     out.checkpoint = parse.last().and_then(|step| step.checkpoint.clone());
     for state in [
@@ -871,39 +944,43 @@ fn rebuild_context(
     blobs: &polylogue_store::blobs::Blobs,
     chain: i64,
     context: &polylogue_model::parser_context::Handle,
-) -> Result<Json, String> {
-    let reads = polylogue_store::ReadPool::open(archive).map_err(|e| e.to_string())?;
-    let reader = reads.reader().map_err(|e| e.to_string())?;
-    let source = reader
-        .stored_chain(&job.input.id, chain, job.start)
-        .map_err(|e| e.to_string())?;
-    let parser = (job.origin.open)(&job.path)
-        .ok_or_else(|| "context reconstruction has no provider parser".to_owned())?;
+    stop: &crate::StopRequest,
+) -> Result<Json, crate::EngineError> {
+    let reads = polylogue_store::ReadPool::open(archive)?;
+    let reader = reads.reader()?;
+    let source = reader.stored_chain(&job.input.id, chain, job.start)?;
+    let parser = (job.origin.open)(&job.path).ok_or_else(|| {
+        crate::EngineError::Parse("context reconstruction has no provider parser".into())
+    })?;
+    polylogue_store::fault::check("parse.context_prefix", &job.input.id)?;
     let mut state = None;
     let mut pending = Vec::new();
     let mut read = 0u64;
     let mut cursor = 0u64;
     while read < job.start {
+        if stop.requested() {
+            return Err(crate::EngineError::Stopped);
+        }
         let end = (read + 65536).min(job.start);
-        pending.extend(
-            source
-                .read_range(blobs, read, end)
-                .map_err(|e| e.to_string())?,
-        );
+        pending.extend(source.read_range(blobs, read, end)?);
         read = end;
         let (steps, next) = parser
             .steps(state.as_ref(), &pending, cursor, false, context)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| crate::EngineError::Parse(e.to_string()))?;
         let consumed = steps.last().map_or(0, |step| step.consumed) as usize;
         if consumed > pending.len() {
-            return Err("context reconstruction cursor exceeds its bytes".into());
+            return Err(crate::EngineError::Parse(
+                "context reconstruction cursor exceeds its bytes".into(),
+            ));
         }
         pending.drain(..consumed);
         cursor += consumed as u64;
         state = Some(next);
     }
     if cursor != job.start || !pending.is_empty() {
-        return Err("context reconstruction did not reach its admitted checkpoint".into());
+        return Err(crate::EngineError::Parse(
+            "context reconstruction did not reach its admitted checkpoint".into(),
+        ));
     }
     Ok(state.unwrap_or(Json::Null))
 }

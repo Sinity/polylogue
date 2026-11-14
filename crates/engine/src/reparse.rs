@@ -455,125 +455,144 @@ fn prepare(
     stop: &StopRequest,
     yielding: &std::sync::atomic::AtomicBool,
 ) -> Result<Option<ChainReading>, EngineError> {
-    if yielding.load(std::sync::atomic::Ordering::Acquire) {
-        return Ok(None);
-    }
-    if let pool::Bytes::Unloaded {
-        chain,
-        length,
-        decoded,
-    } = plan.source
-    {
-        let reads = ReadPool::with_budget(archive, 1, read_memory)?;
-        let stored = reads
-            .reader()?
-            .stored_chain(&plan.input.id, chain, length)?;
-        plan.source = if decoded {
-            pool::Bytes::Import(Arc::new(Mutex::new(read::Imported::from_chain(
-                stored,
-                Arc::clone(blobs),
-            ))))
-        } else {
-            pool::Bytes::Stored(Arc::new(stored))
-        };
-    }
-    polylogue_store::fault::check("reparse.prepare", &plan.input.id)?;
-    let mut reading = ChainReading::new()?;
-    if let Some(polylogue_sources::Parse::Export(mut parser)) = (plan.origin.open)(&plan.path) {
-        let _charge = memory.take(plan.size.min(plan.chunk));
-        let read = crate::import::exports::parse_export(plan, &mut *parser, blobs, |mut item| {
-            // A reading commits whole, so a stop drops what was prepared.
-            if stop.requested() || yielding.load(std::sync::atomic::Ordering::Acquire) {
-                return Err(EngineError::Stopped);
-            }
-            let mut decoded = Vec::new();
-            let mut files = Vec::new();
-            for blob in std::mem::take(&mut item.output.blobs) {
-                let (new, file) = archive.prepare_decoded(&blob.bytes)?;
-                if new.hash != blob.hash || new.size != blob.size {
-                    return Err(std::io::Error::other(
-                        "decoded bytes differ from their declared hash or length",
-                    )
-                    .into());
-                }
-                decoded.push(new);
-                files.extend(file);
-            }
-            let (mut step, cursor) = item.into_parse(plan, blobs, stopped_attempt)?;
-            polylogue_store::timing::time(polylogue_store::timing::Stage::Store, || {
-                reading.push(&mut step)
-            })?;
-            keep_decoded(&mut reading, plan, decoded, files);
-            Ok(cursor)
-        });
-        let read = match read {
-            Err(EngineError::Stopped)
-                if !stop.requested() && yielding.load(std::sync::atomic::Ordering::Acquire) =>
-            {
-                return Ok(None);
-            }
-            result => result?,
-        };
-        *bytes_read += read.bytes_read;
-        if read.complete {
-            plan.parse_pos = plan.size;
-        } else {
-            plan.failed = true;
-            plan.failure_recorded = true;
-        }
-    } else {
-        let context = if plan.origin.name == "claude-code" {
-            Some(polylogue_store::parser_context::Overlay::open(
-                archive,
-                &plan.input.id,
-                plan.parser_chain,
-                &plan.origin.reading_version(),
-                plan.parse_pos,
-            )?)
-        } else {
-            None
-        };
-        while !plan.finished() {
+    let result = polylogue_store::read::limit::ReadLimit::without_deadline(stop.0.reads.clone())
+        .scope(|| {
             if yielding.load(std::sync::atomic::Ordering::Acquire) {
                 return Ok(None);
             }
-            if stop.requested() {
-                return Err(EngineError::Stopped);
-            }
-            let mut job = plan.next_job(stopped_attempt);
-            job.parser_context = context.clone();
-            let bytes = job.end - job.start;
-            let _charge = memory.take(bytes);
-            *bytes_read += bytes;
-            let (batch, done) = pool::run(job, archive, blobs, false);
-            if done.continuation_missing {
-                return Err(EngineError::Parse(done.error.unwrap_or_else(|| {
-                    "native parser continuation is unavailable at the admitted cursor".into()
-                })));
-            }
-            if let Some(error) = &done.error {
-                return Err(if error.starts_with("parse ") {
-                    EngineError::Parse(error.clone())
+            if let pool::Bytes::Unloaded {
+                chain,
+                length,
+                decoded,
+            } = plan.source
+            {
+                let reads = ReadPool::with_budget(archive, 1, read_memory)?;
+                let stored = reads
+                    .reader()?
+                    .stored_chain(&plan.input.id, chain, length)?;
+                plan.source = if decoded {
+                    pool::Bytes::Import(Arc::new(Mutex::new(read::Imported::from_chain(
+                        stored,
+                        Arc::clone(blobs),
+                    ))))
                 } else {
-                    std::io::Error::other(error.clone()).into()
-                });
+                    pool::Bytes::Stored(Arc::new(stored))
+                };
             }
-            let Some(mut batch) = batch else {
-                return Err(std::io::Error::other("a replacement returned no rows").into());
-            };
-            for step in &mut batch.batch.parse {
-                polylogue_store::timing::time(polylogue_store::timing::Stage::Store, || {
-                    reading.push(step)
-                })?;
+            polylogue_store::fault::check("reparse.prepare", &plan.input.id)?;
+            let mut reading = ChainReading::new()?;
+            if let Some(polylogue_sources::Parse::Export(mut parser)) =
+                (plan.origin.open)(&plan.path)
+            {
+                let _charge = memory.take(plan.size.min(plan.chunk));
+                let read =
+                    crate::import::exports::parse_export(plan, &mut *parser, blobs, |mut item| {
+                        // A reading commits whole, so a stop drops what was prepared.
+                        if stop.requested() || yielding.load(std::sync::atomic::Ordering::Acquire) {
+                            return Err(EngineError::Stopped);
+                        }
+                        let mut decoded = Vec::new();
+                        let mut files = Vec::new();
+                        for blob in std::mem::take(&mut item.output.blobs) {
+                            let (new, file) = archive.prepare_decoded(&blob.bytes)?;
+                            if new.hash != blob.hash || new.size != blob.size {
+                                return Err(std::io::Error::other(
+                                    "decoded bytes differ from their declared hash or length",
+                                )
+                                .into());
+                            }
+                            decoded.push(new);
+                            files.extend(file);
+                        }
+                        let (mut step, cursor) = item.into_parse(plan, blobs, stopped_attempt)?;
+                        polylogue_store::timing::time(
+                            polylogue_store::timing::Stage::Store,
+                            || reading.push(&mut step),
+                        )?;
+                        keep_decoded(&mut reading, plan, decoded, files);
+                        Ok(cursor)
+                    });
+                let read = match read {
+                    Err(EngineError::Stopped)
+                        if !stop.requested()
+                            && yielding.load(std::sync::atomic::Ordering::Acquire) =>
+                    {
+                        return Ok(None);
+                    }
+                    result => result?,
+                };
+                *bytes_read += read.bytes_read;
+                if read.complete {
+                    plan.parse_pos = plan.size;
+                } else {
+                    plan.failed = true;
+                    plan.failure_recorded = true;
+                }
+            } else {
+                let context = if plan.origin.name == "claude-code" {
+                    Some(polylogue_store::parser_context::Overlay::open(
+                        archive,
+                        &plan.input.id,
+                        plan.parser_chain,
+                        &plan.origin.reading_version(),
+                        plan.parse_pos,
+                    )?)
+                } else {
+                    None
+                };
+                while !plan.finished() {
+                    if yielding.load(std::sync::atomic::Ordering::Acquire) {
+                        return Ok(None);
+                    }
+                    if stop.requested() {
+                        return Err(EngineError::Stopped);
+                    }
+                    let mut job = plan.next_job(stopped_attempt);
+                    job.parser_context = context.clone();
+                    let bytes = job.end - job.start;
+                    let _charge = memory.take(bytes);
+                    *bytes_read += bytes;
+                    let (batch, done) = pool::run(job, archive, blobs, false, stop);
+                    if done.cancelled {
+                        return Err(EngineError::Stopped);
+                    }
+                    if done.continuation_missing {
+                        return Err(EngineError::Parse(done.error.unwrap_or_else(|| {
+                            "native parser continuation is unavailable at the admitted cursor"
+                                .into()
+                        })));
+                    }
+                    if let Some(error) = &done.error {
+                        return Err(if error.starts_with("parse ") {
+                            EngineError::Parse(error.clone())
+                        } else {
+                            std::io::Error::other(error.clone()).into()
+                        });
+                    }
+                    let Some(mut batch) = batch else {
+                        return Err(std::io::Error::other("a replacement returned no rows").into());
+                    };
+                    for step in &mut batch.batch.parse {
+                        polylogue_store::timing::time(
+                            polylogue_store::timing::Stage::Store,
+                            || reading.push(step),
+                        )?;
+                    }
+                    batch.batch.parse.clear();
+                    if !batch.batch.blobs.is_empty() {
+                        reading.decoded(batch);
+                    }
+                    plan.apply(done, true);
+                }
             }
-            batch.batch.parse.clear();
-            if !batch.batch.blobs.is_empty() {
-                reading.decoded(batch);
-            }
-            plan.apply(done, true);
+            Ok(Some(reading))
+        });
+    match result {
+        Err(EngineError::Store(polylogue_store::StoreError::ReadCancelled)) if stop.requested() => {
+            Err(EngineError::Stopped)
         }
+        other => other,
     }
-    Ok(Some(reading))
 }
 
 fn keep_decoded(

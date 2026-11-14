@@ -53,7 +53,8 @@ fn confirmed_capture_resumes_in_the_same_engine_without_reacquiring_provider_byt
         let mut context = engine.sampling_context(&path, origin.name).unwrap();
         context.facts = Some(now);
         job.acquisition = Some(context);
-        let (prepared, done) = crate::pool::run(job, &engine.archive, &engine.blobs, true);
+        let (prepared, done) =
+            crate::pool::run(job, &engine.archive, &engine.blobs, true, &engine.stop);
         assert!(done.error.is_none(), "{:?}", done.error);
         // A cursorless raw attempt is still unsupported before confirmation.
         engine.apply_raw_result(&mut plan, &done).unwrap();
@@ -189,7 +190,8 @@ fn confirmed_capture_resumes_in_the_same_engine_without_reacquiring_provider_byt
         let mut context = engine.sampling_context(&path, origin.name).unwrap();
         context.facts = Some(now);
         job.acquisition = Some(context);
-        let (prepared, last) = crate::pool::run(job, &engine.archive, &engine.blobs, true);
+        let (prepared, last) =
+            crate::pool::run(job, &engine.archive, &engine.blobs, true, &engine.stop);
         assert!(last.error.is_none(), "{:?}", last.error);
         let results = engine
             .writer

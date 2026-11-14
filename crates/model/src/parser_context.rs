@@ -27,18 +27,36 @@ pub enum Value {
     Alias { target: Option<MessageId> },
 }
 
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum Error {
+    #[error("read cancelled")]
+    Cancelled,
+    #[error("{0}")]
+    Failed(String),
+}
+impl From<String> for Error {
+    fn from(error: String) -> Self {
+        Self::Failed(error)
+    }
+}
+impl From<&str> for Error {
+    fn from(error: &str) -> Self {
+        Self::Failed(error.into())
+    }
+}
+
 /// Implementations own the selected input/chain/reading/cursor view and its
 /// speculative child. Provider parsers never choose those identities.
 pub trait Context: Send {
-    fn get(&mut self, key: &Key) -> Result<Option<Value>, String>;
-    fn put(&mut self, key: Key, value: Value) -> Result<(), String>;
+    fn get(&mut self, key: &Key) -> Result<Option<Value>, Error>;
+    fn put(&mut self, key: Key, value: Value) -> Result<(), Error>;
 }
 
 #[derive(Clone)]
 pub struct Handle(Arc<Mutex<Access>>);
 struct Access {
     backend: Box<dyn Context>,
-    error: Option<String>,
+    error: Option<Error>,
 }
 impl std::fmt::Debug for Handle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -68,10 +86,16 @@ impl Handle {
             access.error.get_or_insert(error);
         }
     }
+    pub fn is_cancelled(&self) -> bool {
+        matches!(
+            self.0.lock().expect("parser context lock").error.as_ref(),
+            Some(Error::Cancelled)
+        )
+    }
     /// Any backend failure rejects the entire parse result before publication.
     pub fn check(&self) -> Result<(), String> {
         match &self.0.lock().expect("parser context lock").error {
-            Some(error) => Err(error.clone()),
+            Some(error) => Err(error.to_string()),
             None => Ok(()),
         }
     }
@@ -82,10 +106,10 @@ impl Handle {
 #[derive(Default)]
 pub struct Memory(BTreeMap<Key, Value>);
 impl Context for Memory {
-    fn get(&mut self, key: &Key) -> Result<Option<Value>, String> {
+    fn get(&mut self, key: &Key) -> Result<Option<Value>, Error> {
         Ok(self.0.get(key).cloned())
     }
-    fn put(&mut self, key: Key, value: Value) -> Result<(), String> {
+    fn put(&mut self, key: Key, value: Value) -> Result<(), Error> {
         self.0.insert(key, value);
         Ok(())
     }
@@ -131,3 +155,6 @@ pub fn delta(state: &Json) -> Result<Option<Delta>, serde_json::Error> {
         .map(serde_json::from_value)
         .transpose()
 }
+
+#[cfg(test)]
+mod tests;

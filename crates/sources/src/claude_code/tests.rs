@@ -504,14 +504,17 @@ fn a_context_backend_error_rejects_the_entire_parse_before_rows_are_published() 
         fn get(
             &mut self,
             _: &polylogue_model::parser_context::Key,
-        ) -> Result<Option<polylogue_model::parser_context::Value>, String> {
+        ) -> Result<
+            Option<polylogue_model::parser_context::Value>,
+            polylogue_model::parser_context::Error,
+        > {
             Err("unavailable selected context".into())
         }
         fn put(
             &mut self,
             _: polylogue_model::parser_context::Key,
             _: polylogue_model::parser_context::Value,
-        ) -> Result<(), String> {
+        ) -> Result<(), polylogue_model::parser_context::Error> {
             Err("unavailable selected context".into())
         }
     }
