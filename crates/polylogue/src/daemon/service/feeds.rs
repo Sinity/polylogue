@@ -5,7 +5,7 @@ use super::*;
 pub(crate) struct Changes;
 
 /// The change feed's only argument.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, command_surface::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ChangesArguments {
     since: Option<String>,

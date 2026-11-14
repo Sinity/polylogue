@@ -43,18 +43,23 @@ fn document_pages_preserve_exact_prefix_and_refuse_cross_content_stale_and_tampe
     write_documents(&source, &[doc.clone(), other]);
     let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let _daemon = start_daemon(&env);
+    eprintln!("document pages: initial import");
     let imported = cli(&env, &["--json", "import", source.to_str().unwrap()]);
     let _ = import_report(&imported);
     let reference = "document:claude-ai:manual";
+    eprintln!("document pages: whole reading");
     let whole = reading(&env, reference, &["--page-tokens", "100000"]);
     let encoded = serde_json::to_string(&whole).unwrap();
     assert!(encoded.contains("synthetic-secret-tail"));
     assert!(encoded.contains("Visible λ🙂 tail"));
+    eprintln!("document pages: concatenate one-token pages");
     assert_eq!(joined_items(&env, reference, "1"), whole.document.items);
+    eprintln!("document pages: portable document");
     assert_eq!(
         document(&env, reference),
         serde_json::to_value(&doc).unwrap()
     );
+    eprintln!("document pages: terminal and HTML");
     let terminal = cli(&env, &["read", reference, "--format", "terminal"]);
     assert!(terminal.status.success(), "{terminal:?}");
     assert!(!terminal.stdout.contains(&0x1b) && !terminal.stdout.contains(&7));
@@ -80,6 +85,7 @@ fn document_pages_preserve_exact_prefix_and_refuse_cross_content_stale_and_tampe
     let html = std::fs::read_to_string(html_path).unwrap();
     assert!(!html.contains("<script>alert('synthetic')</script>"));
     assert!(html.contains("&lt;script&gt;") && html.contains("synthetic-secret-tail"));
+    eprintln!("document pages: refuse invalid continuation tokens");
     let first = reading(&env, reference, &["--page-tokens", "1"]);
     let next = first.document.footer.next.unwrap();
     let args = continuation_arguments(&next);
@@ -114,10 +120,12 @@ fn document_pages_preserve_exact_prefix_and_refuse_cross_content_stale_and_tampe
         }],
     }])
     .unwrap();
+    eprintln!("document pages: unrelated write and continuation");
     let note = cli(&env, &["--json", "assert", &notes]);
     assert!(note.status.success(), "{note:?}");
     let continued = cli(&env, &args.iter().map(String::as_str).collect::<Vec<_>>());
     assert!(continued.status.success(), "{continued:?}");
+    eprintln!("document pages: corrupt body and preserve readable prefix");
     let index = rusqlite::Connection::open(archive.join("index.db")).unwrap();
     index.execute("UPDATE document_block SET body=x'00' WHERE idx=2 AND document_pk=(SELECT pk FROM document WHERE id='claude-ai:manual')",[]).unwrap();
     drop(index);
@@ -138,6 +146,7 @@ fn document_pages_preserve_exact_prefix_and_refuse_cross_content_stale_and_tampe
     }];
     let changed = dir.path().join("changed.json");
     write_documents(&changed, &[doc]);
+    eprintln!("document pages: replacement import and stale continuation");
     let imported = cli(&env, &["--json", "import", changed.to_str().unwrap()]);
     let _ = import_report(&imported);
     let stale = cli(&env, &args.iter().map(String::as_str).collect::<Vec<_>>());

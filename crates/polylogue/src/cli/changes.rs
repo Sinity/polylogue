@@ -15,7 +15,7 @@ fn invalid(message: &str) -> io::Error {
 /// `changes`: writes one finite batch to stdout, ending with its
 /// completion line.
 pub fn run(
-    values: &crate::commands::Values,
+    values: &command_surface::ParsedCommand,
     startup: &crate::config::Startup,
     call: &command_surface::RunnableRequest,
 ) -> ExitCode {
@@ -44,17 +44,16 @@ pub fn run(
 }
 
 /// The feed's arguments: only the last applied position.
-pub(crate) fn arguments(values: &crate::commands::Values) -> Result<serde_json::Value, String> {
-    if values.text("cursor").is_some()
-        || values.0.contains_key("fields")
-        || values.0.contains_key("why")
+pub(crate) fn arguments(
+    values: &command_surface::ParsedCommand,
+) -> Result<serde_json::Value, String> {
+    if values.request.cursor.clone().is_some()
+        || values.calling_process.contains_key("fields")
+        || values.calling_process.contains_key("why")
     {
         return Err("the change feed takes --since; use a changes query for filtering, fields or ordinary pages".into());
     }
-    Ok(match values.text("since") {
-        Some(since) => serde_json::json!({ "since": since }),
-        None => serde_json::json!({}),
-    })
+    Ok(values.request.arguments.clone())
 }
 
 fn send(

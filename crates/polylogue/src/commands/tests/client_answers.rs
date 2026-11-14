@@ -86,19 +86,24 @@ fn cli_answer(w: &test_daemon::TestDaemon, argv: &[&str], request_id: &str) -> (
 fn mcp_answer(
     w: &test_daemon::TestDaemon,
     c: &Command,
-    values: &Values,
+    values: &command_surface::ParsedCommand,
     request_id: &str,
 ) -> Answer {
     if c.name == "complete" {
         return crate::mcp::tests::complete(
             &w.daemon.archive,
-            &values.text("text").unwrap_or_default(),
-            values.integer("position"),
+            values.request.arguments["text"]
+                .as_str()
+                .unwrap_or_default(),
+            values.request.arguments["position"].as_u64(),
         );
     }
     let names: Vec<&str> = c.args_for(Surface::Mcp).map(|a| a.name).collect();
     let arguments = values
-        .0
+        .request
+        .arguments
+        .as_object()
+        .unwrap()
         .iter()
         .filter(|(k, _)| names.contains(&k.as_str()))
         .map(|(k, v)| (k.clone(), v.clone()))
@@ -129,13 +134,16 @@ fn encoded(text: &str) -> String {
 fn http_answer(
     web: &Arc<crate::web::Web>,
     c: &Command,
-    values: &Values,
+    values: &command_surface::ParsedCommand,
     request_id: &str,
 ) -> (Answer, Exit) {
     let mut pairs: Vec<String> = Vec::new();
     let names: Vec<&str> = c.args_for(Surface::Http).map(|a| a.name).collect();
     for (name, value) in values
-        .0
+        .request
+        .arguments
+        .as_object()
+        .unwrap()
         .iter()
         .filter(|(name, _)| names.contains(&name.as_str()))
     {
@@ -154,7 +162,10 @@ fn http_answer(
         pairs.extend(texts.iter().map(|t| format!("{name}={}", encoded(t))));
     }
     let arguments: serde_json::Map<String, Value> = values
-        .0
+        .request
+        .arguments
+        .as_object()
+        .unwrap()
         .iter()
         .filter(|(name, _)| names.contains(&name.as_str()))
         .map(|(name, value)| (name.clone(), value.clone()))

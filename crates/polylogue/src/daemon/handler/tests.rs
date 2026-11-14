@@ -518,10 +518,7 @@ fn named_context_budget_and_identity_survive_the_socket() {
         let (_, values, arguments) =
             crate::cli::request_arguments(&words, std::path::Path::new("/")).unwrap();
         assert_eq!(Value::Object(arguments), selected.arguments);
-        assert_eq!(
-            crate::cli::parse_budget(values.text("budget").as_deref()).unwrap(),
-            budget
-        );
+        assert_eq!(values.request.budget_tokens, budget);
     }
     let answer = crate::client::call_ready(&daemon.daemon.archive, &envelope).unwrap();
     assert_eq!(answer.exit_code(), 0, "{answer:?}");

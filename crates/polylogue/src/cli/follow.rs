@@ -16,13 +16,19 @@ use std::time::Duration;
 const QUIET_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 pub fn run(
-    values: &crate::commands::Values,
+    values: &command_surface::ParsedCommand,
     startup: &crate::config::Startup,
     call: &command_surface::RunnableRequest,
 ) -> ExitCode {
-    let json = values.flag("json");
+    let json = values.json;
     let output = startup.output;
-    let Some(target) = values.text("target") else {
+    let Some(target) = values
+        .request
+        .arguments
+        .get("target")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+    else {
         return fail(
             output,
             json,
@@ -40,9 +46,29 @@ pub fn run(
                 | polylogue_model::Reference::MessageRange { .. })
         );
     if !session_target {
-        if values.flag("until_idle")
-            || !values.list("show").is_empty()
-            || !values.list("hide").is_empty()
+        if values
+            .calling_process
+            .get("until_idle")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+            || !values
+                .calling_process
+                .get("show")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|value| value.as_str().map(str::to_owned))
+                .collect::<Vec<_>>()
+                .is_empty()
+            || !values
+                .calling_process
+                .get("hide")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|value| value.as_str().map(str::to_owned))
+                .collect::<Vec<_>>()
+                .is_empty()
         {
             return fail(
                 output,
@@ -63,18 +89,29 @@ pub fn run(
 fn follow_session(
     archive: &Archive,
     target: &str,
-    values: &crate::commands::Values,
+    values: &command_surface::ParsedCommand,
     output: crate::config::OutputConfig,
     json: bool,
 ) -> ExitCode {
-    let until_idle = values.flag("until_idle");
+    let until_idle = values
+        .calling_process
+        .get("until_idle")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
     let mut arguments = serde_json::json!({
         "target": target,
         "format": "json",
         "latest": true,
     });
     for name in ["show", "hide"] {
-        let words = values.list(name);
+        let words = values
+            .calling_process
+            .get(name)
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|value| value.as_str().map(str::to_owned))
+            .collect::<Vec<_>>();
         if !words.is_empty() {
             arguments[name] = serde_json::json!(words);
         }
@@ -299,7 +336,7 @@ fn answer<T: serde::de::DeserializeOwned>(
 const REQUEST_SPAN: Duration = Duration::from_secs(60);
 
 fn live_query(
-    values: &crate::commands::Values,
+    values: &command_surface::ParsedCommand,
     query: &str,
     startup: &crate::config::Startup,
     _: &command_surface::RunnableRequest,
@@ -335,7 +372,7 @@ fn live_query(
                 match line {
                     Line::Marks { marks } => next = Some(marks),
                     line => {
-                        if values.flag("json") {
+                        if values.json {
                             serde_json::to_writer(&mut stdout, &line)?;
                             writeln!(stdout)?;
                             stdout.flush()?;

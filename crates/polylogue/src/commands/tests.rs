@@ -1,35 +1,64 @@
 use super::*;
 use serde_json::json;
 
-/// A value the command line accepts for a required argument.
-fn sample(a: &Arg) -> &'static str {
-    match a.kind {
-        Kind::Choice(choices) => choices[0],
-        Kind::Integer => "1",
-        Kind::Json => "{}",
-        _ => "claude-code:s1",
-    }
-}
-
 /// A command line naming `c` with every required argument.
 fn argv(c: &Command) -> Vec<&'static str> {
     let mut argv = vec!["polylogue"];
     if c.cli != Cli::NoSubcommand {
         argv.extend(c.name.split(' '));
     }
-    for a in c.args.iter().filter(|a| a.required && a.default.is_none()) {
-        if !a.positional {
+    for a in crate::cli::projections(c).into_iter().filter(|argument| {
+        argument.required
+            && c.args
+                .iter()
+                .any(|a| a.name == argument.spec.name && a.default.is_none())
+    }) {
+        if !matches!(
+            a.spec.form,
+            command_surface::ArgumentForm::Positional
+                | command_surface::ArgumentForm::Words
+                | command_surface::ArgumentForm::Rest
+        ) {
             argv.push(Box::leak(
-                format!("--{}", a.name.replace('_', "-")).into_boxed_str(),
+                format!("--{}", a.spec.name.replace('_', "-")).into_boxed_str(),
             ));
         }
-        argv.push(sample(a));
+        if a.spec.form == command_surface::ArgumentForm::Flag {
+            continue;
+        }
+        let value = a.choices.first().cloned().unwrap_or_else(|| {
+            if matches!(&a.kind, command_surface::ValueKind::List(_))
+                && matches!(
+                    a.spec.form,
+                    command_surface::ArgumentForm::Positional
+                        | command_surface::ArgumentForm::Named
+                )
+            {
+                return "[]".into();
+            }
+            fn sample(kind: &command_surface::ValueKind) -> &'static str {
+                match kind {
+                    command_surface::ValueKind::Text => "claude-code:s1",
+                    command_surface::ValueKind::Boolean => "true",
+                    command_surface::ValueKind::Json => "1",
+                    command_surface::ValueKind::List(item) => sample(item),
+                }
+            }
+            sample(&a.kind).into()
+        });
+        argv.push(Box::leak(value.into_boxed_str()));
     }
     argv
 }
 
 /// The arguments a command line sends, prepared in a fixed directory.
-fn cli(argv: &[&str]) -> (&'static Command, Values, serde_json::Value) {
+fn cli(
+    argv: &[&str],
+) -> (
+    &'static Command,
+    command_surface::ParsedCommand,
+    serde_json::Value,
+) {
     let (c, values, arguments) =
         crate::cli::request_arguments(argv, std::path::Path::new("/home/me/repo"))
             .unwrap_or_else(|e| panic!("{argv:?}: {e}"));
@@ -101,23 +130,19 @@ fn mcp_offers_one_tool_per_family_over_the_commands_marked_for_it() {
 fn only_daemon_rows_go_over_mcp_and_http() {
     for c in COMMANDS.iter().filter(|c| c.tool.is_some() || c.http) {
         assert!(
-            !matches!(c.run, Run::Local(_) | Run::ConfiguredLocal(_)),
+            !matches!(c.run, Run::Local(..) | Run::ConfiguredLocal(..)),
             "{} runs locally",
             c.name
         );
     }
-    // Every daemon row is declared once, with its handler, to the shared
-    // declarations; nothing else is.
+    // Every CLI row has one shared input declaration. Only daemon rows
+    // expose MCP and HTTP; local rows remain process-owned.
     let declared: Vec<&str> = declarations()
         .descriptions()
         .iter()
         .map(|description| description.spec.name.as_str())
         .collect();
-    let rows: Vec<&str> = COMMANDS
-        .iter()
-        .filter(|c| c.registration().is_some())
-        .map(|c| c.name)
-        .collect();
+    let rows: Vec<&str> = COMMANDS.iter().map(|c| c.name).collect();
     assert_eq!(declared, rows);
 }
 

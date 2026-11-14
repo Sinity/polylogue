@@ -45,7 +45,17 @@ const CONTEXT_BUDGET: Duration = Duration::from_millis(1_500);
 const DELIVERED_BUDGET: Duration = Duration::from_millis(20);
 
 /// A harness that calls the hook command.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    command_surface::JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
 pub enum Harness {
     ClaudeCode,
     Codex,
@@ -54,8 +64,6 @@ pub enum Harness {
 }
 
 impl Harness {
-    pub const NAMES: &[&str] = &["claude-code", "codex", "hermes", "gemini-cli"];
-
     pub fn parse(name: &str) -> Option<Self> {
         match name {
             "claude-code" => Some(Self::ClaudeCode),

@@ -6,7 +6,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 pub(crate) fn output(
-    values: &Values,
+    values: &command_surface::ParsedCommand,
     answer: &command_surface::Answer<Value>,
     startup: &crate::config::Startup,
     json: bool,
@@ -14,7 +14,13 @@ pub(crate) fn output(
     let data = answer
         .value()
         .expect("output handlers receive answers with values");
-    if values.text("out").is_none() {
+    if values
+        .calling_process
+        .get("out")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .is_none()
+    {
         if json {
             println!(
                 "{}",
@@ -46,18 +52,26 @@ pub(crate) fn output(
 }
 
 fn write(
-    values: &Values,
+    values: &command_surface::ParsedCommand,
     data: &Value,
     startup: &crate::config::Startup,
 ) -> Result<PathBuf, String> {
-    let path = PathBuf::from(values.text("out").ok_or("--out is required")?);
+    let path = PathBuf::from(
+        values
+            .calling_process
+            .get("out")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .ok_or("--out is required")?,
+    );
     let mut temporary = super::staged_file::StagedFile::new(&path).map_err(|e| e.to_string())?;
     let arguments: serde_json::Map<String, Value> =
         ["message", "block", "attachment", "input", "length"]
             .into_iter()
             .filter_map(|name| {
                 values
-                    .0
+                    .request
+                    .arguments
                     .get(name)
                     .map(|value| (name.to_owned(), value.clone()))
             })
@@ -67,9 +81,7 @@ fn write(
         Value::Object(arguments),
         polylogue_store::user_writes::new_request_id(),
     );
-    if let Some(seconds) = values.integer("timeout") {
-        request.deadline = command_surface::Deadline::Milliseconds(seconds.saturating_mul(1000));
-    }
+    request.deadline = values.request.deadline;
     let mut value = data.clone();
     let mut hasher = blake3::Hasher::new();
     let mut offset = 0;

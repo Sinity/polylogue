@@ -2,7 +2,7 @@
 
 mod files;
 
-use crate::commands::{self, Caller, Command, Surface, Values};
+use crate::commands::{self, Caller, Command, Surface};
 use crate::daemon::service;
 use polylogue_engine::Config;
 use serde::Serialize;
@@ -37,11 +37,17 @@ struct Tour {
 
 pub fn tour(
     _: &Command,
-    values: &Values,
+    values: &command_surface::ParsedCommand,
     startup: &crate::config::Startup,
     json: bool,
 ) -> ExitCode {
-    let directory = values.text("directory").unwrap_or_default();
+    let directory = values
+        .request
+        .arguments
+        .get("directory")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_default();
     match run(Path::new(&directory), startup) {
         Ok(tour) => {
             if json {
@@ -283,7 +289,12 @@ fn command_line(command: &Command, arguments: &Value) -> String {
         if value.is_null() || value == false {
             continue;
         }
-        if !arg.positional {
+        if !matches!(
+            arg.form,
+            command_surface::ArgumentForm::Positional
+                | command_surface::ArgumentForm::Words
+                | command_surface::ArgumentForm::Rest
+        ) {
             words.push(format!("--{}", arg.name.replace('_', "-")));
         }
         if value == true {

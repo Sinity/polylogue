@@ -39,5 +39,5 @@ fn a_read_keeps_the_request_cursor_beside_its_reading_options() {
     )
     .unwrap();
     assert!(arguments.get("cursor").is_none());
-    assert_eq!(values.text("cursor").as_deref(), Some("sealed"));
+    assert_eq!(values.request.cursor.as_deref(), Some("sealed"));
 }

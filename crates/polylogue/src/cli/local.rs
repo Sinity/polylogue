@@ -2,14 +2,32 @@
 //! the daemon itself, the MCP server, the hook command, the browser host,
 //! setup outside the archive and completions.
 
+pub mod arguments;
+
 use super::fail;
-use crate::commands::{Command, Values};
+use crate::commands::Command;
 use std::process::ExitCode;
 
-pub fn daemon(_: &Command, v: &Values, startup: &crate::config::Startup, json: bool) -> ExitCode {
+pub fn daemon(
+    _: &Command,
+    v: &command_surface::ParsedCommand,
+    startup: &crate::config::Startup,
+    json: bool,
+) -> ExitCode {
     let run = crate::daemon::server::Run {
-        reads_sources: !v.flag("no_sources"),
-        lifetime: if v.flag("until_idle") {
+        reads_sources: !v
+            .request
+            .arguments
+            .get("no_sources")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+        lifetime: if v
+            .request
+            .arguments
+            .get("until_idle")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+        {
             polylogue_engine::Lifetime::UntilIdle
         } else {
             polylogue_engine::Lifetime::UntilStopped
@@ -72,7 +90,12 @@ pub fn daemon(_: &Command, v: &Values, startup: &crate::config::Startup, json: b
     }
 }
 
-pub fn mcp(_: &Command, _: &Values, startup: &crate::config::Startup, _: bool) -> ExitCode {
+pub fn mcp(
+    _: &Command,
+    _: &command_surface::ParsedCommand,
+    startup: &crate::config::Startup,
+    _: bool,
+) -> ExitCode {
     match crate::mcp::serve_stdio(&polylogue_store::Archive::at(&startup.config.archive)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -90,23 +113,48 @@ pub fn mcp(_: &Command, _: &Values, startup: &crate::config::Startup, _: bool) -
     }
 }
 
-pub fn hook(_: &Command, v: &Values, startup: &crate::config::Startup, _: bool) -> ExitCode {
-    let name = v.text("harness").unwrap_or_else(|| "claude-code".into());
+pub fn hook(
+    _: &Command,
+    v: &command_surface::ParsedCommand,
+    startup: &crate::config::Startup,
+    _: bool,
+) -> ExitCode {
+    let name = v
+        .request
+        .arguments
+        .get("harness")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| "claude-code".into());
     let Some(harness) = crate::hook::Harness::parse(&name) else {
         // A non-zero exit would block the harness's tool call.
         eprintln!("polylogue hook: unknown harness {name:?}");
         return ExitCode::SUCCESS;
     };
-    crate::hook::run(harness, &v.text("event").unwrap_or_default(), startup)
+    crate::hook::run(
+        harness,
+        &v.request
+            .arguments
+            .get("event")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .unwrap_or_default(),
+        startup,
+    )
 }
 
-pub fn web(_: &Command, _: &Values, startup: &crate::config::Startup, json: bool) -> ExitCode {
+pub fn web(
+    _: &Command,
+    _: &command_surface::ParsedCommand,
+    startup: &crate::config::Startup,
+    json: bool,
+) -> ExitCode {
     open_reader(startup, json)
 }
 
 pub fn browser_host(
     _: &Command,
-    _: &Values,
+    _: &command_surface::ParsedCommand,
     startup: &crate::config::Startup,
     _: bool,
 ) -> ExitCode {
@@ -121,11 +169,17 @@ pub fn browser_host(
 /// this binary for completions as the operator types.
 pub fn completions(
     _: &Command,
-    v: &Values,
+    v: &command_surface::ParsedCommand,
     output: crate::config::OutputConfig,
     _: bool,
 ) -> ExitCode {
-    let shell = v.text("shell").unwrap_or_default();
+    let shell = v
+        .request
+        .arguments
+        .get("shell")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_default();
     let shells = clap_complete::env::Shells::builtins();
     let Some(completer) = shells.completer(&shell) else {
         return fail(
@@ -138,7 +192,13 @@ pub fn completions(
     };
     // A wrapper on PATH that runs this binary (Sinnix's `polylogue-live`)
     // is completed and asked under its own name, so it keeps its archive.
-    let name = v.text("program").unwrap_or_else(|| "polylogue".into());
+    let name = v
+        .request
+        .arguments
+        .get("program")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| "polylogue".into());
     let mut registration = Vec::new();
     match completer.write_registration("COMPLETE", &name, &name, &name, &mut registration) {
         Ok(()) => {
@@ -156,7 +216,7 @@ pub fn completions(
 
 pub fn hooks_install(
     _: &Command,
-    v: &Values,
+    v: &command_surface::ParsedCommand,
     startup: &crate::config::Startup,
     json: bool,
 ) -> ExitCode {
@@ -165,21 +225,38 @@ pub fn hooks_install(
 
 pub fn hooks_uninstall(
     _: &Command,
-    v: &Values,
+    v: &command_surface::ParsedCommand,
     startup: &crate::config::Startup,
     json: bool,
 ) -> ExitCode {
     hooks(v, startup, json, false)
 }
 
-fn hooks(v: &Values, startup: &crate::config::Startup, json: bool, on: bool) -> ExitCode {
-    let name = v.text("harness").unwrap_or_else(|| "claude-code".into());
+fn hooks(
+    v: &command_surface::ParsedCommand,
+    startup: &crate::config::Startup,
+    json: bool,
+    on: bool,
+) -> ExitCode {
+    let name = v
+        .request
+        .arguments
+        .get("harness")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| "claude-code".into());
     let Some(harness) = crate::hook::Harness::parse(&name) else {
         // A non-zero exit would block the harness's tool call.
         eprintln!("polylogue hook: unknown harness {name:?}");
         return ExitCode::SUCCESS;
     };
-    let path = match v.text("settings") {
+    let path = match v
+        .request
+        .arguments
+        .get("settings")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+    {
         Some(path) => std::path::PathBuf::from(path),
         None => match crate::hook::settings_path(harness, &startup.engine) {
             Ok(path) => path,
@@ -203,7 +280,7 @@ fn hooks(v: &Values, startup: &crate::config::Startup, json: bool, on: bool) -> 
 /// A command declared but not built: a typed refusal.
 pub fn not_built(
     c: &Command,
-    _: &Values,
+    _: &command_surface::ParsedCommand,
     output: crate::config::OutputConfig,
     json: bool,
 ) -> ExitCode {
@@ -218,16 +295,30 @@ pub fn not_built(
 
 pub fn install_agent(
     _: &Command,
-    v: &Values,
+    v: &command_surface::ParsedCommand,
     startup: &crate::config::Startup,
     json: bool,
 ) -> ExitCode {
     install_chrome(
         startup,
         json,
-        &v.text("harness").unwrap_or_default(),
-        v.text("extension_id").as_deref(),
-        v.flag("remove"),
+        &v.request
+            .arguments
+            .get("harness")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .unwrap_or_default(),
+        v.request
+            .arguments
+            .get("extension_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .as_deref(),
+        v.request
+            .arguments
+            .get("remove")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
     )
 }
 
@@ -386,7 +477,7 @@ fn open_reader(startup: &crate::config::Startup, json: bool) -> ExitCode {
 /// The same standing instructions the MCP server supplies at initialization.
 pub fn manual(
     _: &Command,
-    _: &Values,
+    _: &command_surface::ParsedCommand,
     _output: crate::config::OutputConfig,
     json: bool,
 ) -> ExitCode {
@@ -407,9 +498,25 @@ pub fn manual(
 
 /// `polylogue host`: holds a hosted agent's stdio for the daemon until the
 /// agent exits (`crate::hosting`).
-pub fn host(_: &Command, v: &Values, output: crate::config::OutputConfig, json: bool) -> ExitCode {
-    let harness = v.text("harness").unwrap_or_default();
-    let session_id = v.text("session_id");
+pub fn host(
+    _: &Command,
+    v: &command_surface::ParsedCommand,
+    output: crate::config::OutputConfig,
+    json: bool,
+) -> ExitCode {
+    let harness = v
+        .request
+        .arguments
+        .get("harness")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_default();
+    let session_id = v
+        .request
+        .arguments
+        .get("session_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
     let (Some(argv), Ok(protocol)) = (
         crate::hosting::agent_command(&harness, session_id.as_deref()),
         polylogue_model::live::channel::host_channel(&harness),
@@ -422,7 +529,14 @@ pub fn host(_: &Command, v: &Values, output: crate::config::OutputConfig, json: 
             2,
         );
     };
-    let path = |name: &str| v.text(name).map(std::path::PathBuf::from);
+    let path = |name: &str| {
+        v.request
+            .arguments
+            .get(name)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .map(std::path::PathBuf::from)
+    };
     let (Some(socket), Some(cwd), Some(spool)) = (path("socket"), path("cwd"), path("spool"))
     else {
         return fail(
