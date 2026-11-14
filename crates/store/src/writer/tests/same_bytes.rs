@@ -40,6 +40,21 @@ fn chain_with_member(
         });
         batch.parse[0].output.prefix_members.extend(member);
         batch.parse[0].counts = counts(1);
+        batch.parse[0].counts.wire_shapes.insert(
+            serde_json::to_string(&("document", "/body")).unwrap(),
+            polylogue_model::WireShape {
+                record_kind: "document".into(),
+                path: "/body".into(),
+                types: BTreeMap::from([("string".into(), 1)]),
+                expected: vec!["string".into()],
+                dynamic_map: false,
+                known_kinds: vec!["document".into()],
+                unknown_kind_count: 0,
+                unused_count: 0,
+                table: None,
+                unknown_table_count: 0,
+            },
+        );
     } else {
         batch.parse.clear();
     }
