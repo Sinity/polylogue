@@ -408,6 +408,14 @@ fn new_versions_do_not_resolve_hashes_again_for_each_child() {
         let mut conn = open_write(&dir.path().join("index.db"), 1).unwrap();
         crate::schema::create_index(&conn).unwrap();
         conn.set_prepared_statement_cache_capacity(0);
+        // SQLite restores the outer insert's row ID after a trigger inserts elsewhere.
+        conn.execute_batch(
+            "CREATE TEMP TABLE registration_effect(pk INTEGER PRIMARY KEY);
+            INSERT INTO registration_effect VALUES(999);
+            CREATE TEMP TRIGGER version_registration_effect AFTER INSERT ON message_version
+            BEGIN INSERT INTO registration_effect(pk) VALUES(NULL); END;",
+        )
+        .unwrap();
         let first = crate::first_build::FirstBuild::default();
         let tx = conn.transaction().unwrap();
         let prefix = batch("input1", Route::Live, 0, vec![], &[]);

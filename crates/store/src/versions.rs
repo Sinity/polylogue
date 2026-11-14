@@ -106,6 +106,8 @@ fn store_value(
         let inserted = conn
             .prepare_cached("INSERT OR IGNORE INTO message_version(version_hash) VALUES(?1)")?
             .execute([hash])?;
+        // execute reports this statement's changes, excluding trigger writes.
+        // This connection has one writer; capture its row ID before another statement.
         let pk = if inserted == 1 {
             conn.last_insert_rowid()
         } else {
