@@ -11,7 +11,7 @@ fn admitted_continuation(
     let reader = reads.reader().unwrap();
     (
         reader.query("SELECT p.chain,p.status,p.parsed_upto,p.reading_version,hex(p.checkpoint) AS checkpoint FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.format='claude-code' ORDER BY p.chain", &[]).unwrap(),
-        reader.query("SELECT c.chain,c.reading_version,c.cursor,c.key,hex(c.value) AS value,hex(c.version_hash) AS version FROM parser_context c JOIN input_ref i ON i.pk=c.input_pk WHERE i.format='claude-code' ORDER BY c.chain,c.reading_version,c.key,c.cursor", &[]).unwrap(),
+        reader.query("SELECT c.chain,c.reading_version,c.cursor,c.key,hex(c.value) AS value,hex((SELECT version_hash FROM message_version WHERE pk=c.version_pk)) AS version FROM parser_context c JOIN input_ref i ON i.pk=c.input_pk WHERE i.format='claude-code' ORDER BY c.chain,c.reading_version,c.key,c.cursor", &[]).unwrap(),
     )
 }
 

@@ -17,7 +17,7 @@ fn a_daemon_over_an_index_from_another_format_rebuilds_it_and_serves() {
     d.restart_after_stop(|| {
         rusqlite::Connection::open(&index)
             .unwrap()
-            .execute_batch("PRAGMA user_version=2; CREATE TABLE synthetic_older(value)")
+            .execute_batch("PRAGMA user_version=1; CREATE TABLE synthetic_older(value)")
             .unwrap();
     });
     d.wait_for(|status| {
@@ -26,7 +26,7 @@ fn a_daemon_over_an_index_from_another_format_rebuilds_it_and_serves() {
     let rebuild = status(&d)["store"]["index_rebuild"].clone();
     assert_eq!(
         rebuild["reason"],
-        serde_json::json!({"kind": "format_version", "found": 2, "wanted": polylogue_store::schema::INDEX_VERSION})
+        serde_json::json!({"kind": "format_version", "found": 1, "wanted": polylogue_store::schema::INDEX_VERSION})
     );
     assert_ne!(rebuild["previous_schema"], rebuild["schema"], "{rebuild}");
     assert_eq!(rebuild.get("set_aside"), None, "{rebuild}");
