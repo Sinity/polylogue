@@ -451,7 +451,7 @@ fn no_outer_header_does_not_supply_a_default_parent_for_a_null_request() {
 fn a_cancelled_http_parent_without_a_header_cannot_submit_a_pure_write() {
     let daemon = crate::test_daemon::start("cancelled HTTP write admission");
     let web = web(&daemon);
-    let cancellation = polylogue_store::read::limit::ReadCancellation::default();
+    let cancellation = polylogue_store::cancellation::Cancellation::default();
     cancellation.cancel();
     let id = "cancelled-parent-no-new-write";
     let request = command_surface::Request {

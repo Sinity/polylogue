@@ -77,7 +77,6 @@ impl Engine {
         let workers = self.config.workers.max(1).min(count);
         let read_memory = self.config.reader_memory_per_connection()?;
         let stopped_attempt = self.stopped_attempt;
-        let stop = self.stop.clone();
         let yielding = self.requests.as_ref().map_or_else(
             || Arc::new(std::sync::atomic::AtomicBool::new(false)),
             |requests| Arc::clone(&requests.yielding),
@@ -96,75 +95,75 @@ impl Engine {
                 let memory = &memory;
                 let archive = &archive;
                 let blobs = &blobs;
-                let stop = &stop;
                 let yielding = &yielding;
                 std::thread::Builder::new()
                     .name(format!("pl-reading-{worker}"))
                     .spawn_scoped(scope, move || {
-                        loop {
-                            // After a stop request the queue is left for the
-                            // loop below to take back.
-                            if stop.requested()
-                                || yielding.load(std::sync::atomic::Ordering::Acquire)
-                            {
-                                break;
-                            }
-                            let plan = { waiting.lock().expect("reading queue").pop_front() };
-                            let Some(mut plan) = plan else { break };
-                            polylogue_store::timing::reading_queue(-1, 0);
-                            let mut bytes_read = 0;
-                            let _busy = polylogue_store::timing::reading_worker(worker);
-                            let reading =
-                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                    prepare(
-                                        &mut plan,
-                                        archive,
-                                        blobs,
-                                        read_memory,
-                                        memory,
-                                        &mut bytes_read,
-                                        &stopped_attempt,
-                                        stop,
-                                        yielding,
-                                    )
-                                }))
-                                .unwrap_or_else(|_| {
-                                    Err(EngineError::Parse(
-                                        "the replacement parser panicked".into(),
-                                    ))
-                                });
-                            let reading = reading.and_then(|reading| {
-                                if yielding.load(std::sync::atomic::Ordering::Acquire) {
-                                    return Ok(None);
+                        polylogue_store::cancellation::under(archive.stop(), || {
+                            loop {
+                                // After a stop request the queue is left for the
+                                // loop below to take back.
+                                if archive.stop().is_cancelled()
+                                    || yielding.load(std::sync::atomic::Ordering::Acquire)
+                                {
+                                    break;
                                 }
-                                reading
-                                    .map(|mut reading| {
-                                        polylogue_store::timing::time(
-                                            polylogue_store::timing::Stage::Store,
-                                            || reading.finish(),
-                                        )?;
-                                        Ok(reading)
+                                let plan = { waiting.lock().expect("reading queue").pop_front() };
+                                let Some(mut plan) = plan else { break };
+                                polylogue_store::timing::reading_queue(-1, 0);
+                                let mut bytes_read = 0;
+                                let _busy = polylogue_store::timing::reading_worker(worker);
+                                let reading =
+                                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                        prepare(
+                                            &mut plan,
+                                            archive,
+                                            blobs,
+                                            read_memory,
+                                            memory,
+                                            &mut bytes_read,
+                                            &stopped_attempt,
+                                            yielding,
+                                        )
+                                    }))
+                                    .unwrap_or_else(|_| {
+                                        Err(EngineError::Parse(
+                                            "the replacement parser panicked".into(),
+                                        ))
+                                    });
+                                let reading = reading.and_then(|reading| {
+                                    if yielding.load(std::sync::atomic::Ordering::Acquire) {
+                                        return Ok(None);
+                                    }
+                                    reading
+                                        .map(|mut reading| {
+                                            polylogue_store::timing::time(
+                                                polylogue_store::timing::Stage::Store,
+                                                || reading.finish(),
+                                            )?;
+                                            Ok(reading)
+                                        })
+                                        .transpose()
+                                });
+                                // Commit replies need progress and state, not open input buffers.
+                                plan.source = pool::Bytes::File;
+                                if !plan.tracked {
+                                    plan.parser_state = None;
+                                    plan.tail = None;
+                                }
+                                polylogue_store::timing::reading_queue(0, 1);
+                                if finished
+                                    .send(Prepared {
+                                        plan,
+                                        reading,
+                                        bytes_read,
                                     })
-                                    .transpose()
-                            });
-                            // Commit replies need progress and state, not open input buffers.
-                            plan.source = pool::Bytes::File;
-                            if !plan.tracked {
-                                plan.parser_state = None;
-                                plan.tail = None;
+                                    .is_err()
+                                {
+                                    return;
+                                }
                             }
-                            polylogue_store::timing::reading_queue(0, 1);
-                            if finished
-                                .send(Prepared {
-                                    plan,
-                                    reading,
-                                    bytes_read,
-                                })
-                                .is_err()
-                            {
-                                return;
-                            }
-                        }
+                        });
                     })
                     .expect("spawn a reading worker");
             }
@@ -213,7 +212,7 @@ impl Engine {
             let every = self.config.live_every.max(Duration::from_millis(10));
             let mut stopping = false;
             while remaining > 0 {
-                if !stopping && (self.stop.requested() || self.poll_request()) {
+                if !stopping && (self.archive.stop().is_cancelled() || self.poll_request()) {
                     // Readings being prepared commit; the rest are not started.
                     stopping = true;
                     let unstarted: Vec<Plan> =
@@ -403,7 +402,7 @@ impl Engine {
             Err(polylogue_store::StoreError::PrimaryPending { .. }) => {
                 pass.capture_pending = true;
             }
-            Err(polylogue_store::StoreError::WriteCancelled) => {}
+            Err(polylogue_store::StoreError::Stopped) => {}
             // The old reading remains committed and the next pass retries.
             Err(error) => pass.errors.push(format!("re-parse: {error}")),
         }
@@ -452,11 +451,11 @@ fn prepare(
     memory: &Memory,
     bytes_read: &mut u64,
     stopped_attempt: &StoppedAttempt,
-    stop: &StopRequest,
     yielding: &std::sync::atomic::AtomicBool,
 ) -> Result<Option<ChainReading>, EngineError> {
-    let result = polylogue_store::read::limit::ReadLimit::without_deadline(stop.0.reads.clone())
-        .scope(|| {
+    let stop = archive.stop();
+    {
+        {
             if yielding.load(std::sync::atomic::Ordering::Acquire) {
                 return Ok(None);
             }
@@ -487,8 +486,9 @@ fn prepare(
                 let _charge = memory.take(plan.size.min(plan.chunk));
                 let read =
                     crate::import::exports::parse_export(plan, &mut *parser, blobs, |mut item| {
-                        // A reading commits whole, so a stop drops what was prepared.
-                        if stop.requested() || yielding.load(std::sync::atomic::Ordering::Acquire) {
+                        // A reading commits whole, so a yield drops what was
+                        // prepared; the export's own loop observes the stop.
+                        if yielding.load(std::sync::atomic::Ordering::Acquire) {
                             return Err(EngineError::Stopped);
                         }
                         let mut decoded = Vec::new();
@@ -514,7 +514,7 @@ fn prepare(
                     });
                 let read = match read {
                     Err(EngineError::Stopped)
-                        if !stop.requested()
+                        if !stop.is_cancelled()
                             && yielding.load(std::sync::atomic::Ordering::Acquire) =>
                     {
                         return Ok(None);
@@ -544,15 +544,13 @@ fn prepare(
                     if yielding.load(std::sync::atomic::Ordering::Acquire) {
                         return Ok(None);
                     }
-                    if stop.requested() {
-                        return Err(EngineError::Stopped);
-                    }
+                    stop.check()?;
                     let mut job = plan.next_job(stopped_attempt);
                     job.parser_context = context.clone();
                     let bytes = job.end - job.start;
                     let _charge = memory.take(bytes);
                     *bytes_read += bytes;
-                    let (batch, done) = pool::run(job, archive, blobs, false, stop);
+                    let (batch, done) = pool::run(job, archive, blobs, false);
                     if done.cancelled {
                         return Err(EngineError::Stopped);
                     }
@@ -586,12 +584,7 @@ fn prepare(
                 }
             }
             Ok(Some(reading))
-        });
-    match result {
-        Err(EngineError::Store(polylogue_store::StoreError::ReadCancelled)) if stop.requested() => {
-            Err(EngineError::Stopped)
         }
-        other => other,
     }
 }
 

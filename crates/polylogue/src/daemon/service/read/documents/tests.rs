@@ -257,11 +257,11 @@ fn document_after_and_before_seek_original_blocks_and_keep_full_item_digest_chec
 
 #[test]
 fn document_block_decode_obeys_cancellation_and_generation_changes_between_items() {
-    use polylogue_store::read::limit::{ReadCancellation, ReadLimit};
+    use polylogue_store::{cancellation::Cancellation, read::limit::ReadLimit};
     for reset in [false, true] {
         let (writer, id) = fixture();
         corrupt(&writer, 1);
-        let cancellation = ReadCancellation::default();
+        let cancellation = Cancellation::default();
         ReadLimit::without_deadline(cancellation.clone()).scope(|| {
             let pool = ReadPool::open(&writer.archive).unwrap();
             let reader = pool.reader().unwrap();

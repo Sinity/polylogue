@@ -259,10 +259,7 @@ fn an_old_daemon_handle_does_not_prevent_empty_archive_restart() {
     };
     check_empty_status(&old);
     runtime.shutdown().unwrap();
-    assert!(matches!(
-        old.reads.reader(),
-        Err(StoreError::ReadPoolClosed)
-    ));
+    assert!(matches!(old.reads.reader(), Err(StoreError::Stopped)));
     let mut next =
         test_daemon::start_runtime(&root, config(dir.path()), ArchiveMode::Standalone).unwrap();
     check_empty_status(&next.daemon);
@@ -320,7 +317,11 @@ fn stopping_releases_requests_waiting_for_a_full_pool_before_workers_or_running_
         );
     }
     runtime.shutdown().unwrap();
-    assert_eq!(reader.query("SELECT 42 AS n", &[]).unwrap()[0]["n"], 42);
+    // A reader held across the stop ends with it.
+    assert!(matches!(
+        reader.query("SELECT 42 AS n", &[]),
+        Err(StoreError::Stopped)
+    ));
     assert!(
         matches!(crate::test_daemon::Call::new("status", serde_json::json!({})).answer(&daemon), command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("shutting_down"))
     );

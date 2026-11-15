@@ -14,6 +14,7 @@ pub mod assets;
 pub mod backfill_jobs;
 pub mod blobs;
 pub mod calendar;
+pub mod cancellation;
 mod chain_progress;
 mod change_summary;
 pub mod chat_actions;
@@ -152,9 +153,11 @@ pub enum StoreError {
     Counts(#[from] polylogue_model::CountMismatch),
     #[error("the writer has stopped")]
     WriterGone,
-    /// Shutdown rolled back replay of retained bytes; its cursor did not move.
-    #[error("retained-byte replay was cancelled")]
-    WriteCancelled,
+    /// The process is stopping ([`cancellation`]): the read, wait or
+    /// reconstructible write it ended left nothing half done, and is done
+    /// again by the next start.
+    #[error("the daemon is stopping")]
+    Stopped,
     /// The disk failed a sync of the register: writing stopped for the rest
     /// of this boot ([`storage_failure`]).
     #[error("{0}")]
@@ -262,8 +265,8 @@ impl StoreError {
     /// the group's reason, refusing content exactly when the group's error
     /// did.
     pub(crate) fn for_group_member(&self) -> Self {
-        if matches!(self, Self::WriteCancelled) {
-            return Self::WriteCancelled;
+        if matches!(self, Self::Stopped) {
+            return Self::Stopped;
         }
         let reason = self.to_string();
         if self.refuses_content() {
@@ -297,8 +300,8 @@ impl StoreError {
                 _ => "bad_request",
             },
             Self::ReadDeadlineExceeded => "deadline_exceeded",
-            Self::ReadCancelled | Self::WriteCancelled => "cancelled",
-            Self::ReadPoolClosed => "shutting_down",
+            Self::ReadCancelled => "cancelled",
+            Self::Stopped | Self::ReadPoolClosed => "shutting_down",
             Self::NotFound(_) => "not_found",
             Self::Invalid(_) => "bad_request",
             Self::Query(error) => error.kind(),
@@ -312,6 +315,11 @@ impl StoreError {
 
 impl From<rusqlite::Error> for StoreError {
     fn from(error: rusqlite::Error) -> Self {
+        if error.sqlite_error_code() == Some(rusqlite::ErrorCode::OperationInterrupted)
+            && let Some(cause) = cancellation::interrupted_by()
+        {
+            return cause;
+        }
         if matches!(
             error.sqlite_error_code(),
             Some(rusqlite::ErrorCode::OperationInterrupted | rusqlite::ErrorCode::DatabaseBusy)

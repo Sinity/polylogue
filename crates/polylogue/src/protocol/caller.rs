@@ -24,7 +24,7 @@ const ENVIRONMENT: [&str; 9] = [
 #[derive(Clone)]
 pub struct Accepted {
     pub authorship: Authorship,
-    pub cancellation: polylogue_store::read::limit::ReadCancellation,
+    pub cancellation: polylogue_store::cancellation::Cancellation,
     /// Process-private outer request bound, captured once by its accepting transport.
     pub(crate) parent: Option<std::sync::Arc<crate::operation::ParentLifetime>>,
     pub working_directory: Option<PathBuf>,
@@ -44,7 +44,7 @@ pub fn accept(
     registry: &hooks::Registry,
     evidence: &CallerEvidence,
     via: Channel,
-    cancellation: polylogue_store::read::limit::ReadCancellation,
+    cancellation: polylogue_store::cancellation::Cancellation,
 ) -> Accepted {
     let hook = registry.identity(evidence);
     Accepted {

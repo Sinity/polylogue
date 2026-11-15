@@ -55,8 +55,7 @@ fn confirmed_capture_resumes_in_the_same_engine_without_reacquiring_provider_byt
         let mut context = engine.sampling_context(&path, origin.name).unwrap();
         context.facts = Some(now);
         job.acquisition = Some(context);
-        let (prepared, done) =
-            crate::pool::run(job, &engine.archive, &engine.blobs, true, &engine.stop);
+        let (prepared, done) = crate::pool::run(job, &engine.archive, &engine.blobs, true);
         assert!(done.error.is_none(), "{:?}", done.error);
         // A cursorless raw attempt is still unsupported before confirmation.
         engine.apply_raw_result(&mut plan, &done).unwrap();
@@ -192,8 +191,7 @@ fn confirmed_capture_resumes_in_the_same_engine_without_reacquiring_provider_byt
         let mut context = engine.sampling_context(&path, origin.name).unwrap();
         context.facts = Some(now);
         job.acquisition = Some(context);
-        let (prepared, last) =
-            crate::pool::run(job, &engine.archive, &engine.blobs, true, &engine.stop);
+        let (prepared, last) = crate::pool::run(job, &engine.archive, &engine.blobs, true);
         assert!(last.error.is_none(), "{:?}", last.error);
         let results = engine
             .writer
@@ -848,6 +846,6 @@ fn a_watched_input_no_parser_reads_is_refused_and_settles() {
 fn a_stopped_engine_reports_cancelled_derivation() {
     let home = ClaudeHome::new();
     let (engine, _lock) = crate::import::tests::engine(&home, 64 << 10);
-    engine.stop_request().request();
+    engine.archive.stop().cancel();
     assert!(matches!(engine.derive(), Err(EngineError::Stopped)));
 }

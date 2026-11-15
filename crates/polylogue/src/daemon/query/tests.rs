@@ -1686,7 +1686,7 @@ fn keep_retains_the_bound_logical_declarations_of_same_name_text_casts() {
 
 #[test]
 fn optional_count_timeout_preserves_a_completed_query_answer() {
-    use polylogue_store::read::limit::{ReadCancellation, ReadLimit};
+    use polylogue_store::{cancellation::Cancellation, read::limit::ReadLimit};
     let dir = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(dir.path()).unwrap();
     fixture
@@ -1696,10 +1696,7 @@ fn optional_count_timeout_preserves_a_completed_query_answer() {
         })
         .unwrap();
     let pool = fixture.reads().unwrap();
-    let limit = ReadLimit::new(
-        std::time::Duration::from_secs(1),
-        ReadCancellation::default(),
-    );
+    let limit = ReadLimit::new(std::time::Duration::from_secs(1), Cancellation::default());
     let response = crate::daemon::handler::within_limit(
         &limit,
         true,

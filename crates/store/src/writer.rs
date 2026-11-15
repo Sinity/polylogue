@@ -165,31 +165,18 @@ enum Msg {
     DeriveWrite(Box<crate::derive::Write>, SyncSender<Result<Vec<bool>>>),
 }
 
-/// Asks the writer to end its long work early, for a stop of the process:
-/// a derive pass ends after the transaction in progress, and a first build's
-/// ending (its deferred indexes) ends at its next step, rolling back the
-/// statement in progress. What committed stays; the rest is done at the next
-/// start. Capture and authored writes are not affected. Replaying retained bytes may
-/// roll back its unfinished index transaction; its earlier cursor remains.
-/// Copying identical-chain readings follows the same reconstruction boundary.
-#[derive(Clone, Default)]
-pub struct WriterStop(Arc<std::sync::atomic::AtomicBool>);
-
-impl WriterStop {
-    pub fn request(&self) {
-        self.0.store(true, std::sync::atomic::Ordering::Release);
-    }
-
-    fn requested(&self) -> bool {
-        self.0.load(std::sync::atomic::Ordering::Acquire)
-    }
-}
-
 /// Handle to the writer thread. Dropping it stops the thread after the
 /// batches already sent are written.
 pub struct Writer {
     tx: Option<WriterQueue>,
-    stop: WriterStop,
+    /// The archive's stop request ([`Archive::stop`]). It ends the writer's
+    /// long work early: a derive pass after the transaction in progress, a
+    /// first build's ending (its deferred indexes) at its next step, replay
+    /// of retained bytes and copies of identical-chain readings by rolling
+    /// back their unfinished index transaction. What committed stays; the
+    /// rest is done at the next start. Capture and authored writes are not
+    /// affected.
+    stop: crate::cancellation::Cancellation,
     handle: Option<JoinHandle<()>>,
     /// The index was empty when the writer started: its first pass is a
     /// first build.
@@ -217,7 +204,7 @@ struct WriterQueue {
     resolver: Arc<resolve::Resolver>,
     commits: crate::completion::CommitEvents,
     sinex: Option<Arc<dyn crate::primary::Sinex>>,
-    stop: WriterStop,
+    stop: crate::cancellation::Cancellation,
     #[cfg(any(test, feature = "fixture"))]
     dispatch: dispatch::Barriers,
 }
@@ -257,7 +244,7 @@ impl WriterQueue {
         resolver: Arc<resolve::Resolver>,
         commits: crate::completion::CommitEvents,
         sinex: Option<Arc<dyn crate::primary::Sinex>>,
-        stop: WriterStop,
+        stop: crate::cancellation::Cancellation,
         #[cfg(any(test, feature = "fixture"))] dispatch: dispatch::Barriers,
     ) -> Self {
         Self {
@@ -495,7 +482,7 @@ impl Writer {
         let dispatch = dispatch::Barriers::default();
         let (tx, rx) = sync_channel::<Msg>(QUEUE);
         let users = Arc::new(user_queue::UserQueue::default());
-        let stop = WriterStop::default();
+        let stop = archive.stop().clone();
         let queue = WriterQueue::new(
             tx,
             Arc::clone(&users),
@@ -524,7 +511,7 @@ impl Writer {
             derive: derive_thread::DeriveThread::start(
                 archive.index_db(),
                 queue.clone(),
-                Arc::clone(&stop.0),
+                stop.child(),
             )?,
             location: archive.clone(),
             sinex,
@@ -569,11 +556,6 @@ impl Writer {
             .map_err(|_| StoreError::WriterGone)?;
         wait.recv().map_err(|_| StoreError::WriterGone)??;
         follower.synchronize()
-    }
-
-    /// The handle that ends this writer's long work early ([`WriterStop`]).
-    pub fn stop_handle(&self) -> WriterStop {
-        self.stop.clone()
     }
 
     /// Whether the index was empty when the writer started.
@@ -816,7 +798,7 @@ impl Writer {
     /// [`StoreError::WriterGone`].
     pub fn stop(&mut self) {
         let started =
-            (self.handle.is_some() && self.stop.requested()).then(std::time::Instant::now);
+            (self.handle.is_some() && self.stop.is_cancelled()).then(std::time::Instant::now);
         if started.is_some() {
             eprintln!("polylogue: shutdown writer drain started");
         }
@@ -1113,7 +1095,7 @@ impl WriterSender {
     /// equal parsing (always in primary mode), or an error from the copy;
     /// both leave the chain unchanged and let the caller parse it instead.
     /// Transaction, transport and stop failures are outer errors. A stop
-    /// interrupts only this reconstructible copy as `WriteCancelled`;
+    /// interrupts only this reconstructible copy as `Stopped`;
     /// copies already committed remain recorded.
     pub fn copy_reading(&self, copy: crate::ReadingCopy) -> Result<Result<bool>> {
         let (reply, wait) = sync_channel(1);
@@ -1259,7 +1241,7 @@ fn user_via(
 
 struct Inner {
     /// Ends a derive pass or a first build's ending early.
-    stop: WriterStop,
+    stop: crate::cancellation::Cancellation,
     #[cfg(any(test, feature = "fixture"))]
     dispatch: dispatch::Barriers,
     commits: crate::completion::CommitEvents,
@@ -1760,14 +1742,14 @@ impl Inner {
     /// checkpoint size ([`crate::archive::restart_full_log`]). A log still in
     /// use by a reader is tried again after the next transaction.
     fn restart_full_logs(&mut self) {
-        if self.stop.requested() {
+        if self.stop.is_cancelled() {
             return;
         }
         let wait = std::time::Duration::from_millis(100);
         let limit = crate::archive::WAL_AUTOCHECKPOINT;
         let index =
             crate::archive::restart_full_log(&self.index, &self.location.index_db(), limit, wait);
-        let archive = if self.sinex.is_none() && !self.stop.requested() {
+        let archive = if self.sinex.is_none() && !self.stop.is_cancelled() {
             crate::archive::restart_full_log(
                 &self.archive,
                 &self.location.archive_db(),
@@ -1811,7 +1793,7 @@ impl Inner {
             return Ok(Ok(false));
         }
         self.until_stopped(|inner| inner.copy_reading_uninterrupted(copy))?
-            .ok_or(StoreError::WriteCancelled)
+            .ok_or(StoreError::Stopped)
     }
 
     fn copy_reading_uninterrupted(&mut self, copy: &crate::ReadingCopy) -> Result<Result<bool>> {
@@ -1875,7 +1857,7 @@ impl Inner {
     fn request_derive(&mut self, waiting: derive_thread::Waiting) {
         let prepared = self
             .until_stopped(|inner| {
-                if inner.stop.requested() {
+                if inner.stop.is_cancelled() {
                     return Err(StoreError::WriterGone);
                 }
                 inner.project_variant_text()?;
@@ -1908,18 +1890,18 @@ impl Inner {
     /// minutes. Stopped, its statement and transaction roll back and the
     /// answer is `None`; the work is done again at the next start.
     fn until_stopped<T>(&mut self, work: impl FnOnce(&mut Self) -> Result<T>) -> Result<Option<T>> {
-        if self.stop.requested() {
+        if self.stop.is_cancelled() {
             return Ok(None);
         }
         let stop = self.stop.clone();
         self.index
-            .progress_handler(1_000, Some(move || stop.requested()))?;
+            .progress_handler(1_000, Some(move || stop.is_cancelled()))?;
         let result = work(self);
         self.index.progress_handler(0, None::<fn() -> bool>)?;
         match result {
             Ok(value) => Ok(Some(value)),
             Err(StoreError::Sqlite(error))
-                if self.stop.requested()
+                if self.stop.is_cancelled()
                     && error.sqlite_error_code()
                         == Some(rusqlite::ErrorCode::OperationInterrupted) =>
             {
@@ -1936,7 +1918,7 @@ impl Inner {
     /// Its commits therefore need no sync of their own, which on a small
     /// archive were most of the startup's time.
     fn finish_build(&mut self) -> Result<()> {
-        if self.first_build.is_none() || self.stop.requested() {
+        if self.first_build.is_none() || self.stop.is_cancelled() {
             return Ok(());
         }
         self.index.pragma_update(None, "synchronous", "normal")?;
@@ -1983,7 +1965,7 @@ impl Inner {
         add(Stage::TrigramIndex, started.elapsed());
         let started = std::time::Instant::now();
         for sql in &self.deferred_indexes {
-            if self.stop.requested() {
+            if self.stop.is_cancelled() {
                 return Err(rusqlite::Error::SqliteFailure(
                     rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERRUPT),
                     None,
@@ -2024,7 +2006,7 @@ impl Inner {
         }
         for b in group {
             if let Err(e) = self.write(std::iter::once(&**b), cancellable_replay(b)) {
-                if matches!(e, StoreError::WriteCancelled) {
+                if matches!(e, StoreError::Stopped) {
                     continue;
                 }
                 self.report
@@ -2176,7 +2158,7 @@ impl Inner {
     ) -> Result<()> {
         if replay && self.sinex.is_none() {
             self.until_stopped(|inner| inner.write_uninterrupted(batches))?
-                .ok_or(StoreError::WriteCancelled)
+                .ok_or(StoreError::Stopped)
         } else {
             self.write_uninterrupted(batches)
         }

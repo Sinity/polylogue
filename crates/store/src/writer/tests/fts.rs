@@ -259,7 +259,7 @@ fn stopped() -> serde_json::Value {
     let conn = open_write(&path, cache::INDEX_WRITER).unwrap();
     let before = parsed(&conn);
     drop(conn);
-    let stop = WriterStop::default();
+    let stop = crate::cancellation::Cancellation::default();
     let stop_seen = stop.clone();
     let commits = Arc::new(AtomicU64::new(0));
     let postings = Arc::new(AtomicU64::new(0));
@@ -291,7 +291,7 @@ fn stopped() -> serde_json::Value {
             },
         ))
         .unwrap();
-        conn.progress_handler(1000, Some(move || stop_seen.requested()))
+        conn.progress_handler(1000, Some(move || stop_seen.is_cancelled()))
             .unwrap();
         let result = crate::text_rows::index_marked(&conn);
         conn.progress_handler(0, None::<fn() -> bool>).unwrap();
@@ -304,7 +304,7 @@ fn stopped() -> serde_json::Value {
             panic!("deferred search ended before its stop boundary: {result:?}");
         }
         if guard.elapsed() >= std::time::Duration::from_secs(30) {
-            stop.request();
+            stop.cancel();
             crate::fault::release();
             let result = run.join().unwrap();
             panic!(
@@ -323,7 +323,7 @@ fn stopped() -> serde_json::Value {
     let not_ready_at_stop = crate::schema::building(&observer).unwrap();
     drop(observer);
     let started = Instant::now();
-    stop.request();
+    stop.cancel();
     crate::fault::release();
     let result = run.join().unwrap();
     let stop_seconds = started.elapsed().as_secs_f64();

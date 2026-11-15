@@ -388,7 +388,7 @@ struct StreamBody {
     offset: usize,
     next: Option<NextChunk>,
     ended: bool,
-    cancellation: polylogue_store::read::limit::ReadCancellation,
+    cancellation: polylogue_store::cancellation::Cancellation,
 }
 impl tokio::io::AsyncRead for StreamBody {
     fn poll_read(

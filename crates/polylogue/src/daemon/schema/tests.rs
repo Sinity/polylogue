@@ -317,7 +317,7 @@ fn primary_inference_reads_owned_sinex_extents_without_a_standalone_blob_copy() 
 fn idle_inference_yields_at_stream_reads_and_cancellation_releases_its_lease() {
     let admission = Admission::default();
     let foreground = admission.foreground();
-    let cancellation = polylogue_store::read::limit::ReadCancellation::default();
+    let cancellation = polylogue_store::cancellation::Cancellation::default();
     let limit = ReadLimit::without_deadline(cancellation.clone());
     std::thread::scope(|scope| {
         let (started, waiting) = channel();

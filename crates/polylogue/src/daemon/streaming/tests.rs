@@ -32,9 +32,9 @@ fn a_stream_write_after_a_scope_change_is_refused_even_before_a_reader_binds_the
 }
 
 #[test]
-fn shutdown_cancels_a_stream_read_without_cancelling_its_producing_parent() {
+fn shutdown_cancels_a_stream_read_and_keeps_its_producers_writes_admissible() {
     let mut daemon = crate::test_daemon::start("stream shutdown");
-    let parent = polylogue_store::read::limit::ReadCancellation::default();
+    let parent = daemon.daemon.archive.stop().child();
     let limit = ReadLimit::without_deadline(parent.clone());
     let authorship = polylogue_model::authorship::compute_authorship(
         polylogue_model::authorship::Channel::Cli,
@@ -70,7 +70,12 @@ fn shutdown_cancels_a_stream_read_without_cancelling_its_producing_parent() {
     stopped
         .recv_timeout(std::time::Duration::from_secs(5))
         .unwrap();
-    assert!(!parent.is_cancelled());
+    // A write its producer already handed over is still admitted.
+    assert!(
+        crate::operation::ParentLifetime::capture(None, parent)
+            .check()
+            .is_ok()
+    );
     assert!(matches!(
         input.next_blocking().unwrap(),
         super::super::stream_buffer::Next::Failed(_)

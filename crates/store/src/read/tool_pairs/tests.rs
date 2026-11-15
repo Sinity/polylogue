@@ -1,8 +1,9 @@
 use super::*;
 use crate::{
     ReadPool,
+    cancellation::Cancellation,
     fixture::writer::{WriterArchive, call},
-    read::limit::{ReadCancellation, ReadLimit},
+    read::limit::ReadLimit,
 };
 use polylogue_model::BlobHash;
 use polylogue_model::Message;
@@ -354,7 +355,7 @@ fn scope_and_cancellation_fail_before_pair_payload_work() {
     let (call, result) = pair("s", 1, "payload");
     archive.write("s", vec![call.clone(), result]);
     let pool = ReadPool::open(&archive.archive).unwrap();
-    let cancellation = ReadCancellation::default();
+    let cancellation = Cancellation::default();
     let limit = ReadLimit::without_deadline(cancellation.clone());
     limit.scope(|| {
         let reader = pool.reader().unwrap();

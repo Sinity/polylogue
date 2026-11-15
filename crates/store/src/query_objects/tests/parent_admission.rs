@@ -8,7 +8,7 @@ fn a_parent_cancelled_after_queueing_cannot_create_question_custody_or_begin() {
     let sender = archive.writer.sender().unwrap();
     let pool = crate::ReadPool::open(&archive.archive).unwrap();
     let object = question("sessions where title:guarded");
-    let cancellation = crate::read::limit::ReadCancellation::default();
+    let cancellation = crate::cancellation::Cancellation::default();
     let parent = ParentLifetime::capture(None, cancellation.clone());
     let barrier =
         sender.pause_user_dispatch_for_test(&object.id.to_string(), DispatchPhase::BeforeAdmission);
@@ -37,7 +37,7 @@ fn a_parent_cancelled_after_queueing_cannot_create_question_custody_or_begin() {
         123_456,
         pool.reader().unwrap().change_position().unwrap(),
     );
-    let cancellation = crate::read::limit::ReadCancellation::default();
+    let cancellation = crate::cancellation::Cancellation::default();
     let parent = ParentLifetime::capture(None, cancellation.clone());
     let barrier =
         sender.pause_user_dispatch_for_test(expected.id.as_str(), DispatchPhase::BeforeAdmission);
@@ -74,7 +74,7 @@ fn an_admitted_begin_finishes_after_parent_cancellation_and_keeps_owned_outcome_
         123_456,
         pool.reader().unwrap().change_position().unwrap(),
     );
-    let cancellation = crate::read::limit::ReadCancellation::default();
+    let cancellation = crate::cancellation::Cancellation::default();
     let parent = ParentLifetime::capture(None, cancellation.clone());
     let barrier = sender.pause_user_dispatch_for_test(expected.id.as_str(), DispatchPhase::Owned);
     let queued = sender.clone();

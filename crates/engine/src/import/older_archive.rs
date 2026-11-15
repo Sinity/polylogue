@@ -454,6 +454,8 @@ impl Engine {
         let folds = self.plan_folds(older)?;
         let mut after: Option<String> = None;
         loop {
+            // A stop ends the import between groups; written groups stay.
+            polylogue_store::cancellation::check_current()?;
             let ids = older.input_ids(after.as_deref(), INPUTS_PER_GROUP)?;
             let Some(last) = ids.last() else {
                 break;

@@ -389,13 +389,13 @@ fn stopping_a_later_copy_keeps_the_completed_chain_and_rolls_back_its_own_readin
             reply,
         ))
         .unwrap();
-    w.writer.stop_handle().request();
+    w.archive.stop().cancel();
     crate::fault::release();
     assert!(matches!(
         result
             .recv_timeout(std::time::Duration::from_secs(5))
             .unwrap(),
-        Err(StoreError::WriteCancelled)
+        Err(StoreError::Stopped)
     ));
     worker.join().unwrap();
     crate::fault::clear();
@@ -423,6 +423,7 @@ fn stopping_a_later_copy_keeps_the_completed_chain_and_rolls_back_its_own_readin
         _dir,
     } = w;
     drop(writer);
+    let archive = archive.reopened();
     let writer = Writer::start(&archive).unwrap();
     let reads = ReadPool::open(&archive).unwrap();
     let reader = reads.reader().unwrap();

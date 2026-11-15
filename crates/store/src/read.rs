@@ -363,17 +363,21 @@ impl ReadPool {
         }
         let owner = std::thread::current().id();
         let capacity = self.max_readers + usize::from(RESERVED.with(std::cell::Cell::get));
-        // A cancelled request wakes its waiting checkout; the deadline bounds
-        // the wait. Nothing polls.
-        let _cancel_wake = limit.as_ref().map(|limit| {
+        // The process's stop and a cancelled request wake a waiting checkout;
+        // the deadline bounds the wait. Nothing polls.
+        let stop = self.archive.stop();
+        let wake = || {
             let (state, available) = (Arc::clone(&self.state), Arc::clone(&self.available));
-            limit
-                .cancellation
-                .on_cancel(move || wake_all(&state, &available))
-        });
+            move || wake_all(&state, &available)
+        };
+        let _stop_wake = stop.on_cancel(wake());
+        let _cancel_wake = limit
+            .as_ref()
+            .map(|limit| limit.cancellation.on_cancel(wake()));
         let idle = {
             let mut state = self.state.lock().map_err(|_| pool_poisoned())?;
             loop {
+                stop.check()?;
                 scope.check()?;
                 if let Some(limit) = &limit {
                     limit.check()?;
@@ -449,13 +453,20 @@ impl ReadPool {
                 (conn, after)
             }
         };
+        // Every reader observes the process's stop and the access scope; a
+        // request's reader also its own deadline and cancellation.
         if let Some(limit) = &reader.limit {
             limit.install(&conn)?;
-        } else {
-            let scope = reader.scope.clone();
-            conn.progress_handler(1000, Some(move || scope.check().is_err()))?;
         }
-        reader.scope.check()?;
+        let (scope, stop, limit) = (reader.scope.clone(), stop.clone(), reader.limit.clone());
+        crate::cancellation::interrupt_on(&conn, move || {
+            stop.check()?;
+            scope.check()?;
+            limit
+                .as_ref()
+                .map_or(Ok(()), limit::ReadLimit::count_and_check)
+        })?;
+        reader.check()?;
         crate::sql_functions::register_calendar(&conn, &reader.calendar)?;
         conn.execute_batch("BEGIN")?;
         let state = self.state.lock().map_err(|_| pool_poisoned())?;
@@ -620,6 +631,7 @@ impl Reader<'_> {
     }
 
     pub fn check(&self) -> Result<()> {
+        self.pool.archive.stop().check()?;
         self.scope.check()?;
         self.limit.as_ref().map_or(Ok(()), limit::ReadLimit::check)
     }
@@ -685,6 +697,7 @@ impl Reader<'_> {
                 }
                 let waiting = std::time::Instant::now();
                 let _shared = crate::write_lock::wait_shared(&self.pool.archive, || {
+                    self.pool.archive.stop().check()?;
                     self.scope.check()?;
                     if conn.is_interrupted() {
                         return Err(rusqlite::Error::SqliteFailure(

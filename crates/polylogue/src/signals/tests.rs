@@ -194,13 +194,13 @@ fn restart_recovers_confirmed_outbox_and_preserves_unknown_attempt() {
 
 /// The signals worker on its own thread, stopped and joined on drop.
 struct Worker {
-    stop: Option<std::sync::mpsc::Sender<()>>,
+    stop: Option<polylogue_store::cancellation::Cancellation>,
     thread: Option<std::thread::JoinHandle<std::io::Result<()>>>,
 }
 impl Drop for Worker {
     fn drop(&mut self) {
         if let Some(stop) = self.stop.take() {
-            let _ = stop.send(());
+            stop.cancel();
         }
         if let Some(thread) = self.thread.take() {
             thread.join().unwrap().unwrap();
@@ -247,7 +247,8 @@ fn only_authored_commits_wake_the_rules() {
     tick(&fixture.daemon).unwrap();
     let (events, observed) = std::sync::mpsc::channel();
     *fixture.daemon.signal_trace.lock().unwrap() = Some(events);
-    let (stop, stopped) = std::sync::mpsc::channel();
+    let stop = fixture.daemon.archive.stop().child();
+    let stopped = stop.clone();
     let daemon = Arc::clone(&fixture.daemon);
     let _worker = Worker {
         stop: Some(stop),
@@ -321,7 +322,8 @@ fn completion_commit_wakes_rules_while_operation_clock_is_stopped() {
     *fixture.daemon.signals.lock().unwrap() = Value::Null;
     let (events, observed) = std::sync::mpsc::channel();
     *fixture.daemon.signal_trace.lock().unwrap() = Some(events);
-    let (stop, stopped) = std::sync::mpsc::channel();
+    let stop = fixture.daemon.archive.stop().child();
+    let stopped = stop.clone();
     let daemon = Arc::clone(&fixture.daemon);
     let _worker = Worker {
         stop: Some(stop),

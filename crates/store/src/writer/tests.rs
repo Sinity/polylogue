@@ -1623,7 +1623,7 @@ fn a_stop_during_deferred_indexes_keeps_committed_rows_for_restart() {
     )
     .unwrap();
     w.writer.flush().unwrap();
-    let stop = w.writer.stop_handle();
+    let stop = w.archive.stop().clone();
     let sender = w.writer.sender().unwrap();
     crate::fault::arm(
         "index.deferred",
@@ -1641,7 +1641,7 @@ fn a_stop_during_deferred_indexes_keeps_committed_rows_for_restart() {
         );
         std::thread::yield_now();
     }
-    stop.request();
+    stop.cancel();
     crate::fault::release();
     assert!(matches!(run.join().unwrap(), Err(StoreError::WriterGone)));
     crate::fault::clear();
@@ -1655,6 +1655,7 @@ fn a_stop_during_deferred_indexes_keeps_committed_rows_for_restart() {
         _dir,
     } = w;
     drop(writer);
+    let archive = archive.reopened();
     let writer = Writer::start(&archive).unwrap();
     writer.derive().unwrap();
     let index = crate::archive::open_read(&archive.index_db()).unwrap();

@@ -1292,7 +1292,7 @@ fn a_late_other_host_original_is_parsed_with_an_empty_local_home() {
             ),
         ])
         .unwrap();
-    let stop = engine.stop_request();
+    let stop = engine.archive.stop().clone();
     let parsing = std::thread::spawn(move || engine.run_pass());
     let started = std::time::Instant::now();
     let publication = loop {
@@ -1320,7 +1320,7 @@ fn a_late_other_host_original_is_parsed_with_an_empty_local_home() {
     // The ordinary writer waits for authoritative admission, which this offline
     // planner control deliberately does not provide. Stop it after inspecting
     // the actual immutable publication, before joining the parser thread.
-    stop.request();
+    stop.cancel();
     let pass = parsing.join().unwrap();
     let (source, frame, count) = publication.expect("the late original reached native publication");
     assert_eq!(count, 1);

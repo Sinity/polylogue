@@ -188,10 +188,10 @@ fn a_rebuild_stopped_mid_chain_finishes_that_chain_first_on_restart() {
 
     delete_index(&w.root);
     let (engine, lock) = one_worker(&w, CHUNK);
-    let stop = engine.stop_request();
+    let stop = engine.archive.stop().clone();
     fault::arm("parse", "big.jsonl", Action::Hold, 3, 1);
     let pass = held_pass(engine, lock);
-    stop.request();
+    stop.cancel();
     fault::release();
     let _ = pass.join().unwrap();
     fault::clear();

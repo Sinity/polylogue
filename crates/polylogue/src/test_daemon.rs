@@ -237,14 +237,6 @@ impl TestDaemon {
         self.runtime.shutdown()
     }
 
-    /// The request [`Self::stop`] makes of the loop, to observe it.
-    pub(crate) fn engine_stop(&self) -> polylogue_engine::StopRequest {
-        self.runtime
-            .engine_stop
-            .clone()
-            .expect("the daemon runs a loop")
-    }
-
     /// Stops the daemon, runs `reset` over its stopped archive, and starts it again.
     pub(crate) fn restart_after_stop(&mut self, reset: impl FnOnce()) {
         self.stop().unwrap();

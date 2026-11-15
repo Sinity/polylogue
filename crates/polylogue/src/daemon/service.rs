@@ -50,8 +50,6 @@ pub struct Daemon {
     #[cfg(test)]
     pub(crate) signal_trace: Mutex<Option<Sender<crate::signals::observations::Phase>>>,
     stopping: AtomicBool,
-    /// Process shutdown cancels request reads, separately from write ownership.
-    read_stop: polylogue_store::read::limit::ReadCancellation,
     pub(super) idle_admission: super::schema::Admission,
     #[cfg(test)]
     pub(crate) read_limits: Mutex<Option<Sender<crate::test_daemon::ReadObservation>>>,
@@ -60,19 +58,6 @@ pub struct Daemon {
 impl Daemon {
     pub(crate) fn is_stopping(&self) -> bool {
         self.stopping.load(Ordering::Acquire)
-    }
-
-    pub(crate) fn cancel_read_on_stop(
-        &self,
-        read: &polylogue_store::read::limit::ReadCancellation,
-    ) -> polylogue_store::read::limit::CancellationWake {
-        let cancelled = read.clone();
-        let wake = self.read_stop.on_cancel(move || cancelled.cancel());
-        // Registration can race a stop that already copied its callbacks.
-        if self.read_stop.is_cancelled() {
-            read.cancel();
-        }
-        wake
     }
 
     pub(crate) fn invocation(
@@ -906,7 +891,8 @@ fn query_targets_in(
 pub struct Runtime {
     pub daemon: Arc<Daemon>,
     pub operations: Arc<command_surface::OperationTable>,
-    signals_stop: Option<Sender<()>>,
+    /// Ends the signal worker: a child of the archive's stop request.
+    signals_stop: Option<polylogue_store::cancellation::Cancellation>,
     signals: Option<JoinHandle<std::io::Result<()>>>,
     live_evidence_stop: Option<Sender<()>>,
     live_evidence: Option<JoinHandle<()>>,
@@ -916,8 +902,6 @@ pub struct Runtime {
     scope: Option<super::scope::ScopeWorker>,
     completion_scope: Option<polylogue_store::ScopeInvalidation>,
     engine: Option<JoinHandle<std::io::Result<()>>>,
-    /// Ends the loop's pass at its next batch when the daemon stops.
-    pub(crate) engine_stop: Option<polylogue_engine::StopRequest>,
     lock: Option<polylogue_store::ArchiveLock>,
     worker_events: tokio::sync::watch::Sender<Option<&'static str>>,
     /// Set once by a loop run until idle, when it ends.
@@ -926,7 +910,8 @@ pub struct Runtime {
 
 impl Runtime {
     fn start_signals(&mut self) -> std::io::Result<()> {
-        let (stop, stopped) = channel();
+        let stop = self.daemon.archive.stop().child();
+        let stopped = stop.clone();
         let daemon = Arc::clone(&self.daemon);
         let worker_events = self.worker_events.clone();
         let worker = std::thread::Builder::new()
@@ -949,7 +934,7 @@ impl Runtime {
     }
 
     #[cfg(test)]
-    pub(crate) fn signal_stop_for_test(&self) -> Sender<()> {
+    pub(crate) fn signal_stop_for_test(&self) -> polylogue_store::cancellation::Cancellation {
         self.signals_stop
             .as_ref()
             .expect("running signal worker")
@@ -959,7 +944,7 @@ impl Runtime {
     #[cfg(test)]
     pub(crate) fn pause_signals(&mut self) -> std::io::Result<()> {
         if let Some(stop) = self.signals_stop.take() {
-            let _ = stop.send(());
+            stop.cancel();
         }
         if let Some(worker) = self.signals.take() {
             worker
@@ -969,20 +954,15 @@ impl Runtime {
         Ok(())
     }
 
-    /// Refuses new requests, wakes readers waiting for a reader slot and
-    /// asks the loop to end its pass at the next batch, before transports
-    /// and workers are joined. Readers and writes already running finish as
-    /// usual.
+    /// Refuses new requests and makes the archive's stop request, before
+    /// transports and workers are joined. The stop ends every read and wait
+    /// in progress, the loop's pass and parsing, the signal worker and the
+    /// writer's reconstructible work; writes the writer was handed, and the
+    /// captured bytes in hand, still commit.
     pub fn stop_accepting(&self) {
         self.daemon.stopping.store(true, Ordering::Release);
         self.daemon.executor.refuse();
-        if let Some(stop) = &self.signals_stop {
-            let _ = stop.send(());
-        }
-        if let Some(stop) = &self.engine_stop {
-            stop.request();
-        }
-        self.daemon.read_stop.cancel();
+        self.daemon.archive.stop().cancel();
         self.daemon.warm.clear();
         self.daemon.reads.close();
     }
@@ -1063,9 +1043,6 @@ impl Runtime {
             failure.get_or_insert(error);
         }
         self.scope.take();
-        if let Some(stop) = self.signals_stop.take() {
-            let _ = stop.send(());
-        }
         if let Some(stop) = self.live_evidence_stop.take() {
             let _ = stop.send(());
         }
@@ -1087,9 +1064,6 @@ impl Runtime {
             if let Err(error) = result {
                 failure.get_or_insert(error);
             }
-        }
-        if let Ok(tx) = self.daemon.loop_tx.lock() {
-            let _ = tx.send(LoopMsg::Stop);
         }
         if let Some(engine) = self.engine.take() {
             let started = Instant::now();
@@ -1322,7 +1296,6 @@ pub fn start(
         #[cfg(test)]
         signal_trace: Mutex::new(None),
         stopping: AtomicBool::new(false),
-        read_stop: Default::default(),
         idle_admission: super::schema::Admission::default(),
         #[cfg(test)]
         read_limits: Mutex::new(None),
@@ -1356,7 +1329,6 @@ pub fn start(
         scope: None,
         completion_scope: Some(completion_scope),
         engine: None,
-        engine_stop: None,
         lock: Some(lock),
         worker_events: tokio::sync::watch::channel(None).0,
         idle: Arc::new(tokio::sync::watch::channel(None).0),
@@ -1399,7 +1371,6 @@ pub fn start(
             polylogue_store::storage_failure::wait();
             storage_events.send_replace(Some("the register failed a disk sync"));
         })?;
-    runtime.engine_stop = Some(engine.stop_request());
     let (ready, wait) = sync_channel(1);
     let worker_events = runtime.worker_events.clone();
     let idle = Arc::clone(&runtime.idle);

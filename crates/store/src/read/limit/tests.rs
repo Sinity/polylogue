@@ -135,18 +135,6 @@ fn deadline_and_cancellation_also_stop_waiting_for_a_reader_slot() {
 }
 
 #[test]
-fn child_cancellation_does_not_cancel_another_request() {
-    let connection = ReadCancellation::default();
-    let a = connection.child();
-    let b = connection.child();
-    a.cancel();
-    assert!(a.is_cancelled());
-    assert!(!b.is_cancelled());
-    connection.cancel();
-    assert!(b.is_cancelled());
-}
-
-#[test]
 fn a_read_waiting_for_the_write_lock_stops_at_its_deadline() {
     let directory = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(directory.path()).unwrap();
@@ -233,7 +221,7 @@ fn absolute_limit_cancellation_interrupts_a_real_pool_wait_before_releasing_the_
     let fixture = Fixture::new(directory.path()).unwrap();
     let pool = ReadPool::with_budget(&fixture.archive, 1, 8 << 20).unwrap();
     let held = pool.reader().unwrap();
-    let cancellation = ReadCancellation::default();
+    let cancellation = Cancellation::default();
     let limit = ReadLimit::at(
         Instant::now() + Duration::from_secs(60),
         cancellation.clone(),
@@ -260,7 +248,7 @@ fn absolute_limit_cancellation_stops_sqlite_progress_and_joins_reader_cleanup() 
     let directory = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(directory.path()).unwrap();
     let pool = ReadPool::with_budget(&fixture.archive, 1, 8 << 20).unwrap();
-    let cancellation = ReadCancellation::default();
+    let cancellation = Cancellation::default();
     let limit = ReadLimit::at(
         Instant::now() + Duration::from_secs(60),
         cancellation.clone(),
@@ -316,6 +304,43 @@ fn absolute_deadline_stops_an_actual_sqlite_busy_wait() {
             .unwrap()
             .query_row::<i64, _, _>("SELECT value FROM sample", [], |row| row.get(0))
             .unwrap(),
+        1
+    );
+}
+
+/// A reader that names no request still belongs to its archive: the stop
+/// interrupts its endless statement and wakes a checkout waiting for its
+/// slot. A newly opened archive is a new process and reads normally.
+#[test]
+fn the_archive_stop_ends_running_and_waiting_reads() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(directory.path()).unwrap();
+    let pool = ReadPool::with_budget(&fixture.archive, 1, 8 << 20).unwrap();
+    std::thread::scope(|scope| {
+        let (started, running) = std::sync::mpsc::channel();
+        let pool = &pool;
+        let endless = scope.spawn(move || {
+            let reader = pool.reader()?;
+            reader.query("SELECT 1", &[])?;
+            started.send(()).unwrap();
+            reader.query(SLOW, &[])
+        });
+        running.recv().unwrap();
+        let waiting = scope.spawn(move || pool.reader().map(drop));
+        let mut state = pool.state.lock().unwrap();
+        while state.waiters == 0 {
+            state = pool.changed.wait(state).unwrap();
+        }
+        drop(state);
+        fixture.archive.stop().cancel();
+        assert!(matches!(endless.join().unwrap(), Err(StoreError::Stopped)));
+        assert!(matches!(waiting.join().unwrap(), Err(StoreError::Stopped)));
+    });
+    assert!(matches!(pool.reader().map(drop), Err(StoreError::Stopped)));
+    let reopened = fixture.archive.reopened();
+    let reads = ReadPool::open(&reopened).unwrap();
+    assert_eq!(
+        reads.reader().unwrap().query("SELECT 1 AS n", &[]).unwrap()[0]["n"],
         1
     );
 }

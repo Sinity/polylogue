@@ -284,6 +284,7 @@ pub(crate) fn open_source(
         )?
     };
     conn.pragma_update(None, "query_only", true)?;
+    crate::read::limit::ReadLimit::observe_current(&conn)?;
     Ok(conn)
 }
 

@@ -1,6 +1,6 @@
 //! One thread watches every connected client for a hang-up, even while the
 //! client's request is inside SQLite, and cancels that client's reads.
-use polylogue_store::read::limit::ReadCancellation;
+use polylogue_store::cancellation::Cancellation;
 use rustix::event::epoll;
 use std::collections::HashMap;
 use std::io::Write;
@@ -15,7 +15,7 @@ const STOP: u64 = u64::MAX;
 
 struct Shared {
     epoll: OwnedFd,
-    watched: Mutex<HashMap<u64, ReadCancellation>>,
+    watched: Mutex<HashMap<u64, Cancellation>>,
     next: AtomicU64,
 }
 
@@ -67,7 +67,7 @@ impl Watcher {
     pub(crate) fn watch(
         &self,
         socket: &impl AsFd,
-        cancellation: ReadCancellation,
+        cancellation: Cancellation,
     ) -> std::io::Result<Watched> {
         let id = self.shared.next.fetch_add(1, Ordering::Relaxed);
         let fd = socket.as_fd().try_clone_to_owned()?;
@@ -91,7 +91,7 @@ impl Watcher {
 }
 
 impl Shared {
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<u64, ReadCancellation>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<u64, Cancellation>> {
         self.watched
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

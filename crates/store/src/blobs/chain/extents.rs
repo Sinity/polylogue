@@ -156,9 +156,7 @@ fn open(source: &ChainSource) -> Result<Connection> {
     conn.execute_batch(&format!(
         "PRAGMA cache_size=-{CHAIN_CACHE_KIB}; PRAGMA mmap_size=0"
     ))?;
-    if let Some(limit) = ReadLimit::current() {
-        limit.install(&conn)?;
-    }
+    ReadLimit::observe_current(&conn)?;
     Ok(conn)
 }
 

@@ -5,7 +5,6 @@
 //! are served while a derivation computes.
 
 use super::*;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Sender, channel};
 
 /// Who waits for a derive pass.
@@ -22,7 +21,8 @@ pub(super) enum Waiting {
 /// in progress is interrupted.
 pub(super) struct DeriveThread {
     requests: Option<Sender<Waiting>>,
-    stopping: Arc<AtomicBool>,
+    /// A child of the archive's stop request, also cancelled when the writer ends.
+    stopping: crate::cancellation::Cancellation,
     interrupt: Arc<Mutex<Option<rusqlite::InterruptHandle>>>,
     handle: Option<JoinHandle<()>>,
 }
@@ -31,14 +31,14 @@ impl DeriveThread {
     pub(super) fn start(
         index_db: std::path::PathBuf,
         queue: WriterQueue,
-        stopping: Arc<AtomicBool>,
+        stopping: crate::cancellation::Cancellation,
     ) -> Result<Self> {
         let (requests, rx) = channel::<Waiting>();
         let interrupt = Arc::new(Mutex::new(None));
         let thread = Worker {
             index_db,
             queue,
-            stopping: Arc::clone(&stopping),
+            stopping: stopping.clone(),
             interrupt: Arc::clone(&interrupt),
             conn: None,
             unreported: Vec::new(),
@@ -74,7 +74,7 @@ impl DeriveThread {
 
     pub(super) fn stop(&mut self) {
         self.requests.take();
-        self.stopping.store(true, Ordering::Release);
+        self.stopping.cancel();
         if let Ok(interrupt) = self.interrupt.lock()
             && let Some(interrupt) = interrupt.as_ref()
         {
@@ -95,7 +95,7 @@ impl Drop for DeriveThread {
 struct Worker {
     index_db: std::path::PathBuf,
     queue: WriterQueue,
-    stopping: Arc<AtomicBool>,
+    stopping: crate::cancellation::Cancellation,
     interrupt: Arc<Mutex<Option<rusqlite::InterruptHandle>>>,
     /// Opened at the first pass: a first build's index has one connection.
     conn: Option<Connection>,
@@ -142,8 +142,8 @@ impl Worker {
         if self.conn.is_none() {
             let conn = crate::archive::open_read(&self.index_db)?;
             conn.pragma_update(None, "cache_size", -(crate::archive::cache::DERIVE * 1024))?;
-            let stopping = Arc::clone(&self.stopping);
-            conn.progress_handler(10_000, Some(move || stopping.load(Ordering::Acquire)))?;
+            let stopping = self.stopping.clone();
+            conn.progress_handler(10_000, Some(move || stopping.is_cancelled()))?;
             *self.interrupt.lock().map_err(|_| StoreError::WriterGone)? =
                 Some(conn.get_interrupt_handle());
             self.conn = Some(conn);
@@ -165,11 +165,11 @@ impl Worker {
                     .map_err(|_| StoreError::WriterGone)?;
                 wait.recv().map_err(|_| StoreError::WriterGone)?
             },
-            &|| stopping.load(Ordering::Acquire),
+            &|| stopping.is_cancelled(),
         );
         match result {
             Err(StoreError::Sqlite(error))
-                if stopping.load(Ordering::Acquire)
+                if stopping.is_cancelled()
                     && error.sqlite_error_code()
                         == Some(rusqlite::ErrorCode::OperationInterrupted) =>
             {

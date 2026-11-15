@@ -1,6 +1,6 @@
 //! A connection carries its disconnect signal into each HTTP request.
 use axum::extract::connect_info::Connected;
-use polylogue_store::read::limit::ReadCancellation;
+use polylogue_store::cancellation::Cancellation;
 use std::io;
 use std::os::fd::AsFd;
 use std::pin::Pin;
@@ -8,7 +8,7 @@ use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 #[derive(Clone, Debug)]
-pub(super) struct Peer(pub ReadCancellation);
+pub(super) struct Peer(pub Cancellation);
 
 impl Connected<axum::serve::IncomingStream<'_, super::OwnerListener>> for Peer {
     fn connect_info(stream: axum::serve::IncomingStream<'_, super::OwnerListener>) -> Self {
@@ -23,13 +23,18 @@ pub(super) struct Connection {
 }
 
 impl Connection {
-    pub(super) fn new(stream: tokio::net::TcpStream) -> io::Result<Self> {
+    /// `cancellation` is cancelled when the peer disconnects; it derives
+    /// from the archive's stop request, so a stop reaches it too.
+    pub(super) fn new(
+        stream: tokio::net::TcpStream,
+        cancellation: Cancellation,
+    ) -> io::Result<Self> {
         let owned = stream.as_fd().try_clone_to_owned()?;
         // SAFETY: this privately owned descriptor stays open and unchanged
         // until AsyncFd is dropped.
         #[allow(unsafe_code)]
         let fd = unsafe { tokio::io::unix::AsyncFd::register(owned) }.map_err(io::Error::from)?;
-        let peer = Peer(ReadCancellation::default());
+        let peer = Peer(cancellation);
         let cancellation = peer.0.clone();
         let watch = tokio::spawn(async move {
             loop {

@@ -48,6 +48,7 @@ impl Overlay {
             None
         } else {
             let index = crate::archive::open_read(&archive.index_db())?;
+            crate::read::limit::ReadLimit::observe_current(&index)?;
             index.execute_batch("BEGIN")?;
             Some(index)
         };
@@ -174,7 +175,9 @@ impl Context for Overlay {
         key: &Key,
     ) -> std::result::Result<Option<Value>, polylogue_model::parser_context::Error> {
         self.lookup(key).map_err(|e| match e {
-            StoreError::ReadCancelled => polylogue_model::parser_context::Error::Cancelled,
+            StoreError::ReadCancelled | StoreError::Stopped => {
+                polylogue_model::parser_context::Error::Cancelled
+            }
             other => polylogue_model::parser_context::Error::Failed(other.to_string()),
         })
     }

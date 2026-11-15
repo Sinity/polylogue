@@ -259,18 +259,23 @@ fn tick(d: &Daemon) -> Result<Tick, Held> {
     })
 }
 
-pub fn run(d: Arc<Daemon>, stop: std::sync::mpsc::Receiver<()>) -> std::io::Result<()> {
+/// Runs the signal worker until `stop`, a child of the archive's stop
+/// request, is cancelled.
+pub fn run(
+    d: Arc<Daemon>,
+    stop: polylogue_store::cancellation::Cancellation,
+) -> std::io::Result<()> {
     let result = (|| -> Result<(), Held> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(|error| Held::from(format!("signal runtime: {error}")))?;
-        let mut stop = desktop::StopBridge::new(stop)
-            .map_err(|error| Held::from(format!("signal stop bridge: {error}")))?;
-        let result = runtime.block_on(desktop::run(Arc::clone(&d), stop.token()));
-        // The stop bridge must join even when the controller failed.
-        let joined = stop.finish().map_err(|error| Held::from(error.to_string()));
-        result.and(joined)
+        let token = tokio_util::sync::CancellationToken::new();
+        let _wake = {
+            let token = token.clone();
+            stop.on_cancel(move || token.cancel())
+        };
+        runtime.block_on(desktop::run(Arc::clone(&d), token))
     })();
     if let Err(error) = &result {
         report(&d, error);

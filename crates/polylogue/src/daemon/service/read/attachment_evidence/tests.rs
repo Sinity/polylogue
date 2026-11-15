@@ -211,11 +211,11 @@ fn page_read_never_touches_blob_bodies() {
 
 #[test]
 fn attachment_metadata_preserves_parent_cancellation() {
-    use polylogue_store::read::limit::{ReadCancellation, ReadLimit};
+    use polylogue_store::{cancellation::Cancellation, read::limit::ReadLimit};
     let daemon = test_daemon::start("synthetic cancelled attachment evidence");
     let bytes = vec![b'X'; 64 * 1024 + 1];
     let message = MessageId::parse(test_daemon::assets::seed_bytes(&daemon, &bytes)).unwrap();
-    let cancelled = ReadCancellation::default();
+    let cancelled = Cancellation::default();
     ReadLimit::without_deadline(cancelled.clone()).scope(|| {
         let reader = daemon.daemon.reads.reader().unwrap();
         let original = item(&reader, &message);

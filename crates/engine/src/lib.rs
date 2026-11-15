@@ -81,7 +81,7 @@ pub fn reading_contracts() -> Vec<polylogue_store::ReadingContract> {
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
     #[error(transparent)]
-    Store(#[from] polylogue_store::StoreError),
+    Store(polylogue_store::StoreError),
     #[error("parser: {0}")]
     Parse(String),
     #[error(transparent)]
@@ -90,9 +90,19 @@ pub enum EngineError {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Watch(#[from] notify::Error),
-    /// The loop was asked to stop while a pass ran ([`StopRequest`]).
+    /// The archive's stop request was made while a pass ran
+    /// ([`polylogue_store::Archive::stop`]).
     #[error("the loop was asked to stop")]
     Stopped,
+}
+
+impl From<polylogue_store::StoreError> for EngineError {
+    fn from(error: polylogue_store::StoreError) -> Self {
+        match error {
+            polylogue_store::StoreError::Stopped => Self::Stopped,
+            error => Self::Store(error),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -414,69 +424,11 @@ pub enum LoopMsg {
         parent: Option<Arc<polylogue_store::writer::ParentLifetime>>,
         reply: SyncSender<Result<ImportReport, ImportFailure>>,
     },
-
+    /// Ends the loop at its next turn: a pass in progress yields as it does
+    /// for an import, then [`Engine::run`] returns. The archive's stop
+    /// request sends it to wake a loop waiting between passes; that request
+    /// also ends the pass's reads and parsing at once.
     Stop,
-}
-
-/// Asks a running loop to end its pass at the next batch boundary: parses
-/// already capturing new bytes commit, replay of retained bytes can roll
-/// back its unfinished index transaction, a chain reading in preparation is
-/// dropped, and the writer's derive pass or first-build ending ends early
-/// ([`polylogue_store::writer::WriterStop`]), work not yet started is left
-/// for the next start, and [`Engine::run`] returns. A loop waiting between
-/// passes also needs [`LoopMsg::Stop`] to wake.
-#[derive(Clone, Default)]
-pub struct StopRequest(Arc<StopState>);
-
-#[derive(Default)]
-struct StopState {
-    requested: std::sync::atomic::AtomicBool,
-    /// Background planning reads have their own cancellation, separate from
-    /// admitted writes and the ordinary reader-pool lifetime.
-    reads: polylogue_store::read::limit::ReadCancellation,
-    /// Parse pools whose submitters wait for room; a request wakes them.
-    pools: Mutex<Vec<std::sync::Weak<pool::Shared>>>,
-    writer: polylogue_store::writer::WriterStop,
-}
-
-impl StopRequest {
-    fn for_writer(writer: &Writer) -> Self {
-        Self(Arc::new(StopState {
-            writer: writer.stop_handle(),
-            ..StopState::default()
-        }))
-    }
-
-    pub fn request(&self) {
-        self.0
-            .requested
-            .store(true, std::sync::atomic::Ordering::Release);
-        self.0.writer.request();
-        self.0.reads.cancel();
-        let pools = self
-            .0
-            .pools
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for pool in pools.iter().filter_map(std::sync::Weak::upgrade) {
-            pool.wake_for_stop();
-        }
-    }
-
-    pub fn requested(&self) -> bool {
-        self.0.requested.load(std::sync::atomic::Ordering::Acquire)
-    }
-
-    /// Wakes `pool`'s submitters when the request is made.
-    fn wake(&self, pool: &Arc<pool::Shared>) {
-        let mut pools = self
-            .0
-            .pools
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        pools.retain(|pool| pool.strong_count() > 0);
-        pools.push(Arc::downgrade(pool));
-    }
 }
 
 struct Requests {
@@ -489,7 +441,6 @@ struct Requests {
 pub struct Engine {
     requests: Option<Requests>,
     collectors: collectors::Collectors,
-    stop: StopRequest,
     pub config: Config,
     pub archive: Archive,
     writer: Writer,
@@ -528,11 +479,6 @@ impl Engine {
         Ok(self.writer.sender()?)
     }
 
-    /// The handle that stops this engine's loop in the middle of a pass.
-    pub fn stop_request(&self) -> StopRequest {
-        self.stop.clone()
-    }
-
     /// Starts the writer on an archive the caller has locked.
     pub fn new(
         config: Config,
@@ -564,7 +510,6 @@ impl Engine {
         let reader_memory = config.reader_memory_per_connection()?;
         let reads = ReadPool::with_budget(&archive, 1, reader_memory)?;
         let blobs = Arc::new(archive.blobs()?);
-        let stop = StopRequest::for_writer(&writer);
         Ok(Self {
             config,
             archive,
@@ -589,14 +534,13 @@ impl Engine {
             lookups_at: None,
             collectors: collectors::Collectors::default(),
             requests: None,
-            stop,
         })
     }
 
     /// Derives changed sessions. Primary facts are emitted with their source reading.
     fn derive(&self) -> Result<u64, EngineError> {
         match self.writer.derive() {
-            Err(polylogue_store::StoreError::WriterGone) if self.stop.requested() => {
+            Err(polylogue_store::StoreError::WriterGone) if self.archive.stop().is_cancelled() => {
                 Err(EngineError::Stopped)
             }
             result => Ok(result?),

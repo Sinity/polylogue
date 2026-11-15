@@ -127,11 +127,8 @@ impl Reader<'_> {
         match result {
             Err(SelectionError::Store(crate::StoreError::ReadDeadlineExceeded)) => {
                 self.scope_token().check()?;
-                if self
-                    .read_limit()
-                    .is_some_and(|limit| limit.cancellation.is_cancelled())
-                {
-                    return Err(crate::StoreError::ReadCancelled.into());
+                if let Some(limit) = self.read_limit() {
+                    limit.cancellation.check()?;
                 }
                 Ok(None)
             }

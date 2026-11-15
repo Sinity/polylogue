@@ -1,7 +1,7 @@
 use super::*;
 use std::time::{Duration, Instant};
 
-fn cancelled_soon(cancellation: &ReadCancellation) -> bool {
+fn cancelled_soon(cancellation: &Cancellation) -> bool {
     let until = Instant::now() + Duration::from_secs(10);
     while !cancellation.is_cancelled() {
         if Instant::now() > until {
@@ -18,7 +18,7 @@ fn a_hang_up_cancels_only_that_connection_and_a_half_close_cancels_nothing() {
     let (gone, gone_peer) = UnixStream::pair().unwrap();
     let (half, half_peer) = UnixStream::pair().unwrap();
     let (stays, _stays_peer) = UnixStream::pair().unwrap();
-    let cancellations: Vec<ReadCancellation> = (0..3).map(|_| Default::default()).collect();
+    let cancellations: Vec<Cancellation> = (0..3).map(|_| Default::default()).collect();
     let _watched: Vec<_> = [&gone, &half, &stays]
         .into_iter()
         .zip(&cancellations)

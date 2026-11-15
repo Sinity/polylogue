@@ -119,7 +119,8 @@ fn serve_client(stream: UnixStream, shared: &Shared) {
     let Ok(read_half) = stream.try_clone() else {
         return;
     };
-    let cancellation = polylogue_store::read::limit::ReadCancellation::default();
+    // The connection's requests end when it hangs up or the daemon stops.
+    let cancellation = d.archive.stop().child();
     let Ok(_watched) = shared.hangups.watch(&stream, cancellation.clone()) else {
         return;
     };
@@ -324,7 +325,7 @@ fn stream_limit(
     command: &crate::commands::Command,
     default_deadline: bool,
     accepted: &crate::protocol::caller::Accepted,
-    cancellation: &polylogue_store::read::limit::ReadCancellation,
+    cancellation: &polylogue_store::cancellation::Cancellation,
 ) -> polylogue_store::read::limit::ReadLimit {
     use polylogue_store::read::limit::ReadLimit;
     let declared = crate::commands::deadlines().get(command.latency);

@@ -313,7 +313,7 @@ fn cached_counts_follow_the_resolved_calendar() {
 
 #[test]
 fn slow_count_still_returns_rows() {
-    use crate::read::limit::{ReadCancellation, ReadLimit};
+    use crate::{cancellation::Cancellation, read::limit::ReadLimit};
     let dir = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(dir.path()).unwrap();
     fixture
@@ -330,10 +330,7 @@ fn slow_count_still_returns_rows() {
         _ => panic!("native session selection"),
     }
     let pool = fixture.reads().unwrap();
-    let limit = ReadLimit::new(
-        std::time::Duration::from_secs(1),
-        ReadCancellation::default(),
-    );
+    let limit = ReadLimit::new(std::time::Duration::from_secs(1), Cancellation::default());
     limit.scope(|| {
         let reader = pool.reader().unwrap();
         let answer = reader.query_page(&program, None).unwrap();
@@ -349,7 +346,7 @@ fn slow_count_still_returns_rows() {
 
 #[test]
 fn cancellation_is_not_a_deferred_count() {
-    use crate::read::limit::{ReadCancellation, ReadLimit};
+    use crate::{cancellation::Cancellation, read::limit::ReadLimit};
     let dir = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(dir.path()).unwrap();
     fixture
@@ -359,7 +356,7 @@ fn cancellation_is_not_a_deferred_count() {
         })
         .unwrap();
     let pool = fixture.reads().unwrap();
-    let cancellation = ReadCancellation::default();
+    let cancellation = Cancellation::default();
     let limit = ReadLimit::without_deadline(cancellation.clone());
     limit.scope(|| {
         let reader = pool.reader().unwrap();
