@@ -11,12 +11,12 @@ Polylogue runs as one resident daemon per archive. The daemon is the only proces
 **Start.** `polylogue daemon` runs in the foreground under a service manager (a systemd user unit on Linux). In order, it:
 1. raises the open-file limit;
 2. takes the archive lock, an exclusive `flock` on `<archive>/lock` opened through the resolved directory path, and writes its pid into it; a second daemon on the same archive, by any path, exits 1 naming the holder's pid;
-3. opens `archive.db` and `embeddings.db` at the current format, applying the declared register transition and embeddings table additions, or refuses an unknown shape with exit 78; the refused database is left as it was ([archive.md#evolution](archive.md#evolution));
-4. opens a matching `index.db` at its saved positions; an unknown current shape refuses, while an index from another format follows the rebuild path ([Replacing an index from another schema](#replacing-an-index-from-another-schema));
+3. opens `archive.db` and `embeddings.db` at the current format, adding to an `embeddings.db` from an earlier build the tables added since, or refuses with exit 78 when either is in another format, naming the version it found; the refused file is left exactly as it was ([archive.md#evolution](archive.md#evolution));
+4. opens `index.db` at its saved positions; an index written for another schema is set aside and a new one is built ([Replacing an index from another schema](#replacing-an-index-from-another-schema));
 5. opens the segment log at its last committed extent;
 6. binds the socket, serves requests, then starts its work.
 
-The durable register transition and parsed-index open are separate steps under the same exclusive archive lock. A matching current index retains parsed rows, identities and saved progress; an earlier parsed format reconstructs from originals. Original bytes and paid vectors are untouched.
+No step rewrites `archive.db`, the segment log or the embeddings store to get past a format difference; the only change at open is adding new tables to the embeddings store.
 
 **Readiness.** With `Type=notify` the daemon signals readiness once the socket answers a `ping`, before catching up. The connection's thread answers `ping` without a reader or any cache, so a vector load or a full reader pool never delays readiness or the watchdog. Catching up is shown as work in `status`, never as unavailability.
 
@@ -53,7 +53,7 @@ boundaries, not limits on file size or the amount an archive may contain.
 
 **Without sources.** `polylogue daemon --no-sources` reads none of its sources: no root is scanned or watched, no spool or tool database is read, no collector runs and no repository lookup is written, so no input, observation or coverage is recorded from the machine. It plans from stored source identities, recorded parser paths and chain progress, without reconstructing watched machine locations. It parses and derives what the archive already stores (an index behind its archive catches up, a reading-version change re-parses) and serves every request, `import` included. A file that has gone from its location is not observed as gone, because nothing looked. With `--until-idle` it processes what is stored and exits. An archive that receives another archive's contents (`import`) is started this way, so that none of its locations is watched before the import, and the restore drill uses it to check a restored copy without touching the machine's live files.
 
-**Exits:** 0 clean stop; 1 failure or lock held; 74 storage failure (the disk failed a sync of `archive.db`; [below](#storage-failure)); 78 refused store (an unknown register, embeddings or current index schema). The service sets `RestartPreventExitStatus=74 78`, and the service manager's failure notification reports either, since no daemon is running to send a notice.
+**Exits:** 0 clean stop; 1 failure or lock held; 74 storage failure (the disk failed a sync of `archive.db`; [below](#storage-failure)); 78 refused archive (`archive.db` or `embeddings.db` in another format; an index never causes it). The service sets `RestartPreventExitStatus=74 78`, and the service manager's failure notification reports either, since no daemon is running to send a notice.
 
 ### Storage failure
 
@@ -261,8 +261,7 @@ An upgrade is a version change in `status` and, when a parser changed, a while i
 |---|---|---|
 | no storage change | restart, resume from committed positions | down for the restart |
 | a parser module's reading version | chains read with the old version are re-parsed one at a time, live inputs first, then newest first | every read answers; results touching a chain not yet re-parsed carry `up_to_date: false`; `status` shows progress |
-| an unknown current index schema | refused unchanged, exit 78 | down |
-| another index format version or no format identity | the old index is set aside and a new one built from stored bytes ([below](#replacing-an-index-from-another-schema)) | every read answers; reads report the index as building until the first build ends |
+| a change to the index schema | the old index is set aside and a new one built from stored bytes ([below](#replacing-an-index-from-another-schema)) | every read answers; reads report the index as building until the first build ends |
 | a table added to `embeddings.db` | added in place at start; stored vectors are untouched | down for the restart |
 | `archive.db` or `embeddings.db` in another format than the binary's | refused, exit 78, not restarted | down |
 | the disk failed a sync of `archive.db` (any time, not an upgrade) | exit 74, not restarted, refuses until the machine reboots ([Storage failure](#storage-failure)) | down |
@@ -271,9 +270,7 @@ An upgrade is a version change in `status` and, when a parser changed, a while i
 
 ### Replacing an index from another schema
 
-`index.db` holds parsed and derived data in standalone Index3 or primary cache5. A matching current schema retains its generation, cursors, readings and saved parser checkpoints. The exact preceding count-trigger shape advances in place under one transaction, preserving that progress; session counts are then owned by the row transaction. An unknown shape at the current format number refuses with exit 78 and leaves its file and progress unchanged. Earlier format numbers use reconstruction, rather than an in-place conversion or a second reader.
-
-An index at another format version, or without the Polylogue format identity, is closed and renamed beside it as `index-set-aside-<schema identity>.db` (with any write-ahead files it left), and a new index is created in its place. The schema identity is a short hash of the file's version, format identity and its tables, views and triggers; indexes are left out of it, since read indexes are added at open and a first build defers some.
+`index.db` holds only what is parsed and derived from the archive's stored bytes, and it has one current format, so an index this build cannot open is replaced rather than converted or refused. At start, an index whose tables, indexes or triggers differ from the build's, that is at another index format version, or that carries no Polylogue format identity, is closed and renamed beside it as `index-set-aside-<schema identity>.db` (with any write-ahead files it left), and a new index is created in its place. The schema identity is a short hash of the file's version, format identity and its tables, views and triggers; indexes are left out of it, since read indexes are added at open and a first build defers some.
 
 The new index records why it replaced the old one, and `status` reports it under `store.index_rebuild`: the reason (`schema_differs`, `format_version` with the version found and wanted, or `older_format`), the previous and current schema identities, whether the first build is still running, and the set-aside file's name while it remains. Progress is the rest of the same answer: chains by parse state against the stored inputs, and the read completeness, which reports the first build until it ends. The set-aside file is removed when the first build ends (standalone: its search and deferred indexes are built; primary: the confirmed stream is applied to its head); a file left by a stop at the wrong moment is removed at the next open of a built index. The record stays with the index it describes.
 

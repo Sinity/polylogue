@@ -12,18 +12,18 @@ fn rebuilding_the_source7_cache_preserves_actual_pending_authored_intent() {
     let predecessor = client(&dir.path().join("request-source"));
     let request = PreparedRequest {
         request: polylogue_store::fixture::authored::operator_request(
-            "pending-through-primary-cache-transition".into(),
+            "pending-through-primary-cache-rebuild".into(),
             UserWrite::Assert { assertions: vec![] },
         ),
         outcome: UserOutcome {
-            id: "pending-through-primary-cache-transition".into(),
+            id: "pending-through-primary-cache-rebuild".into(),
             repeat: false,
             pending: false,
         },
         effect: AuthoredEffect::default(),
     };
     predecessor.prepare_request(&request).unwrap();
-    let identity = "request:pending-through-primary-cache-transition";
+    let identity = "request:pending-through-primary-cache-rebuild";
     let mut original = predecessor
         .spool
         .lock()

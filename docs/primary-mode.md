@@ -210,7 +210,7 @@ remain historical diagnostics rather than current refusal counts.
 
 What a host keeps locally in primary mode:
 - `meta.json`, the archive's durable storage identity, containing its mode;
-- `index.db`, primary cache format2, holding native identity, local interpretation receipts and its stream position;
+- `index.db`, the primary cache, holding native identity, local interpretation receipts and its stream position;
 - the embeddings store, local and backed up, since recomputing it costs money;
 - the producer client's spool, where bytes and prepared writes wait until Sinex acknowledges them; it sits under Sinex's store root on the same host. Material bytes are acknowledged before the events that cite them.
 
@@ -284,9 +284,9 @@ Publication and read failures remain distinct observations in that status. A suc
 
 Browser writes distinguish preparation from enqueue. If attached bytes are durable but unconfirmed, the reply is degraded with their capture `identity`; no action has been enqueued. If the authored chat action or backfill job is durable but unconfirmed, the reply carries its exact user receipt with `pending: true`, without looking up or claiming a confirmed queued action. A confirmed write returns the current action or job as before. Retries retain the corresponding capture or authored identity.
 
-**Rebuild.** A new local `index.db` (one from another schema set aside at start, [operations.md](operations.md#replacing-an-index-from-another-schema), or one moved aside by hand) resets its subscription position and reads Sinex-confirmed records, with progress in `status`. Earlier primary cache formats are set aside for cache5, which stores NFC request-text identities alongside raw text hashes and uses narrow integer message-version references and separate payload storage. Reconstruction reads the retained originals and confirmed records; opening does not decode an earlier derived row format. The producer spool, including pending authored intent, stays under the separate Sinex store root; paid vectors remain in `embeddings.db`. Both retain their original identities and bytes.
+**Rebuild.** A new local `index.db` (one from another schema set aside at start, [operations.md](operations.md#replacing-an-index-from-another-schema), or one moved aside by hand) resets its subscription position and reads Sinex-confirmed records, with progress in `status`. Reconstruction reads the retained originals and confirmed records; nothing reads the set-aside cache. The producer spool, including pending authored intent, stays under the separate Sinex store root; paid vectors remain in `embeddings.db`. Both retain their original identities and bytes.
 
-The old cache remains until the native head has been applied and every stored chain has admitted local progress at its current source length. A known incomplete suffix can settle as waiting; a refused or failed attempt needs its actual program identity. Missing progress and unreadable native facts keep the cache. Retirement runs at ordinary local flush or open, rather than scanning the source catalog on each confirmed position.
+The set-aside cache remains until the native head has been applied and every stored chain has admitted local progress at its current source length. A known incomplete suffix can settle as waiting; a refused or failed attempt needs its actual program identity. Missing progress and unreadable native facts keep it. Its removal runs at ordinary local flush or open, rather than scanning the source catalog on each confirmed position.
 
 A stream with origin zero starts with its ordinary feed. When Sinex requires a current projection, Polylogue clears its reconstructible cache and stages bounded snapshot pages on disk. The original producer queue, source bytes and paid vector stores retain their own custody.
 

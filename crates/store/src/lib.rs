@@ -122,10 +122,13 @@ pub enum StoreError {
         found: u32,
         current: u32,
     },
+    /// A database at an older version, or at this version with other tables.
+    /// Nothing converts it.
     #[error(
-        "{database}.db at version {found} has tables this Polylogue build has no migration from"
+        "{database}.db at version {found} is not in this Polylogue build's format; \
+         it is left as it was"
     )]
-    NoMigration { database: &'static str, found: u32 },
+    OtherFormat { database: &'static str, found: u32 },
     /// `embeddings.db` holds paid vectors, so it is never set aside: a schema
     /// that adding tables cannot bring to this build's is refused.
     #[error(
@@ -138,7 +141,10 @@ pub enum StoreError {
     #[error("older format: import with `polylogue import --from-archive PATH`")]
     OlderFormat { database: &'static str },
     /// The archive's open sets such an index aside and builds a new one.
-    #[error("index format {found} is not {wanted}")]
+    #[error(
+        "index.db at version {found} is not this build's version {wanted}; \
+         it is set aside and rebuilt from the archive"
+    )]
     IndexVersion { found: u32, wanted: u32 },
     #[error("blob {0} failed its check")]
     BlobCorrupt(polylogue_model::BlobHash),

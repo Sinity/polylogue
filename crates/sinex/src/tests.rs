@@ -357,4 +357,4 @@ fn advisory_readiness_is_nonblocking_and_retains_pending_advice_across_restart()
     );
 }
 
-mod primary_transition;
+mod primary_rebuild;

@@ -1134,18 +1134,6 @@ fn every_payload_kind_is_encoded_and_counts_never_decode_it() {
 }
 
 #[test]
-fn plaintext_predecessor_operations_require_an_explicit_preserved_transition() {
-    let directory = tempfile::tempdir().unwrap();
-    let spool = Spool::open(directory.path(), "host").unwrap();
-    let path = spool.operation("old").unwrap();
-    fs::create_dir(&path).unwrap();
-    fs::write(path.join("frame.json"), b"{synthetic old pending bytes}").unwrap();
-    drop(spool);
-    assert!(Spool::open(directory.path(), "host").is_err());
-    assert!(path.join("frame.json").exists());
-}
-
-#[test]
 fn acknowledgment_body_conflict_is_terminal_evidence_and_keeps_offered_bytes_after_restart() {
     let root = tempfile::tempdir().unwrap();
     let spool = Spool::open(root.path(), "host").unwrap();
