@@ -591,12 +591,13 @@ fn apply_rows(
         }
     }
     for u in &p.output.background {
-        if let Some(session) = tx
-            .prepare_cached("SELECT pk FROM session WHERE id=?1")?
-            .query_row([u.session.to_string()], |row| row.get::<_, i64>(0))
-            .optional()?
+        if let Some(call_id) = u.call_id.as_deref()
+            && let Some(session) = tx
+                .prepare_cached("SELECT pk FROM session WHERE id=?1")?
+                .query_row([u.session.to_string()], |row| row.get::<_, i64>(0))
+                .optional()?
         {
-            changes.call_result(tx, session, &u.call_id)?;
+            changes.call_result(tx, session, call_id)?;
             changes.session(tx, session)?;
         }
         let (outcome, reason, exit) = outcome_columns(&u.outcome);

@@ -560,3 +560,56 @@ fn fresh_contributions_match_the_full_fold_for_every_recorded_author() {
     let got=tx.query_row("SELECT human_prompt_count,human_command_count,human_word_count,model_word_count,word_count FROM session",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?))).unwrap();
     assert_eq!(got, (1, 1, 6, 6, 12));
 }
+
+#[test]
+fn background_outcomes_change_counts_only_for_the_named_call() {
+    use polylogue_model::{ErrorReason, ToolAction, ToolOutcome};
+    let mut c = connection(false);
+    let mut call = text_message("call", "s", Role::Assistant, "", None);
+    call.blocks = vec![Block::ToolCall {
+        call_id: Some("named".into()),
+        tool: Some("run".into()),
+        action: ToolAction::Shell,
+        input: Json::Null,
+        written_text: None,
+        command: None,
+        path: None,
+        run_by_script: false,
+    }];
+    {
+        let tx = c.transaction().unwrap();
+        apply(
+            &tx,
+            batch("call", Route::Live, 0, vec![row(0, call)], &["s"]),
+            false,
+        );
+        tx.commit().unwrap();
+    }
+    for (n, call_id, errors) in [(0, None, 0), (1, Some("missing"), 0), (2, Some("named"), 1)] {
+        let mut b = batch(&format!("background-{n}"), Route::Live, 0, vec![], &["s"]);
+        b.parse[0]
+            .output
+            .background
+            .push(polylogue_model::batch::BackgroundUpdate {
+                result_at: None,
+                result_at_evidence: Default::default(),
+                reported_duration_ms: None,
+                session: sid("s"),
+                task_id: "synthetic-task".into(),
+                call_id: call_id.map(str::to_owned),
+                outcome: ToolOutcome::Error {
+                    reason: Some(ErrorReason::ExitCode(1)),
+                },
+                output_file: None,
+            });
+        let tx = c.transaction().unwrap();
+        apply(&tx, b, false);
+        assert_eq!(
+            tx.query_row("SELECT error_count FROM session", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            errors
+        );
+        tx.commit().unwrap();
+    }
+}
