@@ -2,7 +2,7 @@
 //! temporarily lose their last reference. Reusing an ID follows its hash,
 //! never whichever row number SQLite might next make available.
 use crate::{Result, StoreError};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
@@ -23,6 +23,7 @@ pub(crate) struct TextIds {
     /// Search membership bits this writer knows are set on text rows, by ID,
     /// within the current transaction; forgotten when it ends.
     marked: RefCell<HashMap<i64, i64>>,
+    groups: super::StoredGroups,
     next: Cell<i64>,
     reload: Cell<bool>,
 }
@@ -33,6 +34,7 @@ impl TextIds {
         let ids = Self {
             known: RefCell::new(HashMap::new()),
             marked: RefCell::new(HashMap::new()),
+            groups: super::StoredGroups::default(),
             next: Cell::new(next(max)?),
             reload: Cell::new(preload),
         };
@@ -72,7 +74,7 @@ impl TextIds {
         &self,
         conn: &Connection,
         hash: &[u8; 32],
-        body: Option<&crate::encoding::PreparedText>,
+        body: Option<super::groups::Prepared<'_>>,
         membership: Option<&super::NewMembership<'_>>,
     ) -> Result<ResolvedText> {
         self.refresh(conn)?;
@@ -88,8 +90,7 @@ impl TextIds {
                 .and_then(|membership| membership.bits.get(hash))
                 .copied()
                 .unwrap_or(0);
-            let inserted = conn.prepare_cached("INSERT OR IGNORE INTO text(id,hash,body,normalized_hash,indexed) VALUES (?1,?2,?3,?4,?5) RETURNING id")?
-                .query_row(params![id,hash.as_slice(),body.body,body.normalized_hash.as_slice(),bits], |r| r.get::<_,i64>(0)).optional()?;
+            let inserted = super::groups::insert(conn, &self.groups, Some(id), hash, body, bits)?;
             if inserted.is_some() {
                 if bits != 0 {
                     if !membership.is_some_and(|membership| membership.bulk) {
@@ -147,10 +148,13 @@ impl TextIds {
     pub(crate) fn discard_cached(&self) {
         self.known.borrow_mut().clear();
         self.marked.borrow_mut().clear();
+        self.groups.clear();
         self.reload.set(true);
     }
 
+    /// Its group may have left with it.
     pub(crate) fn removed(&self, hash: &[u8; 32], id: i64) {
+        self.groups.clear();
         self.known
             .borrow_mut()
             .insert(*hash, Identity { id, present: false });
@@ -195,6 +199,7 @@ pub(crate) struct TextTransaction<'a> {
 impl TextTransaction<'_> {
     pub(crate) fn commit(mut self) {
         self.committed = true;
+        self.texts.groups.clear();
     }
 }
 impl Drop for TextTransaction<'_> {
@@ -202,6 +207,7 @@ impl Drop for TextTransaction<'_> {
         self.texts.marked.borrow_mut().clear();
         if !self.committed {
             self.texts.reload.set(true);
+            self.texts.groups.clear();
         }
     }
 }

@@ -59,17 +59,14 @@ fn corpus(texts: usize) -> TestArchive {
     let tx = conn.transaction().unwrap();
     for n in 0..texts {
         let text = body(n);
-        tx.execute(
-            "INSERT INTO text(id, hash, body, indexed, normalized_hash) VALUES(?1,?2,?3,?4,?5)",
-            params![
-                1000 + n as i64,
-                blake3::hash(text.as_bytes()).as_bytes().as_slice(),
-                crate::encoding::pack_text(&text).unwrap(),
-                membership(n),
-                crate::encoding::normalized_text_hash(&text).as_slice()
-            ],
-        )
-        .unwrap();
+        crate::text_rows::insert_alone(
+            &tx,
+            Some(1000 + n as i64),
+            blake3::hash(text.as_bytes()).as_bytes(),
+            &crate::encoding::normalized_text_hash(&text),
+            &text,
+            membership(n),
+        );
     }
     tx.commit().unwrap();
     checkpoint(&conn);
@@ -207,24 +204,17 @@ fn corruption() -> serde_json::Value {
     let w = corpus(ROWS);
     let conn = open_write(&w.archive.index_db(), cache::INDEX_WRITER).unwrap();
     let before = parsed(&conn);
-    conn.execute(
-        "UPDATE text SET body=X'00' WHERE id=?1",
-        [1000 + ROWS as i64 - 2],
-    )
-    .unwrap();
+    crate::text_rows::replace_group_body(&conn, 1000 + ROWS as i64 - 2, b"\0");
     let failed = crate::text_rows::index_marked(&conn).is_err();
     let partial: i64 = conn
         .query_row("SELECT count(*) FROM text_fts", [], |r| r.get(0))
         .unwrap();
     let preserved = before == parsed(&conn) && crate::schema::building(&conn).unwrap();
-    conn.execute(
-        "UPDATE text SET body=?1 WHERE id=?2",
-        params![
-            crate::encoding::pack_text(&body(ROWS - 2)).unwrap(),
-            1000 + ROWS as i64 - 2
-        ],
-    )
-    .unwrap();
+    crate::text_rows::replace_group_body(
+        &conn,
+        1000 + ROWS as i64 - 2,
+        &crate::text_rows::alone(&body(ROWS - 2)),
+    );
     drop(conn);
     crate::fault::arm(
         "index.deferred",

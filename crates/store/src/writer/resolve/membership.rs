@@ -1050,17 +1050,14 @@ impl<'a> Projection<'a> {
                     .is_some_and(|previous| previous.replace);
             self.message_layouts
                 .insert(prepared.hash.to_vec(), Some(layout));
-            for (block, hash) in merged.message.blocks.iter().zip(&merged.prepared.texts) {
-                if let (Some(text), Some(hash)) = (crate::encoding::block_text(block), hash)
-                    && let std::collections::hash_map::Entry::Vacant(slot) =
-                        step.prepared.texts.entry(*hash)
-                {
-                    slot.insert(crate::encoding::PreparedText::new(
-                        text,
-                        crate::encoding::pack_text(text)?,
-                    ));
-                }
-            }
+            // A merged value can bring texts its step did not parse.
+            step.prepared.texts.add(
+                merged
+                    .message
+                    .blocks
+                    .iter()
+                    .filter_map(crate::encoding::block_text),
+            )?;
             choices.message_versions.insert(
                 BlobHash(prepared.hash),
                 MessageVersion {

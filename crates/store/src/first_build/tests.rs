@@ -70,16 +70,9 @@ fn texts_and_messages_are_found_by_their_keys() {
     let conn = index();
     let keys = FirstBuild::default();
     let hash = *blake3::hash(b"walrus").as_bytes();
-    conn.execute(
-        "INSERT INTO text(hash, normalized_hash, body) VALUES (?1,?1, X'00')",
-        [&hash[..]],
-    )
-    .unwrap();
+    let id = crate::text_rows::insert_alone(&conn, None, &hash, &hash, "walrus", 0);
     let texts = crate::text_rows::TextIds::new(&conn, true).unwrap();
-    assert_eq!(
-        texts.text(&conn, &hash).unwrap(),
-        Some(conn.last_insert_rowid())
-    );
+    assert_eq!(texts.text(&conn, &hash).unwrap(), Some(id));
     assert_eq!(
         texts
             .text(&conn, blake3::hash(b"narwhal").as_bytes())
@@ -105,11 +98,7 @@ fn loading_committed_rows_restores_every_key_map() {
     let conn = index();
     insert_event(&conn, "event");
     let hash = *blake3::hash(b"kept text").as_bytes();
-    conn.execute(
-        "INSERT INTO text(hash,normalized_hash,body) VALUES (?1,?1,X'00')",
-        [&hash[..]],
-    )
-    .unwrap();
+    crate::text_rows::insert_alone(&conn, None, &hash, &hash, "kept text", 0);
     conn.execute("INSERT INTO message(id,session_pk,session_order,role,written_by,input_pk) VALUES ('claude-code:message',1,'0','user','human',1)", []).unwrap();
     let keys = FirstBuild::load(&conn).unwrap();
     let texts = crate::text_rows::TextIds::new(&conn, true).unwrap();
@@ -134,11 +123,7 @@ fn startup_key_snapshot_never_reads_payload_columns() {
     )
     .unwrap();
     let hash = *blake3::hash(b"text key").as_bytes();
-    conn.execute(
-        "INSERT INTO text(hash,normalized_hash,body) VALUES (?1,?1,?2)",
-        params![hash.as_slice(), vec![8u8; 1024 * 1024]],
-    )
-    .unwrap();
+    crate::text_rows::insert_alone(&conn, None, &hash, &hash, &"8".repeat(1024 * 1024), 0);
     conn.authorizer(Some(|context: AuthContext<'_>| match context.action {
         AuthAction::Read {
             column_name: "body" | "data",

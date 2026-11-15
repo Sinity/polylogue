@@ -793,14 +793,14 @@ fn ordinary_batches_resolve_overlapping_source_chains_once() {
             .unwrap(),
         2
     );
-    let text: Vec<u8> = index
+    let text: i64 = index
         .query_row(
-            "SELECT t.body FROM block b JOIN text t ON t.id=b.text_id",
+            "SELECT b.text_id FROM block b WHERE b.text_id IS NOT NULL",
             [],
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(crate::encoding::unpack_text(&text).unwrap(), "complete");
+    assert_eq!(crate::text_rows::read(&index, text).unwrap(), "complete");
     let mut statement=index.prepare("SELECT i.id,s.facts FROM session_record s JOIN input_ref i ON i.pk=s.input_pk ORDER BY i.id").unwrap();
     let facts = statement
         .query_map([], |row| {
@@ -953,14 +953,14 @@ fn native_source_retraction_reselects_remaining_claims_and_rolls_back_atomically
             .unwrap(),
         (1, 100)
     );
-    let text: Vec<u8> = index
+    let text: i64 = index
         .query_row(
-            "SELECT t.body FROM block b JOIN text t ON t.id=b.text_id",
+            "SELECT b.text_id FROM block b WHERE b.text_id IS NOT NULL",
             [],
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(crate::encoding::unpack_text(&text).unwrap(), "partial");
+    assert_eq!(crate::text_rows::read(&index, text).unwrap(), "partial");
     assert!(!directory.path().join("archive.db").exists());
 }
 

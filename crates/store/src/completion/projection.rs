@@ -78,8 +78,8 @@ impl Reader<'_> {
         let conn = self.conn()?;
         let columns = format!(
             "s.pk,s.id,s.native_id,coalesce({},''),s.origin,s.repo,s.last_activity_at,s.cwd,s.branch,s.harness,
-             (SELECT t.body FROM session_first_prompt f JOIN block b ON b.message_pk=f.message_pk AND b.kind='text'
-              JOIN text t ON t.id=b.text_id WHERE f.session_pk=s.pk ORDER BY b.idx LIMIT 1),
+             (SELECT pl_text_at(g.body,t.start,t.length) FROM session_first_prompt f JOIN block b ON b.message_pk=f.message_pk AND b.kind='text'
+              JOIN text t ON t.id=b.text_id JOIN text_group g ON g.id=t.group_id WHERE f.session_pk=s.pk ORDER BY b.idx LIMIT 1),
              ?1>=0 AND EXISTS(SELECT 1 FROM removed_session r WHERE r.session_id=s.id AND r.changed>?1)",
             crate::session_sql::display_title("s")
         );
@@ -117,10 +117,7 @@ impl Reader<'_> {
                 origin: row.get(4)?,
                 repo: row.get(5)?,
                 last_activity: row.get(6)?,
-                first_prompt: row
-                    .get::<_, Option<Vec<u8>>>(10)?
-                    .map(|body| crate::encoding::unpack_text(&body))
-                    .transpose()?,
+                first_prompt: row.get(10)?,
                 values: BTreeMap::new(),
             };
             for (field, value) in [

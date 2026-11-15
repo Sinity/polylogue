@@ -116,15 +116,15 @@ fn fresh_selected_messages_install_without_replacing_an_old_projection() {
             .unwrap(),
         1
     );
-    let text: Vec<u8> = tx
+    let text: i64 = tx
         .query_row(
-            "SELECT t.body FROM block b JOIN text t ON t.id=b.text_id",
+            "SELECT t.id FROM block b JOIN text t ON t.id=b.text_id",
             [],
             |r| r.get(0),
         )
         .unwrap();
     assert_eq!(
-        crate::encoding::unpack_text(&text).unwrap(),
+        crate::text_rows::read(&tx, text).unwrap(),
         "selected body with four words"
     );
     check_items(&tx, &changes);
@@ -220,15 +220,15 @@ fn reserved_message_keys_are_not_creation_results_across_steps() {
             .unwrap(),
         1
     );
-    let text: Vec<u8> = tx
+    let text: i64 = tx
         .query_row(
-            "SELECT t.body FROM block b JOIN text t ON t.id=b.text_id",
+            "SELECT b.text_id FROM block b WHERE b.text_id IS NOT NULL",
             [],
             |r| r.get(0),
         )
         .unwrap();
     assert_eq!(
-        crate::encoding::unpack_text(&text).unwrap(),
+        crate::text_rows::read(&tx, text).unwrap(),
         "replacement body is different"
     );
     check_items(&tx, &changes);

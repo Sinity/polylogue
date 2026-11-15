@@ -1087,7 +1087,7 @@ fn indexing_errors_abort_the_changed_rows_transaction() {
                 );
             } else {
                 assert!(
-                    matches!(error, crate::StoreError::StoredValue { column: 2, .. }),
+                    matches!(error, crate::StoreError::StoredValue { column: 1, .. }),
                     "{error}"
                 );
             }

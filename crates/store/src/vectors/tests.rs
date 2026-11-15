@@ -13,12 +13,7 @@ fn texts(archive: &Archive, hashes: &[&[u8]]) {
     let index =
         crate::archive::open_write(&archive.index_db(), crate::archive::cache::SETUP).unwrap();
     for hash in hashes {
-        index
-            .execute(
-                "INSERT INTO text(hash, normalized_hash, body) VALUES (?1,?1, x'00')",
-                [hash],
-            )
-            .unwrap();
+        crate::text_rows::insert_alone(&index, None, hash, hash, "\0", 0);
     }
 }
 

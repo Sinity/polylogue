@@ -54,13 +54,11 @@ fn event_id_independent_of_map_insertion_order() {
 }
 
 #[test]
-fn text_rows_read_older_compression_levels_and_reuse_a_packer() {
-    let mut packer = RowPacker::new().unwrap();
+fn text_bodies_read_any_compression_level() {
     for text in ["", "Łódź café 🦀", "a repeated body", "a repeated body"] {
         let old = zstd::bulk::compress(text.as_bytes(), 3).unwrap();
         assert_eq!(unpack_text(&old).unwrap(), text);
         assert_eq!(unpack_text(&pack_text(text).unwrap()).unwrap(), text);
-        assert_eq!(unpack_text(&packer.pack_text(text).unwrap()).unwrap(), text);
     }
 }
 
@@ -70,7 +68,6 @@ fn batch_encoder_keeps_independent_frames_across_row_types_and_sizes() {
     for size in [0, 64 * 1024, 3, 1024 * 1024, 1] {
         let text = "λ".repeat(size);
         let value = json!({"text":text,"nested":[null,false,42],"unknown":{"empty":[]}});
-        assert_eq!(packer.pack_text(&text).unwrap(), pack_text(&text).unwrap());
         let packed = packer.pack_json(&value).unwrap();
         assert!(packed.len() <= pack_json(&value).unwrap().len());
         assert_eq!(unpack_json::<serde_json::Value>(&packed).unwrap(), value);

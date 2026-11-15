@@ -178,15 +178,24 @@ CREATE TABLE message_route (
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX message_route_input ON message_route(input_pk, chain);
 
+-- Text bodies, compressed together: each group is one zstd frame of the UTF-8
+-- of its texts one after another, made by the parse worker that read them
+-- (about 64 KiB before compression; a longer text is a group alone). The
+-- search indexes are contentless, so this is the only copy in the index.
+CREATE TABLE text_group (
+  id                INTEGER PRIMARY KEY,
+  body              BLOB NOT NULL
+) STRICT;
+
 -- Text is stored once per distinct content; `id` is the rowid of its search entries.
 CREATE TABLE text (
   id                INTEGER PRIMARY KEY,
   normalized_hash   BLOB NOT NULL,          -- BLAKE3 of NFC UTF-8; raw spellings may share this identity
   hash              BLOB NOT NULL,          -- unique: text_hash. BLAKE3 of the UTF-8 text; embeddings are keyed by it
-  -- Keep membership before the body: testing it must not read body overflow pages.
   indexed           INTEGER NOT NULL DEFAULT 0, -- bit 1: in text_fts (prose); bit 2: in output_fts (tool output)
-  body              BLOB NOT NULL           -- the UTF-8 text, zstd-compressed (the search indexes are
-                                            --   contentless, so this is the only copy in the index)
+  group_id          INTEGER NOT NULL REFERENCES text_group(id), -- the group leaves with its last text
+  start             INTEGER NOT NULL,       -- byte offset of the text in its group's decoded bytes
+  length            INTEGER NOT NULL        -- its length in bytes
 ) STRICT;
 
 -- What the provider wrote, one row per content item. Facts derived about a tool
@@ -217,6 +226,7 @@ CREATE TABLE block (
   UNIQUE (pk, session_pk)
 ) STRICT;
 CREATE UNIQUE INDEX text_hash ON text(hash);
+CREATE INDEX text_group_member ON text(group_id);  -- whether a group still holds a text
 CREATE UNIQUE INDEX block_message ON block(message_pk, idx);
 CREATE INDEX block_text   ON block(text_id) WHERE text_id IS NOT NULL;   -- search hit -> blocks
 

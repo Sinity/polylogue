@@ -601,13 +601,13 @@ impl Reader<'_> {
     ) -> Result<Vec<ProseText>> {
         let conn = self.conn()?;
         let mut statement = conn.prepare_cached(
-            "SELECT t.id,t.hash,t.body FROM text t WHERE t.normalized_hash=?1 AND t.id>?2 AND t.indexed & 1
+            "SELECT t.id,t.hash,g.body,t.start,t.length FROM text t JOIN text_group g ON g.id=t.group_id WHERE t.normalized_hash=?1 AND t.id>?2 AND t.indexed & 1
              AND EXISTS(SELECT 1 FROM block b JOIN message m ON m.pk=b.message_pk WHERE b.text_id=t.id)
              ORDER BY t.id LIMIT ?3")?;
         let mut rows = statement.query(params![hash.as_slice(), after, limit as i64])?;
         let mut out = Vec::new();
         while let Some(row) = rows.next()? {
-            let text = crate::encoding::unpack_text(&row.get::<_, Vec<u8>>(2)?)?;
+            let text = crate::text_rows::joined(row, 2)?;
             let raw: Vec<u8> = row.get(1)?;
             if raw.as_slice() != blake3::hash(text.as_bytes()).as_bytes()
                 || crate::encoding::normalized_text_hash(&text) != *hash
@@ -635,38 +635,39 @@ impl Reader<'_> {
         sessions: Option<&[String]>,
     ) -> Result<Vec<ProseText>> {
         let mut out = Vec::new();
-        let rows: Vec<(i64, Vec<u8>, Vec<u8>)> = match sessions {
-            None => self
-                .conn()?
-                .prepare_cached(
-                    "SELECT t.id, t.hash, t.body FROM text t WHERE t.indexed & 1 AND t.id > ?1
+        let conn = self.conn()?;
+        let limit = limit as i64;
+        let list;
+        let (mut statement, params): (_, Vec<&dyn rusqlite::ToSql>) = match sessions {
+            None => (
+                conn.prepare_cached(
+                    "SELECT t.id, t.hash, g.body, t.start, t.length FROM text t JOIN text_group g ON g.id=t.group_id
+                     WHERE t.indexed & 1 AND t.id > ?1
                      AND EXISTS (SELECT 1 FROM block b JOIN message m ON m.pk=b.message_pk WHERE b.text_id=t.id)
                      ORDER BY t.id LIMIT ?2",
-                )?
-                .query_map(params![after, limit as i64], |r| {
-                    Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-                })?
-                .collect::<rusqlite::Result<_>>()?,
+                )?,
+                vec![&after, &limit],
+            ),
             Some(ids) => {
-                let list = serde_json::to_string(ids)?;
-                self.conn()?
-                    .prepare_cached(
-                        "SELECT t.id, t.hash, t.body FROM text t WHERE t.indexed & 1 AND t.id > ?1
+                list = serde_json::to_string(ids)?;
+                (
+                    conn.prepare_cached(
+                        "SELECT t.id, t.hash, g.body, t.start, t.length FROM text t JOIN text_group g ON g.id=t.group_id
+                         WHERE t.indexed & 1 AND t.id > ?1
                          AND t.id IN (SELECT b.text_id FROM block b JOIN message m ON m.pk=b.message_pk JOIN session s ON s.pk = b.session_pk
                                       WHERE s.id IN (SELECT value FROM json_each(?3)))
                          ORDER BY t.id LIMIT ?2",
-                    )?
-                    .query_map(params![after, limit as i64, list], |r| {
-                        Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-                    })?
-                    .collect::<rusqlite::Result<_>>()?
+                    )?,
+                    vec![&after, &limit, &list],
+                )
             }
         };
-        for (id, hash, body) in rows {
+        let mut rows = statement.query(params.as_slice())?;
+        while let Some(row) = rows.next()? {
             out.push(ProseText {
-                id,
-                hash,
-                text: crate::encoding::unpack_text(&body)?,
+                id: row.get(0)?,
+                hash: row.get(1)?,
+                text: crate::text_rows::joined(row, 2)?,
             });
         }
         Ok(out)
