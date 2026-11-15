@@ -933,6 +933,12 @@ impl Runtime {
         Ok(())
     }
 
+    /// Whether this runtime runs the ingest loop (writes are not paused).
+    #[cfg(test)]
+    pub(crate) fn runs_loop(&self) -> bool {
+        self.engine.is_some()
+    }
+
     #[cfg(test)]
     pub(crate) fn signal_stop_for_test(&self) -> polylogue_store::cancellation::Cancellation {
         self.signals_stop
