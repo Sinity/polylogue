@@ -265,9 +265,11 @@ fn a_scope_reset_during_preparation_cannot_complete_with_stale_state_or_capture_
     assert_eq!(reader.query("SELECT count(*) AS n FROM message m JOIN session s ON s.pk=m.session_pk WHERE s.id='claude-code:scope-session'", &[]).unwrap()[0]["n"], 2);
 }
 
+#[cfg(feature = "faults")]
 #[test]
 fn queued_import_yields_after_admitted_capture_or_replay_and_resumes_from_durable_positions() {
     use polylogue_model::authorship::{Author, Authorship, Channel};
+    use polylogue_store::fault::{self, Action};
     use std::sync::mpsc::sync_channel;
 
     for (retained, reads_sources) in [(false, true), (true, false), (true, true)] {
@@ -291,6 +293,7 @@ fn queued_import_yields_after_admitted_capture_or_replay_and_resumes_from_durabl
             let path = home.file("request-turn.jsonl");
             let (mut engine, mut lock) = crate::import::tests::engine(&home, 256);
             assert!(engine.run_pass().unwrap().errors.is_empty());
+            let input = engine.inputs[&path].input_id.clone();
             if retained {
                 drop(engine);
                 drop(lock);
@@ -315,8 +318,6 @@ fn queued_import_yields_after_admitted_capture_or_replay_and_resumes_from_durabl
             }
             engine.config.workers = 1;
             engine.config.live_every = Duration::from_millis(10);
-            engine.inputs.get_mut(&path).unwrap().origin = held_origin();
-            let input = engine.inputs[&path].input_id.clone();
             let captured_before = source_rows(&engine, &input);
             let import = home.dir.path().join("queued-conversation.json");
             std::fs::write(
@@ -329,12 +330,8 @@ fn queued_import_yields_after_admitted_capture_or_replay_and_resumes_from_durabl
                 .unwrap(),
             )
             .unwrap();
-            let (entered, waiting) = channel();
-            let (release, held) = channel();
-            *CONTROL.lock().unwrap() = Some(Control {
-                started: entered,
-                release: held,
-            });
+            fault::clear();
+            fault::arm("parse", "request-turn.jsonl", Action::Hold, 0, 1);
             let stop = engine.stop_request();
             let (tx, rx) = channel();
             let worker_tx = tx.clone();
@@ -343,7 +340,11 @@ fn queued_import_yields_after_admitted_capture_or_replay_and_resumes_from_durabl
                 let result = engine.run(worker_tx, rx, &status, Lifetime::UntilIdle, || {});
                 (engine, result)
             });
-            let entered = waiting.recv_timeout(Duration::from_secs(5));
+            let until = Instant::now() + Duration::from_secs(5);
+            while !fault::held() && !worker.is_finished() && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let entered = fault::held();
             // Rendezvous keeps the engine in the real import response until
             // the test checks the committed background prefix.
             let (reply, answer) = sync_channel(0);
@@ -359,7 +360,7 @@ fn queued_import_yields_after_admitted_capture_or_replay_and_resumes_from_durabl
                 parent: None,
                 reply,
             });
-            let _ = release.send(());
+            fault::release();
             let until = Instant::now() + Duration::from_secs(5);
             let mut imported = false;
             while Instant::now() < until {
@@ -388,15 +389,13 @@ fn queued_import_yields_after_admitted_capture_or_replay_and_resumes_from_durabl
                 .unwrap();
             let response = answer.recv_timeout(Duration::from_secs(5));
             drop(answer);
-            if stop_after_import || response.is_err() || !imported || entered.is_err() {
+            if stop_after_import || response.is_err() || !imported || !entered {
                 stop.request();
                 let _ = tx.send(LoopMsg::Stop);
             }
             let (mut engine, result) = worker.join().unwrap();
-            assert!(
-                entered.is_ok(),
-                "the native parser did not reach its held chunk"
-            );
+            fault::clear();
+            assert!(entered, "the native parser did not reach its held chunk");
             assert!(queued.is_ok());
             assert!(
                 imported,
@@ -530,9 +529,11 @@ fn a_stop_message_drains_the_admitted_capture_chunk_without_reading_the_whole_in
     assert_eq!(home.texts("stop-request").len(), 33);
 }
 
+#[cfg(feature = "faults")]
 #[test]
 fn an_import_answers_before_queued_captures_or_replays_start_and_the_next_turn_finishes_them() {
     use polylogue_model::authorship::{Author, Authorship, Channel};
+    use polylogue_store::fault::{self, Action};
     use std::sync::mpsc::sync_channel;
 
     struct Input {
@@ -567,6 +568,11 @@ fn an_import_answers_before_queued_captures_or_replays_start_and_the_next_turn_f
             .collect();
         let (mut engine, mut lock) = crate::import::tests::engine(&home, 4096);
         assert!(engine.run_pass().unwrap().errors.is_empty());
+        let ids: HashMap<_, _> = engine
+            .inputs
+            .iter()
+            .map(|(path, state)| (path.clone(), state.input_id.clone()))
+            .collect();
         if retained {
             drop(engine);
             drop(lock);
@@ -588,9 +594,7 @@ fn an_import_answers_before_queued_captures_or_replays_start_and_the_next_turn_f
             .into_iter()
             .map(|(session, name, first, tail)| {
                 let path = home.file(&name);
-                let state = engine.inputs.get_mut(&path).unwrap();
-                state.origin = held_origin();
-                let id = state.input_id.clone();
+                let id = ids[&path].clone();
                 Input {
                     session,
                     path,
@@ -616,13 +620,8 @@ fn an_import_answers_before_queued_captures_or_replays_start_and_the_next_turn_f
             .unwrap(),
         )
         .unwrap();
-        READS.lock().unwrap().clear();
-        let (entered, waiting) = channel();
-        let (release, held) = channel();
-        *CONTROL.lock().unwrap() = Some(Control {
-            started: entered,
-            release: held,
-        });
+        fault::clear();
+        fault::arm("parse", "queued-", Action::Hold, 0, 1);
         let stop = engine.stop_request();
         let (tx, rx) = channel();
         let worker_tx = tx.clone();
@@ -631,7 +630,11 @@ fn an_import_answers_before_queued_captures_or_replays_start_and_the_next_turn_f
             let result = engine.run(worker_tx, rx, &status, Lifetime::UntilIdle, || {});
             (engine, result)
         });
-        let entered = waiting.recv_timeout(Duration::from_secs(5));
+        let until = Instant::now() + Duration::from_secs(5);
+        while !fault::held() && !worker.is_finished() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let entered = fault::held();
         let until = Instant::now() + Duration::from_secs(5);
         while queued() < inputs.len() as i64 - 1 && Instant::now() < until {
             std::thread::sleep(Duration::from_millis(5));
@@ -658,7 +661,7 @@ fn an_import_answers_before_queued_captures_or_replays_start_and_the_next_turn_f
             std::thread::sleep(Duration::from_millis(5));
         }
         let returned_before_release = queued() == 0;
-        let _ = release.send(());
+        fault::release();
         let until = Instant::now() + Duration::from_secs(5);
         while home.count("SELECT count(*) AS n FROM session WHERE native_id='queue-request'") != 1
             && Instant::now() < until
@@ -667,7 +670,6 @@ fn an_import_answers_before_queued_captures_or_replays_start_and_the_next_turn_f
         }
         // The synchronous reply keeps the loop at its real ACK boundary while
         // the committed capture and untouched queued inputs are inspected.
-        let at_reply = READS.lock().unwrap().clone();
         let before_reply = {
             let reads = home.reads();
             let reader = reads.reader().unwrap();
@@ -689,29 +691,36 @@ fn an_import_answers_before_queued_captures_or_replays_start_and_the_next_turn_f
         };
         let response = answer.recv_timeout(Duration::from_secs(5));
         drop(answer);
-        if entered.is_err() || sent.is_err() || response.is_err() {
+        if !entered || sent.is_err() || response.is_err() {
             stop.request();
             let _ = tx.send(LoopMsg::Stop);
         }
         let (mut engine, result) = worker.join().unwrap();
-        assert!(entered.is_ok());
+        fault::clear();
+        assert!(entered);
         assert!(filled, "the held worker must have queued siblings");
         assert!(sent.is_ok());
         assert!(
             returned_before_release,
             "unstarted jobs stayed ahead of the request"
         );
+        // One worker was held while every sibling left the queue. The
+        // committed claims independently identify exactly the completed job.
+        let completed: Vec<_> = before_reply
+            .iter()
+            .filter(|(_, claims, _, _)| *claims == 2)
+            .collect();
         assert_eq!(
-            at_reply.len(),
+            completed.len(),
             1,
-            "the import waited for unstarted reads: {at_reply:?}"
+            "unstarted reads ran before the import: {before_reply:?}"
         );
-        let first = &at_reply[0];
+        let first = completed[0].0.clone();
         for (path, claims, markers, captured) in before_reply {
             assert_eq!(markers, 0, "a request is not a stopped reading: {path:?}");
             assert_eq!(
                 claims,
-                if &path == first {
+                if path == first {
                     2
                 } else {
                     u64::from(!retained)
@@ -720,7 +729,7 @@ fn an_import_answers_before_queued_captures_or_replays_start_and_the_next_turn_f
             let input = inputs.iter().find(|input| input.path == path).unwrap();
             assert_eq!(
                 captured,
-                if &path == first {
+                if path == first {
                     input.bytes.len() as u64
                 } else {
                     input.captured_before
