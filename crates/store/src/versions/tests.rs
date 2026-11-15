@@ -82,12 +82,8 @@ fn context_reference_cleanup_steps(unrelated: i64, without_index: bool) -> u64 {
         hash[..8].copy_from_slice(&id.to_le_bytes());
         insert_version(&conn, &hash, &[0]);
         conn.execute(
-            "INSERT INTO parser_context VALUES(1,7,'synthetic',?1,?2,x'00',?3)",
-            params![
-                id,
-                format!("context-{id}"),
-                message_key(&conn, &hash).unwrap()
-            ],
+            "INSERT INTO parser_context_response VALUES(1,7,'','s',?1,?2,0,0)",
+            params![format!("context-{id}"), message_key(&conn, &hash).unwrap()],
         )
         .unwrap();
     }
@@ -123,7 +119,7 @@ fn context_reference_cleanup_steps(unrelated: i64, without_index: bool) -> u64 {
         1
     );
     assert_eq!(
-        conn.query_row("SELECT count(*) FROM parser_context", [], |r| r
+        conn.query_row("SELECT count(*) FROM parser_context_response", [], |r| r
             .get::<_, i64>(0))
             .unwrap(),
         unrelated + 1
@@ -383,7 +379,7 @@ fn exact_version_keys_and_payload_children_survive_failed_removal() {
     )
     .unwrap();
     conn.execute(
-        "INSERT INTO parser_context VALUES(1,1,'reader',91,'response',x'00',?1)",
+        "INSERT INTO parser_context_response VALUES(1,1,'','s','response',?1,0,91)",
         [keys[0]],
     )
     .unwrap();
@@ -413,7 +409,8 @@ fn exact_version_keys_and_payload_children_survive_failed_removal() {
         1,
         "retained parser context owns the old payload"
     );
-    conn.execute_batch("DELETE FROM parser_context").unwrap();
+    conn.execute_batch("DELETE FROM parser_context_response")
+        .unwrap();
     remove_unreferenced(&conn, Some(&FirstBuild::default()), &ids).unwrap();
     for table in [
         "message_version_body",

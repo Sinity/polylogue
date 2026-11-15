@@ -278,7 +278,7 @@ fn rejected_context_and_stopped_attempt_roll_back_with_the_reading_cursor() {
         .execute("UPDATE parser_context_state SET through=?1", [sql_cursor])
         .unwrap();
     index
-        .execute("UPDATE parser_context SET cursor=-1", [])
+        .execute("UPDATE parser_context_alias SET target='no-origin'", [])
         .unwrap();
     let mut overlay = crate::parser_context::Overlay::open(
         &archive,
@@ -298,7 +298,7 @@ fn rejected_context_and_stopped_attempt_roll_back_with_the_reading_cursor() {
     );
     drop(overlay);
     index
-        .execute("UPDATE parser_context SET cursor=?1", [sql_cursor])
+        .execute("UPDATE parser_context_alias SET target=NULL", [])
         .unwrap();
     index
         .execute_batch("DROP TRIGGER reject_context_checkpoint")

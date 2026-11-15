@@ -278,6 +278,75 @@ fn keyed_fragment(uuid: &str, key: &str, text: &str) -> String {
 }
 
 #[test]
+fn a_response_growing_across_resumed_appends_keeps_only_its_latest_context() {
+    let home = ClaudeHome::new();
+    let mut length = 0;
+    for (uuid, text) in [("first", "one"), ("second", "two"), ("third", "three")] {
+        home.append("keyed.jsonl", &keyed_fragment(uuid, "response-a", text));
+        let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
+        let pass = engine.run_pass().unwrap();
+        assert!(pass.errors.is_empty(), "{pass:?}");
+        assert!(
+            pass.bytes_read < std::fs::metadata(home.file("keyed.jsonl")).unwrap().len()
+                || length == 0,
+            "an append reread the parsed prefix: {pass:?}"
+        );
+        length = std::fs::metadata(home.file("keyed.jsonl")).unwrap().len();
+    }
+    let (engine, _lock) = crate::import::tests::engine(&home, 4096);
+    let reader = engine.reads.reader().unwrap();
+    let messages = reader
+        .messages(
+            &polylogue_model::SessionId::parse("claude-code:keyed").unwrap(),
+            false,
+        )
+        .unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].text(), "one\n\ntwo\n\nthree");
+    drop(reader);
+    let index = rusqlite::Connection::open(engine.archive.index_db()).unwrap();
+    let column = |sql: &str| -> Vec<(String, String)> {
+        index
+            .prepare(sql)
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    };
+    // Each checkpoint rewrote the open response; only the value at the
+    // latest checkpoint remains, naming the version the session shows
+    // (docs/archive.md, keyed continuation).
+    assert_eq!(
+        column(
+            "SELECT c.key,CASE WHEN c.version_pk=s.version_pk THEN 'shown' ELSE 'other' END
+             FROM parser_context_response c JOIN message m ON m.id='claude-code:first'
+             JOIN message_source s ON s.message_pk=m.pk ORDER BY c.key"
+        ),
+        [("response-a".to_owned(), "shown".to_owned())]
+    );
+    assert_eq!(
+        column("SELECT uuid,target FROM parser_context_alias ORDER BY uuid"),
+        [
+            ("second".to_owned(), "claude-code:first".to_owned()),
+            ("third".to_owned(), "claude-code:first".to_owned()),
+        ]
+    );
+    // The earlier readings of the growing response leave with their context.
+    assert_eq!(
+        index
+            .query_row(
+                "SELECT count(*) FROM message_version v
+                 WHERE NOT EXISTS(SELECT 1 FROM message_source s WHERE s.version_pk=v.pk)",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
 fn restart_reopens_an_evicted_response_and_resolves_its_native_record_alias() {
     let home = ClaudeHome::new();
     home.append(
@@ -442,7 +511,7 @@ fn loss_of_reconstructible_context_replays_stored_bytes_without_changing_message
         assert!(engine.run_pass().unwrap().errors.is_empty());
         let index = rusqlite::Connection::open(engine.archive.index_db()).unwrap();
         index
-            .execute_batch("DELETE FROM parser_context; DELETE FROM parser_context_state;")
+            .execute_batch("DELETE FROM parser_context_response; DELETE FROM parser_context_alias; DELETE FROM parser_context_state;")
             .unwrap();
     }
     home.append("keyed.jsonl", &keyed_fragment("late", "response-a", "last"));

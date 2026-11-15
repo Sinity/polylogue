@@ -6,12 +6,17 @@ use polylogue_testkit::{ClaudeHome, claude_user};
 
 fn admitted_continuation(
     w: &ClaudeHome,
-) -> (Vec<polylogue_model::Json>, Vec<polylogue_model::Json>) {
+) -> (
+    Vec<polylogue_model::Json>,
+    Vec<polylogue_model::Json>,
+    Vec<polylogue_model::Json>,
+) {
     let reads = w.reads();
     let reader = reads.reader().unwrap();
     (
         reader.query("SELECT p.chain,p.status,p.parsed_upto,p.reading_version,hex(p.checkpoint) AS checkpoint FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.format='claude-code' ORDER BY p.chain", &[]).unwrap(),
-        reader.query("SELECT c.chain,c.reading_version,c.cursor,c.key,hex(c.value) AS value,hex((SELECT version_hash FROM message_version WHERE pk=c.version_pk)) AS version FROM parser_context c JOIN input_ref i ON i.pk=c.input_pk WHERE i.format='claude-code' ORDER BY c.chain,c.reading_version,c.key,c.cursor", &[]).unwrap(),
+        reader.query("SELECT c.chain,c.namespace,c.session,c.key,c.source_start,c.source_end,hex((SELECT version_hash FROM message_version WHERE pk=c.version_pk)) AS version FROM parser_context_response c JOIN input_ref i ON i.pk=c.input_pk WHERE i.format='claude-code' ORDER BY c.chain,c.namespace,c.session,c.key", &[]).unwrap(),
+        reader.query("SELECT c.chain,c.namespace,c.uuid,c.target FROM parser_context_alias c JOIN input_ref i ON i.pk=c.input_pk WHERE i.format='claude-code' ORDER BY c.chain,c.namespace,c.uuid", &[]).unwrap(),
     )
 }
 

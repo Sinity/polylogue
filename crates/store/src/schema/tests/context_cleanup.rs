@@ -21,7 +21,7 @@ fn repeated_source_upserts_keep_context_bodies_until_the_context_goes() {
                  INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,session_pk,version_pk,route,completion)
                     VALUES(1,1,17,0,4,'native',1,1,'live','finished');
                  INSERT INTO parser_context_state VALUES(1,17,'reading=1',4);
-                 INSERT INTO parser_context VALUES(1,17,'reading=1',4,'retained-key',x'636f6e74657874',1);
+                 INSERT INTO parser_context_response VALUES(1,17,'','claude-code:context','retained-key',1,0,4);
                  INSERT INTO parse_state(input_pk,chain,status,parsed_upto,reading_version,checkpoint)
                     VALUES(1,17,'partial',4,'reading=1',x'636865636b706f696e74');",
             ).unwrap();
@@ -48,8 +48,10 @@ fn repeated_source_upserts_keep_context_bodies_until_the_context_goes() {
         assert_eq!(snapshot(&conn), retained);
         assert_eq!(versions(&conn), ["01", "02"]);
         // Releasing the context leaves the earlier body without references.
-        conn.execute_batch("DELETE FROM parser_context; DELETE FROM parser_context_state;")
-            .unwrap();
+        conn.execute_batch(
+            "DELETE FROM parser_context_response; DELETE FROM parser_context_state;",
+        )
+        .unwrap();
         crate::versions::remove_unreferenced(
             &conn,
             None,
@@ -80,9 +82,9 @@ fn versions(conn: &Connection) -> Vec<String> {
 #[derive(Debug, PartialEq, Eq)]
 struct ContextSnapshot {
     body: Vec<u8>,
-    value: Vec<u8>,
+    key: String,
     chain: i64,
-    cursor: i64,
+    source_end: i64,
     reading_version: String,
     checkpoint: Vec<u8>,
     version_hash: Vec<u8>,
@@ -90,16 +92,16 @@ struct ContextSnapshot {
 
 fn snapshot(conn: &Connection) -> ContextSnapshot {
     conn.query_row(
-        "SELECT b.body,c.value,c.chain,c.cursor,p.reading_version,p.checkpoint,v.version_hash
-         FROM parser_context c JOIN message_version v ON v.pk=c.version_pk JOIN message_version_body b ON b.version_pk=v.pk
+        "SELECT b.body,c.key,c.chain,c.source_end,p.reading_version,p.checkpoint,v.version_hash
+         FROM parser_context_response c JOIN message_version v ON v.pk=c.version_pk JOIN message_version_body b ON b.version_pk=v.pk
          JOIN parse_state p ON p.input_pk=c.input_pk AND p.chain=c.chain",
         [],
         |r| {
             Ok(ContextSnapshot {
                 body: r.get(0)?,
-                value: r.get(1)?,
+                key: r.get(1)?,
                 chain: r.get(2)?,
-                cursor: r.get(3)?,
+                source_end: r.get(3)?,
                 reading_version: r.get(4)?,
                 checkpoint: r.get(5)?,
                 version_hash: r.get(6)?,

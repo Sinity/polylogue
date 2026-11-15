@@ -148,12 +148,10 @@ pub enum Reference {
     },
 }
 pub const FIELD: &str = "_polylogue_context";
+/// Reads the changes in place: the writer applies them once, so copying the
+/// JSON tree first would only add work to its thread.
 pub fn delta(state: &Json) -> Result<Option<Delta>, serde_json::Error> {
-    state
-        .get(FIELD)
-        .cloned()
-        .map(serde_json::from_value)
-        .transpose()
+    state.get(FIELD).map(Delta::deserialize).transpose()
 }
 
 #[cfg(test)]

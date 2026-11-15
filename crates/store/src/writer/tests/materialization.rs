@@ -200,7 +200,7 @@ fn registered_responses_and_selected_blocks_consume_the_written_keys() {
         assert_eq!(&stored, message);
     }
     assert_eq!(
-        conn.query_row("SELECT count(*) FROM parser_context", [], |r| r
+        conn.query_row("SELECT count(*) FROM parser_context_response", [], |r| r
             .get::<_, i64>(0))
             .unwrap(),
         32
@@ -379,7 +379,7 @@ fn context_keeps_old_and_fresh_versions_of_the_same_message_distinct() {
     let input: i64 = conn
         .query_row("SELECT pk FROM input_ref WHERE id='new'", [], |r| r.get(0))
         .unwrap();
-    let rows: Vec<Vec<u8>> = conn.prepare("SELECT v.version_hash FROM parser_context c JOIN message_version v ON v.pk=c.version_pk WHERE c.input_pk=?1 ORDER BY c.key")
+    let rows: Vec<Vec<u8>> = conn.prepare("SELECT v.version_hash FROM parser_context_response c JOIN message_version v ON v.pk=c.version_pk WHERE c.input_pk=?1 ORDER BY c.key")
         .unwrap().query_map([input], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect();
     let mut expected = vec![
         old.content_hash().unwrap().0.to_vec(),
