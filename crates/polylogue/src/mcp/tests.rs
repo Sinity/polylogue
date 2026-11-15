@@ -175,7 +175,7 @@ fn tools_answer_with_the_daemon_and_refuse_bad_calls() {
         args(json!({"target": "session:claude-code:s1"})),
     )
     .unwrap_err();
-    assert!(e.contains("no tool excise"), "{e}");
+    assert!(e.contains("unknown MCP tool excise"), "{e}");
     let e = call(
         &archive,
         "read",
@@ -532,12 +532,15 @@ fn a_tool_call_names_one_of_its_operations() {
         "polylogue_read",
         json!({"arguments": {}, "request_id": "no-operation"}),
     );
-    assert!(missing.contains("needs `operation`"), "{missing}");
+    assert!(missing.contains("name the operation: one of"), "{missing}");
     let foreign = run(
         "polylogue_read",
         json!({"operation": "assert", "arguments": {}, "request_id": "foreign"}),
     );
-    assert!(foreign.contains("no operation `assert`"), "{foreign}");
+    assert!(
+        foreign.contains("assert is not an operation of this tool"),
+        "{foreign}"
+    );
     let inside = run(
         "polylogue_note",
         json!({"operation": "save", "arguments": {"name": "x", "query": "sessions", "request_id": "inner"}, "request_id": "outer"}),
@@ -816,6 +819,14 @@ fn generated_mcp_follow_up_preserves_the_accepted_request() {
         )
     };
     let projected = crate::commands::declarations().mcp_call(&request).unwrap();
+    let parent_deadline = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap()
+        + 60_000;
     let listener = std::os::unix::net::UnixListener::bind(archive.socket()).unwrap();
     let peer = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
@@ -824,11 +835,13 @@ fn generated_mcp_follow_up_preserves_the_accepted_request() {
             .unwrap();
         let mut line = String::new();
         BufReader::new(&stream).read_line(&mut line).unwrap();
-        let accepted = crate::protocol::wire::incoming(&line)
-            .unwrap()
-            .unwrap()
-            .request;
-        assert_eq!(accepted, request);
+        let incoming = crate::protocol::wire::incoming(&line).unwrap().unwrap();
+        assert_eq!(incoming.parent_deadline_ms, Some(parent_deadline));
+        assert_eq!(
+            incoming.caller.tool_call_id.as_deref(),
+            Some("synthetic-mcp-call")
+        );
+        assert_eq!(incoming.request, request);
         let refusal = command_surface::Answer::<Value>::error(command_surface::Failure::new(
             command_surface::FailureKind::Refused,
             "synthetic refusal",
@@ -839,9 +852,9 @@ fn generated_mcp_follow_up_preserves_the_accepted_request() {
         &archive,
         projected["name"].as_str().unwrap(),
         projected["arguments"].as_object().unwrap().clone(),
-        None,
+        Some(parent_deadline),
         &tokio_util::sync::CancellationToken::new(),
-        None,
+        Some("synthetic-mcp-call".into()),
     )
     .unwrap();
     assert!(failed, "{text}");

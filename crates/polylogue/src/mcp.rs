@@ -9,39 +9,10 @@
 mod completion;
 
 use crate::commands::{COMMANDS, Command, Tool};
-use command_surface::{Answer, Deadline};
+use command_surface::Answer;
 use polylogue_store::Archive;
 use serde_json::{Map, Value, json};
 use std::io::{self, BufRead, Write};
-
-/// An MCP tool call: the operation of the tool it runs (needed when the
-/// tool has several), with the request's arguments and its identity,
-/// deadline, cursor and budget beside them.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ToolCall {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub operation: Option<String>,
-    pub arguments: Value,
-    pub request_id: String,
-    #[serde(default, skip_serializing_if = "default_deadline")]
-    pub deadline: Deadline,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cursor: Option<String>,
-    #[serde(
-        default,
-        skip_serializing_if = "command_surface::TokenBudget::is_default"
-    )]
-    pub budget_tokens: command_surface::TokenBudget,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub fresh: bool,
-    #[serde(default, skip_serializing_if = "command_surface::Format::is_text")]
-    pub format: command_surface::Format,
-}
-
-fn default_deadline(deadline: &Deadline) -> bool {
-    matches!(deadline, Deadline::Default)
-}
 
 /// The commands offered as tool operations.
 pub fn tool_commands() -> impl Iterator<Item = &'static Command> {
@@ -133,57 +104,30 @@ fn call_with_limit(
     cancelled: &tokio_util::sync::CancellationToken,
     tool_call_id: Option<String>,
 ) -> Result<(String, Value, bool), String> {
-    let tool = Tool::named(name).ok_or_else(|| bad_request(&format!("no tool {name}")))?;
-    let call: ToolCall = serde_json::from_value(Value::Object(arguments))
-        .map_err(|error| bad_request(&format!("{name}: {error}")))?;
-    let names = || {
-        operations(tool)
-            .map(|c| c.name)
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-    let command = match call.operation.as_deref() {
-        Some(operation) => operations(tool)
-            .find(|c| c.name == operation)
-            .ok_or_else(|| {
-                bad_request(&format!(
-                    "{name} has no operation `{operation}`; it has: {}",
-                    names()
-                ))
-            })?,
-        None => {
-            let mut rows = operations(tool);
-            match (rows.next(), rows.next()) {
-                (Some(only), None) => only,
-                _ => {
-                    return Err(bad_request(&format!(
-                        "{name} needs `operation`: one of {}",
-                        names()
-                    )));
-                }
-            }
-        }
-    };
-    run(archive, command, call, deadline_ms, cancelled, tool_call_id)
+    let request = crate::commands::declarations()
+        .parse_mcp_call(name, Value::Object(arguments))
+        .map_err(|failure| error_text(&failure))?;
+    run(archive, request, deadline_ms, cancelled, tool_call_id)
 }
 
 /// Runs one operation as the typed request the call names.
 fn run(
     archive: &Archive,
-    command: &'static Command,
-    call: ToolCall,
+    request: command_surface::RunnableRequest,
     deadline_ms: Option<i64>,
     cancelled: &tokio_util::sync::CancellationToken,
     tool_call_id: Option<String>,
 ) -> Result<(String, Value, bool), String> {
-    if call.request_id.is_empty() {
+    let command = crate::commands::command(&request.operation)
+        .ok_or_else(|| bad_request(&format!("unknown operation {}", request.operation)))?;
+    if request.request_id.is_empty() {
         return Err(bad_request("request_id must not be empty"));
     }
-    if !call.arguments.is_object() {
+    if !request.arguments.is_object() {
         return Err(bad_request("arguments must be an object"));
     }
     for field in ["cursor", "request_id"] {
-        if call.arguments.get(field).is_some() {
+        if request.arguments.get(field).is_some() {
             return Err(bad_request(&format!(
                 "{field} goes beside arguments, not inside them"
             )));
@@ -193,7 +137,7 @@ fn run(
     // so a malformed call is refused without a daemon.
     if let Some(registration) = command.registration()
         && let Err(failure) = registration.admit(
-            &call.arguments,
+            &request.arguments,
             command,
             &crate::commands::Caller {
                 surface: crate::commands::Surface::Mcp,
@@ -209,16 +153,6 @@ fn run(
             true,
         ));
     }
-    let request = command_surface::Request {
-        operation: command.name.into(),
-        arguments: call.arguments,
-        request_id: call.request_id,
-        deadline: call.deadline,
-        budget_tokens: call.budget_tokens,
-        cursor: call.cursor,
-        fresh: call.fresh,
-        format: call.format,
-    };
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

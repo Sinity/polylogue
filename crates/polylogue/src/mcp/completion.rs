@@ -29,7 +29,6 @@ pub(super) fn answer(
     cancelled: &tokio_util::sync::CancellationToken,
     with_result_type: bool,
 ) -> Value {
-    let command = crate::commands::command("complete").expect("completion is declared");
     let deadline = deadline_ms.map_or(command_surface::Deadline::Default, |deadline| {
         command_surface::Deadline::Milliseconds(
             crate::daemon::execution::remaining(Some(deadline))
@@ -38,17 +37,13 @@ pub(super) fn answer(
                 .unwrap_or(u64::MAX),
         )
     });
-    let call = ToolCall {
-        operation: None,
-        arguments: serde_json::to_value(&arguments).expect("completion arguments serialize"),
-        budget_tokens: Default::default(),
-        fresh: false,
-        format: Default::default(),
-        cursor: None,
-        request_id: uuid::Uuid::now_v7().to_string(),
-        deadline,
-    };
-    let answer = match run(archive, command, call, deadline_ms, cancelled, None) {
+    let mut request = command_surface::RunnableRequest::new(
+        "complete",
+        serde_json::to_value(&arguments).expect("completion arguments serialize"),
+        uuid::Uuid::now_v7().to_string(),
+    );
+    request.deadline = deadline;
+    let answer = match run(archive, request, deadline_ms, cancelled, None) {
         Ok((_, answer, _)) => answer,
         Err(message) => return error(id, -32603, &message),
     };
