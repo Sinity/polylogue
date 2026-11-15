@@ -23,6 +23,7 @@ use crate::encoding::Columns;
 #[cfg(any(test, feature = "fixture"))]
 use crate::encoding::{restore_text, unpack_block, unpack_text};
 use crate::{Reader, Result, StoreError};
+use entry_bytes::{Owner, decode, encode};
 #[cfg(any(test, feature = "fixture"))]
 use polylogue_model::{Message, Usage};
 use polylogue_model::{
@@ -33,7 +34,9 @@ use polylogue_model::{
     },
 };
 use rusqlite::{Connection, OptionalExtension, params};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+
+pub(crate) mod entry_bytes;
 
 /// A session's entries and the two counters cursors bind.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -155,6 +158,7 @@ impl Unit {
             } => {
                 return event_identity(
                     *pk,
+                    id,
                     &event_item(id, kind, *at, *data_bytes, data.as_deref())?,
                 );
             }
@@ -184,6 +188,7 @@ pub(crate) fn event_is_current(
 ) -> Result<bool> {
     let expected = event_identity(
         pk,
+        id,
         &event_item(id, kind, at, data.len() as u64, Some(data))?,
     )?;
     let stored: Option<Vec<u8>> = conn
@@ -858,8 +863,12 @@ fn rebuild(
     let mut extended = false;
     // A live session's last message grows block by block. When the only
     // difference is new blocks after the last indexed message's entries,
-    // that is an append; outstanding cursors stay valid.
-    if same + 1 == indexed.len() && same < units.len() {
+    // that is an append; outstanding cursors stay valid. The update below
+    // keeps the row's message or event, so only that same row can grow.
+    if same + 1 == indexed.len()
+        && same < units.len()
+        && located_by(conn, session_pk, indexed[same].0)? == located_columns(&units[same])
+    {
         let (first_seq, _) = indexed[same];
         let stored = stored_entries(conn, session_pk, first_seq)?;
         let current = &pending[0];
@@ -876,7 +885,7 @@ fn rebuild(
                 first_seq,
                 identities[same],
                 time_bound,
-                serde_json::to_vec(&current[0])?,
+                encode(&current[0], None)?,
                 classes[0].bits()
             ])?;
             for (entry, class) in current.iter().zip(&classes).skip(stored.len()) {
@@ -887,7 +896,7 @@ fn rebuild(
                     None::<i64>,
                     None::<i64>,
                     None::<i64>,
-                    serde_json::to_vec(entry)?,
+                    encode(entry, Some(&current[0]))?,
                     class.bits(),
                     entry.call_id,
                     None::<Vec<u8>>
@@ -929,7 +938,7 @@ fn rebuild(
                 message_pk.filter(|_| first),
                 event_pk.filter(|_| first),
                 time_bound.filter(|_| first),
-                serde_json::to_vec(entry)?,
+                encode(entry, (!first).then_some(&entries[0]))?,
                 class.bits(),
                 entry.call_id,
                 first.then_some(before.as_slice())
@@ -971,6 +980,22 @@ fn rebuild(
         changed
     ])?;
     Ok(units.len() as u64)
+}
+
+/// The message and event a unit's first row names.
+fn located_by(conn: &Connection, session_pk: i64, seq: i64) -> Result<(Option<i64>, Option<i64>)> {
+    Ok(conn
+        .prepare_cached(
+            "SELECT message_pk, event_pk FROM session_item WHERE session_pk = ?1 AND seq = ?2",
+        )?
+        .query_row(params![session_pk, seq], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?)
+}
+
+fn located_columns(unit: &Unit) -> (Option<i64>, Option<i64>) {
+    let (message_pk, event_pk, _) = unit.columns();
+    (message_pk, event_pk)
 }
 
 fn unit_entries(
@@ -1057,11 +1082,13 @@ fn event_item(
     Ok(entry)
 }
 
-fn event_identity(pk: i64, entry: &IndexEntry) -> Result<Vec<u8>> {
+fn event_identity(pk: i64, id: &str, entry: &IndexEntry) -> Result<Vec<u8>> {
     let mut digest = blake3::Hasher::new();
     digest.update(b"event\0");
     digest.update(&pk.to_le_bytes());
-    digest.update(&serde_json::to_vec(entry)?);
+    digest.update(id.as_bytes());
+    digest.update(b"\0");
+    digest.update(&encode(entry, None)?);
     Ok(digest.finalize().as_bytes().to_vec())
 }
 
@@ -1079,23 +1106,13 @@ fn stored_message_entries(conn: &Connection, pk: i64) -> Result<Vec<IndexEntry>>
     let Some((session, from, until)) = bounds else {
         return Ok(Vec::new());
     };
-    let (sql, values) = match until {
-        Some(until) => (
-            "SELECT entry FROM session_item WHERE session_pk=?1 AND seq>=?2 AND seq<?3 ORDER BY seq",
-            vec![session, from, until],
-        ),
-        None => (
-            "SELECT entry FROM session_item WHERE session_pk=?1 AND seq>=?2 ORDER BY seq",
-            vec![session, from],
-        ),
-    };
-    let mut statement = conn.prepare_cached(sql)?;
-    statement
-        .query_map(rusqlite::params_from_iter(values), |row| {
-            row.get::<_, Vec<u8>>(0)
-        })?
-        .map(|row| decode(&row?))
-        .collect()
+    let until = until.unwrap_or(i64::MAX);
+    Ok(
+        read_entries(conn, session, from..until, true, usize::MAX, |_| true)?
+            .into_iter()
+            .map(|stored| stored.entry)
+            .collect(),
+    )
 }
 
 /// A visibility derivation may reveal content whose item rows are no longer
@@ -1234,16 +1251,17 @@ fn links_identity(conn: &Connection, session_pk: i64) -> Result<Vec<u8>> {
 }
 
 /// The stored entries of a session from `from` on.
-fn stored_entries(conn: &Connection, session_pk: i64, from: i64) -> Result<Vec<IndexEntry>> {
-    let mut statement = conn.prepare_cached(
-        "SELECT entry FROM session_item WHERE session_pk = ?1 AND seq >= ?2 ORDER BY seq",
-    )?;
-    let mut rows = statement.query(params![session_pk, from])?;
-    let mut out = Vec::new();
-    while let Some(row) = rows.next()? {
-        out.push(decode(&row.get::<_, Vec<u8>>(0)?)?);
-    }
-    Ok(out)
+pub(crate) fn stored_entries(
+    conn: &Connection,
+    session_pk: i64,
+    from: i64,
+) -> Result<Vec<IndexEntry>> {
+    Ok(
+        read_entries(conn, session_pk, from..i64::MAX, true, usize::MAX, |_| true)?
+            .into_iter()
+            .map(|stored| stored.entry)
+            .collect(),
+    )
 }
 
 /// Whether `current` is `stored` with entries added at the end. The header's
@@ -1258,8 +1276,219 @@ fn extends(stored: &[IndexEntry], current: &[IndexEntry]) -> bool {
     header == stored[0] && current[1..stored.len()] == stored[1..]
 }
 
-fn decode(bytes: &[u8]) -> Result<IndexEntry> {
-    Ok(serde_json::from_slice(bytes)?)
+/// What a read of stored entries selects: the row, and the message or
+/// event its unit's first row names.
+const ENTRY_COLUMNS: &str = "i.seq, i.class, i.entry, i.call_id, m.id, e.id, i.unit IS NOT NULL
+    FROM session_item i LEFT JOIN message m ON m.pk = i.message_pk
+    LEFT JOIN event e ON e.pk = i.event_pk";
+
+/// The entries in `range` of one session, forward from its start or
+/// backward from its end, at most `limit` of those whose class `wanted`
+/// accepts. Rows it does not accept are passed over without being decoded.
+fn read_entries(
+    conn: &Connection,
+    session_pk: i64,
+    range: std::ops::Range<i64>,
+    forward: bool,
+    limit: usize,
+    wanted: impl Fn(EntryClass) -> bool,
+) -> Result<Vec<StoredEntry>> {
+    let order = if forward { "" } else { " DESC" };
+    let mut statement = conn.prepare_cached(&format!(
+        "SELECT {ENTRY_COLUMNS}
+         WHERE i.session_pk = ?1 AND i.seq >= ?2 AND i.seq < ?3 ORDER BY i.seq{order}"
+    ))?;
+    let mut rows = statement.query(params![session_pk, range.start, range.end])?;
+    let mut run = Run::new(conn, session_pk);
+    while run.rows.len() < limit
+        && let Some(row) = rows.next()?
+    {
+        run.visit(row, &wanted)?;
+    }
+    run.finish()
+}
+
+/// The first row of a message unit: what the message's later entries take
+/// from it.
+struct MessageStart {
+    /// Parsed only when a later entry or the row itself is decoded.
+    id: String,
+    entry: Vec<u8>,
+    call_id: Option<String>,
+}
+
+/// Where a kept row's entry comes from.
+enum RowPlace {
+    /// A message's first row, kept among the unit starts.
+    MessageStart,
+    Event(String, Vec<u8>),
+    /// A later entry of a message.
+    Block(Vec<u8>),
+}
+
+struct KeptRow {
+    seq: i64,
+    class: EntryClass,
+    call_id: Option<String>,
+    place: RowPlace,
+}
+
+/// The rows of one contiguous run of a session's index, read in either
+/// direction. A later entry of a message is decoded with the message's
+/// first row: the nearest unit start at or before it in the run, or, for
+/// the entries before the run's first unit start, the one the index holds
+/// before the run.
+struct Run<'c> {
+    conn: &'c Connection,
+    session_pk: i64,
+    /// Every unit start the run passed, by place: a message's first row,
+    /// or `None` for an event.
+    starts: BTreeMap<i64, Option<MessageStart>>,
+    rows: Vec<KeptRow>,
+}
+
+impl<'c> Run<'c> {
+    fn new(conn: &'c Connection, session_pk: i64) -> Self {
+        Self {
+            conn,
+            session_pk,
+            starts: BTreeMap::new(),
+            rows: Vec::new(),
+        }
+    }
+
+    /// Reads one row of [`ENTRY_COLUMNS`], keeping it when `wanted` accepts
+    /// its class.
+    fn visit(
+        &mut self,
+        row: &rusqlite::Row<'_>,
+        wanted: &impl Fn(EntryClass) -> bool,
+    ) -> Result<()> {
+        let seq: i64 = row.get(0)?;
+        let class = class_of(row.get(1)?)?;
+        let keep = wanted(class);
+        let message: Option<String> = row.get(4)?;
+        let event: Option<String> = row.get(5)?;
+        let starts_unit: bool = row.get(6)?;
+        let place = match (message, event) {
+            (Some(id), _) => {
+                self.starts.insert(
+                    seq,
+                    Some(MessageStart {
+                        id,
+                        entry: row.get(2)?,
+                        call_id: row.get(3)?,
+                    }),
+                );
+                RowPlace::MessageStart
+            }
+            (None, Some(id)) => {
+                self.starts.insert(seq, None);
+                if !keep {
+                    return Ok(());
+                }
+                RowPlace::Event(id, row.get(2)?)
+            }
+            (None, None) if starts_unit => {
+                return Err(StoreError::Invalid(format!(
+                    "session item {seq} names no stored message or event"
+                )));
+            }
+            (None, None) => {
+                if !keep {
+                    return Ok(());
+                }
+                RowPlace::Block(row.get(2)?)
+            }
+        };
+        if keep {
+            self.rows.push(KeptRow {
+                seq,
+                class,
+                call_id: row.get(3)?,
+                place,
+            });
+        }
+        Ok(())
+    }
+
+    /// The kept rows' entries, in the order they were read.
+    fn finish(mut self) -> Result<Vec<StoredEntry>> {
+        let mut headers: HashMap<i64, IndexEntry> = HashMap::new();
+        let mut out = Vec::with_capacity(self.rows.len());
+        for row in std::mem::take(&mut self.rows) {
+            let entry = match row.place {
+                RowPlace::MessageStart => self.header(&mut headers, row.seq)?.clone(),
+                RowPlace::Event(id, entry) => decode(&entry, Owner::Event(id), row.call_id)?,
+                RowPlace::Block(entry) => {
+                    let start = match self.starts.range(..=row.seq).next_back() {
+                        Some((start, _)) => *start,
+                        None => self.start_before(row.seq)?,
+                    };
+                    let header = self.header(&mut headers, start)?;
+                    decode(&entry, Owner::Header(header), row.call_id)?
+                }
+            };
+            out.push(StoredEntry {
+                seq: counter(row.seq)?,
+                class: row.class,
+                entry,
+            });
+        }
+        Ok(out)
+    }
+
+    /// The decoded header of the message whose first row is at `start`.
+    fn header<'h>(
+        &self,
+        headers: &'h mut HashMap<i64, IndexEntry>,
+        start: i64,
+    ) -> Result<&'h IndexEntry> {
+        if let std::collections::hash_map::Entry::Vacant(vacant) = headers.entry(start) {
+            let Some(Some(message)) = self.starts.get(&start) else {
+                return Err(StoreError::Invalid(format!(
+                    "session item {start} is not the first entry of a message"
+                )));
+            };
+            vacant.insert(decode(
+                &message.entry,
+                Owner::Message(message_id(&message.id)?),
+                message.call_id.clone(),
+            )?);
+        }
+        Ok(&headers[&start])
+    }
+
+    /// Finds the unit start at or before `seq` in the index, records it and
+    /// returns its place.
+    fn start_before(&mut self, seq: i64) -> Result<i64> {
+        // Its place, entry, call ID and message ID.
+        type StartRow = (i64, Vec<u8>, Option<String>, Option<String>);
+        let found: Option<StartRow> = self
+            .conn
+            .prepare_cached(
+                "SELECT i.seq, i.entry, i.call_id, m.id
+                 FROM session_item i LEFT JOIN message m ON m.pk = i.message_pk
+                 WHERE i.session_pk = ?1 AND i.seq <= ?2 AND i.unit IS NOT NULL
+                 ORDER BY i.seq DESC LIMIT 1",
+            )?
+            .query_row(params![self.session_pk, seq], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .optional()?;
+        let Some((start, entry, call_id, Some(id))) = found else {
+            return Err(StoreError::Invalid(format!(
+                "session item {seq} follows no message header"
+            )));
+        };
+        self.starts
+            .insert(start, Some(MessageStart { id, entry, call_id }));
+        Ok(start)
+    }
+}
+
+fn message_id(id: &str) -> Result<MessageId> {
+    MessageId::parse(id).map_err(|error| StoreError::Invalid(error.to_string()))
 }
 
 /// The counts stored on the unit whose first entry is at `seq`.
@@ -1280,17 +1509,7 @@ fn unit_counts(conn: &Connection, session_pk: i64, seq: i64) -> Result<ItemCount
 /// Counts as stored: unsigned LEB128 numbers, the running full-form tokens
 /// first, then each class with a count above zero and its count, by class.
 fn encode_counts(counts: &ItemCounts) -> Vec<u8> {
-    fn number(out: &mut Vec<u8>, mut value: u64) {
-        loop {
-            let byte = (value & 0x7F) as u8;
-            value >>= 7;
-            if value == 0 {
-                out.push(byte);
-                return;
-            }
-            out.push(byte | 0x80);
-        }
-    }
+    use entry_bytes::number;
     let mut out = Vec::with_capacity(4 + counts.classes.len() * 4);
     number(&mut out, counts.tokens_full);
     for (class, count) in &counts.classes {
@@ -1302,29 +1521,20 @@ fn encode_counts(counts: &ItemCounts) -> Vec<u8> {
 
 fn decode_counts(bytes: &[u8]) -> Result<ItemCounts> {
     let invalid = || StoreError::Invalid("malformed session item counts".into());
-    let number = |at: &mut usize| -> Result<u64> {
-        let mut value = 0u64;
-        for shift in (0..64).step_by(7) {
-            let byte = *bytes.get(*at).ok_or_else(invalid)?;
-            *at += 1;
-            value |= u64::from(byte & 0x7F) << shift;
-            if byte & 0x80 == 0 {
-                return Ok(value);
-            }
-        }
-        Err(invalid())
-    };
-    let mut at = 0;
+    let mut input = entry_bytes::Input { bytes, at: 0 };
     let mut counts = ItemCounts {
-        tokens_full: number(&mut at)?,
+        tokens_full: input.leb128().ok_or_else(invalid)?,
         ..ItemCounts::default()
     };
-    while at < bytes.len() {
-        let class = u16::try_from(number(&mut at)?)
-            .ok()
+    while !input.done() {
+        let class = input
+            .leb128()
+            .and_then(|bits| u16::try_from(bits).ok())
             .and_then(EntryClass::from_bits)
             .ok_or_else(invalid)?;
-        counts.classes.insert(class, number(&mut at)?);
+        counts
+            .classes
+            .insert(class, input.leb128().ok_or_else(invalid)?);
     }
     Ok(counts)
 }
@@ -1543,35 +1753,16 @@ impl Reader<'_> {
         limit: usize,
         wanted: impl Fn(EntryClass) -> bool,
     ) -> Result<Vec<StoredEntry>> {
-        let conn = self.conn()?;
-        let mut statement = conn.prepare_cached(if forward {
-            "SELECT seq, class, entry FROM session_item
-             WHERE session_pk = ?1 AND seq >= ?2 AND seq < ?3 ORDER BY seq"
-        } else {
-            "SELECT seq, class, entry FROM session_item
-             WHERE session_pk = ?1 AND seq >= ?2 AND seq < ?3 ORDER BY seq DESC"
-        })?;
-        let mut rows = statement.query(params![
+        let out = read_entries(
+            self.conn()?,
             session_pk,
-            position(range.start)?,
-            position(range.end)?
-        ])?;
-        let mut out = Vec::new();
-        while out.len() < limit
-            && let Some(row) = rows.next()?
-        {
-            let class = class_of(row.get(1)?)?;
-            if !wanted(class) {
-                continue;
-            }
-            #[cfg(any(test, feature = "fixture"))]
-            ENTRIES_DECODED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            out.push(StoredEntry {
-                seq: counter(row.get(0)?)?,
-                class,
-                entry: decode(&row.get::<_, Vec<u8>>(2)?)?,
-            });
-        }
+            position(range.start)?..position(range.end)?,
+            forward,
+            limit,
+            wanted,
+        )?;
+        #[cfg(any(test, feature = "fixture"))]
+        ENTRIES_DECODED.fetch_add(out.len() as u64, std::sync::atomic::Ordering::Relaxed);
         Ok(out)
     }
 
@@ -1743,20 +1934,18 @@ impl Reader<'_> {
     /// call's results.
     pub fn item_calls(&self, session_pk: i64, call_id: &str) -> Result<Vec<StoredEntry>> {
         let conn = self.conn()?;
-        let mut statement = conn.prepare_cached(
-            "SELECT seq, class, entry FROM session_item
-             WHERE session_pk = ?1 AND call_id = ?2 ORDER BY seq",
-        )?;
+        let mut statement = conn.prepare_cached(&format!(
+            "SELECT {ENTRY_COLUMNS} WHERE i.session_pk = ?1 AND i.call_id = ?2 ORDER BY i.seq"
+        ))?;
         let mut rows = statement.query(params![session_pk, call_id])?;
         let mut out = Vec::new();
+        // The rows are apart, so each is its own run.
         while let Some(row) = rows.next()? {
             #[cfg(any(test, feature = "fixture"))]
             ENTRIES_DECODED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            out.push(StoredEntry {
-                seq: counter(row.get(0)?)?,
-                class: class_of(row.get(1)?)?,
-                entry: decode(&row.get::<_, Vec<u8>>(2)?)?,
-            });
+            let mut run = Run::new(conn, session_pk);
+            run.visit(row, &|_| true)?;
+            out.extend(run.finish()?);
         }
         Ok(out)
     }

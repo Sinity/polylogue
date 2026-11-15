@@ -9,7 +9,8 @@ CREATE TABLE session_item (
   event_pk          INTEGER,                -- on an event's entry: the event
   time_bound        INTEGER,                -- on a message version's first entry: the latest message time up to it,
                                             --   the session's first message aside; places events that name no message
-  entry             BLOB NOT NULL,          -- the model IndexEntry as JSON
+  entry             BLOB NOT NULL,          -- the model IndexEntry, compact and without what the row,
+                                            --   its unit's first row and call_id hold (items/entry_bytes.rs)
   class             INTEGER NOT NULL,       -- the model EntryClass: what decides whether a reading shows the entry
   call_id           TEXT,                   -- on a call or result: its provider call ID
   counts            BLOB,                   -- on a unit's first entry: per class, how many entries come before it,

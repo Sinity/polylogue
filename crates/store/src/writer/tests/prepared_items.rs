@@ -61,15 +61,7 @@ fn item_commit_uses_prepared_content_without_reading_payloads() {
     tx.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
         .unwrap();
     let expected = crate::items::computed_entries(&tx, session).unwrap();
-    let stored = tx
-        .prepare("SELECT entry FROM session_item ORDER BY seq")
-        .unwrap()
-        .query_map([], |row| row.get::<_, Vec<u8>>(0))
-        .unwrap()
-        .map(|row| {
-            serde_json::from_slice::<polylogue_model::read::IndexEntry>(&row.unwrap()).unwrap()
-        })
-        .collect::<Vec<_>>();
+    let stored = crate::items::stored_entries(&tx, session, 0).unwrap();
     assert_eq!(stored, expected);
     assert_eq!(stored[1].body_bytes, 120000);
     assert_eq!(stored[2].call_id.as_deref(), Some("call"));
@@ -99,14 +91,6 @@ fn item_commit_uses_prepared_content_without_reading_payloads() {
             .iter()
             .all(|entry| entry.active_path == Some(false))
     );
-    let stored = tx
-        .prepare("SELECT entry FROM session_item ORDER BY seq")
-        .unwrap()
-        .query_map([], |row| row.get::<_, Vec<u8>>(0))
-        .unwrap()
-        .map(|row| {
-            serde_json::from_slice::<polylogue_model::read::IndexEntry>(&row.unwrap()).unwrap()
-        })
-        .collect::<Vec<_>>();
+    let stored = crate::items::stored_entries(&tx, session, 0).unwrap();
     assert_eq!(stored, expected);
 }
