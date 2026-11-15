@@ -164,7 +164,8 @@ fn fresh_message_counts_write_once_and_do_not_read_back_each_contribution() {
             if action == rusqlite::hooks::Action::SQLITE_UPDATE && table == "session" {
                 seen.fetch_add(1, Ordering::Relaxed);
             }
-        }));
+        }))
+        .unwrap();
         let tx = c.transaction().unwrap();
         WORK.with(|w| w.set(Work::default()));
         tx.trace_v2(TraceEventCodes::SQLITE_TRACE_PROFILE, Some(observe));
