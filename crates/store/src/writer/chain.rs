@@ -297,7 +297,6 @@ fn write_step(
     let start = file.stream_position()?;
     file.write_all(&0u64.to_le_bytes())?;
     let mut encoder = zstd::stream::write::Encoder::new(&mut *file, 1)?;
-    let texts: Vec<_> = step.prepared.texts.iter().collect();
     serde_json::to_writer(
         &mut encoder,
         &(
@@ -306,7 +305,7 @@ fn write_step(
             &step.prepared.documents,
             &step.prepared.fragments,
             &step.prepared.events,
-            texts,
+            &step.prepared.texts,
             step.prepared.released,
             choices,
         ),
@@ -339,7 +338,7 @@ fn read_step(
         documents,
         fragments,
         events,
-        texts: texts.into_iter().collect(),
+        texts,
         released,
     };
     Ok(Some((step, choices)))
@@ -373,7 +372,7 @@ struct StoredStep(
     Vec<PreparedDocument>,
     crate::fragment::PreparedFragments,
     Vec<(String, Vec<u8>)>,
-    Vec<([u8; 32], crate::encoding::PreparedText)>,
+    crate::text_rows::PreparedTexts,
     bool,
     Option<resolve::membership::Choices>,
 );

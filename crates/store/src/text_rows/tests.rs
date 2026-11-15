@@ -2,6 +2,10 @@ use super::*;
 use crate::archive::{cache, open_write};
 use crate::fixture::Fixture;
 
+fn hash_of(text: &str) -> [u8; 32] {
+    *blake3::hash(text.as_bytes()).as_bytes()
+}
+
 fn count(conn: &Connection, sql: &str) -> i64 {
     conn.query_row(sql, [], |row| row.get(0)).unwrap()
 }
@@ -62,12 +66,8 @@ fn a_failed_decode_keeps_the_pending_entry() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let conn = open_write(&fixture.archive.index_db(), cache::SETUP).unwrap();
-    let mut prepared = HashMap::new();
-    prepared.insert(
-        *blake3::hash(b"walrus").as_bytes(),
-        crate::encoding::PreparedText::new("walrus", b"damaged".to_vec()),
-    );
-    intern(&conn, "walrus", 1, Some(&prepared), None).unwrap();
+    let id = intern(&conn, "walrus", 1, None, None).unwrap();
+    replace_group_body(&conn, id, b"damaged");
     assert!(index_pending(&conn, || ()).is_err());
     assert_eq!(count(&conn, "SELECT count(*) FROM search_pending"), 1);
     assert_eq!(count(&conn, "SELECT count(*) FROM text_fts"), 0);
@@ -81,19 +81,14 @@ fn pending_byte_limit_commits_complete_entries_and_retry_keeps_the_rest() {
     let first = intern(&conn, "walrus", 1, None, None).unwrap();
     let second = intern(&conn, "narwhal", 2, None, None).unwrap();
     intern(&conn, "dolphin", 1, None, None).unwrap();
-    conn.execute("UPDATE text SET body = X'00' WHERE id = ?1", [second])
-        .unwrap();
+    replace_group_body(&conn, second, b"\0");
     assert_eq!(pending_batch(&conn, 1).unwrap(), 1);
     assert_eq!(count(&conn, "SELECT count(*) FROM search_pending"), 2);
     assert!(index_pending(&conn, || ()).is_err());
     assert_eq!(count(&conn, "SELECT count(*) FROM text_fts"), 1);
     assert_eq!(count(&conn, "SELECT count(*) FROM output_fts"), 0);
     assert_eq!(count(&conn, "SELECT rowid FROM text_fts"), first);
-    conn.execute(
-        "UPDATE text SET body = ?1 WHERE id = ?2",
-        params![pack_text("narwhal").unwrap(), second],
-    )
-    .unwrap();
+    replace_group_body(&conn, second, &alone("narwhal"));
     assert_eq!(index_pending(&conn, || ()).unwrap(), 2);
     assert_eq!(index_pending(&conn, || ()).unwrap(), 0);
     assert_eq!(count(&conn, "SELECT count(*) FROM text_fts"), 2);
@@ -115,8 +110,7 @@ fn a_later_decode_failure_rolls_back_earlier_search_entries_in_its_transaction()
         let conn = open_write(&fixture.archive.index_db(), cache::SETUP).unwrap();
         intern(&conn, "walrus", 1, None, first_build.as_ref()).unwrap();
         let second = intern(&conn, "narwhal", 1, None, first_build.as_ref()).unwrap();
-        conn.execute("UPDATE text SET body = X'00' WHERE id = ?1", [second])
-            .unwrap();
+        replace_group_body(&conn, second, b"\0");
         if bulk {
             assert!(index_marked(&conn).is_err());
         } else {
@@ -204,10 +198,9 @@ fn first_build_texts_share_rows_without_sql_readback_or_prefix_aliasing() {
         .resolve(
             &conn,
             &one,
-            Some(&crate::encoding::PreparedText::new(
-                "first",
-                b"first".to_vec(),
-            )),
+            PreparedTexts::pack(["first"])
+                .unwrap()
+                .get(&hash_of("first")),
             None,
         )
         .unwrap()
@@ -216,10 +209,9 @@ fn first_build_texts_share_rows_without_sql_readback_or_prefix_aliasing() {
         .resolve(
             &conn,
             &two,
-            Some(&crate::encoding::PreparedText::new(
-                "second",
-                b"second".to_vec(),
-            )),
+            PreparedTexts::pack(["second"])
+                .unwrap()
+                .get(&hash_of("second")),
             None,
         )
         .unwrap()
@@ -260,10 +252,9 @@ fn failed_text_transaction_reloads_presence_without_reassigning_known_ids() {
             .resolve(
                 &tx,
                 &gone,
-                Some(&crate::encoding::PreparedText::new(
-                    "rolled back",
-                    b"rolled back".to_vec(),
-                )),
+                PreparedTexts::pack(["rolled back"])
+                    .unwrap()
+                    .get(&hash_of("rolled back")),
                 None,
             )
             .unwrap()
@@ -276,10 +267,9 @@ fn failed_text_transaction_reloads_presence_without_reassigning_known_ids() {
         .resolve(
             &tx,
             &kept,
-            Some(&crate::encoding::PreparedText::new(
-                "committed",
-                b"committed".to_vec(),
-            )),
+            PreparedTexts::pack(["committed"])
+                .unwrap()
+                .get(&hash_of("committed")),
             None,
         )
         .unwrap()
@@ -297,10 +287,9 @@ fn failed_text_transaction_reloads_presence_without_reassigning_known_ids() {
             .resolve(
                 &tx,
                 &gone,
-                Some(&crate::encoding::PreparedText::new(
-                    "restored",
-                    b"restored".to_vec()
-                )),
+                PreparedTexts::pack(["restored"])
+                    .unwrap()
+                    .get(&hash_of("restored")),
                 None
             )
             .unwrap()
@@ -328,22 +317,16 @@ fn cached_text_identity_does_not_claim_a_payload_write() {
     let identities = TextIds::new(&conn, true).unwrap();
     let text = "shared synthetic text";
     let hash = *blake3::hash(text.as_bytes()).as_bytes();
-    let prepared =
-        crate::encoding::PreparedText::new(text, crate::encoding::pack_text(text).unwrap());
+    let prepared = PreparedTexts::pack([text]).unwrap();
+    let prepared = prepared.get(&hash);
     let tx = conn.transaction().unwrap();
-    let written = identities
-        .resolve(&tx, &hash, Some(&prepared), None)
-        .unwrap();
+    let written = identities.resolve(&tx, &hash, prepared, None).unwrap();
     assert!(written.written);
-    let reused = identities
-        .resolve(&tx, &hash, Some(&prepared), None)
-        .unwrap();
+    let reused = identities.resolve(&tx, &hash, prepared, None).unwrap();
     assert_eq!(reused.id, written.id);
     assert!(!reused.written);
     tx.commit().unwrap();
-    let cached = identities
-        .resolve(&conn, &hash, Some(&prepared), None)
-        .unwrap();
+    let cached = identities.resolve(&conn, &hash, prepared, None).unwrap();
     assert_eq!(cached.id, written.id);
     assert!(!cached.written);
     let preloaded = TextIds::new(&conn, true)
@@ -361,8 +344,7 @@ fn new_text_membership_follows_unindexing_and_rollback_within_the_writer() {
     let identities = TextIds::new(&conn, true).unwrap();
     let text = "synthetic tool output";
     let hash = *blake3::hash(text.as_bytes()).as_bytes();
-    let prepared =
-        crate::encoding::PreparedText::new(text, crate::encoding::pack_text(text).unwrap());
+    let prepared = PreparedTexts::pack([text]).unwrap();
     let bits = std::collections::HashMap::from([(hash, 2)]);
     let membership = NewMembership {
         bits: &bits,
@@ -382,7 +364,7 @@ fn new_text_membership_follows_unindexing_and_rollback_within_the_writer() {
     let transaction = identities.transaction();
     let tx = conn.transaction().unwrap();
     let id = identities
-        .resolve(&tx, &hash, Some(&prepared), Some(&membership))
+        .resolve(&tx, &hash, prepared.get(&hash), Some(&membership))
         .unwrap()
         .id;
     assert_eq!(state(&tx, id), (2, 1));

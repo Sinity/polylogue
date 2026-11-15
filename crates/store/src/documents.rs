@@ -1,12 +1,12 @@
 //! Text documents: one shown version each, with source time before route
 //! precedence, and reads in the reader's read transaction.
 use crate::encoding::hex;
-use crate::encoding::{PreparedDocument, restore_text, unpack_block, unpack_json, unpack_text};
+use crate::encoding::{PreparedDocument, restore_text, unpack_block, unpack_json};
 use crate::{Reader, Result, StoreError};
 use polylogue_model::{Block, Document, DocumentId, DocumentRow, Json};
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde::Serialize;
-use std::collections::HashMap;
+
 use std::ops::ControlFlow;
 
 pub(crate) struct Source<'a> {
@@ -14,7 +14,7 @@ pub(crate) struct Source<'a> {
     pub chain: i64,
     pub route: polylogue_model::Route,
     pub counter: i64,
-    pub packed: &'a HashMap<[u8; 32], crate::encoding::PreparedText>,
+    pub packed: &'a crate::text_rows::PreparedTexts,
     pub texts: &'a crate::text_rows::TextIds,
     /// Set during a first build ([`crate::first_build`]).
     pub first_build: Option<&'a crate::first_build::FirstBuild>,
@@ -85,7 +85,7 @@ pub(crate) fn apply_choice(
         }
         return Ok(());
     };
-    let packed = HashMap::new();
+    let packed = crate::text_rows::PreparedTexts::default();
     let source = Source {
         input_pk: choice.input,
         chain: choice.chain,
@@ -396,10 +396,10 @@ impl DocumentRead<'_, '_> {
 
 fn decoded_block(row: &rusqlite::Row<'_>) -> Result<Block> {
     let mut block = unpack_block(&row.get::<_, Vec<u8>>(0)?)?;
-    if let Some(text) = row.get::<_, Option<Vec<u8>>>(1)? {
-        restore_text(&mut block, unpack_text(&text)?);
+    if let Some(text) = crate::text_rows::column(row, 1)? {
+        restore_text(&mut block, text);
     }
-    if let Some(data) = row.get::<_, Option<Vec<u8>>>(2)? {
+    if let Some(data) = row.get::<_, Option<Vec<u8>>>(4)? {
         crate::encoding::restore_data(&mut block, &data)?;
     }
     Ok(block)
@@ -469,7 +469,7 @@ fn visit_blocks_selected_from(
     let data = if text_only { "NULL" } else { "b.data" };
     let order = if backwards { "DESC" } else { "ASC" };
     let sql = format!(
-        "SELECT b.body,t.body,{data},b.idx FROM document_block b LEFT JOIN text t ON t.id=b.text_id WHERE b.document_pk=?1 AND b.idx>=?2 {bound} {kinds} ORDER BY b.idx {order}"
+        "SELECT b.body,g.body,t.start,t.length,{data},b.idx FROM document_block b LEFT JOIN text t ON t.id=b.text_id LEFT JOIN text_group g ON g.id=t.group_id WHERE b.document_pk=?1 AND b.idx>=?2 {bound} {kinds} ORDER BY b.idx {order}"
     );
     let mut statement = conn.prepare_cached(&sql)?;
     let mut rows = if let Some(end) = end {
@@ -484,7 +484,7 @@ fn visit_blocks_selected_from(
         if let Some(limit) = crate::read::limit::ReadLimit::current() {
             limit.check()?;
         }
-        let ordinal = u64::try_from(row.get::<_, i64>(3)?)
+        let ordinal = u64::try_from(row.get::<_, i64>(5)?)
             .map_err(|_| StoreError::Invalid("negative document block ordinal".into()))?;
         if visit(ordinal, decoded_block(row)?).is_break() {
             break;

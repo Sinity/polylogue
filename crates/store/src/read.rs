@@ -4,7 +4,7 @@
 
 use crate::archive::{Archive, open_read};
 use crate::blobs::FileFacts;
-use crate::encoding::{Columns, restore_text, unpack_block, unpack_text};
+use crate::encoding::{Columns, restore_text, unpack_block};
 use crate::{Result, StoreError};
 use polylogue_model::{
     Block, Message, MessageId, PromptKind, Role, Session, SessionId, Usage,
@@ -1022,27 +1022,22 @@ impl Reader<'_> {
     /// structured data (`block.data`), which is then neither read nor decoded.
     fn message_blocks(&self, message_pk: i64, structured: bool) -> Result<Vec<Block>> {
         let mut stmt = self.conn()?.prepare_cached(if structured {
-            "SELECT b.body, t.body, b.data FROM block b LEFT JOIN text t ON t.id=b.text_id
+            "SELECT b.body, g.body, t.start, t.length, b.data FROM block b
+             LEFT JOIN text t ON t.id=b.text_id LEFT JOIN text_group g ON g.id=t.group_id
              WHERE b.message_pk=?1 ORDER BY b.idx"
         } else {
-            "SELECT b.body, t.body, NULL FROM block b LEFT JOIN text t ON t.id=b.text_id
+            "SELECT b.body, g.body, t.start, t.length, NULL FROM block b
+             LEFT JOIN text t ON t.id=b.text_id LEFT JOIN text_group g ON g.id=t.group_id
              WHERE b.message_pk=?1 ORDER BY b.idx"
         })?;
-        let rows = stmt.query_map([message_pk], |r| {
-            Ok((
-                r.get::<_, Vec<u8>>(0)?,
-                r.get::<_, Option<Vec<u8>>>(1)?,
-                r.get::<_, Option<Vec<u8>>>(2)?,
-            ))
-        })?;
+        let mut rows = stmt.query([message_pk])?;
         let mut blocks = Vec::new();
-        for row in rows {
-            let (body, text, data) = row?;
-            let mut block = unpack_block(&body)?;
-            if let Some(text) = text {
-                restore_text(&mut block, unpack_text(&text)?);
+        while let Some(row) = rows.next()? {
+            let mut block = unpack_block(&row.get::<_, Vec<u8>>(0)?)?;
+            if let Some(text) = crate::text_rows::column(row, 1)? {
+                restore_text(&mut block, text);
             }
-            if let Some(data) = data {
+            if let Some(data) = row.get::<_, Option<Vec<u8>>>(4)? {
                 crate::encoding::restore_data(&mut block, &data)?;
             }
             blocks.push(block);

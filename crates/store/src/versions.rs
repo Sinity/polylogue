@@ -3,7 +3,7 @@ use crate::{Result, encoding, first_build::FirstBuild};
 use polylogue_model::{BlobHash, Block, Message, bundle::MessageProjection};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::de::DeserializeOwned;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 #[cfg(test)]
 mod tests;
@@ -44,7 +44,7 @@ impl VersionKind {
 }
 
 pub(crate) struct TextRows<'a> {
-    pub packed: &'a HashMap<[u8; 32], crate::encoding::PreparedText>,
+    pub packed: &'a crate::text_rows::PreparedTexts,
     pub texts: &'a crate::text_rows::TextIds,
     pub membership: Option<&'a crate::text_rows::NewMembership<'a>>,
 }
@@ -336,12 +336,13 @@ fn read_body<T: DeserializeOwned>(
         "version_hash"
     };
     let mut statement = conn.prepare_cached(&format!(
-        "SELECT v.idx,t.body FROM {kind}_version_text v JOIN text t ON t.id=v.text_id WHERE v.{column}=?1 ORDER BY v.idx"
+        "SELECT v.idx,g.body,t.start,t.length FROM {kind}_version_text v JOIN text t ON t.id=v.text_id
+         JOIN text_group g ON g.id=t.group_id WHERE v.{column}=?1 ORDER BY v.idx"
     ))?;
     let mut rows = statement.query([key])?;
     while let Some(row) = rows.next()? {
         let idx: i64 = row.get(0)?;
-        let packed: Vec<u8> = row.get(1)?;
+        let text = crate::text_rows::joined(row, 1)?;
         let block = &mut value["blocks"][idx as usize];
         let field = if block.get("output").is_some() {
             "output"
@@ -350,7 +351,7 @@ fn read_body<T: DeserializeOwned>(
         } else {
             "text"
         };
-        block[field] = encoding::unpack_text(&packed)?.into();
+        block[field] = text.into();
     }
     Ok(serde_json::from_value(value)?)
 }
@@ -575,13 +576,11 @@ pub(crate) fn remove_unreferenced(
         .collect::<rusqlite::Result<Vec<_>>>()?;
     for (id, indexed, hash) in unused_texts {
         if first_build.is_some() {
-            conn.prepare_cached("DELETE FROM text WHERE id=?1")?
-                .execute([id])?;
-            texts.removed(&hash, id);
+            crate::text_rows::remove_unindexed(conn, id)?;
         } else {
             crate::text_rows::remove(conn, id, indexed)?;
-            texts.removed(&hash, id);
         }
+        texts.removed(&hash, id);
     }
     conn.prepare_cached("DELETE FROM temp.unreferenced_text")?
         .execute([])?;

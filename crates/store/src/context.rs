@@ -147,11 +147,12 @@ impl Reader<'_> {
             Some(message) => {
                 let mut parts = Vec::new();
                 let mut stmt = conn.prepare_cached(
-                    "SELECT t.body FROM block b JOIN text t ON t.id = b.text_id
+                    "SELECT g.body, t.start, t.length FROM block b JOIN text t ON t.id = b.text_id
+                       JOIN text_group g ON g.id = t.group_id
                       WHERE b.message_pk = ?1 AND b.kind = 'text' ORDER BY b.idx",
                 )?;
-                for body in stmt.query_map([message], |r| r.get::<_, Vec<u8>>(0))? {
-                    parts.push(crate::encoding::unpack_text(&body?)?);
+                for text in stmt.query_and_then([message], |r| crate::text_rows::joined(r, 0))? {
+                    parts.push(text?);
                 }
                 let text = parts.join("\n");
                 (!text.trim().is_empty()).then_some(text)
@@ -194,26 +195,26 @@ impl Reader<'_> {
     pub fn prompts(&self, session: &str) -> Result<Vec<Prompt>> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare_cached(
-            "SELECT m.id, m.at, t.body
+            "SELECT m.id, m.at, g.body, t.start, t.length
                FROM session s
                JOIN message m ON m.session_pk = s.pk
                JOIN block b ON b.message_pk = m.pk AND b.kind = 'text'
                JOIN text t ON t.id = b.text_id
+               JOIN text_group g ON g.id = t.group_id
               WHERE s.id = ?1 AND m.written_by = 'human'
                 AND coalesce(m.prompt_kind, 'prose') = 'prose'
               ORDER BY m.session_order, m.id, b.idx",
         )?;
-        let rows = stmt.query_map([session], |r| {
-            Ok((
+        let rows = stmt.query_and_then([session], |r| {
+            Ok::<_, crate::StoreError>((
                 r.get::<_, String>(0)?,
                 r.optional_time_ms(1)?,
-                r.get::<_, Vec<u8>>(2)?,
+                crate::text_rows::joined(r, 2)?,
             ))
         })?;
         let mut out: Vec<Prompt> = Vec::new();
         for row in rows {
-            let (message_id, at, body) = row?;
-            let text = crate::encoding::unpack_text(&body)?;
+            let (message_id, at, text) = row?;
             match out.last_mut() {
                 // Several text blocks of one message are one prompt.
                 Some(last) if last.message_id == message_id => {
@@ -247,10 +248,10 @@ impl Reader<'_> {
             return Ok(None);
         };
         let mut parts = Vec::new();
-        let mut statement = conn.prepare_cached("SELECT t.body FROM block b JOIN text t ON t.id=b.text_id WHERE b.message_pk=?1 AND b.kind='text' ORDER BY b.idx")?;
-        for body in statement.query_map([pk], |row| row.get::<_, Vec<u8>>(0))? {
+        let mut statement = conn.prepare_cached("SELECT g.body,t.start,t.length FROM block b JOIN text t ON t.id=b.text_id JOIN text_group g ON g.id=t.group_id WHERE b.message_pk=?1 AND b.kind='text' ORDER BY b.idx")?;
+        for text in statement.query_and_then([pk], |r| crate::text_rows::joined(r, 0))? {
             self.check()?;
-            parts.push(crate::encoding::unpack_text(&body?)?);
+            parts.push(text?);
         }
         self.check()?;
         Ok(Some(Prompt {
@@ -469,13 +470,13 @@ impl Reader<'_> {
     pub fn message_text(&self, message: &str) -> Result<Option<String>> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare_cached(
-            "SELECT t.body FROM message m JOIN block b ON b.message_pk = m.pk AND b.kind = 'text'
-               JOIN text t ON t.id = b.text_id
+            "SELECT g.body, t.start, t.length FROM message m JOIN block b ON b.message_pk = m.pk AND b.kind = 'text'
+               JOIN text t ON t.id = b.text_id JOIN text_group g ON g.id = t.group_id
               WHERE m.id = ?1 ORDER BY b.idx",
         )?;
         let mut parts = Vec::new();
-        for body in stmt.query_map([message], |r| r.get::<_, Vec<u8>>(0))? {
-            parts.push(crate::encoding::unpack_text(&body?)?);
+        for text in stmt.query_and_then([message], |r| crate::text_rows::joined(r, 0))? {
+            parts.push(text?);
         }
         Ok((!parts.is_empty()).then(|| parts.join("\n")))
     }

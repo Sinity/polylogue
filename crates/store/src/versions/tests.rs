@@ -27,15 +27,8 @@ fn database(unrelated: i64) -> Connection {
     track_unreferenced(&conn).unwrap();
     for id in 1..=unrelated {
         let text = format!("retained synthetic text {id}");
-        conn.execute(
-            "INSERT INTO text(id,hash,normalized_hash,body) VALUES(?1,?2,?2,?3)",
-            params![
-                id,
-                blake3::hash(text.as_bytes()).as_bytes(),
-                encoding::pack_text(&text).unwrap()
-            ],
-        )
-        .unwrap();
+        let hash = blake3::hash(text.as_bytes());
+        crate::text_rows::insert_alone(&conn, Some(id), hash.as_bytes(), hash.as_bytes(), &text, 0);
     }
     conn
 }
@@ -289,10 +282,9 @@ fn first_build_cleanup_retains_version_text_and_forgets_deleted_identity() {
         .resolve(
             &tx,
             &hash,
-            Some(&crate::encoding::PreparedText::new(
-                "kept",
-                b"kept".to_vec(),
-            )),
+            crate::text_rows::PreparedTexts::pack(["kept"])
+                .unwrap()
+                .get(blake3::hash(b"kept").as_bytes()),
             None,
         )
         .unwrap()
@@ -321,10 +313,9 @@ fn first_build_cleanup_retains_version_text_and_forgets_deleted_identity() {
         .resolve(
             &tx,
             &hash,
-            Some(&crate::encoding::PreparedText::new(
-                "again",
-                b"again".to_vec(),
-            )),
+            crate::text_rows::PreparedTexts::pack(["again"])
+                .unwrap()
+                .get(blake3::hash(b"again").as_bytes()),
             None,
         )
         .unwrap()

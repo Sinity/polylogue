@@ -21,7 +21,7 @@
 use crate::change_summary::{ChangeSummary, SessionChange};
 use crate::encoding::Columns;
 #[cfg(any(test, feature = "fixture"))]
-use crate::encoding::{restore_text, unpack_block, unpack_text};
+use crate::encoding::{restore_text, unpack_block};
 use crate::{Reader, Result, StoreError};
 use entry_bytes::{Owner, decode, encode};
 #[cfg(any(test, feature = "fixture"))]
@@ -1180,18 +1180,18 @@ fn message_body(conn: &Connection, pk: i64) -> Result<(Message, Vec<u64>)> {
     let mut blocks = Vec::new();
     let mut ordinals = Vec::new();
     let mut statement = conn.prepare_cached(
-        "SELECT b.body, t.body, coalesce(CAST(b.ordinal AS INTEGER), b.idx)
-         FROM block b LEFT JOIN text t ON t.id = b.text_id
+        "SELECT b.body, coalesce(CAST(b.ordinal AS INTEGER), b.idx), g.body, t.start, t.length
+         FROM block b LEFT JOIN text t ON t.id = b.text_id LEFT JOIN text_group g ON g.id = t.group_id
          WHERE b.message_pk = ?1 ORDER BY b.idx",
     )?;
     let mut rows = statement.query([pk])?;
     while let Some(row) = rows.next()? {
         let mut block = unpack_block(&row.get::<_, Vec<u8>>(0)?)?;
-        if let Some(text) = row.get::<_, Option<Vec<u8>>>(1)? {
-            restore_text(&mut block, unpack_text(&text)?);
+        if let Some(text) = crate::text_rows::column(row, 2)? {
+            restore_text(&mut block, text);
         }
         blocks.push(block);
-        ordinals.push(row.get::<_, u64>(2)?);
+        ordinals.push(row.get::<_, u64>(1)?);
     }
     let message = Message {
         id,

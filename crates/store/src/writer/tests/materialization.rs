@@ -22,7 +22,7 @@ thread_local! {
 fn family(sql: &str) -> u8 {
     if sql.starts_with("SELECT b.body,p.layout,v.pk") {
         1
-    } else if sql.starts_with("SELECT v.idx,t.body FROM message_version_text") {
+    } else if sql.starts_with("SELECT v.idx,g.body,t.start,t.length FROM message_version_text") {
         2
     } else if sql.starts_with("SELECT idx,text_id FROM message_version_text") {
         3
@@ -310,12 +310,7 @@ fn old_context_versions_keep_payload_and_hash_corruption_checks() {
             "missing" => conn
                 .execute("DELETE FROM message_version_body", [])
                 .unwrap(),
-            "text" => conn
-                .execute(
-                    "UPDATE text SET body=?1",
-                    [crate::encoding::pack_text("changed response").unwrap()],
-                )
-                .unwrap(),
+            "text" => replace_every_text(&conn, "changed response"),
             "layout" => conn
                 .execute("UPDATE message_projection SET layout=x'00'", [])
                 .unwrap(),
@@ -460,11 +455,7 @@ fn a_new_version_with_reused_text_keeps_stored_payload_validation() {
         .0
         .unwrap();
         if corrupt {
-            conn.execute(
-                "UPDATE text SET body=?1",
-                [crate::encoding::pack_text("corrupt reused text").unwrap()],
-            )
-            .unwrap();
+            replace_every_text(&conn, "corrupt reused text");
         }
         let next = text_message(
             "next",
@@ -500,4 +491,19 @@ fn a_new_version_with_reused_text_keeps_stored_payload_validation() {
             assert_eq!(stored, next);
         }
     }
+}
+
+/// Points every stored text at `text`, leaving its hashes.
+fn replace_every_text(conn: &rusqlite::Connection, text: &str) -> usize {
+    let ids: Vec<i64> = conn
+        .prepare("SELECT id FROM text")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    for &id in &ids {
+        crate::text_rows::replace_text(conn, id, text);
+    }
+    ids.len()
 }

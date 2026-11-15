@@ -85,29 +85,12 @@ pub(crate) fn pack_text(text: &str) -> std::io::Result<Vec<u8>> {
     pack_bytes(text.as_bytes())
 }
 
-/// Raw bytes and their request-text identity are prepared together, before
-/// the serial writer loses access to the original text.
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct PreparedText {
-    pub body: Vec<u8>,
-    pub normalized_hash: [u8; 32],
-}
-
 pub(crate) fn normalized_text_hash(text: &str) -> [u8; 32] {
     use unicode_normalization::UnicodeNormalization;
     if unicode_normalization::is_nfc(text) {
         *blake3::hash(text.as_bytes()).as_bytes()
     } else {
         *blake3::hash(text.nfc().collect::<String>().as_bytes()).as_bytes()
-    }
-}
-
-impl PreparedText {
-    pub(crate) fn new(text: &str, body: Vec<u8>) -> Self {
-        Self {
-            body,
-            normalized_hash: normalized_text_hash(text),
-        }
     }
 }
 
@@ -360,10 +343,6 @@ impl RowPacker {
             plain: zstd::bulk::Compressor::new(LEVEL)?,
             rows: zstd::bulk::Compressor::with_prepared_dictionary(&ROW_ENCODER)?,
         })
-    }
-
-    pub(crate) fn pack_text(&mut self, text: &str) -> std::io::Result<Vec<u8>> {
-        self.plain.compress(text.as_bytes())
     }
 
     fn pack_row(&mut self, bytes: &[u8]) -> std::io::Result<Vec<u8>> {

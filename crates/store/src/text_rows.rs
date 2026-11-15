@@ -2,16 +2,15 @@
 //! in their own transaction; indexing consumes committed queue entries.
 
 use crate::Result;
+mod groups;
 mod identities;
 #[cfg(any(test, feature = "fixture"))]
-use crate::encoding::pack_text;
-use crate::encoding::unpack_text;
 use crate::first_build::FirstBuild;
+pub(crate) use groups::{PreparedTexts, StoredGroups, column, joined, read, slice};
 pub(crate) use identities::TextIds;
+#[cfg(any(test, feature = "fixture"))]
 use rusqlite::OptionalExtension;
 use rusqlite::{Connection, TransactionBehavior, params};
-#[cfg(any(test, feature = "fixture"))]
-use std::collections::HashMap;
 
 /// The text row for `body`, stored once per distinct content, and its
 /// entry in the search index `bit` names (1 prose, 2 tool output). During a
@@ -21,7 +20,7 @@ pub(crate) fn intern(
     conn: &Connection,
     body: &str,
     bit: i64,
-    prepared: Option<&HashMap<[u8; 32], crate::encoding::PreparedText>>,
+    prepared: Option<&PreparedTexts>,
     first_build: Option<&FirstBuild>,
 ) -> Result<i64> {
     let hash = blake3::hash(body.as_bytes());
@@ -37,23 +36,29 @@ pub(crate) fn intern(
                 .query_row([id], |r| r.get(0))?,
         ),
         None => {
-            let packed = match prepared.and_then(|p| p.get(hash.as_bytes())) {
-                Some(p) => std::borrow::Cow::Borrowed(p.body.as_slice()),
-                None => pack_text(body)?.into(),
+            let own;
+            let prepared = match prepared.filter(|p| p.contains(hash.as_bytes())) {
+                Some(prepared) => prepared,
+                None => {
+                    own = PreparedTexts::pack([body])?;
+                    &own
+                }
             };
+            let prepared = prepared
+                .get(hash.as_bytes())
+                .expect("the text was just prepared");
             // A first build marks the text for its search index now and
             // writes the entry when the build ends.
             let claimed = if bulk { bit } else { 0 };
-            conn.prepare_cached(
-                "INSERT INTO text(hash, body, indexed, normalized_hash) VALUES (?1, ?2, ?3, ?4)",
-            )?
-            .execute(params![
-                &hash.as_bytes()[..],
-                &*packed,
+            let id = groups::insert(
+                conn,
+                &StoredGroups::default(),
+                None,
+                hash.as_bytes(),
+                prepared,
                 claimed,
-                crate::encoding::normalized_text_hash(body).as_slice()
-            ])?;
-            let id = conn.last_insert_rowid();
+            )?
+            .ok_or_else(|| crate::StoreError::Invalid("the text row already exists".into()))?;
             (id, claimed)
         }
     };
@@ -83,7 +88,7 @@ pub(crate) fn activate(
     bit: i64,
     bulk: bool,
 ) -> Result<()> {
-    // Rewriting the row would copy and compare its whole body.
+    // A text marked in this transaction needs no statement per block.
     if texts.is_marked(id, bit) {
         return Ok(());
     }
@@ -135,14 +140,15 @@ pub(crate) fn index_marked(conn: &Connection) -> Result<()> {
     )?;
     let mut written = false;
     {
-        let mut select =
-            tx.prepare("SELECT id, indexed, body FROM text WHERE indexed <> 0 ORDER BY id")?;
+        let mut select = tx.prepare(
+            "SELECT t.id, t.indexed, g.body, t.start, t.length FROM text t
+             JOIN text_group g ON g.id = t.group_id WHERE t.indexed <> 0 ORDER BY t.id",
+        )?;
         let mut rows = select.query([])?;
         while let Some(row) = rows.next()? {
             let id: i64 = row.get(0)?;
             let indexed: i64 = row.get(1)?;
-            let packed: Vec<u8> = row.get(2)?;
-            let (folded, _) = folded_text(&packed)?;
+            let (folded, _) = folded_text(joined(row, 2)?)?;
             for bit in [1, 2].into_iter().filter(|bit| indexed & bit != 0) {
                 insert_entry(&tx, id, bit, &folded)?;
             }
@@ -195,13 +201,7 @@ fn pending_batch(conn: &Connection, byte_limit: usize) -> Result<u64> {
     let mut written = 0;
     let mut bytes = 0;
     for (id, bit) in ids {
-        {
-            let mut select = tx.prepare_cached("SELECT body FROM text WHERE id = ?1")?;
-            let mut rows = select.query([id])?;
-            let row = rows.next()?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
-            let packed: Vec<u8> = row.get(0)?;
-            bytes += write_entry(&tx, id, bit, &packed)?;
-        }
+        bytes += write_entry(&tx, id, bit, read(&tx, id)?)?;
         tx.prepare_cached("DELETE FROM search_pending WHERE text_id = ?1 AND fts_table = ?2")?
             .execute(params![id, bit])?;
         written += 1;
@@ -216,15 +216,14 @@ fn pending_batch(conn: &Connection, byte_limit: usize) -> Result<u64> {
     Ok(written)
 }
 
-fn write_entry(conn: &Connection, id: i64, bit: i64, packed: &[u8]) -> Result<usize> {
-    let (folded, length) = folded_text(packed)?;
+fn write_entry(conn: &Connection, id: i64, bit: i64, text: String) -> Result<usize> {
+    let (folded, length) = folded_text(text)?;
     insert_entry(conn, id, bit, &folded)?;
     Ok(length)
 }
 
 /// A stored text as the search indexes hold it, and its length in bytes.
-fn folded_text(packed: &[u8]) -> Result<(String, usize)> {
-    let text = unpack_text(packed)?;
+fn folded_text(text: String) -> Result<(String, usize)> {
     let length = text.len();
     let folded = if text.is_ascii() {
         text
@@ -278,8 +277,68 @@ pub(crate) fn remove(i: &Connection, id: i64, indexed: i64) -> Result<()> {
         i.execute("DELETE FROM output_fts WHERE rowid = ?1", [id])?;
     }
     i.execute("DELETE FROM search_pending WHERE text_id = ?1", [id])?;
-    i.execute("DELETE FROM text WHERE id = ?1", [id])?;
-    Ok(())
+    groups::delete(i, id)
+}
+
+/// Removes a text row during a first build, whose search entries are written
+/// only when it ends.
+pub(crate) fn remove_unindexed(i: &Connection, id: i64) -> Result<()> {
+    groups::delete(i, id)
+}
+
+/// A group body holding only `text`.
+#[cfg(test)]
+pub(crate) fn alone(text: &str) -> Vec<u8> {
+    zstd::bulk::compress(text.as_bytes(), 1).unwrap()
+}
+
+/// Inserts a text row, under the hashes given, holding `text` in a group of
+/// its own.
+#[cfg(test)]
+pub(crate) fn insert_alone(
+    conn: &Connection,
+    id: Option<i64>,
+    hash: &[u8],
+    normalized_hash: &[u8],
+    text: &str,
+    indexed: i64,
+) -> i64 {
+    conn.execute("INSERT INTO text_group(body) VALUES (?1)", [alone(text)])
+        .unwrap();
+    let group = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT INTO text(id,hash,normalized_hash,indexed,group_id,start,length)
+         VALUES (?1,?2,?3,?4,?5,0,?6)",
+        params![id, hash, normalized_hash, indexed, group, text.len() as i64],
+    )
+    .unwrap();
+    conn.last_insert_rowid()
+}
+
+/// Points text `id` at a new group holding only `text`, leaving its hashes.
+#[cfg(test)]
+pub(crate) fn replace_text(conn: &Connection, id: i64, text: &str) {
+    conn.execute("INSERT INTO text_group(body) VALUES (?1)", [alone(text)])
+        .unwrap();
+    let changed = conn
+        .execute(
+            "UPDATE text SET group_id=?2, start=0, length=?3 WHERE id=?1",
+            params![id, conn.last_insert_rowid(), text.len() as i64],
+        )
+        .unwrap();
+    assert_eq!(changed, 1);
+}
+
+/// Replaces the body of the group holding text `id`.
+#[cfg(test)]
+pub(crate) fn replace_group_body(conn: &Connection, id: i64, body: &[u8]) {
+    let changed = conn
+        .execute(
+            "UPDATE text_group SET body=?2 WHERE id=(SELECT group_id FROM text WHERE id=?1)",
+            params![id, body],
+        )
+        .unwrap();
+    assert_eq!(changed, 1);
 }
 
 #[cfg(test)]

@@ -293,8 +293,9 @@ pub const MESSAGE_HAS: [Has; 4] = [
         name: "code",
         sql: |m| {
             format!(
-                "EXISTS (SELECT 1 FROM block xb JOIN text tx ON tx.id = xb.text_id WHERE xb.message_pk = {m}.pk \
-                 AND xb.kind = 'text' AND instr(pl_text(tx.body), char(96, 96, 96)) > 0)"
+                "EXISTS (SELECT 1 FROM block xb JOIN text tx ON tx.id = xb.text_id \
+                 JOIN text_group xg ON xg.id = tx.group_id WHERE xb.message_pk = {m}.pk \
+                 AND xb.kind = 'text' AND instr(pl_text_at(xg.body, tx.start, tx.length), char(96, 96, 96)) > 0)"
             )
         },
     },

@@ -1,6 +1,5 @@
 use super::*;
 use crate::fixture::{Fixture, MessageFacts, SessionFacts};
-use rusqlite::params;
 
 #[test]
 fn chosen_hit_batches_preserve_source_text_and_ignore_unselected_corruption() {
@@ -97,8 +96,14 @@ fn chosen_hit_batches_preserve_source_text_and_ignore_unselected_corruption() {
 
     // Unselected earlier rows do not affect a snippet; the original reader
     // also retains its consistent selected source snapshot.
-    let ordinary = crate::encoding::pack_text("ordinary header").unwrap();
-    write.execute("UPDATE text SET body=?1 WHERE id=(SELECT text_id FROM block WHERE message_pk=?2 LIMIT 1)", params![ordinary, header]).unwrap();
+    let header_text: i64 = write
+        .query_row(
+            "SELECT text_id FROM block WHERE message_pk=?1 LIMIT 1",
+            [header],
+            |r| r.get(0),
+        )
+        .unwrap();
+    crate::text_rows::replace_text(&write, header_text, "ordinary header");
     let fresh = pool.reader().unwrap();
     let changed = fresh.snippets(&queries, &scopes).unwrap();
     assert!(changed[0].as_ref().unwrap().text.contains("needleprivate"));

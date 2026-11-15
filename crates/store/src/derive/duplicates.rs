@@ -15,7 +15,7 @@
 
 use super::{Class, Derivation, Output, Version};
 use crate::Result;
-use crate::encoding::{restore_text, unpack_block, unpack_text};
+use crate::encoding::{restore_text, unpack_block};
 use polylogue_model::Block;
 use rusqlite::{Connection, Transaction, params};
 use std::collections::HashMap;
@@ -170,15 +170,16 @@ fn repeated(conn: &Connection, session_pk: i64) -> Result<HashMap<i64, String>> 
 /// The prompt's text blocks, whitespace runs read as one space.
 fn prompt_key(conn: &Connection, message_pk: i64) -> Result<String> {
     let mut statement = conn.prepare_cached(
-        "SELECT b.body, t.body FROM block b LEFT JOIN text t ON t.id = b.text_id
+        "SELECT b.body, g.body, t.start, t.length FROM block b
+         LEFT JOIN text t ON t.id = b.text_id LEFT JOIN text_group g ON g.id = t.group_id
          WHERE b.message_pk = ?1 ORDER BY b.idx",
     )?;
     let mut rows = statement.query([message_pk])?;
     let mut text = String::new();
     while let Some(row) = rows.next()? {
         let mut block = unpack_block(&row.get::<_, Vec<u8>>(0)?)?;
-        if let Some(body) = row.get::<_, Option<Vec<u8>>>(1)? {
-            restore_text(&mut block, unpack_text(&body)?);
+        if let Some(body) = crate::text_rows::column(row, 1)? {
+            restore_text(&mut block, body);
         }
         if let Block::Text { text: part } = &block {
             text.push(' ');

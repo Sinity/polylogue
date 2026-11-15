@@ -2,7 +2,9 @@
 //! read what the index stores compressed and group by the operator's
 //! logical day without a second pass in Rust:
 //!
-//! - `pl_text(body)`: a `text.body` decompressed to UTF-8;
+//! - `pl_text(body)`: a compressed UTF-8 body (a delivery's) decompressed;
+//! - `pl_text_at(group_body, start, length)`: a stored text, from its
+//!   `text_group` body and its `text` row's place in it;
 //! - `pl_block(body)`: a `block.body` decompressed to its JSON (text moved
 //!   to `text` is not in it);
 //! - `pl_fold(text)`: letters with a stroke folded, as the index does;
@@ -114,6 +116,14 @@ pub fn register(conn: &Connection) -> rusqlite::Result<()> {
     })?;
     conn.create_scalar_function("pl_text", 1, FLAGS, |ctx| {
         decompress(ctx, 0).map(|b| b.map(|b| String::from_utf8_lossy(&b).into_owned()))
+    })?;
+    conn.create_scalar_function("pl_text_at", 3, FLAGS, |ctx| {
+        let Some(body) = ctx.get_raw(0).as_blob_or_null()? else {
+            return Ok(None);
+        };
+        crate::text_rows::slice(body, ctx.get(1)?, ctx.get(2)?)
+            .map(Some)
+            .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))
     })?;
     conn.create_scalar_function("pl_block", 1, FLAGS, |ctx| {
         decompress(ctx, 0).map(|b| b.map(|b| String::from_utf8_lossy(&b).into_owned()))
