@@ -502,9 +502,10 @@ impl Engine {
             .inputs
             .iter()
             .filter(|(p, state)| {
-                (discover
-                    || state.origin.is_row_dump(p)
-                    || paths.iter().any(|path| p.starts_with(path)))
+                sources
+                    && (discover
+                        || state.origin.is_row_dump(p)
+                        || paths.iter().any(|path| p.starts_with(path)))
                     && !seen.contains(*p)
             })
             .map(|(path, _)| path.clone())
@@ -1192,7 +1193,9 @@ impl Engine {
                 break;
             }
             let state = c.progress;
-            let (path, origin) = if state.imported || self.archive.is_primary() {
+            let stored_source =
+                state.imported || self.archive.is_primary() || !self.config.reads_sources;
+            let (path, origin) = if stored_source {
                 let source = &c.source;
                 let Some(origin) = polylogue_sources::origin::by_name(&source.format)
                     .filter(|origin| has_reading(origin))
@@ -1201,7 +1204,17 @@ impl Engine {
                 };
                 // The recorded path chooses the parser. Without one, this
                 // input is refused with its reason and the pass goes on.
-                let path = match source.path.clone().map(PathBuf::from) {
+                let recorded_path = if !state.imported && !self.archive.is_primary() {
+                    use std::os::unix::ffi::OsStringExt;
+                    source
+                        .path_bytes
+                        .clone()
+                        .map(|bytes| PathBuf::from(std::ffi::OsString::from_vec(bytes)))
+                        .or_else(|| source.path.clone().map(PathBuf::from))
+                } else {
+                    source.path.clone().map(PathBuf::from)
+                };
+                let path = match recorded_path {
                     None => Err((
                         PathBuf::new(),
                         "the stored input has no recorded path".to_owned(),
@@ -1257,7 +1270,10 @@ impl Engine {
             if !has_reading(origin) {
                 continue;
             }
-            let tracked = c.current && !state.imported && watched.get(&c.input) == Some(&path);
+            let tracked = self.config.reads_sources
+                && c.current
+                && !state.imported
+                && watched.get(&c.input) == Some(&path);
             let facts = tracked
                 .then(|| self.inputs.get(&path).and_then(|st| st.facts))
                 .flatten();

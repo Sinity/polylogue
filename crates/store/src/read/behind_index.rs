@@ -23,6 +23,9 @@ pub struct StoredSource {
     pub format: String,
     /// The path the parser reads the bytes as, never a file to open.
     pub path: Option<String>,
+    /// Exact native spelling of the same observation, when recorded.
+    /// This is a parser hint, never permission to reopen a source file.
+    pub path_bytes: Option<Vec<u8>>,
 }
 
 /// Whether chains whose refusal or failure is recorded at their stored length
@@ -47,7 +50,7 @@ const CHAINS_BEHIND: &str = r#"first_paths AS MATERIALIZED (
                 SELECT input, min(rowid) AS observation
                 FROM observations GROUP BY input
             ), formats AS (
-                SELECT o.input, o.path, json_extract(o.details_json, '$.import_format') AS format,
+                SELECT o.input, o.path, o.path_bytes, json_extract(o.details_json, '$.import_format') AS format,
                     row_number() OVER (PARTITION BY o.input
                         ORDER BY (json_extract(o.details_json, '$.import_format') = 'export-file'),
                                  o.rowid DESC) AS choice
@@ -58,7 +61,8 @@ const CHAINS_BEHIND: &str = r#"first_paths AS MATERIALIZED (
                 s.imported,
                 COALESCE(f.format, i.format),
                 COALESCE(f.path, o.path),
-                COALESCE(p.parsed_upto, 0), p.input_pk IS NOT NULL, COALESCE(p.status = 'waiting' AND p.at_length = c.length, 0), p.reading_version, p.status, p.at_length, p.reason, p.stopped_attempt
+                COALESCE(p.parsed_upto, 0), p.input_pk IS NOT NULL, COALESCE(p.status = 'waiting' AND p.at_length = c.length, 0), p.reading_version, p.status, p.at_length, p.reason, p.stopped_attempt,
+                CASE WHEN f.path IS NOT NULL THEN f.path_bytes ELSE o.path_bytes END
             FROM chains c JOIN source_input i ON i.id = c.input
             JOIN inputs s ON s.input = c.input
             JOIN revisions l ON l.input = c.input AND l.number = s.number
@@ -203,6 +207,7 @@ impl Reader<'_> {
                 source: StoredSource {
                     format: origin,
                     path: row.get(6)?,
+                    path_bytes: row.get(15)?,
                 },
                 reading_changed,
                 previous_reading,

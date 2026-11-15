@@ -155,3 +155,171 @@ fn without_sources_an_import_is_stored_and_the_loop_then_becomes_idle() {
     assert_eq!(home.count("SELECT count(*) AS n FROM a.input"), 1);
     assert!(home.texts("unread").is_empty());
 }
+
+#[test]
+fn retained_replay_uses_recorded_native_paths_without_machine_discovery() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let home = ClaudeHome::new();
+    let path = home
+        .file("unused")
+        .with_file_name(std::ffi::OsString::from_vec(
+            b"retained-\xff.jsonl".to_vec(),
+        ));
+    std::fs::write(
+        &path,
+        claude_user("one", "native-kept", "native retained words"),
+    )
+    .unwrap();
+    {
+        let (mut engine, _lock) = open_engine(&home);
+        assert!(engine.run_pass().unwrap().errors.is_empty());
+    }
+    let stored = rows(&home);
+    std::fs::remove_file(&path).unwrap();
+    polylogue_testkit::delete_index(&home.root);
+    let (mut engine, _lock) = open_engine(&home);
+    engine.config.reads_sources = false;
+    // Stored identity and parser selection do not depend on this host having
+    // observed the input. No native path is used to reopen the gone file.
+    engine.config.machine = "another-machine".into();
+    let summary = until_idle(&mut engine, Vec::new());
+    assert!(summary.work.errors.is_empty(), "{summary:?}");
+    assert_eq!(home.texts("native-kept"), ["native retained words"]);
+    assert_eq!(rows(&home), stored);
+    assert!(engine.inputs.is_empty());
+    let idle = engine.run_pass().unwrap();
+    assert!(idle.errors.is_empty(), "{idle:?}");
+    assert_eq!(
+        (idle.bytes_read, idle.bytes_stored, idle.messages_written),
+        (0, 0, 0)
+    );
+}
+
+#[cfg(feature = "faults")]
+#[test]
+fn retained_planning_never_reads_watched_history_but_source_restoration_still_does() {
+    use polylogue_store::fault::{self, Action};
+
+    let home = ClaudeHome::new();
+    home.append(
+        "stored.jsonl",
+        &claude_user("one", "stored", "retained body"),
+    );
+    {
+        let (mut engine, _lock) = open_engine(&home);
+        assert!(engine.run_pass().unwrap().errors.is_empty());
+    }
+    let stored = rows(&home);
+    polylogue_testkit::delete_index(&home.root);
+    let (mut engine, _lock) = open_engine(&home);
+    engine.config.reads_sources = false;
+    // Refuse the entire observation-history lookup, not just one result row.
+    // Successful replay proves that this work is absent from the real route.
+    fault::clear();
+    fault::arm(
+        "read.watched_inputs",
+        "test-machine",
+        Action::Fail,
+        0,
+        u32::MAX,
+    );
+    let replay = engine.run_pass();
+    let skipped = engine.inputs.is_empty() && !engine.loaded;
+    engine.config.reads_sources = true;
+    let restoration = engine.load();
+    fault::clear();
+    let replay = replay.unwrap();
+    assert!(replay.errors.is_empty(), "{replay:?}");
+    assert!(skipped);
+    assert!(
+        restoration
+            .unwrap_err()
+            .to_string()
+            .contains("read.watched_inputs")
+    );
+    engine.load().unwrap();
+    assert!(engine.loaded);
+    assert_eq!(engine.inputs.len(), 1);
+    assert_eq!(
+        engine.inputs[&home.file("stored.jsonl")].parsed_upto,
+        std::fs::metadata(home.file("stored.jsonl")).unwrap().len()
+    );
+    assert_eq!(home.texts("stored"), ["retained body"]);
+    assert_eq!(rows(&home), stored);
+}
+
+#[test]
+fn retained_stopped_readings_keep_their_attempt_and_upgrade_from_stored_bytes() {
+    use polylogue_model::batch::StepProgress;
+
+    for old_version in [false, true] {
+        let home = ClaudeHome::new();
+        home.append(
+            "upgrade.jsonl",
+            &claude_user("one", "upgrade", "preserved reading"),
+        );
+        let (mut engine, _lock) = open_engine(&home);
+        assert!(engine.run_pass().unwrap().errors.is_empty());
+        let state = &engine.inputs[&home.file("upgrade.jsonl")];
+        let input = state.input_id.clone();
+        let length = state.stored;
+        let version = state.origin.reading_version();
+        let mut step =
+            polylogue_store::ParseStep::new(Default::default(), Default::default(), 0..0, false);
+        step.progress = StepProgress::Refused {
+            reason: "recorded synthetic refusal".into(),
+        };
+        step.reading_version = if old_version {
+            "synthetic-previous-reading".into()
+        } else {
+            version.clone()
+        };
+        step.stopped_attempt = Some(engine.stopped_attempt);
+        engine
+            .writer
+            .send(polylogue_store::Batch {
+                required_disposition: None,
+                input: InputKey {
+                    id: input.clone(),
+                    format: state.origin.name.into(),
+                    route: state.origin.route,
+                },
+                change: Change::Reparse {
+                    chain: state.chain.unwrap(),
+                },
+                observation: None,
+                continues: false,
+                new_blob: None,
+                blobs: vec![],
+                length,
+                parse: vec![step],
+                acquisition: None,
+                basis: None,
+                release: Default::default(),
+            })
+            .unwrap();
+        assert!(engine.writer.flush().unwrap().errors.is_empty());
+        let stored = rows(&home);
+        engine.config.reads_sources = false;
+        std::fs::remove_file(home.file("upgrade.jsonl")).unwrap();
+        engine.archive.advance_generation_for_test().unwrap();
+        let replay = engine.run_pass().unwrap();
+        assert!(replay.errors.is_empty(), "{replay:?}");
+        let progress = engine.reads.reader().unwrap().query(
+            "SELECT status,reading_version,parsed_upto FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id=?1",
+            &[polylogue_store::SqlValue::Text(input)],
+        ).unwrap();
+        assert_eq!(
+            progress[0]["status"],
+            if old_version { "done" } else { "refused" }
+        );
+        assert_eq!(progress[0]["reading_version"], version);
+        assert_eq!(
+            progress[0]["parsed_upto"].as_u64(),
+            Some(if old_version { length } else { 0 })
+        );
+        assert_eq!(rows(&home), stored);
+        assert_eq!(home.texts("upgrade"), ["preserved reading"]);
+    }
+}

@@ -22,6 +22,7 @@ fn expected(
         source: StoredSource {
             format: source.0.into(),
             path: source.1.map(str::to_owned),
+            path_bytes: None,
         },
         progress: ChainProgress {
             chain,
@@ -475,3 +476,55 @@ fn selected_chain_planning_does_not_scan_unselected_history() {
 }
 
 mod selection;
+
+#[test]
+fn stored_parser_paths_keep_native_bytes_from_the_same_selected_observation() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
+    let archive = Connection::open(fixture.archive.archive_db()).unwrap();
+    archive.execute_batch(
+        "INSERT INTO input VALUES ('native','claude-code'),('manual','export-file'),('fallback','export-file');
+         INSERT INTO revision VALUES ('native',1,'first',1,10,1),('manual',1,'imported',1,10,2),('fallback',1,'imported',1,10,3);
+         INSERT INTO observation(id,input,machine,path,path_bytes,class,details_json,polylogue_version,seen_at) VALUES
+           ('native','native','m','/display/session.jsonl',X'2f6e61746976652fff2e6a736f6e6c','first','{}','test',1),
+           ('first','manual','m','/first.json',X'2f66697273742e6a736f6e','first','{}','test',1),
+           ('selected','manual','m','/selected.json',X'2f73656c65637465642e6a736f6e','imported','{\"import_format\":\"claude-export\"}','test',2),
+           ('first-fallback','fallback','m','/fallback.json',X'2f66616c6c6261636b2e6a736f6e','first','{}','test',1),
+           ('no-native','fallback','m','/selected-without-bytes.json',NULL,'imported','{\"import_format\":\"claude-export\"}','test',2);"
+    ).unwrap();
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    for selected in [
+        None,
+        Some(vec!["native".into(), "manual".into(), "fallback".into()]),
+    ] {
+        let rows = reader
+            .chains_behind_index(
+                &[],
+                crate::StoppedChains::Settled,
+                RevisionChains::All,
+                selected.as_deref(),
+            )
+            .unwrap();
+        let source = |id| &rows.iter().find(|row| row.input == id).unwrap().source;
+        assert_eq!(
+            source("native").path.as_deref(),
+            Some("/display/session.jsonl")
+        );
+        assert_eq!(
+            source("native").path_bytes.as_deref(),
+            Some(b"/native/\xff.jsonl".as_slice())
+        );
+        assert_eq!(source("manual").path.as_deref(), Some("/selected.json"));
+        assert_eq!(
+            source("manual").path_bytes.as_deref(),
+            Some(b"/selected.json".as_slice())
+        );
+        assert_eq!(
+            source("fallback").path.as_deref(),
+            Some("/selected-without-bytes.json")
+        );
+        assert_eq!(source("fallback").path_bytes.as_deref(), None);
+        assert_eq!(source("fallback").format, "claude-export");
+    }
+}

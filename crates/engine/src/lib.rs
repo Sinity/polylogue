@@ -631,7 +631,9 @@ impl Engine {
             self.discard_confirmed_state();
         }
         let scope = self.cached_scope()?;
-        if self.loaded {
+        // Retained replay plans from stored chains, not machine locations.
+        // Leave discovery unloaded so enabling sources can still restore it.
+        if !self.config.reads_sources || self.loaded {
             return Ok(());
         }
         let reader = self.reads.reader()?;
