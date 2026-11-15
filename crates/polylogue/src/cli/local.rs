@@ -76,7 +76,7 @@ pub fn daemon(
                     matches!(
                         inner,
                         polylogue_store::StoreError::NewerSchema { .. }
-                            | polylogue_store::StoreError::NoMigration { .. }
+                            | polylogue_store::StoreError::OtherFormat { .. }
                             | polylogue_store::StoreError::EmbeddingsSchemaDiffers { .. }
                             | polylogue_store::StoreError::OlderFormat { .. }
                     )

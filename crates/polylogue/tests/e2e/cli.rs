@@ -734,47 +734,6 @@ mod attachments;
 #[cfg(target_os = "linux")]
 mod read_bench;
 
-#[cfg(target_os = "linux")]
-#[test]
-fn the_daemon_refuses_an_archive_it_has_no_migration_from_and_exits_with_its_code() {
-    let dir = tempfile::tempdir().unwrap();
-    let archive = dir.path().join("archive");
-    let home = dir.path().join("home");
-    let config = dir.path().join("config");
-    std::fs::create_dir_all(&home).unwrap();
-    let (opened, lock) = polylogue_store::Archive::open_or_create(&archive).unwrap();
-    drop(lock);
-    // As an archive written by a build that declared the current version
-    // with other tables.
-    rusqlite::Connection::open(opened.archive_db())
-        .unwrap()
-        .execute_batch("DROP TABLE revision")
-        .unwrap();
-    let mut command = crate::command(dir.path());
-    command
-        .arg("daemon")
-        .env("XDG_CONFIG_HOME", &config)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped());
-    let mut daemon = Daemon(polylogue_testkit::spawn_daemon(&mut command).unwrap());
-    let mut stderr = String::new();
-    daemon
-        .0
-        .stderr
-        .take()
-        .unwrap()
-        .read_to_string(&mut stderr)
-        .unwrap();
-    let status = daemon.0.wait().unwrap();
-    assert_eq!(status.code(), Some(78), "{stderr}");
-    assert!(
-        stderr.contains("has tables this Polylogue build has no migration from"),
-        "{stderr}"
-    );
-    assert!(!stderr.contains("serving"), "{stderr}");
-    assert!(!archive.join("daemon.sock").exists());
-}
-
 mod python;
 
 #[test]

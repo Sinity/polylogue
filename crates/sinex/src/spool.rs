@@ -380,24 +380,6 @@ impl Spool {
             .open(root.join("lock"))?;
         lock.try_lock()
             .map_err(|error| Error::Invalid(format!("producer spool is already open: {error}")))?;
-        for entry in fs::read_dir(&root)? {
-            let path = entry?.path();
-            if path
-                .extension()
-                .is_some_and(|extension| extension == "json" || extension == "body")
-            {
-                return invalid(
-                    "producer spool contains an earlier pending-frame format; preserve it before an explicit transition",
-                );
-            }
-        }
-        if !root.join("queue.db").exists()
-            && fs::read_dir(root.join("operations"))?.next().is_some()
-        {
-            return invalid(
-                "producer spool has an earlier queue format; preserve it before an explicit transition",
-            );
-        }
         let queue = Queue::open(&root.join("queue.db"))?;
         let spool = Self {
             root,
@@ -422,13 +404,7 @@ impl Spool {
             if !entry.file_name().to_str().is_some_and(hex_name) || !entry.file_type()?.is_dir() {
                 continue;
             }
-            refuse_previous_operation(&entry.path())?;
             let members = entry.path().join("operations");
-            if members.is_dir() {
-                for member in fs::read_dir(&members)? {
-                    refuse_previous_operation(&member?.path())?;
-                }
-            }
             let relative = format!(
                 "operations/{}",
                 entry.file_name().to_str().expect("hex name checked")
@@ -1498,16 +1474,6 @@ impl Spool {
     }
 }
 
-/// Removes the `.preparing-*` and `.ack-preparing-*` directories in `directory`.
-fn refuse_previous_operation(directory: &Path) -> Result<()> {
-    if directory.join("frame.json").try_exists()? || directory.join("metadata.json").try_exists()? {
-        return invalid(
-            "producer spool contains an earlier pending payload format; preserve it before an explicit transition",
-        );
-    }
-    Ok(())
-}
-
 fn remove_staging_database(directory: &Path) -> Result<()> {
     // Every accepted member is already in the main queue transaction. The
     // closed private database is temporary metadata, not another authority.
@@ -1521,6 +1487,7 @@ fn remove_staging_database(directory: &Path) -> Result<()> {
     sync(directory)
 }
 
+/// Removes the `.preparing-*` and `.ack-preparing-*` directories in `directory`.
 fn remove_dot_entries(directory: &Path) -> Result<()> {
     let mut removed = false;
     for entry in fs::read_dir(directory)? {

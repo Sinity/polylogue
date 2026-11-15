@@ -1,16 +1,14 @@
-//! Current table declarations. The durable register converts its exact
-//! immediate predecessor at exclusive open; other differences are refused.
-//! Index3 and primary cache5 store normalized request-text identities alongside raw text hashes.
-//! Earlier parsed formats rebuild from retained originals.
-//! Unknown current shapes refuse.
-//! Indexes from another format are set aside and rebuilt. Paid-vector
-//! stores retain their bytes and gain declared additions at normal open.
+//! Table declarations. Each database has one current format: an empty file
+//! is created at the current version with exactly the tables declared here,
+//! and a file at that version with these tables opens. Any other file is
+//! refused unchanged; nothing converts it. An index refused this way is
+//! replaced by the archive's open, since it is derived from stored bytes.
+//! `embeddings.db` holds paid vectors and is never replaced: a file written by
+//! an earlier build gains the tables added since ([`ensure_embeddings`]).
 
 use crate::{Result, StoreError};
 use rusqlite::{Connection, OptionalExtension};
 use std::collections::HashSet;
-
-mod request_hash_transition;
 
 pub const ARCHIVE: &str = concat!(
     include_str!("schema/archive.sql"),
@@ -77,12 +75,12 @@ const EMBEDDINGS_ADDITIONS: &[&str] = &[
     include_str!("schema/query_vector.sql"),
 ];
 
-/// The current durable register version.
+/// The register format version.
 pub const ARCHIVE_VERSION: u32 = 3;
 
 /// The index schema and row encoding version. Reading versions are independent.
 pub const INDEX_VERSION: u32 = 3;
-/// The primary cache indexes original materials, native admission and canonical request hashes.
+/// The primary cache's schema and row encoding version.
 pub const PRIMARY_INDEX_VERSION: u32 = 5;
 
 pub const fn index_version(primary: bool) -> u32 {
@@ -111,7 +109,7 @@ fn check_format(conn: &Connection, database: &'static str) -> Result<()> {
         return Err(StoreError::OlderFormat { database });
     }
     if found == 0 && !shape(conn)?.is_empty() {
-        return Err(StoreError::NoMigration { database, found });
+        return Err(StoreError::OtherFormat { database, found });
     }
     Ok(())
 }
@@ -165,10 +163,9 @@ fn create_index_in(conn: &Connection, primary: bool) -> Result<()> {
 }
 
 /// Creates the index in an empty file, or opens one at this version with the
-/// declared tables, adding any read index it lacks. The exact preceding
-/// count-trigger shape advances atomically without rewriting rows. Other
-/// shapes are refused unchanged. Earlier versions rebuild through archive open; an
-/// unknown current-format shape is never reset.
+/// declared tables, adding any read index it lacks. Any other index is
+/// refused unchanged; the archive's open sets it aside and builds a new one
+/// ([`crate::archive::index_rebuild`]).
 pub fn ensure_index(conn: &Connection) -> Result<()> {
     ensure_index_in(conn, false)
 }
@@ -188,10 +185,7 @@ fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
     if found == 0 {
         create_index_in(&tx, primary)?;
     } else {
-        // This reverse reference is needed by the writer, including a resumed
-        // first build. Adding the index preserves rows and table identity.
-        tx.execute_batch(crate::parser_context::VERSION_INDEX)?;
-        // Physical indexes are added before the shape check, so an index missing
+        // Read indexes are added before the shape check, so an index missing
         // only those is completed rather than refused. A first build still in
         // progress leaves out the ones it defers: it builds each once from a
         // sorted scan when it ends, and building one here would read the
@@ -217,47 +211,16 @@ fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
         if primary {
             tx.execute_batch(include_str!("primary/projection/read_indexes.sql"))?;
         }
-        let current = |conn: &Connection| {
-            if building(conn)? {
-                same_build_schema_in(conn, primary, false)
-            } else {
-                same_index_schema_in(conn, primary, false)
-            }
+        let matches = if deferring {
+            same_build_schema_in(&tx, primary)?
+        } else {
+            same_index_schema_in(&tx, primary)?
         };
-        if !current(&tx)? {
-            // Only the exact preceding count-trigger shape evolves in place.
-            // Tables, row encodings and durable parser progress do not change.
-            let previous = if deferring {
-                same_build_schema_in(&tx, primary, true)?
-            } else {
-                same_index_schema_in(&tx, primary, true)?
-            };
-            if !previous {
-                return Err(StoreError::NoMigration {
-                    database: "index",
-                    found,
-                });
-            }
-            for line in include_str!("schema/session_counts_before_transaction.sql").lines() {
-                if let Some(declaration) = line.strip_prefix("CREATE TRIGGER ") {
-                    let name = declaration
-                        .split_whitespace()
-                        .next()
-                        .expect("declared count trigger");
-                    tx.execute_batch(&format!("DROP TRIGGER {name}"))?;
-                }
-            }
-            let file: String = tx.query_row(
-                "SELECT file FROM pragma_database_list WHERE name='main'",
-                [],
-                |row| row.get(0),
-            )?;
-            crate::fault::check("index.session_counts_transition", &file)?;
-            if !current(&tx)? {
-                return Err(StoreError::Invalid(
-                    "session count transition did not produce the current index".into(),
-                ));
-            }
+        if !matches {
+            return Err(StoreError::OtherFormat {
+                database: "index",
+                found,
+            });
         }
     }
     tx.commit()?;
@@ -319,9 +282,8 @@ pub fn building(conn: &Connection) -> Result<bool> {
     Ok(value.as_deref() == Some("1"))
 }
 
-/// Creates the current durable register, or opens it under the archive's
-/// exclusive lock. Exact predecessors gain unknown assertion times, source
-/// memberships and validated canonical request hashes in one transaction.
+/// Creates the register in an empty file, or opens one at this version with
+/// the declared tables. Any other register is refused unchanged.
 pub fn ensure_archive(conn: &Connection) -> Result<()> {
     crate::sql_functions::register(conn)?;
     check_format(conn, "archive")?;
@@ -333,66 +295,20 @@ pub fn ensure_archive(conn: &Connection) -> Result<()> {
             current: ARCHIVE_VERSION,
         });
     }
-    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
-    match found {
-        0 => {
-            tx.pragma_update(None, "application_id", FORMAT_ID)?;
-            tx.execute_batch(ARCHIVE)?;
-        }
-        1 => {
-            let previous = ARCHIVE.replacen(
-                crate::assertions::SCHEMA,
-                include_str!("schema/assertions_before_unknown_time.sql"),
-                1,
-            );
-            if !same_schema(&tx, &[&previous])? {
-                return Err(StoreError::NoMigration {
-                    database: "archive",
-                    found,
-                });
-            }
-            relax_assertion_time(&tx)?;
-        }
-        _ if same_schema(&tx, &[ARCHIVE])? => {}
-        _ => {
-            return Err(StoreError::NoMigration {
-                database: "archive",
-                found,
-            });
-        }
-    }
-    if found != 0 && found < ARCHIVE_VERSION {
-        request_hash_transition::apply(&tx)?;
-    }
-    if found != ARCHIVE_VERSION {
+    if found == 0 {
+        let tx =
+            rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+        tx.pragma_update(None, "application_id", FORMAT_ID)?;
+        tx.execute_batch(ARCHIVE)?;
         set_version(&tx, ARCHIVE_VERSION)?;
+        tx.commit()?;
+        return Ok(());
     }
-    tx.commit()?;
-    Ok(())
-}
-
-fn relax_assertion_time(tx: &rusqlite::Transaction<'_>) -> Result<()> {
-    // Relax the constraint without rewriting assertion rows or their inbound
-    // references. The register remains under the same immediate transaction.
-    tx.execute_batch("ALTER TABLE assertion ALTER COLUMN created_at DROP NOT NULL")?;
-    let current = Connection::open_in_memory()?;
-    current.execute_batch(ARCHIVE)?;
-    let provenance: String = current.query_row(
-        "SELECT sql FROM sqlite_schema WHERE type='table' AND name='assertion_import'",
-        [],
-        |r| r.get(0),
-    )?;
-    tx.execute_batch(&provenance)?;
-    let file: String = tx.query_row(
-        "SELECT file FROM pragma_database_list WHERE name='main'",
-        [],
-        |r| r.get(0),
-    )?;
-    crate::fault::check("archive.authored_time_transition", &file)?;
-    if shape(tx)? != shape(&current)? {
-        return Err(StoreError::Invalid(
-            "authored-time transition did not produce the current register".into(),
-        ));
+    if found != ARCHIVE_VERSION || !same_schema(conn, &[ARCHIVE])? {
+        return Err(StoreError::OtherFormat {
+            database: "archive",
+            found,
+        });
     }
     Ok(())
 }
@@ -492,14 +408,11 @@ pub(crate) fn same_schema(conn: &Connection, sql: &[&str]) -> Result<bool> {
 }
 
 /// Physical indexes created at open do not change the parsed table format.
-fn same_index_schema_in(conn: &Connection, primary: bool, previous_counts: bool) -> Result<bool> {
+fn same_index_schema_in(conn: &Connection, primary: bool) -> Result<bool> {
     let expected = Connection::open_in_memory()?;
     base_index(&expected)?;
     if primary {
         add_primary(&expected)?;
-    }
-    if previous_counts {
-        expected.execute_batch(include_str!("schema/session_counts_before_transaction.sql"))?;
     }
     let base = shape(&expected)?;
     expected.execute_batch(OPEN_INDEXES)?;
@@ -517,15 +430,12 @@ fn same_index_schema_in(conn: &Connection, primary: bool, previous_counts: bool)
 }
 
 /// A pending first build may lack only the indexes the writer deferred.
-fn same_build_schema_in(conn: &Connection, primary: bool, previous_counts: bool) -> Result<bool> {
+fn same_build_schema_in(conn: &Connection, primary: bool) -> Result<bool> {
     let expected = Connection::open_in_memory()?;
     base_index(&expected)?;
     expected.execute_batch(OPEN_INDEXES)?;
     if primary {
         add_primary(&expected)?;
-    }
-    if previous_counts {
-        expected.execute_batch(include_str!("schema/session_counts_before_transaction.sql"))?;
     }
     let found = shape(conn)?;
     let mut wanted = shape(&expected)?;

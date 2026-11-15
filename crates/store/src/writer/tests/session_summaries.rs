@@ -1,66 +1,16 @@
 use super::*;
-use rusqlite::trace::{TraceEvent, TraceEventCodes};
-use std::cell::Cell;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
 };
 
-#[derive(Clone, Copy, Debug, Default)]
-struct Work {
-    statements: u64,
-    vm: u64,
-    contribution_reads: u64,
-    missing_old_reads: u64,
-    script_vm: u64,
-}
-thread_local! { static WORK: Cell<Work> = Cell::new(Work::default()); }
-fn observe(event: TraceEvent<'_>) {
-    if let TraceEvent::Profile(statement, _) = event {
-        WORK.with(|work| {
-            let mut w = work.get();
-            w.statements += 1;
-            let steps = statement.get_status(rusqlite::StatementStatus::VmStep) as u64;
-            let sql = statement.sql();
-            // These row insertions and summary reads each own one execution
-            // with the cache disabled; reused resolver statements are excluded.
-            if sql.starts_with("INSERT INTO message(")
-                || sql.starts_with("INSERT INTO block(")
-                || sql.starts_with("INSERT INTO tool_call(")
-                || sql.starts_with("UPDATE session SET")
-                || sql.contains("run_by_script=1")
-                || sql.starts_with("SELECT session_pk,duplicate_of")
-            {
-                w.vm += steps;
-            }
-            if sql.contains("run_by_script=1") {
-                w.script_vm += steps;
-            }
-            w.contribution_reads += u64::from(
-                statement
-                    .sql()
-                    .starts_with("SELECT session_pk,duplicate_of IS NULL"),
-            );
-            w.missing_old_reads +=
-                u64::from(sql.starts_with("SELECT session_pk, parent_id, session_order, id"));
-            work.set(w);
-        });
-    }
-}
-fn connection(legacy: bool) -> Connection {
+fn connection() -> Connection {
     let c = Connection::open_in_memory().unwrap();
     crate::schema::create_index(&c).unwrap();
     c.pragma_update(None, "foreign_keys", true).unwrap();
-    c.set_prepared_statement_cache_capacity(0);
-    if legacy {
-        c.execute_batch(include_str!(
-            "../../schema/session_counts_before_transaction.sql"
-        ))
-        .unwrap();
-    }
     c
 }
-fn apply(tx: &Transaction<'_>, mut b: Batch, legacy: bool) {
+fn apply(tx: &Transaction<'_>, mut b: Batch) {
     resolve::prepare_index(tx, &mut b, 1, false).unwrap();
     let changes = crate::change_summary::ChangeSummary::start(tx).unwrap();
     write_rows(
@@ -75,9 +25,7 @@ fn apply(tx: &Transaction<'_>, mut b: Batch, legacy: bool) {
         &changes,
     )
     .unwrap();
-    if !legacy {
-        changes.finish_summaries(tx, Some(1)).unwrap();
-    }
+    changes.finish_summaries(tx, Some(1)).unwrap();
     let pks = tx
         .prepare("SELECT pk FROM session")
         .unwrap()
@@ -124,9 +72,9 @@ fn fresh(count: usize, input: &str, session: &str) -> Batch {
     )
 }
 #[test]
-fn fresh_message_counts_write_once_and_do_not_read_back_each_contribution() {
-    let measure = |count, history, legacy, history_session| {
-        let mut c = connection(legacy);
+fn fresh_message_counts_update_each_session_once_per_transaction() {
+    let measure = |count, history, history_session| {
+        let mut c = connection();
         if history > 0 {
             let tx = c.transaction().unwrap();
             let messages = (0..history)
@@ -154,7 +102,6 @@ fn fresh_message_counts_write_once_and_do_not_read_back_each_contribution() {
             apply(
                 &tx,
                 batch("old", Route::Live, 0, messages, &[history_session]),
-                legacy,
             );
             tx.commit().unwrap();
         }
@@ -167,10 +114,6 @@ fn fresh_message_counts_write_once_and_do_not_read_back_each_contribution() {
         }))
         .unwrap();
         let tx = c.transaction().unwrap();
-        WORK.with(|w| w.set(Work::default()));
-        tx.trace_v2(TraceEventCodes::SQLITE_TRACE_PROFILE, Some(observe));
-        // Only the application belongs to this observation; independent full
-        // count verification is performed after stopping the trace below.
         let mut b = fresh(count, "fresh", "s");
         resolve::prepare_index(&tx, &mut b, 1, false).unwrap();
         let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
@@ -186,11 +129,7 @@ fn fresh_message_counts_write_once_and_do_not_read_back_each_contribution() {
             &changes,
         )
         .unwrap();
-        if !legacy {
-            changes.finish_summaries(&tx, Some(1)).unwrap();
-        }
-        tx.trace_v2(TraceEventCodes::empty(), None);
-        let w = WORK.with(Cell::get);
+        changes.finish_summaries(&tx, Some(1)).unwrap();
         let updates = updates.load(Ordering::Relaxed);
         let pk: i64 = tx
             .query_row("SELECT pk FROM session WHERE id='claude-code:s'", [], |r| {
@@ -201,39 +140,20 @@ fn fresh_message_counts_write_once_and_do_not_read_back_each_contribution() {
             crate::derive::counts::read(&tx, pk, true).unwrap(),
             crate::derive::counts::compute(&tx, pk).unwrap()
         );
-        (w, updates)
+        updates
     };
-    let small = measure(1, 0, false, "unrelated");
-    let large = measure(1024, 0, false, "unrelated");
-    let history = measure(1024, 4096, false, "unrelated");
-    let same_session = measure(1024, 4096, false, "s");
-    let old = measure(1024, 4096, true, "s");
-    eprintln!(
-        "session count writer work: small={small:?} large={large:?} history={history:?} same_session={same_session:?} row-trigger control={old:?}"
-    );
-    // One activity update and one final summary update, independent of message count.
-    assert_eq!(small.1, 2);
-    assert_eq!(large.1, 2);
-    assert_eq!(history.1, 2);
-    assert_eq!(same_session.1, 2);
-    assert_eq!(small.0.script_vm, large.0.script_vm);
-    assert_eq!(large.0.script_vm, history.0.script_vm);
-    assert_eq!(history.0.script_vm, same_session.0.script_vm);
-    assert_eq!(large.0.contribution_reads, 0);
-    assert_eq!(history.0.contribution_reads, 0);
-    assert_eq!(small.0.missing_old_reads, 0);
-    assert_eq!(large.0.missing_old_reads, 0);
-    assert_eq!(history.0.missing_old_reads, 0);
-    assert_eq!(same_session.0.missing_old_reads, 0);
-    assert!(old.1 >= 1024);
-    assert!(same_session.0.vm < old.0.vm);
-    // PROFILE counts top-level executions; trigger programs are included in VM steps.
+    // One activity update and one final summary update, independent of the
+    // number of messages and of the history already in the index.
+    assert_eq!(measure(1, 0, "unrelated"), 2);
+    assert_eq!(measure(1024, 0, "unrelated"), 2);
+    assert_eq!(measure(1024, 4096, "unrelated"), 2);
+    assert_eq!(measure(1024, 4096, "s"), 2);
 }
 
 #[test]
 fn count_contributions_keep_script_changes_late_results_and_rollback_exact() {
     use polylogue_model::{ErrorReason, ToolAction, ToolOutcome};
-    let mut c = connection(false);
+    let mut c = connection();
     let mut code = text_message("code", "s", Role::Assistant, "", None);
     code.blocks = vec![Block::ToolCall {
         call_id: Some("code".into()),
@@ -250,7 +170,6 @@ fn count_contributions_keep_script_changes_late_results_and_rollback_exact() {
         apply(
             &tx,
             batch("code-input", Route::Live, 0, vec![row(0, code)], &["s"]),
-            false,
         );
         tx.commit().unwrap();
     }
@@ -274,7 +193,6 @@ fn count_contributions_keep_script_changes_late_results_and_rollback_exact() {
         apply(
             &tx,
             batch("script-input", Route::Live, 0, vec![row(0, script)], &["s"]),
-            false,
         );
         tx.commit().unwrap();
     }
@@ -292,7 +210,7 @@ fn count_contributions_keep_script_changes_late_results_and_rollback_exact() {
     let late = batch("late-input", Route::Live, 0, vec![row(0, result)], &["s"]);
     {
         let tx = c.transaction().unwrap();
-        apply(&tx, late.clone(), false);
+        apply(&tx, late.clone());
         assert_eq!(
             tx.query_row("SELECT error_count FROM session", [], |r| r
                 .get::<_, i64>(0))
@@ -308,7 +226,7 @@ fn count_contributions_keep_script_changes_late_results_and_rollback_exact() {
     );
     {
         let tx = c.transaction().unwrap();
-        apply(&tx, late, false);
+        apply(&tx, late);
         tx.commit().unwrap();
     }
     let tx = c.transaction().unwrap();
@@ -354,7 +272,7 @@ fn reopened_missing_count_baseline_is_folded_without_blessing_a_stale_version() 
         let mut c = Connection::open(&path).unwrap();
         crate::schema::create_index(&c).unwrap();
         let tx = c.transaction().unwrap();
-        apply(&tx, fresh(8, "old", "s"), false);
+        apply(&tx, fresh(8, "old", "s"));
         tx.commit().unwrap();
         c.execute("UPDATE session SET word_count=NULL", []).unwrap();
         c.execute("INSERT INTO derive_state(name,session_pk,version)SELECT 'counts',pk,'stale' FROM session",[]).unwrap();
@@ -369,7 +287,7 @@ fn reopened_missing_count_baseline_is_folded_without_blessing_a_stale_version() 
     );
     {
         let tx = c.transaction().unwrap();
-        apply(&tx, fresh(1, "new", "s"), false);
+        apply(&tx, fresh(1, "new", "s"));
         tx.commit().unwrap();
     }
     assert_eq!(
@@ -402,7 +320,7 @@ fn fresh_installed_counts_are_invalidated_by_same_transaction_visibility_or_sess
         "on_active_path=0",
         "session_pk=(SELECT pk FROM session WHERE id='claude-code:to')",
     ] {
-        let mut c = connection(false);
+        let mut c = connection();
         let tx = c.transaction().unwrap();
         let mut message = text_message("fresh", "s", Role::Assistant, "", None);
         message.blocks.clear();
@@ -455,7 +373,7 @@ fn fresh_installed_counts_are_invalidated_by_same_transaction_visibility_or_sess
 
 #[test]
 fn compaction_moves_and_removal_keep_both_sessions_exact_across_rollback() {
-    let mut c = connection(false);
+    let mut c = connection();
     let mut b = batch("events", Route::Live, 0, vec![], &["s", "to"]);
     b.parse[0].output.events.push(Event {
         session: Some(sid("s")),
@@ -470,7 +388,7 @@ fn compaction_moves_and_removal_keep_both_sessions_exact_across_rollback() {
     });
     {
         let tx = c.transaction().unwrap();
-        apply(&tx, b, false);
+        apply(&tx, b);
         tx.commit().unwrap();
     }
     for remove in [false, true] {
@@ -536,7 +454,7 @@ fn compaction_moves_and_removal_keep_both_sessions_exact_across_rollback() {
 
 #[test]
 fn fresh_contributions_match_the_full_fold_for_every_recorded_author() {
-    let mut c = connection(false);
+    let mut c = connection();
     let tx = c.transaction().unwrap();
     let mut messages = Vec::new();
     for (n, role, kind) in [
@@ -553,11 +471,7 @@ fn fresh_contributions_match_the_full_fold_for_every_recorded_author() {
         m.prompt_kind = kind;
         messages.push(row(n, m));
     }
-    apply(
-        &tx,
-        batch("authors", Route::Live, 0, messages, &["s"]),
-        false,
-    );
+    apply(&tx, batch("authors", Route::Live, 0, messages, &["s"]));
     let got=tx.query_row("SELECT human_prompt_count,human_command_count,human_word_count,model_word_count,word_count FROM session",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?))).unwrap();
     assert_eq!(got, (1, 1, 6, 6, 12));
 }
@@ -565,7 +479,7 @@ fn fresh_contributions_match_the_full_fold_for_every_recorded_author() {
 #[test]
 fn background_outcomes_change_counts_only_for_the_named_call() {
     use polylogue_model::{ErrorReason, ToolAction, ToolOutcome};
-    let mut c = connection(false);
+    let mut c = connection();
     let mut call = text_message("call", "s", Role::Assistant, "", None);
     call.blocks = vec![Block::ToolCall {
         call_id: Some("named".into()),
@@ -582,7 +496,6 @@ fn background_outcomes_change_counts_only_for_the_named_call() {
         apply(
             &tx,
             batch("call", Route::Live, 0, vec![row(0, call)], &["s"]),
-            false,
         );
         tx.commit().unwrap();
     }
@@ -604,7 +517,7 @@ fn background_outcomes_change_counts_only_for_the_named_call() {
                 output_file: None,
             });
         let tx = c.transaction().unwrap();
-        apply(&tx, b, false);
+        apply(&tx, b);
         assert_eq!(
             tx.query_row("SELECT error_count FROM session", [], |r| r
                 .get::<_, i64>(0))

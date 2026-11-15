@@ -146,9 +146,14 @@ fn reopening_a_first_build_does_not_build_its_deferred_indexes() {
 #[test]
 fn an_archive_newer_or_with_unknown_tables_is_refused_and_left_as_it_is() {
     let newer = format!("PRAGMA user_version = {}", schema::ARCHIVE_VERSION + 1);
-    // The second as an archive written by a build that declared the current
+    let older = format!("PRAGMA user_version = {}", schema::ARCHIVE_VERSION - 1);
+    // The last as an archive written by a build that declared the current
     // version with other tables.
-    for (change, newer) in [(newer.as_str(), true), ("DROP TABLE revision", false)] {
+    for (change, newer) in [
+        (newer.as_str(), true),
+        (older.as_str(), false),
+        ("DROP TABLE revision", false),
+    ] {
         let dir = tempfile::tempdir().unwrap();
         let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
         drop(lock);
@@ -170,7 +175,7 @@ fn an_archive_newer_or_with_unknown_tables_is_refused_and_left_as_it_is() {
         } else {
             matches!(
                 error,
-                StoreError::NoMigration {
+                StoreError::OtherFormat {
                     database: "archive",
                     ..
                 }

@@ -20,10 +20,13 @@ working rules that apply here.
 ## The design of record
 
 The pages in `docs/` are Polylogue's design: behaviour, model and formats,
-one page per area, each fact on one page. Relevant design constraints bind
-changes to that behaviour. The selected Bead bounds the current delivery;
-unrelated future capabilities and other design gaps do not become its scope
-or release blockers. `docs/README.md` indexes
+one page per area, each fact on one page. They describe the product as
+designed, not the code as it is; when the code and a page differ, the page is
+the target and closing the difference is the work. The selected Bead bounds
+what the current delivery must finish: unrelated future capabilities and
+other design gaps do not become its scope or release blockers. It does not
+license leaving a wrong design or a known defect in the code the delivery
+changes. `docs/README.md` indexes
 the pages and defines how the operator's rulings are cited. Start with `docs/architecture.md` (purpose, principles, modes, stores,
 durability, pipeline, configuration and clocks), then read the page that owns
 the area you are changing. CLI help, MCP tool schemas and module
@@ -130,11 +133,11 @@ configuration.
 ## How work is done here
 
 **Design first.** Before writing code, read the page in `docs/` that owns the
-area, its relevant linked pages, the current code of the area, and the
+area, the pages it links, the current code of the area, and the
 predecessor's implementation and tests for what you are building (Polylogue's
-earlier Python backend is in this repository's Git history). Implement
-the selected behaviour completely on the architecture's abstractions, with
-the predecessor's behaviour and test cases ported.
+earlier Python implementation is in this repository's Git history). Write the
+whole change from the design: complete features, built on the architecture's
+abstractions, with the predecessor's behaviour and test cases ported.
 
 **Edit in bulk; type-check as you go.** Change whole modules, crates and call
 sites in one pass. Run `cargo xtask check --changed` (formatting, boundaries,
@@ -142,10 +145,17 @@ clippy and the tests the change can affect) after each layer you write; it
 reports every type error at once. Run the wider tests once the change is
 coherent.
 
-**Review before verification.** Read the coherent diff against the selected
-acceptance, owning design and predecessor behaviour. Fix unmet requirements,
-duplicated mechanisms, unconverted callers, invalid refusals and weak tests
-in one pass, then revisit the affected invariants.
+**Review your own work before verifying it.** Read the whole diff once
+against the task, the owning page, `docs/architecture.md` and the
+predecessor's behaviour, and list everything wrong in that one pass: a
+requirement not met, a mechanism duplicated, a predecessor left in place, a
+caller not converted, a limit that refuses valid input, a test that cannot
+fail, a name that does not say what the thing is, a case the design covers
+and the code does not. Fix the whole list, then read only what the fixes
+changed. Then verify. The author makes the work good; a separate reviewer is not the mechanism for
+that. "Review should not look for a single wrong thing, it should strive to
+list everything wrong. so that there is no forever loop of fixing and finding
+new issue" (operator, 2026-09-29, `cc:9ec284a7-6a6a-486b-949f-d8bbdb22ae1e:16cb3a25-318f-455b-82b5-bf0f6f732e30`).
 
 **Verify scoped to the change.** Commit first, so a result belongs to a
 commit. While editing, `cargo xtask check --changed` runs formatting, clippy
@@ -155,16 +165,16 @@ every test runs again on master after the merge. Run a full local check only
 to reproduce a failure CI reported. Before treating a failure as yours,
 compare with the same test on current master (`gh run list -b master`).
 
-**Finish the selected delivery.** The Bead owns its outcome, acceptance and
-actual prerequisites. Fix findings that invalidate that acceptance in the
-same work. Independent findings do not enlarge it: use an existing task, or
-file a concrete outcome with a finite completion condition when useful.
-Unselected designs and globally ready tasks are not implicit prerequisites.
-Source acceptance requires the tested change on master; runtime acceptance
-requires its named deployment, data and client observations. Keep one concise
-current-state note with evidence pointers; native task, Git, CI and job
-history retain the chronology. Leave unmet criteria open and name the next
-observation or external blocker that decides them.
+**Finish what the task names.** A task states its done condition before work
+starts, as behaviour on master and the tests that prove it; a runtime task
+also names the deployment, data and client observations that prove it. A
+defect inside the area that stops that condition from holding is fixed in the
+same work, and so is a wrong design in the code the change touches (*Full
+features, built on a whole architecture*, below). Anything else found goes on
+a Bead with what was found, and the current work lands without it; unselected
+designs and globally ready tasks are not implicit prerequisites. Keep one
+current-state note on the Bead with evidence pointers, and leave unmet
+criteria open, naming the observation or blocker that decides them.
 
 **Git and pull requests.** Work on a branch from `origin/master`; every pull
 request targets `master`, and stacked pull requests are not used. Commit with
@@ -197,9 +207,11 @@ The operator decides product scope and intent, privacy, money (paid APIs,
 purchased vectors) and anything published outward. Deploying, activating,
 restarting, rebuilding an archive and the release cutover are yours: original
 inputs stay where their sources keep them and an old archive is set aside, not
-deleted. Target one current stored format. The supported transactional
-archive transitions in `docs/archive.md` preserve durable rows and compatible
-derived progress; they do not retain a second reader. When an operator
+deleted. No stored format or archive is deployed in a sense that needs
+compatibility or migration; target one current format. Original input bytes
+and paid outputs such as embedding vectors are preserved; a one-time
+operation on an archive is written, run, and leaves a result, not durable
+code. When an operator
 question is open, take the conservative option, keep
 working on the rest, and put the question in the report and on the Bead.
 
@@ -241,6 +253,8 @@ do more than its predecessor did, without the predecessor's machinery. "Why
 build some sort of bare-bones features which will need to be replaced by
 actual full-fledged ones anyway?" (2026-10-27,
 `cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:3c3dd59f-4560-4fee-95d4-5c43b6c94ca5`).
+When an area you are changing works but its design is wrong, redesign it as
+part of the task; an area you are not changing gets a Bead.
 
 **Use the predecessor's knowledge, not its mechanisms.** The Python
 predecessor had a working core under layers of repair and bookkeeping. Port
@@ -317,9 +331,7 @@ and cleanup before raising timeouts or cutting coverage.
 - Each stored format has one current version (`docs/archive.md`). A format
   change rewrites the format, its writers and its readers together and
   regenerates test data; no reader for an earlier version of Polylogue's own
-  formats is kept. A compatible index keeps its progress through a durable
-  constraint relaxation; changed derived formats are re-parsed from the
-  original inputs.
+  formats is kept, and what is derived is re-parsed from the original inputs.
   Inputs are read where the outside tools write them and recognised by
   declared structure (`docs/capture.md`).
 
