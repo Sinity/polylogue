@@ -1322,7 +1322,7 @@ fn a_late_other_host_original_is_parsed_with_an_empty_local_home() {
     let pass = parsing.join().unwrap();
     let (frame, count) = publication.expect("the late original's parsed facts reached the spool");
     assert_eq!(count, 1);
-    assert!(frame.contains(&input), "{frame}");
+    assert!(frame.contains(input), "{frame}");
     assert!(
         frame.contains("confirmed original words"),
         "{frame}; {pass:?}"

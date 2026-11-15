@@ -1677,10 +1677,16 @@ fn frames_of_one_parsed_chain_are_sent_one_at_a_time_in_queue_order() {
         Vec::<String>::new()
     );
     spool.acknowledge(ack(&first, false, Some(5))).unwrap();
-    assert_eq!(ready(&spool, &[other.clone()]), vec![second.clone()]);
+    assert_eq!(
+        ready(&spool, std::slice::from_ref(&other)),
+        vec![second.clone()]
+    );
     drop(spool);
     let spool = Spool::open(directory.path(), "host").unwrap();
-    assert_eq!(ready(&spool, &[other.clone()]), vec![second.clone()]);
+    assert_eq!(
+        ready(&spool, std::slice::from_ref(&other)),
+        vec![second.clone()]
+    );
     // A refused frame was never admitted, so it does not hold back its chain.
     let mut refused = ack(&second, false, None);
     refused.result = FrameResult::Refused {
@@ -1688,5 +1694,5 @@ fn frames_of_one_parsed_chain_are_sent_one_at_a_time_in_queue_order() {
         reason: "synthetic refusal".into(),
     };
     spool.acknowledge(refused).unwrap();
-    assert_eq!(ready(&spool, &[other.clone()]), vec![third]);
+    assert_eq!(ready(&spool, std::slice::from_ref(&other)), vec![third]);
 }
