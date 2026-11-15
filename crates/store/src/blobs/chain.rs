@@ -109,6 +109,55 @@ impl StoredChain {
         }
         Ok(out)
     }
+
+    /// Where this chain's bytes and `other`'s first differ, comparing from
+    /// `from` (bytes before it are known to be alike); the shorter length
+    /// when one chain's bytes begin the other's.
+    pub fn shared_prefix(
+        &self,
+        other: &StoredChain,
+        store: &crate::blobs::Blobs,
+        from: u64,
+    ) -> Result<u64> {
+        let end = self.length.min(other.length);
+        if from >= end {
+            return Ok(end);
+        }
+        let (mut mine, mut theirs) = (Cursor::range(from, end), Cursor::range(from, end));
+        let (mut a, mut b) = (vec![0; 1 << 20], vec![0; 1 << 20]);
+        let mut at = from;
+        while at < end {
+            let want = a.len().min(usize::try_from(end - at).unwrap_or(usize::MAX));
+            fill(&mut mine, &mut a[..want], self.extents.as_deref(), store)?;
+            fill(&mut theirs, &mut b[..want], other.extents.as_deref(), store)?;
+            if let Some(differs) = a[..want].iter().zip(&b[..want]).position(|(x, y)| x != y) {
+                // An abandoned range keeps no read transaction open.
+                self.release();
+                other.release();
+                return Ok(at + differs as u64);
+            }
+            at += want as u64;
+        }
+        Ok(end)
+    }
+}
+
+/// Reads exactly `out.len()` bytes of the range `cursor` reads.
+fn fill(
+    cursor: &mut Cursor,
+    out: &mut [u8],
+    extents: Option<&ExtentList>,
+    store: &crate::blobs::Blobs,
+) -> Result<()> {
+    let mut at = 0;
+    while at < out.len() {
+        let n = cursor.read(&mut out[at..], extents, store)?;
+        if n == 0 {
+            return Err(StoreError::Invalid("stored byte range missing".into()));
+        }
+        at += n;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

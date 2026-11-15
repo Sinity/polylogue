@@ -164,6 +164,13 @@ pub(crate) struct Plan {
     pub(crate) pending: Option<String>,
     pub(crate) checkpoint: Option<polylogue_model::batch::ParserCheckpoint>,
     pub(crate) raw: Option<RawState>,
+    /// Older chains of the input recorded from this chain's reading as the
+    /// parse passes the end of the bytes they share with it, by stop
+    /// ([`crate::prefix_copies`]). No range reads past the first stop.
+    pub(crate) prefix_copies: Vec<crate::prefix_copies::PrefixCopy>,
+    /// The end of the last range parsed: once it reaches a copy's stop, the
+    /// parse has read every complete record the shared bytes hold.
+    pub(crate) read_to: u64,
 }
 
 impl Plan {
@@ -219,6 +226,8 @@ impl Plan {
             waiting: false,
             input_finished: false,
             source,
+            prefix_copies: Vec::new(),
+            read_to: parse_pos,
         }
     }
 
@@ -250,7 +259,11 @@ impl Plan {
         } else {
             self.parse_pos
         };
-        (start, self.size.min(start.saturating_add(self.span)))
+        let end = self.size.min(start.saturating_add(self.span));
+        match self.prefix_copies.first() {
+            Some(copy) if copy.stop > start => (start, end.min(copy.stop)),
+            _ => (start, end),
+        }
     }
 
     pub(crate) fn next_job(
@@ -345,11 +358,22 @@ impl Plan {
             return;
         }
         self.parser_state = d.parser_state;
+        // A range that ends at a copy's stop is cut short only for the copy.
+        let at_stop = self
+            .prefix_copies
+            .first()
+            .is_some_and(|copy| copy.stop == d.end);
+        if parsed {
+            self.read_to = d.end;
+        }
         if !parsed {
             self.parse_pos = d.end;
         } else if d.parsed_upto > d.start {
             self.parse_pos = d.parsed_upto;
             self.span = self.chunk;
+        } else if at_stop {
+            // No record completed before the stop: the copy is taken where
+            // the parse stands, and the next range reads on from there.
         } else if d.end < self.size {
             // One record is longer than the range read: read more of it.
             self.span = (d.end - d.start).saturating_mul(2);
