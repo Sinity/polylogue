@@ -26,28 +26,7 @@ pub(crate) fn version_key(version: &TextSourceVersion) -> Result<String> {
     String::from_utf8(bytes).map_err(|error| StoreError::Invalid(error.to_string()))
 }
 
-pub(crate) fn receipt(value: u64) -> Result<i64> {
-    i64::try_from(value).ok().filter(|n| *n > 0).ok_or_else(|| {
-        StoreError::Invalid("fragment admission is outside the positive SQLite range".into())
-    })
-}
-
 impl PreparedFragments {
-    pub(crate) fn retain(&mut self, mask: &[bool]) -> Result<()> {
-        if self.0.len() != mask.len() {
-            return Err(StoreError::Invalid(
-                "fragment eligibility differs from its prepared rows".into(),
-            ));
-        }
-        let mut index = 0;
-        self.0.retain(|_| {
-            let keep = mask[index];
-            index += 1;
-            keep
-        });
-        Ok(())
-    }
-
     /// Hashing, validation and compression happen before the serial writer.
     pub(crate) fn prepare(output: &Output) -> Result<Self> {
         output

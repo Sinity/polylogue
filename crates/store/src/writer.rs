@@ -27,7 +27,6 @@ use std::thread::JoinHandle;
 mod assertions;
 mod assets;
 mod dispatch;
-mod source_eligibility;
 pub use dispatch::ParentLifetime;
 #[cfg(any(test, feature = "fixture"))]
 pub use dispatch::{DispatchBarrier, DispatchPhase};
@@ -2172,15 +2171,6 @@ impl Inner {
         if primary {
             for batch in batches.clone() {
                 self.validate_primary_reading(batch)?;
-                if batch
-                    .parse
-                    .iter()
-                    .any(|step| step.publication.is_none() || step.source_eligibility.is_none())
-                {
-                    return Err(StoreError::Invalid(
-                        "a primary batch has no admitted original interpretation".into(),
-                    ));
-                }
             }
         }
         for b in batches.clone() {
@@ -2296,33 +2286,17 @@ impl Inner {
                         chain,
                         p.parsed_upto,
                     )?;
-                    stats.1 += if primary {
-                        rows::write_published_rows(
-                            &self.texts,
-                            &itx,
-                            b,
-                            p,
-                            resolution,
-                            counter,
-                            self.first_build.as_deref(),
-                            &receipt,
-                            p.publication.as_ref().expect("validated native admission"),
-                            false,
-                            &changes,
-                        )?
-                    } else {
-                        write_rows(
-                            &self.texts,
-                            &itx,
-                            b,
-                            p,
-                            resolution,
-                            counter,
-                            self.first_build.as_deref(),
-                            Some(&receipt),
-                            &changes,
-                        )?
-                    };
+                    stats.1 += write_rows(
+                        &self.texts,
+                        &itx,
+                        b,
+                        p,
+                        resolution,
+                        counter,
+                        self.first_build.as_deref(),
+                        Some(&receipt),
+                        &changes,
+                    )?;
                 }
                 if b.parse.iter().any(|p| p.progress.reached_end()) {
                     rows::prune_sessions(&itx, &b.input.id, chain, counter)?;

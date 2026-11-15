@@ -11,7 +11,8 @@ pub struct ChainReading {
     decoded: Vec<crate::staging::PreparedBatch>,
     resolved: Option<ResolvedChain>,
     release: InFlight,
-    publication: Option<crate::primary::PublicationReceipt>,
+    /// In primary mode, its parsed facts are in the producer spool.
+    spooled: bool,
 }
 
 /// The row identities a chain reading's steps were resolved with, and the
@@ -30,7 +31,7 @@ impl ChainReading {
             decoded: Vec::new(),
             resolved: None,
             release: InFlight::default(),
-            publication: None,
+            spooled: false,
         })
     }
     pub fn push(&mut self, step: &mut ParseStep) -> Result<()> {
@@ -84,28 +85,9 @@ impl ChainReading {
         Ok(())
     }
 
-    pub(super) fn select_source(
-        &mut self,
-        index: &Connection,
-        input: &InputKey,
-        chain: i64,
-        length: u64,
-        publication: crate::primary::PublicationReceipt,
-    ) -> Result<()> {
-        self.finish()?;
-        let (file, path) = tempfile::NamedTempFile::new()?.into_parts();
-        let mut output = BufWriter::new(file);
-        let mut reader = BufReader::new(std::fs::File::open(&self.path)?);
-        while let Some((mut step, _)) = read_step(&mut reader)? {
-            super::source_eligibility::retain_source_records(
-                index, input, chain, length, &mut step,
-            )?;
-            write_step(&mut output, &step, None)?;
-        }
-        drop(output.into_inner().map_err(|error| error.into_error())?);
-        self.path = path;
-        self.publication = Some(publication);
-        Ok(())
+    /// Its parsed facts were prepared in the producer spool.
+    pub(super) fn mark_spooled(&mut self) {
+        self.spooled = true;
     }
 
     fn resolved_for(&self, chain: i64) -> Result<&ResolvedChain> {
@@ -326,8 +308,6 @@ fn write_step(
             &step.prepared.events,
             texts,
             step.prepared.released,
-            &step.source_eligibility,
-            step.original_export_body,
             choices,
         ),
     )?;
@@ -352,20 +332,8 @@ fn read_step(
     let mut decoder = zstd::stream::read::Decoder::new(reader.take(size))?;
     let mut bytes = Vec::new();
     decoder.read_to_end(&mut bytes)?;
-    let StoredStep(
-        mut step,
-        messages,
-        documents,
-        fragments,
-        events,
-        texts,
-        released,
-        eligibility,
-        original_body,
-        choices,
-    ) = crate::encoding::read_json(&bytes)?;
-    step.source_eligibility = eligibility;
-    step.original_export_body = original_body;
+    let StoredStep(mut step, messages, documents, fragments, events, texts, released, choices) =
+        crate::encoding::read_json(&bytes)?;
     step.prepared = batch::PreparedRows {
         messages,
         documents,
@@ -407,8 +375,6 @@ struct StoredStep(
     Vec<(String, Vec<u8>)>,
     Vec<([u8; 32], crate::encoding::PreparedText)>,
     bool,
-    Option<super::source_eligibility::Snapshot>,
-    Option<BlobHash>,
     Option<resolve::membership::Choices>,
 );
 #[derive(Clone, Copy)]
@@ -587,10 +553,12 @@ impl Inner {
         mut reading: ChainReading,
     ) -> Result<u64> {
         if self.sinex.is_some() {
-            let publication = reading.publication.clone().ok_or_else(|| {
-                StoreError::Invalid("a primary replacement has no admitted interpretation".into())
-            })?;
-            return self.replace_index(input, chain, length, reading, Some(&publication));
+            if !reading.spooled {
+                return Err(StoreError::Invalid(
+                    "a primary replacement must spool its parsed facts first".into(),
+                ));
+            }
+            return self.replace_index(input, chain, length, reading);
         }
         let exists: bool = self.archive.query_row(
             "SELECT EXISTS(SELECT 1 FROM revision WHERE input=?1 AND chain=?2 AND length>=?3)",
@@ -638,9 +606,9 @@ impl Inner {
             ));
         }
         if diagnosed {
-            self.replace_index(input, chain, length, reading, None)
+            self.replace_index(input, chain, length, reading)
         } else {
-            self.until_stopped(|inner| inner.replace_index(input, chain, length, reading, None))?
+            self.until_stopped(|inner| inner.replace_index(input, chain, length, reading))?
                 .ok_or(StoreError::Stopped)
         }
     }
@@ -651,7 +619,6 @@ impl Inner {
         chain: i64,
         length: u64,
         reading: ChainReading,
-        publication: Option<&crate::primary::PublicationReceipt>,
     ) -> Result<u64> {
         let file = std::fs::File::open(&reading.path)?;
         let mut reader = BufReader::new(file);
@@ -713,38 +680,22 @@ impl Inner {
                 chain,
                 step.parsed_upto,
             )?;
-            written += if let Some(publication) = publication {
-                rows::write_published_rows(
-                    &self.texts,
-                    &tx,
-                    &batch,
-                    &step,
-                    &resolution,
-                    counter,
-                    self.first_build.as_deref(),
-                    &receipt,
-                    publication,
-                    replace_wire,
-                    &changes,
-                )?
+            let write = if replace_wire {
+                rows::write_replacement_rows
             } else {
-                let write = if replace_wire {
-                    rows::write_replacement_rows
-                } else {
-                    write_rows
-                };
-                write(
-                    &self.texts,
-                    &tx,
-                    &batch,
-                    &step,
-                    &resolution,
-                    counter,
-                    self.first_build.as_deref(),
-                    Some(&receipt),
-                    &changes,
-                )?
+                write_rows
             };
+            written += write(
+                &self.texts,
+                &tx,
+                &batch,
+                &step,
+                &resolution,
+                counter,
+                self.first_build.as_deref(),
+                Some(&receipt),
+                &changes,
+            )?;
         }
         if first {
             return Err(StoreError::Invalid(

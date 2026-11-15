@@ -35,7 +35,6 @@ pub(super) fn write_rows(
             counter,
             first_build,
             retraction: false,
-            publication: None,
             replacement: false,
             receipt,
             changes,
@@ -43,52 +42,7 @@ pub(super) fn write_rows(
     )
 }
 
-/// An original-source interpretation whose native fact frame was admitted.
-/// Its receipt and ordinary parser progress commit with the same model rows.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn write_published_rows(
-    texts: &crate::text_rows::TextIds,
-    tx: &Transaction<'_>,
-    b: &Batch,
-    p: &ParseStep,
-    resolution: &resolve::Resolution,
-    counter: i64,
-    first_build: Option<&FirstBuild>,
-    receipt: &crate::wire_shapes::ReadingReceipt,
-    publication: &crate::primary::PublicationReceipt,
-    replacement: bool,
-    changes: &ChangeSummary,
-) -> Result<u64> {
-    if publication.number <= 0
-        || publication.producer.is_empty()
-        || publication.frame.is_empty()
-        || publication.root_material.is_empty()
-    {
-        return Err(StoreError::Invalid(
-            "native publication receipt is incomplete".into(),
-        ));
-    }
-    super::source_eligibility::validate(tx, p)?;
-    apply_rows(
-        tx,
-        b,
-        p,
-        ReadingWrite {
-            resolution,
-            texts,
-            counter,
-            first_build,
-            retraction: false,
-            replacement,
-            receipt: Some(receipt),
-            publication: Some(publication),
-            changes,
-        },
-    )
-}
-
-/// Only the complete standalone replacement owner uses this entry point for
-/// its first ordinary chunk. Later chunks use the ordinary continuation path.
+/// A complete replacement uses this entry point for its first chunk. Later chunks use the ordinary continuation path.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn write_replacement_rows(
     texts: &crate::text_rows::TextIds,
@@ -111,7 +65,6 @@ pub(super) fn write_replacement_rows(
             counter,
             first_build,
             retraction: false,
-            publication: None,
             replacement: true,
             receipt,
             changes,
@@ -139,7 +92,6 @@ pub(super) fn retract_source(
             counter,
             first_build: None,
             retraction: true,
-            publication: None,
             replacement: false,
             receipt: None,
             changes,
@@ -153,7 +105,6 @@ struct ReadingWrite<'a> {
     counter: i64,
     first_build: Option<&'a FirstBuild>,
     retraction: bool,
-    publication: Option<&'a crate::primary::PublicationReceipt>,
     replacement: bool,
     receipt: Option<&'a crate::wire_shapes::ReadingReceipt>,
     changes: &'a ChangeSummary,
@@ -171,7 +122,6 @@ fn apply_rows(
         counter,
         first_build,
         retraction,
-        publication,
         replacement,
         receipt,
         changes,
@@ -186,8 +136,7 @@ fn apply_rows(
     if !crate::wire_shapes::admit_export(tx, &b.input.id, chain, b.length, p)? {
         return Ok(0);
     }
-    let previous_checkpoint =
-        checkpoint::read(tx, input_pk, chain, retraction || publication.is_some())?;
+    let previous_checkpoint = checkpoint::read(tx, input_pk, chain)?;
     if p.delivery.is_none() && !retraction && !admit_step(previous_checkpoint.as_ref(), p)? {
         return Ok(0);
     }
@@ -204,7 +153,6 @@ fn apply_rows(
             counter,
             retraction,
             receipt,
-            publication,
         )?,
         source_admitted: if retraction {
             None
@@ -267,18 +215,14 @@ fn apply_rows(
                 texts,
             },
             version.replace,
-            version.admitted.or(source_admission),
+            source_admission,
         )?;
         rows.versions
             .insert(version.value.prepared.hash, registered);
     }
     let mut sessions: HashMap<String, i64> = HashMap::new();
     for s in &p.output.sessions {
-        let admitted = p
-            .native_admission(&("session", &s.id))?
-            .map(|n| n as i64)
-            .or(rows.source_admitted);
-        let (pk, _) = rows.upsert_session(s, admitted)?;
+        let (pk, _) = rows.upsert_session(s, rows.source_admitted)?;
         sessions.insert(s.id.to_string(), pk);
     }
     let source = crate::documents::Source {
@@ -296,21 +240,12 @@ fn apply_rows(
             continue;
         }
         let prepared = &p.prepared.documents[i];
-        let admitted = p
-            .native_admission(&("document", &row.document.id, row.offset))?
-            .map(|n| n as i64)
-            .or(rows.source_admitted);
-        crate::documents::write(tx, &source, row, prepared, admitted)?;
+        crate::documents::write(tx, &source, row, prepared, rows.source_admitted)?;
     }
     p.prepared
         .fragments
-        .apply(tx, input_pk, chain, p.parsed_upto, |row| {
-            Ok(
-                p.native_admission(&("fragment", &row.record.reference, row.offset))?
-                    .map(crate::fragment::receipt)
-                    .transpose()?
-                    .or(rows.source_admitted),
-            )
+        .apply(tx, input_pk, chain, p.parsed_upto, |_| {
+            Ok(rows.source_admitted)
         })?;
     let mut written = 0;
     let mut activity: HashMap<i64, i64> = HashMap::new();
@@ -404,10 +339,7 @@ fn apply_rows(
         let child = prefix.child.to_string();
         let ids = &rows.keys.identities;
         let (parent, child) = (ids.shown_session(&parent), ids.shown_session(&child));
-        let admitted = p
-            .native_admission(&("prefix_copy", &prefix.parent, &prefix.child))?
-            .map(|n| n as i64)
-            .or(rows.source_admitted);
+        let admitted = rows.source_admitted;
         rows.write_prefix_copy(parent, child, prefix.explicit_members, admitted)?;
     }
     for member in &p.output.prefix_members {
@@ -425,24 +357,13 @@ fn apply_rows(
                 chain,
                 reading_version: p.reading_version.clone(),
             });
-        let admitted = p
-            .native_admission(&(
-                "prefix_member",
-                &member.parent,
-                &member.child,
-                &member.message,
-            ))?
-            .map(|n| n as i64)
-            .or(rows.source_admitted);
+        let admitted = rows.source_admitted;
         tx.prepare_cached("INSERT INTO prefix_member(input_pk,chain,parent_id,child_id,message_id,source_input,source_chain,source_version,sequence,position,admitted) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT DO UPDATE SET admitted=coalesce(max(prefix_member.admitted,excluded.admitted),prefix_member.admitted,excluded.admitted)")?
             .execute(params![input_pk,chain,parent,child,message,source.input,source.chain,source.reading_version,member.position[0].to_string(),member.position[1].to_string(),admitted])?;
         rows.write_prefix_copy(parent, child, true, admitted)?;
     }
     for (i, l) in p.output.links.iter().enumerate() {
-        let admitted = p
-            .native_admission(&("link", l.selection_tag()))?
-            .map(|n| n as i64)
-            .or(rows.source_admitted);
+        let admitted = rows.source_admitted;
         rows.write_link(l, i, admitted)?;
     }
     for l in &p.output.repo_lookups {
