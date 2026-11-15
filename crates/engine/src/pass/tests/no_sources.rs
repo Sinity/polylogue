@@ -162,10 +162,11 @@ fn retained_replay_uses_recorded_native_paths_without_machine_discovery() {
 
     let home = ClaudeHome::new();
     let path = home
-        .file("unused")
-        .with_file_name(std::ffi::OsString::from_vec(
-            b"retained-\xff.jsonl".to_vec(),
-        ));
+        .home
+        .join(".claude/projects")
+        .join(std::ffi::OsString::from_vec(b"retained-\xff".to_vec()))
+        .join("native-kept.jsonl");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(
         &path,
         claude_user("one", "native-kept", "native retained words"),
@@ -267,6 +268,7 @@ fn retained_stopped_readings_keep_their_attempt_and_upgrade_from_stored_bytes() 
         let version = state.origin.reading_version();
         let mut step =
             polylogue_store::ParseStep::new(Default::default(), Default::default(), 0..0, false);
+        step.reset = true;
         step.progress = StepProgress::Refused {
             reason: "recorded synthetic refusal".into(),
         };
