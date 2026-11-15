@@ -1,5 +1,5 @@
 //! Native saved values are checked against the one original/scratch binder.
-//! Provisional objects provide syntax only; final acceptance requires custody.
+//! Provisional objects provide syntax only; final acceptance requires the stored object.
 use super::*;
 use crate::{
     primary::Sinex,
@@ -74,7 +74,7 @@ impl<'a> SavedPreparation<'a> {
             &hash.to_string(),
             self.pending,
         )? {
-            return Ok(found.value);
+            return Ok(found);
         }
         if let Some(object) = self
             .provisional
@@ -83,10 +83,7 @@ impl<'a> SavedPreparation<'a> {
         {
             return Ok(object.clone());
         }
-        Err(self.unavailable(
-            format!("query:{hash}"),
-            "retained query object custody is missing",
-        ))
+        Err(self.unavailable(format!("query:{hash}"), "the saved query object is missing"))
     }
     fn admit_plan(&mut self, plan: &Plan) -> Result<()> {
         if let Some(provisional) = self.provisional.as_deref_mut() {

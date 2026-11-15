@@ -303,3 +303,22 @@ fn one_free_sender_slot_alternates_new_capture_and_old_backlog() {
         .remove(0);
     assert_eq!(third.identity, "newest");
 }
+
+#[test]
+fn a_format_one_queue_is_refused_with_its_drain_step() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("queue.db");
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE operation(ordering INTEGER PRIMARY KEY);
+             PRAGMA application_id=1347178801; PRAGMA user_version=1;",
+        )
+        .unwrap();
+    drop(connection);
+    let Err(StoreError::Invalid(reason)) = Queue::open(&path) else {
+        panic!("a format-1 queue cannot open")
+    };
+    assert!(reason.contains("format 1"), "{reason}");
+    assert!(reason.contains("set the empty queue aside"), "{reason}");
+}

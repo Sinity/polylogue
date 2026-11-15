@@ -1,9 +1,9 @@
-//! Question custody is acknowledged separately from asynchronous execution history.
+//! Saved questions are written before their asynchronous execution history.
 use super::*;
-use polylogue_model::query_objects::{QueryCustody, QueryObject, QueryRun, QueryRunOutcome};
+use polylogue_model::query_objects::{QueryObject, QueryRun, QueryRunOutcome};
 
-/// Semantic/scope validation only. This private value is neither a custody
-/// receipt nor evidence of native execution eligibility.
+/// Semantic and scope validation only; it states nothing about whether Sinex
+/// has the write.
 pub(super) struct PreparedObjects {
     scope: crate::ReadScopeToken,
     queries: crate::selection::ProvisionalQueries,
@@ -34,7 +34,7 @@ fn object_via(
     queue: &WriterQueue,
     object: QueryObject,
     parent: Option<Arc<ParentLifetime>>,
-) -> Result<QueryCustody> {
+) -> Result<()> {
     let (reply, wait) = sync_channel(1);
     queue
         .send_user(UserMsg::QueryObject(Box::new(object), parent, reply))
@@ -46,7 +46,7 @@ fn begin_via(
     queue: &WriterQueue,
     run: QueryRun,
     parent: Option<Arc<ParentLifetime>>,
-) -> Result<QueryCustody> {
+) -> Result<()> {
     let (reply, wait) = sync_channel(1);
     queue
         .send_user(UserMsg::QueryRun(Box::new(run), parent, reply))
@@ -54,10 +54,7 @@ fn begin_via(
     wait.recv().map_err(|_| StoreError::WriterGone)?
 }
 
-fn finish_via(
-    queue: &WriterQueue,
-    outcome: QueryRunOutcome,
-) -> Result<Receiver<Result<QueryCustody>>> {
+fn finish_via(queue: &WriterQueue, outcome: QueryRunOutcome) -> Result<Receiver<Result<()>>> {
     let (reply, wait) = sync_channel(1);
     queue
         .send_user(UserMsg::QueryRunOutcome(Box::new(outcome), reply))
@@ -97,8 +94,8 @@ impl HistorySlot {
 }
 
 impl Writer {
-    /// Establishes durable custody before a response exposes the question reference.
-    pub fn query_object(&self, object: QueryObject) -> Result<QueryCustody> {
+    /// Stores the question durably before a response exposes its reference.
+    pub fn query_object(&self, object: QueryObject) -> Result<()> {
         object_via(
             self.tx.as_ref().ok_or(StoreError::WriterGone)?,
             object,
@@ -107,15 +104,12 @@ impl Writer {
     }
 
     /// Acknowledges immutable inputs before a continuation exposes its run reference.
-    pub fn begin_query_run(&self, run: QueryRun) -> Result<QueryCustody> {
+    pub fn begin_query_run(&self, run: QueryRun) -> Result<()> {
         begin_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, run, None)
     }
 
     /// Dropping the completion receipt never cancels accepted history work.
-    pub fn finish_query_run(
-        &self,
-        outcome: QueryRunOutcome,
-    ) -> Result<Receiver<Result<QueryCustody>>> {
+    pub fn finish_query_run(&self, outcome: QueryRunOutcome) -> Result<Receiver<Result<()>>> {
         finish_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, outcome)
     }
 }
@@ -137,27 +131,24 @@ impl WriterSender {
         &self,
         object: QueryObject,
         parent: Arc<ParentLifetime>,
-    ) -> Result<QueryCustody> {
+    ) -> Result<()> {
         object_via(&self.0, object, Some(parent))
     }
     pub fn begin_query_run_with_parent(
         &self,
         run: QueryRun,
         parent: Arc<ParentLifetime>,
-    ) -> Result<QueryCustody> {
+    ) -> Result<()> {
         begin_via(&self.0, run, Some(parent))
     }
-    pub fn query_object(&self, object: QueryObject) -> Result<QueryCustody> {
+    pub fn query_object(&self, object: QueryObject) -> Result<()> {
         object_via(&self.0, object, None)
     }
 
-    pub fn begin_query_run(&self, run: QueryRun) -> Result<QueryCustody> {
+    pub fn begin_query_run(&self, run: QueryRun) -> Result<()> {
         begin_via(&self.0, run, None)
     }
-    pub fn finish_query_run(
-        &self,
-        outcome: QueryRunOutcome,
-    ) -> Result<Receiver<Result<QueryCustody>>> {
+    pub fn finish_query_run(&self, outcome: QueryRunOutcome) -> Result<Receiver<Result<()>>> {
         finish_via(&self.0, outcome)
     }
 }
@@ -175,7 +166,7 @@ impl Inner {
         Ok(prepared.scope)
     }
 
-    /// The reusable question has its own natural name in primary custody;
+    /// The reusable question has its own name in the producer spool;
     /// one completed run and outcome form one immutable event group.
     pub(super) fn write_history(&mut self, history: &History) -> Result<()> {
         let History {
@@ -203,12 +194,12 @@ impl Inner {
         }
         if self.sinex.is_some() {
             self.primary_cache_ready()?;
-            // Refuse a conflicting canonical Begin or Outcome before adding
-            // another immutable intent to producer custody.
+            // Refuse a conflicting confirmed Begin or Outcome before adding
+            // another immutable write to the producer spool.
             let run_known = crate::query_objects::known_run(&self.index, run)?;
             let outcome_known = crate::query_objects::known_run_outcome(&self.index, outcome)?;
             // Questions are shared by runs and remain directly addressable
-            // through their existing query:<hash> custody name.
+            // through their existing query:<hash> name.
             self.write_query_object(object)?;
             if run_known && outcome_known {
                 return Ok(());
@@ -265,7 +256,7 @@ impl Inner {
         Ok(())
     }
 
-    pub(super) fn write_query_object(&mut self, object: &QueryObject) -> Result<QueryCustody> {
+    pub(super) fn write_query_object(&mut self, object: &QueryObject) -> Result<()> {
         crate::query_objects::validate_object(object)?;
         let conn = if self.sinex.is_some() {
             self.primary_cache_ready()?;
@@ -288,13 +279,13 @@ impl Inner {
         &mut self,
         object: &QueryObject,
         scope: Option<&crate::ReadScopeToken>,
-    ) -> Result<QueryCustody> {
+    ) -> Result<()> {
         scoped::require_current(&self.location, scope)?;
         if let Some(sinex) = &self.sinex {
             self.primary_cache_ready()?;
             scoped::require_current(&self.location, scope)?;
             if crate::query_objects::known_object(&self.index, object)? {
-                return Ok(QueryCustody::Canonical);
+                return Ok(());
             }
             let mut queued = false;
             sinex.visit_named_products(
@@ -312,7 +303,7 @@ impl Inner {
                 },
             )?;
             if queued {
-                return Ok(QueryCustody::Queued);
+                return Ok(());
             }
             scoped::require_current(&self.location, scope)?;
             sinex.prepare_named_products(
@@ -329,7 +320,7 @@ impl Inner {
                 }],
             )?;
             scoped::require_current(&self.location, scope)?;
-            return Ok(QueryCustody::Queued);
+            return Ok(());
         }
         let tx = self.archive.transaction()?;
         let counter = bump_counter(&tx)?;
@@ -344,16 +335,16 @@ impl Inner {
         } else {
             tx.rollback()?;
         }
-        Ok(QueryCustody::Canonical)
+        Ok(())
     }
 
-    pub(super) fn write_query_run(&mut self, run: &QueryRun) -> Result<QueryCustody> {
+    pub(super) fn write_query_run(&mut self, run: &QueryRun) -> Result<()> {
         crate::query_objects::validate_run(run)?;
         if let Some(sinex) = &self.sinex {
             match self.primary_cache_ready() {
                 Ok(()) => {
                     if crate::query_objects::known_run(&self.index, run)? {
-                        return Ok(QueryCustody::Canonical);
+                        return Ok(());
                     }
                 }
                 Err(StoreError::ScopeChanged) => {}
@@ -390,10 +381,10 @@ impl Inner {
             )?;
             if !visible {
                 return Err(StoreError::Sinex(
-                    "acknowledged query run is unavailable from named custody".into(),
+                    "acknowledged query run is missing from the producer spool".into(),
                 ));
             }
-            return Ok(QueryCustody::Queued);
+            return Ok(());
         }
         let tx = self.archive.transaction()?;
         let sequence = bump_counter(&tx)?;
@@ -407,18 +398,15 @@ impl Inner {
         } else {
             tx.rollback()?;
         }
-        Ok(QueryCustody::Canonical)
+        Ok(())
     }
-    pub(super) fn write_query_run_outcome(
-        &mut self,
-        outcome: &QueryRunOutcome,
-    ) -> Result<QueryCustody> {
+    pub(super) fn write_query_run_outcome(&mut self, outcome: &QueryRunOutcome) -> Result<()> {
         crate::query_objects::validate_run_outcome(outcome)?;
         if let Some(sinex) = &self.sinex {
             match self.primary_cache_ready() {
                 Ok(()) => {
                     if crate::query_objects::known_run_outcome(&self.index, outcome)? {
-                        return Ok(QueryCustody::Canonical);
+                        return Ok(());
                     }
                 }
                 Err(StoreError::ScopeChanged) => {}
@@ -438,7 +426,7 @@ impl Inner {
                     publish: true,
                 }],
             )?;
-            return Ok(QueryCustody::Queued);
+            return Ok(());
         }
         let tx = self.archive.transaction()?;
         let before = tx.total_changes();
@@ -452,6 +440,6 @@ impl Inner {
         } else {
             tx.rollback()?;
         }
-        Ok(QueryCustody::Canonical)
+        Ok(())
     }
 }

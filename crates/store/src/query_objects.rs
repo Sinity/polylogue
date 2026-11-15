@@ -2,8 +2,7 @@
 
 use crate::{Reader, Result, StoreError, primary::Product, source::Source};
 use polylogue_model::query_objects::{
-    ExecutionBinding, QueryCustody, QueryEdge, QueryLookup, QueryObject, QueryRun, QueryRunOutcome,
-    RunBinding,
+    ExecutionBinding, QueryEdge, QueryObject, QueryRun, QueryRunOutcome, RunBinding,
 };
 use query_language::identity::{QuestionId, question_id_from_normal_form};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -229,7 +228,7 @@ pub(crate) fn known_run(conn: &Connection, run: &QueryRun) -> Result<bool> {
     let Some(existing) = lookup_run(conn, source, &run.id, None)? else {
         return Ok(false);
     };
-    if existing.value != *run {
+    if existing != *run {
         return Err(StoreError::Conflict(format!("run:{}", run.id)));
     }
     Ok(true)
@@ -473,13 +472,13 @@ pub(crate) fn lookup_run(
     source: Source,
     id: &polylogue_model::RunId,
     pending: Option<&dyn crate::primary::Sinex>,
-) -> Result<Option<QueryLookup<QueryRun>>> {
+) -> Result<Option<QueryRun>> {
     let stored:Option<(Vec<u8>,String,String)>=conn.query_row(
         &source.sql("SELECT run,binding_hash,run_hash FROM @source.query_run WHERE id=?1 AND run IS NOT NULL"),
         [id.as_str()],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
     ).optional()?;
     let mut found = stored
-        .map(|(body, action, intent)| -> Result<QueryLookup<QueryRun>> {
+        .map(|(body, action, intent)| -> Result<QueryRun> {
             let value: QueryRun = crate::encoding::unpack_json(&body)?;
             if &value.id != id
                 || value.binding_hash()?.to_string() != action
@@ -489,10 +488,7 @@ pub(crate) fn lookup_run(
                     "retained run beginning failed its action or invocation integrity check",
                 ));
             }
-            Ok(QueryLookup {
-                value,
-                custody: QueryCustody::Canonical,
-            })
+            Ok(value)
         })
         .transpose()?;
     if let Some(pending) = pending {
@@ -504,14 +500,11 @@ pub(crate) fn lookup_run(
                 {
                     validate_run(run)?;
                     if let Some(existing) = &found {
-                        if existing.value != **run {
+                        if *existing != **run {
                             return Err(StoreError::Conflict(format!("run:{id}")));
                         }
                     } else {
-                        found = Some(QueryLookup {
-                            value: *run.clone(),
-                            custody: QueryCustody::Queued,
-                        });
+                        found = Some(*run.clone());
                     }
                 }
                 Ok(())
@@ -521,16 +514,16 @@ pub(crate) fn lookup_run(
     Ok(found)
 }
 
-/// The same canonical and durable queued custody lookup serves readers and
+/// One lookup over the index and this host's spooled writes serves readers and
 /// accepting original/scratch preparation. The caller retains its scope guard.
 pub(crate) fn query_object_on(
     conn: &Connection,
     source: Source,
     key: &str,
     pending: Option<&dyn crate::primary::Sinex>,
-) -> Result<Option<QueryLookup<QueryObject>>> {
+) -> Result<Option<QueryObject>> {
     let key = prefix(key)?;
-    let mut found = BTreeMap::<String, QueryLookup<QueryObject>>::new();
+    let mut found = BTreeMap::<String, QueryObject>::new();
     let mut statement = conn.prepare(&source.sql(
         "SELECT hash,object FROM @source.query WHERE hash LIKE ?1 || '%' ORDER BY hash LIMIT 2",
     ))?;
@@ -546,13 +539,7 @@ pub(crate) fn query_object_on(
                 "retained query body disagrees with its stored identity",
             ));
         }
-        found.insert(
-            object.id.to_string(),
-            QueryLookup {
-                value: object,
-                custody: QueryCustody::Canonical,
-            },
-        );
+        found.insert(object.id.to_string(), object);
     }
     if let Some(pending) = pending {
         let name = format!("query:{key}");
@@ -568,17 +555,11 @@ pub(crate) fn query_object_on(
                 validate_integrity(object)?;
                 let id = object.id.to_string();
                 if let Some(existing) = found.get(&id) {
-                    if !equivalent(&existing.value, object) {
+                    if !equivalent(existing, object) {
                         return Err(StoreError::Conflict(format!("query:{id}")));
                     }
                 } else if found.len() < 2 {
-                    found.insert(
-                        id,
-                        QueryLookup {
-                            value: *object.clone(),
-                            custody: QueryCustody::Queued,
-                        },
-                    );
+                    found.insert(id, *object.clone());
                 }
             }
             Ok(())
@@ -596,7 +577,7 @@ impl Reader<'_> {
         &self,
         key: &str,
         pending: Option<&dyn crate::primary::Sinex>,
-    ) -> Result<Option<QueryLookup<QueryObject>>> {
+    ) -> Result<Option<QueryObject>> {
         let found = query_object_on(self.conn()?, Source::Cache, key, pending)?;
         self.conn()?;
         Ok(found)
@@ -606,7 +587,7 @@ impl Reader<'_> {
         &self,
         id: &polylogue_model::RunId,
         pending: Option<&dyn crate::primary::Sinex>,
-    ) -> Result<Option<QueryLookup<QueryRun>>> {
+    ) -> Result<Option<QueryRun>> {
         let found = lookup_run(self.conn()?, Source::Cache, id, pending)?;
         self.conn()?;
         Ok(found)
@@ -616,22 +597,17 @@ impl Reader<'_> {
         &self,
         id: &polylogue_model::RunId,
         pending: Option<&dyn crate::primary::Sinex>,
-    ) -> Result<Option<QueryLookup<QueryRunOutcome>>> {
+    ) -> Result<Option<QueryRunOutcome>> {
         let stored:Option<(Vec<u8>,String,String)>=self.conn()?.query_row(
             "SELECT completion,binding_hash,run_hash FROM source_query_run WHERE id=?1 AND completion IS NOT NULL",
             [id.as_str()],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
         ).optional()?;
         let mut found = stored
-            .map(
-                |(body, action, intent)| -> Result<QueryLookup<QueryRunOutcome>> {
-                    let value: QueryRunOutcome = crate::encoding::unpack_json(&body)?;
-                    check_outcome_integrity(&value, &action, &intent)?;
-                    Ok(QueryLookup {
-                        value,
-                        custody: QueryCustody::Canonical,
-                    })
-                },
-            )
+            .map(|(body, action, intent)| -> Result<QueryRunOutcome> {
+                let value: QueryRunOutcome = crate::encoding::unpack_json(&body)?;
+                check_outcome_integrity(&value, &action, &intent)?;
+                Ok(value)
+            })
             .transpose()?;
         if let Some(pending) = pending {
             // Ordinary reads hand over a completed run group. Retained-object
@@ -645,14 +621,11 @@ impl Reader<'_> {
                         {
                             validate_run_outcome(outcome)?;
                             if let Some(existing) = &found {
-                                if existing.value != **outcome {
+                                if *existing != **outcome {
                                     return Err(StoreError::Conflict(format!("run outcome:{id}")));
                                 }
                             } else {
-                                found = Some(QueryLookup {
-                                    value: *outcome.clone(),
-                                    custody: QueryCustody::Queued,
-                                });
+                                found = Some(*outcome.clone());
                             }
                         }
                         Ok(())

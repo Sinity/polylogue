@@ -45,20 +45,18 @@ fn completed_history_returns_before_the_writer_and_commits_as_one_record() {
         reader
             .query_object(&object.id.to_string(), None)
             .unwrap()
-            .unwrap()
-            .value,
+            .unwrap(),
         object
     );
     assert_eq!(
-        reader.query_run(&expected.id, None).unwrap().unwrap().value,
+        reader.query_run(&expected.id, None).unwrap().unwrap(),
         expected
     );
     assert_eq!(
         reader
             .query_run_outcome(&expected.id, None)
             .unwrap()
-            .unwrap()
-            .value,
+            .unwrap(),
         completed
     );
 }
@@ -113,8 +111,7 @@ fn conflicting_history_rolls_back_its_question_and_run() {
         reader
             .query_run_outcome(&expected.id, None)
             .unwrap()
-            .unwrap()
-            .value,
+            .unwrap(),
         previous
     );
 }

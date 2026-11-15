@@ -220,16 +220,16 @@ enum UserMsg {
     QueryObject(
         Box<polylogue_model::query_objects::QueryObject>,
         Option<Arc<ParentLifetime>>,
-        SyncSender<Result<polylogue_model::query_objects::QueryCustody>>,
+        SyncSender<Result<()>>,
     ),
     QueryRun(
         Box<polylogue_model::query_objects::QueryRun>,
         Option<Arc<ParentLifetime>>,
-        SyncSender<Result<polylogue_model::query_objects::QueryCustody>>,
+        SyncSender<Result<()>>,
     ),
     QueryRunOutcome(
         Box<polylogue_model::query_objects::QueryRunOutcome>,
-        SyncSender<Result<polylogue_model::query_objects::QueryCustody>>,
+        SyncSender<Result<()>>,
     ),
     History(Box<query_objects::History>),
 }
