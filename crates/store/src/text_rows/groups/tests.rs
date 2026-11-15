@@ -60,6 +60,21 @@ fn a_step_packs_neighbouring_texts_together_and_a_long_text_alone() {
 }
 
 #[test]
+fn an_empty_text_is_prepared_in_a_group() {
+    for texts in [vec![""], vec!["before", ""], vec!["", "after"]] {
+        let prepared = PreparedTexts::pack(texts.iter().copied()).unwrap();
+        assert_eq!(prepared.groups.len(), 1);
+        for text in texts {
+            assert_eq!(read_back(&prepared, text), text);
+        }
+    }
+    let mut prepared = PreparedTexts::pack(["first"]).unwrap();
+    prepared.add([""]).unwrap();
+    assert_eq!(prepared.groups.len(), 2);
+    assert_eq!(read_back(&prepared, ""), "");
+}
+
+#[test]
 fn added_texts_go_to_new_groups_after_the_prepared_ones() {
     let mut prepared = PreparedTexts::pack(["first", "second"]).unwrap();
     prepared.add(["second", "third"]).unwrap();

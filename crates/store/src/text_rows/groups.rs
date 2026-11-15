@@ -62,13 +62,16 @@ impl PreparedTexts {
     /// Adds the texts not yet prepared, in new groups after the existing ones.
     pub(crate) fn add<'t>(&mut self, texts: impl IntoIterator<Item = &'t str>) -> Result<()> {
         let mut pending = Vec::new();
+        // Counted apart from the bytes: an empty text still needs its group.
+        let mut members = 0;
         for text in texts {
             let hash = *blake3::hash(text.as_bytes()).as_bytes();
             if self.texts.contains_key(&hash) {
                 continue;
             }
-            if !pending.is_empty() && pending.len() + text.len() > GROUP_BYTES {
+            if members > 0 && pending.len() + text.len() > GROUP_BYTES {
                 self.close(&mut pending)?;
+                members = 0;
             }
             self.texts.insert(
                 hash,
@@ -80,8 +83,9 @@ impl PreparedTexts {
                 },
             );
             pending.extend_from_slice(text.as_bytes());
+            members += 1;
         }
-        if !pending.is_empty() {
+        if members > 0 {
             self.close(&mut pending)?;
         }
         Ok(())

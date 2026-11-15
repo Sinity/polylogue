@@ -42,6 +42,23 @@ pub(super) fn capture_log(captures: &[&[&str]]) -> Vec<u8> {
 /// Format evidence is compared by what it says and the chain it cites, not
 /// by the byte ranges it was read in or the revisions it took them at
 /// ([`READ_RANGES`]). A status count no chain has reads as absent.
+/// The text a `text` row names: its group's decoded bytes at its start and
+/// length.
+fn grouped_text(
+    row: &rusqlite::Row<'_>,
+    names: &[String],
+    group: usize,
+) -> rusqlite::Result<rusqlite::types::Value> {
+    let at = |column: &str| names.iter().position(|name| name == column).unwrap();
+    let body: Vec<u8> = row.get(group)?;
+    let start = usize::try_from(row.get::<_, i64>(at("start"))?).unwrap();
+    let length = usize::try_from(row.get::<_, i64>(at("length"))?).unwrap();
+    let decoded = zstd::stream::decode_all(body.as_slice()).unwrap();
+    Ok(rusqlite::types::Value::Text(
+        String::from_utf8(decoded[start..start + length].to_vec()).unwrap(),
+    ))
+}
+
 pub(super) fn dump(w: &ClaudeHome) -> BTreeMap<String, Vec<String>> {
     let conn = rusqlite::Connection::open_with_flags(
         w.root.join("index.db"),
@@ -82,6 +99,10 @@ pub(super) fn dump(w: &ClaudeHome) -> BTreeMap<String, Vec<String>> {
                 "NULL".to_owned()
             } else if table == "wire_receipt" && name == "receipt" {
                 "json_extract(t.receipt,'$.chain') AS receipt".to_owned()
+            } else if table == "text" && name == "group_id" {
+                // Which group holds a text's bytes follows the steps that wrote
+                // it (docs/archive.md, evolution); readers see only the text.
+                "(SELECT g.body FROM text_group g WHERE g.id=t.group_id) AS group_id".to_owned()
             } else if table == "wire_reading" && name == "state" {
                 format!("json_remove(t.state,{}) AS state", READ_RANGES.iter().map(|key| format!("'$.{key}'")).collect::<Vec<_>>().join(","))
             } else { format!("t.\"{name}\"") }
@@ -99,7 +120,13 @@ pub(super) fn dump(w: &ClaudeHome) -> BTreeMap<String, Vec<String>> {
                     if WRITE_COUNTER_VALUES.iter().any(&column) || WRITE_ORDER.iter().any(&column) {
                         continue;
                     }
+                    if table == "text" && matches!(name.as_str(), "start" | "length") {
+                        continue;
+                    }
                     let mut value: rusqlite::types::Value = row.get(n)?;
+                    if table == "text" && name == "group_id" {
+                        value = grouped_text(row, &names, n)?;
+                    }
                     if table == "parse_state" && name == "checkpoint" {
                         value = checkpoint_without_read_range(value);
                     }
@@ -110,6 +137,10 @@ pub(super) fn dump(w: &ClaudeHome) -> BTreeMap<String, Vec<String>> {
             .unwrap()
             .collect::<rusqlite::Result<_>>()
             .unwrap();
+        if table == "text_group" {
+            // Compared through the text rows above.
+            continue;
+        }
         if table == "meta" {
             rows.retain(|row| {
                 !CREATED_WITH_THE_INDEX
