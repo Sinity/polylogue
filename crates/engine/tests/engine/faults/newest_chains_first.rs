@@ -64,8 +64,13 @@ fn readings(
     (exports, rows)
 }
 
+/// 1 while the index is being built in its private file.
 fn building(w: &ClaudeHome) -> i64 {
-    w.count("SELECT CAST(value AS INTEGER) AS n FROM meta WHERE key = 'building'")
+    i64::from(
+        w.root
+            .join(polylogue_store::archive::index_build::DIR)
+            .exists(),
+    )
 }
 
 /// One worker, so the order of parses is the order the pass plans them.

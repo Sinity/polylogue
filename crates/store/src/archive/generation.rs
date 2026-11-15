@@ -1,6 +1,6 @@
 //! The index generation: a fresh ID for each index build, so a change feed
 //! position from an earlier build is recognized as one.
-use crate::{Result, archive::cache};
+use crate::Result;
 use rusqlite::{Connection, OptionalExtension};
 
 pub(crate) fn create(index: &Connection) -> Result<()> {
@@ -34,10 +34,9 @@ pub(crate) fn rotate(index: &Connection) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn open(archive: &super::Archive) -> Result<()> {
+pub(super) fn open(archive: &super::Archive, index: &Connection) -> Result<()> {
     let boot = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
-    let index = super::open_write(&archive.index_db(), cache::SETUP)?;
-    begin(&index, boot.trim(), Some(&archive.read_scope))
+    begin(index, boot.trim(), Some(&archive.read_scope))
 }
 
 fn begin(

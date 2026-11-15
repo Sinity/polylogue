@@ -153,9 +153,6 @@ fn create_index_in(conn: &Connection, primary: bool) -> Result<()> {
             [uuid::Uuid::now_v7().to_string()],
         )?;
     }
-    if !primary {
-        conn.execute("INSERT INTO meta(key,value) VALUES ('building','1')", [])?;
-    }
     crate::archive::generation::create(conn)?;
     set_version(conn, index_version(primary))?;
     conn.pragma_update(None, "application_id", FORMAT_ID)?;
@@ -164,15 +161,16 @@ fn create_index_in(conn: &Connection, primary: bool) -> Result<()> {
 
 /// Creates the index in an empty file, or opens one at this version with the
 /// declared tables, adding any read index it lacks. Any other index is
-/// refused unchanged; the archive's open sets it aside and builds a new one
-/// ([`crate::archive::index_rebuild`]).
-pub fn ensure_index(conn: &Connection) -> Result<()> {
-    ensure_index_in(conn, false)
+/// refused unchanged; the archive's open builds a new one in its place
+/// ([`crate::archive::index_build`]). `building`: the file is a standalone
+/// build in progress ([`crate::archive::index_build`]).
+pub fn ensure_index(conn: &Connection, building: bool) -> Result<()> {
+    ensure_index_in(conn, false, building)
 }
 pub fn ensure_primary_index(conn: &Connection) -> Result<()> {
-    ensure_index_in(conn, true)
+    ensure_index_in(conn, true, false)
 }
-fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
+fn ensure_index_in(conn: &Connection, primary: bool, deferring: bool) -> Result<()> {
     // ALTER TABLE validates views that read packed bodies through these functions.
     crate::sql_functions::register(conn)?;
     check_format(conn, "index")?;
@@ -186,11 +184,10 @@ fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
         create_index_in(&tx, primary)?;
     } else {
         // Read indexes are added before the shape check, so an index missing
-        // only those is completed rather than refused. A first build still in
+        // only those is completed rather than refused. A build still in
         // progress leaves out the ones it defers: it builds each once from a
         // sorted scan when it ends, and building one here would read the
         // whole table at every restart.
-        let deferring = building(&tx)?;
         let statements = OPEN_INDEXES
             .lines()
             .filter(|line| !line.trim_start().starts_with("--"))
@@ -270,16 +267,6 @@ pub(crate) fn primary_previous_index() -> Result<Connection> {
     conn.pragma_update(None, "application_id", FORMAT_ID)?;
     crate::archive::generation::create(&conn)?;
     Ok(conn)
-}
-
-/// Whether the first build still has search and secondary indexes to finish.
-pub fn building(conn: &Connection) -> Result<bool> {
-    let value: Option<String> = conn
-        .query_row("SELECT value FROM meta WHERE key = 'building'", [], |row| {
-            row.get(0)
-        })
-        .optional()?;
-    Ok(value.as_deref() == Some("1"))
 }
 
 /// Creates the register in an empty file, or opens one at this version with

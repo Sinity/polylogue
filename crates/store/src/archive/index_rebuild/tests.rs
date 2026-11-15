@@ -7,12 +7,15 @@ fn meta(conn: &Connection, key: &str) -> Option<String> {
         .unwrap()
 }
 
-fn set_aside_files(root: &Path) -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir(root)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-        .filter(|name| name.starts_with(PREFIX))
-        .collect();
+fn build_files(root: &Path) -> Vec<String> {
+    let mut names: Vec<String> = match std::fs::read_dir(root.join(super::super::index_build::DIR))
+    {
+        Ok(entries) => entries
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => panic!("{error}"),
+    };
     names.sort();
     names
 }
@@ -28,7 +31,7 @@ fn rebuild_status(archive: &Archive) -> Option<IndexRebuild> {
 }
 
 #[test]
-fn an_index_from_another_schema_is_set_aside_and_rebuilt_without_touching_the_archive() {
+fn an_index_from_another_schema_is_replaced_by_a_build_without_touching_the_archive() {
     for (change, reason) in [
         (
             "PRAGMA user_version = 26",
@@ -39,10 +42,6 @@ fn an_index_from_another_schema_is_set_aside_and_rebuilt_without_touching_the_ar
         ),
         (
             "CREATE TABLE synthetic_older(value)",
-            IndexRebuildReason::SchemaDiffers,
-        ),
-        (
-            "UPDATE meta SET value='1' WHERE key='building'; CREATE TABLE synthetic_older(value)",
             IndexRebuildReason::SchemaDiffers,
         ),
         ("PRAGMA application_id = 0", IndexRebuildReason::OlderFormat),
@@ -81,23 +80,22 @@ fn set_aside_and_rebuild(change: &str, reason: IndexRebuildReason) {
     let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
     let build = schema::build_index_identity(false).unwrap();
     assert_ne!(previous, build, "{change}");
-    let name = format!("index-set-aside-{previous}.db");
-    // Inspection preserves the old index and every write-ahead file it left.
+    // The old index waits beside the build, with the write-ahead log it left.
     assert_eq!(
-        set_aside_files(dir.path()),
-        vec![name.clone(), format!("{name}-shm"), format!("{name}-wal")],
+        build_files(dir.path()),
+        vec!["index.db", "previous.db", "previous.db-wal"],
         "{change}"
     );
-    let old = open_read(&dir.path().join(&name)).unwrap();
+    let old = open_read(&dir.path().join("index-build/previous.db")).unwrap();
     assert_eq!(
         meta(&old, "previous-index-marker").as_deref(),
         Some("present")
     );
     drop(old);
+    assert!(!dir.path().join("index.db").exists());
     let index = open_read(&archive.index_db()).unwrap();
     assert_eq!(meta(&index, "previous-index-marker"), None);
     assert_eq!(schema::index_identity(&index).unwrap(), build);
-    assert!(schema::building(&index).unwrap());
     drop(index);
     assert_eq!(
         rebuild_status(&archive),
@@ -106,7 +104,7 @@ fn set_aside_and_rebuild(change: &str, reason: IndexRebuildReason) {
             previous_schema: previous.clone(),
             schema: build.clone(),
             building: true,
-            set_aside: Some(name),
+            set_aside: None,
         }),
         "{change}"
     );
@@ -131,13 +129,9 @@ fn set_aside_and_rebuild(change: &str, reason: IndexRebuildReason) {
         [0, 0, 128, 63]
     );
 
-    // The first build ends: the set-aside file goes, the report stays.
+    // The build ends: the old index goes, the report stays.
     crate::Writer::start(&archive).unwrap().derive().unwrap();
-    assert_eq!(
-        set_aside_files(dir.path()),
-        Vec::<String>::new(),
-        "{change}"
-    );
+    assert_eq!(build_files(dir.path()), Vec::<String>::new(), "{change}");
     assert_eq!(
         rebuild_status(&archive),
         Some(IndexRebuild {
@@ -153,16 +147,39 @@ fn set_aside_and_rebuild(change: &str, reason: IndexRebuildReason) {
 }
 
 #[test]
-fn a_set_aside_file_left_by_a_stop_is_removed_at_the_next_open_of_a_built_index() {
+fn files_left_beside_a_built_index_are_removed_at_the_next_open() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
     crate::Writer::start(&archive).unwrap().derive().unwrap();
     drop(lock);
-    let left = dir.path().join(file_name("0123456789abcdef"));
-    std::fs::write(&left, b"").unwrap();
+    std::fs::create_dir(dir.path().join("index-build")).unwrap();
+    std::fs::write(dir.path().join("index-build/previous.db"), b"").unwrap();
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
-    assert!(!left.exists());
+    assert_eq!(build_files(dir.path()), Vec::<String>::new());
+    assert!(!dir.path().join("index-build").exists());
     assert_eq!(rebuild_status(&archive), None);
+}
+
+#[test]
+fn a_build_file_from_another_schema_is_discarded_and_started_again() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+        drop(crate::Writer::start(&archive).unwrap());
+        let build = Connection::open(archive.index_db()).unwrap();
+        build
+            .execute_batch(
+                "CREATE TABLE synthetic_older(value); INSERT INTO meta VALUES ('older-build','present')",
+            )
+            .unwrap();
+    }
+    let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+    let index = open_read(&archive.index_db()).unwrap();
+    assert_eq!(meta(&index, "older-build"), None);
+    assert_eq!(
+        schema::index_identity(&index).unwrap(),
+        schema::build_index_identity(false).unwrap()
+    );
 }
 
 #[test]

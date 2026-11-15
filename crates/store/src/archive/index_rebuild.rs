@@ -1,10 +1,12 @@
-//! Replacing an `index.db` written for another schema. The index is derived
-//! from the archive's stored bytes, so an index this build cannot open is
-//! renamed beside it, under its schema identity, and a new one is built in
-//! its place. The renamed file is removed once the new index has finished
-//! its first build. `archive.db` is never handled here.
+//! Replacing an `index.db` written for another schema. The index is derived,
+//! so an index this build cannot open is replaced and its reason recorded in
+//! the new one. A standalone index is built privately and installed over the
+//! old one ([`super::index_build`]); the primary cache is renamed beside
+//! itself under its schema identity, rebuilt from the confirmed stream, and
+//! the renamed file removed once the rebuild reaches the stream's head.
+//! `archive.db` is never handled here.
 
-use crate::{Result, StoreError, schema};
+use crate::{Result, StoreError};
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -32,9 +34,10 @@ pub struct IndexRebuild {
     pub previous_schema: String,
     /// The schema identity of this build's index.
     pub schema: String,
-    /// Whether the first build of the new index is still running.
+    /// Whether the build of the new index is still running.
     pub building: bool,
-    /// The set-aside file beside `index.db`, until the first build ends.
+    /// Primary mode: the set-aside cache beside `index.db`, until the
+    /// rebuild reaches the stream's head.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub set_aside: Option<String>,
 }
@@ -70,8 +73,8 @@ pub(crate) fn reason(error: &StoreError) -> Option<IndexRebuildReason> {
     }
 }
 
-/// Renames `index.db` (closed by the caller after reading `previous`) and
-/// any write-ahead files it left beside it, under its schema identity.
+/// Renames the primary cache (closed by the caller after reading `previous`)
+/// and any write-ahead files it left beside it, under its schema identity.
 pub(crate) fn set_aside(index: &Path, previous: &str) -> Result<()> {
     let dir = index
         .parent()
@@ -110,14 +113,10 @@ pub(crate) fn record(
     Ok(())
 }
 
-/// Whether the index has finished its first build: standalone, the build
-/// marker is cleared. Primary needs the stream applied through Sinex's latest
-/// position, parser progress at the stored length of every chain, and no
-/// unreadable Sinex events that are still live.
-pub(crate) fn built(index: &Connection, primary: bool) -> Result<bool> {
-    if !primary {
-        return Ok(!schema::building(index)?);
-    }
+/// Whether the primary cache has finished its rebuild: its actual native
+/// head, admitted local parser progress for every stored chain, and no
+/// unresolved native facts.
+pub(crate) fn built(index: &Connection) -> Result<bool> {
     let state = crate::primary::projection::replay_state(index)?;
     if !matches!(
         (state.applied_position, state.head),
@@ -143,10 +142,10 @@ pub(crate) fn built(index: &Connection, primary: bool) -> Result<bool> {
     Ok(!unresolved)
 }
 
-/// Removes every set-aside index beside `index.db` once the index has
-/// finished its first build. Matching by name also removes one a crash left
+/// Removes every set-aside cache beside `index.db` once the primary cache
+/// has finished its rebuild. Matching by name also removes one a crash left
 /// before its record was written.
-pub(crate) fn remove_when_built(index: &Connection, path: &Path, primary: bool) -> Result<()> {
+pub(crate) fn remove_when_built(index: &Connection, path: &Path) -> Result<()> {
     let Some(dir) = path.parent() else {
         return Ok(());
     };
@@ -159,7 +158,7 @@ pub(crate) fn remove_when_built(index: &Connection, path: &Path, primary: bool) 
                 .is_some_and(|name| name.to_string_lossy().starts_with(PREFIX))
         })
         .collect::<Vec<_>>();
-    if retained.is_empty() || !built(index, primary)? {
+    if retained.is_empty() || !built(index)? {
         return Ok(());
     }
     for path in retained {
@@ -173,8 +172,9 @@ pub(crate) fn remove_when_built(index: &Connection, path: &Path, primary: bool) 
 }
 
 /// The rebuild this index records, with its current state, if it replaced
-/// an index from another schema.
-pub(crate) fn status(index: &Connection, primary: bool) -> Result<Option<IndexRebuild>> {
+/// an index from another schema. A standalone index is read only once built,
+/// or, while a build replaces it, as the previous index.
+pub(crate) fn status(index: &Connection, archive: &super::Archive) -> Result<Option<IndexRebuild>> {
     let value: Option<String> = index
         .query_row(
             "SELECT value FROM main.meta WHERE key = ?1",
@@ -186,9 +186,14 @@ pub(crate) fn status(index: &Connection, primary: bool) -> Result<Option<IndexRe
         return Ok(None);
     };
     let record: Record = serde_json::from_str(&value)?;
-    let building = !built(index, primary)?;
+    let primary = archive.is_primary();
+    let building = if primary {
+        !built(index)?
+    } else {
+        archive.index_build.building()
+    };
     Ok(Some(IndexRebuild {
-        set_aside: building.then(|| file_name(&record.previous_schema)),
+        set_aside: (primary && building).then(|| file_name(&record.previous_schema)),
         reason: record.reason,
         previous_schema: record.previous_schema,
         schema: record.schema,

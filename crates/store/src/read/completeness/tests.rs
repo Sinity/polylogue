@@ -78,8 +78,7 @@ fn exact_waiting_length_and_explicit_kept_contracts_have_distinct_meanings() {
     let index = index_editor(&fixture.archive);
     index
         .execute_batch(
-            "UPDATE meta SET value='0' WHERE key='building';
-        INSERT INTO input_ref(id,format) VALUES('waiting','synthetic');
+            "INSERT INTO input_ref(id,format) VALUES('waiting','synthetic');
         INSERT INTO parse_state(input_pk,chain,reading_version,status,parsed_upto,at_length)
         SELECT pk,1,'v1','waiting',4,10 FROM input_ref WHERE id='waiting';",
         )

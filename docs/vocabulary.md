@@ -12,8 +12,16 @@ generated page of the thing they belong to, or on the area page that owns them.
 - **index**: `index.db`; everything parsed and derived, built from the archive.
 - **schema identity**: a short hash of an index file's version, format identity,
   tables, views and triggers.
-- **set-aside index**: an `index.db` from another schema, renamed beside the
-  new index under its schema identity until the new index's first build ends.
+- **index build**: writing a new index in the private file
+  `index-build/index.db`, which is installed over `index.db` when the build
+  ends; the first build of an archive, or one replacing an index from another
+  schema.
+- **previous index**: the index a build replaces, kept as
+  `index-build/previous.db` until the new one is installed, and read
+  meanwhile when its schema identity is the build's.
+- **set-aside cache**: in primary mode, a cache from another schema, renamed
+  beside the new one under its schema identity until the rebuild reaches the
+  confirmed stream's head.
 - **embeddings store**: message vectors for semantic ranking, kept apart
   because vectors cost money or time to make.
 - **segment log**: append-only files of compressed frames holding every blob;

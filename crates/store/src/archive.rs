@@ -1,6 +1,7 @@
 //! The archive directory, its single-writer lock and connection settings.
 
 pub(crate) mod generation;
+pub mod index_build;
 pub mod index_rebuild;
 mod metadata;
 pub use metadata::Mode;
@@ -46,6 +47,8 @@ pub struct Archive {
     /// store hands out, the writer's long work and the engine's loop observe
     /// it; clones share it.
     stop: crate::cancellation::Cancellation,
+    /// Whether `index.db` is being built, shared by every value for this root.
+    pub(crate) index_build: std::sync::Arc<index_build::State>,
 }
 
 /// Held by the daemon for as long as it runs. Only the holder writes.
@@ -146,8 +149,18 @@ impl Archive {
         ))
     }
 
+    /// The index file the build pipeline (the writer, its resolver and
+    /// parser-context reads, the engine's planning reads, tool-database
+    /// catalog reads) opens: the private build file while a standalone build
+    /// runs ([`index_build`]), otherwise `index.db`. Client-facing readers
+    /// open [`Archive::served_index`] instead.
     pub fn index_db(&self) -> PathBuf {
-        self.root.join("index.db")
+        let paths = index_build::Paths::of(&self.root);
+        if !self.is_primary() && self.index_build.building() {
+            paths.build
+        } else {
+            paths.index
+        }
     }
 
     pub fn embeddings_db(&self) -> PathBuf {
@@ -171,6 +184,7 @@ impl Archive {
             primary: false,
             read_scope: crate::read::scope::state(root),
             stop: crate::cancellation::Cancellation::stop_request(),
+            index_build: index_build::state(root),
         }
     }
 
@@ -183,6 +197,7 @@ impl Archive {
             primary: true,
             read_scope: crate::read::scope::state(root),
             stop: crate::cancellation::Cancellation::stop_request(),
+            index_build: index_build::state(root),
         }
     }
 
@@ -269,6 +284,7 @@ impl Archive {
             primary: true,
             read_scope: crate::read::scope::state(root),
             stop: crate::cancellation::Cancellation::stop_request(),
+            index_build: index_build::state(root),
         }
     }
 
@@ -360,20 +376,21 @@ impl Archive {
         let e = open_write(&self.embeddings_db(), cache::SETUP)?;
         schema::ensure_embeddings(&e)?;
         drop(e);
-        self.prepare_index()?;
-        generation::open(self)
+        self.prepare_index()
     }
 
-    /// The caller holds the archive lock. Parse positions in the index
-    /// resume an interrupted build. Unknown current shapes refuse.
-    /// An index from another format
-    /// is set aside under its schema identity and a new one is built from the
-    /// archive's stored bytes; the set-aside file is removed once that first
-    /// build ends ([`index_rebuild`]).
+    /// The caller holds the archive lock. A standalone index is built in a
+    /// private file and installed when its build ends ([`index_build`]). The
+    /// primary cache from another format is set aside under its schema
+    /// identity and rebuilt from the confirmed stream; the set-aside file is
+    /// removed once that rebuild reaches the stream's head ([`index_rebuild`]).
     pub(crate) fn prepare_index(&self) -> Result<()> {
+        if !self.is_primary() {
+            return index_build::prepare(self);
+        }
         let path = self.index_db();
         let mut index = open_runtime_writer(&path, cache::SETUP)?;
-        if let Err(error) = self.ensure_index(&index) {
+        if let Err(error) = self.ensure_index(&index, false) {
             let Some(reason) = index_rebuild::reason(&error) else {
                 return Err(error);
             };
@@ -382,7 +399,7 @@ impl Archive {
             index_rebuild::set_aside(&path, &previous)?;
             crate::fault::check("index.after_set_aside", &path.to_string_lossy())?;
             index = open_write(&path, cache::SETUP)?;
-            self.ensure_index(&index)?;
+            self.ensure_index(&index, false)?;
             index_rebuild::record(
                 &index,
                 reason,
@@ -390,13 +407,16 @@ impl Archive {
                 schema::build_index_identity(self.is_primary())?,
             )?;
         }
-        index_rebuild::remove_when_built(&index, &path, self.is_primary())?;
+        index_rebuild::remove_when_built(&index, &path)?;
+        generation::open(self, &index)?;
         crate::fault::check("index.after_creation", "")?;
         Ok(())
     }
 
     /// Creates the index schema in an empty file or opens the one there.
-    fn ensure_index(&self, index: &Connection) -> Result<()> {
+    /// `building`: the file is a standalone build, which leaves out the
+    /// indexes it builds when it ends.
+    pub(crate) fn ensure_index(&self, index: &Connection, building: bool) -> Result<()> {
         let fresh = schema::version(index)? == 0;
         if fresh {
             let mut reset = self.read_scope.begin_reset()?;
@@ -407,7 +427,7 @@ impl Archive {
         } else {
             let archive = open_read(&self.archive_db())?;
             let _write = crate::write_lock::hold(&archive)?;
-            schema::ensure_index(index)?;
+            schema::ensure_index(index, building)?;
         }
         if fresh {
             self.read_scope.finish_reset();
@@ -438,7 +458,7 @@ fn clear_directory(dir: &Path) -> Result<()> {
 /// Turns copy-on-write off for a new, empty directory on btrfs, so files
 /// created in it inherit the flag (SQLite and blob files fragment badly
 /// under copy-on-write). Best effort: other filesystems ignore it.
-fn no_cow(dir: &Path) {
+pub(crate) fn no_cow(dir: &Path) {
     let _ = std::process::Command::new("chattr")
         .arg("+C")
         .arg(dir)
@@ -448,7 +468,7 @@ fn no_cow(dir: &Path) {
 }
 
 /// How long a connection waits for a lock another connection holds.
-const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+pub(crate) const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 fn tune(conn: &Connection) -> Result<()> {
     conn.pragma_update(None, "journal_mode", "wal")?;
@@ -534,6 +554,13 @@ pub fn open_write(path: &Path, cache_mib: i64) -> Result<Connection> {
             | OpenFlags::SQLITE_OPEN_URI,
     )?;
     tune(&conn)?;
+    writer_settings(&conn, cache_mib)?;
+    conn.pragma_update(None, "wal_autocheckpoint", WAL_AUTOCHECKPOINT)?;
+    Ok(conn)
+}
+
+/// The statement cache and page cache of a write connection.
+pub(crate) fn writer_settings(conn: &Connection, cache_mib: i64) -> Result<()> {
     // The writer runs a few hundred distinct statements per batch; rusqlite
     // keeps 16 by default, so most were parsed again for every batch.
     conn.set_prepared_statement_cache_capacity(WRITER_STATEMENTS);
@@ -541,8 +568,7 @@ pub fn open_write(path: &Path, cache_mib: i64) -> Result<Connection> {
     // Mapped pages count as resident memory and speed up reads only; the
     // writer's reads go through its page cache.
     conn.pragma_update(None, "mmap_size", 0)?;
-    conn.pragma_update(None, "wal_autocheckpoint", WAL_AUTOCHECKPOINT)?;
-    Ok(conn)
+    Ok(())
 }
 
 /// Pipeline writers checkpoint between turns. Closing them must not start a

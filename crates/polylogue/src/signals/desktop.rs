@@ -143,11 +143,24 @@ async fn drive(
     let worker = if d.archive.is_primary() {
         None
     } else {
-        let restored = (|| -> polylogue_store::Result<NotificationState> {
-            let state = load(d)?.and_then(|c| c.notifications).unwrap_or_default();
-            recover(d, &state, &requests)?;
-            Ok(state)
-        })();
+        let restored = loop {
+            let restored = (|| -> polylogue_store::Result<NotificationState> {
+                let state = load(d)?.and_then(|c| c.notifications).unwrap_or_default();
+                recover(d, &state, &requests)?;
+                Ok(state)
+            })();
+            // Nothing is readable until the index being built is installed,
+            // which is a commit: restore once it is.
+            if !matches!(restored, Err(polylogue_store::StoreError::IndexBuilding(_))) {
+                break restored;
+            }
+            tokio::select! {
+                _ = stop.cancelled() => return Ok(()),
+                changed = changes.recv() => if changed.is_none() {
+                    return Ok(());
+                },
+            }
+        };
         let state = match restored {
             Ok(state) => state,
             // The stop request ends reads and closes the reader pool. A
@@ -175,6 +188,12 @@ async fn drive(
     loop {
         if stop.is_cancelled() {
             break;
+        }
+        // Rules read the index; while it is being built with nothing to
+        // serve, the next commit (its install among them) evaluates again.
+        if evaluate && matches!(d.archive.index_build(), Some(build) if !build.serving_previous) {
+            evaluate = false;
+            due = d.config.requests.now().unix_ms().saturating_add(30_000);
         }
         if evaluate {
             let now = d.config.requests.now().unix_ms();

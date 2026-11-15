@@ -65,6 +65,7 @@ pub(super) fn answer(
         pid: std::process::id(),
         uptime_seconds: d.started.elapsed().as_secs(),
         store,
+        index_build: d.archive.index_build(),
         totals_error,
         loop_status,
         signals,
@@ -82,6 +83,65 @@ pub(super) fn answer(
     let mut missing: Vec<String> = freshness.notes().into_iter().map(str::to_owned).collect();
     missing.push(format!("{}: {error}", path.display()));
     command_surface::Answer::degraded(status, missing)
+}
+
+/// Status while `index.db` is being built and no index can be read: the
+/// daemon's own state and the build's progress, degraded until it ends.
+pub(super) fn building(
+    d: &Daemon,
+    build: polylogue_store::archive::index_build::IndexBuild,
+) -> command_surface::Answer<crate::protocol::status::Answer> {
+    use polylogue_model::currency::{
+        CompletenessDimension, CompletenessReason, IndexCurrency, ReadCompleteness, ReadFreshness,
+    };
+    let unread = build.to_string();
+    let loop_status = d
+        .status
+        .lock()
+        .map(|status| status.clone())
+        .unwrap_or_default();
+    let signals = d
+        .signals
+        .lock()
+        .map(|signals| signals.clone())
+        .unwrap_or_default();
+    let signals = match serde_json::from_value(signals) {
+        Ok(signals) => signals,
+        Err(problem) => return error("internal", problem),
+    };
+    let freshness = ReadFreshness {
+        local: ReadCompleteness {
+            parsing: CompletenessDimension::Incomplete(vec![CompletenessReason::FirstBuild]),
+            derivation: CompletenessDimension::Incomplete(vec![
+                CompletenessReason::DerivationBehind,
+            ]),
+            search: CompletenessDimension::Incomplete(vec![CompletenessReason::FirstBuild]),
+            projection: CompletenessDimension::NotApplicable,
+            kept_chains: 0,
+            raw_only_chains: 0,
+        },
+        owner: IndexCurrency::Standalone,
+    };
+    let status = crate::protocol::status::Answer {
+        archive: Some(d.archive.root.clone()),
+        pid: std::process::id(),
+        uptime_seconds: d.started.elapsed().as_secs(),
+        store: None,
+        index_build: Some(build),
+        totals_error: Some(unread.clone()),
+        loop_status,
+        signals,
+        notices: crate::protocol::status::Notices::Unavailable {
+            error: unread.clone(),
+        },
+        running: crate::protocol::status::Running::Unavailable { error: unread },
+        warm: d.warm.summary(),
+        mode: crate::protocol::status::Mode::Standalone,
+        freshness: freshness.clone(),
+        #[cfg(feature = "sinex")]
+        primary: None,
+    };
+    crate::protocol::read(status, &freshness)
 }
 
 #[cfg(feature = "sinex")]

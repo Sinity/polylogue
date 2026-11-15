@@ -3,7 +3,7 @@ use super::*;
 fn removal_steps(unrelated: usize, indexed: bool) -> u64 {
     let w = test_archive();
     let mut conn = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
-    assert!(crate::schema::building(&conn).unwrap());
+    assert!(w.archive.index_build().is_some());
     assert_eq!(
         conn.query_row(
             "SELECT count(*) FROM sqlite_schema WHERE name='event_after'",
@@ -165,7 +165,7 @@ fn first_build_message_removal_uses_keyed_event_foreign_keys() {
 fn session_removal_steps(unrelated: usize, indexed: bool) -> u64 {
     let w = test_archive();
     let mut conn = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
-    assert!(crate::schema::building(&conn).unwrap());
+    assert!(w.archive.index_build().is_some());
     assert_eq!(
         conn.query_row(
             "SELECT count(*) FROM sqlite_schema WHERE name='link_child'",

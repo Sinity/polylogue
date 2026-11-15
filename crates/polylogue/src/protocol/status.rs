@@ -19,6 +19,9 @@ pub struct Answer {
     pub uptime_seconds: u64,
     /// The archive totals; none when they could not be read (`totals_error`).
     pub store: Option<polylogue_store::Status>,
+    /// The build of `index.db` in progress, with its progress.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index_build: Option<polylogue_store::archive::index_build::IndexBuild>,
     pub totals_error: Option<String>,
     #[serde(flatten)]
     pub loop_status: polylogue_engine::LoopStatus,

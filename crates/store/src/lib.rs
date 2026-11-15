@@ -174,6 +174,10 @@ pub enum StoreError {
     ScopeChanged,
     #[error("the index was replaced; acquire a new reader")]
     ReadIndexReplaced,
+    /// No index can be read until the build in progress ends
+    /// ([`archive::index_build`]).
+    #[error("{0}")]
+    IndexBuilding(Box<archive::index_build::IndexBuild>),
     #[error("request {0} was already used for different content")]
     Conflict(String),
     #[error("{reference} is stale; current revisions: {current:?}")]
@@ -302,6 +306,7 @@ impl StoreError {
             Self::ReadDeadlineExceeded => "deadline_exceeded",
             Self::ReadCancelled => "cancelled",
             Self::Stopped | Self::ReadPoolClosed => "shutting_down",
+            Self::IndexBuilding(_) => "index_building",
             Self::NotFound(_) => "not_found",
             Self::Invalid(_) => "bad_request",
             Self::Query(error) => error.kind(),

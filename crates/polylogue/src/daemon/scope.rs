@@ -131,10 +131,23 @@ impl ScopeWorker {
                             completed.store(true, Ordering::Release);
                             return;
                         }
+                        let building =
+                            matches!(error, polylogue_store::StoreError::IndexBuilding(_));
                         let error = error.to_string();
                         if last_error.as_ref() != Some(&error) {
                             eprintln!("polylogue: scope index: {error}");
                             last_error = Some(error);
+                        }
+                        // Nothing is readable until the index being built is
+                        // installed, which is a commit: wait for it.
+                        if building && let Some(subscription) = &subscription {
+                            if subscription.recv().is_err() {
+                                if stopped.load(Ordering::Acquire) {
+                                    completed.store(true, Ordering::Release);
+                                }
+                                return;
+                            }
+                            continue;
                         }
                         // Retry from the same position; a commit cue is not needed.
                         std::thread::sleep(std::time::Duration::from_millis(100));

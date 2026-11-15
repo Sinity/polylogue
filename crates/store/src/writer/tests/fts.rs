@@ -209,7 +209,7 @@ fn corruption() -> serde_json::Value {
     let partial: i64 = conn
         .query_row("SELECT count(*) FROM text_fts", [], |r| r.get(0))
         .unwrap();
-    let preserved = before == parsed(&conn) && crate::schema::building(&conn).unwrap();
+    let preserved = before == parsed(&conn) && w.archive.index_build().is_some();
     crate::text_rows::replace_group_body(
         &conn,
         1000 + ROWS as i64 - 2,
@@ -224,15 +224,13 @@ fn corruption() -> serde_json::Value {
         1,
     );
     let (w, first_resume) = reopen(w);
-    let index = crate::archive::open_read(&w.archive.index_db()).unwrap();
-    let still_not_ready = crate::schema::building(&index).unwrap();
-    drop(index);
+    let still_not_ready = w.archive.index_build().is_some();
     // This retry starts with a fully committed FTS build but incomplete
     // secondary indexes, exercising its statistics as well as partial rows.
     let (w, resumed) = reopen(w);
     crate::fault::clear();
     let conn = open_write(&w.archive.index_db(), cache::INDEX_WRITER).unwrap();
-    let ready = !crate::schema::building(&conn).unwrap();
+    let ready = w.archive.index_build().is_none();
     let recovered = signature(&conn);
     let preserved = preserved && before == parsed(&conn);
     drop(conn);
@@ -309,9 +307,7 @@ fn stopped() -> serde_json::Value {
     let wal_at_stop = wal_bytes(&path);
     let commits_at_stop = commits.load(Ordering::Relaxed);
     let postings_at_stop = postings.load(Ordering::Relaxed);
-    let observer = crate::archive::open_read(&path).unwrap();
-    let not_ready_at_stop = crate::schema::building(&observer).unwrap();
-    drop(observer);
+    let not_ready_at_stop = w.archive.index_build().is_some();
     let started = Instant::now();
     stop.cancel();
     crate::fault::release();
@@ -322,11 +318,11 @@ fn stopped() -> serde_json::Value {
     let partial: i64 = conn
         .query_row("SELECT count(*) FROM text_fts", [], |r| r.get(0))
         .unwrap();
-    let preserved = before == parsed(&conn) && crate::schema::building(&conn).unwrap();
+    let preserved = before == parsed(&conn) && w.archive.index_build().is_some();
     drop(conn);
     let (w, resumed) = reopen(w);
     let conn = open_write(&w.archive.index_db(), cache::INDEX_WRITER).unwrap();
-    let ready = !crate::schema::building(&conn).unwrap();
+    let ready = w.archive.index_build().is_none();
     let preserved = preserved && before == parsed(&conn);
     let recovered = signature(&conn);
     drop(conn);
