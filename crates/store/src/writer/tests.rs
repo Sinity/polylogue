@@ -25,6 +25,7 @@ mod routes;
 mod saved;
 mod scoped;
 mod session_order;
+mod session_summaries;
 mod sparse_projection;
 mod stopping;
 mod stored_replay;
@@ -42,7 +43,8 @@ fn write_test_rows(
     let mut batch = batch.clone();
     batch.parse = vec![step.clone()];
     resolve::prepare_index(tx, &mut batch, chain, first.is_some())?;
-    write_rows(
+    let changes = crate::change_summary::ChangeSummary::start(tx)?;
+    let written = write_rows(
         &crate::text_rows::TextIds::new(tx, false).unwrap(),
         tx,
         &batch,
@@ -51,8 +53,10 @@ fn write_test_rows(
         counter,
         first,
         Some(&fixture_receipt()),
-        &crate::change_summary::ChangeSummary::start(tx).unwrap(),
-    )
+        &changes,
+    )?;
+    changes.finish_summaries(tx, Some(counter))?;
+    Ok(written)
 }
 
 fn fixture_receipt() -> crate::wire_shapes::ReadingReceipt {

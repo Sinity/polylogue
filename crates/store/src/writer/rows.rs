@@ -388,11 +388,10 @@ fn apply_rows(
     }
     for (session_pk, at) in activity {
         tx.prepare_cached(
-            "UPDATE session SET last_activity_at = MAX(COALESCE(last_activity_at, ?2), ?2),
-                 changed = ?3
+            "UPDATE session SET last_activity_at = MAX(COALESCE(last_activity_at, ?2), ?2)
              WHERE pk = ?1",
         )?
-        .execute(params![session_pk, at, counter])?;
+        .execute(params![session_pk, at])?;
     }
     for (i, e) in p.output.events.iter().enumerate() {
         if let Some(id) = &e.session {
@@ -472,6 +471,7 @@ fn apply_rows(
                 .prepare_cached("SELECT EXISTS(SELECT 1 FROM event WHERE pk=?1)")?
                 .query_row([target], |r| r.get::<_, bool>(0))?
             {
+                changes.event(tx, *target)?;
                 tx.prepare_cached(
                     "INSERT INTO event(pk,id,session_pk,seq,after_message_id,seq_from_message,after_message_pk,kind,at,input_pk,source_chain,source_start,source_end,fields,data)
                      SELECT ?2,?3,session_pk,seq,after_message_id,seq_from_message,after_message_pk,kind,at,input_pk,source_chain,source_start,source_end,fields,data
@@ -513,6 +513,7 @@ fn apply_rows(
                     .prepare_cached("SELECT EXISTS(SELECT 1 FROM event WHERE pk=?1)")?
                     .query_row([target], |r| r.get::<_, bool>(0))?
                 {
+                    changes.event(tx, *target)?;
                     tx.prepare_cached(
                         "INSERT INTO event(pk,id,session_pk,seq,after_message_id,seq_from_message,after_message_pk,kind,at,input_pk,source_chain,source_start,source_end,fields,data)
                          SELECT ?2,?3,?4,seq,after_message_id,seq_from_message,after_message_pk,kind,at,input_pk,source_chain,source_start,source_end,fields,data
@@ -565,8 +566,7 @@ fn apply_rows(
     }
     // Every session these records touched is derived again.
     for pk in sessions.values() {
-        tx.prepare_cached("UPDATE session SET changed = ?2 WHERE pk = ?1 AND changed IS NOT ?2")?
-            .execute(params![pk, counter])?;
+        changes.session(tx, *pk)?;
     }
     // Hooks name the selected tool-call rows, which message projection just wrote.
     for (i, e) in p.output.events.iter().enumerate() {
@@ -591,6 +591,14 @@ fn apply_rows(
         }
     }
     for u in &p.output.background {
+        if let Some(session) = tx
+            .prepare_cached("SELECT pk FROM session WHERE id=?1")?
+            .query_row([u.session.to_string()], |row| row.get::<_, i64>(0))
+            .optional()?
+        {
+            changes.call_result(tx, session, &u.call_id)?;
+            changes.session(tx, session)?;
+        }
         let (outcome, reason, exit) = outcome_columns(&u.outcome);
         tx.prepare_cached(
             "UPDATE tool_call SET outcome = ?1, outcome_reason = ?2, exit_code = ?3,result_at=?6,reported_duration_ms=?7
@@ -665,7 +673,9 @@ pub(crate) fn finish(
     changes: &ChangeSummary,
     first_build: Option<&FirstBuild>,
     texts: &crate::text_rows::TextIds,
+    counter: i64,
 ) -> Result<u64> {
+    changes.finish_summaries(tx, Some(counter))?;
     changes.finish_links(tx)?;
     let read = crate::items::refresh(tx, changes)?;
     crate::session_values::refresh(tx, changes)?;
@@ -802,11 +812,14 @@ impl RowWriter<'_, '_> {
         self.changes.link_child(self.tx, child)?;
         self.tx.prepare_cached("INSERT INTO prefix_copy(input_pk,chain,parent_id,child_id,admitted,explicit_members) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(input_pk,chain,parent_id,child_id) DO UPDATE SET admitted=coalesce(max(prefix_copy.admitted,excluded.admitted),prefix_copy.admitted,excluded.admitted),explicit_members=max(prefix_copy.explicit_members,excluded.explicit_members)")?
             .execute(params![self.input_pk,self.chain,parent,child,admitted,explicit])?;
-        self.tx
-            .prepare_cached(
-                "UPDATE session SET changed=?3 WHERE id IN (?1,?2) AND changed IS NOT ?3",
-            )?
-            .execute(params![parent, child, self.counter])?;
+        let sessions = self
+            .tx
+            .prepare_cached("SELECT pk FROM session WHERE id IN (?1,?2)")?
+            .query_map(params![parent, child], |row| row.get::<_, i64>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for session in sessions {
+            self.changes.session(self.tx, session)?;
+        }
         Ok(())
     }
 
@@ -882,9 +895,7 @@ impl RowWriter<'_, '_> {
             }
         }
         self.changes.whole_session(to);
-        self.tx
-            .prepare_cached("UPDATE session SET changed=?2 WHERE pk=?1")?
-            .execute(params![to, self.counter])?;
+
         Ok(())
     }
 
@@ -909,9 +920,6 @@ impl RowWriter<'_, '_> {
         }
         for pk in [from, to] {
             self.changes.whole_session(pk);
-            self.tx
-                .prepare_cached("UPDATE session SET changed=?2 WHERE pk=?1")?
-                .execute(params![pk, self.counter])?;
         }
         Ok(())
     }
@@ -979,9 +987,10 @@ impl RowWriter<'_, '_> {
         }
         let main = merged.kind == polylogue_model::SessionKind::Main;
         self.tx.execute("UPDATE message_source SET main=?4 WHERE session_pk=?1 AND input_pk=?2 AND chain=?3 AND main<>?4",params![pk,self.input_pk,self.chain,main])?;
+        self.changes.session(self.tx, pk)?;
         self.tx
-            .prepare_cached("UPDATE session SET changed = ?2, stub = 0 WHERE pk = ?1")?
-            .execute(params![pk, self.counter])?;
+            .prepare_cached("UPDATE session SET stub=0 WHERE pk=?1 AND stub IS NOT 0")?
+            .execute([pk])?;
         Ok((pk, main))
     }
 
@@ -997,7 +1006,10 @@ impl RowWriter<'_, '_> {
         {
             return Ok(pk);
         }
-        self.tx.prepare_cached("INSERT INTO session(pk,id,origin,native_id,kind,cwd_json,changed,harness,stub) VALUES (?1,?2,?3,?4,'main','[]',?5,?3,?6)")?.execute(params![pk,key,id.origin().as_str(),id.native().as_str(),self.counter,stub])?;
+        self.tx.prepare_cached("INSERT INTO session(pk,id,origin,native_id,kind,cwd_json,changed,harness,stub,
+            message_count,human_prompt_count,human_command_count,word_count,human_word_count,model_word_count,
+            thinking_count,compaction_count,tool_call_count,error_count)
+            VALUES (?1,?2,?3,?4,'main','[]',?5,?3,?6,0,0,0,0,0,0,0,0,0,0)")?.execute(params![pk,key,id.origin().as_str(),id.native().as_str(),self.counter,stub])?;
         self.tx
             .prepare_cached(
                 "UPDATE link SET child_pk = ?1 WHERE child_id = ?2 AND child_pk IS NULL",
@@ -1036,10 +1048,8 @@ impl RowWriter<'_, '_> {
         let pk = match pk {
             Some(pk) => pk,
             None => {
-                self.changes.message(
-                    self.tx,
-                    self.keys.get(resolve::Kind::Message, id.as_bytes())?.pk,
-                )?;
+                self.changes
+                    .new_message(self.keys.get(resolve::Kind::Message, id.as_bytes())?.pk);
                 let write = self
                     .messages
                     .get(&self.keys.get(resolve::Kind::Message, id.as_bytes())?.pk)
@@ -1115,6 +1125,7 @@ impl RowWriter<'_, '_> {
             self.detach_event_anchors(pk)?;
             self.tx
                 .execute("DELETE FROM message_route WHERE message_pk=?1", [pk])?;
+            self.changes.replaced_message(pk)?;
             self.tx.execute("DELETE FROM message WHERE pk=?1", [pk])?;
             return Ok(true);
         };
@@ -1163,10 +1174,7 @@ impl RowWriter<'_, '_> {
             }
             // Adding or removing a source claim can change session
             // derivations even when the displayed message stays equal.
-            self.tx.execute(
-                "UPDATE session SET changed=?2 WHERE pk=?1 AND changed IS NOT ?2",
-                params![session_pk, self.counter],
-            )?;
+            self.changes.session(self.tx, session_pk)?;
             return Ok(false);
         }
         self.changes.message(self.tx, pk)?;
@@ -1176,7 +1184,7 @@ impl RowWriter<'_, '_> {
         let m = &value.message;
         let prepared = &value.prepared;
         self.changes.prepare_items(pk, prepared.items.clone());
-        self.tx.execute("UPDATE session SET changed=?2 WHERE pk IN (SELECT session_pk FROM message WHERE pk=?1) OR pk=?3",params![pk,self.counter,session_pk])?;
+        self.changes.session(self.tx, session_pk)?;
         if created.is_none() {
             if self
                 .tx
@@ -1236,7 +1244,9 @@ impl RowWriter<'_, '_> {
         v: &Version,
         order: &str,
     ) -> Result<i64> {
-        let written_by = polylogue_model::WrittenBy::of(m).as_str();
+        self.changes.session(self.tx, session_pk)?;
+        let author = polylogue_model::WrittenBy::of(m);
+        let written_by = author.as_str();
         // A copy's message is written with its ID in the session.
         let id = self
             .keys
@@ -1343,7 +1353,14 @@ impl RowWriter<'_, '_> {
             },
             v.time,
         ])?;
+        let created = pk.is_none();
         let pk = pk.unwrap_or_else(|| self.tx.last_insert_rowid());
+        if created {
+            self.changes
+                .installed_message(pk, session_pk, m, words, author)?;
+        } else {
+            self.changes.replaced_message(pk)?;
+        }
         Ok(pk)
     }
 
@@ -1405,9 +1422,7 @@ impl RowWriter<'_, '_> {
             // Only its place moved; its session is the one it had.
             self.changes.event(self.tx, event)?;
             let Some(session) = session else { continue };
-            self.tx
-                .prepare_cached("UPDATE session SET changed=?2 WHERE pk=?1 AND changed IS NOT ?2")?
-                .execute(params![session, self.counter])?;
+            self.changes.session(self.tx, session)?;
         }
         Ok(())
     }
@@ -1417,6 +1432,7 @@ impl RowWriter<'_, '_> {
     /// the message row changes: a version from another session moves the
     /// message, and its old blocks must not outlive the move.
     fn clear_blocks(&self, message_pk: i64) -> Result<()> {
+        self.changes.remove_results(self.tx, message_pk)?;
         let texts: Vec<i64> = self
             .tx
             .prepare_cached(
@@ -1629,6 +1645,9 @@ impl RowWriter<'_, '_> {
                 ..
             } => {
                 let (outcome, reason, exit) = outcome_columns(outcome);
+                if let Some(call_id) = call_id {
+                    self.changes.call_result(self.tx, session_pk, call_id)?;
+                }
                 self.tx
                     .prepare_cached(
                         "UPDATE tool_call SET result_block_pk = ?1, outcome = ?2, outcome_reason = ?3,

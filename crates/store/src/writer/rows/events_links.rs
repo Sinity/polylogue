@@ -3,7 +3,7 @@ use super::*;
 
 impl RowWriter<'_, '_> {
     pub(super) fn refresh_event(&self, pk: i64) -> Result<()> {
-        self.tx.prepare_cached("UPDATE session SET changed=?2 WHERE pk=(SELECT session_pk FROM event WHERE pk=?1) AND changed IS NOT ?2")?.execute(params![pk,self.counter])?;
+        self.changes.event(self.tx, pk)?;
         let choice = self
             .choices
             .events
@@ -14,9 +14,9 @@ impl RowWriter<'_, '_> {
             self.tx.execute("DELETE FROM event WHERE pk=?1", [pk])?;
             return Ok(());
         };
-        self.tx
-            .prepare_cached("UPDATE session SET changed=?2 WHERE pk=?1 AND changed IS NOT ?2")?
-            .execute(params![choice.session, self.counter])?;
+        if let Some(session) = choice.session {
+            self.changes.session(self.tx, session)?;
+        }
         let after = choice
             .after
             .as_ref()
@@ -101,7 +101,17 @@ impl RowWriter<'_, '_> {
         Ok(())
     }
     fn mark_link_sessions(&self, pk: i64) -> Result<()> {
-        self.tx.prepare_cached("UPDATE session SET changed=?2 WHERE id IN (SELECT parent_id FROM link WHERE pk=?1 UNION SELECT child_id FROM link WHERE pk=?1) AND changed IS NOT ?2")?.execute(params![pk,self.counter])?;
+        let sessions = self
+            .tx
+            .prepare_cached(
+                "SELECT pk FROM session WHERE id IN
+            (SELECT parent_id FROM link WHERE pk=?1 UNION SELECT child_id FROM link WHERE pk=?1)",
+            )?
+            .query_map([pk], |row| row.get::<_, i64>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for session in sessions {
+            self.changes.session(self.tx, session)?;
+        }
         Ok(())
     }
     pub(super) fn store_link(

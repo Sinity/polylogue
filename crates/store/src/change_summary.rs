@@ -8,6 +8,7 @@ use crate::Result;
 use rusqlite::{Connection, OptionalExtension};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
+mod counts;
 
 pub(crate) struct ChangeSummary {
     changed: RefCell<Changed>,
@@ -24,6 +25,19 @@ struct Before {
     key: OrderKey,
     /// What it contributed to completion ([`crate::session_values`]).
     values: Vec<crate::session_values::Value>,
+    counts: crate::derive::counts::Counts,
+}
+
+struct MessageChange {
+    before: Option<Before>,
+    /// The successful fresh insert already owns these facts. Tool outcomes
+    /// are read after pairing; ordinary bodies need no contribution readback.
+    installed: Option<(i64, crate::derive::counts::Counts, bool)>,
+}
+
+struct SessionBefore {
+    script: bool,
+    counts_known: bool,
 }
 
 #[derive(Default)]
@@ -33,9 +47,11 @@ struct Changed {
     /// Messages whose row, blocks, place or visibility changed, with the
     /// session, parent and place each had before the change (none for a
     /// new one).
-    messages: BTreeMap<i64, Option<Before>>,
+    messages: BTreeMap<i64, MessageChange>,
     /// Events whose row changed, with the session each had before.
-    events: BTreeMap<i64, Option<i64>>,
+    events: BTreeMap<i64, Option<(i64, bool)>>,
+    /// The session-wide rule for counting script calls, before any mutation.
+    sessions: BTreeMap<i64, SessionBefore>,
     /// Sessions whose links as a child changed, by session ID.
     link_children: BTreeMap<String, String>,
     /// Sessions to bring up to date from their first unit: a change the
@@ -112,6 +128,7 @@ impl ChangeSummary {
     /// Placement and visibility change without changing the selected content.
     pub(crate) fn message_metadata(&self, conn: &Connection, pk: i64) -> Result<()> {
         self.record_message(conn, pk)?;
+        self.replaced_message(pk)?;
         self.changed
             .borrow_mut()
             .items
@@ -135,16 +152,42 @@ impl ChangeSummary {
                     parent: row.get(1)?,
                     key: (row.get(2)?, row.get(3)?),
                     values: Vec::new(),
+                    counts: crate::derive::counts::Counts::default(),
                 })
             })
             .optional()?
             .map(|mut before| {
                 before.values = crate::session_values::of_message(conn, pk, before.session)?;
+                before.counts = crate::derive::counts::message(conn, pk)?
+                    .ok_or_else(|| {
+                        crate::StoreError::Invalid("changed message disappeared".into())
+                    })?
+                    .1;
                 Ok::<_, crate::StoreError>(before)
             })
             .transpose()?;
-        self.changed.borrow_mut().messages.insert(pk, before);
+        if let Some(before) = &before {
+            self.session(conn, before.session)?;
+        }
+        self.changed.borrow_mut().messages.insert(
+            pk,
+            MessageChange {
+                before,
+                installed: None,
+            },
+        );
         Ok(())
+    }
+
+    pub(crate) fn new_message(&self, pk: i64) {
+        self.changed
+            .borrow_mut()
+            .messages
+            .entry(pk)
+            .or_insert(MessageChange {
+                before: None,
+                installed: None,
+            });
     }
 
     /// Records an event before its row changes or is inserted.
@@ -153,10 +196,15 @@ impl ChangeSummary {
             return Ok(());
         }
         let before = conn
-            .prepare_cached("SELECT session_pk FROM event WHERE pk = ?1")?
-            .query_row([pk], |row| row.get::<_, Option<i64>>(0))
+            .prepare_cached("SELECT session_pk,kind='compaction' FROM event WHERE pk = ?1")?
+            .query_row([pk], |row| {
+                Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, bool>(1)?))
+            })
             .optional()?
-            .flatten();
+            .and_then(|(session, compaction)| session.map(|session| (session, compaction)));
+        if let Some((session, _)) = before {
+            self.session(conn, session)?;
+        }
         self.changed.borrow_mut().events.insert(pk, before);
         Ok(())
     }
@@ -210,7 +258,13 @@ impl ChangeSummary {
         pk: i64,
         session_pk: i64,
     ) -> Vec<crate::session_values::Value> {
-        match self.changed.borrow().messages.get(&pk) {
+        match self
+            .changed
+            .borrow()
+            .messages
+            .get(&pk)
+            .map(|change| &change.before)
+        {
             Some(Some(before)) if before.session == session_pk => before.values.clone(),
             _ => Vec::new(),
         }
@@ -232,7 +286,7 @@ impl ChangeSummary {
         )?;
         let mut places = Vec::new();
         for pk in messages {
-            if let Some(Some(before)) = changed.messages.get(pk)
+            if let Some(Some(before)) = changed.messages.get(pk).map(|change| &change.before)
                 && before.session == session_pk
             {
                 places.push(before.key.clone());
@@ -259,7 +313,8 @@ impl ChangeSummary {
         let mut out: BTreeMap<i64, SessionChange> = BTreeMap::new();
         let mut now =
             conn.prepare_cached("SELECT session_pk, parent_id FROM message WHERE pk = ?1")?;
-        for (&pk, before) in &changed.messages {
+        for (&pk, change) in &changed.messages {
+            let before = &change.before;
             let after: Option<(i64, Option<String>)> = now
                 .query_row([pk], |row| Ok((row.get(0)?, row.get(1)?)))
                 .optional()?;
@@ -276,7 +331,11 @@ impl ChangeSummary {
         let mut now = conn.prepare_cached("SELECT session_pk FROM event WHERE pk = ?1")?;
         for (&pk, before) in &changed.events {
             let after: Option<i64> = now.query_row([pk], |row| row.get(0)).optional()?.flatten();
-            for session in before.iter().chain(after.iter()) {
+            for session in before
+                .iter()
+                .map(|(session, _)| session)
+                .chain(after.iter())
+            {
                 out.entry(*session).or_default().events.insert(pk);
             }
         }

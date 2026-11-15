@@ -752,8 +752,13 @@ impl Inner {
             ));
         }
         rows::prune_sessions(&tx, &batch.input.id, chain, counter)?;
-        self.report.item_units_read +=
-            rows::finish(&tx, &changes, self.first_build.as_deref(), &self.texts)?;
+        self.report.item_units_read += rows::finish(
+            &tx,
+            &changes,
+            self.first_build.as_deref(),
+            &self.texts,
+            counter,
+        )?;
         batch.parse.clear();
         crate::fault::check("write.index_commit", "")?;
         crate::fault::check("reparse.commit", &batch.input.id)?;

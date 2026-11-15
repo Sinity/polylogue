@@ -2348,8 +2348,13 @@ impl Inner {
             }
             stats.0 += 1;
         }
-        self.report.item_units_read +=
-            rows::finish(&itx, &changes, self.first_build.as_deref(), &self.texts)?;
+        self.report.item_units_read += rows::finish(
+            &itx,
+            &changes,
+            self.first_build.as_deref(),
+            &self.texts,
+            counter,
+        )?;
         let source_changed = if !primary {
             let changed = crate::chain_progress::recorded(&self.archive)?;
             crate::chain_progress::refresh(&itx, &changed)?;

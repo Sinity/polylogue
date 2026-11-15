@@ -73,7 +73,7 @@ pub(super) fn apply(
         step.reset && step.delivery.is_none(),
         &changes,
     )?;
-    rows::finish(&tx, &changes, None, &texts)?;
+    rows::finish(&tx, &changes, None, &texts, counter)?;
     tx.commit()?;
     text_transaction.commit();
     Ok(())
