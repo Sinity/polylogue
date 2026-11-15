@@ -121,10 +121,6 @@ impl Tool {
     pub fn open_world(self) -> bool {
         matches!(self, Tool::Chat | Tool::Act)
     }
-
-    pub fn named(name: &str) -> Option<Tool> {
-        Tool::ALL.into_iter().find(|tool| tool.name() == name)
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

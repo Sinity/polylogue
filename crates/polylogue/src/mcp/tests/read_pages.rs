@@ -141,13 +141,12 @@ struct ItemUniverse {
 }
 impl ItemUniverse {
     fn from_root(daemon: &test_daemon::TestDaemon, next: &ReadyCall) -> Self {
-        let child: crate::mcp::ToolCall = serde_json::from_value(
-            crate::commands::declarations()
-                .mcp_call(&next.request)
-                .unwrap()["arguments"]
-                .clone(),
-        )
-        .unwrap();
+        let call = crate::commands::declarations()
+            .mcp_call(&next.request)
+            .unwrap();
+        let child = crate::commands::declarations()
+            .parse_mcp_call(call["name"].as_str().unwrap(), call["arguments"].clone())
+            .unwrap();
         let arguments: crate::protocol::read::Arguments =
             serde_json::from_value(child.arguments).unwrap();
         let mut request =
@@ -366,10 +365,13 @@ pub(super) fn collect(
         let Some(mut ready) = page.document.footer.next.clone() else {
             break;
         };
-        let envelope = &crate::commands::declarations()
+        let call = crate::commands::declarations()
             .mcp_call(&ready.request)
-            .unwrap()["arguments"];
-        let child: crate::mcp::ToolCall = serde_json::from_value(envelope.clone()).unwrap();
+            .unwrap();
+        let envelope = &call["arguments"];
+        let child = crate::commands::declarations()
+            .parse_mcp_call(call["name"].as_str().unwrap(), envelope.clone())
+            .unwrap();
         assert_eq!(
             child.deadline, expected_deadline,
             "generated child changed the deadline"
@@ -424,17 +426,11 @@ pub(super) fn structured_read_without_deadline(
     archive: &Archive,
     arguments: Value,
 ) -> Result<ReadPage, String> {
-    let envelope = serde_json::to_value(crate::mcp::ToolCall {
-        operation: Some("read".into()),
-        arguments,
-        budget_tokens: Default::default(),
-        fresh: false,
-        format: Default::default(),
-        cursor: None,
-        request_id: uuid::Uuid::now_v7().to_string(),
-        deadline: command_surface::Deadline::None,
-    })
-    .unwrap();
+    let mut request =
+        command_surface::RunnableRequest::new("read", arguments, uuid::Uuid::now_v7().to_string());
+    request.deadline = command_surface::Deadline::None;
+    let call = crate::commands::declarations().mcp_call(&request).unwrap();
+    let envelope = &call["arguments"];
     assert_eq!(envelope.get("deadline"), Some(&Value::Null));
     let (text, structured, failed) = call_with_limit(
         archive,
@@ -559,14 +555,17 @@ fn an_omitted_read_deadline_stays_default_in_the_next_call() {
         .footer
         .next
         .expect("small bounded root has a next call");
-    let envelope = &crate::commands::declarations()
+    let call = crate::commands::declarations()
         .mcp_call(&next.request)
-        .unwrap()["arguments"];
+        .unwrap();
+    let envelope = &call["arguments"];
     assert!(
         envelope.get("deadline").is_none(),
         "default is represented by omission"
     );
-    let child: crate::mcp::ToolCall = serde_json::from_value(envelope.clone()).unwrap();
+    let child = crate::commands::declarations()
+        .parse_mcp_call(call["name"].as_str().unwrap(), envelope.clone())
+        .unwrap();
     assert_eq!(child.deadline, command_surface::Deadline::Default);
     assert!(child.cursor.is_some());
     let continued = execute_ready(&archive, &next).unwrap();

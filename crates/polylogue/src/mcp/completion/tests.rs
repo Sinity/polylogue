@@ -29,17 +29,11 @@ fn completion_route_uses_full_query_cursor_and_preserves_the_suffix() {
     );
     let (_, direct, failed) = run(
         archive,
-        crate::commands::command("complete").unwrap(),
-        ToolCall {
-            operation: None,
-            arguments: json!({"text":"live: | measure count","position":5}),
-            budget_tokens: Default::default(),
-            fresh: false,
-            format: Default::default(),
-            cursor: None,
-            request_id: "complete-parity".into(),
-            deadline: Default::default(),
-        },
+        command_surface::RunnableRequest::new(
+            "complete",
+            json!({"text":"live: | measure count","position":5}),
+            "complete-parity",
+        ),
         None,
         &tokio_util::sync::CancellationToken::new(),
         None,
