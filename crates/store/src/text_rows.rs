@@ -82,61 +82,50 @@ pub(crate) fn activate(conn: &Connection, id: i64, bit: i64, bulk: bool) -> Resu
     Ok(())
 }
 
-// Limit transaction work independently of compressed row sizes. A single
-// oversized text is still decoded whole and ends its transaction.
+// Limit the search thread's transaction work independently of compressed
+// row sizes. A single oversized text is still decoded whole and ends its
+// transaction.
 const SEARCH_ROWS: i64 = 2_000;
 const SEARCH_BYTES: usize = 16 * 1024 * 1024;
 
 /// Writes the first build's marked texts in ID order, both search indexes
-/// from one scan of `text`. Only the FTS tables change while its source
-/// cursor is open.
+/// from one scan of `text`, in one transaction. The full-text index then
+/// writes each segment once: committing every few megabytes of text flushed
+/// a small segment per commit and merged them again, which wrote twice what
+/// the index keeps without a journal and four times with one (2026-11-15
+/// measurement). Prior postings and statistics are replaced in the same
+/// transaction; inserting the same contentless row IDs again would count
+/// words twice. A failure or a stop leaves the search indexes as they were.
 pub(crate) fn index_marked(conn: &Connection) -> Result<()> {
-    let mut after = 0;
-    loop {
-        let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-        if after == 0 {
-            // Retry starts from ID zero, including after a later deferred index
-            // fails. Replace prior derived postings and statistics together;
-            // inserting the same contentless row IDs again counts words twice.
-            tx.execute("INSERT INTO text_fts(text_fts) VALUES ('delete-all')", [])?;
-            tx.execute(
-                "INSERT INTO output_fts(output_fts) VALUES ('delete-all')",
-                [],
-            )?;
-        }
-        let mut bytes = 0;
-        let mut last = after;
-        {
-            let mut select = tx.prepare_cached(
-                "SELECT id, indexed, body FROM text WHERE id > ?1 AND indexed <> 0
-                 ORDER BY id LIMIT ?2",
-            )?;
-            let mut rows = select.query(params![after, SEARCH_ROWS])?;
-            while let Some(row) = rows.next()? {
-                last = row.get(0)?;
-                let indexed: i64 = row.get(1)?;
-                let packed: Vec<u8> = row.get(2)?;
-                let (folded, length) = folded_text(&packed)?;
-                for bit in [1, 2].into_iter().filter(|bit| indexed & bit != 0) {
-                    insert_entry(&tx, last, bit, &folded)?;
-                }
-                #[cfg(feature = "faults")]
-                crate::fault::check("search.indexed", conn.path().unwrap_or_default())?;
-                bytes += length;
-                if bytes >= SEARCH_BYTES {
-                    break;
-                }
+    let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    tx.execute("INSERT INTO text_fts(text_fts) VALUES ('delete-all')", [])?;
+    tx.execute(
+        "INSERT INTO output_fts(output_fts) VALUES ('delete-all')",
+        [],
+    )?;
+    let mut written = false;
+    {
+        let mut select =
+            tx.prepare("SELECT id, indexed, body FROM text WHERE indexed <> 0 ORDER BY id")?;
+        let mut rows = select.query([])?;
+        while let Some(row) = rows.next()? {
+            let id: i64 = row.get(0)?;
+            let indexed: i64 = row.get(1)?;
+            let packed: Vec<u8> = row.get(2)?;
+            let (folded, _) = folded_text(&packed)?;
+            for bit in [1, 2].into_iter().filter(|bit| indexed & bit != 0) {
+                insert_entry(&tx, id, bit, &folded)?;
             }
+            written = true;
+            #[cfg(feature = "faults")]
+            crate::fault::check("search.indexed", conn.path().unwrap_or_default())?;
         }
-        if last != after {
-            crate::archive::bump_counter(&tx)?;
-        }
-        tx.commit()?;
-        if last == after {
-            return Ok(());
-        }
-        after = last;
     }
+    if written {
+        crate::archive::bump_counter(&tx)?;
+    }
+    tx.commit()?;
+    Ok(())
 }
 
 /// Drains committed search work in bounded transactions, each inside what

@@ -267,8 +267,8 @@ fn stopped() -> serde_json::Value {
     let posted = postings.clone();
     let file = path.clone();
     let run = std::thread::spawn(move || {
-        // Force natural FTS flushing and WAL spill with a finite synthetic set.
-        // This connection's page cache is smaller; FTS settings are unchanged.
+        // A small page cache, so the one search transaction spills pages
+        // before the stop; FTS settings are unchanged.
         let conn = open_write(&file, 8).unwrap();
         // SQLite owns the resolved filename used by the production fault point.
         crate::fault::arm(
@@ -356,14 +356,18 @@ fn deferred_search_replay_matches_live_ranking_after_interruption() {
         serde_json::json!({"stopped":stopped,"corruption":corruption})
     );
     assert_eq!(stopped["interrupted"], true);
-    assert!(stopped["wal_at_stop"].as_u64().unwrap() > 32);
-    assert!(stopped["postings_at_stop"].as_u64().unwrap() > 0);
+    // The search indexes are written in one transaction
+    // (docs/architecture.md, Pipeline): nothing of it has committed when the
+    // stop arrives, and the stop leaves no partial index behind.
+    assert_eq!(stopped["commits_at_stop"], 0);
+    assert_eq!(stopped["partial_fts_rows"], 0);
     assert_eq!(stopped["not_ready_at_stop"], true);
     assert_eq!(stopped["parsed_preserved"], true);
     assert_eq!(stopped["ready"], true);
     assert_eq!(stopped["reopen_ok"], true);
     assert_eq!(stopped["normal_pending_exact"], true);
     assert_eq!(corruption["failed"], true);
+    assert_eq!(corruption["partial_fts_rows"], 0);
     assert_eq!(corruption["parsed_preserved"], true);
     assert_eq!(corruption["ready"], true);
     assert_eq!(corruption["reopen_ok"], true);
