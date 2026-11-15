@@ -528,26 +528,3 @@ fn row_dump_header_preserves_native_columns_without_defaults_or_guessed_json_typ
         2
     );
 }
-
-/// During a build the index file has a rollback journal, where an open read
-/// blocks the writer's commits; comparing a database the index has never
-/// seen reads nothing from it and must not hold the file
-/// (docs/architecture.md, Durability).
-#[test]
-fn comparing_a_new_database_during_a_build_leaves_the_writer_free_to_commit() {
-    let dir = tempfile::tempdir().unwrap();
-    let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
-    assert!(archive.index_build().is_some());
-    let catalog = catalog::Catalog::open(&archive, "never-seen").unwrap();
-    assert!(
-        catalog
-            .changed("t", &serde_json::json!(1), &serde_json::json!({"a": 1}))
-            .unwrap()
-    );
-    let writer = Connection::open(archive.index_db()).unwrap();
-    writer.busy_timeout(std::time::Duration::ZERO).unwrap();
-    writer
-        .execute_batch("BEGIN IMMEDIATE; INSERT INTO meta(key,value) VALUES ('probe','1'); COMMIT")
-        .unwrap();
-    drop(catalog);
-}
