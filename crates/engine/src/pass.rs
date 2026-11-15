@@ -1630,6 +1630,9 @@ impl Engine {
                 }));
                 let failure = match result {
                     Ok(Ok(())) => None,
+                    // A stop is no failure of the export: its committed
+                    // deliveries stay and the next parse continues after them.
+                    Ok(Err(EngineError::Stopped)) => return Err(EngineError::Stopped),
                     Ok(Err(error)) => Some(error.to_string()),
                     Err(_) => Some("the array parser panicked".to_owned()),
                 };

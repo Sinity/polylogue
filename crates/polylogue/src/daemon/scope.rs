@@ -123,7 +123,11 @@ impl ScopeWorker {
                         .reader()
                         .and_then(|reader| daemon.scope.refresh(&reader));
                     if let Err(error) = result {
-                        if stopped.load(Ordering::Acquire) {
+                        // The daemon's stop request ends the worker as its
+                        // own stop does.
+                        if stopped.load(Ordering::Acquire)
+                            || matches!(error, polylogue_store::StoreError::Stopped)
+                        {
                             completed.store(true, Ordering::Release);
                             return;
                         }

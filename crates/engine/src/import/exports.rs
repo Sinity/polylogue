@@ -545,7 +545,12 @@ pub(crate) fn parse_export(
     let scanned = parser.scan(&plan.input.id, &mut reader, &mut ItemWriter(&mut scratch));
     let refusal = match scanned {
         Err(export::ScanError::Malformed(error)) => Some(error.to_string()),
-        Err(error) => return Err(std::io::Error::other(error).into()),
+        Err(error) => {
+            // The stored bytes are read through the parser's io::Read, which
+            // carries a stop only as text; a scan the stop ended is stopped.
+            polylogue_store::cancellation::check_current()?;
+            return Err(std::io::Error::other(error).into());
+        }
         Ok(_) => {
             use std::io::BufRead;
             // Rewinds count as IO, but only the final logical position can
