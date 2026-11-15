@@ -231,12 +231,14 @@ fn count_contributions_keep_script_changes_late_results_and_rollback_exact() {
     }
     let tx = c.transaction().unwrap();
     let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
-    let call: i64 = tx
-        .query_row("SELECT pk FROM tool_call WHERE run_by_script=1", [], |r| {
-            r.get(0)
-        })
+    let (call, session, call_id): (i64, i64, String) = tx
+        .query_row(
+            "SELECT pk,session_pk,call_id FROM tool_call WHERE run_by_script=1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
         .unwrap();
-    changes.call(&tx, call).unwrap();
+    changes.call_result(&tx, session, &call_id).unwrap();
     tx.execute("UPDATE tool_call SET run_by_script=0 WHERE pk=?1", [call])
         .unwrap();
     changes.finish_summaries(&tx, Some(2)).unwrap();

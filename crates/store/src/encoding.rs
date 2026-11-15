@@ -5,6 +5,7 @@ use polylogue_model::{
     Block, Document, DocumentId, Event, Message, MessageId, Timestamp, bundle::MessageProjection,
 };
 use serde::{Serialize, de::DeserializeOwned};
+use std::cell::RefCell;
 use std::io::Read;
 use std::sync::LazyLock;
 
@@ -19,12 +20,59 @@ static ROW_ENCODER: LazyLock<zstd::dict::EncoderDictionary<'static>> =
 static ROW_DECODER: LazyLock<zstd::dict::DecoderDictionary<'static>> =
     LazyLock::new(|| zstd::dict::DecoderDictionary::copy(ROW_DICTIONARY));
 
+// Codec contexts are reused by each thread: creating one per call cost more
+// than packing a typical row.
+thread_local! {
+    static PLAIN_PACKER: RefCell<Option<zstd::bulk::Compressor<'static>>> =
+        const { RefCell::new(None) };
+    static PLAIN_UNPACKER: RefCell<Option<zstd::bulk::Decompressor<'static>>> =
+        const { RefCell::new(None) };
+    static ROW_UNPACKER: RefCell<Option<zstd::bulk::Decompressor<'static>>> =
+        const { RefCell::new(None) };
+}
+
 pub(crate) fn pack_bytes(bytes: &[u8]) -> std::io::Result<Vec<u8>> {
-    zstd::bulk::compress(bytes, LEVEL)
+    PLAIN_PACKER.with(|packer| {
+        let mut packer = packer.borrow_mut();
+        let packer = match &mut *packer {
+            Some(packer) => packer,
+            empty => empty.insert(zstd::bulk::Compressor::new(LEVEL)?),
+        };
+        packer.compress(bytes)
+    })
 }
 
 pub(crate) fn unpack_bytes(packed: &[u8]) -> std::io::Result<Vec<u8>> {
-    if zstd::zstd_safe::get_dict_id_from_frame(packed).is_none() {
+    let dictionary = zstd::zstd_safe::get_dict_id_from_frame(packed).is_some();
+    // A frame states its decoded size when it was packed whole; anything
+    // else, and a size that does not hold, decodes through the stream path.
+    if let Ok(Some(size)) = zstd::zstd_safe::get_frame_content_size(packed)
+        && let Ok(size) = usize::try_from(size)
+    {
+        let unpacker = if dictionary {
+            &ROW_UNPACKER
+        } else {
+            &PLAIN_UNPACKER
+        };
+        let unpacked = unpacker.with(|unpacker| {
+            let mut unpacker = unpacker.borrow_mut();
+            let unpacker = match &mut *unpacker {
+                Some(unpacker) => unpacker,
+                empty => empty.insert(if dictionary {
+                    zstd::bulk::Decompressor::with_prepared_dictionary(&ROW_DECODER)?
+                } else {
+                    zstd::bulk::Decompressor::new()?
+                }),
+            };
+            unpacker.decompress(packed, size)
+        });
+        if let Ok(bytes) = unpacked
+            && bytes.len() == size
+        {
+            return Ok(bytes);
+        }
+    }
+    if !dictionary {
         return zstd::stream::decode_all(packed);
     }
     let mut decoder = zstd::stream::read::Decoder::with_prepared_dictionary(packed, &ROW_DECODER)?;

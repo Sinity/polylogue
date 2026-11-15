@@ -61,24 +61,54 @@ pub(crate) fn intern(
     // written after this transaction commits: by the search thread, or by
     // a first build in bulk when it ends.
     if bit != 0 && indexed & bit == 0 {
-        activate(conn, id, bit, bulk)?;
+        join_index(conn, id, bit, bulk)?;
     }
     Ok(id)
 }
 
+/// The search indexes new text rows join when they are written: those the
+/// blocks a step makes current name, by text hash (bit 1 prose, 2 tool
+/// output). A first build (`bulk`) writes the entries when it ends; otherwise
+/// they are queued for the search thread.
+pub(crate) struct NewMembership<'a> {
+    pub bits: &'a std::collections::HashMap<[u8; 32], i64>,
+    pub bulk: bool,
+}
+
 /// Marks an already stored text for current-block search membership.
-pub(crate) fn activate(conn: &Connection, id: i64, bit: i64, bulk: bool) -> Result<()> {
+pub(crate) fn activate(
+    conn: &Connection,
+    texts: &TextIds,
+    id: i64,
+    bit: i64,
+    bulk: bool,
+) -> Result<()> {
+    // Rewriting the row would copy and compare its whole body.
+    if texts.is_marked(id, bit) {
+        return Ok(());
+    }
+    join_index(conn, id, bit, bulk)?;
+    texts.mark(id, bit);
+    Ok(())
+}
+
+fn join_index(conn: &Connection, id: i64, bit: i64, bulk: bool) -> Result<()> {
     let changed = conn
         .prepare_cached(
             "UPDATE text SET indexed = indexed | ?2 WHERE id = ?1 AND indexed & ?2 = 0",
         )?
         .execute(params![id, bit])?;
     if changed != 0 && !bulk {
-        conn.prepare_cached(
-            "INSERT OR IGNORE INTO search_pending(text_id, fts_table) VALUES (?1, ?2)",
-        )?
-        .execute(params![id, bit])?;
+        queue_entry(conn, id, bit)?;
     }
+    Ok(())
+}
+
+fn queue_entry(conn: &Connection, id: i64, bit: i64) -> Result<()> {
+    conn.prepare_cached(
+        "INSERT OR IGNORE INTO search_pending(text_id, fts_table) VALUES (?1, ?2)",
+    )?
+    .execute(params![id, bit])?;
     Ok(())
 }
 
@@ -216,7 +246,7 @@ fn insert_entry(conn: &Connection, id: i64, bit: i64, folded: &str) -> Result<()
 
 /// Historical versions keep their text row, but only current blocks contribute
 /// documents to full-text ranking or embedding.
-pub(crate) fn unindex_unused(i: &Connection, id: i64, bulk: bool) -> Result<()> {
+pub(crate) fn unindex_unused(i: &Connection, texts: &TextIds, id: i64, bulk: bool) -> Result<()> {
     for (bit, kind, table) in [
         (1, "b.kind NOT IN ('tool_result','tool_call')", "text_fts"),
         (2, "b.kind IN ('tool_result','tool_call')", "output_fts"),
@@ -234,6 +264,7 @@ pub(crate) fn unindex_unused(i: &Connection, id: i64, bulk: bool) -> Result<()> 
                 "UPDATE text SET indexed=indexed & ~?2 WHERE id=?1",
                 params![id, bit],
             )?;
+            texts.unmark(id, bit);
         }
     }
     Ok(())

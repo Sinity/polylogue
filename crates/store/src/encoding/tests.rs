@@ -235,6 +235,24 @@ fn dictionary_rows_and_plain_sorted_frames_remain_distinct() {
 }
 
 #[test]
+fn concatenated_frames_and_alternating_frame_kinds_decode_whole() {
+    let first = pack_bytes(b"first frame, ").unwrap();
+    let joined = [first.clone(), pack_bytes(b"second frame").unwrap()].concat();
+    // The first frame's stated size covers only that frame.
+    assert_eq!(
+        unpack_bytes(&joined).unwrap(),
+        b"first frame, second frame".to_vec()
+    );
+    let bytes = br#"{"type":"text","text":"a dictionary row"}"#;
+    let row = RowPacker::new().unwrap().pack_row(bytes).unwrap();
+    assert!(zstd::zstd_safe::get_dict_id_from_frame(&row).is_some());
+    for _ in 0..2 {
+        assert_eq!(unpack_bytes(&row).unwrap(), bytes.to_vec());
+        assert_eq!(unpack_bytes(&first).unwrap(), b"first frame, ".to_vec());
+    }
+}
+
+#[test]
 fn unknown_dictionary_and_truncated_dictionary_frames_refuse() {
     // The formatted dictionary begins with its magic and little-endian ID.
     let mut other = ROW_DICTIONARY.to_vec();

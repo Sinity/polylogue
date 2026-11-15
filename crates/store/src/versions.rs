@@ -46,6 +46,7 @@ impl VersionKind {
 pub(crate) struct TextRows<'a> {
     pub packed: &'a HashMap<[u8; 32], crate::encoding::PreparedText>,
     pub texts: &'a crate::text_rows::TextIds,
+    pub membership: Option<&'a crate::text_rows::NewMembership<'a>>,
 }
 
 pub(crate) fn store_document(
@@ -143,6 +144,7 @@ fn store_value(
     let TextRows {
         packed,
         texts: identities,
+        membership,
     } = text_rows;
     let name = kind.name();
     let (inserted, key, column) = if matches!(kind, VersionKind::Message) {
@@ -204,7 +206,7 @@ fn store_value(
     ))?;
     for (idx, hash) in texts.iter().enumerate() {
         if let Some(hash) = hash {
-            let resolved = identities.resolve(conn, hash, packed.get(hash))?;
+            let resolved = identities.resolve(conn, hash, packed.get(hash), membership)?;
             let id = resolved.id;
             written_payload &= resolved.written;
             text.execute(params![key, idx as i64, id])?;
@@ -267,13 +269,8 @@ pub(crate) fn store_message<'a>(
     let pk = stored
         .message_pk
         .expect("message versions have integer keys");
-    // A stored version no source row chose is deleted before the commit.
-    conn.prepare_cached(
-        "INSERT OR IGNORE INTO temp.unreferenced_value(kind,value_pk) VALUES ('message',?1)",
-    )?
-    .execute([pk])?;
     let layout = message_layout(&prepared.projection)?;
-    conn.execute(
+    conn.prepare_cached(
         "INSERT INTO message_projection(version_pk,layout,admitted) VALUES (?1,?2,?3)
          ON CONFLICT(version_pk) DO UPDATE SET layout=excluded.layout,
          admitted=CASE WHEN message_projection.admitted IS NULL THEN excluded.admitted
@@ -281,7 +278,8 @@ pub(crate) fn store_message<'a>(
              ELSE max(message_projection.admitted,excluded.admitted) END
          WHERE layout IS NOT excluded.layout OR (excluded.admitted IS NOT NULL
              AND (message_projection.admitted IS NULL OR excluded.admitted>message_projection.admitted))",
-        params![
+    )?
+    .execute(params![
             pk,
             layout,
             admitted
@@ -290,8 +288,7 @@ pub(crate) fn store_message<'a>(
                 .map_err(|_| crate::StoreError::Invalid(
                     "message admission exceeds SQLite's integer range".into()
                 ))?
-        ],
-    )?;
+    ])?;
     Ok(RegisteredMessage {
         pk,
         message,
@@ -299,6 +296,17 @@ pub(crate) fn store_message<'a>(
         text_ids: stored.text_ids,
         written_payload: stored.written_payload,
     })
+}
+
+/// Makes a registered message version a candidate for deletion before the
+/// commit ([`remove_unreferenced`]): the caller registered it without a
+/// source row choosing it.
+pub(crate) fn unreferenced_message(conn: &Connection, pk: i64) -> Result<()> {
+    conn.prepare_cached(
+        "INSERT OR IGNORE INTO temp.unreferenced_value(kind,value_pk) VALUES ('message',?1)",
+    )?
+    .execute([pk])?;
+    Ok(())
 }
 
 pub(crate) fn message_layout(projection: &MessageProjection) -> Result<Vec<u8>> {

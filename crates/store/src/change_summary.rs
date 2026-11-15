@@ -32,7 +32,16 @@ struct MessageChange {
     before: Option<Before>,
     /// The successful fresh insert already owns these facts. Tool outcomes
     /// are read after pairing; ordinary bodies need no contribution readback.
-    installed: Option<(i64, crate::derive::counts::Counts, bool)>,
+    installed: Option<Installed>,
+}
+
+/// What a message inserted in this transaction holds while its row is the
+/// one the insert wrote: any later replacement or removal clears it.
+struct Installed {
+    session: i64,
+    parent: Option<String>,
+    counts: crate::derive::counts::Counts,
+    has_calls: bool,
 }
 
 struct SessionBefore {
@@ -315,9 +324,12 @@ impl ChangeSummary {
             conn.prepare_cached("SELECT session_pk, parent_id FROM message WHERE pk = ?1")?;
         for (&pk, change) in &changed.messages {
             let before = &change.before;
-            let after: Option<(i64, Option<String>)> = now
-                .query_row([pk], |row| Ok((row.get(0)?, row.get(1)?)))
-                .optional()?;
+            let after: Option<(i64, Option<String>)> = match &change.installed {
+                Some(installed) => Some((installed.session, installed.parent.clone())),
+                None => now
+                    .query_row([pk], |row| Ok((row.get(0)?, row.get(1)?)))
+                    .optional()?,
+            };
             let before = before.as_ref().map(|b| (b.session, b.parent.clone()));
             for (session, parent) in before.iter().chain(after.iter()) {
                 let change = out.entry(*session).or_default();

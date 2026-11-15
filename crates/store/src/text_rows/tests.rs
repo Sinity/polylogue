@@ -208,6 +208,7 @@ fn first_build_texts_share_rows_without_sql_readback_or_prefix_aliasing() {
                 "first",
                 b"first".to_vec(),
             )),
+            None,
         )
         .unwrap()
         .id;
@@ -219,6 +220,7 @@ fn first_build_texts_share_rows_without_sql_readback_or_prefix_aliasing() {
                 "second",
                 b"second".to_vec(),
             )),
+            None,
         )
         .unwrap()
         .id;
@@ -233,12 +235,12 @@ fn first_build_texts_share_rows_without_sql_readback_or_prefix_aliasing() {
         _ => Authorization::Allow,
     }))
     .unwrap();
-    assert_eq!(first.resolve(&conn, &one, None).unwrap().id, a);
-    assert_eq!(first.resolve(&conn, &two, None).unwrap().id, b);
+    assert_eq!(first.resolve(&conn, &one, None, None).unwrap().id, a);
+    assert_eq!(first.resolve(&conn, &two, None, None).unwrap().id, b);
     conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
         .unwrap();
     assert!(matches!(
-        first.resolve(&conn, &[9; 32], None),
+        first.resolve(&conn, &[9; 32], None, None),
         Err(crate::StoreError::Invalid(_))
     ));
 }
@@ -262,6 +264,7 @@ fn failed_text_transaction_reloads_presence_without_reassigning_known_ids() {
                     "rolled back",
                     b"rolled back".to_vec(),
                 )),
+                None,
             )
             .unwrap()
             .id;
@@ -277,14 +280,15 @@ fn failed_text_transaction_reloads_presence_without_reassigning_known_ids() {
                 "committed",
                 b"committed".to_vec(),
             )),
+            None,
         )
         .unwrap()
         .id;
     assert_ne!(old, new);
-    assert!(first.resolve(&tx, &gone, None).is_err());
+    assert!(first.resolve(&tx, &gone, None, None).is_err());
     tx.commit().unwrap();
     texts.commit();
-    assert_eq!(first.resolve(&conn, &kept, None).unwrap().id, new);
+    assert_eq!(first.resolve(&conn, &kept, None, None).unwrap().id, new);
     assert_eq!(count(&conn, "SELECT count(*) FROM text"), 1);
     let transaction = first.transaction();
     let tx = conn.transaction().unwrap();
@@ -296,7 +300,8 @@ fn failed_text_transaction_reloads_presence_without_reassigning_known_ids() {
                 Some(&crate::encoding::PreparedText::new(
                     "restored",
                     b"restored".to_vec()
-                ))
+                )),
+                None
             )
             .unwrap()
             .id,
@@ -326,19 +331,83 @@ fn cached_text_identity_does_not_claim_a_payload_write() {
     let prepared =
         crate::encoding::PreparedText::new(text, crate::encoding::pack_text(text).unwrap());
     let tx = conn.transaction().unwrap();
-    let written = identities.resolve(&tx, &hash, Some(&prepared)).unwrap();
+    let written = identities
+        .resolve(&tx, &hash, Some(&prepared), None)
+        .unwrap();
     assert!(written.written);
-    let reused = identities.resolve(&tx, &hash, Some(&prepared)).unwrap();
+    let reused = identities
+        .resolve(&tx, &hash, Some(&prepared), None)
+        .unwrap();
     assert_eq!(reused.id, written.id);
     assert!(!reused.written);
     tx.commit().unwrap();
-    let cached = identities.resolve(&conn, &hash, Some(&prepared)).unwrap();
+    let cached = identities
+        .resolve(&conn, &hash, Some(&prepared), None)
+        .unwrap();
     assert_eq!(cached.id, written.id);
     assert!(!cached.written);
     let preloaded = TextIds::new(&conn, true)
         .unwrap()
-        .resolve(&conn, &hash, None)
+        .resolve(&conn, &hash, None, None)
         .unwrap();
     assert_eq!(preloaded.id, written.id);
     assert!(!preloaded.written);
+}
+
+#[test]
+fn new_text_membership_follows_unindexing_and_rollback_within_the_writer() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    crate::schema::create_index(&conn).unwrap();
+    let identities = TextIds::new(&conn, true).unwrap();
+    let text = "synthetic tool output";
+    let hash = *blake3::hash(text.as_bytes()).as_bytes();
+    let prepared =
+        crate::encoding::PreparedText::new(text, crate::encoding::pack_text(text).unwrap());
+    let bits = std::collections::HashMap::from([(hash, 2)]);
+    let membership = NewMembership {
+        bits: &bits,
+        bulk: false,
+    };
+    let state = |conn: &Connection, id: i64| {
+        (
+            count(conn, &format!("SELECT indexed FROM text WHERE id={id}")),
+            count(
+                conn,
+                &format!("SELECT count(*) FROM search_pending WHERE text_id={id}"),
+            ),
+        )
+    };
+
+    // A text a step's blocks name joins their index as it is written.
+    let transaction = identities.transaction();
+    let tx = conn.transaction().unwrap();
+    let id = identities
+        .resolve(&tx, &hash, Some(&prepared), Some(&membership))
+        .unwrap()
+        .id;
+    assert_eq!(state(&tx, id), (2, 1));
+    activate(&tx, &identities, id, 2, false).unwrap();
+    assert_eq!(state(&tx, id), (2, 1));
+    // No block uses it, so unindexing removes it; activating restores it.
+    unindex_unused(&tx, &identities, id, false).unwrap();
+    assert_eq!(state(&tx, id), (0, 0));
+    activate(&tx, &identities, id, 2, false).unwrap();
+    assert_eq!(state(&tx, id), (2, 1));
+    unindex_unused(&tx, &identities, id, false).unwrap();
+    tx.commit().unwrap();
+    transaction.commit();
+    assert_eq!(state(&conn, id), (0, 0));
+
+    // Membership set in a transaction that rolls back is not assumed after it.
+    let transaction = identities.transaction();
+    let tx = conn.transaction().unwrap();
+    activate(&tx, &identities, id, 1, false).unwrap();
+    assert_eq!(state(&tx, id), (1, 1));
+    drop(tx);
+    drop(transaction);
+    assert_eq!(state(&conn, id), (0, 0));
+    let tx = conn.transaction().unwrap();
+    activate(&tx, &identities, id, 1, false).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(state(&conn, id), (1, 1));
 }
