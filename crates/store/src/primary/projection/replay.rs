@@ -1,15 +1,15 @@
 //! The applied position, scope and staged delivery share the fact transaction.
 use super::*;
 use crate::primary::{
-    CompletedDelivery, NativeFactContext, ProjectionBasis, ReplayControl, ReplayState,
+    AppliedSnapshot, CompletedDelivery, NativeFactContext, ReplayControl, ReplayState,
 };
 
-/// Both forms attest to a complete position and share its pending row.
-/// Their required fields are disjoint; the projection keeps its current encoding.
+/// Both forms mark a complete position and share its pending row; their
+/// required fields are disjoint.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
 enum CompletionEvidence {
-    Projection(ProjectionBasis),
+    Snapshot(AppliedSnapshot),
     Delivery(CompletedDelivery),
 }
 
@@ -29,7 +29,7 @@ pub(crate) fn replay_state(conn: &Connection) -> Result<ReplayState> {
             head: None,
             staged_delivery: None,
             completed_delivery: None,
-            basis: None,
+            snapshot: None,
             projection: None,
         },
     })
@@ -104,21 +104,24 @@ pub(super) fn validate_context(context: &NativeFactContext) -> Result<()> {
     Ok(())
 }
 
-fn validate_projection(state: &ReplayState, basis: &ProjectionBasis) -> Result<()> {
+fn validate_snapshot(state: &ReplayState, snapshot: &AppliedSnapshot) -> Result<()> {
     let projection = state
         .projection
         .as_ref()
-        .ok_or_else(|| invalid("a projection completion has no start"))?;
-    if basis.position < projection.origin
+        .ok_or_else(|| invalid("a snapshot completion has no start"))?;
+    if snapshot.position < projection.origin
         || projection
             .position
-            .is_some_and(|position| position != basis.position)
-        || state.scope.as_deref() != Some(basis.scope.as_str())
-        || basis.stamp.is_empty()
-        || basis.catalog.is_empty()
+            .is_some_and(|position| position != snapshot.position)
+        || state.scope.as_deref() != Some(snapshot.scope.as_str())
+        || snapshot.stream_instance != projection.stream_instance
+        || snapshot
+            .last
+            .as_ref()
+            .is_some_and(|last| last.sequence == 0 || !hash(&last.fingerprint))
     {
         return Err(invalid(
-            "a projection certificate differs from the staged snapshot",
+            "a snapshot completion differs from its staged pages",
         ));
     }
     Ok(())
@@ -161,9 +164,9 @@ pub(super) fn stage_control(
             projection.position = Some(*position);
             projection.cursor = Some(cursor.clone());
         }
-        ReplayControl::ProjectionComplete { basis } => {
-            validate_projection(state, basis)?;
-            conn.execute("INSERT INTO primary_complete(position,evidence) VALUES (?1,?2) ON CONFLICT(position) DO UPDATE SET evidence=excluded.evidence", params![basis.position, packed(&CompletionEvidence::Projection(basis.clone()))?])?;
+        ReplayControl::ProjectionComplete { snapshot } => {
+            validate_snapshot(state, snapshot)?;
+            conn.execute("INSERT INTO primary_complete(position,evidence) VALUES (?1,?2) ON CONFLICT(position) DO UPDATE SET evidence=excluded.evidence", params![snapshot.position, packed(&CompletionEvidence::Snapshot(snapshot.clone()))?])?;
         }
         ReplayControl::Head { position } => {
             if *position < 0 {
@@ -187,7 +190,7 @@ pub(super) fn stage_control(
         ReplayControl::Completion { position, delivery } => {
             if state.projection.is_some() {
                 return Err(invalid(
-                    "a projection needs its owner certificate before completion",
+                    "a snapshot needs its last page before a stream completion",
                 ));
             }
             if *position < 0 {
@@ -238,21 +241,19 @@ pub(super) fn complete(conn: &Connection, position: i64) -> Result<()> {
     let install_receipt = state.applied_position.is_none_or(|old| position > old)
         || (state.applied_position == Some(position) && state.completed_delivery.is_none());
     match evidence.as_deref().map(unpacked).transpose()? {
-        Some(CompletionEvidence::Projection(basis)) => {
-            validate_projection(&state, &basis)?;
-            if basis.position != position {
-                return Err(invalid("projection evidence changed position"));
+        Some(CompletionEvidence::Snapshot(snapshot)) => {
+            validate_snapshot(&state, &snapshot)?;
+            if snapshot.position != position {
+                return Err(invalid("snapshot completion changed position"));
             }
-            state.basis = Some(basis);
+            state.snapshot = Some(snapshot);
             state.projection = None;
             state.staged_delivery = None;
             state.completed_delivery = None;
         }
         delivery => {
             if state.projection.is_some() {
-                return Err(invalid(
-                    "a projection completion needs its owner certificate",
-                ));
+                return Err(invalid("a snapshot completion needs its last page"));
             }
             let receipt = match delivery {
                 Some(CompletionEvidence::Delivery(receipt)) => {

@@ -77,7 +77,7 @@ struct OfflineProducer {
 
 #[test]
 fn projection_start_replaces_an_equal_scope_and_preserves_original_and_paid_stores() {
-    use crate::primary::{Confirmed, ConfirmedChange, ProjectionBasis, ReplayControl};
+    use crate::primary::{AppliedSnapshot, Confirmed, ConfirmedChange, ReplayControl};
     let directory = tempfile::tempdir().unwrap();
     let producer_root = directory.path().join("producer");
     std::fs::create_dir(&producer_root).unwrap();
@@ -195,20 +195,20 @@ fn projection_start_replaces_an_equal_scope_and_preserves_original_and_paid_stor
         .query_row("SELECT bytes FROM paid_fixture", [], |row| row.get(0))
         .unwrap();
     assert_eq!(paid, [1, 2, 3, 4]);
-    let basis = ProjectionBasis {
-        stamp: "owner-signature".into(),
+    let snapshot = AppliedSnapshot {
         position: 12,
         scope: "scope".into(),
-        catalog: "catalog".into(),
+        stream_instance: "new-stream".into(),
+        last: None,
     };
     writer
         .apply_confirmed(vec![control(ReplayControl::ProjectionComplete {
-            basis: basis.clone(),
+            snapshot: snapshot.clone(),
         })])
         .unwrap();
     let state = read_state();
     assert_eq!(state.applied_position, Some(12));
-    assert_eq!(state.basis, Some(basis));
+    assert_eq!(state.snapshot, Some(snapshot));
     assert_eq!(state.projection, None);
 }
 

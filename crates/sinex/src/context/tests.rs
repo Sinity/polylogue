@@ -1,15 +1,8 @@
 use super::*;
 
-#[test]
-fn private_context_token_is_not_in_the_public_schema() {
-    let schema = serde_json::to_value(schemars::schema_for!(ResolvedContext)).unwrap();
-    assert!(schema["properties"].get("context_token").is_none());
-}
-
 fn available() -> PublicContext {
     PublicContext::Available {
         settings_identity: "settings-1".into(),
-        context_token: "synthetic-owner-context-proof".into(),
         owner_revision: 7,
         day: query_language::time::DaySettingWire {
             zone: "Europe/Warsaw".into(),
@@ -26,7 +19,6 @@ fn available() -> PublicContext {
             window_ms: 3600000,
         },
         observed_at: sinex_model::Timestamp::from_unix_secs(100).unwrap(),
-        coverage: sinex_protocol::CoverageStatus::NotRequested,
     }
 }
 

@@ -457,7 +457,6 @@ impl Sinex {
         queue.prepare_parsed(
             Ingress::Events {
                 source: Some(crate::source_reference()),
-                coverage: None,
                 frame: identity.clone(),
                 events: crate::products::events(writes)?,
                 failures: Vec::new(),
@@ -608,7 +607,6 @@ impl Sinex {
                 queue.prepare_group(
                     Ingress::Events {
                         source: Some(crate::source_reference()),
-                        coverage: None,
                         frame: identity.into(),
                         events: crate::products::events(&writes)?,
                         failures: Vec::new(),
@@ -623,7 +621,6 @@ impl Sinex {
         }
         queue.prepare(Ingress::Events {
             source: Some(crate::source_reference()),
-            coverage: None,
             frame: identity.into(),
             events: crate::products::events(writes)?,
             failures: Vec::new(),
@@ -704,7 +701,6 @@ impl Sinex {
         queue.prepare_group(
             Ingress::Events {
                 source: Some(crate::source_reference()),
-                coverage: None,
                 frame: identity.clone(),
                 events: crate::products::events(writes)?,
                 failures: Vec::new(),

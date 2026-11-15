@@ -1,4 +1,4 @@
-//! One owner-observed temporal and policy snapshot. Resolution performs no I/O
+//! One Sinex-observed temporal and policy snapshot. Resolution performs no I/O
 //! except the explicit named-zone callback supplied by the application boundary.
 use crate::Sinex;
 use serde::Serialize;
@@ -7,9 +7,6 @@ use std::time::{Duration, Instant};
 
 #[derive(Clone, Serialize, schemars::JsonSchema)]
 pub struct ResolvedContext {
-    #[serde(skip_serializing)]
-    #[schemars(skip)]
-    pub context_token: String,
     pub settings_identity: String,
     pub owner_revision: u64,
     pub day: query_language::time::DaySetting,
@@ -74,17 +71,11 @@ impl Cache {
             Ok(reply) => {
                 if let PublicContext::Available {
                     settings_identity,
-                    context_token,
                     quiet_hours,
                     interrupt_budget,
                     ..
                 } = &reply
-                    && valid(
-                        settings_identity,
-                        context_token,
-                        quiet_hours.as_ref(),
-                        interrupt_budget,
-                    )
+                    && valid(settings_identity, quiet_hours.as_ref(), interrupt_budget)
                 {
                     self.last_known_identity = Some(settings_identity.clone());
                 }
@@ -117,43 +108,33 @@ impl Cache {
                 "Sinex public context has not been observed",
             )
         })?;
-        let (
-            settings_identity,
-            owner_revision,
-            day,
-            quiet_hours,
-            interrupt_budget,
-            observed_at,
-            context_token,
-        ) = match reply {
-            PublicContext::Pending { reason } => {
-                return Err(self.failure(ContextFailureKind::Pending, reason.clone()));
-            }
-            PublicContext::Unavailable { reason } => {
-                return Err(self.failure(ContextFailureKind::Unavailable, reason.clone()));
-            }
-            PublicContext::Refused { reason } => {
-                return Err(self.failure(ContextFailureKind::Refused, reason.clone()));
-            }
-            PublicContext::Available {
-                settings_identity,
-                owner_revision,
-                day,
-                quiet_hours,
-                interrupt_budget,
-                observed_at,
-                context_token,
-                ..
-            } => (
-                settings_identity,
-                owner_revision,
-                day,
-                quiet_hours,
-                interrupt_budget,
-                observed_at,
-                context_token,
-            ),
-        };
+        let (settings_identity, owner_revision, day, quiet_hours, interrupt_budget, observed_at) =
+            match reply {
+                PublicContext::Pending { reason } => {
+                    return Err(self.failure(ContextFailureKind::Pending, reason.clone()));
+                }
+                PublicContext::Unavailable { reason } => {
+                    return Err(self.failure(ContextFailureKind::Unavailable, reason.clone()));
+                }
+                PublicContext::Refused { reason } => {
+                    return Err(self.failure(ContextFailureKind::Refused, reason.clone()));
+                }
+                PublicContext::Available {
+                    settings_identity,
+                    owner_revision,
+                    day,
+                    quiet_hours,
+                    interrupt_budget,
+                    observed_at,
+                } => (
+                    settings_identity,
+                    owner_revision,
+                    day,
+                    quiet_hours,
+                    interrupt_budget,
+                    observed_at,
+                ),
+            };
         let age = self
             .received
             .map(|at| at.elapsed().as_secs_f64())
@@ -169,12 +150,7 @@ impl Cache {
                 "Sinex public context observation is stale",
             ));
         }
-        if !valid(
-            settings_identity,
-            context_token,
-            quiet_hours.as_ref(),
-            interrupt_budget,
-        ) {
+        if !valid(settings_identity, quiet_hours.as_ref(), interrupt_budget) {
             return Err(self.failure(
                 ContextFailureKind::Invalid,
                 "Sinex public context contains invalid policy evidence",
@@ -187,7 +163,6 @@ impl Cache {
             .resolve(zone)
             .map_err(|error| self.failure(ContextFailureKind::Invalid, error.to_string()))?;
         Ok(ResolvedContext {
-            context_token: context_token.clone(),
             settings_identity: settings_identity.clone(),
             owner_revision: *owner_revision,
             day,
@@ -201,12 +176,10 @@ impl Cache {
 
 fn valid(
     identity: &str,
-    token: &str,
     quiet: Option<&shared_signals::QuietHours>,
     budget: &sinex_protocol::PublicInterruptBudget,
 ) -> bool {
     !identity.is_empty()
-        && !token.is_empty()
         && budget.window_ms > 0
         && budget.remaining == budget.per_hour.saturating_sub(budget.used)
         && quiet.is_none_or(|hours| hours.from < 1440 && hours.to < 1440)
