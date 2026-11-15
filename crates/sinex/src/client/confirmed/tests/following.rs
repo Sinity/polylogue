@@ -90,6 +90,17 @@ async fn publish(daemon: &async_nats::Client, change: sinex_protocol::Confirmed)
         .unwrap();
 }
 
+/// A stream message for an event of a class the stream does not carry whole.
+fn withheld(number: u128) -> sinex_protocol::Confirmed {
+    sinex_protocol::Confirmed::Withheld(sinex_protocol::WithheldEvent {
+        commit_seq: 17,
+        event: EventId(uuid::Uuid::from_u128(number)),
+        event_type: "polylogue.document".into(),
+        class: sinex_model::Class::Guarded,
+        reason: sinex_protocol::WithheldReason::Class,
+    })
+}
+
 fn provisioned() -> ConfirmedConsumerReply {
     let subjects = Subjects::new("auth");
     ConfirmedConsumerReply::Provisioned {
@@ -327,7 +338,7 @@ async fn answer_fetch(
 }
 
 #[test]
-fn confirmed_fetches_overlap_with_a_bound_and_keep_order_refusals_and_erasure() {
+fn withheld_fetches_overlap_with_a_bound_and_keep_order_refusals_and_erasure() {
     let server = crate::client::tests::server();
     let root = tempfile::tempdir().unwrap();
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -343,9 +354,7 @@ fn confirmed_fetches_overlap_with_a_bound_and_keep_order_refusals_and_erasure() 
             let mut fetches = daemon.subscribe(subjects.fetch_event("polylogue")).await.unwrap();
             jetstream::new(daemon.clone()).query_account().await.unwrap();
             for number in 1..=36 {
-                publish(&daemon, sinex_protocol::Confirmed::EventReference {
-                    commit_seq: 17, event: EventId(uuid::Uuid::from_u128(number)),
-                }).await;
+                publish(&daemon, withheld(number)).await;
             }
             publish(&daemon, sinex_protocol::Confirmed::PositionComplete { commit_seq: 17 }).await;
             let (inflight, first_fetches) = tokio::sync::oneshot::channel();
@@ -435,9 +444,7 @@ fn reconnect_requests_the_completed_receipt_and_delivers_the_head_marker_without
             let (daemon, mut client) = connections(&server, root.path(), spool).await;
             let subjects = Subjects::new("auth");
             for number in 1..=36 {
-                publish(&daemon, sinex_protocol::Confirmed::EventReference {
-                    commit_seq: 17, event: EventId(uuid::Uuid::from_u128(number)),
-                }).await;
+                publish(&daemon, withheld(number)).await;
             }
             publish(&daemon, sinex_protocol::Confirmed::PositionComplete { commit_seq: 17 }).await;
             let stream = jetstream::new(daemon.clone()).get_stream(subjects.confirmed_stream()).await.unwrap();
@@ -479,5 +486,73 @@ fn reconnect_requests_the_completed_receipt_and_delivers_the_head_marker_without
             };
             tokio::join!(owner, read);
         }).await.expect("bounded reconnect fixture");
+    });
+}
+
+#[test]
+fn an_open_event_on_the_stream_is_applied_without_a_fetch() {
+    let server = crate::client::tests::server();
+    let root = tempfile::tempdir().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let spool = Arc::new(std::sync::Mutex::new(
+                crate::spool::Spool::open(root.path(), "polylogue").unwrap(),
+            ));
+            let (daemon, mut client) = connections(&server, root.path(), spool).await;
+            let subjects = Subjects::new("auth");
+            let mut consumers = daemon
+                .subscribe(subjects.confirmed_consumer("polylogue"))
+                .await
+                .unwrap();
+            let mut fetches = daemon
+                .subscribe(subjects.fetch_event("polylogue"))
+                .await
+                .unwrap();
+            jetstream::new(daemon.clone())
+                .query_account()
+                .await
+                .unwrap();
+            let mut open = current_event(&document(polylogue_model::batch::StepProgress::AtEnd));
+            open.commit_seq = 17;
+            let id = open.id;
+            publish(&daemon, sinex_protocol::Confirmed::Event(Box::new(open))).await;
+            publish(
+                &daemon,
+                sinex_protocol::Confirmed::PositionComplete { commit_seq: 17 },
+            )
+            .await;
+            let owner = async {
+                let request = consumers.next().await.unwrap();
+                reply(&daemon, request, provisioned()).await;
+            };
+            let reader = async {
+                let state = ReplayState {
+                    scope: Some("test-scope".into()),
+                    ..Default::default()
+                };
+                client.confirmed(&state, "cache").await
+            };
+            let (_, page) = tokio::join!(owner, reader);
+            let page = page.unwrap();
+            let live = page
+                .iter()
+                .find(|item| item.event == id.to_string())
+                .expect("the open event is staged");
+            assert_eq!(live.position, 17);
+            assert!(matches!(&live.change, ConfirmedChange::Live(_)));
+            assert!(live.native.is_some());
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), fetches.next())
+                    .await
+                    .is_err(),
+                "an inline event needs no fetch"
+            );
+        })
+        .await
+        .expect("inline stream fixture");
     });
 }

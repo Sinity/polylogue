@@ -1,7 +1,9 @@
-//! Bounded owner-certified snapshot pages share the ordinary pending-fact writer.
+//! Snapshot pages of Sinex's current state share the ordinary pending-fact writer.
 use super::*;
 use futures_util::stream;
-use sinex_protocol::{InputReplayReply, ReplayContinuation, ReplayQuery, ReplayReply};
+use sinex_protocol::{
+    ReplayQuery, ReplayReply, SnapshotCursor, SnapshotNext, SnapshotReading, SnapshotReply,
+};
 
 fn start(
     scope: String,
@@ -17,26 +19,10 @@ fn start(
     })]
 }
 
-fn matches(
-    reference: &sinex_protocol::InputReference,
-    event: &sinex_protocol::ConfirmedEvent,
-) -> bool {
-    event.id == reference.event
-        && event.commit_seq == reference.commit_seq
-        && event.event_type == reference.kind.name
-        && event.kind_version == reference.kind.version
-        && event.kind_definition_hash == reference.kind_definition_hash
-        && event.projection == reference.projection
-        && event.source_ref == reference.source
-        && event.source_fingerprint == reference.source_fingerprint
-        && event.projection.verifies(&event.payload)
-}
-
 impl Client {
-    pub(super) async fn projection_page(
+    pub(super) async fn snapshot_page(
         &mut self,
         state: &ReplayState,
-        cache: &str,
         origin: i64,
         head: i64,
         scope: String,
@@ -44,7 +30,7 @@ impl Client {
     ) -> Result<Vec<Confirmed>> {
         if origin < 0 || head < origin || scope.is_empty() || stream_instance.is_empty() {
             return Err(Error::Invalid(
-                "the projection origin has inconsistent native identity".into(),
+                "the snapshot origin has an inconsistent stream identity".into(),
             ));
         }
         self.consumer = None;
@@ -57,89 +43,94 @@ impl Client {
         }) else {
             return Ok(start(scope, origin, stream_instance, None));
         };
+        let cursor = progress
+            .cursor
+            .as_deref()
+            .map(serde_json::from_str::<SnapshotCursor>)
+            .transpose()?;
         let reply: ReplayReply = self
             .request(
                 self.subjects.replay_scope(&self.producer),
-                ReplayQuery::Inputs {
-                    cache: cache.into(),
-                    cursor: progress.cursor.clone(),
+                ReplayQuery::Snapshot {
+                    cursor: cursor.clone(),
                 },
             )
             .await?;
-        let ReplayReply::Inputs { result } = reply else {
+        let ReplayReply::Snapshot { reply } = reply else {
             return Err(Error::Invalid(
-                "projection replay returned another mode".into(),
+                "a snapshot request returned another mode".into(),
             ));
         };
-        let (position, returned_scope, inputs, continuation) = match result {
-            InputReplayReply::Page {
-                position,
-                scope,
-                inputs,
-                continuation,
-            } => (position, scope, inputs, continuation),
-            InputReplayReply::Incomplete {
-                reason,
-                basis: sinex_protocol::ReplayBasisStatus::Invalidated { .. },
-            } => {
+        let (events, next) = match reply {
+            SnapshotReply::Page { events, next } => (events, next),
+            SnapshotReply::Restart { reason } => {
                 return Ok(start(scope, origin, stream_instance, Some(reason)));
             }
-            InputReplayReply::Incomplete {
-                reason,
-                basis: sinex_protocol::ReplayBasisStatus::Unverified,
-            } => {
+            SnapshotReply::Unavailable { reason } => {
                 return Err(Error::Refused {
-                    name: "projection replay".into(),
+                    name: "snapshot".into(),
                     reason,
                 });
             }
         };
+        let position = match &next {
+            SnapshotNext::More { cursor } => cursor.position,
+            SnapshotNext::Complete { complete } => complete.position,
+        };
+        let (next_scope, next_instance) = match &next {
+            SnapshotNext::More { cursor } => (&cursor.scope, &cursor.stream_instance),
+            SnapshotNext::Complete { complete } => (&complete.scope, &complete.stream_instance),
+        };
         if position < origin
-            || returned_scope != scope
+            || *next_scope != scope
+            || *next_instance != stream_instance
             || progress.position.is_some_and(|old| old != position)
         {
             return Err(Error::Invalid(
-                "a projection page changed its cut or scope".into(),
+                "a snapshot page changed its position, scope or stream".into(),
             ));
         }
-        // Bound requests in flight without serializing every network round trip.
+        // Withheld readings are fetched with a bound on requests in flight.
         let client = &*self;
-        let mut reads = stream::iter(inputs.iter().map(|reference| async move {
-            if reference.commit_seq <= 0
-                || reference.commit_seq > position
-                || reference
+        let mut reads = stream::iter(events.into_iter().map(|entry| async move {
+            let (commit_seq, id) = match &entry.event {
+                SnapshotReading::Inline(event) => (event.commit_seq, event.id),
+                SnapshotReading::Withheld(event) => (event.commit_seq, event.event),
+            };
+            if commit_seq <= 0
+                || commit_seq > position
+                || entry
                     .lifecycle_position
-                    .is_some_and(|changed| changed < reference.commit_seq || changed > position)
-                || reference.archived && reference.lifecycle_position.is_none()
+                    .is_some_and(|changed| changed < commit_seq || changed > position)
+                || entry.archived && entry.lifecycle_position.is_none()
             {
                 return Err(Error::Invalid(
-                    "a projection reference has inconsistent positions".into(),
+                    "a snapshot reading has inconsistent positions".into(),
                 ));
             }
-            let Some(event) = client
-                .fetch_event(reference.event, reference.commit_seq)
-                .await?
-            else {
-                return Ok(None);
+            let event = match entry.event {
+                SnapshotReading::Inline(event) => *event,
+                SnapshotReading::Withheld(_) => {
+                    let Some(event) = client.fetch_event(id, commit_seq).await? else {
+                        return Ok(None);
+                    };
+                    event
+                }
             };
-            if !matches(reference, &event) {
+            if event.id != id
+                || event.commit_seq != commit_seq
+                || !event.projection.verifies(&event.payload)
+            {
                 return Err(Error::Invalid(
-                    "a projection fetch differs from its certified reference".into(),
+                    "a snapshot reading differs from its position or payload hash".into(),
                 ));
             }
-            let mut live = readable(
-                event.commit_seq,
-                &event.id.to_string(),
-                format!("{}@{}", event.event_type, event.kind_version),
-                Some(&event.kind_definition_hash),
-                decode_event(&event),
-            )?;
-            live.native = Some(native_context(&event));
-            let archived = reference.archived.then(|| Confirmed {
-                position: reference
+            let live = confirmed_event(&event)?;
+            let archived = entry.archived.then(|| Confirmed {
+                position: entry
                     .lifecycle_position
                     .expect("validated lifecycle position"),
-                event: reference.event.to_string(),
+                event: id.to_string(),
                 output_index: 0,
                 native: None,
                 change: ConfirmedChange::Archived,
@@ -150,8 +141,8 @@ impl Client {
         let mut page = Vec::new();
         while let Some(read) = reads.next().await {
             let Some((live, archived)) = read? else {
-                // Erasure after the owner's cut invalidated this fetch. Restart
-                // the snapshot; its missing historical body is not fabricated.
+                // An erasure after the snapshot position: restart the snapshot
+                // rather than make up the missing body.
                 return Ok(start(
                     scope,
                     origin,
@@ -163,30 +154,27 @@ impl Client {
             page.extend(archived);
         }
         drop(reads);
-        page.push(control_fact(match continuation {
-            ReplayContinuation::Next { cursor } => {
-                if cursor.is_empty() || progress.cursor.as_ref() == Some(&cursor) {
-                    return Err(Error::Invalid(
-                        "the projection cursor did not advance".into(),
-                    ));
+        page.push(control_fact(match next {
+            SnapshotNext::More { cursor: next } => {
+                if cursor.as_ref() == Some(&next) {
+                    return Err(Error::Invalid("the snapshot cursor did not advance".into()));
                 }
-                ReplayControl::ProjectionPage { position, cursor }
-            }
-            ReplayContinuation::Complete { projection, .. } => {
-                if projection.position != position || projection.scope != scope {
-                    return Err(Error::Invalid(
-                        "the projection certificate differs from its pages".into(),
-                    ));
-                }
-                ReplayControl::ProjectionComplete {
-                    basis: local::ProjectionBasis {
-                        stamp: projection.stamp,
-                        position,
-                        scope,
-                        catalog: projection.catalog,
-                    },
+                ReplayControl::ProjectionPage {
+                    position,
+                    cursor: serde_json::to_string(&next)?,
                 }
             }
+            SnapshotNext::Complete { complete } => ReplayControl::ProjectionComplete {
+                snapshot: local::AppliedSnapshot {
+                    position,
+                    scope,
+                    stream_instance,
+                    last: complete.last.map(|last| local::LastStreamMessage {
+                        sequence: last.sequence,
+                        fingerprint: last.fingerprint,
+                    }),
+                },
+            },
         }));
         Ok(page)
     }

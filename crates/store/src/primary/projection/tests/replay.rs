@@ -29,7 +29,7 @@ fn rows(index: &Connection, sql: &str) -> i64 {
 }
 
 #[test]
-fn projection_pages_resume_hidden_and_install_the_certificate_with_the_complete_snapshot() {
+fn snapshot_pages_resume_hidden_and_install_with_their_completion() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("index.db");
     let mut index = cache(&path);
@@ -84,7 +84,7 @@ fn projection_pages_resume_hidden_and_install_the_certificate_with_the_complete_
         state.projection.as_ref().unwrap().cursor.as_deref(),
         Some("next-page")
     );
-    assert_eq!(state.basis, None);
+    assert_eq!(state.snapshot, None);
     assert!(
         apply(
             &crate::text_rows::TextIds::new(&index, false).unwrap(),
@@ -94,11 +94,14 @@ fn projection_pages_resume_hidden_and_install_the_certificate_with_the_complete_
         )
         .is_err()
     );
-    let basis = ProjectionBasis {
-        stamp: "owner-signature".into(),
+    let snapshot = AppliedSnapshot {
         position: 8,
         scope: "scope".into(),
-        catalog: "catalog".into(),
+        stream_instance: "new-stream".into(),
+        last: Some(LastStreamMessage {
+            sequence: 3,
+            fingerprint: "b".repeat(64),
+        }),
     };
     index.execute_batch("CREATE TRIGGER stop_snapshot BEFORE INSERT ON meta WHEN new.key='confirmed_position' BEGIN SELECT raise(ABORT,'stop snapshot'); END").unwrap();
     assert!(
@@ -116,14 +119,14 @@ fn projection_pages_resume_hidden_and_install_the_certificate_with_the_complete_
                     change: ConfirmedChange::Archived
                 },
                 control(ReplayControl::ProjectionComplete {
-                    basis: basis.clone()
+                    snapshot: snapshot.clone()
                 })
             ]
         )
         .is_err()
     );
     assert_eq!(checkpoint(&index).unwrap(), None);
-    assert_eq!(replay_state(&index).unwrap().basis, None);
+    assert_eq!(replay_state(&index).unwrap().snapshot, None);
     assert_eq!(rows(&index, "SELECT count(*) FROM source_input"), 0);
     index.execute_batch("DROP TRIGGER stop_snapshot").unwrap();
     apply(
@@ -135,7 +138,7 @@ fn projection_pages_resume_hidden_and_install_the_certificate_with_the_complete_
     .unwrap();
     assert_eq!(checkpoint(&index).unwrap(), Some(8));
     let state = replay_state(&index).unwrap();
-    assert_eq!(state.basis, Some(basis));
+    assert_eq!(state.snapshot, Some(snapshot));
     assert_eq!(state.projection, None);
     assert_eq!(rows(&index, "SELECT count(*) FROM source_input"), 1);
     assert_eq!(
@@ -765,13 +768,13 @@ fn malformed_and_wrong_kind_pending_evidence_refuse_visible_progress() {
         &[input(2, "first"), delivered(5)],
     )
     .unwrap();
-    let projection =
-        serde_json::json!({"stamp":"certificate","position":2,"scope":"scope","catalog":"catalog"});
+    let snapshot =
+        serde_json::json!({"position":2,"scope":"scope","stream_instance":"instance","last":null});
     for evidence in [
         serde_json::json!({"stream_instance":"instance","stream_sequence":5,"fingerprint":"bad"}),
         serde_json::json!({"stream_instance":"instance","stream_sequence":0,"fingerprint":"a".repeat(64)}),
-        serde_json::json!({"stream_instance":"instance","stream_sequence":5,"fingerprint":"a".repeat(64),"stamp":"ambiguous","position":2,"scope":"scope","catalog":"catalog"}),
-        projection,
+        serde_json::json!({"stream_instance":"instance","stream_sequence":5,"fingerprint":"a".repeat(64),"position":2,"scope":"scope","last":null}),
+        snapshot,
     ] {
         index
             .execute(

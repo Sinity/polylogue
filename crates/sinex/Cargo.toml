@@ -17,9 +17,9 @@ hashed-blobs.workspace = true
 query-language.workspace = true
 shared-signals.workspace = true
 jiff.workspace = true
-sinex-protocol = { git = "https://github.com/Sinity/sinex", rev = "51bb651234f822027fef791028944ad3e49c90fd" }
-sinex-transport = { git = "https://github.com/Sinity/sinex", rev = "51bb651234f822027fef791028944ad3e49c90fd" }
-sinex-model = { git = "https://github.com/Sinity/sinex", rev = "51bb651234f822027fef791028944ad3e49c90fd" }
+sinex-protocol = { git = "https://github.com/Sinity/sinex", rev = "9f672eb5f4dcd49b065539d2f78ff8c8be7e83d8" }
+sinex-transport = { git = "https://github.com/Sinity/sinex", rev = "9f672eb5f4dcd49b065539d2f78ff8c8be7e83d8" }
+sinex-model = { git = "https://github.com/Sinity/sinex", rev = "9f672eb5f4dcd49b065539d2f78ff8c8be7e83d8" }
 # The same features as Sinex: JetStream over ring TLS. Leaving out NKeys,
 # WebSockets, key-value, object store and service keeps their signing and
 # socket crates out of the build.

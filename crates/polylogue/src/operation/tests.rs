@@ -54,7 +54,7 @@ fn replayed_evaluation_time_never_rewrites_the_accepting_invocation() {
 
 #[cfg(feature = "sinex")]
 #[test]
-fn public_context_evidence_and_debug_never_expose_the_owner_bearer_token() {
+fn a_sinex_context_records_its_settings_revision_in_provenance() {
     let at = Timestamp::parse_rfc3339("2026-10-29T08:00:00Z").unwrap();
     let invocation = Invocation::new(
         at,
@@ -62,7 +62,6 @@ fn public_context_evidence_and_debug_never_expose_the_owner_bearer_token() {
         Context::worker_authorship("polylogue-signals"),
     );
     let policy = polylogue_sinex::ResolvedContext {
-        context_token: "synthetic-private-owner-token".into(),
         settings_identity: "public-settings:17".into(),
         owner_revision: 17,
         day: DaySetting::new(
@@ -89,16 +88,6 @@ fn public_context_evidence_and_debug_never_expose_the_owner_bearer_token() {
             ..
         }
     ));
-    let output = serde_json::to_string(&context.provenance()).unwrap();
-    let debug = format!("{context:?}");
-    let schema = schemars::schema_for!(Provenance).to_value().to_string();
-    for public in [output, debug, schema] {
-        assert!(!public.contains("context_token"), "{public}");
-        assert!(
-            !public.contains("synthetic-private-owner-token"),
-            "{public}"
-        );
-    }
 }
 
 #[test]

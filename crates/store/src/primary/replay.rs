@@ -1,7 +1,7 @@
 //! The local index's place in Sinex's confirmed stream. The durable consumer
 //! is read from the applied position (0 for a rebuild); there is no other way
-//! into the index, except an owner-certified current projection at a new
-//! stream's origin.
+//! into the index, except a complete snapshot of Sinex's current state at a
+//! new stream's origin.
 use serde::{Deserialize, Serialize};
 
 /// The last stream message staged in the index, so its acknowledgement can be
@@ -35,21 +35,32 @@ pub struct ReplayState {
     /// A completed prefix, distinct from a newer partially staged page.
     #[serde(default)]
     pub completed_delivery: Option<CompletedDelivery>,
-    /// A signed current projection, saved only with its visible application.
+    /// The applied snapshot, saved only with its visible application; the
+    /// first consumer request after it names where following starts.
     #[serde(default)]
-    pub basis: Option<ProjectionBasis>,
+    pub snapshot: Option<AppliedSnapshot>,
     /// The next bounded snapshot page; its predecessors are durably staged.
     #[serde(default)]
     pub projection: Option<ProjectionReplay>,
 }
 
+/// A complete snapshot: its position and scope, the stream instance it was
+/// read for, and the last stream message before its read (none when the
+/// stream was empty). Following starts after that message.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct ProjectionBasis {
-    pub stamp: String,
+pub struct AppliedSnapshot {
     pub position: i64,
     pub scope: String,
-    pub catalog: String,
+    pub stream_instance: String,
+    pub last: Option<LastStreamMessage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LastStreamMessage {
+    pub sequence: u64,
+    pub fingerprint: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -73,10 +84,10 @@ pub enum ReplayControl {
         stream_instance: String,
         reason: Option<String>,
     },
-    /// This page and the owner's next cursor share the staging transaction.
+    /// This page and Sinex's next cursor share the staging transaction.
     ProjectionPage { position: i64, cursor: String },
-    /// Every snapshot page is staged; install it and its certificate together.
-    ProjectionComplete { basis: ProjectionBasis },
+    /// Every snapshot page is staged; install it and its completion together.
+    ProjectionComplete { snapshot: AppliedSnapshot },
     /// Sinex's commit position when this page was read.
     Head { position: i64 },
     /// Every change committed at `position` has been delivered.

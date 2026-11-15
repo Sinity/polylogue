@@ -83,9 +83,9 @@ fn authenticated_private_reply_and_complete_registration_acknowledgment_establis
             let query:sinex_protocol::RecordedQuery=serde_json::from_slice(&request.payload).unwrap();assert_eq!(query.numbers,[1]);
             sinex_transport::replies::publish_json(&client,request.reply.unwrap().to_string(),sinex_protocol::RecordedPage{acknowledgments:vec![acknowledgment],next:None,..Default::default()},Duration::from_secs(5)).await.unwrap();
             let request=contexts.next().await.unwrap();
-            let query:sinex_protocol::PublicContextRequest=serde_json::from_slice(&request.payload).unwrap();assert!(query.coverage.is_none());
+            let _query:sinex_protocol::PublicContextRequest=serde_json::from_slice(&request.payload).unwrap();
             assert!(request.reply.as_ref().unwrap().starts_with("_INBOX.polylogue."));
-            let context:sinex_protocol::PublicContext=serde_json::from_value(serde_json::json!({"state":"available","context_token":"synthetic-context-token","settings_identity":"owner-settings","owner_revision":7,"day":{"zone":"Europe/Warsaw","start":"04:00:00"},"quiet_hours":{"from":1320,"to":420},"interrupt_budget":{"per_hour":3,"used":1,"remaining":2,"window_ms":3600000},"observed_at":"2026-01-01T00:00:00Z","coverage":{"state":"not_requested"}})).unwrap();
+            let context:sinex_protocol::PublicContext=serde_json::from_value(serde_json::json!({"state":"available","settings_identity":"owner-settings","owner_revision":7,"day":{"zone":"Europe/Warsaw","start":"04:00:00"},"quiet_hours":{"from":1320,"to":420},"interrupt_budget":{"per_hour":3,"used":1,"remaining":2,"window_ms":3600000},"observed_at":"2026-01-01T00:00:00Z"})).unwrap();
             sinex_transport::replies::publish_json(&client,request.reply.unwrap().to_string(),context,Duration::from_secs(5)).await.unwrap();
             // Exercise real transmission/recorded-acknowledgment lookup for two
             // accepted frames which have no admitted-event position.
@@ -109,7 +109,7 @@ fn authenticated_private_reply_and_complete_registration_acknowledgment_establis
             let subjects=Subjects::new("auth");
             let request=consumers.next().await.unwrap();
             let query:sinex_protocol::ConfirmedConsumer=serde_json::from_slice(&request.payload).unwrap();
-            assert_eq!(query,sinex_protocol::ConfirmedConsumer{basis:None,completion:None,after:42,cache:"cache-test".into(),status_only:false});
+            assert_eq!(query,sinex_protocol::ConfirmedConsumer{completion:None,start:None,after:42,cache:"cache-test".into(),status_only:false});
             let reply=sinex_protocol::ConfirmedConsumerReply::Provisioned{position:50,stream:subjects.confirmed_stream(),stream_instance:Some("instance".into()),consumer:"consumer".into(),scope:"test-scope".into()};
             sinex_transport::replies::publish_json(&client,request.reply.unwrap().to_string(),reply,Duration::from_secs(5)).await.unwrap();
             let request=consumers.next().await.unwrap();
@@ -201,7 +201,6 @@ fn authenticated_private_reply_and_complete_registration_acknowledgment_establis
                 sinex_protocol::Ingress::Events {
                     frame: "empty-events".into(),
                     source: None,
-                    coverage: None,
                     events: vec![],
                     failures: vec![],
                 },
@@ -227,14 +226,13 @@ fn authenticated_private_reply_and_complete_registration_acknowledgment_establis
         head: None,
         staged_delivery: None,
         completed_delivery: None,
-        basis: None,
+        snapshot: None,
         projection: None,
     };
     // A committed local frame can fail before reaching ingress. Its retry
     // error belongs to publication, while confirmed reads remain available.
     let pending = sinex_protocol::Ingress::Events {
         source: None,
-        coverage: None,
         frame: "recoverable-publication".into(),
         events: Vec::new(),
         failures: Vec::new(),
@@ -280,7 +278,7 @@ fn authenticated_private_reply_and_complete_registration_acknowledgment_establis
         head: None,
         staged_delivery: None,
         completed_delivery: None,
-        basis: None,
+        snapshot: None,
         projection: None,
     };
     let refused = primary::Sinex::confirmed(&sinex, &state, "cache-test").unwrap_err();
@@ -518,7 +516,7 @@ fn reordered_duplicate_acknowledgments_keep_concurrent_frames_independent_after_
         });
         let spool = Arc::new(Mutex::new(crate::spool::Spool::open(root.path(), "polylogue").unwrap()));
         for number in 0..5 {
-            spool.lock().unwrap().prepare(sinex_protocol::Ingress::Events { frame: format!("concurrent-{number}"), source: None, coverage: None, events: vec![], failures: vec![] }).unwrap();
+            spool.lock().unwrap().prepare(sinex_protocol::Ingress::Events { frame: format!("concurrent-{number}"), source: None, events: vec![], failures: vec![] }).unwrap();
         }
         let mut client = super::Client::connect_shared(&config, &Authentication::Password(PASSWORD.into()), spool.clone(), Default::default(), Default::default(), false).await.unwrap();
         let result = tokio::time::timeout(Duration::from_secs(10), client.retry_prepared()).await.expect("all independent frames complete without waiting for an earlier refusal");
@@ -634,7 +632,6 @@ fn dropping_sender_waiting_for_acknowledgment_preserves_the_original_frame() {
     let frame = sinex_protocol::Ingress::Events {
         frame: "cancelled-frame".into(),
         source: None,
-        coverage: None,
         events: vec![],
         failures: vec![],
     };
@@ -800,7 +797,6 @@ fn current_frame_reaches_durable_acknowledgment_with_5000_original_frames_waitin
             .prepare(sinex_protocol::Ingress::Events {
                 frame: format!("original-{number}"),
                 source: None,
-                coverage: None,
                 events: vec![],
                 failures: vec![],
             })
@@ -809,7 +805,6 @@ fn current_frame_reaches_durable_acknowledgment_with_5000_original_frames_waitin
     let current = sinex_protocol::Ingress::Events {
         frame: "current-frame".into(),
         source: None,
-        coverage: None,
         events: vec![],
         failures: vec![],
     };

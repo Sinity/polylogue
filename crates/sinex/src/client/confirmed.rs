@@ -1,4 +1,5 @@
-//! Grant-checked payload reads and one durable confirmed-stream subscription.
+//! One durable confirmed-stream subscription, and grant-checked reads of the
+//! events the stream carries withheld.
 use super::Client;
 use crate::{Error, Result};
 use async_nats::jetstream;
@@ -14,7 +15,7 @@ use sinex_protocol::{
 use std::time::Duration;
 mod projection;
 
-/// Exact grant-checked requests in flight; results retain delivery order.
+/// Fetches of withheld events in flight; results keep delivery order.
 const FETCH_CONCURRENCY: usize = 16;
 
 /// An event Polylogue cannot read (an unknown kind, a refused or
@@ -52,6 +53,20 @@ pub(crate) fn readable(
         }
         read => read,
     }
+}
+
+/// A complete event as the index stages it; an unreadable one is refused at
+/// its position.
+fn confirmed_event(event: &sinex_protocol::ConfirmedEvent) -> Result<Confirmed> {
+    let mut fact = readable(
+        event.commit_seq,
+        &event.id.to_string(),
+        format!("{}@{}", event.event_type, event.kind_version),
+        Some(&event.kind_definition_hash),
+        decode_event(event),
+    )?;
+    fact.native = Some(native_context(event));
+    Ok(fact)
 }
 
 fn decode_event(event: &sinex_protocol::ConfirmedEvent) -> Result<Confirmed> {
@@ -184,8 +199,8 @@ impl Client {
         })
     }
 
-    /// The event a stream reference names, or `None` when Sinex erased it
-    /// after the reference was committed.
+    /// The event a withheld message names, or `None` when Sinex erased it
+    /// after it was committed.
     async fn fetch_event(
         &self,
         id: sinex_model::EventId,
@@ -210,7 +225,7 @@ impl Client {
                     || erased.commit_seq <= original_position
                 {
                     return Err(Error::Invalid(
-                        "event erasure differs from its confirmed reference".into(),
+                        "event erasure differs from its confirmed position".into(),
                     ));
                 }
                 return Ok(None);
@@ -260,14 +275,6 @@ impl Client {
             .request(
                 self.subjects.confirmed_consumer(&self.producer),
                 ConfirmedConsumer {
-                    basis: state.basis.as_ref().map(|basis| {
-                        sinex_protocol::FullProjectionComplete {
-                            stamp: basis.stamp.clone(),
-                            position: basis.position,
-                            scope: basis.scope.clone(),
-                            catalog: basis.catalog.clone(),
-                        }
-                    }),
                     after,
                     completion: state.completed_delivery.as_ref().map(|receipt| {
                         sinex_protocol::DeliveredCompletion {
@@ -276,20 +283,35 @@ impl Client {
                             fingerprint: receipt.fingerprint.clone(),
                         }
                     }),
+                    // Until its first completion marker, the index names
+                    // where its applied snapshot's read stopped.
+                    start: state
+                        .snapshot
+                        .as_ref()
+                        .filter(|_| state.completed_delivery.is_none())
+                        .map(|snapshot| sinex_protocol::SnapshotStart {
+                            stream_instance: snapshot.stream_instance.clone(),
+                            last: snapshot.last.as_ref().map(|last| {
+                                sinex_protocol::LastStreamMessage {
+                                    sequence: last.sequence,
+                                    fingerprint: last.fingerprint.clone(),
+                                }
+                            }),
+                        }),
                     cache: cache.into(),
                     status_only: provisioned,
                 },
             )
             .await?;
         let (position, stream, stream_instance, consumer, scope) = match reply {
-            ConfirmedConsumerReply::ProjectionRequired {
+            ConfirmedConsumerReply::SnapshotRequired {
                 origin,
                 position,
                 scope,
                 stream_instance,
             } => {
                 return self
-                    .projection_page(state, cache, origin, position, scope, stream_instance)
+                    .snapshot_page(state, origin, position, scope, stream_instance)
                     .await;
             }
             ConfirmedConsumerReply::Refused { reason }
@@ -421,31 +443,30 @@ impl Client {
         after: i64,
     ) -> Result<Option<Confirmed>> {
         let item = match change {
-            sinex_protocol::Confirmed::EventReference { commit_seq, event }
-                if commit_seq > after =>
-            {
+            sinex_protocol::Confirmed::Event(event) if event.commit_seq > after => {
+                let event = *event;
+                if !event.projection.verifies(&event.payload) {
+                    return Err(Error::Invalid(
+                        "a confirmed event's payload differs from its hash".into(),
+                    ));
+                }
+                confirmed_event(&event)?
+            }
+            sinex_protocol::Confirmed::Withheld(withheld) if withheld.commit_seq > after => {
+                let (commit_seq, event) = (withheld.commit_seq, withheld.event);
                 match self.fetch_event(event, commit_seq).await {
-                    Ok(Some(fetched)) => {
-                        let same_position = fetched.commit_seq == commit_seq;
-                        let read = if same_position {
-                            decode_event(&fetched)
-                        } else {
-                            Err(Error::Invalid(
-                                "a fetched event differs from its confirmed position".into(),
-                            ))
-                        };
-                        let mut fact = readable(
-                            commit_seq,
-                            &event.to_string(),
-                            format!("{}@{}", fetched.event_type, fetched.kind_version),
-                            same_position.then_some(fetched.kind_definition_hash.as_str()),
-                            read,
-                        )?;
-                        if same_position {
-                            fact.native = Some(native_context(&fetched));
-                        }
-                        fact
+                    Ok(Some(fetched)) if fetched.commit_seq == commit_seq => {
+                        confirmed_event(&fetched)?
                     }
+                    Ok(Some(fetched)) => readable(
+                        commit_seq,
+                        &event.to_string(),
+                        format!("{}@{}", fetched.event_type, fetched.kind_version),
+                        None,
+                        Err(Error::Invalid(
+                            "a fetched event differs from its confirmed position".into(),
+                        )),
+                    )?,
                     Ok(None) => Confirmed {
                         position: commit_seq,
                         event: event.to_string(),
@@ -456,13 +477,15 @@ impl Client {
                     Err(error) => readable(
                         commit_seq,
                         &event.to_string(),
-                        String::new(),
+                        format!("{}@?", withheld.event_type),
                         None,
                         Err(error),
                     )?,
                 }
             }
-            sinex_protocol::Confirmed::EventReference { .. } => return Ok(None),
+            sinex_protocol::Confirmed::Event(_) | sinex_protocol::Confirmed::Withheld(_) => {
+                return Ok(None);
+            }
             sinex_protocol::Confirmed::Archived(change) => Confirmed {
                 position: change.archived_seq,
                 event: change.event.to_string(),

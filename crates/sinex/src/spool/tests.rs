@@ -1246,14 +1246,7 @@ fn a_finished_operation_refuses_a_different_outcome_through_the_spool() {
 fn complete_no_position_outcomes_preserve_acknowledgment_and_application_identity() {
     let directory = tempfile::tempdir().unwrap();
     let spool = Spool::open(directory.path(), "host").unwrap();
-    let mut repeat = events("coverage-repeat", "owner-known event");
-    if let Ingress::Events { coverage, .. } = &mut repeat {
-        *coverage = Some(sinex_protocol::CoverageProof {
-            stamp: "owner-signed-coverage".into(),
-            position: 42,
-            scope: "scope".into(),
-        });
-    }
+    let repeat = events("known-repeat", "already known event");
     spool.prepare(repeat.clone()).unwrap();
     let mut acknowledgment = crate::tests::no_event_acknowledgment(&repeat);
     counts(&mut acknowledgment).repeats = 1;

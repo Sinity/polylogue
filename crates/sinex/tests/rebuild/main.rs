@@ -469,7 +469,6 @@ fn captured_evidence(
     let interpreted = sinex_protocol::Ingress::Events {
         frame: format!("{frame}/events"),
         source: Some(source),
-        coverage: None,
         events,
         failures: vec![],
     };
