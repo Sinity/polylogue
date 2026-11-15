@@ -48,10 +48,11 @@ Counting ordinary rows applies the query's filters and stage selections without 
 
 The full-text indexes are contentless, keyed by text ID, with contentless delete. A text enters an index when its first block of that kind is written and leaves with its last. Ranking after re-parse retractions equals a fresh build's: whenever retracted rows exceed 10% of an index's rows, the writer rebuilds that index's statistics in the same pass. This is part of the ordinary write path, not a command.
 
-A deferred first build replays marked texts from the beginning in bounded
-transactions. Its first transaction clears earlier derived postings and
-statistics, so retry after interruption or a later deferred-index failure has
-the same ranking and vocabulary as a fresh build. Parsed rows, source progress
+A deferred first build writes both full-text indexes from all marked texts in
+one transaction, which first clears earlier derived postings and statistics:
+each search segment is written once, and an interruption or failure leaves the
+indexes as they were, so a retry, also after a later deferred-index failure,
+has the same ranking and vocabulary as a fresh build. Parsed rows, source progress
 and original bytes remain committed. Ordinary reopen repeats this work while
 the build is incomplete; search becomes ready after deferred finalization
 succeeds.

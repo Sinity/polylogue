@@ -204,9 +204,11 @@ Building the archive overlaps every stage:
 - consumers of committed positions: derived data (computed on a thread of
   its own and written by the writer only if its inputs are unchanged), the
   request-log projection and the completion catalog;
-- at the end of a first build, full-text and secondary indexes built in
-  parallel, with the archive searchable before the trigram index finishes,
-  then the query planner's statistics gathered from a sample of each index,
+- at the end of a first build, both full-text indexes written from one
+  ordered scan of the text in one transaction, so each search segment is
+  written once rather than flushed small and merged again; then the trigram
+  index and the deferred secondary indexes, each from one sorted scan, and
+  the query planner's statistics gathered from a sample of each index,
   so lookups by session are not mistaken for lookups by a column of few
   values;
 - live inputs ahead of bulk work.
