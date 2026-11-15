@@ -165,8 +165,9 @@ fn create_index_in(conn: &Connection, primary: bool) -> Result<()> {
 }
 
 /// Creates the index in an empty file, or opens one at this version with the
-/// declared tables, adding any read index it lacks. Any other index is
-/// refused unchanged. Earlier versions rebuild through archive open; an
+/// declared tables, adding any read index it lacks. The exact preceding
+/// count-trigger shape advances atomically without rewriting rows. Other
+/// shapes are refused unchanged. Earlier versions rebuild through archive open; an
 /// unknown current-format shape is never reset.
 pub fn ensure_index(conn: &Connection) -> Result<()> {
     ensure_index_in(conn, false)
@@ -218,16 +219,45 @@ fn ensure_index_in(conn: &Connection, primary: bool) -> Result<()> {
         }
         let current = |conn: &Connection| {
             if building(conn)? {
-                same_build_schema_in(conn, primary)
+                same_build_schema_in(conn, primary, false)
             } else {
-                same_index_schema_in(conn, primary)
+                same_index_schema_in(conn, primary, false)
             }
         };
         if !current(&tx)? {
-            return Err(StoreError::NoMigration {
-                database: "index",
-                found,
-            });
+            // Only the exact preceding count-trigger shape evolves in place.
+            // Tables, row encodings and durable parser progress do not change.
+            let previous = if deferring {
+                same_build_schema_in(&tx, primary, true)?
+            } else {
+                same_index_schema_in(&tx, primary, true)?
+            };
+            if !previous {
+                return Err(StoreError::NoMigration {
+                    database: "index",
+                    found,
+                });
+            }
+            for line in include_str!("schema/session_counts_before_transaction.sql").lines() {
+                if let Some(declaration) = line.strip_prefix("CREATE TRIGGER ") {
+                    let name = declaration
+                        .split_whitespace()
+                        .next()
+                        .expect("declared count trigger");
+                    tx.execute_batch(&format!("DROP TRIGGER {name}"))?;
+                }
+            }
+            let file: String = tx.query_row(
+                "SELECT file FROM pragma_database_list WHERE name='main'",
+                [],
+                |row| row.get(0),
+            )?;
+            crate::fault::check("index.session_counts_transition", &file)?;
+            if !current(&tx)? {
+                return Err(StoreError::Invalid(
+                    "session count transition did not produce the current index".into(),
+                ));
+            }
         }
     }
     tx.commit()?;
@@ -462,11 +492,14 @@ pub(crate) fn same_schema(conn: &Connection, sql: &[&str]) -> Result<bool> {
 }
 
 /// Physical indexes created at open do not change the parsed table format.
-fn same_index_schema_in(conn: &Connection, primary: bool) -> Result<bool> {
+fn same_index_schema_in(conn: &Connection, primary: bool, previous_counts: bool) -> Result<bool> {
     let expected = Connection::open_in_memory()?;
     base_index(&expected)?;
     if primary {
         add_primary(&expected)?;
+    }
+    if previous_counts {
+        expected.execute_batch(include_str!("schema/session_counts_before_transaction.sql"))?;
     }
     let base = shape(&expected)?;
     expected.execute_batch(OPEN_INDEXES)?;
@@ -484,12 +517,15 @@ fn same_index_schema_in(conn: &Connection, primary: bool) -> Result<bool> {
 }
 
 /// A pending first build may lack only the indexes the writer deferred.
-fn same_build_schema_in(conn: &Connection, primary: bool) -> Result<bool> {
+fn same_build_schema_in(conn: &Connection, primary: bool, previous_counts: bool) -> Result<bool> {
     let expected = Connection::open_in_memory()?;
     base_index(&expected)?;
     expected.execute_batch(OPEN_INDEXES)?;
     if primary {
         add_primary(&expected)?;
+    }
+    if previous_counts {
+        expected.execute_batch(include_str!("schema/session_counts_before_transaction.sql"))?;
     }
     let found = shape(conn)?;
     let mut wanted = shape(&expected)?;

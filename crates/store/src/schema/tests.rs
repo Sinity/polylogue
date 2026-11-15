@@ -1,4 +1,5 @@
 use super::*;
+mod session_counts;
 
 #[test]
 fn every_schema_applies_to_an_empty_database() {
@@ -145,7 +146,7 @@ fn open_indexes_are_added_in_place_and_survive_reopen() {
         .unwrap();
     // Views are part of the schema; open indexes are recreated before writing.
     conn.execute_batch(OPEN_INDEXES).unwrap();
-    assert!(same_index_schema_in(&conn, false).unwrap());
+    assert!(same_index_schema_in(&conn, false, false).unwrap());
     ensure_index(&conn).unwrap();
     let base = Connection::open_in_memory().unwrap();
     base_index(&base).unwrap();
@@ -162,7 +163,7 @@ fn open_indexes_are_added_in_place_and_survive_reopen() {
     for name in open_indexes {
         conn.execute_batch(&format!("DROP INDEX {name}")).unwrap();
         assert!(
-            same_index_schema_in(&conn, false).unwrap(),
+            same_index_schema_in(&conn, false, false).unwrap(),
             "missing {name}"
         );
         ensure_index(&conn).unwrap();
@@ -178,7 +179,7 @@ fn open_indexes_are_added_in_place_and_survive_reopen() {
     );
     conn.execute_batch("DROP INDEX event_at; CREATE INDEX event_at ON event(kind)")
         .unwrap();
-    assert!(!same_index_schema_in(&conn, false).unwrap());
+    assert!(!same_index_schema_in(&conn, false, false).unwrap());
 }
 
 #[test]

@@ -126,6 +126,15 @@ impl Fixture {
         Ok(())
     }
 
+    fn refresh_counts(&self, session: i64) -> Result<()> {
+        crate::derive::counts::apply_values(
+            &self.index,
+            session,
+            &crate::derive::counts::compute(&self.index, session)?,
+            None,
+        )
+    }
+
     pub fn queue_search_text(&self, body: &str) -> Result<i64> {
         let tx = self.index.unchecked_transaction()?;
         let id = crate::text_rows::intern(&tx, body, 1, None, None)?;
@@ -380,6 +389,7 @@ impl Fixture {
                 serde_json::json!({"type": "text", "text": ""}),
             )?;
         }
+        self.refresh_counts(session_pk)?;
         crate::items::refresh_stale(&self.index)?;
         Ok(pk)
     }
@@ -446,6 +456,7 @@ impl Fixture {
             [session_pk],
         )?;
         self.forget_settled(session_pk)?;
+        self.refresh_counts(session_pk)?;
         crate::items::refresh_stale(&self.index)?;
         Ok(pk)
     }
@@ -456,8 +467,8 @@ impl Fixture {
     /// last active `last - (sessions - 1 - n)` minutes ago, so the highest
     /// numbers are the newest. Each has `messages` messages alternating a
     /// person's prompt and a model answer; the newest `answered` end on a
-    /// model answer with text. The schema's triggers keep the counts; brief
-    /// summaries are stored as the derive step leaves them. Returns the session row keys in order.
+    /// model answer with text. The fixture folds each session's counts once;
+    /// brief summaries are stored as the derive step leaves them. Returns the session row keys in order.
     pub fn many_sessions(&mut self, spec: ManySessions<'_>) -> Result<Vec<i64>> {
         let tx = rusqlite::Transaction::new_unchecked(
             &self.index,
@@ -525,6 +536,14 @@ impl Fixture {
                 }
                 pks.push(pk);
             }
+        }
+        for &pk in &pks {
+            crate::derive::counts::apply_values(
+                &tx,
+                pk,
+                &crate::derive::counts::compute(&tx, pk)?,
+                None,
+            )?;
         }
         tx.commit()?;
         crate::text_rows::index_pending(&self.index, || ())?;
@@ -604,6 +623,7 @@ impl Fixture {
             [session_pk],
         )?;
         self.forget_settled(session_pk)?;
+        self.refresh_counts(session_pk)?;
         crate::items::refresh_stale(&self.index)?;
         Ok(())
     }

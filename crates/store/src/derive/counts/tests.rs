@@ -77,7 +77,7 @@ fn stored_counts_match_the_shown_path_and_action_population() {
         (4, 1, 1, 6, 3, 3, 1, 2, 2)
     );
     let tx = conn.unchecked_transaction().unwrap();
-    apply(&tx, pk, &compute(&tx, pk).unwrap()).unwrap();
+    apply_values(&tx, pk, &compute(&tx, pk).unwrap(), None).unwrap();
     tx.commit().unwrap();
     let stored = read(&conn, pk, true).unwrap();
     assert_eq!(

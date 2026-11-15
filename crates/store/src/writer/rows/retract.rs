@@ -17,8 +17,20 @@ impl RowWriter<'_, '_> {
         for session in sessions {
             self.changes.whole_session(session);
         }
-        self.tx.prepare_cached("UPDATE session SET changed=?3 WHERE id IN (SELECT parent_id FROM prefix_copy WHERE input_pk=?1 AND chain=?2 UNION SELECT child_id FROM prefix_copy WHERE input_pk=?1 AND chain=?2) AND changed IS NOT ?3")?
-            .execute(params![self.input_pk,self.chain,self.counter])?;
+        let related = self
+            .tx
+            .prepare_cached(
+                "SELECT pk FROM session WHERE id IN
+            (SELECT parent_id FROM prefix_copy WHERE input_pk=?1 AND chain=?2
+             UNION SELECT child_id FROM prefix_copy WHERE input_pk=?1 AND chain=?2)",
+            )?
+            .query_map(params![self.input_pk, self.chain], |row| {
+                row.get::<_, i64>(0)
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for session in related {
+            self.changes.session(self.tx, session)?;
+        }
         let prefix_children = self
             .tx
             .prepare_cached("SELECT child_id FROM prefix_copy WHERE input_pk=?1 AND chain=?2")?
@@ -33,7 +45,7 @@ impl RowWriter<'_, '_> {
         for kind in VersionKind::ALL {
             kind.retract(self.tx, self.input_pk, self.chain)?;
         }
-        self.tx.execute("UPDATE session SET changed=?3,live_reparse=1 WHERE pk IN (SELECT session_pk FROM parsed WHERE input_pk=?1 AND chain=?2)", params![self.input_pk,self.chain,self.counter])?;
+        self.tx.execute("UPDATE session SET live_reparse=1 WHERE live_reparse IS NOT 1 AND pk IN (SELECT session_pk FROM parsed WHERE input_pk=?1 AND chain=?2)", params![self.input_pk,self.chain])?;
         for table in [
             "session_record",
             "session_alias",

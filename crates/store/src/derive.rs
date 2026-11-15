@@ -26,7 +26,7 @@
 //! cost, a shell call's normalized command). The writer writes it with the
 //! row by the same function, so it runs here only when its version moves.
 //! A fold-class derivation is kept in the transaction of each change to the
-//! rows it folds: the session counts by schema triggers (including the
+//! rows it folds: the session counts by the transaction's change summary (including the
 //! changes this step makes to duplicates and the active path), the links by
 //! the writer from the transaction's change summary. It runs here only when
 //! its version moves, for a session it never ran on, or for a cause it
@@ -157,7 +157,7 @@ impl Output {
             Self::Title(title) => title::apply(tx, session_pk, title.as_deref()),
             Self::Links(links) => links::replace(tx, session_pk, links),
             Self::Cost(costs) => cost::apply(tx, costs),
-            Self::Counts(counts) => counts::apply(tx, session_pk, counts),
+            Self::Counts(counts) => counts::apply_values(tx, session_pk, counts, None),
             Self::Span(derived) => crate::measure::time::write_derived(tx, session_pk, derived),
             #[cfg(test)]
             Self::Columns(columns) => {
@@ -668,6 +668,7 @@ pub(crate) fn apply(index: &Connection, write: &Write) -> Result<Vec<bool>> {
         applied.push(true);
     }
     drop(state);
+    changes.finish_summaries(&tx, None)?;
     let sessions = changes.sessions(&tx)?;
     // A span resumed from a settled message must not pass a message whose
     // duplicate mark or path place changed.

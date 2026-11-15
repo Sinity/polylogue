@@ -3,7 +3,6 @@ use super::*;
 
 impl RowWriter<'_, '_> {
     pub(super) fn refresh_event(&self, pk: i64) -> Result<()> {
-        self.tx.prepare_cached("UPDATE session SET changed=?2 WHERE pk=(SELECT session_pk FROM event WHERE pk=?1) AND changed IS NOT ?2")?.execute(params![pk,self.counter])?;
         let choice = self
             .choices
             .events
@@ -14,9 +13,6 @@ impl RowWriter<'_, '_> {
             self.tx.execute("DELETE FROM event WHERE pk=?1", [pk])?;
             return Ok(());
         };
-        self.tx
-            .prepare_cached("UPDATE session SET changed=?2 WHERE pk=?1 AND changed IS NOT ?2")?
-            .execute(params![choice.session, self.counter])?;
         let after = choice
             .after
             .as_ref()
@@ -82,6 +78,9 @@ impl RowWriter<'_, '_> {
             return Ok(());
         }
         self.changes.event(self.tx, pk)?;
+        if let Some(session) = choice.session {
+            self.changes.session(self.tx, session)?;
+        }
         self.tx.prepare_cached("UPDATE event SET session_pk=?2,seq=?3,after_message_pk=?4,at=?5,input_pk=?6,source_chain=?7,source_start=?8,source_end=?9,data=?10,after_message_id=?11,seq_from_message=?12,kind=?13,fields=?14 WHERE pk=?1")?.execute(params![pk,choice.session,seq,after,choice.at,choice.input,choice.chain,choice.start,choice.end,choice.body,choice.after,choice.seq.is_none(),choice.kind,choice.fields])?;
         Ok(())
     }
@@ -101,7 +100,17 @@ impl RowWriter<'_, '_> {
         Ok(())
     }
     fn mark_link_sessions(&self, pk: i64) -> Result<()> {
-        self.tx.prepare_cached("UPDATE session SET changed=?2 WHERE id IN (SELECT parent_id FROM link WHERE pk=?1 UNION SELECT child_id FROM link WHERE pk=?1) AND changed IS NOT ?2")?.execute(params![pk,self.counter])?;
+        let sessions = self
+            .tx
+            .prepare_cached(
+                "SELECT pk FROM session WHERE id IN
+            (SELECT parent_id FROM link WHERE pk=?1 UNION SELECT child_id FROM link WHERE pk=?1)",
+            )?
+            .query_map([pk], |row| row.get::<_, i64>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for session in sessions {
+            self.changes.session(self.tx, session)?;
+        }
         Ok(())
     }
     pub(super) fn store_link(

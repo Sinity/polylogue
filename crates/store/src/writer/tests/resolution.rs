@@ -933,6 +933,7 @@ fn native_source_retraction_reselects_remaining_claims_and_rolls_back_atomically
         &changes,
         None,
         &crate::text_rows::TextIds::new(&tx, false).unwrap(),
+        2,
     )
     .unwrap();
     tx.commit().unwrap();
