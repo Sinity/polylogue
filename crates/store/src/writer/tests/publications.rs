@@ -354,7 +354,12 @@ fn an_archived_value_does_not_turn_a_processed_incomplete_tail_into_an_unknown_p
             .unwrap(),
         ("waiting".into(), 90, 100, None)
     );
-    for table in ["message", "parser_context", "parser_context_state"] {
+    for table in [
+        "message",
+        "parser_context_response",
+        "parser_context_alias",
+        "parser_context_state",
+    ] {
         assert_eq!(
             index
                 .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row

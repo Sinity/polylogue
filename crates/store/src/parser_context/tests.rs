@@ -16,14 +16,10 @@ fn fresh_context_leaves_checkpoint_free_while_resumed_context_keeps_its_snapshot
         namespace: String::new(),
         uuid: "event".into(),
     };
-    let sql_key = serde_json::to_string(&key).unwrap();
     writer
         .execute(
-            "INSERT INTO parser_context VALUES(1,3,'synthetic=1',2,?1,?2,NULL)",
-            params![
-                sql_key,
-                crate::encoding::pack_json(&Reference::Alias { target: None }).unwrap()
-            ],
+            "INSERT INTO parser_context_alias VALUES(1,3,'','event',NULL)",
+            [],
         )
         .unwrap();
     let restart = || restart_full_log(&writer, &path, 0, std::time::Duration::ZERO).unwrap();
@@ -103,13 +99,10 @@ fn fresh_context_leaves_checkpoint_free_while_resumed_context_keeps_its_snapshot
         resumed.get(&key).unwrap(),
         Some(Value::Alias { target: None })
     ));
-    let later: Reference =
-        serde_json::from_value(serde_json::json!({"kind":"alias","target":"claude-code:later"}))
-            .unwrap();
     writer
         .execute(
-            "UPDATE parser_context SET value=?1 WHERE key=?2",
-            params![crate::encoding::pack_json(&later).unwrap(), sql_key],
+            "UPDATE parser_context_alias SET target='claude-code:later' WHERE uuid='event'",
+            [],
         )
         .unwrap();
     assert!(!restart());

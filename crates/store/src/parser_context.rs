@@ -5,12 +5,20 @@ use polylogue_model::parser_context::{Context, Delta, Entry, Key, Reference, Val
 use rusqlite::{Connection, OptionalExtension, params};
 use std::sync::{Arc, Mutex};
 
-pub(crate) const SCHEMA: &str = "CREATE TABLE parser_context_state(input_pk INTEGER NOT NULL REFERENCES input_ref(pk),chain INTEGER NOT NULL,reading_version TEXT NOT NULL,through INTEGER NOT NULL,PRIMARY KEY(input_pk,chain,reading_version)) STRICT, WITHOUT ROWID;
-CREATE TABLE parser_context(input_pk INTEGER NOT NULL REFERENCES input_ref(pk),chain INTEGER NOT NULL,reading_version TEXT NOT NULL,cursor INTEGER NOT NULL,key TEXT NOT NULL,value BLOB NOT NULL,version_pk INTEGER REFERENCES message_version(pk),PRIMARY KEY(input_pk,chain,reading_version,key,cursor)) STRICT, WITHOUT ROWID;";
+// A chain's context belongs to one reading, named once in its state row: a
+// reading from byte zero replaces the whole context, and an extension applies
+// only on top of a state row of its own reading version. Each key keeps only
+// its value at that checkpoint (`through`): a resumed parse reads it under the
+// read snapshot it opened at the checkpoint, so a value a later checkpoint
+// replaced is never read again.
+pub(crate) const SCHEMA: &str = "CREATE TABLE parser_context_state(input_pk INTEGER NOT NULL REFERENCES input_ref(pk),chain INTEGER NOT NULL,reading_version TEXT NOT NULL,through INTEGER NOT NULL,PRIMARY KEY(input_pk,chain)) STRICT, WITHOUT ROWID;
+CREATE TABLE parser_context_response(input_pk INTEGER NOT NULL REFERENCES input_ref(pk),chain INTEGER NOT NULL,namespace TEXT NOT NULL,session TEXT NOT NULL,key TEXT NOT NULL,version_pk INTEGER NOT NULL REFERENCES message_version(pk),source_start INTEGER NOT NULL,source_end INTEGER NOT NULL,PRIMARY KEY(input_pk,chain,namespace,session,key)) STRICT, WITHOUT ROWID;
+CREATE TABLE parser_context_alias(input_pk INTEGER NOT NULL REFERENCES input_ref(pk),chain INTEGER NOT NULL,namespace TEXT NOT NULL,uuid TEXT NOT NULL,target TEXT,PRIMARY KEY(input_pk,chain,namespace,uuid)) STRICT, WITHOUT ROWID;";
 
 // Collection and foreign-key checks follow this reference during first build,
 // so its reverse index must remain present while query-only indexes are deferred.
-pub(crate) const VERSION_INDEX: &str = "CREATE INDEX IF NOT EXISTS parser_context_version ON parser_context(version_pk) WHERE version_pk IS NOT NULL;";
+pub(crate) const VERSION_INDEX: &str =
+    "CREATE INDEX IF NOT EXISTS parser_context_version ON parser_context_response(version_pk);";
 
 #[derive(Clone)]
 pub struct Overlay(Arc<Mutex<Attempt>>);
@@ -205,10 +213,13 @@ impl Overlay {
             .0
             .lock()
             .map_err(|_| StoreError::Invalid("parser context lock poisoned".into()))?;
-        let key = serde_json::to_string(key)?;
         let changed: Option<Vec<u8>> = attempt
             .scratch
-            .query_row("SELECT value FROM entry WHERE key=?1", [&key], |r| r.get(0))
+            .query_row(
+                "SELECT value FROM entry WHERE key=?1",
+                [serde_json::to_string(key)?],
+                |r| r.get(0),
+            )
             .optional()?;
         if let Some(bytes) = changed {
             return Ok(Some(crate::encoding::unpack_json(&bytes)?));
@@ -219,55 +230,63 @@ impl Overlay {
         let index = attempt.index.as_ref().ok_or_else(|| {
             StoreError::Invalid("admitted parser context has no read snapshot".into())
         })?;
-        let sql_base = sql_cursor(attempt.lookup_through)?;
-        let row=index.query_row("SELECT c.value,v.version_hash,c.cursor FROM parser_context c LEFT JOIN message_version v ON v.pk=c.version_pk WHERE c.input_pk=?1 AND c.chain=?2 AND c.reading_version=?3 AND c.key=?4 AND c.cursor<=?5 ORDER BY c.cursor DESC LIMIT 1",params![input,chain,attempt.version,key,sql_base],|r|Ok((r.get::<_,Vec<u8>>(0)?,r.get::<_,Option<Vec<u8>>>(1)?,r.get::<_,i64>(2)?))).optional()?;
-        let Some((bytes, hash, cursor)) = row else {
-            return Ok(None);
-        };
-        let cursor = stored_cursor(cursor)?;
-        Ok(Some(
-            match crate::encoding::unpack_json::<Reference>(&bytes)? {
-                Reference::Alias { target } => Value::Alias { target },
-                Reference::Response {
-                    message,
-                    version,
-                    offset,
-                    end,
-                } => {
-                    if offset > end || end > cursor {
-                        return Err(StoreError::Invalid(
-                            "response context range exceeds its recorded cursor".into(),
-                        ));
-                    }
-                    let hash = hash.ok_or_else(|| {
-                        StoreError::Invalid("response context has no message version".into())
-                    })?;
-                    if hash.as_slice() != version.0.as_slice() {
-                        return Err(StoreError::Invalid(
-                            "response context version differs from its mapping".into(),
-                        ));
-                    }
-                    let (value, _) =
-                        crate::versions::read_message(index, &hash)?.ok_or_else(|| {
-                            StoreError::Invalid("response context message version is absent".into())
-                        })?;
-                    if value.id != message {
-                        return Err(StoreError::Invalid(
-                            "response context has another message identity".into(),
-                        ));
-                    }
-                    Value::Response {
-                        row: Box::new(polylogue_model::MessageRow {
-                            page_text: false,
-                            id_kind: polylogue_model::IdKind::Native,
-                            offset,
-                            end,
-                            message: value,
-                        }),
-                    }
+        match key {
+            Key::Alias { namespace, uuid } => {
+                let row = index
+                    .prepare_cached("SELECT target FROM parser_context_alias WHERE input_pk=?1 AND chain=?2 AND namespace=?3 AND uuid=?4")?
+                    .query_row(params![input, chain, namespace, uuid], |r| {
+                        r.get::<_, Option<String>>(0)
+                    })
+                    .optional()?;
+                let Some(target) = row else {
+                    return Ok(None);
+                };
+                let target = target
+                    .map(|target| polylogue_model::MessageId::parse(&target))
+                    .transpose()
+                    .map_err(|e| StoreError::Invalid(format!("alias context target: {e}")))?;
+                Ok(Some(Value::Alias { target }))
+            }
+            Key::Response {
+                namespace,
+                session,
+                key,
+            } => {
+                let row = index
+                    .prepare_cached("SELECT v.version_hash,r.source_start,r.source_end FROM parser_context_response r JOIN message_version v ON v.pk=r.version_pk WHERE r.input_pk=?1 AND r.chain=?2 AND r.namespace=?3 AND r.session=?4 AND r.key=?5")?
+                    .query_row(params![input, chain, namespace, session, key], |r| {
+                        Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
+                    })
+                    .optional()?;
+                let Some((hash, offset, end)) = row else {
+                    return Ok(None);
+                };
+                let (offset, end) = (stored_cursor(offset)?, stored_cursor(end)?);
+                if offset > end || end > attempt.lookup_through {
+                    return Err(StoreError::Invalid(
+                        "response context range exceeds its recorded cursor".into(),
+                    ));
                 }
-            },
-        ))
+                let (message, _) =
+                    crate::versions::read_message(index, &hash)?.ok_or_else(|| {
+                        StoreError::Invalid("response context message version is absent".into())
+                    })?;
+                if message.session.to_string() != *session {
+                    return Err(StoreError::Invalid(
+                        "response key has another source session".into(),
+                    ));
+                }
+                Ok(Some(Value::Response {
+                    row: Box::new(polylogue_model::MessageRow {
+                        page_text: false,
+                        id_kind: polylogue_model::IdKind::Native,
+                        offset,
+                        end,
+                        message,
+                    }),
+                }))
+            }
+        }
     }
 }
 
@@ -380,29 +399,52 @@ pub(crate) fn apply(
         }
     }
     if unavailable || delta.base == 0 {
-        tx.execute(
-            "DELETE FROM parser_context WHERE input_pk=?1 AND chain=?2 AND reading_version=?3",
-            params![input, chain, step.reading_version],
-        )?;
+        for table in ["parser_context_response", "parser_context_alias"] {
+            tx.prepare_cached(&format!(
+                "DELETE FROM {table} WHERE input_pk=?1 AND chain=?2"
+            ))?
+            .execute(params![input, chain])?;
+        }
     }
     if unavailable {
         tx.execute(
-            "DELETE FROM parser_context_state WHERE input_pk=?1 AND chain=?2 AND reading_version=?3",
-            params![input, chain, step.reading_version],
+            "DELETE FROM parser_context_state WHERE input_pk=?1 AND chain=?2",
+            params![input, chain],
         )?;
         return Ok(false);
     }
-    for entry in delta.entries {
-        let hash = match &entry.value {
-            Reference::Response { version, .. } => Some(match response_key(&entry) {
-                Some(pk) => pk,
-                None => crate::versions::message_key(tx, &version.0)?,
-            }),
-            Reference::Alias { .. } => None,
-        };
-        tx.execute("INSERT INTO parser_context VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(input_pk,chain,reading_version,key,cursor) DO UPDATE SET value=excluded.value,version_pk=excluded.version_pk",params![input,chain,step.reading_version,through,serde_json::to_string(&entry.key)?,crate::encoding::pack_json(&entry.value)?,hash])?;
+    // A key changed at this checkpoint replaces its earlier value in place.
+    for entry in &delta.entries {
+        match (&entry.key, &entry.value) {
+            (
+                Key::Response {
+                    namespace,
+                    session,
+                    key,
+                },
+                Reference::Response {
+                    version,
+                    offset,
+                    end,
+                    ..
+                },
+            ) => {
+                let version_pk = match response_key(entry) {
+                    Some(pk) => pk,
+                    None => crate::versions::message_key(tx, &version.0)?,
+                };
+                tx.prepare_cached("INSERT INTO parser_context_response VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(input_pk,chain,namespace,session,key) DO UPDATE SET version_pk=excluded.version_pk,source_start=excluded.source_start,source_end=excluded.source_end")?
+                    .execute(params![input, chain, namespace, session, key, version_pk, sql_cursor(*offset)?, sql_cursor(*end)?])?;
+            }
+            (Key::Alias { namespace, uuid }, Reference::Alias { target }) => {
+                tx.prepare_cached("INSERT INTO parser_context_alias VALUES(?1,?2,?3,?4,?5) ON CONFLICT(input_pk,chain,namespace,uuid) DO UPDATE SET target=excluded.target")?
+                    .execute(params![input, chain, namespace, uuid, target.as_ref().map(ToString::to_string)])?;
+            }
+            _ => unreachable!("key and value kinds were checked above"),
+        }
     }
-    tx.execute("INSERT INTO parser_context_state VALUES(?1,?2,?3,?4) ON CONFLICT(input_pk,chain,reading_version) DO UPDATE SET through=excluded.through",params![input,chain,step.reading_version,through])?;
+    tx.prepare_cached("INSERT INTO parser_context_state VALUES(?1,?2,?3,?4) ON CONFLICT(input_pk,chain) DO UPDATE SET reading_version=excluded.reading_version,through=excluded.through")?
+        .execute(params![input, chain, step.reading_version, through])?;
     Ok(true)
 }
 
@@ -418,7 +460,7 @@ pub(crate) fn canonical_message_sql(
     }
     let uuid = bind(id.native().as_str().to_owned());
     format!(
-        "CASE WHEN EXISTS(SELECT 1 FROM message direct JOIN message_source ds ON ds.message_pk=direct.pk WHERE direct.id={original}) THEN {original} ELSE pl_source_alias((SELECT json_group_array(DISTINCT json_extract(pl_block(pc.value),'$.target')) FROM parser_context pc JOIN parser_context_state cs ON cs.input_pk=pc.input_pk AND cs.chain=pc.chain AND cs.reading_version=pc.reading_version JOIN parse_state ps ON ps.input_pk=cs.input_pk AND ps.chain=cs.chain AND ps.reading_version=cs.reading_version WHERE json_extract(pc.key,'$.kind')='alias' AND json_extract(pc.key,'$.uuid')={uuid} AND pc.cursor<=cs.through AND NOT EXISTS(SELECT 1 FROM parser_context later WHERE later.input_pk=pc.input_pk AND later.chain=pc.chain AND later.reading_version=pc.reading_version AND later.key=pc.key AND later.cursor>pc.cursor AND later.cursor<=cs.through)),{original}) END"
+        "CASE WHEN EXISTS(SELECT 1 FROM message direct JOIN message_source ds ON ds.message_pk=direct.pk WHERE direct.id={original}) THEN {original} ELSE pl_source_alias((SELECT json_group_array(DISTINCT pc.target) FROM parser_context_alias pc JOIN parser_context_state cs ON cs.input_pk=pc.input_pk AND cs.chain=pc.chain JOIN parse_state ps ON ps.input_pk=cs.input_pk AND ps.chain=cs.chain AND ps.reading_version=cs.reading_version WHERE pc.uuid={uuid}),{original}) END"
     )
 }
 pub(crate) fn canonical_message(

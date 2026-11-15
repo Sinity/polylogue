@@ -1061,7 +1061,7 @@ fn unreferenced(w: &TestArchive) -> Json {
             "SELECT
            (SELECT count(*) FROM message_version v
             WHERE NOT EXISTS(SELECT 1 FROM message_source s WHERE s.version_pk = v.pk)
-              AND NOT EXISTS(SELECT 1 FROM parser_context c WHERE c.version_pk = v.pk))
+              AND NOT EXISTS(SELECT 1 FROM parser_context_response c WHERE c.version_pk = v.pk))
              AS message_versions,
            (SELECT count(*) FROM document_version v
             WHERE NOT EXISTS(SELECT 1 FROM document_source s WHERE s.version_hash = v.version_hash))

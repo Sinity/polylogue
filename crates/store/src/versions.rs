@@ -459,8 +459,8 @@ fn reference_triggers() -> String {
     // Context a parser keeps holds an earlier message body after the shown
     // source moved on; releasing the context makes the body a candidate.
     trigger(
-        "parser_context",
-        "parser_context",
+        "parser_context_response",
+        "parser_context_response",
         "version_pk",
         "unreferenced_value",
         Some("message"),
@@ -534,7 +534,7 @@ pub(crate) fn remove_unreferenced(
             )
         };
         let context = if matches!(kind, VersionKind::Message) {
-            " AND NOT EXISTS(SELECT 1 FROM parser_context c WHERE c.version_pk=t.pk)"
+            " AND NOT EXISTS(SELECT 1 FROM parser_context_response c WHERE c.version_pk=t.pk)"
         } else {
             ""
         };
