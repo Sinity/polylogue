@@ -280,7 +280,7 @@ fn reopened_missing_count_baseline_is_folded_without_blessing_a_stale_version() 
         c.execute("INSERT INTO derive_state(name,session_pk,version)SELECT 'counts',pk,'stale' FROM session",[]).unwrap();
     }
     let mut c = Connection::open(&path).unwrap();
-    crate::schema::ensure_index(&c, false).unwrap();
+    crate::schema::ensure_index(&c).unwrap();
     assert_eq!(
         c.query_row("SELECT word_count FROM session", [], |r| r
             .get::<_, Option<i64>>(0))

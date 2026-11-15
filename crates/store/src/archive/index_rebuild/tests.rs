@@ -1,5 +1,6 @@
 use super::*;
 use crate::archive::{Archive, cache, open_archive_writer, open_read, open_write};
+use crate::schema;
 
 fn meta(conn: &Connection, key: &str) -> Option<String> {
     conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))
@@ -275,7 +276,7 @@ fn primary_previous_index_rebuild_preserves_original_cache_and_paid_and_pending_
             schema::version(&index).unwrap(),
             schema::PRIMARY_INDEX_VERSION
         );
-        assert!(!built(&index, true).unwrap());
+        assert!(!built(&index).unwrap());
         let mut replay = crate::primary::projection::replay_state(&index).unwrap();
         replay.applied_position = Some(5);
         replay.head = Some(5);
@@ -288,35 +289,35 @@ fn primary_previous_index_rebuild_preserves_original_cache_and_paid_and_pending_
             )
             .unwrap();
         assert!(
-            !built(&index, true).unwrap(),
+            !built(&index).unwrap(),
             "head receipt does not replace missing parser progress"
         );
         index.execute_batch("INSERT INTO parse_state(input_pk,chain,reading_version,status,parsed_upto) VALUES(71,1,'reader=1','parsing',5)").unwrap();
         assert!(
-            !built(&index, true).unwrap(),
+            !built(&index).unwrap(),
             "an unfinished prefix remains pending"
         );
         index
             .execute_batch("UPDATE parse_state SET status='waiting',at_length=9")
             .unwrap();
         assert!(
-            !built(&index, true).unwrap(),
+            !built(&index).unwrap(),
             "a waiting suffix belongs to its exact source length"
         );
         index
             .execute_batch("UPDATE parse_state SET at_length=10")
             .unwrap();
         assert!(
-            built(&index, true).unwrap(),
+            built(&index).unwrap(),
             "waiting at the known source length is an explicit incomplete suffix"
         );
         index.execute_batch("INSERT INTO primary_refused VALUES('unknown',5,'unknown@1','unavailable original evidence',1)").unwrap();
         assert!(
-            !built(&index, true).unwrap(),
+            !built(&index).unwrap(),
             "unknown native evidence retains the old cache"
         );
         index.execute_batch("DELETE FROM primary_refused").unwrap();
-        remove_when_built(&index, &current.index_db(), true).unwrap();
+        remove_when_built(&index, &current.index_db()).unwrap();
         assert!(!retained.exists());
         assert_eq!(
             std::fs::read(&pending).unwrap(),

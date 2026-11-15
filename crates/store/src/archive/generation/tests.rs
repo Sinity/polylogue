@@ -1,4 +1,5 @@
 use super::*;
+use crate::archive::cache;
 
 fn index() -> Connection {
     let conn = Connection::open_in_memory().unwrap();

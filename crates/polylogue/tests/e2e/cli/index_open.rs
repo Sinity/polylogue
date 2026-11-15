@@ -21,6 +21,11 @@ fn the_daemon_rebuilds_an_index_from_another_schema_and_serves() {
         let home = dir.path().join("home");
         std::fs::create_dir_all(&home).unwrap();
         let (archive, lock) = polylogue_store::Archive::open_or_create(&root).unwrap();
+        // An installed index: a build installs its file when it ends.
+        polylogue_store::Writer::start(&archive)
+            .unwrap()
+            .derive()
+            .unwrap();
         let conn = rusqlite::Connection::open(archive.index_db()).unwrap();
         conn.execute("INSERT INTO meta VALUES ('kept-marker','present')", [])
             .unwrap();

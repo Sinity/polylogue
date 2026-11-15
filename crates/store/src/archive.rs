@@ -408,9 +408,8 @@ impl Archive {
             )?;
         }
         index_rebuild::remove_when_built(&index, &path)?;
-        generation::open(self, &index)?;
         crate::fault::check("index.after_creation", "")?;
-        Ok(())
+        generation::open(self, &index)
     }
 
     /// Creates the index schema in an empty file or opens the one there.
@@ -427,7 +426,11 @@ impl Archive {
         } else {
             let archive = open_read(&self.archive_db())?;
             let _write = crate::write_lock::hold(&archive)?;
-            schema::ensure_index(index, building)?;
+            if building {
+                schema::ensure_build_index(index)?;
+            } else {
+                schema::ensure_index(index)?;
+            }
         }
         if fresh {
             self.read_scope.finish_reset();

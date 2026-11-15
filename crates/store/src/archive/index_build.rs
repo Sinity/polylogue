@@ -213,9 +213,8 @@ pub(crate) fn prepare(archive: &Archive) -> Result<()> {
                 // is left from before it was installed.
                 remove_build_files(&paths)?;
                 archive.index_build.set(false, false);
-                crate::archive::generation::open(archive, &index)?;
                 crate::fault::check("index.after_creation", "")?;
-                return Ok(());
+                return crate::archive::generation::open(archive, &index);
             }
             Err(error) => {
                 let Some(reason) = crate::archive::index_rebuild::reason(&error) else {
@@ -264,9 +263,8 @@ pub(crate) fn prepare(archive: &Archive) -> Result<()> {
     };
     let serving_previous = paths.previous.exists() && servable(&paths.previous)?;
     archive.index_build.set(true, serving_previous);
-    crate::archive::generation::open(archive, &build)?;
     crate::fault::check("index.after_creation", "")?;
-    Ok(())
+    crate::archive::generation::open(archive, &build)
 }
 
 /// Whether `previous` can be read by this build: its schema identity is

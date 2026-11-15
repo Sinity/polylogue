@@ -156,13 +156,23 @@ fn a_stop_during_index_rebuild_preserves_retained_bytes_and_restart_finishes() {
     .unwrap();
     let started = Instant::now();
     loop {
-        let messages = runtime
-            .daemon
-            .reads
-            .reader()
-            .unwrap()
+        // Reads answer `index_building` until the rebuilt index is installed
+        // (docs/operations.md, Replacing an index from another schema).
+        let reader = match runtime.daemon.reads.reader() {
+            Err(polylogue_store::StoreError::IndexBuilding(_)) => {
+                assert!(
+                    started.elapsed() < Duration::from_secs(30),
+                    "restart did not install the rebuilt index"
+                );
+                std::thread::yield_now();
+                continue;
+            }
+            reader => reader.unwrap(),
+        };
+        let messages = reader
             .messages(&SessionId::parse("claude-code:rebuild").unwrap(), false)
             .unwrap();
+        drop(reader);
         if messages.len() == 48 {
             assert!(
                 messages

@@ -37,13 +37,13 @@ fn every_database_starts_at_its_current_version() {
 #[test]
 fn an_index_at_another_version_is_refused_without_removing_rows() {
     let conn = Connection::open_in_memory().unwrap();
-    ensure_index(&conn, false).unwrap();
+    ensure_index(&conn).unwrap();
     conn.execute("INSERT INTO input_ref(id) VALUES ('synthetic')", [])
         .unwrap();
     // An index written by an older build of another lineage.
     set_version(&conn, 17).unwrap();
     assert!(matches!(
-        ensure_index(&conn, false),
+        ensure_index(&conn),
         Err(StoreError::IndexVersion {
             found: 17,
             wanted: INDEX_VERSION
@@ -58,11 +58,11 @@ fn an_index_at_another_version_is_refused_without_removing_rows() {
     .unwrap();
     // No baseline format identity: an index written by an earlier Polylogue.
     assert!(matches!(
-        ensure_index(&conn, false),
+        ensure_index(&conn),
         Err(StoreError::OlderFormat { database: "index" })
     ));
     assert_eq!(
-        ensure_index(&conn, false).unwrap_err().to_string(),
+        ensure_index(&conn).unwrap_err().to_string(),
         "older format: import with `polylogue import --from-archive PATH`"
     );
     assert_eq!(
@@ -146,7 +146,7 @@ fn open_indexes_are_added_in_place_and_survive_reopen() {
     // Views are part of the schema; open indexes are recreated before writing.
     conn.execute_batch(OPEN_INDEXES).unwrap();
     assert!(same_index_schema_in(&conn, false).unwrap());
-    ensure_index(&conn, false).unwrap();
+    ensure_index(&conn).unwrap();
     let base = Connection::open_in_memory().unwrap();
     base_index(&base).unwrap();
     let base_shape = shape(&base).unwrap();
@@ -165,7 +165,7 @@ fn open_indexes_are_added_in_place_and_survive_reopen() {
             same_index_schema_in(&conn, false).unwrap(),
             "missing {name}"
         );
-        ensure_index(&conn, false).unwrap();
+        ensure_index(&conn).unwrap();
         assert_eq!(shape(&conn).unwrap(), expected);
     }
     assert_eq!(shape(&conn).unwrap(), expected);
@@ -196,11 +196,11 @@ fn recent_read_indexes_wait_for_first_build_completion_on_reopen() {
         )
         .unwrap()
     };
-    ensure_index(&conn, true).unwrap();
+    ensure_build_index(&conn).unwrap();
     assert_eq!(recent(), 0);
-    ensure_index(&conn, false).unwrap();
+    ensure_index(&conn).unwrap();
     assert_eq!(recent(), 2);
-    ensure_index(&conn, false).unwrap();
+    ensure_index(&conn).unwrap();
     assert_eq!(recent(), 2);
 }
 
@@ -277,7 +277,7 @@ fn an_unversioned_file_with_tables_is_refused_unchanged() {
 #[test]
 fn parse_standings_require_their_length_and_reason() {
     let conn = Connection::open_in_memory().unwrap();
-    ensure_index(&conn, false).unwrap();
+    ensure_index(&conn).unwrap();
     conn.execute_batch("INSERT INTO input_ref(pk,id,format) VALUES(1,'waiting','synthetic'),(2,'done','synthetic'),(3,'collected','synthetic');
         INSERT INTO parse_state(input_pk,chain,reading_version,status,parsed_upto,at_length) VALUES
           (1,1,'v1','waiting',40,100),(2,1,'v1','done',90,NULL),(3,1,'v1','no_parser_yet',30,NULL);").unwrap();

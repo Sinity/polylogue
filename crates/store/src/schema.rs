@@ -7,7 +7,7 @@
 //! an earlier build gains the tables added since ([`ensure_embeddings`]).
 
 use crate::{Result, StoreError};
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::Connection;
 use std::collections::HashSet;
 
 pub const ARCHIVE: &str = concat!(
@@ -162,10 +162,14 @@ fn create_index_in(conn: &Connection, primary: bool) -> Result<()> {
 /// Creates the index in an empty file, or opens one at this version with the
 /// declared tables, adding any read index it lacks. Any other index is
 /// refused unchanged; the archive's open builds a new one in its place
-/// ([`crate::archive::index_build`]). `building`: the file is a standalone
-/// build in progress ([`crate::archive::index_build`]).
-pub fn ensure_index(conn: &Connection, building: bool) -> Result<()> {
-    ensure_index_in(conn, false, building)
+/// ([`crate::archive::index_build`]).
+pub fn ensure_index(conn: &Connection) -> Result<()> {
+    ensure_index_in(conn, false, false)
+}
+/// [`ensure_index`] for a standalone build in progress, which leaves out the
+/// indexes it builds when it ends ([`crate::archive::index_build`]).
+pub fn ensure_build_index(conn: &Connection) -> Result<()> {
+    ensure_index_in(conn, false, true)
 }
 pub fn ensure_primary_index(conn: &Connection) -> Result<()> {
     ensure_index_in(conn, true, false)

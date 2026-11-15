@@ -253,7 +253,7 @@ fn member_discovery_filters_before_decoding_and_propagates_visitor_refusal() {
 #[test]
 fn import_members_and_asset_rows_move_their_import_counters() {
     let conn = Connection::open_in_memory().unwrap();
-    crate::schema::ensure_index(&conn, false).unwrap();
+    crate::schema::ensure_index(&conn).unwrap();
     let counter = |import: &str| -> Option<i64> {
         conn.query_row(
             "SELECT changed FROM import_change WHERE import_id=?1",
@@ -296,7 +296,7 @@ fn import_members_and_asset_rows_move_their_import_counters() {
 #[test]
 fn an_identical_reimport_leaves_the_import_counters_unchanged() {
     let conn = Connection::open_in_memory().unwrap();
-    crate::schema::ensure_index(&conn, false).unwrap();
+    crate::schema::ensure_index(&conn).unwrap();
     let counter = || -> Option<i64> {
         conn.query_row(
             "SELECT changed FROM import_change WHERE import_id='import-a'",

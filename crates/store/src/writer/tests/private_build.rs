@@ -296,7 +296,7 @@ fn a_crash_during_a_build_discards_it_and_restarts_from_the_stored_bytes() {
     assert_eq!(reader.status().unwrap().inputs, 1);
     let progress = reader.input_progress("crashed").unwrap().unwrap();
     assert!(!progress.parsed);
-    assert_eq!(progress.stored, 100);
+    assert_eq!(progress.length, 100);
 }
 
 #[cfg(feature = "faults")]
