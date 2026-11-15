@@ -863,8 +863,12 @@ fn rebuild(
     let mut extended = false;
     // A live session's last message grows block by block. When the only
     // difference is new blocks after the last indexed message's entries,
-    // that is an append; outstanding cursors stay valid.
-    if same + 1 == indexed.len() && same < units.len() {
+    // that is an append; outstanding cursors stay valid. The update below
+    // keeps the row's message or event, so only that same row can grow.
+    if same + 1 == indexed.len()
+        && same < units.len()
+        && located_by(conn, session_pk, indexed[same].0)? == located_columns(&units[same])
+    {
         let (first_seq, _) = indexed[same];
         let stored = stored_entries(conn, session_pk, first_seq)?;
         let current = &pending[0];
@@ -976,6 +980,22 @@ fn rebuild(
         changed
     ])?;
     Ok(units.len() as u64)
+}
+
+/// The message and event a unit's first row names.
+fn located_by(conn: &Connection, session_pk: i64, seq: i64) -> Result<(Option<i64>, Option<i64>)> {
+    Ok(conn
+        .prepare_cached(
+            "SELECT message_pk, event_pk FROM session_item WHERE session_pk = ?1 AND seq = ?2",
+        )?
+        .query_row(params![session_pk, seq], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?)
+}
+
+fn located_columns(unit: &Unit) -> (Option<i64>, Option<i64>) {
+    let (message_pk, event_pk, _) = unit.columns();
+    (message_pk, event_pk)
 }
 
 fn unit_entries(
@@ -1258,7 +1278,7 @@ fn extends(stored: &[IndexEntry], current: &[IndexEntry]) -> bool {
 
 /// What a read of stored entries selects: the row, and the message or
 /// event its unit's first row names.
-const ENTRY_COLUMNS: &str = "i.seq, i.class, i.entry, i.call_id, m.id, e.id
+const ENTRY_COLUMNS: &str = "i.seq, i.class, i.entry, i.call_id, m.id, e.id, i.unit IS NOT NULL
     FROM session_item i LEFT JOIN message m ON m.pk = i.message_pk
     LEFT JOIN event e ON e.pk = i.event_pk";
 
@@ -1348,6 +1368,7 @@ impl<'c> Run<'c> {
         let keep = wanted(class);
         let message: Option<String> = row.get(4)?;
         let event: Option<String> = row.get(5)?;
+        let starts_unit: bool = row.get(6)?;
         let place = match (message, event) {
             (Some(id), _) => {
                 self.starts.insert(
@@ -1366,6 +1387,11 @@ impl<'c> Run<'c> {
                     return Ok(());
                 }
                 RowPlace::Event(id, row.get(2)?)
+            }
+            (None, None) if starts_unit => {
+                return Err(StoreError::Invalid(format!(
+                    "session item {seq} names no stored message or event"
+                )));
             }
             (None, None) => {
                 if !keep {
