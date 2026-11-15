@@ -49,7 +49,7 @@ async fn queued_or_disconnected_stop_prevents_signal_startup_work() {
         drop(stop);
         let mut bridge = StopBridge::new(stopped).unwrap();
         assert!(bridge.token().is_cancelled());
-        run(fixture.daemon.clone(), bridge.token()).await;
+        run(fixture.daemon.clone(), bridge.token()).await.unwrap();
         bridge.finish().unwrap();
         assert_eq!(
             load(&fixture.daemon)
@@ -103,4 +103,32 @@ async fn stopping_drains_submitted_unknown_ack_before_joining_the_worker() {
         .await
         .unwrap();
     bridge.finish().unwrap();
+}
+
+#[tokio::test]
+async fn an_admission_stop_does_not_report_a_closed_startup_reader_as_failure() {
+    let mut fixture = fixture();
+    fixture.stop().unwrap();
+    // The normal admission stop already closed reads, but this worker has not
+    // received its own stop channel yet. No new restoration is admitted.
+    run(fixture.daemon.clone(), CancellationToken::new())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn notification_cleanup_preserves_the_delivery_workers_actual_error() {
+    let fixture = fixture();
+    let (updates, mut returned) = mpsc::unbounded_channel();
+    let worker = tokio::spawn(async move {
+        drop(updates);
+        Err::<(), _>(zbus::Error::Failure("synthetic delivery failure".into()))
+    });
+    let error = drain_worker(&fixture.daemon, &mut returned, worker)
+        .await
+        .unwrap_err();
+    assert!(
+        error.reason.contains("synthetic delivery failure"),
+        "{error:?}"
+    );
 }
