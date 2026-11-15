@@ -1,6 +1,8 @@
 //! An older chain's reading copied from a newer chain holding the same
 //! bytes equals the reading a parse of the older chain records
 //! (docs/archive.md, versioned rows), for documents too.
+mod receipts;
+
 use super::*;
 use polylogue_model::{Document, DocumentId, DocumentPurpose, DocumentRow};
 use std::collections::BTreeMap;
