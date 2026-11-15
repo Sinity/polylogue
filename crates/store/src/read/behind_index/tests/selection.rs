@@ -93,6 +93,8 @@ fn history(fixture: &Fixture, chains: usize, appends: usize) {
         [number],
     )
     .unwrap();
+    tx.execute("UPDATE observation SET path_bytes=CAST(path AS BLOB)", [])
+        .unwrap();
     tx.commit().unwrap();
     let mut index = Connection::open(fixture.archive.index_db()).unwrap();
     let tx = index.transaction().unwrap();
@@ -156,6 +158,10 @@ fn newest_and_older_match_the_original_query_for_retained_histories() {
     let a = newest.iter().find(|c| c.input == "a").unwrap();
     assert_eq!((a.progress.chain, a.progress.length), (1, 107));
     assert_eq!(a.source.path.as_deref(), Some("/home/op/chosen"));
+    assert_eq!(
+        a.source.path_bytes.as_deref(),
+        Some(b"/home/op/chosen".as_slice())
+    );
 }
 
 fn compare_work(chains: usize, appends: usize) -> (usize, usize) {

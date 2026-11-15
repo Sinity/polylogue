@@ -160,13 +160,15 @@ fn without_sources_an_import_is_stored_and_the_loop_then_becomes_idle() {
 fn retained_replay_uses_recorded_native_paths_without_machine_discovery() {
     use std::os::unix::ffi::OsStringExt;
 
-    let home = ClaudeHome::new();
-    let path = home
+    let mut home = ClaudeHome::new();
+    // Fixed roots may contain native bytes; the provider's wildcard path
+    // components and transcript stem still use their supported spelling.
+    let native_home = home
         .home
-        .join(".claude/projects")
-        .join(std::ffi::OsString::from_vec(b"retained-\xff".to_vec()))
-        .join("native-kept.jsonl");
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        .with_file_name(std::ffi::OsString::from_vec(b"home-\xff".to_vec()));
+    std::fs::rename(&home.home, &native_home).unwrap();
+    home.home = native_home;
+    let path = home.file("native-kept.jsonl");
     std::fs::write(
         &path,
         claude_user("one", "native-kept", "native retained words"),
@@ -175,8 +177,36 @@ fn retained_replay_uses_recorded_native_paths_without_machine_discovery() {
     {
         let (mut engine, _lock) = open_engine(&home);
         assert!(engine.run_pass().unwrap().errors.is_empty());
+        let reader = engine.reads.reader().unwrap();
+        let known = reader
+            .known_watched_input_at("test-machine", path.as_os_str().as_encoded_bytes())
+            .unwrap()
+            .expect("the fixed native root was captured");
+        assert_eq!(
+            known.path_bytes.as_deref(),
+            Some(path.as_os_str().as_encoded_bytes())
+        );
+        let plans = reader
+            .chains_behind_index(
+                &[("claude-code".into(), "synthetic-previous-reading".into())],
+                polylogue_store::StoppedChains::Settled,
+                RevisionChains::Newest,
+                None,
+            )
+            .unwrap();
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].input, known.input_id);
+        assert_eq!(
+            plans[0].source.path_bytes.as_deref(),
+            Some(path.as_os_str().as_encoded_bytes())
+        );
     }
+    assert_eq!(home.texts("native-kept"), ["native retained words"]);
     let stored = rows(&home);
+    assert!(
+        stored.iter().all(|count| *count > 0),
+        "the fixture must capture original bytes and their observation"
+    );
     std::fs::remove_file(&path).unwrap();
     polylogue_testkit::delete_index(&home.root);
     let (mut engine, _lock) = open_engine(&home);
@@ -262,13 +292,19 @@ fn retained_stopped_readings_keep_their_attempt_and_upgrade_from_stored_bytes() 
         );
         let (mut engine, _lock) = open_engine(&home);
         assert!(engine.run_pass().unwrap().errors.is_empty());
+        assert_eq!(home.texts("upgrade"), ["preserved reading"]);
         let state = &engine.inputs[&home.file("upgrade.jsonl")];
         let input = state.input_id.clone();
         let length = state.stored;
         let version = state.origin.reading_version();
-        let mut step =
-            polylogue_store::ParseStep::new(Default::default(), Default::default(), 0..0, false);
-        step.reset = true;
+        // A refusal after a committed prefix changes neither that prefix's
+        // rows nor its cursor. A resetting step would retract the reading.
+        let mut step = polylogue_store::ParseStep::new(
+            Default::default(),
+            Default::default(),
+            length..length,
+            false,
+        );
         step.progress = StepProgress::Refused {
             reason: "recorded synthetic refusal".into(),
         };
@@ -302,6 +338,11 @@ fn retained_stopped_readings_keep_their_attempt_and_upgrade_from_stored_bytes() 
             })
             .unwrap();
         assert!(engine.writer.flush().unwrap().errors.is_empty());
+        assert_eq!(
+            home.texts("upgrade"),
+            ["preserved reading"],
+            "a refusal at the committed cursor keeps its prior rows"
+        );
         let stored = rows(&home);
         engine.config.reads_sources = false;
         std::fs::remove_file(home.file("upgrade.jsonl")).unwrap();
@@ -317,10 +358,7 @@ fn retained_stopped_readings_keep_their_attempt_and_upgrade_from_stored_bytes() 
             if old_version { "done" } else { "refused" }
         );
         assert_eq!(progress[0]["reading_version"], version);
-        assert_eq!(
-            progress[0]["parsed_upto"].as_u64(),
-            Some(if old_version { length } else { 0 })
-        );
+        assert_eq!(progress[0]["parsed_upto"].as_u64(), Some(length));
         assert_eq!(rows(&home), stored);
         assert_eq!(home.texts("upgrade"), ["preserved reading"]);
     }
