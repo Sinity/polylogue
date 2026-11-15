@@ -293,6 +293,7 @@ fn first_build_cleanup_retains_version_text_and_forgets_deleted_identity() {
                 "kept",
                 b"kept".to_vec(),
             )),
+            None,
         )
         .unwrap()
         .id;
@@ -308,14 +309,14 @@ fn first_build_cleanup_retains_version_text_and_forgets_deleted_identity() {
     )
     .unwrap();
     remove_unreferenced(&tx, Some(&first), &identities).unwrap();
-    assert_eq!(identities.resolve(&tx, &hash, None).unwrap().id, id);
+    assert_eq!(identities.resolve(&tx, &hash, None, None).unwrap().id, id);
     tx.execute(
         "DELETE FROM message_version WHERE version_hash=?1",
         [version.as_slice()],
     )
     .unwrap();
     remove_unreferenced(&tx, Some(&first), &identities).unwrap();
-    assert!(identities.resolve(&tx, &hash, None).is_err());
+    assert!(identities.resolve(&tx, &hash, None, None).is_err());
     let replacement = identities
         .resolve(
             &tx,
@@ -324,6 +325,7 @@ fn first_build_cleanup_retains_version_text_and_forgets_deleted_identity() {
                 "again",
                 b"again".to_vec(),
             )),
+            None,
         )
         .unwrap()
         .id;
@@ -339,7 +341,7 @@ fn first_build_cleanup_retains_version_text_and_forgets_deleted_identity() {
     tx.commit().unwrap();
     texts.commit();
     assert_eq!(
-        identities.resolve(&conn, &hash, None).unwrap().id,
+        identities.resolve(&conn, &hash, None, None).unwrap().id,
         replacement
     );
 }

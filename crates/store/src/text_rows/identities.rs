@@ -65,18 +65,10 @@ impl TextIds {
         Ok(())
     }
 
+    /// The row of text `hash`, written from `body` when it is not stored; a
+    /// row written here joins the search indexes `membership` names for its
+    /// hash.
     pub(crate) fn resolve(
-        &self,
-        conn: &Connection,
-        hash: &[u8; 32],
-        body: Option<&crate::encoding::PreparedText>,
-    ) -> Result<ResolvedText> {
-        self.resolve_member(conn, hash, body, None)
-    }
-
-    /// Like [`Self::resolve`]; a text row written here joins the search
-    /// indexes `membership` names for its hash.
-    pub(crate) fn resolve_member(
         &self,
         conn: &Connection,
         hash: &[u8; 32],

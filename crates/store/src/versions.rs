@@ -206,7 +206,7 @@ fn store_value(
     ))?;
     for (idx, hash) in texts.iter().enumerate() {
         if let Some(hash) = hash {
-            let resolved = identities.resolve_member(conn, hash, packed.get(hash), membership)?;
+            let resolved = identities.resolve(conn, hash, packed.get(hash), membership)?;
             let id = resolved.id;
             written_payload &= resolved.written;
             text.execute(params![key, idx as i64, id])?;
