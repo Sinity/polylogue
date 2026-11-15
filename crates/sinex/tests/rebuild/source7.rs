@@ -246,7 +246,7 @@ fn admit_originals(
             if let Some(message) = message {
                 events.push(event("polylogue.message",old_message(&input,message.clone(),offset,length),1));
             }
-            let interpreted = Ingress::Events {frame:format!("source7-facts-{index}"),source:Some(source.clone()),coverage:None,events,failures:vec![]};
+            let interpreted = Ingress::Events {frame:format!("source7-facts-{index}"),source:Some(source.clone()),events,failures:vec![]};
             let receipt = sinex_transport::producer::submit_frame(&client,&subjects,"polylogue",&mut acks,&interpreted,Duration::from_secs(30)).await.unwrap();
             assert_eq!(receipt.refusal(),None,"{receipt:?}");
             originals.push((material, bytes.as_bytes().to_vec()));
