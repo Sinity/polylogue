@@ -445,6 +445,7 @@ mod deliveries;
 mod outcomes;
 
 mod stopping;
+mod workers;
 
 #[test]
 fn an_invalidated_read_phase_does_not_enter_the_authored_writer() {

@@ -205,7 +205,8 @@ impl Executor {
     /// Call it from outside the executor's own threads.
     pub(crate) fn stop(&self, wait: Duration) -> usize {
         let until = Instant::now() + wait;
-        let mut state = self.refuse();
+        self.refuse();
+        let mut state = self.shared.lock();
         while state.threads > 0 {
             let left = until.saturating_duration_since(Instant::now());
             if left.is_zero() {
@@ -240,7 +241,9 @@ impl Executor {
 }
 
 impl Executor {
-    fn refuse(&self) -> MutexGuard<'_, State> {
+    /// Refuses new jobs and releases queued callers without waiting for work
+    /// that already owns its execution. Transport drain can then precede join.
+    pub(crate) fn refuse(&self) {
         let mut state = self.shared.lock();
         state.stopping = true;
         let queued: Vec<_> = state.queues.iter_mut().flat_map(std::mem::take).collect();
@@ -253,7 +256,6 @@ impl Executor {
             }
         }
         self.shared.work.notify_all();
-        state
     }
 }
 
@@ -261,7 +263,7 @@ impl Drop for Executor {
     /// The last owner may be a job on one of the executor's threads, so
     /// dropping refuses work without waiting for it.
     fn drop(&mut self) {
-        drop(self.refuse());
+        self.refuse();
     }
 }
 

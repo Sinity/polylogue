@@ -58,6 +58,10 @@ pub struct Daemon {
 }
 
 impl Daemon {
+    pub(crate) fn is_stopping(&self) -> bool {
+        self.stopping.load(Ordering::Acquire)
+    }
+
     pub(crate) fn cancel_read_on_stop(
         &self,
         read: &polylogue_store::read::limit::ReadCancellation,
@@ -903,7 +907,7 @@ pub struct Runtime {
     pub daemon: Arc<Daemon>,
     pub operations: Arc<command_surface::OperationTable>,
     signals_stop: Option<Sender<()>>,
-    signals: Option<JoinHandle<()>>,
+    signals: Option<JoinHandle<std::io::Result<()>>>,
     live_evidence_stop: Option<Sender<()>>,
     live_evidence: Option<JoinHandle<()>>,
     /// Records hosted-connection outcomes and runs resumes.
@@ -921,6 +925,29 @@ pub struct Runtime {
 }
 
 impl Runtime {
+    fn start_signals(&mut self) -> std::io::Result<()> {
+        let (stop, stopped) = channel();
+        let daemon = Arc::clone(&self.daemon);
+        let worker_events = self.worker_events.clone();
+        let worker = std::thread::Builder::new()
+            .name("polylogue-signals".into())
+            .spawn(move || {
+                let _exit = super::lifecycle::WorkerExit::new(
+                    worker_events,
+                    "signal worker terminated",
+                    None,
+                );
+                let result = crate::signals::run(daemon, stopped);
+                if let Err(error) = &result {
+                    eprintln!("polylogue: signal worker: {error}");
+                }
+                result
+            })?;
+        self.signals_stop = Some(stop);
+        self.signals = Some(worker);
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) fn signal_stop_for_test(&self) -> Sender<()> {
         self.signals_stop
@@ -937,7 +964,7 @@ impl Runtime {
         if let Some(worker) = self.signals.take() {
             worker
                 .join()
-                .map_err(|_| std::io::Error::other("signal worker panicked"))?;
+                .map_err(|_| std::io::Error::other("signal worker panicked"))??;
         }
         Ok(())
     }
@@ -948,6 +975,10 @@ impl Runtime {
     /// usual.
     pub fn stop_accepting(&self) {
         self.daemon.stopping.store(true, Ordering::Release);
+        self.daemon.executor.refuse();
+        if let Some(stop) = &self.signals_stop {
+            let _ = stop.send(());
+        }
         if let Some(stop) = &self.engine_stop {
             stop.request();
         }
@@ -1049,10 +1080,13 @@ impl Runtime {
                 failure.get_or_insert_with(|| std::io::Error::other("acts worker panicked"));
             }
         }
-        if let Some(signals) = self.signals.take()
-            && signals.join().is_err()
-        {
-            failure.get_or_insert_with(|| std::io::Error::other("signal worker panicked"));
+        if let Some(signals) = self.signals.take() {
+            let result = signals
+                .join()
+                .unwrap_or_else(|_| Err(std::io::Error::other("signal worker panicked")));
+            if let Err(error) = result {
+                failure.get_or_insert(error);
+            }
         }
         if let Ok(tx) = self.daemon.loop_tx.lock() {
             let _ = tx.send(LoopMsg::Stop);
@@ -1403,22 +1437,7 @@ pub fn start(
     wait.recv()
         .map_err(|_| std::io::Error::other("loop thread exited during startup"))?
         .map_err(std::io::Error::other)?;
-    let (stop, stopped) = channel();
-    runtime.signals_stop = Some(stop);
-    let daemon = Arc::clone(&runtime.daemon);
-    let worker_events = runtime.worker_events.clone();
-    runtime.signals = Some(
-        std::thread::Builder::new()
-            .name("polylogue-signals".into())
-            .spawn(move || {
-                let _exit = super::lifecycle::WorkerExit::new(
-                    worker_events,
-                    "signal worker terminated",
-                    None,
-                );
-                crate::signals::run(daemon, stopped)
-            })?,
-    );
+    runtime.start_signals()?;
     let (stop, stopped) = channel();
     runtime.live_evidence_stop = Some(stop);
     let daemon = Arc::clone(&runtime.daemon);
