@@ -538,11 +538,7 @@ impl Writer {
             users,
             // Both open the installed index, once a build has ended.
             search: Search::start(installed.clone(), !building)?,
-            derive: derive_thread::DeriveThread::start(
-                installed,
-                queue.clone(),
-                stop.child(),
-            )?,
+            derive: derive_thread::DeriveThread::start(installed, queue.clone(), stop.child())?,
             location: archive.clone(),
             sinex,
             stream_error: None,
