@@ -142,7 +142,7 @@ pub(crate) fn named_definitions(
             &name,
             pending,
         )?
-        .map(|found| found.value.id)
+        .map(|found| found.id)
         .or_else(|| {
             provisional.and_then(|prepared| {
                 let mut matching = prepared
@@ -297,7 +297,6 @@ fn retained_bindings(
         &hash.to_string(),
         pending,
     )?
-    .map(|found| found.value)
     .or_else(|| provisional.and_then(|prepared| prepared.object(hash).cloned()));
     let Some(object) = object else {
         return Ok(None);

@@ -500,7 +500,7 @@ pub(crate) fn lookup_run(
                 {
                     validate_run(run)?;
                     if let Some(existing) = &found {
-                        if existing != **run {
+                        if *existing != **run {
                             return Err(StoreError::Conflict(format!("run:{id}")));
                         }
                     } else {
@@ -621,7 +621,7 @@ impl Reader<'_> {
                         {
                             validate_run_outcome(outcome)?;
                             if let Some(existing) = &found {
-                                if existing != **outcome {
+                                if *existing != **outcome {
                                     return Err(StoreError::Conflict(format!("run outcome:{id}")));
                                 }
                             } else {
