@@ -1311,7 +1311,8 @@ fn read_entries(
 /// The first row of a message unit: what the message's later entries take
 /// from it.
 struct MessageStart {
-    id: MessageId,
+    /// Parsed only when a later entry or the row itself is decoded.
+    id: String,
     entry: Vec<u8>,
     call_id: Option<String>,
 }
@@ -1374,7 +1375,7 @@ impl<'c> Run<'c> {
                 self.starts.insert(
                     seq,
                     Some(MessageStart {
-                        id: message_id(&id)?,
+                        id,
                         entry: row.get(2)?,
                         call_id: row.get(3)?,
                     }),
@@ -1451,7 +1452,7 @@ impl<'c> Run<'c> {
             };
             vacant.insert(decode(
                 &message.entry,
-                Owner::Message(message.id.clone()),
+                Owner::Message(message_id(&message.id)?),
                 message.call_id.clone(),
             )?);
         }
@@ -1480,14 +1481,8 @@ impl<'c> Run<'c> {
                 "session item {seq} follows no message header"
             )));
         };
-        self.starts.insert(
-            start,
-            Some(MessageStart {
-                id: message_id(&id)?,
-                entry,
-                call_id,
-            }),
-        );
+        self.starts
+            .insert(start, Some(MessageStart { id, entry, call_id }));
         Ok(start)
     }
 }
