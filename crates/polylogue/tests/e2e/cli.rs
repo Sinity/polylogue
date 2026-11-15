@@ -192,7 +192,13 @@ pub(super) fn wait_rows(
             Some(i32::from(answer.exit_code())),
             "{out:?}"
         );
-        if !matches!(&answer.outcome, command_surface::Outcome::Degraded { .. }) {
+        // Reads answer `index_building` until the daemon's first build is
+        // installed (docs/operations.md, Replacing an index from another schema).
+        let building = matches!(
+            &answer.outcome,
+            command_surface::Outcome::Error(failure) if failure.code.as_deref() == Some("index_building")
+        );
+        if !building && !matches!(&answer.outcome, command_surface::Outcome::Degraded { .. }) {
             let rows = query_rows(&out);
             if ready(&rows) {
                 return rows;
