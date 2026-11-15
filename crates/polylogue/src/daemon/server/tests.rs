@@ -168,7 +168,11 @@ fn listener_quiescence_is_observable_before_joining_clients() {
         daemon.reads.reader(),
         Err(polylogue_store::StoreError::Stopped)
     ));
-    assert_eq!(reader.query("SELECT 42 AS n", &[]).unwrap()[0]["n"], 42);
+    // A reader held across the stop ends with it.
+    assert!(matches!(
+        reader.query("SELECT 42 AS n", &[]),
+        Err(polylogue_store::StoreError::Stopped)
+    ));
 }
 
 #[test]

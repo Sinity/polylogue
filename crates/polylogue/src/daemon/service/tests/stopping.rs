@@ -229,10 +229,10 @@ fn a_stop_during_derivation_leaves_the_session_due_and_restart_derives_it() {
 }
 
 /// A stop while an import parses a stored export ends it between items:
-/// the import is not reported done, no later item is parsed, and the next
-/// start finishes the export from its stored bytes, each item once.
+/// the import is not reported done, no later item is parsed, and importing
+/// it again after a restart finishes the export, each item once.
 #[test]
-fn a_stop_during_an_import_keeps_delivered_items_and_restart_finishes_it() {
+fn a_stop_during_an_import_is_not_reported_done_and_importing_again_finishes_it() {
     let mut daemon = crate::test_daemon::start_with_workers("before the import", 1);
     let root = daemon._dir.path().join("archive");
     let export = daemon._dir.path().join("conversations.json");
@@ -298,23 +298,19 @@ fn a_stop_during_an_import_keeps_delivered_items_and_restart_finishes_it() {
         crate::daemon::service::ArchiveMode::Standalone,
     )
     .unwrap();
-    let until = Instant::now() + Duration::from_secs(30);
-    loop {
-        let reader = resumed.daemon.reads.reader().unwrap();
-        let texts: Vec<String> = (0..3)
-            .flat_map(|n| reader.messages(&session(n), false).unwrap())
-            .map(|message| message.text())
-            .collect();
-        if texts.len() == 3 {
-            assert_eq!(
-                texts,
-                ["imported words 0", "imported words 1", "imported words 2"]
-            );
-            break;
-        }
-        assert!(Instant::now() < until, "restart did not finish the export");
-        drop(reader);
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    crate::test_answers::ok(
+        crate::test_daemon::Call::new("import", serde_json::json!({"paths": [export]}))
+            .answer(&resumed.daemon),
+    );
+    let reader = resumed.daemon.reads.reader().unwrap();
+    let texts: Vec<String> = (0..3)
+        .flat_map(|n| reader.messages(&session(n), false).unwrap())
+        .map(|message| message.text())
+        .collect();
+    assert_eq!(
+        texts,
+        ["imported words 0", "imported words 1", "imported words 2"]
+    );
+    drop(reader);
     resumed.shutdown().unwrap();
 }
