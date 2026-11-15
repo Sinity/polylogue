@@ -81,10 +81,16 @@ fn set_aside_and_rebuild(change: &str, reason: IndexRebuildReason) {
     let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
     let build = schema::build_index_identity(false).unwrap();
     assert_ne!(previous, build, "{change}");
-    // The old index waits beside the build, with the write-ahead log it left.
+    // The old index waits beside the build, with the write-ahead log it
+    // left; checking whether it can be served opened its shared memory.
     assert_eq!(
         build_files(dir.path()),
-        vec!["index.db", "previous.db", "previous.db-wal"],
+        vec![
+            "index.db",
+            "previous.db",
+            "previous.db-shm",
+            "previous.db-wal"
+        ],
         "{change}"
     );
     let old = open_read(&dir.path().join("index-build/previous.db")).unwrap();
