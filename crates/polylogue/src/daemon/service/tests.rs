@@ -297,7 +297,14 @@ fn stopping_releases_requests_waiting_for_a_full_pool_before_workers_or_running_
     )
     .unwrap();
     let daemon = Arc::clone(&runtime.daemon);
-    let reader = daemon.reads.reader().unwrap();
+    // Reads answer `index_building` until the first pass installs the index
+    // (docs/operations.md, Replacing an index from another schema).
+    let reader = loop {
+        match daemon.reads.reader() {
+            Err(polylogue_store::StoreError::IndexBuilding(_)) => std::thread::yield_now(),
+            reader => break reader.unwrap(),
+        }
+    };
     assert_eq!(reader.query("SELECT 42 AS n", &[]).unwrap()[0]["n"], 42);
     let mut requests = Vec::new();
     let entered = Arc::new(std::sync::Barrier::new(9));

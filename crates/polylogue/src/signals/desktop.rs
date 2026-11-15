@@ -85,7 +85,9 @@ pub(super) async fn run(d: Arc<Daemon>, stop: CancellationToken) -> Result<(), H
     let (changed, mut changes) = mpsc::channel(1);
     #[cfg(test)]
     let trace_daemon = Arc::clone(&d);
+    let archive = d.archive.clone();
     let bridge = tokio::task::spawn_blocking(move || {
+        let mut building = archive.index_build().is_some();
         while !stopped.load(std::sync::atomic::Ordering::Acquire) {
             let Ok(committed) = commits.recv() else {
                 break;
@@ -103,7 +105,11 @@ pub(super) async fn run(d: Arc<Daemon>, stop: CancellationToken) -> Result<(), H
             // content, but every rule is held until its closure is proven
             // (`rules::definition`), so while none runs, a commit of content
             // or of a read's run record changes nothing a tick reads.
-            if !committed.authored {
+            // Installing a built index is a content commit, but it is the
+            // first commit after which a tick can read anything.
+            let installed = building && archive.index_build().is_none();
+            building = archive.index_build().is_some();
+            if !committed.authored && !installed {
                 #[cfg(test)]
                 super::observations::emit(&trace_daemon, super::observations::Phase::CueIgnored);
                 continue;
