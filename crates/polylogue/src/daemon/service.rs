@@ -144,6 +144,10 @@ impl Daemon {
                     },
                 )
                 .map_err(|failure| failure.error)?;
+        } else if let crate::commands::Run::Feed { registration, .. } = command.run {
+            registration
+                .admit(request)
+                .map_err(|failure| failure.error)?;
         }
         if description.spec.http_route.is_none() {
             return Err(Failure::new(

@@ -254,6 +254,7 @@ pub(crate) const fn streams<H: Streams>() -> Registration {
 pub struct FeedRegistration {
     produce: ProduceFeed,
     declare: fn(&mut DeclarationsBuilder, &'static Command),
+    admit: fn(&command_surface::RunnableRequest) -> Result<(), Failure>,
 }
 
 type ProduceFeed = fn(&Value, &Daemon, &Arc<Context>, &mut dyn Write) -> Result<(), Failure>;
@@ -262,6 +263,7 @@ pub(crate) const fn feed<F: Feed>() -> FeedRegistration {
     FeedRegistration {
         produce: produce_feed::<F>,
         declare: declare_feed::<F>,
+        admit: admit_feed::<F>,
     }
 }
 
@@ -336,6 +338,14 @@ impl Registration {
 }
 
 impl FeedRegistration {
+    /// Check the canonical envelope and the feed's own typed arguments before
+    /// opening a stream. Feed positions live in those arguments, not page
+    /// cursors. Feeds emit their own event format and do not prepare context
+    /// under a token budget or refresh the archive.
+    pub(crate) fn admit(&self, request: &command_surface::RunnableRequest) -> Result<(), Failure> {
+        (self.admit)(request)
+    }
+
     pub(crate) fn produce(
         &self,
         arguments: &Value,
@@ -406,6 +416,25 @@ fn answer_local<H: Handler>(
         Some(error) => Failure::new("internal", error).answer(),
         None => serialized.map(|value| value.expect("serialized without a problem")),
     }
+}
+
+fn admit_feed<F: Feed>(request: &command_surface::RunnableRequest) -> Result<(), Failure> {
+    if request.request_id.is_empty() {
+        return Err(Failure::new("bad_request", "request_id must not be empty"));
+    }
+    if !request.arguments.is_object() {
+        return Err(Failure::new("bad_request", "arguments must be an object"));
+    }
+    if let Some(option) = command_surface::RequestOption::ALL
+        .into_iter()
+        .find(|option| option.used_by(request))
+    {
+        return Err(Failure::new(
+            "bad_request",
+            format!("{} does not take {}", request.operation, option.name()),
+        ));
+    }
+    decode::<F::Arguments>(&request.arguments).map(drop)
 }
 
 fn admit<H: Handler>(

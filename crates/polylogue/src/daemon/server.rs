@@ -204,6 +204,12 @@ fn serve_client(stream: UnixStream, shared: &Shared) {
             continue;
         };
         if let crate::commands::Run::Feed { registration, .. } = command.run {
+            if let Err(failure) = registration.admit(&request) {
+                if !write_answer(&mut out, &failure.answer()) {
+                    return;
+                }
+                continue;
+            }
             let limit = stream_limit(&request, command, true, &accepted, &cancellation);
             let arguments = request.arguments.clone();
             if !send_stream(

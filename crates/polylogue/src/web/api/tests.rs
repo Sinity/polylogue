@@ -1,3 +1,4 @@
+mod feeds;
 use super::*;
 use crate::daemon::{Failure, service::Daemon};
 use std::io::Write;

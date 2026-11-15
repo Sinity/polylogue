@@ -1,6 +1,7 @@
 //! Each operation is declared once with its handler; every surface reaches
 //! the same typed handler. Ported case by case from the tests of the
 //! typed adapters this module replaces.
+mod feeds;
 use super::*;
 use crate::commands::{COMMANDS, Cli};
 use serde_json::json;

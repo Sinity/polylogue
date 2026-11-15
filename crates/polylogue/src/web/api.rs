@@ -40,27 +40,13 @@ pub fn routes() -> Router<Arc<Web>> {
                     move |State(web): State<Arc<Web>>,
                           Query(pairs): Query<Vec<(String, String)>>,
                           headers: HeaderMap| async move {
-                        let request = match c.run {
-                            // A stream the shared declarations do not hold
-                            // takes its pairs as text arguments.
-                            Run::Feed { .. } => Ok(crate::client::request(
+                        let request = crate::commands::declarations()
+                            .parse_http_query(
                                 c.name,
-                                serde_json::Value::Object(
-                                    pairs
-                                        .into_iter()
-                                        .map(|(key, value)| (key, serde_json::Value::String(value)))
-                                        .collect(),
-                                ),
+                                &pairs,
                                 polylogue_store::user_writes::new_request_id(),
-                            )),
-                            _ => crate::commands::declarations()
-                                .parse_http_query(
-                                    c.name,
-                                    &pairs,
-                                    polylogue_store::user_writes::new_request_id(),
-                                )
-                                .map_err(|failure| failure.message),
-                        };
+                            )
+                            .map_err(|failure| failure.message);
                         answer(&web, c, request, &headers).await
                     },
                 ),
@@ -143,6 +129,9 @@ async fn answer(
     let registration = match c.run {
         Run::Daemon(registration) | Run::Delivered { registration, .. } => registration,
         Run::Feed { registration, .. } => {
+            if let Err(failure) = registration.admit(&request) {
+                return json_answer(web, failure.answer::<serde_json::Value>());
+            }
             let limit = stream_limit(&request, true);
             let arguments = request.arguments.clone();
             return stream(

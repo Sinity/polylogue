@@ -329,16 +329,29 @@ fn failed_final_flush_is_an_unknown_delivery_outcome_and_can_replay_from_the_pri
 
 #[test]
 fn feed_refuses_query_page_and_field_flags_instead_of_ignoring_global_arguments() {
+    let root = tempfile::tempdir().unwrap();
+    let engine = crate::test_daemon::engine_config(root.path().join("home"));
+    let startup = crate::config::Startup::for_test(engine, root.path());
     for suffix in [
         vec!["--cursor", "opaque"],
         vec!["--fields", "ref"],
         vec!["--why"],
+        vec!["--budget", "none"],
     ] {
         let mut argv = vec!["polylogue", "changes"];
         argv.extend(suffix);
-        let (_, values) = crate::cli::parse(&argv).unwrap();
-        assert!(request(&values).is_err(), "{argv:?}");
+        let matches = crate::cli::command().try_get_matches_from(&argv).unwrap();
+        assert_eq!(
+            crate::cli::run(&matches, &startup, root.path()),
+            ExitCode::from(2),
+            "{argv:?}"
+        );
+        assert!(!startup.config.archive.join("daemon.sock").exists());
     }
+    let error = crate::cli::command()
+        .try_get_matches_from(["polylogue", "changes", "--fresh"])
+        .unwrap_err();
+    assert_eq!(error.exit_code(), 2);
 }
 
 fn request(v: &command_surface::ParsedCommand) -> Result<command_surface::RunnableRequest, String> {

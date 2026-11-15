@@ -494,7 +494,17 @@ pub fn run(
         }
     }
     let call = &values.request;
-    if let Run::Delivered { deliver, .. } | Run::Feed { deliver, .. } = cmd.run {
+    if let Run::Feed {
+        registration,
+        deliver,
+    } = cmd.run
+    {
+        if let Err(failure) = registration.admit(call) {
+            return fail(policy, json, "bad_request", &failure.error.message, 2);
+        }
+        return deliver(&values, startup, call);
+    }
+    if let Run::Delivered { deliver, .. } = cmd.run {
         return deliver(&values, startup, call);
     }
     let root = startup.config.archive.clone();
