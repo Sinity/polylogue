@@ -42,6 +42,10 @@ pub struct Archive {
     sinex_store: Option<PathBuf>,
     primary: bool,
     pub(crate) read_scope: std::sync::Arc<crate::read::scope::ReadScopeState>,
+    /// The stop request of the process using this archive. Every reader the
+    /// store hands out, the writer's long work and the engine's loop observe
+    /// it; clones share it.
+    stop: crate::cancellation::Cancellation,
 }
 
 /// Held by the daemon for as long as it runs. Only the holder writes.
@@ -51,6 +55,24 @@ pub struct ArchiveLock {
 }
 
 impl Archive {
+    /// The stop request of the process using this archive: cancelling it
+    /// ends every read, wait and reconstructible write made through it with
+    /// [`StoreError::Stopped`](crate::StoreError::Stopped). Requests derive
+    /// their own cancellation from it with [`Cancellation::child`](crate::cancellation::Cancellation::child).
+    pub fn stop(&self) -> &crate::cancellation::Cancellation {
+        &self.stop
+    }
+
+    /// This archive as a new process would open it, with a stop request of
+    /// its own: a test's restart after a stop.
+    #[cfg(any(test, feature = "fixture"))]
+    pub fn reopened(&self) -> Self {
+        Self {
+            stop: crate::cancellation::Cancellation::stop_request(),
+            ..self.clone()
+        }
+    }
+
     /// Resolve existing ancestors even before this archive's directory exists.
     pub fn resolved_root(root: &Path) -> PathBuf {
         crate::read::scope::root_key(root)
@@ -148,6 +170,7 @@ impl Archive {
             sinex_store: None,
             primary: false,
             read_scope: crate::read::scope::state(root),
+            stop: crate::cancellation::Cancellation::stop_request(),
         }
     }
 
@@ -159,6 +182,7 @@ impl Archive {
             sinex_store: Some(store.to_path_buf()),
             primary: true,
             read_scope: crate::read::scope::state(root),
+            stop: crate::cancellation::Cancellation::stop_request(),
         }
     }
 
@@ -244,6 +268,7 @@ impl Archive {
             sinex_store: None,
             primary: true,
             read_scope: crate::read::scope::state(root),
+            stop: crate::cancellation::Cancellation::stop_request(),
         }
     }
 
@@ -556,9 +581,7 @@ pub fn open_read(path: &Path) -> Result<Connection> {
         true,
     )?;
     conn.busy_timeout(std::time::Duration::from_secs(30))?;
-    if let Some(limit) = crate::read::limit::ReadLimit::current() {
-        limit.install(&conn)?;
-    }
+    crate::read::limit::ReadLimit::observe_current(&conn)?;
     // One-off readers use the setup allocation; pools override both databases
     // from their aggregate budget after attaching archive.db.
     conn.pragma_update(None, "cache_size", -(cache::SETUP * 1024))?;

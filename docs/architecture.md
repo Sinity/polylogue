@@ -224,7 +224,21 @@ replacement is the exception: it commits once, because readers must see
 either the old reading or the new one. Between transactions the writer starts
 a write-ahead log over once it passes its checkpoint size (about 1 GB),
 waiting briefly for readers still reading it, so the log stays bounded while
-readers follow every commit. The pipeline's database connections do not checkpoint on close. A requested stop skips optional checkpoint work and leaves committed WAL frames beside their databases; normal commit syncing is unchanged, and the next open reads those frames.
+readers follow every commit. The pipeline's database connections do not checkpoint on close.
+
+**Stopping.** A process has one stop request, carried by the archive it
+opened; the daemon makes it on `SIGTERM`. Each request's cancellation is a
+child of it. Every reader the store hands out checks it in its SQLite
+progress handler and every blocking wait registers a wake on it; the loop and
+its workers run under it, so the store connections opened there, their
+source-byte reads and their parsing steps observe it; the writer's
+reconstructible work (derivation, deferred indexes, replay of retained bytes,
+copies of identical chains' readings) rolls back to its last commit. Captured
+bytes in hand and writes already handed to the writer commit. A stop skips
+optional checkpoint work and leaves committed WAL frames beside their
+databases; normal commit syncing is unchanged, and the next open reads those
+frames and resumes from committed positions
+([operations](operations.md#the-daemon)).
 
 **Targets**, on the full corpus of an active user (about 40 GB): at least
 40 MB/s; searchable in about 25 minutes; at most 0.6 bytes written per input

@@ -72,7 +72,7 @@ fn stopping_retained_byte_replay_rolls_back_the_index_and_restart_replays_it() {
         };
         let sender = w.writer.sender().unwrap();
         let store = Arc::new(w.archive.blobs().unwrap());
-        let stop = w.writer.stop_handle();
+        let stop = w.archive.stop().clone();
         crate::fault::arm("write.replay_rows", "", crate::fault::Action::Hold, 0, 1);
         let (done, finished) = sync_channel(1);
         let worker = std::thread::spawn(move || {
@@ -95,14 +95,14 @@ fn stopping_retained_byte_replay_rolls_back_the_index_and_restart_replays_it() {
                     )
                     .unwrap()
                     .into_iter()
-                    .all(|result| matches!(result, Err(StoreError::WriteCancelled))),
+                    .all(|result| matches!(result, Err(StoreError::Stopped))),
                 _ => {
                     let mut b = b;
                     let mut reading = ChainReading::new().unwrap();
                     reading.push(&mut b.parse[0]).unwrap();
                     matches!(
                         sender.replace_chain(b.input, 1, b.length, reading),
-                        Err(StoreError::WriteCancelled)
+                        Err(StoreError::Stopped)
                     )
                 }
             };
@@ -116,7 +116,7 @@ fn stopping_retained_byte_replay_rolls_back_the_index_and_restart_replays_it() {
             );
             std::thread::yield_now();
         }
-        stop.request();
+        stop.cancel();
         crate::fault::release();
         assert_eq!(
             finished.recv_timeout(std::time::Duration::from_secs(5)),
@@ -125,7 +125,7 @@ fn stopping_retained_byte_replay_rolls_back_the_index_and_restart_replays_it() {
         );
         worker.join().unwrap();
         crate::fault::clear();
-        let reads = ReadPool::open(&w.archive).unwrap();
+        let reads = ReadPool::open(&w.archive.reopened()).unwrap();
         let r = reads.reader().unwrap();
         if let Some(blob) = decoded {
             assert_eq!(
@@ -167,6 +167,8 @@ fn stopping_retained_byte_replay_rolls_back_the_index_and_restart_replays_it() {
             _dir,
         } = w;
         drop(writer);
+        // The next start is a new process, with its own stop request.
+        let archive = archive.reopened();
         let writer = Writer::start(&archive).unwrap();
         writer.send(b).unwrap();
         let report = writer.flush().unwrap();
@@ -200,10 +202,10 @@ fn stopping_still_commits_an_explicit_parse_failure() {
         reason: "declared source is invalid".into(),
     };
     b.parse = vec![step];
-    w.writer.stop_handle().request();
+    w.archive.stop().cancel();
     w.writer.send(b).unwrap();
     assert!(w.writer.flush_rows().unwrap().errors.is_empty());
-    let reads = ReadPool::open(&w.archive).unwrap();
+    let reads = ReadPool::open(&w.archive.reopened()).unwrap();
     let r = reads.reader().unwrap();
     assert_eq!(
         r.query("SELECT status,reason,parsed_upto FROM parse_state", &[])
@@ -308,7 +310,7 @@ fn a_diagnosed_member_does_not_keep_other_replays_running_during_stop() {
                         store,
                     )
                     .unwrap();
-                matches!(results.first(), Some(Err(StoreError::WriteCancelled)))
+                matches!(results.first(), Some(Err(StoreError::Stopped)))
                     && matches!(results.get(1), Some(Ok(_)))
             } else {
                 sender.send(normal).unwrap();
@@ -328,7 +330,7 @@ fn a_diagnosed_member_does_not_keep_other_replays_running_during_stop() {
             );
             std::thread::yield_now();
         }
-        w.writer.stop_handle().request();
+        w.archive.stop().cancel();
         crate::fault::release();
         assert_eq!(
             finished.recv_timeout(std::time::Duration::from_secs(5)),
@@ -337,7 +339,7 @@ fn a_diagnosed_member_does_not_keep_other_replays_running_during_stop() {
         );
         worker.join().unwrap();
         crate::fault::clear();
-        let reads = ReadPool::open(&w.archive).unwrap();
+        let reads = ReadPool::open(&w.archive.reopened()).unwrap();
         let r = reads.reader().unwrap();
         assert_eq!(
             r.messages(&sid("s"), false)

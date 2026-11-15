@@ -5,12 +5,12 @@ use super::*;
 /// Unlike a read limit, it carries no SQL stages, counters, or archive scopes.
 pub struct ParentLifetime {
     deadline: Option<std::time::Instant>,
-    cancellation: crate::read::limit::ReadCancellation,
+    cancellation: crate::cancellation::Cancellation,
 }
 impl ParentLifetime {
     pub fn capture(
         deadline: Option<std::time::Instant>,
-        cancellation: crate::read::limit::ReadCancellation,
+        cancellation: crate::cancellation::Cancellation,
     ) -> Arc<Self> {
         Arc::new(Self {
             deadline,
@@ -19,15 +19,28 @@ impl ParentLifetime {
     }
     pub fn read_limit(
         &self,
-        cancellation: crate::read::limit::ReadCancellation,
+        cancellation: crate::cancellation::Cancellation,
     ) -> crate::read::limit::ReadLimit {
         match self.deadline {
             Some(deadline) => crate::read::limit::ReadLimit::at(deadline, cancellation),
             None => crate::read::limit::ReadLimit::without_deadline(cancellation),
         }
     }
+    /// Whether the producer still waits for this operation. The process's
+    /// stop does not withdraw it: the writer finishes what it was handed
+    /// before it exits.
     pub fn check(&self) -> Result<()> {
-        self.read_limit(self.cancellation.clone()).check()
+        match self.cancellation.check() {
+            Ok(()) | Err(StoreError::Stopped) => {}
+            Err(error) => return Err(error),
+        }
+        if self
+            .deadline
+            .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+        {
+            return Err(StoreError::ReadDeadlineExceeded);
+        }
+        Ok(())
     }
 }
 

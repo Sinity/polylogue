@@ -617,6 +617,8 @@ pub(crate) fn parse_export(
         first = false;
     }
     while let Some(ExportRecord { range, bytes }) = next {
+        // A stop ends a long export between items; what was delivered stays.
+        polylogue_store::cancellation::check_current()?;
         polylogue_store::fault::check("parse", &plan.path.to_string_lossy())?;
         let mut state = StateLookup {
             items: &mut scratch,

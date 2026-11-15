@@ -110,6 +110,7 @@ fn start_on(
     };
     let directory = daemon.config.paths.runtime_dir(&daemon.archive.root);
     let uid = access::my_uid().ok_or_else(|| std::io::Error::other("cannot read this uid"))?;
+    let stop_request = daemon.archive.stop().clone();
     let web = Arc::new(Web {
         daemon,
         operations,
@@ -129,7 +130,7 @@ fn start_on(
     server.thread = Some(std::thread::Builder::new().name("polylogue-http".into()).spawn(move || {
         runtime.block_on(async move {
             tokio::select! {
-                result = axum::serve(OwnerListener { inner: listener, uid }, router(web).into_make_service_with_connect_info::<connection::Peer>()).into_future() => result,
+                result = axum::serve(OwnerListener { inner: listener, uid, stop: stop_request }, router(web).into_make_service_with_connect_info::<connection::Peer>()).into_future() => result,
                 _ = stopped => Ok(()),
             }
         })
@@ -145,6 +146,8 @@ fn start_on(
 struct OwnerListener {
     inner: tokio::net::TcpListener,
     uid: u32,
+    /// The archive's stop request; each connection's requests derive from it.
+    stop: polylogue_store::cancellation::Cancellation,
 }
 
 impl axum::serve::Listener for OwnerListener {
@@ -161,7 +164,7 @@ impl axum::serve::Listener for OwnerListener {
                 continue;
             };
             if access::socket_owner(peer, server) == Some(self.uid)
-                && let Ok(connection) = connection::Connection::new(stream)
+                && let Ok(connection) = connection::Connection::new(stream, self.stop.child())
             {
                 return (connection, peer);
             }
@@ -251,15 +254,17 @@ async fn guarded(web: Arc<Web>, req: HttpRequest, next: Next) -> HttpResponse {
 }
 
 tokio::task_local! {
-    static READ_LIMIT: (Option<std::time::Instant>, polylogue_store::read::limit::ReadCancellation);
+    static READ_LIMIT: (Option<std::time::Instant>, polylogue_store::cancellation::Cancellation);
 }
 
 async fn guard(State(web): State<Arc<Web>>, req: HttpRequest, next: Next) -> HttpResponse {
     let cancellation = req
         .extensions()
         .get::<axum::extract::ConnectInfo<connection::Peer>>()
-        .map(|peer| peer.0.0.child())
-        .unwrap_or_default();
+        .map_or_else(
+            || web.daemon.archive.stop().child(),
+            |peer| peer.0.0.child(),
+        );
     let deadline_ms = match req.headers().get("x-polylogue-deadline-ms") {
         Some(value) => match value
             .to_str()
@@ -387,7 +392,7 @@ pub(super) fn parent_lifetime() -> Option<Arc<crate::operation::ParentLifetime>>
         .ok()
 }
 
-pub(super) struct CancelRead(Option<polylogue_store::read::limit::ReadCancellation>);
+pub(super) struct CancelRead(Option<polylogue_store::cancellation::Cancellation>);
 impl Drop for CancelRead {
     fn drop(&mut self) {
         if let Some(cancellation) = &self.0 {

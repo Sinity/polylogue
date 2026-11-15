@@ -13,7 +13,7 @@ use command_surface::{
     Access, Answer, DeclarationsBuilder, FailureKind, JsonSchema, Operation, OperationFuture,
     OperationTable, RequestContext, TextStyle, TokenBudget,
 };
-use polylogue_store::read::limit::{ReadCancellation, ReadLimit};
+use polylogue_store::{cancellation::Cancellation, read::limit::ReadLimit};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::io::Write;
@@ -535,7 +535,7 @@ struct Row<H> {
 }
 
 /// A dropped shared operation cancels its blocking reader before releasing ownership.
-struct CancelRead(ReadCancellation);
+struct CancelRead(Cancellation);
 impl Drop for CancelRead {
     fn drop(&mut self) {
         self.0.cancel();
@@ -603,9 +603,10 @@ impl<H: Handler> Operation for Row<H> {
             let accepted = context
                 .caller()
                 .identity::<crate::protocol::caller::Accepted>();
-            let cancellation = accepted
-                .map(|caller| caller.cancellation.child())
-                .unwrap_or_default();
+            let cancellation = accepted.map_or_else(
+                || self.daemon.archive.stop().child(),
+                |caller| caller.cancellation.child(),
+            );
             let authorship = accepted
                 .map(|caller| caller.authorship.clone())
                 .unwrap_or_else(|| {
@@ -630,10 +631,6 @@ impl<H: Handler> Operation for Row<H> {
                 )
                 && H::default_deadline(&arguments)
                 && H::read_phase(&arguments, self.row, &caller);
-            // This child stops reads without revoking the producing parent
-            // that already handed a durable write to the writer.
-            let _stopping_read = H::read_phase(&arguments, self.row, &caller)
-                .then(|| self.daemon.cancel_read_on_stop(&cancellation));
             let guard = CancelRead(cancellation.clone());
             let daemon = Arc::clone(&self.daemon);
             let row = self.row;

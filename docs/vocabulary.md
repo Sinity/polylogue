@@ -262,6 +262,10 @@ generated page of the thing they belong to, or on the area page that owns them.
 - **daemon**: the one process on the archive; it holds the lock, runs the
   writer and serves every client.
 - **writer**: the one thread that appends and commits.
+- **stop request**: the one request a process makes to stop, carried by the
+  archive it opened; every read, wait and reconstructible write observes it.
+  A request's **cancellation** (its client hung up, its stream was dropped) is
+  a child of it.
 - **command table**: every operation, once; the CLI, socket, HTTP and MCP are
   generated from it.
 - **failure kind**: a stable name for why an operation failed, mapped to an

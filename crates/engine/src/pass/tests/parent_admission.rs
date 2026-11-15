@@ -17,7 +17,7 @@ fn queued_import_checks_its_captured_parent_before_source_admission() {
         .unwrap();
         std::fs::write(&path, &bytes).unwrap();
         let (mut engine, lock) = open_engine(&home);
-        let cancellation = polylogue_store::read::limit::ReadCancellation::default();
+        let cancellation = polylogue_store::cancellation::Cancellation::default();
         let parent = ParentLifetime::capture(expired.then(Instant::now), cancellation.clone());
         if !expired {
             parent.check().unwrap();

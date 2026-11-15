@@ -245,7 +245,7 @@ impl Inner {
         }) else {
             return results;
         };
-        if parsed.len() > 1 && (independent || matches!(error, StoreError::WriteCancelled)) {
+        if parsed.len() > 1 && (independent || matches!(error, StoreError::Stopped)) {
             for (position, batch) in &parsed {
                 if let Err(error) = crate::timing::time(crate::timing::Stage::Rows, || {
                     self.write(std::iter::once(batch), replay && cancellable_replay(batch))

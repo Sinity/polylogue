@@ -1086,12 +1086,12 @@ fn a_stop_reaches_the_derive_worker_before_writer_teardown() {
     let mut w = WriterArchive::new();
     w.write_underived("a", prose("a", 1, 1_000, "the first session"));
     let sender = w.writer.sender().unwrap();
-    let stop = w.writer.stop_handle();
+    let stop = w.archive.stop().clone();
     let barrier = sender.pause_derive_for_test();
     std::thread::scope(|scope| {
         let deriving = scope.spawn(|| sender.derive());
         barrier.wait().unwrap();
-        stop.request();
+        stop.cancel();
         barrier.release();
         assert!(matches!(
             deriving.join().unwrap(),
@@ -1110,7 +1110,7 @@ fn a_stop_reaches_the_derive_worker_before_writer_teardown() {
     );
     drop(index);
     drop(w.writer);
-    let writer = crate::writer::Writer::start(&w.archive).unwrap();
+    let writer = crate::writer::Writer::start(&w.archive.reopened()).unwrap();
     assert!(writer.derive().unwrap() > 0);
     let index = rusqlite::Connection::open(w.archive.index_db()).unwrap();
     assert_eq!(

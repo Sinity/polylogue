@@ -177,7 +177,7 @@ fn server_run_ids_are_random_v4_and_independent_of_captured_time() {
 #[test]
 fn parent_lifetime_survives_context_conversion_and_replay_without_becoming_public() {
     let at = Timestamp::parse_rfc3339("2026-10-29T08:00:00Z").unwrap();
-    let cancellation = polylogue_store::read::limit::ReadCancellation::default();
+    let cancellation = polylogue_store::cancellation::Cancellation::default();
     let parent = ParentLifetime::capture(None, cancellation.clone());
     let invocation = Invocation::new(at, "fixture".into(), Context::worker_authorship("fixture"))
         .with_parent(Some(parent.clone()));

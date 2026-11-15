@@ -83,11 +83,7 @@ impl Engine {
         let Some(requests) = &mut self.requests else {
             return false;
         };
-        let pending = requests.poll();
-        if matches!(requests.pending.as_ref(), Some(LoopMsg::Stop)) {
-            self.stop.request();
-        }
-        pending
+        requests.poll()
     }
 
     pub(super) fn yielding(&self) -> bool {
@@ -313,9 +309,7 @@ impl Engine {
         {
             self.discard_confirmed_state();
         }
-        let reads =
-            polylogue_store::read::limit::ReadLimit::without_deadline(self.stop.0.reads.clone());
-        let result = reads.scope(|| {
+        let result = (|| {
             let scope = self.cached_scope()?;
             let result = self.read_turn(discover || !self.loaded, paths)?;
             // A completed reset can race the last SQL read. Its cached progress
@@ -329,21 +323,10 @@ impl Engine {
                 return Err(error.into());
             }
             Ok(result)
-        });
-        result.map_err(|error| {
-            if self.stop.requested()
-                && matches!(
-                    error,
-                    EngineError::Store(
-                        polylogue_store::StoreError::ReadCancelled
-                            | polylogue_store::StoreError::WriteCancelled
-                    )
-                )
-            {
-                EngineError::Stopped
-            } else {
-                self.failed_read_turn(error)
-            }
+        })();
+        result.map_err(|error| match error {
+            EngineError::Stopped => EngineError::Stopped,
+            error => self.failed_read_turn(error),
         })
     }
 
@@ -611,7 +594,7 @@ impl Engine {
             pass.seconds = started.elapsed().as_secs_f64();
             return Ok((pass, seen));
         }
-        if self.stop.requested() {
+        if self.archive.stop().is_cancelled() {
             pass.seconds = started.elapsed().as_secs_f64();
             return Ok((pass, seen));
         }
@@ -1570,7 +1553,7 @@ impl Engine {
         let mut ordinary = Vec::new();
         let mut replacements = Vec::new();
         for mut plan in plans {
-            if self.stop.requested() || self.poll_request() {
+            if self.archive.stop().is_cancelled() || self.poll_request() {
                 break;
             }
             self.prepare_raw_plan(&mut plan)?;
@@ -1664,7 +1647,7 @@ impl Engine {
             return Ok(());
         }
         self.replace_readings(replacements, pass)?;
-        if self.stop.requested() {
+        if self.archive.stop().is_cancelled() {
             return Err(EngineError::Stopped);
         }
         Ok(())
@@ -1682,7 +1665,6 @@ impl Engine {
             Arc::clone(&self.blobs),
             self.archive.clone(),
             done_tx,
-            self.stop.clone(),
         );
         // Plans wait here and enter the pool a few at a time, so live inputs
         // that arrive meanwhile can go ahead of what is still waiting.
@@ -1712,7 +1694,7 @@ impl Engine {
                 // chunks already in hand keep their normal commit and ACK.
                 outstanding -= pool.cancel_queued();
             }
-            if !stopping && self.stop.requested() {
+            if !stopping && self.archive.stop().is_cancelled() {
                 // What workers are parsing commits; nothing else starts.
                 stopping = true;
                 waiting.clear();
@@ -2046,11 +2028,6 @@ impl Engine {
         lifetime: Lifetime,
         ready: impl FnOnce(),
     ) -> Result<RunSummary, EngineError> {
-        let busy = |busy: bool| {
-            if let Ok(mut s) = status.lock() {
-                s.busy = busy;
-            }
-        };
         self.watcher = if self.config.reads_sources {
             Some(watch::Roots::new(&self.config, tx.clone())?)
         } else {
@@ -2058,14 +2035,31 @@ impl Engine {
         };
         self.wake = Some(tx.clone());
         self.requests = Some(Requests::new(rx));
-        drop(tx);
+        // The stop request wakes a loop waiting between passes.
+        let stop = self.archive.stop().clone();
+        let _stop_wake = stop.on_cancel(move || {
+            let _ = tx.send(LoopMsg::Stop);
+        });
         ready();
+        polylogue_store::cancellation::under(&stop, || self.run_passes(status, lifetime))
+    }
+
+    fn run_passes(
+        &mut self,
+        status: &Arc<Mutex<LoopStatus>>,
+        lifetime: Lifetime,
+    ) -> Result<RunSummary, EngineError> {
+        let busy = |busy: bool| {
+            if let Ok(mut s) = status.lock() {
+                s.busy = busy;
+            }
+        };
         let mut summary = RunSummary::default();
         let mut discover = true;
         let mut changed = std::collections::BTreeSet::new();
         let mut watch_errors = Vec::new();
         loop {
-            if self.stop.requested() {
+            if self.archive.stop().is_cancelled() {
                 return Ok(self.stopped(summary));
             }
             discover |= self.take_watched(&mut changed, &mut watch_errors);

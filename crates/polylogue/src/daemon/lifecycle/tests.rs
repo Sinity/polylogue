@@ -401,7 +401,7 @@ fn isolated_signal_child() {
                 },
             )
             .await;
-            stop_worker.send(()).unwrap();
+            stop_worker.cancel();
             tokio::time::timeout(Duration::from_secs(5), monitored)
                 .await
                 .expect("worker exit did not wake supervision")

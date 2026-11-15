@@ -150,10 +150,12 @@ async fn drive(
         })();
         let state = match restored {
             Ok(state) => state,
-            // Admission closes the reader pool. A worker starting in that
-            // same stop has no restoration left to perform; corruption and
-            // other failures still retain their original diagnosis.
-            Err(polylogue_store::StoreError::ReadPoolClosed) if d.is_stopping() => return Ok(()),
+            // The stop request ends reads and closes the reader pool. A
+            // worker starting in that same stop has no restoration left to
+            // perform; corruption and other failures keep their diagnosis.
+            Err(
+                polylogue_store::StoreError::Stopped | polylogue_store::StoreError::ReadPoolClosed,
+            ) if d.is_stopping() => return Ok(()),
             Err(error) => return Err(error.to_string().into()),
         };
         let connection = tokio::select! {
@@ -292,67 +294,6 @@ async fn drain_worker(
         }
     }
     failure.map_or(Ok(()), Err)
-}
-
-/// Converts the actual native worker stop channel into asynchronous owner
-/// cancellation. The timeout only lets an already-cancelled owner join this
-/// bridge; receiving a stop or disconnect cancels immediately.
-pub(super) struct StopBridge {
-    cancellation: CancellationToken,
-    thread: Option<std::thread::JoinHandle<()>>,
-}
-impl StopBridge {
-    pub(super) fn new(stopped: std::sync::mpsc::Receiver<()>) -> std::io::Result<Self> {
-        let cancellation = CancellationToken::new();
-        if !matches!(
-            stopped.try_recv(),
-            Err(std::sync::mpsc::TryRecvError::Empty)
-        ) {
-            cancellation.cancel();
-            return Ok(Self {
-                cancellation,
-                thread: None,
-            });
-        }
-        let owner = cancellation.clone();
-        let thread = std::thread::Builder::new()
-            .name("polylogue-signal-stop".into())
-            .spawn(move || {
-                loop {
-                    match stopped.recv_timeout(std::time::Duration::from_millis(100)) {
-                        Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                            owner.cancel();
-                            break;
-                        }
-                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) if owner.is_cancelled() => {
-                            break;
-                        }
-                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-                    }
-                }
-            })?;
-        Ok(Self {
-            cancellation,
-            thread: Some(thread),
-        })
-    }
-    pub(super) fn token(&self) -> CancellationToken {
-        self.cancellation.clone()
-    }
-    pub(super) fn finish(&mut self) -> std::io::Result<()> {
-        self.cancellation.cancel();
-        if let Some(thread) = self.thread.take() {
-            thread
-                .join()
-                .map_err(|_| std::io::Error::other("signal stop bridge panicked"))?;
-        }
-        Ok(())
-    }
-}
-impl Drop for StopBridge {
-    fn drop(&mut self) {
-        let _ = self.finish();
-    }
 }
 
 #[cfg(test)]

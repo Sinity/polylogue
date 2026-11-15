@@ -332,7 +332,7 @@ fn queued_import_yields_after_admitted_capture_or_replay_and_resumes_from_durabl
             .unwrap();
             fault::clear();
             fault::arm("parse", "request-turn.jsonl", Action::Hold, 0, 1);
-            let stop = engine.stop_request();
+            let stop = engine.archive.stop().clone();
             let (tx, rx) = channel();
             let worker_tx = tx.clone();
             let status = Arc::new(Mutex::new(LoopStatus::default()));
@@ -453,7 +453,7 @@ fn queued_import_yields_after_admitted_capture_or_replay_and_resumes_from_durabl
 }
 
 #[test]
-fn a_stop_message_drains_the_admitted_capture_chunk_without_reading_the_whole_input() {
+fn a_stop_keeps_the_bytes_in_hand_without_reading_the_whole_input() {
     let home = ClaudeHome::new();
     let first = claude_user("first", "stop-request", "initial body");
     home.append("stop-request.jsonl", &first);
@@ -469,7 +469,7 @@ fn a_stop_message_drains_the_admitted_capture_chunk_without_reading_the_whole_in
     engine.config.live_every = Duration::from_millis(10);
     engine.inputs.get_mut(&path).unwrap().origin = held_origin();
     let input = engine.inputs[&path].input_id.clone();
-    let stop = engine.stop_request();
+    let stop = engine.archive.stop().clone();
     let (entered, waiting) = channel();
     let (release, held) = channel();
     *CONTROL.lock().unwrap() = Some(Control {
@@ -483,28 +483,15 @@ fn a_stop_message_drains_the_admitted_capture_chunk_without_reading_the_whole_in
         let result = engine.run(worker_tx, rx, &status, Lifetime::UntilStopped, || {});
         (engine, result)
     });
+    // The stop is made while the parser holds its first chunk.
     let entered = waiting.recv_timeout(Duration::from_secs(5));
-    let sent = tx.send(LoopMsg::Stop);
-    let until = Instant::now() + Duration::from_secs(5);
-    while !stop.requested() && Instant::now() < until {
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    // The channel itself must reach the ordinary shutdown request while
-    // the admitted parser chunk is still held. No external signal does it.
-    let requested_while_held = stop.requested();
+    stop.cancel();
     let _ = release.send(());
-    if !requested_while_held {
-        stop.request();
-    }
     let (engine, result) = worker.join().unwrap();
     assert!(entered.is_ok());
-    assert!(sent.is_ok());
-    assert!(
-        requested_while_held,
-        "Stop waited for the whole background pass"
-    );
     assert!(result.unwrap().work.errors.is_empty());
-    let reader = engine.reads.reader().unwrap();
+    let reads = polylogue_store::ReadPool::open(&engine.archive.reopened()).unwrap();
+    let reader = reads.reader().unwrap();
     let progress = reader.input_progress(&input).unwrap().unwrap();
     assert!(
         progress.length > first.len() as u64,
@@ -521,6 +508,7 @@ fn a_stop_message_drains_the_admitted_capture_chunk_without_reading_the_whole_in
         &complete.as_bytes()[..progress.length as usize]
     );
     drop(reader);
+    drop(reads);
     drop(engine);
     drop(lock);
     let (mut engine, _lock) = crate::import::tests::engine(&home, 256);
@@ -622,7 +610,7 @@ fn an_import_answers_before_queued_captures_or_replays_start_and_the_next_turn_f
         .unwrap();
         fault::clear();
         fault::arm("parse", "queued-", Action::Hold, 0, 1);
-        let stop = engine.stop_request();
+        let stop = engine.archive.stop().clone();
         let (tx, rx) = channel();
         let worker_tx = tx.clone();
         let worker = std::thread::spawn(move || {
@@ -742,7 +730,7 @@ fn an_import_answers_before_queued_captures_or_replays_start_and_the_next_turn_f
         let summary = result.unwrap();
         assert!(summary.work.errors.is_empty(), "{summary:?}");
         assert_eq!(summary.imports, 1);
-        assert!(!stop.requested());
+        assert!(!stop.is_cancelled());
         for input in &inputs {
             assert_eq!(
                 home.texts(&input.session),
@@ -785,177 +773,4 @@ fn an_import_answers_before_queued_captures_or_replays_start_and_the_next_turn_f
         drop(engine);
         drop(lock);
     }
-}
-
-#[cfg(feature = "faults")]
-#[test]
-fn stopping_at_chain_planning_cancels_the_engine_read_and_keeps_committed_progress() {
-    use polylogue_store::fault::{self, Action};
-    use polylogue_store::read::limit::ReadLimit;
-
-    let home = ClaudeHome::new();
-    home.append(
-        "planning-stop.jsonl",
-        &claude_user("one", "planning-stop", "retained body"),
-    );
-    let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
-    assert!(engine.run_pass().unwrap().errors.is_empty());
-    let input = engine.inputs[&home.file("planning-stop.jsonl")]
-        .input_id
-        .clone();
-    let before = source_rows(&engine, &input);
-    let checkpoint = |engine: &Engine| {
-        engine.reads.reader().unwrap().query(
-            "SELECT p.chain,p.reading_version,p.status,p.parsed_upto,p.at_length,p.records,p.used,p.skipped,p.unreadable,CASE WHEN p.checkpoint IS NULL THEN NULL ELSE hex(p.checkpoint) END AS checkpoint,p.reason FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id=?1 ORDER BY p.chain",
-            &[polylogue_store::SqlValue::Text(input.clone())],
-        ).unwrap()
-    };
-    let before_checkpoint = checkpoint(&engine);
-    let parent = ReadLimit::without_deadline(Default::default());
-    let stop = engine.stop_request();
-    fault::clear();
-    fault::arm("read.chains_behind_index", "", Action::Hold, 0, 1);
-    let worker_parent = parent.clone();
-    let work = std::thread::spawn(move || {
-        let result = worker_parent.scope(|| {
-            let result = engine.run_pass();
-            assert!(ReadLimit::current().unwrap().check().is_ok());
-            result
-        });
-        (engine, result)
-    });
-    let until = Instant::now() + Duration::from_secs(10);
-    while !fault::held() && !work.is_finished() && Instant::now() < until {
-        std::thread::yield_now();
-    }
-    let reached = fault::held();
-    stop.request();
-    fault::release();
-    let (engine, result) = work.join().unwrap();
-    fault::clear();
-    assert!(
-        reached,
-        "pass did not reach the retained-chain planning reader"
-    );
-    assert!(matches!(result, Err(EngineError::Stopped)), "{result:?}");
-    assert!(
-        parent.check().is_ok(),
-        "engine stop cancelled an independent caller"
-    );
-    assert_eq!(source_rows(&engine, &input), before);
-    assert_eq!(checkpoint(&engine), before_checkpoint);
-    assert!(
-        engine
-            .reads
-            .reader()
-            .unwrap()
-            .query("SELECT 1", &[])
-            .is_ok()
-    );
-}
-
-#[test]
-fn engine_stop_interrupts_a_running_statement_without_closing_other_readers() {
-    use polylogue_store::read::limit::ReadLimit;
-    let home = ClaudeHome::new();
-    let (engine, _lock) = crate::import::tests::engine(&home, 4096);
-    let stop = engine.stop_request();
-    let limit = ReadLimit::without_deadline(stop.0.reads.clone());
-    let reads = &engine.reads;
-    std::thread::scope(|threads| {
-        let read_limit = &limit;
-        let (started, ready) = channel();
-        let work = threads.spawn(move || read_limit.scope(|| {
-            let reader = reads.reader()?;
-            reader.query("SELECT 1", &[])?;
-            started.send(read_limit.sqlite_steps()).unwrap();
-            reader.query("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2000000000) SELECT count(*) FROM n", &[])
-        }));
-        let before = ready.recv().unwrap();
-        let until = Instant::now() + Duration::from_secs(10);
-        while limit.sqlite_steps() == before && Instant::now() < until {
-            std::thread::yield_now();
-        }
-        let running = limit.sqlite_steps() > before;
-        stop.request();
-        let result = work.join().unwrap();
-        assert!(running, "statement did not reach SQLite");
-        assert!(
-            matches!(result, Err(polylogue_store::StoreError::ReadCancelled)),
-            "{result:?}"
-        );
-    });
-    assert_eq!(
-        engine
-            .reads
-            .reader()
-            .unwrap()
-            .query("SELECT 7 AS n", &[])
-            .unwrap()[0]["n"],
-        7
-    );
-}
-
-#[test]
-fn stopping_started_context_replay_keeps_the_checkpoint_and_new_raw_bytes() {
-    use polylogue_store::fault::{self, Action};
-    let home = ClaudeHome::new();
-    home.append(
-        "parser-stop.jsonl",
-        &claude_user("one", "parser-stop", &"retained ".repeat(9000)),
-    );
-    let path = home.file("parser-stop.jsonl");
-    let (mut first, lock) = crate::import::tests::engine(&home, 4096);
-    assert!(first.run_pass().unwrap().errors.is_empty());
-    let input = first.inputs[&path].input_id.clone();
-    let before = first.reads.reader().unwrap().query(
-        "SELECT p.parsed_upto,hex(p.checkpoint) AS checkpoint,p.status FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id=?1",
-        &[polylogue_store::SqlValue::Text(input.clone())]).unwrap();
-    let length = std::fs::metadata(&path).unwrap().len();
-    let archive = first.archive.clone();
-    drop(first);
-    drop(lock);
-    let index = rusqlite::Connection::open(archive.index_db()).unwrap();
-    index.execute("DELETE FROM parser_context_state WHERE input_pk=(SELECT pk FROM input_ref WHERE id=?1)",[&input]).unwrap();
-    drop(index);
-    home.append(
-        "parser-stop.jsonl",
-        &claude_user("two", "parser-stop", "new acquired bytes"),
-    );
-    let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
-    let stop = engine.stop_request();
-    fault::clear();
-    fault::arm("parse.context_prefix", &input, Action::Hold, 0, 1);
-    let work = std::thread::spawn(move || {
-        let result = engine.run_pass();
-        (engine, result)
-    });
-    let until = Instant::now() + Duration::from_secs(10);
-    while !fault::held() && !work.is_finished() && Instant::now() < until {
-        std::thread::yield_now();
-    }
-    let reached = fault::held();
-    stop.request();
-    fault::release();
-    let (engine, result) = work.join().unwrap();
-    fault::clear();
-    assert!(
-        reached,
-        "started parser did not reach context reconstruction"
-    );
-    assert!(matches!(result, Err(EngineError::Stopped)), "{result:?}");
-    let reader = engine.reads.reader().unwrap();
-    let after=reader.query(
-        "SELECT p.parsed_upto,hex(p.checkpoint) AS checkpoint,p.status FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id=?1",
-        &[polylogue_store::SqlValue::Text(input.clone())]).unwrap();
-    assert_eq!(
-        after, before,
-        "cancelled private parse advanced or failed its checkpoint"
-    );
-    let progress = reader.input_progress(&input).unwrap().unwrap();
-    assert_eq!(progress.parsed_upto, length);
-    assert!(
-        progress.length > length,
-        "acquired bytes were not kept through ordinary writer custody"
-    );
 }

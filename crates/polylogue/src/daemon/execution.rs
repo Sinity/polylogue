@@ -1,7 +1,7 @@
 //! Request deadlines and transport cancellation. Only read work is interrupted;
 //! a committed write keeps its ordinary result.
 use command_surface::Answer;
-use polylogue_store::read::limit::{ReadCancellation, ReadLimit};
+use polylogue_store::{cancellation::Cancellation, read::limit::ReadLimit};
 use std::time::Duration;
 
 pub const DEFAULT_READ_TIMEOUT_MS: u64 = 30_000;
@@ -20,7 +20,7 @@ pub fn remaining(deadline_ms: Option<i64>) -> Duration {
     })
 }
 
-pub fn limit(deadline_ms: Option<i64>, cancellation: ReadCancellation) -> ReadLimit {
+pub fn limit(deadline_ms: Option<i64>, cancellation: Cancellation) -> ReadLimit {
     ReadLimit::new(remaining(deadline_ms), cancellation)
 }
 

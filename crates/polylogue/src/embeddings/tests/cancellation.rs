@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 struct Cleanup {
     stop_peer: Arc<AtomicBool>,
-    cancellation: polylogue_store::read::limit::ReadCancellation,
+    cancellation: polylogue_store::cancellation::Cancellation,
 }
 impl Drop for Cleanup {
     fn drop(&mut self) {
@@ -43,7 +43,7 @@ fn stalled_provider(cancel: bool) {
         credentials: Credentials::new(None),
     };
     let stop_peer = Arc::new(AtomicBool::new(false));
-    let cancellation = polylogue_store::read::limit::ReadCancellation::default();
+    let cancellation = polylogue_store::cancellation::Cancellation::default();
     let (ready, started) = channel();
     std::thread::scope(|scope| {
         // Drop before scoped joins even when setup/assertions fail. No peer

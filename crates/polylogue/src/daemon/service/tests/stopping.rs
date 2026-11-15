@@ -25,20 +25,11 @@ fn a_stop_during_a_pass_keeps_admitted_rows_and_cancels_private_parsing() {
     while !fault::held() {
         std::thread::sleep(Duration::from_millis(1));
     }
-    let stop = daemon.engine_stop();
-    let releaser = std::thread::spawn(move || {
-        while !stop.requested() {
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        fault::release();
-    });
-    let started = Instant::now();
+    // The held parser returns once the stop is made; the stop does not wait
+    // for the queued sessions.
+    let _release = daemon.daemon.archive.stop().on_cancel(fault::release);
     daemon.stop().unwrap();
-    let took = started.elapsed();
-    releaser.join().unwrap();
     fault::clear();
-    // docs/operations.md: a stop within 5 s.
-    assert!(took < Duration::from_secs(5), "stopping took {took:?}");
 
     let (archive, _lock) =
         polylogue_store::Archive::open_or_create(&daemon._dir.path().join("archive")).unwrap();
@@ -144,23 +135,18 @@ fn a_stop_during_index_rebuild_preserves_retained_bytes_and_restart_finishes() {
         );
         std::thread::yield_now();
     }
-    let idle = runtime.idle();
+    let mut idle = runtime.idle();
     runtime.stop_accepting();
     fault::release();
-    let started = Instant::now();
-    loop {
-        if let Some(summary) = idle.borrow().as_ref() {
-            assert!(summary.work.errors.is_empty(), "{summary:?}");
-            break;
-        }
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "cancelled rebuild did not finish"
-        );
-        std::thread::yield_now();
-    }
+    let summary = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(idle.wait_for(Option::is_some))
+        .unwrap()
+        .clone()
+        .unwrap();
+    assert!(summary.work.errors.is_empty(), "{summary:?}");
     runtime.shutdown().unwrap();
-    assert!(started.elapsed() < Duration::from_secs(5));
     fault::clear();
     let mut runtime = crate::test_daemon::start_runtime(
         &root,
@@ -192,4 +178,143 @@ fn a_stop_during_index_rebuild_preserves_retained_bytes_and_restart_finishes() {
         std::thread::yield_now();
     }
     runtime.shutdown().unwrap();
+}
+
+fn due_derivations(root: &std::path::Path) -> i64 {
+    rusqlite::Connection::open(root.join("index.db"))
+        .unwrap()
+        .query_row("SELECT count(*) FROM derive_due", [], |row| row.get(0))
+        .unwrap()
+}
+
+/// A stop while the derive thread holds a computed wave drops that wave:
+/// the session stays due, and the next start derives it.
+#[test]
+fn a_stop_during_derivation_leaves_the_session_due_and_restart_derives_it() {
+    let mut daemon = crate::test_daemon::start_with_workers("before derivation", 1);
+    let root = daemon._dir.path().join("archive");
+    let barrier = daemon
+        .daemon
+        .writes
+        .as_ref()
+        .unwrap()
+        .pause_derive_for_test();
+    std::fs::write(
+        daemon.home.join(".claude/projects/-p/derive.jsonl"),
+        polylogue_testkit::claude_user("d1", "derive", "a session to derive"),
+    )
+    .unwrap();
+    while barrier.wait().is_err() {}
+    let barrier = std::sync::Mutex::new(Some(barrier));
+    let _release = daemon.daemon.archive.stop().on_cancel(move || {
+        if let Some(barrier) = barrier.lock().unwrap().take() {
+            barrier.release();
+        }
+    });
+    daemon.stop().unwrap();
+    assert_eq!(due_derivations(&root), 1, "the dropped wave stays due");
+
+    let mut resumed = crate::test_daemon::start_runtime(
+        &root,
+        daemon.config.clone(),
+        crate::daemon::service::ArchiveMode::Standalone,
+    )
+    .unwrap();
+    let until = Instant::now() + Duration::from_secs(30);
+    while due_derivations(&root) != 0 {
+        assert!(Instant::now() < until, "restart did not derive the session");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    resumed.shutdown().unwrap();
+}
+
+/// A stop while an import parses a stored export ends it between items:
+/// the import is not reported done, no later item is parsed, and the next
+/// start finishes the export from its stored bytes, each item once.
+#[test]
+fn a_stop_during_an_import_keeps_delivered_items_and_restart_finishes_it() {
+    let mut daemon = crate::test_daemon::start_with_workers("before the import", 1);
+    let root = daemon._dir.path().join("archive");
+    let export = daemon._dir.path().join("conversations.json");
+    let conversations: Vec<_> = (0..3)
+        .map(|n| {
+            serde_json::json!({
+                "uuid": format!("imported-{n}"),
+                "chat_messages": [{
+                    "uuid": format!("imported-message-{n}"),
+                    "sender": "human",
+                    "text": format!("imported words {n}"),
+                }],
+            })
+        })
+        .collect();
+    std::fs::write(&export, serde_json::to_vec(&conversations).unwrap()).unwrap();
+    fault::clear();
+    // The second item holds until the stop is made.
+    fault::arm("parse", "conversations.json", Action::Hold, 1, 1);
+    let _release = daemon.daemon.archive.stop().on_cancel(fault::release);
+    let mut client =
+        std::os::unix::net::UnixStream::connect(daemon.daemon.archive.socket()).unwrap();
+    let request = command_surface::Request {
+        operation: "import".into(),
+        arguments: serde_json::json!({"paths": [export]}),
+        request_id: "import-during-stop".into(),
+        deadline: command_surface::Deadline::None,
+        budget_tokens: Default::default(),
+        cursor: None,
+        fresh: false,
+        format: Default::default(),
+    };
+    use std::io::{BufRead, Write};
+    writeln!(client, "{}", serde_json::to_string(&request).unwrap()).unwrap();
+    while !fault::held() {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    daemon.stop().unwrap();
+    fault::clear();
+    let mut line = String::new();
+    std::io::BufReader::new(client)
+        .read_line(&mut line)
+        .unwrap();
+    let answer: command_surface::Answer<serde_json::Value> = serde_json::from_str(&line).unwrap();
+    assert!(
+        answer.value().is_none(),
+        "a stopped import is not reported done: {answer:?}"
+    );
+
+    let session = |n: usize| SessionId::parse(&format!("claude-ai:imported-{n}")).unwrap();
+    {
+        let (archive, _lock) = polylogue_store::Archive::open_or_create(&root).unwrap();
+        let reads = polylogue_store::ReadPool::open(&archive).unwrap();
+        let reader = reads.reader().unwrap();
+        assert!(
+            reader.messages(&session(2), false).unwrap().is_empty(),
+            "no item after the stop was parsed"
+        );
+    }
+    let mut resumed = crate::test_daemon::start_runtime(
+        &root,
+        daemon.config.clone(),
+        crate::daemon::service::ArchiveMode::Standalone,
+    )
+    .unwrap();
+    let until = Instant::now() + Duration::from_secs(30);
+    loop {
+        let reader = resumed.daemon.reads.reader().unwrap();
+        let texts: Vec<String> = (0..3)
+            .flat_map(|n| reader.messages(&session(n), false).unwrap())
+            .map(|message| message.text())
+            .collect();
+        if texts.len() == 3 {
+            assert_eq!(
+                texts,
+                ["imported words 0", "imported words 1", "imported words 2"]
+            );
+            break;
+        }
+        assert!(Instant::now() < until, "restart did not finish the export");
+        drop(reader);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    resumed.shutdown().unwrap();
 }

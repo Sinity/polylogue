@@ -132,10 +132,10 @@ fn sparse_retained_readings_commit_their_diagnosis_even_during_stop() {
         };
         reading.parse = vec![step];
         let before = archive_state(&w);
-        w.writer.stop_handle().request();
+        w.archive.stop().cancel();
         w.store_reading(reading, None).unwrap();
         assert_eq!(archive_state(&w), before);
-        let reads = ReadPool::open(&w.archive).unwrap();
+        let reads = ReadPool::open(&w.archive.reopened()).unwrap();
         assert_eq!(
             reads
                 .reader()

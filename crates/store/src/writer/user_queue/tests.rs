@@ -1,5 +1,5 @@
 use super::*;
-use crate::read::limit::ReadCancellation;
+use crate::cancellation::Cancellation;
 use std::time::Duration;
 
 fn message() -> UserMsg {
@@ -50,7 +50,7 @@ fn cancelled_admission_wakes_without_a_deadline() {
     let _reservations = (0..USER_QUEUE)
         .map(|_| queue.reserve(None).unwrap())
         .collect::<Vec<_>>();
-    let cancellation = ReadCancellation::default();
+    let cancellation = Cancellation::default();
     let limit = ReadLimit::without_deadline(cancellation.clone());
     let waiting = Arc::clone(&queue);
     let thread = std::thread::spawn(move || waiting.reserve(Some(&limit)));
@@ -68,7 +68,7 @@ fn admission_uses_the_original_deadline() {
     let _reservations = (0..USER_QUEUE)
         .map(|_| queue.reserve(None).unwrap())
         .collect::<Vec<_>>();
-    let limit = ReadLimit::new(Duration::from_millis(1), ReadCancellation::default());
+    let limit = ReadLimit::new(Duration::from_millis(1), Cancellation::default());
     assert!(matches!(
         queue.reserve(Some(&limit)),
         Err(StoreError::ReadDeadlineExceeded)

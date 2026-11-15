@@ -12,8 +12,8 @@ impl WriterSender {
         let token = location.read_scope.token()?;
         let commits = self.completion_commits();
         loop {
-            if self.0.stop.requested() {
-                return Err(StoreError::WriteCancelled);
+            if self.0.stop.is_cancelled() {
+                return Err(StoreError::Stopped);
             }
             scoped::require_current(location, Some(&token))?;
             let index = crate::archive::open_read(&location.index_db())?;
@@ -41,8 +41,8 @@ impl WriterSender {
         let token = location.read_scope.token()?;
         let commits = self.completion_commits();
         let open = || -> Result<Connection> {
-            if self.0.stop.requested() {
-                return Err(StoreError::WriteCancelled);
+            if self.0.stop.is_cancelled() {
+                return Err(StoreError::Stopped);
             }
             scoped::require_current(location, Some(&token))?;
             let index = crate::archive::open_read(&location.index_db())?;
@@ -207,8 +207,8 @@ impl WriterSender {
             }
         }
         let open = || -> Result<Connection> {
-            if self.0.stop.requested() {
-                return Err(StoreError::WriteCancelled);
+            if self.0.stop.is_cancelled() {
+                return Err(StoreError::Stopped);
             }
             scoped::require_current(location, Some(&token))?;
             let index = crate::archive::open_read(&location.index_db())?;
@@ -222,8 +222,8 @@ impl WriterSender {
                     return Err(StoreError::WriterGone);
                 }
             }
-            if self.0.stop.requested() {
-                return Err(StoreError::WriteCancelled);
+            if self.0.stop.is_cancelled() {
+                return Err(StoreError::Stopped);
             }
             scoped::require_current(location, Some(&token))
         };

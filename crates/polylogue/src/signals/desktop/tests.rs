@@ -36,28 +36,20 @@ fn seed(d: &Daemon) -> Notice {
 }
 
 #[tokio::test]
-async fn queued_or_disconnected_stop_prevents_signal_startup_work() {
+async fn a_stop_made_before_startup_prevents_signal_startup_work() {
     let fixture = fixture();
     let before = load(&fixture.daemon)
         .unwrap()
         .map(|checkpoint| checkpoint.identity().unwrap());
-    for queued in [false, true] {
-        let (stop, stopped) = std::sync::mpsc::channel();
-        if queued {
-            stop.send(()).unwrap();
-        }
-        drop(stop);
-        let mut bridge = StopBridge::new(stopped).unwrap();
-        assert!(bridge.token().is_cancelled());
-        run(fixture.daemon.clone(), bridge.token()).await.unwrap();
-        bridge.finish().unwrap();
-        assert_eq!(
-            load(&fixture.daemon)
-                .unwrap()
-                .map(|checkpoint| checkpoint.identity().unwrap()),
-            before
-        );
-    }
+    let stop = CancellationToken::new();
+    stop.cancel();
+    run(fixture.daemon.clone(), stop).await.unwrap();
+    assert_eq!(
+        load(&fixture.daemon)
+            .unwrap()
+            .map(|checkpoint| checkpoint.identity().unwrap()),
+        before
+    );
 }
 
 #[tokio::test]
@@ -68,8 +60,6 @@ async fn stopping_drains_submitted_unknown_ack_before_joining_the_worker() {
     let mut state = NotificationState::default();
     let receipts = state.begin(notice);
     let (updates, mut returned) = mpsc::unbounded_channel();
-    let (stop, stopped) = std::sync::mpsc::channel();
-    let mut bridge = StopBridge::new(stopped).unwrap();
     let (submitted, wait) = tokio::sync::oneshot::channel();
     let daemon = fixture.daemon.clone();
     let worker = tokio::spawn(async move {
@@ -97,20 +87,17 @@ async fn stopping_drains_submitted_unknown_ack_before_joining_the_worker() {
         Ok::<(), zbus::Error>(())
     });
     wait.await.unwrap();
-    stop.send(()).unwrap();
-    bridge.token().cancelled().await;
     drain_worker(&fixture.daemon, &mut returned, worker)
         .await
         .unwrap();
-    bridge.finish().unwrap();
 }
 
 #[tokio::test]
 async fn an_admission_stop_does_not_report_a_closed_startup_reader_as_failure() {
     let mut fixture = fixture();
     fixture.stop().unwrap();
-    // The normal admission stop already closed reads, but this worker has not
-    // received its own stop channel yet. No new restoration is admitted.
+    // The daemon's stop already ended reads, but this worker's own token
+    // is not cancelled. No new restoration is admitted.
     run(fixture.daemon.clone(), CancellationToken::new())
         .await
         .unwrap();

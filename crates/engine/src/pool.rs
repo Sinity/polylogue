@@ -136,14 +136,16 @@ pub(crate) struct Shared {
     wake: Vec<Condvar>,
     room: Condvar,
     limit: u64,
-    /// Once requested, workers start no further job.
-    stop: crate::StopRequest,
+    /// The archive's stop request: once made, workers start no further job.
+    stop: polylogue_store::cancellation::Cancellation,
 }
 
 pub struct Pool {
     shared: Arc<Shared>,
     workers: Vec<JoinHandle<()>>,
     acknowledgments: Option<JoinHandle<()>>,
+    /// Wakes submitters waiting for room when the stop request is made.
+    _stop_wake: polylogue_store::cancellation::CancellationWake,
 }
 
 impl Pool {
@@ -154,7 +156,6 @@ impl Pool {
         blobs: Arc<polylogue_store::blobs::Blobs>,
         archive: polylogue_store::Archive,
         done: Sender<Done>,
-        stop: crate::StopRequest,
     ) -> Self {
         let workers = workers.max(1);
         let shared = Arc::new(Shared {
@@ -168,9 +169,16 @@ impl Pool {
             wake: (0..workers).map(|_| Condvar::new()).collect(),
             room: Condvar::new(),
             limit: bytes_in_flight.max(1),
-            stop,
+            stop: archive.stop().clone(),
         });
-        shared.stop.wake(&shared);
+        let stop_wake = {
+            let shared = Arc::downgrade(&shared);
+            archive.stop().on_cancel(move || {
+                if let Some(shared) = shared.upgrade() {
+                    shared.wake_for_stop();
+                }
+            })
+        };
         let (acknowledge, pending) = channel();
         let acknowledged = done.clone();
         let acknowledgments = std::thread::Builder::new()
@@ -186,7 +194,11 @@ impl Pool {
                 let acknowledge = acknowledge.clone();
                 std::thread::Builder::new()
                     .name(format!("polylogue-parse-{i}"))
-                    .spawn(move || work(i, &shared, &writer, &blobs, &archive, &acknowledge))
+                    .spawn(move || {
+                        polylogue_store::cancellation::under(archive.stop(), || {
+                            work(i, &shared, &writer, &blobs, &archive, &acknowledge);
+                        });
+                    })
                     .expect("spawn a parse worker")
             })
             .collect();
@@ -195,6 +207,7 @@ impl Pool {
             shared,
             workers,
             acknowledgments: Some(acknowledgments),
+            _stop_wake: stop_wake,
         }
     }
 
@@ -214,7 +227,7 @@ impl Pool {
     pub fn submit(&self, job: Job) -> bool {
         let mut q = self.shared.queue.lock().expect("pool lock");
         loop {
-            if self.shared.stop.requested() {
+            if self.shared.stop.is_cancelled() {
                 return false;
             }
             if q.in_flight == 0 || q.in_flight + job.bytes() <= self.shared.limit {
@@ -279,7 +292,7 @@ impl Shared {
     /// Wakes submitters waiting for room so they see a stop request. Taking
     /// the queue lock first means a submitter that checked the request
     /// before it was made is already waiting.
-    pub(crate) fn wake_for_stop(&self) {
+    fn wake_for_stop(&self) {
         drop(self.queue.lock());
         self.room.notify_all();
     }
@@ -315,7 +328,7 @@ fn work(
             let mut woken = false;
             loop {
                 // After a stop request the queue is left for `cancel_queued`.
-                if !shared.stop.requested()
+                if !shared.stop.is_cancelled()
                     && let Some(j) = q.live.pop_front().or_else(|| q.bulk.pop_front())
                 {
                     polylogue_store::timing::queue(polylogue_store::timing::Queue::Parse, -1);
@@ -355,7 +368,7 @@ fn work(
         };
         let size = job.bytes();
         let live = job.priority == Priority::Live;
-        let (batch, result) = run(job, archive, store, true, &shared.stop);
+        let (batch, result) = run(job, archive, store, true);
         group.waiting.push((batch, result, size));
         group.bytes += size;
         if (live || group.bytes >= GROUP_BYTES)
@@ -397,7 +410,7 @@ fn acknowledge_groups(pending: Receiver<PendingGroup>, done: Sender<Done>) {
                                 result.checkpoint = None;
                                 result.parser_state = None;
                             }
-                            Some(Err(polylogue_store::StoreError::WriteCancelled)) => {
+                            Some(Err(polylogue_store::StoreError::Stopped)) => {
                                 result.write_failed = true;
                                 result.stored = 0;
                             }
@@ -496,24 +509,16 @@ fn failed_step(job: &Job, error: String, prepare: bool) -> ParseStep {
     failed
 }
 
+/// Reads, stores and parses one job. The archive's stop request ends it
+/// between steps and inside each read; a stopped job keeps only the raw
+/// bytes it already prepared and makes no parser progress.
 pub(crate) fn run(
-    job: Job,
-    archive: &polylogue_store::Archive,
-    store: &polylogue_store::blobs::Blobs,
-    prepare: bool,
-    stop: &crate::StopRequest,
-) -> (Option<PreparedBatch>, Done) {
-    polylogue_store::read::limit::ReadLimit::without_deadline(stop.0.reads.clone())
-        .scope(|| run_scoped(job, archive, store, prepare, stop))
-}
-
-fn run_scoped(
     mut job: Job,
     archive: &polylogue_store::Archive,
     store: &polylogue_store::blobs::Blobs,
     prepare: bool,
-    stop: &crate::StopRequest,
 ) -> (Option<PreparedBatch>, Done) {
+    let stop = archive.stop();
     use polylogue_store::timing::{Stage, add, time};
     let mut out = Done {
         chain: None,
@@ -535,7 +540,7 @@ fn run_scoped(
         raw_custody: None,
         raw_acquisition: None,
     };
-    if stop.requested() {
+    if stop.is_cancelled() {
         out.cancelled = true;
         return (None, out);
     }
@@ -565,10 +570,9 @@ fn run_scoped(
     let bytes = match read {
         Ok(b) => b,
         Err(e) => {
-            if stop.requested()
-                && e.get_ref()
-                    .and_then(|e| e.downcast_ref::<polylogue_store::StoreError>())
-                    .is_some_and(|e| matches!(e, polylogue_store::StoreError::ReadCancelled))
+            if e.get_ref()
+                .and_then(|e| e.downcast_ref::<polylogue_store::StoreError>())
+                .is_some_and(|e| matches!(e, polylogue_store::StoreError::Stopped))
             {
                 out.cancelled = true;
                 return (None, out);
@@ -640,7 +644,7 @@ fn run_scoped(
             receipt
         });
     out.raw_acquisition = acquisition.clone();
-    out.cancelled = stop.requested();
+    out.cancelled = stop.is_cancelled();
     let context_overlay = if out.cancelled {
         None
     } else if let Some(context) = job.parser_context.take() {
@@ -651,10 +655,7 @@ fn run_scoped(
             job.start,
         ) {
             Ok(()) => Some(context),
-            Err(error)
-                if stop.requested()
-                    && matches!(error, polylogue_store::StoreError::ReadCancelled) =>
-            {
+            Err(polylogue_store::StoreError::Stopped) => {
                 out.cancelled = true;
                 None
             }
@@ -680,10 +681,7 @@ fn run_scoped(
             job.start,
         ) {
             Ok(context) => Some(context),
-            Err(error)
-                if stop.requested()
-                    && matches!(error, polylogue_store::StoreError::ReadCancelled) =>
-            {
+            Err(polylogue_store::StoreError::Stopped) => {
                 out.cancelled = true;
                 None
             }
@@ -704,7 +702,7 @@ fn run_scoped(
         .as_ref()
         .and_then(|overlay| overlay.replay_chain())
     {
-        match rebuild_context(&job, archive, store, chain, &context, stop) {
+        match rebuild_context(&job, archive, store, chain, &context) {
             Ok(state) => {
                 let mut expected = out.parser_state.clone().unwrap_or(Json::Null);
                 if let Some(object) = expected.as_object_mut() {
@@ -719,16 +717,8 @@ fn run_scoped(
                     out.parser_state = Some(state);
                 }
             }
-            Err(error)
-                if stop.requested()
-                    && (matches!(
-                        error,
-                        crate::EngineError::Stopped
-                            | crate::EngineError::Store(polylogue_store::StoreError::ReadCancelled)
-                    ) || context.is_cancelled()) =>
-            {
-                out.cancelled = true;
-            }
+            Err(crate::EngineError::Stopped) => out.cancelled = true,
+            Err(_) if context.is_cancelled() => out.cancelled = true,
             Err(error) => {
                 out.error = Some(error.to_string());
                 out.continuation_missing = true;
@@ -743,7 +733,7 @@ fn run_scoped(
     });
     let mut parse = parser
         .map(|parser| {
-            if out.cancelled || stop.requested() && out.error.is_none() { out.cancelled = true; return Vec::new(); }
+            if out.cancelled || stop.is_cancelled() && out.error.is_none() { out.cancelled = true; return Vec::new(); }
             if job.origin.support == polylogue_sources::Support::Parsed
                 && (job.parser_deferred || out.continuation_missing || job.start > 0 && out.parser_state.is_none()) {
                 out.continuation_missing = true;
@@ -769,11 +759,11 @@ fn run_scoped(
             });
             match step {
                 Ok((steps, parser_state)) => {
-                    if context.is_cancelled() && stop.requested() { out.cancelled = true; return Vec::new(); }
+                    if context.is_cancelled() { out.cancelled = true; return Vec::new(); }
                     out.parser_state = Some(parser_state);
                     let mut parsed = Vec::new();
                     for mut step in steps {
-                        if stop.requested() && out.error.is_none() { out.cancelled = true; return Vec::new(); }
+                        if stop.is_cancelled() && out.error.is_none() { out.cancelled = true; return Vec::new(); }
                         if step.consumed == step.start && !job.at_end {
                             continue;
                         }
@@ -836,7 +826,7 @@ fn run_scoped(
                             };
                             match overlay.checkpoint_delta(out.parsed_upto).and_then(|delta| serde_json::to_value(delta).map_err(Into::into)) {
                                 Ok(delta) => { state.insert(polylogue_model::parser_context::FIELD.into(), delta); }
-                                Err(error) if stop.requested() && matches!(error, polylogue_store::StoreError::ReadCancelled) => {
+                                Err(polylogue_store::StoreError::Stopped) => {
                                     out.cancelled = true;
                                     return Vec::new();
                                 }
@@ -853,7 +843,7 @@ fn run_scoped(
                     parsed
                 }
                 Err(e) => {
-                    if context.is_cancelled() && stop.requested() { out.cancelled = true; return Vec::new(); }
+                    if context.is_cancelled() { out.cancelled = true; return Vec::new(); }
                     out.error = Some(format!("parse {}: {e}", job.path.display()));
                     out.failure_recorded = true;
                     vec![failed_step(&job, e, prepare)]
@@ -944,7 +934,6 @@ fn rebuild_context(
     blobs: &polylogue_store::blobs::Blobs,
     chain: i64,
     context: &polylogue_model::parser_context::Handle,
-    stop: &crate::StopRequest,
 ) -> Result<Json, crate::EngineError> {
     let reads = polylogue_store::ReadPool::open(archive)?;
     let reader = reads.reader()?;
@@ -958,9 +947,7 @@ fn rebuild_context(
     let mut read = 0u64;
     let mut cursor = 0u64;
     while read < job.start {
-        if stop.requested() {
-            return Err(crate::EngineError::Stopped);
-        }
+        archive.stop().check()?;
         let end = (read + 65536).min(job.start);
         pending.extend(source.read_range(blobs, read, end)?);
         read = end;
