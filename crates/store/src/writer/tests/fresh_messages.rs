@@ -45,13 +45,7 @@ fn check_items(tx: &Transaction<'_>, changes: &crate::change_summary::ChangeSumm
         })
         .unwrap();
     let expected = crate::items::computed_entries(tx, session).unwrap();
-    let stored = tx
-        .prepare("SELECT entry FROM session_item WHERE session_pk=?1 ORDER BY seq")
-        .unwrap()
-        .query_map([session], |r| r.get::<_, Vec<u8>>(0))
-        .unwrap()
-        .map(|r| serde_json::from_slice::<polylogue_model::read::IndexEntry>(&r.unwrap()).unwrap())
-        .collect::<Vec<_>>();
+    let stored = crate::items::stored_entries(tx, session, 0).unwrap();
     assert_eq!(stored, expected);
     assert_eq!(
         tx.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r

@@ -80,15 +80,7 @@ fn revealed_message_items_are_prepared_before_the_derive_commit() {
     conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
         .unwrap();
     let expected = crate::items::computed_entries(&conn, session).unwrap();
-    let actual = conn
-        .prepare("SELECT entry FROM session_item ORDER BY seq")
-        .unwrap()
-        .query_map([], |row| row.get::<_, Vec<u8>>(0))
-        .unwrap()
-        .map(|row| {
-            serde_json::from_slice::<polylogue_model::read::IndexEntry>(&row.unwrap()).unwrap()
-        })
-        .collect::<Vec<_>>();
+    let actual = crate::items::stored_entries(&conn, session, 0).unwrap();
     assert_eq!(actual, expected);
     assert_eq!(actual[1].body_bytes, 25);
 }

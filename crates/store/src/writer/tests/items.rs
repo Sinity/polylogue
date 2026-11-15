@@ -190,14 +190,14 @@ fn an_identical_event_claim_repairs_retained_old_item_metadata() {
         .unwrap();
     assert!(w.writer.flush().unwrap().errors.is_empty());
     let conn = rusqlite::Connection::open(w.archive.index_db()).unwrap();
-    let (pk, entry): (i64, Vec<u8>) = conn
+    let pk: i64 = conn
         .query_row(
-            "SELECT event_pk,entry FROM session_item WHERE event_pk IS NOT NULL",
+            "SELECT event_pk FROM session_item WHERE event_pk IS NOT NULL",
             [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| r.get(0),
         )
         .unwrap();
-    let mut stale: polylogue_model::read::IndexEntry = serde_json::from_slice(&entry).unwrap();
+    let mut stale = stored(&w, "s").entries[0].clone();
     stale.at = Some(123);
     let mut old = blake3::Hasher::new();
     old.update(b"event\0");
@@ -207,7 +207,7 @@ fn an_identical_event_claim_repairs_retained_old_item_metadata() {
         "UPDATE session_item SET unit=?1,entry=?2 WHERE event_pk=?3",
         params![
             old.finalize().as_bytes().as_slice(),
-            serde_json::to_vec(&stale).unwrap(),
+            crate::items::entry_bytes::encode(&stale, None).unwrap(),
             pk
         ],
     )
@@ -341,7 +341,7 @@ fn equal_length_context_boundary_changes_refresh_typed_event_items() {
             "UPDATE session_item SET unit=?1,entry=?2 WHERE event_pk=?3",
             params![
                 old.finalize().as_bytes().as_slice(),
-                serde_json::to_vec(&original.entries[0]).unwrap(),
+                crate::items::entry_bytes::encode(&original.entries[0], None).unwrap(),
                 pk
             ],
         )
