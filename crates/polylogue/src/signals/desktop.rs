@@ -49,32 +49,30 @@ fn recover(
     d: &Daemon,
     state: &NotificationState,
     requests: &mpsc::UnboundedSender<NotificationRequest>,
-) -> Result<(), String> {
-    let reader = d.reads.reader().map_err(|e| e.to_string())?;
-    reader
-        .visit_signals(|stored| {
-            let metadata = stored.outbox.metadata;
-            let attempted = state.attempt(&stored.id).is_some()
-                || stored
-                    .events
-                    .iter()
-                    .any(|event| matches!(event.event, Event::Desktop { .. }));
-            if metadata.execution == ExecutionEligibility::Live
-                && metadata.delivery.decision.interrupts()
-                && !attempted
-            {
-                requests
-                    .send(NotificationRequest::Deliver(Box::new(metadata.notice)))
-                    .map_err(|_| polylogue_store::StoreError::WriterGone)?;
-            }
-            Ok(())
-        })
-        .map_err(|e| e.to_string())
+) -> polylogue_store::Result<()> {
+    let reader = d.reads.reader()?;
+    reader.visit_signals(|stored| {
+        let metadata = stored.outbox.metadata;
+        let attempted = state.attempt(&stored.id).is_some()
+            || stored
+                .events
+                .iter()
+                .any(|event| matches!(event.event, Event::Desktop { .. }));
+        if metadata.execution == ExecutionEligibility::Live
+            && metadata.delivery.decision.interrupts()
+            && !attempted
+        {
+            requests
+                .send(NotificationRequest::Deliver(Box::new(metadata.notice)))
+                .map_err(|_| polylogue_store::StoreError::WriterGone)?;
+        }
+        Ok(())
+    })
 }
 
-pub(super) async fn run(d: Arc<Daemon>, stop: CancellationToken) {
+pub(super) async fn run(d: Arc<Daemon>, stop: CancellationToken) -> Result<(), Held> {
     let Some(writes) = &d.writes else {
-        return;
+        return Ok(());
     };
     // The subscription precedes both startup snapshots. It carries wakeups,
     // not work counters or authoritative observation timestamps.
@@ -126,10 +124,10 @@ pub(super) async fn run(d: Arc<Daemon>, stop: CancellationToken) {
     let result = drive(&d, &stop, &mut changes).await;
     done.store(true, std::sync::atomic::Ordering::Release);
     let _ = wake.try_send(());
-    let _ = bridge.await;
-    if let Err(error) = result {
-        report(&d, error);
-    }
+    let joined = bridge
+        .await
+        .map_err(|error| Held::from(format!("signal commit bridge: {error}")));
+    result.and(joined)
 }
 
 async fn drive(
@@ -145,8 +143,19 @@ async fn drive(
     let worker = if d.archive.is_primary() {
         None
     } else {
-        let state = load(d)?.and_then(|c| c.notifications).unwrap_or_default();
-        recover(d, &state, &requests)?;
+        let restored = (|| -> polylogue_store::Result<NotificationState> {
+            let state = load(d)?.and_then(|c| c.notifications).unwrap_or_default();
+            recover(d, &state, &requests)?;
+            Ok(state)
+        })();
+        let state = match restored {
+            Ok(state) => state,
+            // Admission closes the reader pool. A worker starting in that
+            // same stop has no restoration left to perform; corruption and
+            // other failures still retain their original diagnosis.
+            Err(polylogue_store::StoreError::ReadPoolClosed) if d.is_stopping() => return Ok(()),
+            Err(error) => return Err(error.to_string().into()),
+        };
         let connection = tokio::select! {
             _ = stop.cancelled() => return Ok(()),
             connection = connect(d) => connection,
@@ -160,6 +169,7 @@ async fn drive(
     let mut evaluate = true;
     let mut due = d.config.requests.now().unix_ms();
     let mut failure = None;
+    let mut worker_ended = false;
     loop {
         if stop.is_cancelled() {
             break;
@@ -179,7 +189,7 @@ async fn drive(
                             .send(NotificationRequest::Deliver(Box::new(notice)))
                             .is_err()
                         {
-                            failure = Some(Held::from("desktop worker stopped"));
+                            worker_ended = true;
                             break;
                         }
                     }
@@ -190,10 +200,10 @@ async fn drive(
                         d,
                         super::observations::Phase::TickFailed(json!(&error)),
                     );
-                    report(d, error);
+                    report(d, &error);
                 }
             }
-            if failure.is_some() {
+            if worker_ended {
                 break;
             }
             evaluate = false;
@@ -204,7 +214,7 @@ async fn drive(
         tokio::select! {
             update=returned.recv(),if worker.is_some()=>{
                 let Some(update) = update else {
-                    failure = Some(Held::from("desktop worker stopped"));
+                    worker_ended = true;
                     break;
                 };
                 match persist_update(d,&update) {
@@ -214,7 +224,12 @@ async fn drive(
                 }
             }
             changed=changes.recv()=>{
-                if changed.is_none(){break;}
+                if changed.is_none(){
+                    if !stop.is_cancelled() && !d.is_stopping() {
+                        failure=Some(Held::from("signal commit subscription stopped"));
+                    }
+                    break;
+                }
                 #[cfg(test)]
                 super::observations::emit(d, super::observations::Phase::ControllerWake { refresh: false });
                 evaluate=true;
@@ -233,6 +248,11 @@ async fn drive(
         && let Err(error) = drain_worker(d, &mut returned, worker).await
     {
         failure.get_or_insert(error);
+    }
+    if worker_ended {
+        // Joining above retains a delivery error; channel closure alone is
+        // only the fallback when that worker returned successfully.
+        failure.get_or_insert_with(|| Held::from("desktop worker stopped"));
     }
     match failure {
         Some(error) => Err(error),

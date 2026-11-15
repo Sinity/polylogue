@@ -195,7 +195,7 @@ fn restart_recovers_confirmed_outbox_and_preserves_unknown_attempt() {
 /// The signals worker on its own thread, stopped and joined on drop.
 struct Worker {
     stop: Option<std::sync::mpsc::Sender<()>>,
-    thread: Option<std::thread::JoinHandle<()>>,
+    thread: Option<std::thread::JoinHandle<std::io::Result<()>>>,
 }
 impl Drop for Worker {
     fn drop(&mut self) {
@@ -203,7 +203,7 @@ impl Drop for Worker {
             let _ = stop.send(());
         }
         if let Some(thread) = self.thread.take() {
-            thread.join().unwrap();
+            thread.join().unwrap().unwrap();
         }
     }
 }

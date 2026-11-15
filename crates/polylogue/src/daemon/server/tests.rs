@@ -380,6 +380,72 @@ fn a_client_can_close_its_write_half_and_still_receive_the_answer() {
     );
 }
 
+/// A client already queued behind running work must be refused before the
+/// transport owner waits for it. The running owner still finishes normally.
+#[test]
+fn admission_stop_releases_queued_socket_requests_before_running_work_finishes() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut config = crate::test_daemon::engine_config(directory.path().join("home"));
+    config.workers = 1;
+    config.reads_sources = false;
+    let mut runtime = crate::test_daemon::start_runtime(
+        &directory.path().join("archive"),
+        config,
+        service::ArchiveMode::Standalone,
+    )
+    .unwrap();
+    let mut server =
+        Server::start(Arc::clone(&runtime.daemon), Arc::clone(&runtime.operations)).unwrap();
+    let (entered, running) = std::sync::mpsc::channel();
+    let (release, held) = std::sync::mpsc::channel();
+    let (finished, done) = std::sync::mpsc::channel();
+    assert!(runtime.daemon.executor.submit(
+        super::super::executor::Class::Ordinary,
+        None,
+        move || {
+            entered.send(()).unwrap();
+            let _ = held.recv();
+            let _ = finished.send(());
+        }
+    ));
+    running.recv_timeout(Duration::from_secs(2)).unwrap();
+    let mut client = UnixStream::connect(runtime.daemon.archive.socket()).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    client
+        .write_all(
+            request_line(
+                "sql",
+                serde_json::json!({"statement":"SELECT 1"}),
+                "queued-before-stop",
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+    eventually("request did not enter the executor queue", || {
+        runtime.daemon.executor.queued() == 1
+    });
+    runtime.stop_accepting();
+    let mut line = String::new();
+    BufReader::new(client).read_line(&mut line).unwrap();
+    let answer: command_surface::Answer<serde_json::Value> = serde_json::from_str(&line).unwrap();
+    let command_surface::Outcome::Error(error) = answer.outcome else {
+        panic!("queued request must be refused");
+    };
+    assert_eq!(error.code.as_deref(), Some("shutting_down"));
+    assert_eq!(error.kind, command_surface::FailureKind::NotRunning);
+    assert_eq!(
+        done.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty),
+        "admission stop must not revoke the running owner"
+    );
+    release.send(()).unwrap();
+    done.recv_timeout(Duration::from_secs(2)).unwrap();
+    server.shutdown().unwrap();
+    runtime.shutdown().unwrap();
+}
+
 #[test]
 fn complete_queued_requests_receive_shutting_down_before_socket_drain() {
     let dir = tempfile::tempdir().unwrap();
