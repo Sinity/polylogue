@@ -115,16 +115,10 @@ fn outcome(run: &QueryRun, count: u64) -> QueryRunOutcome {
 fn query_objects_keep_one_semantic_body_and_reject_forged_identity() {
     let archive = WriterArchive::new();
     let first = question("sessions where title:focus | limit 5");
-    assert_eq!(
-        archive.writer.query_object(first.clone()).unwrap(),
-        QueryCustody::Canonical
-    );
+    archive.writer.query_object(first.clone()).unwrap();
     let pool = crate::ReadPool::open(&archive.archive).unwrap();
     let position = pool.reader().unwrap().change_position().unwrap();
-    assert_eq!(
-        archive.writer.query_object(first.clone()).unwrap(),
-        QueryCustody::Canonical
-    );
+    archive.writer.query_object(first.clone()).unwrap();
     assert_eq!(pool.reader().unwrap().change_position().unwrap(), position);
     let read = pool
         .reader()
@@ -132,8 +126,7 @@ fn query_objects_keep_one_semantic_body_and_reject_forged_identity() {
         .query_object(&first.id.to_string()[..12], None)
         .unwrap()
         .unwrap();
-    assert_eq!(read.value, first);
-    assert_eq!(read.custody, QueryCustody::Canonical);
+    assert_eq!(read, first);
     let equivalent = question("sessions  where title:focus | limit 5");
     assert_eq!(equivalent.id, first.id);
     archive.writer.query_object(equivalent).unwrap();
@@ -146,8 +139,7 @@ fn query_objects_keep_one_semantic_body_and_reject_forged_identity() {
             .unwrap()
             .query_object(&first.id.to_string(), None)
             .unwrap()
-            .unwrap()
-            .value,
+            .unwrap(),
         first
     );
 }
@@ -164,13 +156,10 @@ fn run_begin_is_visible_before_completion_and_both_facts_are_immutable() {
         123_456,
         pool.reader().unwrap().change_position().unwrap(),
     );
-    assert_eq!(
-        archive.writer.begin_query_run(expected.clone()).unwrap(),
-        QueryCustody::Canonical
-    );
+    archive.writer.begin_query_run(expected.clone()).unwrap();
     let reader = pool.reader().unwrap();
     assert_eq!(
-        reader.query_run(&expected.id, None).unwrap().unwrap().value,
+        reader.query_run(&expected.id, None).unwrap().unwrap(),
         expected
     );
     assert!(
@@ -198,12 +187,11 @@ fn run_begin_is_visible_before_completion_and_both_facts_are_immutable() {
         reader
             .query_run_outcome(&expected.id, None)
             .unwrap()
-            .unwrap()
-            .value,
+            .unwrap(),
         completed
     );
     assert_eq!(
-        reader.query_run(&expected.id, None).unwrap().unwrap().value,
+        reader.query_run(&expected.id, None).unwrap().unwrap(),
         expected
     );
     drop(reader);
@@ -324,12 +312,11 @@ fn a_large_question_and_replay_body_survive_writer_restart_whole() {
         reader
             .query_object(&object.id.to_string(), None)
             .unwrap()
-            .unwrap()
-            .value,
+            .unwrap(),
         object
     );
     assert_eq!(
-        reader.query_run(&expected.id, None).unwrap().unwrap().value,
+        reader.query_run(&expected.id, None).unwrap().unwrap(),
         expected
     );
 }
@@ -412,8 +399,7 @@ fn result_output_schemas_require_the_canonical_kept_columns() {
             .unwrap()
             .query_object(&actual.id.to_string(), None)
             .unwrap()
-            .unwrap()
-            .value,
+            .unwrap(),
         actual
     );
 }
@@ -506,7 +492,7 @@ fn executed_selection_records_its_actual_clock_resolution_and_read_context() {
         .query_run(&expected.id, None)
         .unwrap()
         .unwrap();
-    assert_eq!(stored.value, expected);
+    assert_eq!(stored, expected);
 }
 
 #[test]
@@ -581,8 +567,7 @@ fn writer_keeps_normalized_span_metadata_bound_to_the_accepted_direct_target() {
         .unwrap()
         .query_run(&execution.id, None)
         .unwrap()
-        .unwrap()
-        .value;
+        .unwrap();
     assert_eq!(stored, execution);
     assert_eq!(stored.binding_hash().unwrap(), hash);
     let mut conflicting = execution.clone();
@@ -669,7 +654,7 @@ fn object_run_has_no_question_and_query_or_continuation_cannot_omit_one() {
     let fetched = lookup_run(&conn, Source::Ledger, &exact.id, None)
         .unwrap()
         .unwrap();
-    assert_eq!(fetched.value, exact);
+    assert_eq!(fetched, exact);
 }
 
 #[test]

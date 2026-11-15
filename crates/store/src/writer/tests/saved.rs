@@ -82,7 +82,7 @@ fn saved_acceptance_retains_objects_and_frozen_dependencies_before_publishing_as
             .query_object(&expected.question_id().to_string(), None)
             .unwrap()
             .unwrap();
-        assert_eq!(retained.value, expected.query_object().unwrap());
+        assert_eq!(retained, expected.query_object().unwrap());
     }
     let before = {
         let reader = reads.reader().unwrap();

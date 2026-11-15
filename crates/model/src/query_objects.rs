@@ -419,20 +419,5 @@ pub enum QueryEdge {
     In { query: QuestionId },
 }
 
-/// Queued means durable producer custody; it makes no canonical admission claim.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum QueryCustody {
-    Canonical,
-    Queued,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct QueryLookup<T> {
-    pub value: T,
-    pub custody: QueryCustody,
-}
-
 #[cfg(test)]
 mod tests;

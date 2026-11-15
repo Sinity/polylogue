@@ -226,10 +226,8 @@ CREATE TABLE operation (
   raw_generation BLOB,
   raw_predecessor TEXT,
   raw_root INTEGER NOT NULL,
-  reading_version TEXT,
   input TEXT,
   format TEXT,
-  export_keys TEXT NOT NULL,
   stored_bytes INTEGER NOT NULL,
   completion TEXT,
   captured INTEGER NOT NULL,
@@ -248,9 +246,9 @@ CREATE INDEX queue_acquisition ON operation(acquisition,ordinal);
 CREATE INDEX queue_source ON operation(source,ordering);
 CREATE INDEX queue_raw_generation ON operation(raw_generation,ordering);
 CREATE INDEX queue_raw_child ON operation(raw_predecessor,ordering);
-CREATE INDEX queue_export_input ON operation(input,format,ordering);
+CREATE INDEX queue_input ON operation(input,format,ordering);
 PRAGMA application_id=1347178801;
-PRAGMA user_version=1;
+PRAGMA user_version=2;
 ";
 
 const COLUMNS: &str = "ordering,identity,directory,metadata,phase,position,offered,unresolved";
@@ -294,8 +292,8 @@ fn refresh_ready(connection: &Connection, identity: &str) -> Result<()> {
 }
 
 fn insert(connection: &Connection, operation: &Operation, group_hash: Option<&str>) -> Result<()> {
-    connection.execute("INSERT INTO operation(identity,directory,metadata,kind,logical_name,acquisition,ordinal,unresolved,source,raw_generation,raw_predecessor,raw_root,reading_version,input,format,export_keys,stored_bytes,group_hash,material,previous_material,raw,completion,captured,blob)
-          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,NULL,?13,?14,'[]',?15,?16,?17,?18,?19,?20,?21,?22)", params![operation.identity, operation.directory, operation.metadata, operation.kind.name(), operation.logical_name.as_ref().map(|name| name.as_bytes()), operation.acquisition, operation.ordinal, operation.unresolved, operation.source, operation.raw_generation, operation.raw_predecessor, operation.raw_root, operation.input, operation.format, operation.stored_bytes, group_hash, operation.material, operation.previous_material, operation.raw, operation.completion.map(Completion::name), operation.captured, operation.blob])?;
+    connection.execute("INSERT INTO operation(identity,directory,metadata,kind,logical_name,acquisition,ordinal,unresolved,source,raw_generation,raw_predecessor,raw_root,input,format,stored_bytes,group_hash,material,previous_material,raw,completion,captured,blob)
+          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)", params![operation.identity, operation.directory, operation.metadata, operation.kind.name(), operation.logical_name.as_ref().map(|name| name.as_bytes()), operation.acquisition, operation.ordinal, operation.unresolved, operation.source, operation.raw_generation, operation.raw_predecessor, operation.raw_root, operation.input, operation.format, operation.stored_bytes, group_hash, operation.material, operation.previous_material, operation.raw, operation.completion.map(Completion::name), operation.captured, operation.blob])?;
     Ok(())
 }
 
@@ -327,7 +325,12 @@ impl Queue {
             let transaction = connection.unchecked_transaction()?;
             transaction.execute_batch(SCHEMA)?;
             transaction.commit()?;
-        } else if version != 1
+        } else if version == 1 {
+            return Err(StoreError::Invalid(format!(
+                "producer queue {} has format 1; let the earlier build send and confirm every operation, then set the empty queue aside",
+                path.display()
+            )));
+        } else if version != 2
             || connection.pragma_query_value(None, "application_id", |row| row.get::<_, u32>(0))?
                 != 1347178801
         {
@@ -382,8 +385,8 @@ impl Queue {
         let result: Result<()> = (|| {
             let tx = self.connection.unchecked_transaction()?;
             insert(&tx, header, None)?;
-            tx.execute("INSERT INTO operation(identity,directory,metadata,kind,material,previous_material,phase,position,offered,admitted,logical_name,acquisition,ordinal,confirmed_group,group_hash,unresolved,source,raw,raw_generation,raw_predecessor,raw_root,reading_version,input,format,export_keys,stored_bytes,completion,captured,blob)
-                SELECT identity,?1 || '/' || directory,metadata,kind,material,previous_material,phase,position,offered,admitted,logical_name,?2,ordering-1,confirmed_group,group_hash,?3,source,raw,raw_generation,raw_predecessor,raw_root,reading_version,input,format,export_keys,stored_bytes,completion,captured,blob FROM staged.operation ORDER BY ordering",
+            tx.execute("INSERT INTO operation(identity,directory,metadata,kind,material,previous_material,phase,position,offered,admitted,logical_name,acquisition,ordinal,confirmed_group,group_hash,unresolved,source,raw,raw_generation,raw_predecessor,raw_root,input,format,stored_bytes,completion,captured,blob)
+                SELECT identity,?1 || '/' || directory,metadata,kind,material,previous_material,phase,position,offered,admitted,logical_name,?2,ordering-1,confirmed_group,group_hash,?3,source,raw,raw_generation,raw_predecessor,raw_root,input,format,stored_bytes,completion,captured,blob FROM staged.operation ORDER BY ordering",
                 params![header.directory, header.identity, header.unresolved])?;
             tx.execute("UPDATE operation AS current SET ready=(phase='pending' AND unresolved=0 AND kind!='acquisition'
                 AND NOT EXISTS(SELECT 1 FROM operation AS member WHERE member.confirmed_group=current.identity AND (member.phase!='acknowledged' OR member.unresolved!=0))

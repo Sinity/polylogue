@@ -49,11 +49,11 @@ applied a complete prefix in the same scope through an owner head observed
 after the acknowledgment. Sinex reads that head from its committed counter.
 A head observed before publication, or an incomplete prefix, retains the group.
 
-The producer queue retains its existing physical `reading_version` and
-`export_keys` columns so committed pending operations keep their database and
-membership. Those columns are inert: new operations write no reading version or
-export keys, and source-head lookups depend only on physical source identity.
-Parser output is not retained as a second reconstruction body in the queue.
+The producer queue is a SQLite database of format 2. Source-head lookups
+depend only on physical source identity, and parser output is not stored as a
+second reconstruction body in the queue. A queue of another format is refused
+when it opens: a format-1 queue is emptied by the build that wrote it (every
+operation sent and confirmed) and then set aside.
 
 Each complete stream position applies atomically. If a later position fails,
 the earlier committed prefix stays visible and notifies readers. The writer

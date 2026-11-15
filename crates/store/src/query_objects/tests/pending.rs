@@ -52,24 +52,21 @@ fn completed_history_keeps_question_lookup_and_one_durable_run_group() {
             reader
                 .query_object(&object.id.to_string(), Some(producer.as_ref()))
                 .unwrap()
-                .unwrap()
-                .value,
+                .unwrap(),
             object
         );
         assert_eq!(
             reader
                 .query_run(&expected.id, Some(producer.as_ref()))
                 .unwrap()
-                .unwrap()
-                .value,
+                .unwrap(),
             expected
         );
         assert_eq!(
             reader
                 .query_run_outcome(&expected.id, Some(producer.as_ref()))
                 .unwrap()
-                .unwrap()
-                .value,
+                .unwrap(),
             completed
         );
         let retained = producer.writes().unwrap();
@@ -232,7 +229,7 @@ impl Sinex for PendingProducer {
 }
 
 #[test]
-fn completed_run_keeps_its_original_scope_in_durable_custody_during_cache_reset() {
+fn completed_run_keeps_its_original_scope_in_the_spool_during_cache_reset() {
     let dir = tempfile::tempdir().unwrap();
     let producer = Arc::new(PendingProducer(dir.path().join("named.json")));
     let object = question("sessions");
@@ -271,10 +268,7 @@ fn completed_run_keeps_its_original_scope_in_durable_custody_during_cache_reset(
             writer.query_object(object.clone()),
             Err(StoreError::ScopeChanged)
         ));
-        assert_eq!(
-            writer.begin_query_run(expected.clone()).unwrap(),
-            QueryCustody::Queued
-        );
+        writer.begin_query_run(expected.clone()).unwrap();
         let retained = producer.writes().unwrap();
         let writes = retained.get(&format!("query-run:{}", expected.id)).unwrap();
         let [write] = writes.as_slice() else {
@@ -311,18 +305,14 @@ fn queued_begin_and_outcome_remain_distinct_and_lookup_survives_restart() {
             crate::Archive::open_primary(&dir.path().join("cache"), &dir.path().join("bytes"))
                 .unwrap();
         let writer = crate::Writer::start_on_sinex(&archive, producer.clone()).unwrap();
-        assert_eq!(
-            writer.begin_query_run(expected.clone()).unwrap(),
-            QueryCustody::Queued
-        );
+        writer.begin_query_run(expected.clone()).unwrap();
         let pool = crate::ReadPool::open(&archive).unwrap();
         assert_eq!(
             pool.reader()
                 .unwrap()
                 .query_run(&expected.id, Some(producer.as_ref()))
                 .unwrap()
-                .unwrap()
-                .value,
+                .unwrap(),
             expected
         );
         if phase == 0 {
@@ -341,8 +331,7 @@ fn queued_begin_and_outcome_remain_distinct_and_lookup_survives_restart() {
                 .unwrap()
                 .query_run_outcome(&expected.id, Some(producer.as_ref()))
                 .unwrap()
-                .unwrap()
-                .value,
+                .unwrap(),
             completed
         );
         assert_eq!(
@@ -350,8 +339,7 @@ fn queued_begin_and_outcome_remain_distinct_and_lookup_survives_restart() {
                 .unwrap()
                 .query_run(&expected.id, Some(producer.as_ref()))
                 .unwrap()
-                .unwrap()
-                .value,
+                .unwrap(),
             expected
         );
         assert_eq!(producer.writes().unwrap().len(), 2);
@@ -359,7 +347,7 @@ fn queued_begin_and_outcome_remain_distinct_and_lookup_survives_restart() {
 }
 
 #[test]
-fn confirmed_run_phases_reuse_canonical_custody_without_a_new_spool_write() {
+fn confirmed_run_phases_need_no_new_spool_write() {
     let dir = tempfile::tempdir().unwrap();
     let producer = Arc::new(PendingProducer(dir.path().join("named.json")));
     let (archive, _lock) =
@@ -383,19 +371,13 @@ fn confirmed_run_phases_reuse_canonical_custody_without_a_new_spool_write() {
     tx.commit().unwrap();
     drop(conn);
     let writer = crate::Writer::start_on_sinex(&archive, producer.clone()).unwrap();
-    assert_eq!(
-        writer.begin_query_run(expected).unwrap(),
-        QueryCustody::Canonical
-    );
-    assert_eq!(
-        writer
-            .finish_query_run(completed)
-            .unwrap()
-            .recv()
-            .unwrap()
-            .unwrap(),
-        QueryCustody::Canonical
-    );
+    writer.begin_query_run(expected).unwrap();
+    writer
+        .finish_query_run(completed)
+        .unwrap()
+        .recv()
+        .unwrap()
+        .unwrap();
     assert!(producer.writes().unwrap().is_empty());
 }
 
@@ -427,9 +409,6 @@ fn confirmed_outcome_first_rejects_another_begin_intent_before_primary_spooling(
         Err(StoreError::Conflict(_))
     ));
     assert!(producer.writes().unwrap().is_empty());
-    assert_eq!(
-        writer.begin_query_run(original).unwrap(),
-        QueryCustody::Queued
-    );
+    writer.begin_query_run(original).unwrap();
     assert_eq!(producer.writes().unwrap().len(), 1);
 }
