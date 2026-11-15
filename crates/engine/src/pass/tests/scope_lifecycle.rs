@@ -332,7 +332,6 @@ fn queued_import_yields_after_admitted_capture_or_replay_and_resumes_from_durabl
             .unwrap();
             fault::clear();
             fault::arm("parse", "request-turn.jsonl", Action::Hold, 0, 1);
-            let stop = engine.archive.stop().clone();
             let (tx, rx) = channel();
             let worker_tx = tx.clone();
             let status = Arc::new(Mutex::new(LoopStatus::default()));
@@ -390,7 +389,6 @@ fn queued_import_yields_after_admitted_capture_or_replay_and_resumes_from_durabl
             let response = answer.recv_timeout(Duration::from_secs(5));
             drop(answer);
             if stop_after_import || response.is_err() || !imported || !entered {
-                stop.request();
                 let _ = tx.send(LoopMsg::Stop);
             }
             let (mut engine, result) = worker.join().unwrap();
@@ -680,7 +678,6 @@ fn an_import_answers_before_queued_captures_or_replays_start_and_the_next_turn_f
         let response = answer.recv_timeout(Duration::from_secs(5));
         drop(answer);
         if !entered || sent.is_err() || response.is_err() {
-            stop.request();
             let _ = tx.send(LoopMsg::Stop);
         }
         let (mut engine, result) = worker.join().unwrap();
