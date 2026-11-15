@@ -555,7 +555,7 @@ pub(crate) fn query_object_on(
                 validate_integrity(object)?;
                 let id = object.id.to_string();
                 if let Some(existing) = found.get(&id) {
-                    if !equivalent(&existing, object) {
+                    if !equivalent(existing, object) {
                         return Err(StoreError::Conflict(format!("query:{id}")));
                     }
                 } else if found.len() < 2 {
