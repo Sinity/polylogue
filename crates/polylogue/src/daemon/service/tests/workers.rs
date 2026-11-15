@@ -6,29 +6,28 @@ async fn a_signal_checkpoint_failure_survives_worker_join_and_releases_the_archi
     let root = directory.path().join("archive");
     let mut engine = crate::test_daemon::engine_config(directory.path().join("home"));
     engine.reads_sources = false;
-    let (archive, claim) = polylogue_store::Archive::open_or_create(&root).unwrap();
-    let conn = rusqlite::Connection::open(archive.archive_db()).unwrap();
-    // Corrupt content is a real worker failure, not an instruction to bootstrap
-    // a new checkpoint or to silently continue with empty state.
+    let mut runtime =
+        crate::test_daemon::start_runtime(&root, engine, ArchiveMode::Standalone).unwrap();
+    runtime.pause_signals().unwrap();
+    let conn = rusqlite::Connection::open(runtime.daemon.archive.archive_db()).unwrap();
+    // Change only the synthetic checkpoint after ordinary startup, so setup
+    // cannot fail through an unrelated initialization read of authored state.
     conn.execute(
-        "INSERT INTO signal_state(owner,body,commit_seq) VALUES(?1,?2,0)",
-        rusqlite::params![engine.machine, [0_u8].as_slice()],
+        "INSERT OR REPLACE INTO signal_state(owner,body,commit_seq) VALUES(?1,?2,0)",
+        rusqlite::params![runtime.daemon.config.requests.machine(), [0_u8].as_slice()],
     )
     .unwrap();
     drop(conn);
-    let reads = polylogue_store::ReadPool::open(&archive).unwrap();
-    let expected = reads
+    let expected = runtime
+        .daemon
+        .reads
         .reader()
         .unwrap()
-        .signal_checkpoint(&engine.machine)
+        .signal_checkpoint(runtime.daemon.config.requests.machine())
         .unwrap_err()
         .to_string();
-    drop(reads);
-    drop(claim);
-    drop(archive);
-
-    let mut runtime =
-        crate::test_daemon::start_runtime(&root, engine, ArchiveMode::Standalone).unwrap();
+    let _ = runtime.worker_events.send_replace(None);
+    runtime.start_signals().unwrap();
     let mut workers = runtime.worker_events();
     let exited = tokio::time::timeout(
         std::time::Duration::from_secs(5),

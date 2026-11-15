@@ -925,6 +925,29 @@ pub struct Runtime {
 }
 
 impl Runtime {
+    fn start_signals(&mut self) -> std::io::Result<()> {
+        let (stop, stopped) = channel();
+        let daemon = Arc::clone(&self.daemon);
+        let worker_events = self.worker_events.clone();
+        let worker = std::thread::Builder::new()
+            .name("polylogue-signals".into())
+            .spawn(move || {
+                let _exit = super::lifecycle::WorkerExit::new(
+                    worker_events,
+                    "signal worker terminated",
+                    None,
+                );
+                let result = crate::signals::run(daemon, stopped);
+                if let Err(error) = &result {
+                    eprintln!("polylogue: signal worker: {error}");
+                }
+                result
+            })?;
+        self.signals_stop = Some(stop);
+        self.signals = Some(worker);
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) fn signal_stop_for_test(&self) -> Sender<()> {
         self.signals_stop
@@ -1414,26 +1437,7 @@ pub fn start(
     wait.recv()
         .map_err(|_| std::io::Error::other("loop thread exited during startup"))?
         .map_err(std::io::Error::other)?;
-    let (stop, stopped) = channel();
-    runtime.signals_stop = Some(stop);
-    let daemon = Arc::clone(&runtime.daemon);
-    let worker_events = runtime.worker_events.clone();
-    runtime.signals = Some(
-        std::thread::Builder::new()
-            .name("polylogue-signals".into())
-            .spawn(move || {
-                let _exit = super::lifecycle::WorkerExit::new(
-                    worker_events,
-                    "signal worker terminated",
-                    None,
-                );
-                let result = crate::signals::run(daemon, stopped);
-                if let Err(error) = &result {
-                    eprintln!("polylogue: signal worker: {error}");
-                }
-                result
-            })?,
-    );
+    runtime.start_signals()?;
     let (stop, stopped) = channel();
     runtime.live_evidence_stop = Some(stop);
     let daemon = Arc::clone(&runtime.daemon);
