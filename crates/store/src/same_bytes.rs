@@ -1,34 +1,145 @@
-//! Chains of one input that hold exactly the same bytes. A file read again
-//! after a restore or a remount could start a chain whose extents repeat an
-//! older chain's; parsing such a chain gives that chain's reading again, so
-//! its reading is recorded from the other chain's rows instead of parsed.
+//! Chains of one input whose bytes begin alike. A rewritten file starts a
+//! chain that often repeats an older chain's bytes, wholly (a file read
+//! again after a restore or a remount) or up to a point (a file that was
+//! appended to, or edited after its first part). Parsing those bytes again
+//! gives the reading the other chain had at that point, so the older chain's
+//! reading is recorded from the newer chain's rows instead of parsed.
 use crate::{Result, StoreError, source::Source};
 use rusqlite::{Connection, OptionalExtension, params};
 
-/// The newest chain of `input` after `chain` with the same length and the
-/// same extents (offset, length, blob and blob offset) as `chain`.
-pub(crate) fn newest_identical(conn: &Connection, input: &str, chain: i64) -> Result<Option<i64>> {
-    let sql = Source::of(conn)?.sql(
-        "WITH mine AS (SELECT offset, length, blob, blob_offset FROM @source.extent
-                       WHERE input = ?1 AND chain = ?2),
-              size AS (SELECT max(length) AS length FROM @source.revision
-                       WHERE input = ?1 AND chain = ?2),
-              later AS (SELECT chain, max(length) AS length FROM @source.revision
-                        WHERE input = ?1 AND chain > ?2 GROUP BY chain)
-         SELECT later.chain FROM later, size
-         WHERE later.length = size.length AND size.length > 0
-           AND (SELECT count(*) FROM @source.extent e WHERE e.input = ?1 AND e.chain = later.chain)
-             = (SELECT count(*) FROM mine)
-           AND NOT EXISTS (SELECT 1 FROM mine m WHERE NOT EXISTS (
-                 SELECT 1 FROM @source.extent e WHERE e.input = ?1 AND e.chain = later.chain
-                   AND e.offset = m.offset AND e.length = m.length
-                   AND e.blob = m.blob AND e.blob_offset = m.blob_offset))
-         ORDER BY later.chain DESC LIMIT 1",
-    );
-    Ok(conn
-        .prepare_cached(&sql)?
-        .query_row(params![input, chain], |row| row.get(0))
-        .optional()?)
+/// One chain of an input: its stored length, where its bytes come from and
+/// how far it is read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChainLayout {
+    pub chain: i64,
+    pub length: u64,
+    /// The chain's extents, by offset; left empty when every chain of the
+    /// input is read.
+    pub extents: Vec<StoredExtent>,
+    /// The chain's reading, when it has one.
+    pub reading: Option<ChainReading>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct StoredExtent {
+    pub offset: u64,
+    pub length: u64,
+    pub blob: Vec<u8>,
+    pub blob_offset: u64,
+}
+
+/// How far a chain's reading has read, under which reading version.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChainReading {
+    pub reading_version: String,
+    /// The stored parse status word (`parsing`, `waiting`, `done`, ...).
+    pub status: String,
+    pub parsed_upto: u64,
+    /// The stored length a waiting, refused or failed reading stands at.
+    pub at_length: Option<u64>,
+}
+
+impl ChainReading {
+    /// Read through the end of a chain of `length` bytes: nothing remains
+    /// for a later parse but a record still being written.
+    pub fn settled(&self, length: u64) -> bool {
+        self.status == "done" || (self.status == "waiting" && self.at_length == Some(length))
+    }
+
+    /// A reading another chain's reading can continue from or be copied
+    /// from: current and not stopped.
+    pub fn continues(&self, reading_version: &str) -> bool {
+        self.reading_version == reading_version
+            && matches!(self.status.as_str(), "parsing" | "waiting" | "done")
+    }
+}
+
+impl ChainLayout {
+    /// How many bytes from the start this chain and `other` take from the
+    /// same bytes of the same blobs, which makes them alike without reading
+    /// them. Bytes alike in different blobs are found by reading
+    /// ([`crate::blobs::StoredChain::shared_prefix`]).
+    pub fn shared_extents(&self, other: &ChainLayout) -> u64 {
+        let (mut i, mut j, mut at) = (0, 0, 0u64);
+        while let (Some(a), Some(b)) = (self.extents.get(i), other.extents.get(j)) {
+            let inside = |e: &StoredExtent| e.offset <= at && at < e.offset + e.length;
+            if !inside(a)
+                || !inside(b)
+                || a.blob != b.blob
+                || a.blob_offset + (at - a.offset) != b.blob_offset + (at - b.offset)
+            {
+                break;
+            }
+            at = (a.offset + a.length).min(b.offset + b.length);
+            if at == a.offset + a.length {
+                i += 1;
+            }
+            if at == b.offset + b.length {
+                j += 1;
+            }
+        }
+        at.min(self.length).min(other.length)
+    }
+}
+
+/// Every chain of `input` with its reading, by chain, and its extents when
+/// some chain of the input is not read yet.
+pub(crate) fn chain_layouts(conn: &Connection, input: &str) -> Result<Vec<ChainLayout>> {
+    let source = Source::of(conn)?;
+    let mut chains: Vec<ChainLayout> = conn
+        .prepare_cached(&source.sql(
+            "SELECT chain, max(length) FROM @source.revision WHERE input = ?1
+             GROUP BY chain ORDER BY chain",
+        ))?
+        .query_map([input], |row| {
+            Ok(ChainLayout {
+                chain: row.get(0)?,
+                length: row.get(1)?,
+                extents: Vec::new(),
+                reading: None,
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    if chains.len() < 2 {
+        return Ok(chains);
+    }
+    let at = |chains: &[ChainLayout], chain: i64| chains.binary_search_by_key(&chain, |c| c.chain);
+    let mut statement = conn.prepare_cached(
+        "SELECT p.chain, p.reading_version, p.status, p.parsed_upto, p.at_length FROM parse_state p
+         JOIN input_ref r ON r.pk = p.input_pk WHERE r.id = ?1",
+    )?;
+    let mut rows = statement.query([input])?;
+    while let Some(row) = rows.next()? {
+        if let Ok(n) = at(&chains, row.get(0)?) {
+            chains[n].reading = Some(ChainReading {
+                reading_version: row.get(1)?,
+                status: row.get(2)?,
+                parsed_upto: row.get(3)?,
+                at_length: row.get(4)?,
+            });
+        }
+    }
+    // Extents decide which chains' bytes begin alike, which matters only
+    // while some chain is not read yet.
+    if chains.iter().all(|chain| chain.reading.is_some()) {
+        return Ok(chains);
+    }
+    let mut statement = conn.prepare_cached(&source.sql(
+        "SELECT chain, offset, length, blob, blob_offset FROM @source.extent
+         WHERE input = ?1 ORDER BY chain, offset",
+    ))?;
+    let mut rows = statement.query([input])?;
+    while let Some(row) = rows.next()? {
+        if let Ok(n) = at(&chains, row.get(0)?) {
+            chains[n].extents.push(StoredExtent {
+                offset: row.get(1)?,
+                length: row.get(2)?,
+                blob: row.get(3)?,
+                blob_offset: row.get(4)?,
+            });
+        }
+    }
+    Ok(chains)
 }
 
 /// The index tables that hold one chain's reading, keyed by `input_pk` and
@@ -59,37 +170,65 @@ const READING_TABLES: [&str; 22] = [
 ];
 
 /// An older chain whose reading is recorded from a newer chain of the same
-/// input holding the same bytes.
+/// input whose bytes begin with the same `upto` bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReadingCopy {
     pub input: String,
-    /// The newer chain, read under `reading_version`.
+    /// The newer chain, read under `reading_version` exactly to `upto`.
     pub from: i64,
     /// The older chain.
     pub to: i64,
     pub reading_version: String,
+    /// The parse position of `from` the copy is taken at: the end of its
+    /// last complete record within the bytes the two chains share.
+    pub upto: u64,
+    /// Every byte of `to` is one `from` was given when it reached `upto`, so
+    /// the copy reads `to` to its end, as a parse of `to` alone would. Else
+    /// `to` has bytes of its own after `upto`, parsed from there.
+    pub reaches_end: bool,
 }
 
-/// Records chain `to`'s reading as a copy of chain `from`'s, both of
-/// `input` and holding the same bytes. `false` when the copy would not equal
-/// parsing `to`: the bytes differ, `from` is not read to its end under
-/// `reading_version`, `to` already has a reading, or the input's reading
-/// writes rows shared by all its chains (a repository lookup, tool rows), or
-/// copied membership names its own chain and must be resolved by parsing.
+/// Records chain `to`'s reading as a copy of chain `from`'s at `upto`,
+/// both of `input`. The caller has compared the bytes: the two chains hold
+/// the same bytes before the point the copy is taken at. `false` when the
+/// copy would not equal parsing `to`: `from` is not read exactly to `upto`
+/// under `reading_version`, `to` already has a reading, or the input's
+/// reading writes rows shared by all its chains (a repository lookup, tool
+/// rows), or copied membership names its own chain and must be resolved by
+/// parsing.
 ///
 /// A message, document, event or link shows its source input's newest
-/// chain, and on equal values a newer chain wins, so an older chain's copy
-/// changes no shown row, and a copied document source is not the shown one. Its sessions are marked changed, as a parse of the
-/// chain would mark them.
+/// chain, and on equal values a newer chain wins. The copy holds exactly
+/// the rows `from` holds at that moment, so it changes no shown row, and a
+/// copied document source is not the shown one. Its sessions are marked
+/// changed, as a parse of the chain would mark them. The copied parse state
+/// stands where a parse of `to` stands once it has read those bytes: at its
+/// end when it `reaches_end`, else parsing, with the parser checkpoint that
+/// lets the parse of `to`'s own bytes continue from `upto`.
 pub(crate) fn copy_reading(tx: &Connection, copy: &ReadingCopy, counter: i64) -> Result<bool> {
     let ReadingCopy {
         input,
         from,
         to,
         reading_version,
+        upto,
+        reaches_end,
     } = copy;
-    let (input, from, to) = (input.as_str(), *from, *to);
-    if to >= from || newest_identical(tx, input, to)? != Some(from) {
+    let (input, from, to, upto) = (input.as_str(), *from, *to, *upto);
+    let Ok(upto_sql) = i64::try_from(upto) else {
+        return Ok(false);
+    };
+    let length_sql = Source::of(tx)?
+        .sql("SELECT max(length) FROM @source.revision WHERE input = ?1 AND chain = ?2");
+    let length = |chain: i64| -> Result<Option<u64>> {
+        Ok(tx
+            .prepare_cached(&length_sql)?
+            .query_row(params![input, chain], |row| row.get::<_, Option<u64>>(0))?)
+    };
+    let (Some(from_length), Some(to_length)) = (length(from)?, length(to)?) else {
+        return Ok(false);
+    };
+    if to >= from || upto > from_length || upto > to_length {
         return Ok(false);
     }
     let Some(input_pk) = tx
@@ -100,22 +239,19 @@ pub(crate) fn copy_reading(tx: &Connection, copy: &ReadingCopy, counter: i64) ->
     else {
         return Ok(false);
     };
-    // Read to its end, so every source receipt of the reading was taken at
-    // the end of its byte footprint and is taken again for `to` below.
-    let length_sql = Source::of(tx)?
-        .sql("(SELECT max(length) FROM @source.revision WHERE input = ?5 AND chain = ?2)");
+    // Every source receipt of the reading so far was taken through at most
+    // `upto`, which `to` holds too, and is taken again for `to` below.
     let ready: bool = tx.query_row(
-        &format!(
-            "SELECT EXISTS(SELECT 1 FROM parse_state WHERE input_pk = ?1 AND chain = ?2
-             AND reading_version = ?3 AND status = 'done' AND parsed_upto = {length_sql})
+        "SELECT EXISTS(SELECT 1 FROM parse_state WHERE input_pk = ?1 AND chain = ?2
+             AND reading_version = ?3 AND status IN ('parsing','waiting','done')
+             AND parsed_upto = ?6)
          AND NOT EXISTS(SELECT 1 FROM parse_state WHERE input_pk = ?1 AND chain = ?4)
          AND NOT EXISTS(SELECT 1 FROM repo_lookup WHERE input_pk = ?1)
          AND NOT EXISTS(SELECT 1 FROM tool_row WHERE input_pk = ?1)
          AND NOT EXISTS(SELECT 1 FROM tool_database WHERE input_pk = ?1)
          AND NOT EXISTS(SELECT 1 FROM prefix_member WHERE input_pk = ?1 AND chain = ?2
-             AND source_input = ?5 AND source_chain = ?2)"
-        ),
-        params![input_pk, from, reading_version, to, input],
+             AND source_input = ?5 AND source_chain = ?2)",
+        params![input_pk, from, reading_version, to, input, upto_sql],
         |row| row.get(0),
     )?;
     if !ready {
@@ -208,6 +344,49 @@ pub(crate) fn copy_reading(tx: &Connection, copy: &ReadingCopy, counter: i64) ->
             }
         }
     }
+    // `from` may have more bytes after the copy point than `to`, or bytes
+    // of its own: the standing is `to`'s, over `to`'s own length.
+    let progress = if *reaches_end {
+        polylogue_model::batch::ParseProgress::after(
+            polylogue_model::batch::StepProgress::AtEnd,
+            upto,
+            to_length,
+        )
+    } else {
+        polylogue_model::batch::ParseProgress::Parsing
+    };
+    tx.prepare_cached(
+        "UPDATE parse_state SET status = ?3, at_length = ?4 WHERE input_pk = ?1 AND chain = ?2",
+    )?
+    .execute(params![
+        input_pk,
+        to,
+        progress.status(),
+        progress
+            .at_length()
+            .map(i64::try_from)
+            .transpose()
+            .map_err(|_| {
+                StoreError::Invalid("a stored length exceeds SQLite's integer range".into())
+            })?
+    ])?;
+    let receipt = Source::reading_receipt(tx, input, to, upto)?;
+    crate::wire_shapes::copied(
+        tx,
+        crate::wire_shapes::Source {
+            input_pk,
+            input,
+            format: "",
+            chain: to,
+            length: to_length,
+            receipt: receipt.sequence,
+            receipt_id: receipt.id.as_deref(),
+            observation: receipt.observation.as_deref(),
+            observed_at_ms: receipt.observed_at_ms,
+        },
+        reading_version,
+        *reaches_end,
+    )?;
     tx.execute(
         "UPDATE session SET changed = ?3 WHERE pk IN (SELECT session_pk FROM parsed WHERE input_pk = ?1 AND chain = ?2)",
         params![input_pk, to, counter],

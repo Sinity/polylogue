@@ -50,6 +50,8 @@ fn copy_receipts(count: i64, refuse_first: bool) -> u64 {
         from: 3,
         to: 1,
         reading_version: version.clone(),
+        upto: 100,
+        reaches_end: true,
     };
     if refuse_first {
         let mut invalid: serde_json::Value = serde_json::from_str(&original).unwrap();

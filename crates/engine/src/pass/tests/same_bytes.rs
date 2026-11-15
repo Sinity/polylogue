@@ -27,9 +27,9 @@ fn a_user_request_yields_between_complete_copies_and_resume_selects_only_the_rem
         .reparse_behind(None, RevisionChains::Older, &mut pass)
         .unwrap();
     assert_eq!(engine.same_bytes.len(), 2);
-    let first = engine.same_bytes[0].1.to;
-    let remaining = engine.same_bytes[1].1.to;
-    let input = engine.same_bytes[0].1.input.clone();
+    let first = engine.same_bytes[0].parser_chain.unwrap();
+    let remaining = engine.same_bytes[1].parser_chain.unwrap();
+    let input = engine.same_bytes[0].input.id.clone();
     let (send, receive) = std::sync::mpsc::channel();
     engine.requests = Some(Requests::new(receive));
     fault::arm("write.copy_table", "unused", Action::Hold, 0, 1);

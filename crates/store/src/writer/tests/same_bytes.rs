@@ -172,6 +172,8 @@ fn a_copied_document_source_equals_its_parse_and_is_not_shown() {
                     from,
                     to,
                     reading_version: "synthetic=1".into(),
+                    upto: 100,
+                    reaches_end: true,
                 })
                 .unwrap()
                 .unwrap()
@@ -242,6 +244,8 @@ fn reading_copies_preserve_portable_members_and_reparse_chain_owned_members() {
                 from: 2,
                 to: 1,
                 reading_version: "synthetic=1".into(),
+                upto: 100,
+                reaches_end: true,
             })
             .unwrap();
         assert!(
@@ -289,6 +293,8 @@ fn stopping_a_later_copy_keeps_the_completed_chain_and_rolls_back_its_own_readin
         from,
         to,
         reading_version: "synthetic=1".into(),
+        upto: 100,
+        reaches_end: true,
     });
     // The later copy stops inside the last table's INSERT SELECT. All
     // preceding tables, including its cursor and wire receipts, have copied.
@@ -535,6 +541,8 @@ fn an_ordinary_copy_failure_keeps_its_cause_and_rolls_back_its_transaction() {
             from: 2,
             to: 1,
             reading_version: "synthetic=1".into(),
+            upto: 100,
+            reaches_end: true,
         })
         .unwrap();
     crate::fault::clear();

@@ -53,7 +53,7 @@ pub mod read;
 pub mod reference;
 mod repo_lookup;
 mod same_bytes;
-pub use same_bytes::ReadingCopy;
+pub use same_bytes::{ChainLayout, ChainReading, ReadingCopy, StoredExtent};
 pub mod schema;
 pub mod schema_inputs;
 pub mod scope_index;

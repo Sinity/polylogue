@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 /// A Claude Code record without a `uuid`, so its message is named by its
 /// content.
-fn unnamed(session: &str, text: &str) -> String {
+pub(super) fn unnamed(session: &str, text: &str) -> String {
     format!(
         "{}\n",
         serde_json::json!({
@@ -17,7 +17,7 @@ fn unnamed(session: &str, text: &str) -> String {
 }
 
 /// A capture log holding one capture per entry, each with these turns.
-fn capture_log(captures: &[&[&str]]) -> Vec<u8> {
+pub(super) fn capture_log(captures: &[&[&str]]) -> Vec<u8> {
     let mut log = polylogue_model::capture_log::MAGIC.to_vec();
     for turns in captures {
         let payload = serde_json::to_vec(&serde_json::json!({
@@ -39,7 +39,10 @@ fn capture_log(captures: &[&[&str]]) -> Vec<u8> {
 
 /// Every row of every table, sorted, with local version keys named by their
 /// canonical hashes. The full payload and every reference remain compared.
-fn dump(w: &ClaudeHome) -> BTreeMap<String, Vec<String>> {
+/// Format evidence is compared by what it says and the chain it cites, not
+/// by the byte ranges it was read in or the revisions it took them at
+/// ([`READ_RANGES`]). A status count no chain has reads as absent.
+pub(super) fn dump(w: &ClaudeHome) -> BTreeMap<String, Vec<String>> {
     let conn = rusqlite::Connection::open_with_flags(
         w.root.join("index.db"),
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -72,6 +75,15 @@ fn dump(w: &ClaudeHome) -> BTreeMap<String, Vec<String>> {
         let columns = names.iter().map(|name| {
             if name == "version_pk" || (table == "message_version" && name == "pk") {
                 format!("(SELECT v.version_hash FROM message_version v WHERE v.pk=t.\"{name}\") AS \"{name}\"")
+            } else if matches!(table.as_str(), "wire_shape" | "wire_type") && matches!(name.as_str(), "first" | "last") {
+                // The chain the receipt cites, not the read range it took.
+                format!("(SELECT json_extract(r.receipt,'$.chain') FROM wire_receipt r WHERE r.input_pk=t.input_pk AND r.chain=t.chain AND r.reading_version=t.reading_version AND r.number=t.\"{name}\") AS \"{name}\"")
+            } else if table == "wire_receipt" && name == "number" {
+                "NULL".to_owned()
+            } else if table == "wire_receipt" && name == "receipt" {
+                "json_extract(t.receipt,'$.chain') AS receipt".to_owned()
+            } else if table == "wire_reading" && name == "state" {
+                format!("json_remove(t.state,{}) AS state", READ_RANGES.iter().map(|key| format!("'$.{key}'")).collect::<Vec<_>>().join(","))
             } else { format!("t.\"{name}\"") }
         }).collect::<Vec<_>>().join(",");
         let mut statement = conn
@@ -87,7 +99,10 @@ fn dump(w: &ClaudeHome) -> BTreeMap<String, Vec<String>> {
                     if WRITE_COUNTER_VALUES.iter().any(&column) || WRITE_ORDER.iter().any(&column) {
                         continue;
                     }
-                    let value: rusqlite::types::Value = row.get(n)?;
+                    let mut value: rusqlite::types::Value = row.get(n)?;
+                    if table == "parse_state" && name == "checkpoint" {
+                        value = checkpoint_without_read_range(value);
+                    }
                     text.push_str(&format!("{name}={value:?};"));
                 }
                 Ok(text)
@@ -103,6 +118,14 @@ fn dump(w: &ClaudeHome) -> BTreeMap<String, Vec<String>> {
             });
         }
         rows.sort();
+        if table == "wire_receipt" {
+            // One row per chain cited, however many ranges read it.
+            rows.dedup();
+        }
+        if table == "parse_status_count" {
+            // Readers count only statuses some chain has (read.rs).
+            rows.retain(|row| !row.ends_with("n=Integer(0);"));
+        }
         out.insert(table, rows);
     }
     out
@@ -116,6 +139,7 @@ const WRITE_COUNTER_VALUES: &[(&str, &str)] = &[
     ("*", "commit_seq"),
     ("session", "changed"),
     ("session", "derived_changed"),
+    ("session_first_prompt", "changed"),
     ("session_item_state", "indexed_changed"),
 ];
 /// Values that follow the order of writes rather than what was written: a
@@ -125,6 +149,35 @@ const WRITE_COUNTER_VALUES: &[(&str, &str)] = &[
 /// item index). A copy is written after the newer chain's parse, where a
 /// parse of the older chain would have come before it.
 const WRITE_ORDER: &[(&str, &str)] = &[("block", "pk"), ("session_item_state", "rewrite_version")];
+/// Fields of a reading's format evidence that record the ranges it was read
+/// in: the receipts of its first and latest read ranges (each a range and
+/// the revision it was taken at) and the latest range's bounds and hash,
+/// which let a range read again be recognized. A copied reading carries the
+/// newer chain's read ranges over the shared bytes, retaken for its own
+/// chain's revisions (docs/archive.md, versioned rows), where a parse of the
+/// chain alone reads other ranges and so cites other revisions; the evidence
+/// they gathered is compared in full.
+const READ_RANGES: &[&str] = &["first", "last", "last_start", "last_end", "last_hash"];
+
+/// A parser checkpoint as JSON text, without the position its last read
+/// range started at (the base of the parser context changes it carries),
+/// which is where the chain's reading last stopped and went on, not what it
+/// read.
+fn checkpoint_without_read_range(value: rusqlite::types::Value) -> rusqlite::types::Value {
+    let rusqlite::types::Value::Blob(compressed) = &value else {
+        return value;
+    };
+    let mut checkpoint: serde_json::Value =
+        serde_json::from_slice(&zstd::decode_all(&compressed[..]).unwrap()).unwrap();
+    if let Some(context) = checkpoint
+        .pointer_mut("/parser_state/_polylogue_context")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        context.remove("base");
+    }
+    rusqlite::types::Value::Text(checkpoint.to_string())
+}
+
 /// Rows of `meta` that are the write counter itself or identities each index
 /// is given when it is created.
 const CREATED_WITH_THE_INDEX: &[&str] = &[
@@ -197,14 +250,23 @@ fn an_identical_older_chain_is_recorded_exactly_as_its_parse() {
         (pass, dump(&w))
     };
     let (parsed, every_chain_parsed) = rebuild(false);
-    assert_eq!(parsed.readings_copied, 0);
+    assert_eq!((parsed.readings_copied, parsed.bytes_copied), (0, 0));
     let (copied, with_copies) = rebuild(true);
-    // In each input chain 1 is recorded from chain 3, chain 2 from chain 4,
-    // and only chains 3 and 4 are read.
-    assert_eq!(copied.readings_copied, 4);
+    // In each input chain 1 is recorded from chain 3 and chain 2 from chain
+    // 4. Chains `a` and `b` of the transcript also share their first record,
+    // so chain 3 is recorded from chain 4 through it and parses only the
+    // rest (docs/archive.md, versioned rows); the capture logs share no
+    // complete capture, and chain 3 of the log is parsed whole.
+    assert_eq!(copied.readings_copied, 5);
+    let first = user("u1", "same", "first prompt").len() as u64;
     let both = (a.len() + b.len() + captured_a.len() + captured_b.len()) as u64;
+    // Chain 4's parse stops at the end of the record the chains share and
+    // reads on from there, so no byte is read twice.
     assert_eq!(parsed.bytes_read, 2 * both);
-    assert_eq!(copied.bytes_read, both);
+    assert_eq!(copied.bytes_read, both - first);
+    // Chains 1 and 2 of each input are read whole by their copies, chain 3
+    // of the transcript through its first record.
+    assert_eq!(copied.bytes_copied, both + first);
     let differing: Vec<String> = every_chain_parsed
         .iter()
         .filter(|(table, rows)| with_copies.get(*table) != Some(rows))

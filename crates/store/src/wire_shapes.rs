@@ -281,6 +281,47 @@ impl Reading {
     }
 }
 
+/// Restates a reading copied from another chain's reading (with its receipts
+/// already taken again for this chain) against this chain's own `source`:
+/// its length, whether the copy read it to its end, and so whether, and at
+/// which receipt, it covers its whole source. A completion of the other
+/// chain belonged to that chain's bytes, not to the copied ones.
+pub(crate) fn copied(
+    tx: &Connection,
+    source: Source<'_>,
+    reading_version: &str,
+    reaches_end: bool,
+) -> Result<()> {
+    let key = params![source.input_pk, source.chain, reading_version];
+    let Some(state) = tx
+        .prepare_cached(
+            "SELECT state FROM wire_reading WHERE input_pk=?1 AND chain=?2 AND reading_version=?3",
+        )?
+        .query_row(key, |row| row.get::<_, String>(0))
+        .optional()?
+    else {
+        return Ok(());
+    };
+    let mut reading: Reading = serde_json::from_str(&state)?;
+    reading.length = source.length;
+    reading.progress = reading.progress.clone().with_end(reaches_end);
+    reading.completed = None;
+    reading.completed_before_reset = None;
+    if reading.status() == CoverageStatus::Complete {
+        reading.complete(source, &Receipt::from(source));
+    }
+    tx.prepare_cached(
+        "UPDATE wire_reading SET state=?4 WHERE input_pk=?1 AND chain=?2 AND reading_version=?3",
+    )?
+    .execute(params![
+        source.input_pk,
+        source.chain,
+        reading_version,
+        serde_json::to_string(&reading)?
+    ])?;
+    Ok(())
+}
+
 /// Apply before or after the ordinary parse checkpoint, in the same transaction.
 /// A complete reset replaces current counts, retaining first/last evidence and
 /// the rows of older reading versions. Overlapping non-identical ranges fail;

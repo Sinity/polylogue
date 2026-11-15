@@ -10,6 +10,7 @@ use std::fs;
 
 mod newest_chains_first;
 mod older_chains;
+mod prefix_copies;
 mod reparse;
 mod same_bytes;
 

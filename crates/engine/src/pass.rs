@@ -1124,6 +1124,8 @@ impl Engine {
             waiting: false,
             input_finished: false,
             source: pool::Bytes::File,
+            prefix_copies: Vec::new(),
+            read_to: parse_pos,
         }))
     }
 
@@ -1134,9 +1136,10 @@ impl Engine {
     /// needs no command of its own; older chains go through the ordinary
     /// parser and writer, where a newer chain wins. A pass reads every
     /// input's newest chain before any older chain, so a first build ends
-    /// once the newest chains are read. An older chain that holds exactly
-    /// the bytes of a newer chain of its input is not parsed: its reading is
-    /// that chain's, copied once that chain is read ([`Engine::copy_same_bytes`]).
+    /// once the newest chains are read. An older chain whose bytes begin
+    /// like a newer chain's is not parsed over the bytes they share: its
+    /// reading is copied from that chain's as the newer chain's parse passes
+    /// them, or once that chain is read ([`crate::prefix_copies`]).
     /// `selected` limits it to some inputs.
     ///
     /// The chains run on the parse pool together, in rounds that hold one
@@ -1164,6 +1167,7 @@ impl Engine {
         )?;
         // Chains set aside by an earlier pass that ended early are found again.
         self.same_bytes.clear();
+        self.shared_prefixes.get_mut().clear();
         let mut replacements = Vec::new();
         let mut parse = Vec::new();
         let watched: HashMap<String, PathBuf> = self
@@ -1296,20 +1300,17 @@ impl Engine {
                 && !state.parsed
                 && !self.archive.is_primary()
                 && !origin.is_row_dump(&plan.path)
-                && let Some(newer) = self
-                    .reads
-                    .reader()?
-                    .newest_identical_chain(&plan.input.id, state.chain)?
+                && self.copied_later(
+                    &plan.input.id,
+                    state.chain,
+                    &origin.reading_version(),
+                    plan.input_finished,
+                )?
             {
-                // Parsing the same bytes again gives the newer chain's
-                // reading; it is copied once that chain is read.
-                let copy = polylogue_store::ReadingCopy {
-                    input: plan.input.id.clone(),
-                    from: newer,
-                    to: state.chain,
-                    reading_version: origin.reading_version(),
-                };
-                self.same_bytes.push((plan, copy));
+                // Parsing these bytes again gives a reading another chain
+                // has, or will have once read; it is copied after this pass
+                // reads the chains it parses.
+                self.same_bytes.push(plan);
                 continue;
             }
             parse.push(plan);
@@ -1348,10 +1349,11 @@ impl Engine {
     }
 
     /// Records each older chain set aside by [`Engine::reparse_behind`] from
-    /// its newer chain of the same bytes, now that the pass has read that
-    /// chain. A chain whose copy would not equal its parse (the newer chain
-    /// stopped, or its reading writes rows shared by the input's chains) is
-    /// parsed instead.
+    /// the reading of the chain whose bytes it shares, now that the pass has
+    /// read the chains it parses. A chain the copy does not read to its end
+    /// is parsed on from the copy; one whose copy would not equal its parse
+    /// (its source stopped, or its reading writes rows shared by the input's
+    /// chains) is parsed whole.
     fn copy_same_bytes(&mut self, pass: &mut Pass) -> Result<(), EngineError> {
         if self.same_bytes.is_empty() || self.poll_request() {
             return Ok(());
@@ -1360,21 +1362,41 @@ impl Engine {
         pass.messages_written += report.messages;
         pass.errors.extend(report.errors);
         let mut parse = Vec::new();
-        for (plan, copy) in std::mem::take(&mut self.same_bytes) {
+        for plan in std::mem::take(&mut self.same_bytes) {
             // Each answer commits one complete chain. A request between
             // copies yields now; uncopied chains are selected next pass.
             if self.poll_request() {
                 break;
             }
-            let answer = self.writer.sender()?.copy_reading(copy)?;
+            let Some(chain) = plan.parser_chain else {
+                parse.push(plan);
+                continue;
+            };
+            let copy = self.copy_now(
+                &plan.input.id,
+                chain,
+                &plan.origin.reading_version(),
+                plan.input_finished,
+            )?;
+            // Only a parser reading ranges in order continues from a copy.
+            let continues = crate::prefix_copies::parses_in_order(&plan);
+            let Some(copy) = copy.filter(|copy| copy.reaches_end || continues) else {
+                parse.push(plan);
+                continue;
+            };
+            let (reaches_end, upto) = (copy.reaches_end, copy.upto);
             // A copy that would not be exact, or failed, is parsed instead,
             // which gives the same reading. Transaction and stop errors
             // propagate rather than becoming another parse attempt.
+            let answer = self.writer.sender()?.copy_reading(copy)?;
             if matches!(answer, Ok(true)) {
                 pass.readings_copied += 1;
-            } else {
-                parse.push(plan);
+                pass.bytes_copied += upto;
+                if reaches_end {
+                    continue;
+                }
             }
+            parse.push(plan);
         }
         self.execute_by_path(parse, pass)
     }
@@ -1513,7 +1535,12 @@ impl Engine {
                 && stored.parsed_upto > 0
             {
                 plan.parse_pos = stored.parsed_upto;
+                plan.read_to = stored.parsed_upto;
                 plan.replace = false;
+                // A reading another chain's copy took to this chain's end
+                // leaves only a record still being written.
+                plan.waiting = stored.progress
+                    == polylogue_model::batch::ParseProgress::Waiting { length: plan.size };
                 plan.parser_state = self.restored_parser_state(
                     &reader,
                     &plan.input.id,
@@ -1734,11 +1761,13 @@ impl Engine {
                     continue 'work;
                 }
                 if plan.finished() {
+                    self.make_due_copies(&mut plan, pass)?;
                     pass.capture_pending |= plan.pending.is_some();
                     self.finish_plan(plan);
                     continue;
                 }
-                if !started.contains(&plan.path) {
+                let first = !started.contains(&plan.path);
+                if first {
                     let (start, end) = plan.next_range();
                     if outstanding > 0 && !pool.has_room(end - start) {
                         waiting.push_front(plan);
@@ -1749,6 +1778,17 @@ impl Engine {
                 // Stored bytes are loaded as their plan starts, so a pass
                 // over every stored input holds only the running plans'.
                 if !self.load_stored(&mut plan)? {
+                    continue;
+                }
+                if first {
+                    self.plan_prefix_copies(&mut plan)?;
+                }
+                // Copies whose stop the parse has reached take the reading
+                // before the next range changes it.
+                self.make_due_copies(&mut plan, pass)?;
+                if plan.finished() {
+                    pass.capture_pending |= plan.pending.is_some();
+                    self.finish_plan(plan);
                     continue;
                 }
                 let mut job = plan.next_job(&self.stopped_attempt);
@@ -1878,6 +1918,7 @@ impl Engine {
                     }
                     continue;
                 }
+                self.make_due_copies(&mut plan, pass)?;
                 pass.capture_pending |= plan.pending.is_some();
                 self.finish_plan(plan);
             } else {

@@ -44,6 +44,7 @@ pub use import::predecessor::PredecessorReport;
 mod parser_checkpoint;
 mod pass;
 mod plan;
+mod prefix_copies;
 mod reparse;
 mod writes;
 
@@ -255,8 +256,11 @@ pub struct Pass {
     pub blobs_deduplicated: u64,
     pub messages_written: u64,
     /// Older chains whose reading was recorded from a newer chain of the
-    /// same input holding the same bytes, instead of parsed again.
+    /// same input whose bytes begin alike, instead of parsed again.
     pub readings_copied: u64,
+    /// Bytes of those older chains the copies read: each copy's position,
+    /// before which the chain is not parsed.
+    pub bytes_copied: u64,
     /// Sessions whose derived products the pass recomputed.
     pub sessions_derived: u64,
     pub seconds: f64,
@@ -284,6 +288,7 @@ impl Pass {
         self.blobs_deduplicated += next.blobs_deduplicated;
         self.messages_written += next.messages_written;
         self.readings_copied += next.readings_copied;
+        self.bytes_copied += next.bytes_copied;
         self.sessions_derived += next.sessions_derived;
         self.seconds += next.seconds;
         for root in next.unreadable_roots {
@@ -461,13 +466,16 @@ pub struct Engine {
     databases: BTreeMap<PathBuf, &'static str>,
     live_checked: Instant,
     pass_open: bool,
-    /// Older chains this pass records from a newer chain holding the same
-    /// bytes once that chain is read, each with the plan that parses it
-    /// when the copy would not be exact.
-    same_bytes: Vec<(Plan, polylogue_store::ReadingCopy)>,
+    /// Plans of older chains this pass records from a chain whose bytes they
+    /// share once the pass's parsing is done ([`Engine::copy_same_bytes`]),
+    /// run when the copy would not be exact or leaves bytes to parse.
+    same_bytes: Vec<Plan>,
     collectors_at: Option<Instant>,
     capture_checked: Option<Instant>,
     lookups: repo_lookup::Cache,
+    /// How many bytes two stored chains share from their starts; each pair
+    /// is compared once per pass.
+    shared_prefixes: std::cell::RefCell<prefix_copies::SharedPrefixes>,
     /// When repository lookups were last refreshed; at most once a minute.
     lookups_at: Option<Instant>,
 }
@@ -531,6 +539,7 @@ impl Engine {
             collectors_at: None,
             capture_checked: None,
             lookups: repo_lookup::Cache::default(),
+            shared_prefixes: Default::default(),
             lookups_at: None,
             collectors: collectors::Collectors::default(),
             requests: None,

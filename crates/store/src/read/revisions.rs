@@ -7,10 +7,10 @@ pub struct RevisionPoint {
     pub length: u64,
 }
 impl Reader<'_> {
-    /// The newest later chain of `input` holding exactly the bytes of
-    /// `chain` (the same length and extents), whose reading is that chain's.
-    pub fn newest_identical_chain(&self, input: &str, chain: i64) -> Result<Option<i64>> {
-        crate::same_bytes::newest_identical(self.conn()?, input, chain)
+    /// Every chain of `input`, with its extents and reading, by chain: what
+    /// deciding which chains' bytes begin alike needs.
+    pub fn chain_layouts(&self, input: &str) -> Result<Vec<crate::ChainLayout>> {
+        crate::same_bytes::chain_layouts(self.conn()?, input)
     }
 
     /// Visits known points at exactly this length, at most once per byte chain.
