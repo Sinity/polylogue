@@ -1594,16 +1594,11 @@ fn confirmed_removal_does_not_read_unrelated_pending_metadata_or_acknowledgments
     .unwrap();
     let checked = std::cell::Cell::new(0);
     spool
-        .remove_confirmed(
-            &crate::tests::applied(10),
-            &|identity| {
-                assert_eq!(identity, uuid::Uuid::nil().to_string());
-                checked.set(checked.get() + 1);
-                Ok(true)
-            },
-            "fixture-producer",
-            &|_, _| Ok(false),
-        )
+        .remove_confirmed(&crate::tests::applied(10), &|identity| {
+            assert_eq!(identity, uuid::Uuid::nil().to_string());
+            checked.set(checked.get() + 1);
+            Ok(true)
+        })
         .unwrap();
     assert_eq!(checked.get(), 1);
     assert!(spool.get("confirmed").unwrap().is_none());
