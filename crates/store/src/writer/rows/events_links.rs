@@ -73,7 +73,7 @@ impl RowWriter<'_, '_> {
                     &choice.body,
                 )?
             {
-                self.changes.event_items(self.tx, pk)?;
+                self.changes.event(self.tx, pk)?;
             }
             return Ok(());
         }

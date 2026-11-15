@@ -479,8 +479,6 @@ fn compaction_moves_and_removal_keep_both_sessions_exact_across_rollback() {
         let event = tx
             .query_row("SELECT pk FROM event", [], |r| r.get::<_, i64>(0))
             .unwrap();
-        // A later real mutation must upgrade an earlier derived-only refresh.
-        changes.event_items(&tx, event).unwrap();
         changes.event(&tx, event).unwrap();
         if remove {
             tx.execute("DELETE FROM event_source WHERE event_pk=?1", [event])

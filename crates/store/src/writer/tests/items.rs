@@ -213,14 +213,6 @@ fn an_identical_event_claim_repairs_retained_old_item_metadata() {
     )
     .unwrap();
     let before = stored(&w, "s");
-    let summary =
-        || {
-            conn.query_row(
-        "SELECT changed,message_count,compaction_count FROM session WHERE id='claude-code:s'",
-        [], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?)),
-    ).unwrap()
-        };
-    let summary_before = summary();
     let mut extra = batch("z-extra-events", Route::Capture, 0, vec![], &[]);
     extra.parse[0].output.events = input.parse[0].output.events.clone();
     w.store_reading(extra, Some(&SOURCE_RECORD)).unwrap();
@@ -235,11 +227,6 @@ fn an_identical_event_claim_repairs_retained_old_item_metadata() {
         "the existing item cursor version invalidates the stale reading"
     );
     assert_matches_rows(&w, "s");
-    assert_eq!(
-        summary(),
-        summary_before,
-        "derived item repair keeps row counts and change stamp"
-    );
     assert_eq!(
         conn.query_row("SELECT count(*) FROM event_source", [], |r| r
             .get::<_, i64>(0))

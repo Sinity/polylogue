@@ -128,11 +128,8 @@ impl ChangeSummary {
                 deltas.entry(session).or_default().accumulate(&after, 1)?;
             }
         }
-        for (&pk, event) in &changed.events {
-            if !event.rows_changed {
-                continue;
-            }
-            if let Some((session, compaction)) = &event.before {
+        for (&pk, before) in &changed.events {
+            if let Some((session, compaction)) = before {
                 deltas.entry(*session).or_default().compactions -= i64::from(*compaction);
             }
             let after = conn
