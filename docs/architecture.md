@@ -165,7 +165,8 @@ they reached the disk. Recovery starts with a reboot
 
 **Building `index.db`.** A build of the index, the first one or one that
 replaces an index from another schema, writes a private file,
-`index-build/index.db`, in a directory with copy-on-write off, with SQLite's
+`index-build/index.db`, in a directory with copy-on-write (and so
+filesystem compression) off, with SQLite's
 rollback journal kept in memory and no syncs. A failed transaction still
 rolls back in the process; a lost process or boot may leave the file torn.
 Before the build's first unsynced write the writer creates and syncs the

@@ -131,9 +131,18 @@ impl Catalog {
             )
             .optional()?;
         let schema = schema.map(|s| serde_json::from_str(&s)).transpose()?;
+        // An input the index has no row for has nothing to compare, so the
+        // snapshot ends now. During a build the index file has a rollback
+        // journal, where a held read blocks every commit of the writer.
+        if pk.is_none() {
+            conn.execute_batch("COMMIT")?;
+        }
         Ok(Self { conn, pk, schema })
     }
     pub fn changed(&self, table: &str, key: &Value, row: &Value) -> crate::Result<bool> {
+        if self.pk.is_none() {
+            return Ok(true);
+        }
         let key = key.to_string();
         self.conn
             .prepare_cached("INSERT INTO temp.seen VALUES(?1,?2)")?
@@ -150,6 +159,9 @@ impl Catalog {
         table: &str,
         visit: &mut dyn FnMut(Value) -> Result<(), DatabaseError>,
     ) -> Result<(), DatabaseError> {
+        if self.pk.is_none() {
+            return Ok(());
+        }
         let mut stmt = self.conn.prepare("SELECT key FROM tool_row WHERE input_pk=?1 AND tbl=?2 AND NOT EXISTS(SELECT 1 FROM temp.seen s WHERE s.tbl=tool_row.tbl AND s.key=tool_row.key) ORDER BY key").map_err(crate::StoreError::from)?;
         let mut rows = stmt
             .query(params![self.pk, table])
@@ -165,6 +177,9 @@ impl Catalog {
         tables: &[&str],
         visit: &mut dyn FnMut(&str, Value) -> Result<(), DatabaseError>,
     ) -> Result<(), DatabaseError> {
+        if self.pk.is_none() {
+            return Ok(());
+        }
         let mut stmt = self
             .conn
             .prepare("SELECT DISTINCT tbl FROM tool_row WHERE input_pk=?1 ORDER BY tbl")
