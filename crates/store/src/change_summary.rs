@@ -35,6 +35,11 @@ struct MessageChange {
     installed: Option<(i64, crate::derive::counts::Counts, bool)>,
 }
 
+struct EventChange {
+    before: Option<(i64, bool)>,
+    rows_changed: bool,
+}
+
 struct SessionBefore {
     script: bool,
     counts_known: bool,
@@ -49,7 +54,7 @@ struct Changed {
     /// new one).
     messages: BTreeMap<i64, MessageChange>,
     /// Events whose row changed, with the session each had before.
-    events: BTreeMap<i64, Option<(i64, bool)>>,
+    events: BTreeMap<i64, EventChange>,
     /// The session-wide rule for counting script calls, before any mutation.
     sessions: BTreeMap<i64, SessionBefore>,
     /// Sessions whose links as a child changed, by session ID.
@@ -192,7 +197,33 @@ impl ChangeSummary {
 
     /// Records an event before its row changes or is inserted.
     pub(crate) fn event(&self, conn: &Connection, pk: i64) -> Result<()> {
-        if self.changed.borrow().events.contains_key(&pk) {
+        self.record_event(conn, pk, true)
+    }
+
+    /// An unchanged event needs only its derived item metadata refreshed.
+    pub(crate) fn event_items(&self, conn: &Connection, pk: i64) -> Result<()> {
+        self.record_event(conn, pk, false)
+    }
+
+    fn record_event(&self, conn: &Connection, pk: i64, rows_changed: bool) -> Result<()> {
+        let recorded = self
+            .changed
+            .borrow()
+            .events
+            .get(&pk)
+            .map(|event| event.before);
+        if let Some(before) = recorded {
+            if rows_changed {
+                if let Some((session, _)) = before {
+                    self.session(conn, session)?;
+                }
+                self.changed
+                    .borrow_mut()
+                    .events
+                    .get_mut(&pk)
+                    .expect("recorded event")
+                    .rows_changed = true;
+            }
             return Ok(());
         }
         let before = conn
@@ -202,10 +233,16 @@ impl ChangeSummary {
             })
             .optional()?
             .and_then(|(session, compaction)| session.map(|session| (session, compaction)));
-        if let Some((session, _)) = before {
+        if rows_changed && let Some((session, _)) = before {
             self.session(conn, session)?;
         }
-        self.changed.borrow_mut().events.insert(pk, before);
+        self.changed.borrow_mut().events.insert(
+            pk,
+            EventChange {
+                before,
+                rows_changed,
+            },
+        );
         Ok(())
     }
 
@@ -329,7 +366,8 @@ impl ChangeSummary {
             }
         }
         let mut now = conn.prepare_cached("SELECT session_pk FROM event WHERE pk = ?1")?;
-        for (&pk, before) in &changed.events {
+        for (&pk, event) in &changed.events {
+            let before = &event.before;
             let after: Option<i64> = now.query_row([pk], |row| row.get(0)).optional()?.flatten();
             for session in before
                 .iter()
