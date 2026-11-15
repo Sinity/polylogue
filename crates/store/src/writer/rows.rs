@@ -541,6 +541,7 @@ fn apply_rows(
         for pk in choices.messages.keys() {
             written += u64::from(rows.refresh_message(*pk)?);
         }
+        rows.refresh_event_anchors()?;
         for (pk, choice) in &choices.documents {
             crate::documents::apply_choice(
                 tx,
@@ -1111,7 +1112,7 @@ impl RowWriter<'_, '_> {
             }
             self.changes.message(self.tx, pk)?;
             self.clear_blocks(pk)?;
-            self.update_event_anchors(pk, false)?;
+            self.detach_event_anchors(pk)?;
             self.tx
                 .execute("DELETE FROM message_route WHERE message_pk=?1", [pk])?;
             self.tx.execute("DELETE FROM message WHERE pk=?1", [pk])?;
@@ -1166,9 +1167,6 @@ impl RowWriter<'_, '_> {
                 "UPDATE session SET changed=?2 WHERE pk=?1 AND changed IS NOT ?2",
                 params![session_pk, self.counter],
             )?;
-            // The main reading's sequence can move anchored events even
-            // when every displayed message column stays the same.
-            self.update_event_anchors(pk, true)?;
             return Ok(false);
         }
         self.changes.message(self.tx, pk)?;
@@ -1179,23 +1177,21 @@ impl RowWriter<'_, '_> {
         let prepared = &value.prepared;
         self.changes.prepare_items(pk, prepared.items.clone());
         self.tx.execute("UPDATE session SET changed=?2 WHERE pk IN (SELECT session_pk FROM message WHERE pk=?1) OR pk=?3",params![pk,self.counter,session_pk])?;
-        if created.is_some() {
-            // Source claims now exist, so events can take the main reading's
-            // real sequence rather than the insert's provisional sequence.
-            self.update_event_anchors(pk, true)?;
-        } else if self
-            .tx
-            .prepare_cached("SELECT EXISTS(SELECT 1 FROM message WHERE pk=?1)")?
-            .query_row([pk], |r| r.get::<_, bool>(0))?
-        {
-            self.clear_blocks(pk)?;
-            self.update_message(pk, m, session_pk, &v, order)?;
-            self.tx
-                .prepare_cached("DELETE FROM message_route WHERE message_pk=?1")?
-                .execute([pk])?;
-        } else {
-            // A copy joining its session can first materialize here.
-            self.insert_message(m, session_pk, &v, order)?;
+        if created.is_none() {
+            if self
+                .tx
+                .prepare_cached("SELECT EXISTS(SELECT 1 FROM message WHERE pk=?1)")?
+                .query_row([pk], |r| r.get::<_, bool>(0))?
+            {
+                self.clear_blocks(pk)?;
+                self.update_message(pk, m, session_pk, &v, order)?;
+                self.tx
+                    .prepare_cached("DELETE FROM message_route WHERE message_pk=?1")?
+                    .execute([pk])?;
+            } else {
+                // A copy joining its session can first materialize here.
+                self.insert_message(m, session_pk, &v, order)?;
+            }
         }
         self.insert_blocks(pk, session_pk, m, prepared)?;
         for (group, input, chain) in &choice.routes {
@@ -1348,37 +1344,64 @@ impl RowWriter<'_, '_> {
             v.time,
         ])?;
         let pk = pk.unwrap_or_else(|| self.tx.last_insert_rowid());
-        self.update_event_anchors(pk, true)?;
         Ok(pk)
     }
 
-    /// Events can precede their message, or survive its replacement.
-    fn update_event_anchors(&self, message_pk: i64, present: bool) -> Result<()> {
-        // An event placed by its message takes the seq of the message's
-        // main reading; a message inserted before its reading takes 0 until
-        // its reading is stored.
-        let (id, seq): (String, i64) = self
+    /// Sources and selected rows now agree. Events need only their final
+    /// anchors, including when an unchanged message's selected source moved.
+    fn refresh_event_anchors(&self) -> Result<()> {
+        if self.choices.messages.is_empty()
+            || !self
+                .tx
+                .prepare_cached(
+                    "SELECT EXISTS(SELECT 1 FROM event WHERE after_message_id IS NOT NULL)",
+                )?
+                .query_row([], |row| row.get::<_, bool>(0))?
+        {
+            return Ok(());
+        }
+        let messages = serde_json::to_string(&self.choices.messages.keys().collect::<Vec<_>>())?;
+        let events = self
             .tx
             .prepare_cached(
-                "SELECT m.id,coalesce(s.seq,0) FROM message m LEFT JOIN message_source s
-                 ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain WHERE m.pk=?1",
+                "UPDATE event SET after_message_pk=m.pk,
+                 seq=CASE WHEN seq_from_message=1 THEN coalesce(s.seq,0) ELSE event.seq END
+             FROM json_each(?1) changed JOIN message m ON m.pk=changed.value
+             LEFT JOIN message_source s ON s.message_pk=m.pk
+                 AND s.input_pk=m.input_pk AND s.chain=m.source_chain
+             WHERE event.after_message_id=m.id AND (event.after_message_pk IS NOT m.pk
+                 OR (event.seq_from_message=1 AND event.seq IS NOT coalesce(s.seq,0)))
+             RETURNING pk,session_pk",
             )?
-            .query_row([message_pk], |r| Ok((r.get(0)?, r.get(1)?)))?;
-        let pk = present.then_some(message_pk);
-        let seq = if present { seq } else { 0 };
-        let sessions = self
+            .query_map([messages], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        self.moved_event_anchors(events)
+    }
+
+    /// A referenced message cannot be deleted before its events are detached.
+    /// Their natural anchor remains available for a later message reading.
+    fn detach_event_anchors(&self, message_pk: i64) -> Result<()> {
+        let id: String = self
+            .tx
+            .prepare_cached("SELECT id FROM message WHERE pk=?1")?
+            .query_row([message_pk], |r| r.get(0))?;
+        let events = self
             .tx
             .prepare_cached(
-                "UPDATE event SET after_message_pk=?2,
-             seq=CASE WHEN seq_from_message=1 THEN ?3 ELSE seq END
-             WHERE after_message_id=?1 AND (after_message_pk IS NOT ?2
-                OR (seq_from_message=1 AND seq IS NOT ?3)) RETURNING pk, session_pk",
+                "UPDATE event SET after_message_pk=NULL,
+             seq=CASE WHEN seq_from_message=1 THEN 0 ELSE seq END
+             WHERE after_message_id=?1 AND (after_message_pk IS NOT NULL
+                OR (seq_from_message=1 AND seq IS NOT 0)) RETURNING pk, session_pk",
             )?
-            .query_map(params![id, pk, seq], |r| {
+            .query_map([id], |r| {
                 Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        for (event, session) in sessions {
+        self.moved_event_anchors(events)
+    }
+
+    fn moved_event_anchors(&self, events: Vec<(i64, Option<i64>)>) -> Result<()> {
+        for (event, session) in events {
             // Only its place moved; its session is the one it had.
             self.changes.event(self.tx, event)?;
             let Some(session) = session else { continue };
