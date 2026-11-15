@@ -299,7 +299,7 @@ fn collection_without_a_parser_commits_its_explicit_status() {
 
 #[test]
 fn value_identity_survives_a_commit_newer_than_the_workers_snapshot() {
-    let w = test_archive();
+    let w = installed_archive();
     let sender = w.writer.sender().unwrap();
     let captured = w
         .commit_source(

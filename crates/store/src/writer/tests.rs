@@ -131,6 +131,16 @@ fn test_archive() -> TestArchive {
     }
 }
 
+/// An archive whose first build has ended: its index is installed in WAL,
+/// where a reader keeps its snapshot while the writer commits. A build
+/// file has a rollback journal, where a held read blocks the writer
+/// (docs/architecture.md, Durability).
+fn installed_archive() -> TestArchive {
+    let w = test_archive();
+    w.writer.derive().unwrap();
+    w
+}
+
 fn sid(n: &str) -> SessionId {
     SessionId::parse(&format!("claude-code:{n}")).unwrap()
 }
