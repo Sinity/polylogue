@@ -197,6 +197,10 @@ Building the archive overlaps every stage:
   selected metadata before source claims refer to it; its first body installation
   consumes that creation result. Later installations replace the existing
   blocks and routes, including multiple changes within one transaction;
+  after a row application installs its selected messages and source claims,
+  one indexed operation resolves their event anchors from that final state.
+  Deleting a referenced message first detaches its events to preserve their
+  natural anchors and the foreign-key constraint;
 - consumers of committed positions: derived data (computed on a thread of
   its own and written by the writer only if its inputs are unchanged), the
   request-log projection and the completion catalog;
