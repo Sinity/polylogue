@@ -180,29 +180,31 @@ pub(crate) fn copy_reading(tx: &Connection, copy: &ReadingCopy, counter: i64) ->
         })?;
     }
     let mut receipts = std::collections::HashMap::new();
-    for (table, column, key) in [
-        ("wire_reading", "state", "reading_version"),
-        (
-            "wire_receipt",
-            "receipt",
-            "reading_version || char(0) || number",
-        ),
+    for (table, column, number) in [
+        ("wire_reading", "state", "NULL"),
+        ("wire_receipt", "receipt", "number"),
     ] {
-        let rows: Vec<(String, String)> = tx
+        let rows: Vec<(String, Option<i64>, String)> = tx
             .prepare(&format!(
-                "SELECT {key}, {column} FROM {table} WHERE input_pk = ?1 AND chain = ?2"
+                "SELECT reading_version, {number}, {column} FROM {table} WHERE input_pk = ?1 AND chain = ?2"
             ))?
-            .query_map(params![input_pk, to], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .query_map(params![input_pk, to], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
             .collect::<rusqlite::Result<_>>()?;
-        for (row, text) in rows {
+        for (version, number, text) in rows {
             let mut value: serde_json::Value = serde_json::from_str(&text)?;
             if !retake_receipts(tx, &mut value, input, from, to, &mut receipts)? {
                 return Ok(false);
             }
-            tx.prepare_cached(&format!(
-                "UPDATE {table} SET {column} = ?4 WHERE input_pk = ?1 AND chain = ?2 AND {key} = ?3"
-            ))?
-            .execute(params![input_pk, to, row, serde_json::to_string(&value)?])?;
+            let text = serde_json::to_string(&value)?;
+            if let Some(number) = number {
+                // The receipt's complete primary key avoids scanning every
+                // receipt in this chain again for each retaken receipt.
+                tx.prepare_cached("UPDATE wire_receipt SET receipt = ?5 WHERE input_pk = ?1 AND chain = ?2 AND reading_version = ?3 AND number = ?4")?
+                    .execute(params![input_pk, to, version, number, text])?;
+            } else {
+                tx.prepare_cached("UPDATE wire_reading SET state = ?4 WHERE input_pk = ?1 AND chain = ?2 AND reading_version = ?3")?
+                    .execute(params![input_pk, to, version, text])?;
+            }
         }
     }
     tx.execute(
