@@ -530,10 +530,6 @@ impl Client {
         &mut self,
         state: &ReplayState,
         applied: &dyn Fn(&str) -> Result<bool>,
-        processed: &dyn Fn(
-            &polylogue_store::primary::ParsedSource,
-            &polylogue_store::primary::PublicationReceipt,
-        ) -> Result<bool>,
     ) -> Result<()> {
         // A confirmed delivery may remove original producer bytes. Freeze must
         // cover that confirmed removal until its immutable queue cut is acquired.
@@ -571,7 +567,7 @@ impl Client {
         self.spool
             .lock()
             .map_err(|_| Error::Invalid("producer spool panicked".into()))?
-            .remove_confirmed(&confirmed_removal, applied, &self.producer, processed)?;
+            .remove_confirmed(&confirmed_removal, applied)?;
         Ok(())
     }
 }

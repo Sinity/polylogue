@@ -111,8 +111,9 @@ pub(crate) fn record(
 }
 
 /// Whether the index has finished its first build: standalone, the build
-/// marker is cleared. Primary also needs its actual native head, admitted local
-/// parser progress for every stored chain, and no unresolved native facts.
+/// marker is cleared. Primary needs the stream applied through Sinex's latest
+/// position, parser progress at the stored length of every chain, and no
+/// unreadable Sinex events that are still live.
 pub(crate) fn built(index: &Connection, primary: bool) -> Result<bool> {
     if !primary {
         return Ok(!schema::building(index)?);
@@ -129,7 +130,7 @@ pub(crate) fn built(index: &Connection, primary: bool) -> Result<bool> {
          SELECT EXISTS(SELECT 1 FROM chains c
              LEFT JOIN input_ref i ON i.id=c.input
              LEFT JOIN parse_state p ON p.input_pk=i.pk AND p.chain=c.chain
-             WHERE c.length>0 AND NOT COALESCE(p.native_publication IS NOT NULL AND (
+             WHERE c.length>0 AND NOT COALESCE((
                  (p.reading_version IS NOT NULL AND p.reading_version<>'' AND
                     ((p.status IN ('parsing','done') AND p.parsed_upto>=c.length) OR
                      (p.status='waiting' AND p.at_length=c.length) OR

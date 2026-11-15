@@ -780,7 +780,7 @@ pub(crate) fn events(
 ) -> Result<Vec<sinex_protocol::ProducerEvent>> {
     use sinex_model::{Class, MaterialId, RecordLocation};
     let mut observations = std::collections::BTreeMap::<String, crate::native::Native>::new();
-    for write in writes.iter().filter(|write| write.publish) {
+    for write in writes {
         match &write.product {
             Product::Session { facts, .. } => {
                 let context = observations
@@ -815,7 +815,6 @@ pub(crate) fn events(
         .collect::<std::collections::BTreeMap<_, _>>();
     writes
         .iter()
-        .filter(|write| write.publish)
         .map(|write| {
             let mut payload = payload(&write.product, write.output_index)?;
             let mut source = write.location.clone();

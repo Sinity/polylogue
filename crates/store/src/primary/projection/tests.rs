@@ -450,7 +450,7 @@ fn confirmed_slices_keep_full_material_descriptors_without_opening_source_bytes(
 }
 
 mod chunks;
-mod eligibility;
+mod sending;
 mod source_memberships;
 
 mod replay;

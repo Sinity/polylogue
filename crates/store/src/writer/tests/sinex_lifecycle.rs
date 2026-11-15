@@ -1,0 +1,176 @@
+//! Local rows come from parsing confirmed original bytes. The lifecycle of
+//! Polylogue's own parsed events in Sinex does not change them.
+use super::*;
+use crate::primary::{Confirmed, ConfirmedChange, Product, ReplayControl};
+
+fn reading(text: &str) -> Batch {
+    let mut batch = batch(
+        "original",
+        Route::Live,
+        0,
+        vec![row(
+            12,
+            text_message(
+                "message",
+                "session",
+                Role::Assistant,
+                text,
+                Some("end_turn"),
+            ),
+        )],
+        &["session"],
+    );
+    batch.change = Change::Reparse { chain: 1 };
+    batch.observation = None;
+    batch.parse[0].reading_version = "synthetic=1".into();
+    batch
+}
+
+/// Writes the local rows of a re-parse of a confirmed chain, as the serial
+/// writer does after the parsed facts are in the spool.
+fn write_local(index: &mut Connection, archive: &Archive, mut batch: Batch) {
+    batch.parse[0].prepare();
+    let resolver = resolve::Resolver::new(archive, index, None).unwrap();
+    resolver.batches(&mut [&mut batch]).unwrap();
+    let texts = crate::text_rows::TextIds::new(index, false).unwrap();
+    let text_transaction = texts.transaction();
+    let tx = index.transaction().unwrap();
+    let counter = bump_counter(&tx).unwrap();
+    let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
+    let step = &batch.parse[0];
+    write_rows(
+        &texts,
+        &tx,
+        &batch,
+        step,
+        step.resolution.as_ref().unwrap(),
+        counter,
+        None,
+        Some(&fixture_receipt()),
+        &changes,
+    )
+    .unwrap();
+    rows::finish(&tx, &changes, None, &texts, counter).unwrap();
+    tx.commit().unwrap();
+    text_transaction.commit();
+}
+
+/// Applies one confirmed position holding `changes` for the event `event`.
+fn apply_position(
+    index: &mut Connection,
+    archive: &Archive,
+    position: i64,
+    changes: Vec<(String, ConfirmedChange)>,
+) {
+    let resolver = resolve::Resolver::new(archive, index, None).unwrap();
+    let mut events = changes
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, (event, change))| Confirmed {
+            native: None,
+            position,
+            output_index: ordinal as u64,
+            event,
+            change,
+        })
+        .collect::<Vec<_>>();
+    events.push(Confirmed {
+        native: None,
+        position: 0,
+        output_index: 0,
+        event: String::new(),
+        change: ConfirmedChange::Control(Box::new(ReplayControl::Completion {
+            position,
+            delivery: None,
+        })),
+    });
+    crate::primary::projection::apply(
+        &crate::text_rows::TextIds::new(index, false).unwrap(),
+        index,
+        &resolver,
+        &events,
+    )
+    .unwrap();
+}
+
+fn shown_text(archive: &Archive, message: &polylogue_model::MessageId) -> Option<String> {
+    let pool = ReadPool::open(archive).unwrap();
+    let reader = pool.reader().unwrap();
+    reader
+        .message_with_projection(message)
+        .unwrap()
+        .map(|(value, _)| value.text())
+}
+
+#[test]
+fn archiving_a_parsed_sinex_event_leaves_the_local_message_shown() {
+    let directory = tempfile::tempdir().unwrap();
+    let archive = Archive::on_sinex(directory.path(), &directory.path().join("bytes"));
+    let mut index = Connection::open(archive.index_db()).unwrap();
+    crate::schema::ensure_primary_index(&index).unwrap();
+    let original = reading("locally parsed original");
+    let message = original.parse[0].output.messages[0].message.id.clone();
+    write_local(&mut index, &archive, original.clone());
+
+    // Sinex confirms the parsed facts of the same step at positions after the
+    // material acknowledgment the local rows carry.
+    let mut prepared = original.clone();
+    prepared.parse[0].prepare();
+    let facts = crate::primary::products::parse(
+        &prepared.input,
+        1,
+        Some(prepared.length),
+        &prepared.parse[0],
+    )
+    .unwrap()
+    .into_iter()
+    .enumerate()
+    .map(|(ordinal, product)| {
+        (
+            format!("fact-{ordinal}"),
+            ConfirmedChange::Live(Box::new(Product::Interpreted {
+                reading: product.reading().unwrap().clone(),
+                record: crate::primary::SourceRecord::of(&product).unwrap().unwrap(),
+            })),
+        )
+    })
+    .collect::<Vec<_>>();
+    let message_fact = facts
+        .iter()
+        .position(|(_, change)| {
+            matches!(change, ConfirmedChange::Live(product)
+                if matches!(product.as_ref(), Product::Interpreted { record, .. } if record.family == "message"))
+        })
+        .map(|ordinal| format!("fact-{ordinal}"))
+        .unwrap();
+    apply_position(&mut index, &archive, 10, facts);
+    let admitted = || {
+        ReadPool::open(&archive)
+            .unwrap()
+            .reader()
+            .unwrap()
+            .message_admission(&message)
+            .unwrap()
+    };
+    assert_eq!(admitted(), Some(fixture_receipt().sequence as u64));
+
+    for (position, change) in [
+        (11, ConfirmedChange::Archived),
+        (12, ConfirmedChange::Restored),
+        (13, ConfirmedChange::Archived),
+        (14, ConfirmedChange::Tombstoned),
+    ] {
+        apply_position(
+            &mut index,
+            &archive,
+            position,
+            vec![(message_fact.clone(), change)],
+        );
+        assert_eq!(
+            shown_text(&archive, &message).as_deref(),
+            Some("locally parsed original"),
+            "position {position}"
+        );
+        assert_eq!(admitted(), Some(fixture_receipt().sequence as u64));
+    }
+}

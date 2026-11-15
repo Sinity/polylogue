@@ -1,9 +1,14 @@
-//! Original parser scratch waits for native admission before local resolution.
+//! Local rows in primary mode come from parsing confirmed original bytes. The
+//! parsed facts of each step are prepared in the producer spool before the
+//! rows of the same parse commit; nothing here waits for Sinex to acknowledge
+//! them or for them to come back on the confirmed stream.
 use super::*;
-use crate::primary::{ExportReadingKey, ParsedPublication, ReadingScope};
+use crate::primary::ExportReadingKey;
 use std::time::Duration;
 
 impl WriterSender {
+    /// Decoded attachment bytes are materials. The rows that cite them are
+    /// written once the confirmed stream has delivered those materials.
     pub(in crate::writer) fn wait_primary_blobs(&self, bodies: &[(BlobHash, u64)]) -> Result<()> {
         if bodies.is_empty() {
             return Ok(());
@@ -17,15 +22,7 @@ impl WriterSender {
             }
             scoped::require_current(location, Some(&token))?;
             let index = crate::archive::open_read(&location.index_db())?;
-            let mut complete = true;
-            for (hash, size) in bodies {
-                complete &= index.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM source_blob WHERE hash=?1 AND size=?2)",
-                    params![hash.0.as_slice(), size],
-                    |row| row.get::<_, bool>(0),
-                )?;
-            }
-            if complete {
+            if confirmed_blobs(&index, bodies)? {
                 return Ok(());
             }
             drop(index);
@@ -33,40 +30,23 @@ impl WriterSender {
         }
     }
 
-    pub(in crate::writer) fn prepare_primary_batch(&self, batch: &mut Batch) -> Result<()> {
+    /// Prepares the parsed facts of every step of a batch in the spool.
+    pub(in crate::writer) fn spool_primary_batch(&self, batch: &mut Batch) -> Result<()> {
         if batch.parse.is_empty() {
             return Ok(());
         }
         let location = self.0.resolver.location();
         let token = location.read_scope.token()?;
-        let commits = self.completion_commits();
-        let open = || -> Result<Connection> {
-            if self.0.stop.is_cancelled() {
-                return Err(StoreError::Stopped);
-            }
-            scoped::require_current(location, Some(&token))?;
-            let index = crate::archive::open_read(&location.index_db())?;
-            crate::primary::scope::require_readable(&index)?;
-            Ok(index)
-        };
-        let index = open()?;
+        let mut index = self.open_current(&token)?;
         let chain = validate_primary_reading(&index, batch)?;
         for blob in &batch.blobs {
-            if !index.query_row(
-                "SELECT EXISTS(SELECT 1 FROM source_blob WHERE hash=?1 AND size=?2)",
-                params![blob.hash.0.as_slice(), blob.size],
-                |row| row.get::<_, bool>(0),
-            )? {
+            if !confirmed_blobs(&index, &[(blob.hash, blob.size)])? {
                 return Err(StoreError::Invalid(
-                    "decoded bytes need confirmed native custody before interpretation".into(),
+                    "decoded bytes must be confirmed by Sinex before they are parsed".into(),
                 ));
             }
         }
-        let root: String = index.query_row(
-            "SELECT id FROM source_material WHERE input=?1 AND chain=?2 AND offset=0 ORDER BY rowid LIMIT 1",
-            params![batch.input.id,chain], |row| row.get(0),
-        )?;
-        drop(index);
+        let root = root_material(&index, &batch.input.id, chain)?;
         let sinex = self.0.sinex.as_ref().expect("primary sender");
         for step in &mut batch.parse {
             step.prepare();
@@ -79,67 +59,31 @@ impl WriterSender {
                     step,
                 ),
             };
-            let writes = {
-                let mut index = open()?;
-                let snapshot = index.transaction()?;
-                let mut writes = product_writes(
-                    &snapshot,
-                    crate::primary::products::parse(&batch.input, chain, Some(batch.length), step)?,
-                )?;
-                for write in &mut writes {
-                    let record =
-                        crate::primary::SourceRecord::of(&write.product)?.expect("source identity");
-                    write.publish = crate::primary::products::needs_publication(
-                        &snapshot,
-                        &source.reading,
-                        &record,
-                    )?;
+            // One read snapshot decides the anchors and what Sinex already holds.
+            let snapshot = index.transaction()?;
+            let mut writes = Vec::new();
+            for write in product_writes(
+                &snapshot,
+                crate::primary::products::parse(&batch.input, chain, Some(batch.length), step)?,
+            )? {
+                let record =
+                    crate::primary::SourceRecord::of(&write.product)?.expect("source identity");
+                if crate::primary::products::needs_sending(&snapshot, &source.reading, &record)? {
+                    writes.push(write);
                 }
-                writes
-            };
-            let receipt = loop {
-                open()?;
-                match sinex.prepare_parsed(&source, &writes) {
-                    Ok(ParsedPublication::Admitted(receipt)) => break receipt,
-                    Ok(ParsedPublication::Pending { .. }) | Err(StoreError::Sinex(_)) => {
-                        let _ = commits.recv_timeout(Duration::from_millis(250));
-                    }
-                    Ok(ParsedPublication::Following(_)) => {
-                        return Err(StoreError::Invalid(
-                            "an append returned a replacement selection".into(),
-                        ));
-                    }
-                    Err(error) => return Err(error),
-                }
-            };
-            loop {
-                let mut index = open()?;
-                let snapshot = index.transaction()?;
-                let applied = crate::primary::projection::checkpoint(&snapshot)?;
-                if receipt
-                    .commit_seq
-                    .is_some_and(|position| applied.is_none_or(|local| local < position))
-                {
-                    drop(snapshot);
-                    drop(index);
-                    let _ = commits.recv_timeout(Duration::from_millis(250));
-                    continue;
-                }
-                super::super::source_eligibility::retain_source_records(
-                    &snapshot,
-                    &batch.input,
-                    chain,
-                    batch.length,
-                    step,
-                )?;
-                step.publication = Some(receipt);
-                break;
+            }
+            drop(snapshot);
+            if !writes.is_empty() {
+                sinex.prepare_parsed(&source, &writes)?;
             }
         }
         Ok(())
     }
 
-    pub(in crate::writer) fn prepare_primary_reading(
+    /// Prepares a complete re-parse of one chain for Sinex. When Sinex holds
+    /// parsed facts of an earlier reading version, a producer replay replaces
+    /// them; otherwise the steps are sent as ordinary parsed frames.
+    pub(in crate::writer) fn spool_primary_reading(
         &self,
         input: &InputKey,
         chain: i64,
@@ -148,7 +92,6 @@ impl WriterSender {
     ) -> Result<()> {
         let location = self.0.resolver.location();
         let token = location.read_scope.token()?;
-        // Subscribe before the first snapshot: native completion can race admission.
         let commits = self.completion_commits();
         let mut version = None;
         let mut complete = false;
@@ -206,45 +149,9 @@ impl WriterSender {
                 }
             }
         }
-        let open = || -> Result<Connection> {
-            if self.0.stop.is_cancelled() {
-                return Err(StoreError::Stopped);
-            }
-            scoped::require_current(location, Some(&token))?;
-            let index = crate::archive::open_read(&location.index_db())?;
-            crate::primary::scope::require_readable(&index)?;
-            Ok(index)
-        };
-        let pause = || -> Result<()> {
-            match commits.recv_timeout(Duration::from_millis(250)) {
-                Ok(_) | Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    return Err(StoreError::WriterGone);
-                }
-            }
-            if self.0.stop.is_cancelled() {
-                return Err(StoreError::Stopped);
-            }
-            scoped::require_current(location, Some(&token))
-        };
-        loop {
-            let index = open()?;
-            let mut available = true;
-            for (hash, size) in &blobs {
-                available &= index.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM source_blob WHERE hash=?1 AND size=?2)",
-                    params![hash.0.as_slice(), size],
-                    |row| row.get::<_, bool>(0),
-                )?;
-            }
-            if available {
-                break;
-            }
-            drop(index);
-            pause()?;
-        }
-        let root: String = {
-            let index = open()?;
+        self.wait_primary_blobs(&blobs)?;
+        let root = {
+            let index = self.open_current(&token)?;
             let exact: bool = index.query_row(
                 "SELECT EXISTS(SELECT 1 FROM source_input WHERE id=?1 AND format=?2)",
                 params![input.id, input.format],
@@ -254,29 +161,21 @@ impl WriterSender {
                 return Err(StoreError::Invalid("reading input identity differs".into()));
             }
             crate::staging::require_range(&index, "source_", &input.id, chain, 0..length)?;
-            index.query_row(
-                "SELECT id FROM source_material WHERE input=?1 AND chain=?2 AND offset=0 ORDER BY rowid LIMIT 1",
-                params![input.id,chain], |row| row.get(0),
-            )?
+            root_material(&index, &input.id, chain)?
         };
         let previous = crate::primary::products::previous_reading_bound(
-            &open()?,
+            &self.open_current(&token)?,
             &input.id,
             chain,
             &key.reading_version,
         )?;
-        if previous.is_some_and(|required| required > frontier) {
+        if let Some(required) = previous.filter(|required| *required > frontier) {
             return Err(StoreError::Invalid(format!(
-                "native replacement parsed through {frontier}, but previous facts require source bytes through {}",
-                previous.expect("checked previous bound"),
+                "the replacement parsed through {frontier}, but Sinex's earlier facts need source bytes through {required}",
             )));
         }
         if previous.is_none() {
-            // Reconstruct the current native reading without replacing its
-            // output set. Lifecycle eligibility still selects its local rows.
-            let mut publication = None;
             source.visit_source(|step| {
-                open()?;
                 let mut batch = Batch {
                     input: input.clone(),
                     change: Change::Reparse { chain },
@@ -291,90 +190,76 @@ impl WriterSender {
                     basis: None,
                     required_disposition: None,
                 };
-                self.prepare_primary_batch(&mut batch)?;
-                publication = batch.parse[0].publication.take();
-                Ok(())
+                self.spool_primary_batch(&mut batch)
             })?;
-            let publication = publication.ok_or_else(|| {
-                StoreError::Invalid("a reconstruction has no admitted interpretation".into())
-            })?;
-            let mut index = open()?;
-            let snapshot = index.transaction()?;
-            source.select_source(&snapshot, input, chain, length, publication)?;
+            source.mark_spooled();
             return Ok(());
         }
         let sinex = self.0.sinex.as_ref().expect("primary sender");
-        let mut following: Option<ReadingScope> = None;
-        let publication = loop {
-            if let Some(scope) = &following {
-                let index = open()?;
-                if crate::primary::products::scope_hash(&index, scope)? != scope.expected_live_hash
-                {
-                    drop(index);
-                    pause()?;
-                    continue;
-                }
-                following = None;
-            }
-            open()?;
-            let result = sinex.prepare_reading(&root, &key, &mut |scope, emit| {
-                let mut index = open()?;
+        // The replay names the live set Sinex holds for the chain, so it is
+        // prepared once Sinex answers and no earlier frame of the chain is
+        // unacknowledged. The local rows do not wait for the replay itself.
+        loop {
+            self.open_current(&token)?;
+            let prepared = sinex.prepare_reading(&root, &key, &mut |emit| {
+                let mut index = self.open_current(&token)?;
                 let snapshot = index.transaction()?;
-                let live_hash = crate::primary::products::scope_hash(&snapshot, scope)?;
-                if crate::primary::products::previous_reading_bound(
-                    &snapshot,
-                    &input.id,
-                    chain,
-                    &key.reading_version,
-                )?
-                .is_some_and(|required| required > frontier)
-                {
-                    return Err(StoreError::Invalid(
-                        "previous native facts extend beyond the replacement's parsed prefix"
-                            .into(),
-                    ));
-                }
-                if live_hash != scope.expected_live_hash {
-                    return Ok(live_hash);
-                }
                 source.visit_source(|step| {
-                    for mut write in product_writes(
+                    for write in product_writes(
                         &snapshot,
                         crate::primary::products::parse(input, chain, Some(length), step)?,
                     )? {
-                        let reading = write.product.reading().expect("source interpretation");
-                        let record = crate::primary::SourceRecord::of(&write.product)?
-                            .expect("source identity");
-                        write.publish =
-                            crate::primary::products::allowed(&snapshot, reading, &record)?;
                         emit(write)?;
                     }
                     Ok(())
-                })?;
-                Ok(live_hash)
+                })
             });
-            match result {
-                Ok(ParsedPublication::Admitted(receipt)) => break receipt,
-                Ok(ParsedPublication::Following(scope)) => following = Some(scope),
-                Ok(ParsedPublication::Pending { .. }) | Err(StoreError::Sinex(_)) => pause()?,
+            match prepared {
+                Ok(Some(_)) => break,
+                Ok(None) | Err(StoreError::Sinex(_)) => {
+                    match commits.recv_timeout(Duration::from_millis(250)) {
+                        Ok(_) | Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                            return Err(StoreError::WriterGone);
+                        }
+                    }
+                }
                 Err(error) => return Err(error),
             }
-        };
-        loop {
-            let mut index = open()?;
-            let snapshot = index.transaction()?;
-            let applied = crate::primary::projection::checkpoint(&snapshot)?;
-            if publication
-                .commit_seq
-                .is_some_and(|position| applied.is_none_or(|local| local < position))
-            {
-                drop(snapshot);
-                drop(index);
-                pause()?;
-                continue;
-            }
-            source.select_source(&snapshot, input, chain, length, publication)?;
-            return Ok(());
+        }
+        source.mark_spooled();
+        Ok(())
+    }
+
+    fn open_current(&self, token: &crate::ReadScopeToken) -> Result<Connection> {
+        if self.0.stop.is_cancelled() {
+            return Err(StoreError::Stopped);
+        }
+        let location = self.0.resolver.location();
+        scoped::require_current(location, Some(token))?;
+        let index = crate::archive::open_read(&location.index_db())?;
+        crate::primary::scope::require_readable(&index)?;
+        Ok(index)
+    }
+}
+
+fn confirmed_blobs(index: &Connection, bodies: &[(BlobHash, u64)]) -> Result<bool> {
+    for (hash, size) in bodies {
+        if !index.query_row(
+            "SELECT EXISTS(SELECT 1 FROM source_blob WHERE hash=?1 AND size=?2)",
+            params![hash.0.as_slice(), size],
+            |row| row.get::<_, bool>(0),
+        )? {
+            return Ok(false);
         }
     }
+    Ok(true)
+}
+
+fn root_material(index: &Connection, input: &str, chain: i64) -> Result<String> {
+    Ok(index.query_row(
+        "SELECT id FROM source_material WHERE input=?1 AND chain=?2 AND offset=0 ORDER BY rowid LIMIT 1",
+        params![input, chain],
+        |row| row.get(0),
+    )?)
 }

@@ -269,19 +269,8 @@ fn ordinary_primary_readings_preserve_every_known_block() {
         input.observation = None;
         readings.push(input);
     }
-    for n in [0, 2, 1] {
-        super::publications::confirm(&mut index, &archive, &readings[n], [7, 13, 11][n]);
-    }
     for input in &mut readings {
         input.parse[0].prepare();
-        super::super::source_eligibility::retain_source_records(
-            &index,
-            &input.input,
-            1,
-            input.length,
-            &mut input.parse[0],
-        )
-        .unwrap();
     }
     resolver
         .batches(&mut readings.iter_mut().collect::<Vec<_>>())
@@ -321,7 +310,10 @@ fn ordinary_primary_readings_preserve_every_known_block() {
     );
     let pool = ReadPool::open(&archive).unwrap();
     let reader = pool.reader().unwrap();
-    assert_eq!(reader.message_admission(&message.id).unwrap(), Some(13));
+    assert_eq!(
+        reader.message_admission(&message.id).unwrap(),
+        Some(fixture_receipt().sequence as u64)
+    );
     let mut streamed = Vec::new();
     reader
         .select_messages(&sid("s"), false)
@@ -336,7 +328,7 @@ fn ordinary_primary_readings_preserve_every_known_block() {
         vec![(
             message.clone(),
             selected(&message, &[0, 1, 2, 3]).1,
-            Some(13)
+            Some(fixture_receipt().sequence as u64)
         )]
     );
     drop(reader);
@@ -348,7 +340,7 @@ fn ordinary_primary_readings_preserve_every_known_block() {
             .unwrap()
             .message_admission(&message.id)
             .unwrap(),
-        Some(13)
+        Some(fixture_receipt().sequence as u64)
     );
 }
 
@@ -382,54 +374,6 @@ fn sparse_native_union_keeps_the_later_required_byte_admission() {
     assert_eq!(shown, "a-first");
     assert_eq!(reader.message_admission(&message.id).unwrap(), Some(second));
     assert_eq!(current(&w, &message.id), selected(&message, &[0, 1, 2, 3]));
-}
-
-#[test]
-fn sparse_fact_admission_precedes_raw_bytes_and_unions_without_regression() {
-    let directory = tempfile::tempdir().unwrap();
-    let archive = Archive::on_sinex(directory.path(), &directory.path().join("bytes"));
-    let mut index = crate::archive::open_write(&archive.index_db(), 1).unwrap();
-    crate::schema::ensure_primary_index(&index).unwrap();
-    let message = original();
-    let mut batches = Vec::new();
-    for (input, ordinals) in [("later-fact", &[0][..]), ("earlier-fact", &[1, 2, 3][..])] {
-        let part = selected(&message, ordinals);
-        let mut batch = projected_batch(input, part.0, part.1);
-        batch.change = Change::Reparse { chain: 1 };
-        batch.observation = None;
-        batches.push(batch);
-    }
-    super::publications::confirm(&mut index, &archive, &batches[1], 120);
-    super::publications::confirm(&mut index, &archive, &batches[0], 130);
-    for (n, batch) in batches.into_iter().enumerate() {
-        super::publications::apply(
-            &mut index,
-            batch,
-            &super::publications::publication(&format!("frame-{n}"), n as i64 + 1),
-        )
-        .unwrap();
-    }
-    let pool = ReadPool::open(&archive).unwrap();
-    let reader = pool.reader().unwrap();
-    assert!((fixture_receipt().sequence as u64) < 120);
-    assert_eq!(reader.message_admission(&message.id).unwrap(), Some(130));
-    assert_eq!(
-        reader
-            .message_with_projection(&message.id)
-            .unwrap()
-            .unwrap(),
-        selected(&message, &[0, 1, 2, 3])
-    );
-    let mut admissions = Vec::new();
-    reader
-        .select_messages(&sid("s"), false)
-        .unwrap()
-        .visit_with_evidence(|_, _, admitted| {
-            admissions.push(admitted);
-            std::ops::ControlFlow::Continue(())
-        })
-        .unwrap();
-    assert_eq!(admissions, vec![Some(130)]);
 }
 
 #[test]

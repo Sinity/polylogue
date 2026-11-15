@@ -892,7 +892,7 @@ impl WriterSender {
                         }
                     }
                     self.wait_primary_blobs(&bodies)?;
-                    self.prepare_primary_batch(&mut item.batch)?;
+                    self.spool_primary_batch(&mut item.batch)?;
                     item.files.clear();
                     item.batch.blobs.clear();
                 }
@@ -914,7 +914,7 @@ impl WriterSender {
 
     pub fn send(&self, mut batch: Batch) -> Result<()> {
         if self.0.sinex.is_some() && matches!(batch.change, Change::Reparse { .. }) {
-            self.prepare_primary_batch(&mut batch)?;
+            self.spool_primary_batch(&mut batch)?;
         }
         if !self.0.resolver.location().is_primary()
             || matches!(batch.change, Change::Reparse { .. })
@@ -949,7 +949,7 @@ impl WriterSender {
     ) -> Result<Receiver<Result<u64>>> {
         reading.finish()?;
         if self.0.sinex.is_some() {
-            self.prepare_primary_reading(&input, chain, length, &mut reading)?;
+            self.spool_primary_reading(&input, chain, length, &mut reading)?;
         }
         reading.resolve(&self.0.resolver, &input, chain, length)?;
         let (reply, wait) = sync_channel(1);
@@ -1835,7 +1835,6 @@ impl Inner {
                 parents: Vec::new(),
                 machine: Some(machine),
                 output_index: 0,
-                publish: true,
             }])?;
             return Ok(());
         }

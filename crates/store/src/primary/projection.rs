@@ -1,6 +1,5 @@
 //! The primary cache applies complete confirmed positions, never producer acknowledgments.
 pub(crate) const SCHEMA: &str = concat!("
-ALTER TABLE parse_state ADD COLUMN native_publication BLOB;
 CREATE TABLE primary_fact (
  event TEXT PRIMARY KEY, admitted INTEGER NOT NULL, changed INTEGER NOT NULL, source_order INTEGER NOT NULL,
  state TEXT NOT NULL CHECK(state IN ('live','archived','tombstoned')),
@@ -38,7 +37,7 @@ use super::{Confirmed, ConfirmedChange, Material, Product};
 mod replay;
 use crate::{Result, StoreError};
 pub(crate) use replay::save as save_replay;
-pub(crate) use replay::{has_fact, native_context, processed_source, replay_state};
+pub(crate) use replay::{has_fact, native_context, replay_state};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Serialize, de::DeserializeOwned};
 use std::collections::{BTreeMap, BTreeSet};
@@ -522,29 +521,6 @@ fn plan(index: &Connection) -> Result<Plan> {
     let mut rows = query.query([])?;
     while let Some(row) = rows.next()? {
         let fact = Fact::read(row)?;
-        if fact.kind == "reading"
-            && fact.changed != fact.admitted
-            && let (Some(input), Some(chain), Some(version)) =
-                (&fact.input, fact.chain, &fact.version)
-        {
-            let local: Option<(String,u64)> = index.query_row(
-                    "SELECT i.format,coalesce((SELECT max(length) FROM source_revision WHERE input=i.id AND chain=p.chain),0) FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id=?1 AND p.chain=?2 AND p.reading_version=?3",
-                    params![input,chain,version], |row| Ok((row.get(0)?,row.get(1)?)),
-                ).optional()?;
-            if let Some((format, length)) = local {
-                chains.insert(
-                    (input.clone(), chain),
-                    (
-                        crate::InputKey {
-                            id: input.clone(),
-                            format,
-                            route: polylogue_model::Route::Live,
-                        },
-                        length,
-                    ),
-                );
-            }
-        }
         if let Some(product) = fact.product()? {
             if let Product::AttachmentBinding { record } = &product {
                 out.binding_messages

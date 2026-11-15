@@ -290,16 +290,6 @@ fn primary_previous_index_rebuild_preserves_original_cache_and_paid_and_pending_
             .execute_batch("UPDATE parse_state SET at_length=10")
             .unwrap();
         assert!(
-            !built(&index, true).unwrap(),
-            "a parser cursor without native admission retains the old cache"
-        );
-        index
-            .execute(
-                "UPDATE parse_state SET native_publication=?1",
-                [crate::encoding::pack_bytes(b"synthetic admitted receipt").unwrap()],
-            )
-            .unwrap();
-        assert!(
             built(&index, true).unwrap(),
             "waiting at the known source length is an explicit incomplete suffix"
         );

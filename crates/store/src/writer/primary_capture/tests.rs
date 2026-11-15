@@ -394,7 +394,7 @@ impl crate::primary::Sinex for OfflineProducer {
         _: &str,
         _: &crate::primary::ExportReadingKey,
         _: &mut crate::primary::ReadingProducts<'_>,
-    ) -> Result<crate::primary::ParsedPublication> {
+    ) -> Result<Option<crate::primary::PreparedWrite>> {
         Self::unavailable()
     }
     fn prepare_named_products(
@@ -447,19 +447,10 @@ impl crate::primary::Sinex for OfflineProducer {
     /// pass may rewrite the file while the test reads it.
     fn prepare_parsed(
         &self,
-        source: &crate::primary::ParsedSource,
+        _: &crate::primary::ParsedSource,
         writes: &[crate::primary::ProductWrite],
-    ) -> Result<crate::primary::ParsedPublication> {
-        let prepared = self.prepare_products(writes)?;
-        Ok(crate::primary::ParsedPublication::Admitted(
-            crate::primary::PublicationReceipt {
-                producer: "fixture-producer".into(),
-                frame: prepared.identity,
-                number: 1,
-                commit_seq: None,
-                root_material: source.root_material.clone(),
-            },
-        ))
+    ) -> Result<crate::primary::PreparedWrite> {
+        self.prepare_products(writes)
     }
     fn prepare_products(&self, writes: &[ProductWrite]) -> Result<crate::primary::PreparedWrite> {
         std::fs::create_dir_all(&self.root)?;
@@ -510,10 +501,6 @@ impl crate::primary::Sinex for OfflineProducer {
         &self,
         _: &crate::primary::ReplayState,
         _: &dyn Fn(&str) -> Result<bool>,
-        _: &dyn Fn(
-            &crate::primary::ParsedSource,
-            &crate::primary::PublicationReceipt,
-        ) -> Result<bool>,
     ) -> Result<()> {
         if self.root.join("ready").exists() {
             Ok(())

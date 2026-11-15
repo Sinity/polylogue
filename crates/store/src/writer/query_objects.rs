@@ -218,7 +218,6 @@ impl Inner {
                             parents: Vec::new(),
                             machine: Some(run.machine.clone()),
                             output_index: 0,
-                            publish: true,
                         },
                         crate::primary::ProductWrite {
                             product: crate::primary::Product::QueryRunOutcome {
@@ -228,7 +227,6 @@ impl Inner {
                             parents: Vec::new(),
                             machine: None,
                             output_index: 1,
-                            publish: true,
                         },
                     ],
                 )?;
@@ -316,7 +314,6 @@ impl Inner {
                     parents: Vec::new(),
                     machine: None,
                     output_index: 0,
-                    publish: true,
                 }],
             )?;
             scoped::require_current(&self.location, scope)?;
@@ -361,7 +358,6 @@ impl Inner {
                     parents: Vec::new(),
                     machine: Some(run.machine.clone()),
                     output_index: 0,
-                    publish: true,
                 }],
             )?;
             let mut visible = false;
@@ -423,7 +419,6 @@ impl Inner {
                     parents: Vec::new(),
                     machine: None,
                     output_index: 0,
-                    publish: true,
                 }],
             )?;
             return Ok(());

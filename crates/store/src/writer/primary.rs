@@ -288,7 +288,6 @@ pub(super) fn product_writes(
             parents: Vec::new(),
             machine,
             output_index: ordinal as u64,
-            publish: true,
         });
     }
     Ok(writes)
