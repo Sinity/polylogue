@@ -53,6 +53,7 @@ pub(crate) fn write(
         crate::versions::TextRows {
             packed: source.packed,
             texts: source.texts,
+            membership: None,
         },
     )?;
     let pk = match existing {
@@ -77,10 +78,10 @@ pub(crate) fn apply_choice(
     keys: &crate::writer::resolve::ResolvedKeys,
 ) -> Result<()> {
     let Some(choice) = choice else {
-        let texts=tx.prepare("SELECT DISTINCT text_id FROM document_block WHERE document_pk=?1 AND text_id IS NOT NULL")?.query_map([pk],|r|r.get::<_,i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let old=tx.prepare("SELECT DISTINCT text_id FROM document_block WHERE document_pk=?1 AND text_id IS NOT NULL")?.query_map([pk],|r|r.get::<_,i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
         tx.execute("DELETE FROM document WHERE pk=?1", [pk])?;
-        for text in texts {
-            crate::text_rows::unindex_unused(tx, text, first_build.is_some())?;
+        for text in old {
+            crate::text_rows::unindex_unused(tx, texts, text, first_build.is_some())?;
         }
         return Ok(());
     };
@@ -152,7 +153,7 @@ fn show(
     tx.execute("DELETE FROM document_block WHERE document_pk=?1", [pk])?;
     insert_blocks(tx, pk, source, document, prepared)?;
     for text in old {
-        crate::text_rows::unindex_unused(tx, text, source.first_build.is_some())?;
+        crate::text_rows::unindex_unused(tx, source.texts, text, source.first_build.is_some())?;
     }
     Ok(())
 }
@@ -181,7 +182,7 @@ fn insert_blocks(
             })
             .transpose()?;
         if let Some(id) = text {
-            crate::text_rows::activate(tx, id, 1, source.first_build.is_some())?;
+            crate::text_rows::activate(tx, source.texts, id, 1, source.first_build.is_some())?;
         }
         let blob = match block {
             Block::Image(a) | Block::File(a) => a.blob.map(|h| h.0.to_vec()),

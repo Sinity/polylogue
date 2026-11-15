@@ -140,7 +140,8 @@ fn apply_rows(
     if p.delivery.is_none() && !retraction && !admit_step(previous_checkpoint.as_ref(), p)? {
         return Ok(0);
     }
-    tx.execute("INSERT INTO input_ref(pk,id,format) VALUES (?1,?2,?3) ON CONFLICT(pk) DO UPDATE SET format=excluded.format WHERE format IS NOT excluded.format",params![input_pk,b.input.id,b.input.format])?;
+    tx.prepare_cached("INSERT INTO input_ref(pk,id,format) VALUES (?1,?2,?3) ON CONFLICT(pk) DO UPDATE SET format=excluded.format WHERE format IS NOT excluded.format")?
+        .execute(params![input_pk,b.input.id,b.input.format])?;
     if let Some(update) = &p.comparison {
         update.write(tx, input_pk)?;
     }
@@ -171,6 +172,7 @@ fn apply_rows(
         keys,
         choices,
         changes,
+        texts,
         versions: HashMap::new(),
         messages: choices
             .messages
@@ -205,6 +207,10 @@ fn apply_rows(
             })
             .transpose()?
     };
+    let membership = crate::text_rows::NewMembership {
+        bits: &rows.current_texts(),
+        bulk: first_build.is_some(),
+    };
     for version in choices.message_versions.values() {
         let registered = crate::versions::store_message(
             tx,
@@ -213,6 +219,7 @@ fn apply_rows(
             crate::versions::TextRows {
                 packed: &p.prepared.texts,
                 texts,
+                membership: Some(&membership),
             },
             version.replace,
             source_admission,
@@ -248,6 +255,9 @@ fn apply_rows(
             Ok(rows.source_admitted)
         })?;
     let mut written = 0;
+    // Versions a source row of this step now refers to. Removing or changing
+    // that reference later records the version through its trigger.
+    let mut chosen = std::collections::HashSet::new();
     let mut activity: HashMap<i64, i64> = HashMap::new();
     // Messages one record holds share its offset; their order in the
     // record breaks the tie.
@@ -269,15 +279,17 @@ fn apply_rows(
         // A kind this step states needs no lookup.
         let main = choices.message_mains[i];
         let order_time = choices.message_order_times[i];
-        written += u64::from(rows.write_message(
+        let version_pk = rows.version_pk(&prepared.hash)?;
+        let new = rows.write_message(
             row,
             session_pk,
             prepared,
-            position,
-            order_time,
+            (position, order_time),
             main,
+            version_pk,
             &mut sessions,
-        )?);
+        )?;
+        chosen.insert(version_pk);
         super::native_hook_fields::write(
             tx,
             super::native_hook_fields::Source {
@@ -288,11 +300,18 @@ fn apply_rows(
             keys,
             p,
             i,
-            rows.version_pk(&prepared.hash)?,
+            version_pk,
+            new,
         )?;
         if let Some(at) = ms(row.message.at) {
             let last = activity.entry(session_pk).or_insert(at);
             *last = (*last).max(at);
+        }
+    }
+    // A stored version no source row chose is deleted before the commit.
+    for version in rows.versions.values() {
+        if !chosen.contains(&version.pk()) {
+            crate::versions::unreferenced_message(tx, version.pk())?;
         }
     }
     // A message read again with another time changes the order times of the
@@ -482,6 +501,7 @@ fn apply_rows(
             rows.refresh_link(*pk)?;
         }
         for (from, _, copy) in &choices.absorbed_sessions {
+            changes.removed_session(*from);
             crate::session_row::remove(tx, *from, copy, counter)?;
         }
     }
@@ -674,6 +694,7 @@ pub(super) struct RowWriter<'a, 't> {
     keys: &'a resolve::ResolvedKeys,
     choices: &'a resolve::membership::Choices,
     changes: &'a ChangeSummary,
+    texts: &'a crate::text_rows::TextIds,
 }
 
 /// One selected message's application in this step. The creation result is
@@ -908,7 +929,8 @@ impl RowWriter<'_, '_> {
                 .execute(params![alias.to_string(), pk, self.input_pk, self.chain])?;
         }
         let main = merged.kind == polylogue_model::SessionKind::Main;
-        self.tx.execute("UPDATE message_source SET main=?4 WHERE session_pk=?1 AND input_pk=?2 AND chain=?3 AND main<>?4",params![pk,self.input_pk,self.chain,main])?;
+        self.tx.prepare_cached("UPDATE message_source SET main=?4 WHERE session_pk=?1 AND input_pk=?2 AND chain=?3 AND main<>?4")?
+            .execute(params![pk,self.input_pk,self.chain,main])?;
         self.changes.session(self.tx, pk)?;
         self.tx
             .prepare_cached("UPDATE session SET stub=0 WHERE pk=?1 AND stub IS NOT 0")?
@@ -940,16 +962,17 @@ impl RowWriter<'_, '_> {
         Ok(pk)
     }
 
-    /// Stores a chain's reading beneath the resolved selected value.
+    /// Stores a chain's reading, as version `version_pk`, beneath the resolved
+    /// selected value; returns whether the message row was created here.
     #[allow(clippy::too_many_arguments)]
     fn write_message(
         &self,
         row: &MessageRow,
         session_pk: i64,
         prepared: &PreparedMessage,
-        position: (i64, i64),
-        order_time: Option<i64>,
+        (position, order_time): ((i64, i64), Option<i64>),
         main: bool,
+        version_pk: i64,
         sessions: &mut HashMap<String, i64>,
     ) -> Result<bool> {
         let m = &row.message;
@@ -1005,14 +1028,13 @@ impl RowWriter<'_, '_> {
             }
         };
         let id_kind = row.id_kind.as_str();
-        let version_pk = self.version_pk(&prepared.hash)?;
         let (route, completion) = (route.as_str(), completion.as_str());
         if new {
             self.tx.prepare_cached(
                 "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,completion,version_pk,session_pk,main,route,seq,record_position,order_time,at)
                  VALUES (?1,?2,?3,?4,?5,?13,?6,?7,?8,?9,?10,?11,?12,?14,?15)"
             )?.execute(params![pk,v.input_pk,v.chain,v.start,v.end,completion,version_pk,session_pk,main,route,position.0,position.1,id_kind,order_time,at])?;
-            return Ok(false);
+            return Ok(true);
         }
         self.tx.prepare_cached(
             "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,completion,version_pk,session_pk,main,route,seq,record_position,order_time,at)
@@ -1035,11 +1057,11 @@ impl RowWriter<'_, '_> {
         let created = write.created.take();
         let winner = choice.map(|choice| (selected_version(choice, value), choice.session));
         let Some((v, session_pk)) = winner else {
-            if !self.tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM message WHERE pk=?1)",
-                [pk],
-                |r| r.get::<_, bool>(0),
-            )? {
+            if !self
+                .tx
+                .prepare_cached("SELECT EXISTS(SELECT 1 FROM message WHERE pk=?1)")?
+                .query_row([pk], |r| r.get::<_, bool>(0))?
+            {
                 return Ok(false);
             }
             self.changes.message(self.tx, pk)?;
@@ -1080,10 +1102,12 @@ impl RowWriter<'_, '_> {
                 if !items_unchanged {
                     self.changes.message_metadata(self.tx, pk)?;
                 }
-                self.tx.execute(
-                    "UPDATE message SET input_pk=?2,source_chain=?3,source_start=?4,source_end=?5,
+                self.tx
+                    .prepare_cached(
+                        "UPDATE message SET input_pk=?2,source_chain=?3,source_start=?4,source_end=?5,
                      session_order=?6,in_progress=?7 WHERE pk=?1",
-                    params![
+                    )?
+                    .execute(params![
                         pk,
                         v.input_pk,
                         v.chain,
@@ -1240,7 +1264,7 @@ impl RowWriter<'_, '_> {
             m.prompt_kind.map(|k| name(&k)),
             m.model,
             ms(m.at),
-            parent,
+            parent.as_deref(),
             v.input_pk,
             v.chain,
             v.start,
@@ -1279,7 +1303,7 @@ impl RowWriter<'_, '_> {
         let pk = pk.unwrap_or_else(|| self.tx.last_insert_rowid());
         if created {
             self.changes
-                .installed_message(pk, session_pk, m, words, author)?;
+                .installed_message(pk, session_pk, parent, m, words, author)?;
         } else {
             self.changes.replaced_message(pk)?;
         }
@@ -1396,9 +1420,35 @@ impl RowWriter<'_, '_> {
             .prepare_cached("DELETE FROM block WHERE message_pk = ?1")?
             .execute([message_pk])?;
         for text in texts {
-            crate::text_rows::unindex_unused(self.tx, text, self.first_build.is_some())?;
+            crate::text_rows::unindex_unused(
+                self.tx,
+                self.texts,
+                text,
+                self.first_build.is_some(),
+            )?;
         }
         Ok(())
+    }
+
+    /// The search indexes the texts of the blocks this step installs belong
+    /// to, by text hash: every changed selected message's blocks are written
+    /// ([`Self::refresh_message`]).
+    fn current_texts(&self) -> HashMap<[u8; 32], i64> {
+        let mut bits = HashMap::new();
+        for write in self.messages.values() {
+            let (Some(choice), Some(value)) = (write.choice, write.value) else {
+                continue;
+            };
+            if !choice.changed {
+                continue;
+            }
+            for (block, text) in value.message.blocks.iter().zip(&value.prepared.texts) {
+                if let Some(hash) = text {
+                    *bits.entry(*hash).or_default() |= search_bit(block);
+                }
+            }
+        }
+        bits
     }
 
     fn version_pk(&self, hash: &[u8; 32]) -> Result<i64> {
@@ -1479,13 +1529,9 @@ impl RowWriter<'_, '_> {
         at: Option<i64>,
     ) -> Result<()> {
         let (idx, ordinal) = position;
-        let bit = if matches!(block, Block::ToolResult { .. } | Block::ToolCall { .. }) {
-            2
-        } else {
-            1
-        };
+        let bit = search_bit(block);
         if let Some(id) = text_id {
-            crate::text_rows::activate(self.tx, id, bit, self.first_build.is_some())?;
+            crate::text_rows::activate(self.tx, self.texts, id, bit, self.first_build.is_some())?;
         }
         let (kind, call_id, attachment) = match block {
             Block::Text { .. } => ("text", None, None),
@@ -1723,6 +1769,15 @@ impl RowWriter<'_, '_> {
             }
         }
         Ok(())
+    }
+}
+
+/// The search index a block's text belongs to: 2 for tool output, 1 for prose.
+fn search_bit(block: &Block) -> i64 {
+    if matches!(block, Block::ToolResult { .. } | Block::ToolCall { .. }) {
+        2
+    } else {
+        1
     }
 }
 

@@ -342,3 +342,61 @@ fn cached_text_identity_does_not_claim_a_payload_write() {
     assert_eq!(preloaded.id, written.id);
     assert!(!preloaded.written);
 }
+
+#[test]
+fn new_text_membership_follows_unindexing_and_rollback_within_the_writer() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    crate::schema::create_index(&conn).unwrap();
+    let identities = TextIds::new(&conn, true).unwrap();
+    let text = "synthetic tool output";
+    let hash = *blake3::hash(text.as_bytes()).as_bytes();
+    let prepared =
+        crate::encoding::PreparedText::new(text, crate::encoding::pack_text(text).unwrap());
+    let bits = std::collections::HashMap::from([(hash, 2)]);
+    let membership = NewMembership {
+        bits: &bits,
+        bulk: false,
+    };
+    let state = |conn: &Connection, id: i64| {
+        (
+            count(conn, &format!("SELECT indexed FROM text WHERE id={id}")),
+            count(
+                conn,
+                &format!("SELECT count(*) FROM search_pending WHERE text_id={id}"),
+            ),
+        )
+    };
+
+    // A text a step's blocks name joins their index as it is written.
+    let transaction = identities.transaction();
+    let tx = conn.transaction().unwrap();
+    let id = identities
+        .resolve_member(&tx, &hash, Some(&prepared), Some(&membership))
+        .unwrap()
+        .id;
+    assert_eq!(state(&tx, id), (2, 1));
+    activate(&tx, &identities, id, 2, false).unwrap();
+    assert_eq!(state(&tx, id), (2, 1));
+    // No block uses it, so unindexing removes it; activating restores it.
+    unindex_unused(&tx, &identities, id, false).unwrap();
+    assert_eq!(state(&tx, id), (0, 0));
+    activate(&tx, &identities, id, 2, false).unwrap();
+    assert_eq!(state(&tx, id), (2, 1));
+    unindex_unused(&tx, &identities, id, false).unwrap();
+    tx.commit().unwrap();
+    transaction.commit();
+    assert_eq!(state(&conn, id), (0, 0));
+
+    // Membership set in a transaction that rolls back is not assumed after it.
+    let transaction = identities.transaction();
+    let tx = conn.transaction().unwrap();
+    activate(&tx, &identities, id, 1, false).unwrap();
+    assert_eq!(state(&tx, id), (1, 1));
+    drop(tx);
+    drop(transaction);
+    assert_eq!(state(&conn, id), (0, 0));
+    let tx = conn.transaction().unwrap();
+    activate(&tx, &identities, id, 1, false).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(state(&conn, id), (1, 1));
+}

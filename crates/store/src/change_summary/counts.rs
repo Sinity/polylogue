@@ -8,6 +8,7 @@ impl ChangeSummary {
         &self,
         pk: i64,
         session: i64,
+        parent: Option<String>,
         message: &polylogue_model::Message,
         words: i64,
         author: polylogue_model::WrittenBy,
@@ -34,14 +35,15 @@ impl ChangeSummary {
         let change = changed.messages.get_mut(&pk).ok_or_else(|| {
             crate::StoreError::Invalid("installed message has no transaction owner".into())
         })?;
-        change.installed = Some((
+        change.installed = Some(Installed {
             session,
+            parent,
             counts,
-            message
+            has_calls: message
                 .blocks
                 .iter()
                 .any(|block| matches!(block, Block::ToolCall { .. })),
-        ));
+        });
         Ok(())
     }
 
@@ -52,6 +54,20 @@ impl ChangeSummary {
         })?;
         change.installed = None;
         Ok(())
+    }
+
+    /// A session row is being removed with its messages: what messages
+    /// inserted into it in this transaction held is no longer their row.
+    pub(crate) fn removed_session(&self, session: i64) {
+        for change in self.changed.borrow_mut().messages.values_mut() {
+            if change
+                .installed
+                .as_ref()
+                .is_some_and(|installed| installed.session == session)
+            {
+                change.installed = None;
+            }
+        }
     }
     pub(crate) fn session(&self, conn: &Connection, session: i64) -> Result<()> {
         if !self.changed.borrow().sessions.contains_key(&session)
@@ -68,40 +84,40 @@ impl ChangeSummary {
         Ok(())
     }
 
-    /// A result can change the count of a call in a different message.
-    pub(crate) fn call(&self, conn: &Connection, call: i64) -> Result<()> {
-        let message = conn.prepare_cached(
-            "SELECT b.message_pk FROM tool_call t JOIN block b ON b.pk=t.call_block_pk WHERE t.pk=?1",
-        )?.query_row([call], |row| row.get(0)).optional()?;
-        if let Some(message) = message {
+    /// A result can change the count of a call in a different message: the
+    /// messages holding the calls `sql` selects (with `params`) are recorded.
+    fn call_messages(
+        &self,
+        conn: &Connection,
+        sql: &str,
+        params: impl rusqlite::Params,
+    ) -> Result<()> {
+        let messages = conn
+            .prepare_cached(sql)?
+            .query_map(params, |row| row.get::<_, i64>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for message in messages {
             self.record_message(conn, message)?;
         }
         Ok(())
     }
 
     pub(crate) fn call_result(&self, conn: &Connection, session: i64, id: &str) -> Result<()> {
-        let calls = conn
-            .prepare_cached("SELECT pk FROM tool_call WHERE session_pk=?1 AND call_id=?2")?
-            .query_map(rusqlite::params![session, id], |row| row.get::<_, i64>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        for call in calls {
-            self.call(conn, call)?;
-        }
-        Ok(())
+        self.call_messages(
+            conn,
+            "SELECT b.message_pk FROM tool_call t JOIN block b ON b.pk=t.call_block_pk
+             WHERE t.session_pk=?1 AND t.call_id=?2",
+            rusqlite::params![session, id],
+        )
     }
 
     pub(crate) fn remove_results(&self, conn: &Connection, message: i64) -> Result<()> {
-        let calls = conn
-            .prepare_cached(
-                "SELECT pk FROM tool_call WHERE result_block_pk IN
-            (SELECT pk FROM block WHERE message_pk=?1)",
-            )?
-            .query_map([message], |row| row.get::<_, i64>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        for call in calls {
-            self.call(conn, call)?;
-        }
-        Ok(())
+        self.call_messages(
+            conn,
+            "SELECT b.message_pk FROM tool_call t JOIN block b ON b.pk=t.call_block_pk
+             WHERE t.result_block_pk IN (SELECT pk FROM block WHERE message_pk=?1)",
+            [message],
+        )
     }
 
     pub(crate) fn finish_summaries(&self, conn: &Connection, counter: Option<i64>) -> Result<()> {
@@ -115,12 +131,12 @@ impl ChangeSummary {
                     .accumulate(&before.counts, -1)?;
             }
             let after = match &change.installed {
-                Some((session, counts, has_calls)) => {
-                    let mut counts = counts.clone();
-                    if *has_calls {
+                Some(installed) => {
+                    let mut counts = installed.counts.clone();
+                    if installed.has_calls {
                         (counts.tool_calls, counts.errors) = counts::message_actions(conn, pk)?;
                     }
-                    Some((*session, counts))
+                    Some((installed.session, counts))
                 }
                 None => counts::message(conn, pk)?,
             };

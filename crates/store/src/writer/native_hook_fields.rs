@@ -54,6 +54,8 @@ pub(super) struct Source<'a> {
 
 /// All fields in this path remain declared. Acquisition payloads alone do not
 /// authenticate their owner; future native proof must enter through that owner.
+/// A message row `created` by this reading has no earlier claims to replace.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn write(
     conn: &rusqlite::Connection,
     source: Source<'_>,
@@ -61,6 +63,7 @@ pub(super) fn write(
     step: &super::ParseStep,
     index: usize,
     version_pk: i64,
+    created: bool,
 ) -> Result<()> {
     use polylogue_model::injection::NativeHookField;
     use rusqlite::params;
@@ -71,16 +74,18 @@ pub(super) fn write(
             row.message.id.to_string().as_bytes(),
         )?
         .pk;
-    conn.execute(
-        "DELETE FROM message_injection_field WHERE message_pk=?1 AND input_pk=?2 AND chain=?3 AND version_pk<>?4",
-        params![pk, source.input_pk, source.chain, version_pk],
-    )?;
+    if !created {
+        conn.prepare_cached(
+            "DELETE FROM message_injection_field WHERE message_pk=?1 AND input_pk=?2 AND chain=?3 AND version_pk<>?4",
+        )?
+        .execute(params![pk, source.input_pk, source.chain, version_pk])?;
+    }
     let insert = |block: u64, field: NativeHookField| -> Result<()> {
         field.validate()?;
-        conn.execute(
+        conn.prepare_cached(
             "INSERT OR IGNORE INTO message_injection_field(message_pk,version_pk,block_ordinal,input_pk,chain,field) VALUES (?1,?2,?3,?4,?5,?6)",
-            params![pk,version_pk,block.to_string(),source.input_pk,source.chain,serde_json::to_string(&field)?],
-        )?;
+        )?
+        .execute(params![pk,version_pk,block.to_string(),source.input_pk,source.chain,serde_json::to_string(&field)?])?;
         Ok(())
     };
     if let Some(claims) = step.output.native_hook_fields.get(&index) {

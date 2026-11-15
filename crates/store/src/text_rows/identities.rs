@@ -20,6 +20,9 @@ pub(crate) struct ResolvedText {
 
 pub(crate) struct TextIds {
     known: RefCell<HashMap<[u8; 32], Identity>>,
+    /// Search membership bits this writer knows are set on text rows, by ID,
+    /// within the current transaction; forgotten when it ends.
+    marked: RefCell<HashMap<i64, i64>>,
     next: Cell<i64>,
     reload: Cell<bool>,
 }
@@ -29,6 +32,7 @@ impl TextIds {
         let max: i64 = conn.query_row("SELECT coalesce(max(id),0) FROM text", [], |r| r.get(0))?;
         let ids = Self {
             known: RefCell::new(HashMap::new()),
+            marked: RefCell::new(HashMap::new()),
             next: Cell::new(next(max)?),
             reload: Cell::new(preload),
         };
@@ -67,6 +71,18 @@ impl TextIds {
         hash: &[u8; 32],
         body: Option<&crate::encoding::PreparedText>,
     ) -> Result<ResolvedText> {
+        self.resolve_member(conn, hash, body, None)
+    }
+
+    /// Like [`Self::resolve`]; a text row written here joins the search
+    /// indexes `membership` names for its hash.
+    pub(crate) fn resolve_member(
+        &self,
+        conn: &Connection,
+        hash: &[u8; 32],
+        body: Option<&crate::encoding::PreparedText>,
+        membership: Option<&super::NewMembership<'_>>,
+    ) -> Result<ResolvedText> {
         self.refresh(conn)?;
         let known = self.known.borrow().get(hash).copied();
         if let Some(Identity { id, present: true }) = known {
@@ -76,9 +92,21 @@ impl TextIds {
         if let Some(body) = body {
             let id = allocated.unwrap_or(self.next.get());
             let after = next(id)?;
-            let inserted = conn.prepare_cached("INSERT OR IGNORE INTO text(id,hash,body,normalized_hash,indexed) VALUES (?1,?2,?3,?4,0) RETURNING id")?
-                .query_row(params![id,hash.as_slice(),body.body,body.normalized_hash.as_slice()], |r| r.get::<_,i64>(0)).optional()?;
+            let bits = membership
+                .and_then(|membership| membership.bits.get(hash))
+                .copied()
+                .unwrap_or(0);
+            let inserted = conn.prepare_cached("INSERT OR IGNORE INTO text(id,hash,body,normalized_hash,indexed) VALUES (?1,?2,?3,?4,?5) RETURNING id")?
+                .query_row(params![id,hash.as_slice(),body.body,body.normalized_hash.as_slice(),bits], |r| r.get::<_,i64>(0)).optional()?;
             if inserted.is_some() {
+                if bits != 0 {
+                    if !membership.is_some_and(|membership| membership.bulk) {
+                        for bit in [1, 2].into_iter().filter(|bit| bits & bit != 0) {
+                            super::queue_entry(conn, id, bit)?;
+                        }
+                    }
+                    self.marked.borrow_mut().insert(id, bits);
+                }
                 self.next.set(self.next.get().max(after));
                 self.known
                     .borrow_mut()
@@ -126,6 +154,7 @@ impl TextIds {
     /// the allocator's high-water mark remains above all IDs already used.
     pub(crate) fn discard_cached(&self) {
         self.known.borrow_mut().clear();
+        self.marked.borrow_mut().clear();
         self.reload.set(true);
     }
 
@@ -133,6 +162,25 @@ impl TextIds {
         self.known
             .borrow_mut()
             .insert(*hash, Identity { id, present: false });
+        self.marked.borrow_mut().remove(&id);
+    }
+
+    /// Whether text `id` is known to be in the search index `bit` names.
+    pub(super) fn is_marked(&self, id: i64, bit: i64) -> bool {
+        self.marked
+            .borrow()
+            .get(&id)
+            .is_some_and(|bits| bits & bit != 0)
+    }
+
+    pub(super) fn mark(&self, id: i64, bit: i64) {
+        *self.marked.borrow_mut().entry(id).or_default() |= bit;
+    }
+
+    pub(super) fn unmark(&self, id: i64, bit: i64) {
+        if let Some(bits) = self.marked.borrow_mut().get_mut(&id) {
+            *bits &= !bit;
+        }
     }
 
     pub(crate) fn transaction(&self) -> TextTransaction<'_> {
@@ -159,6 +207,7 @@ impl TextTransaction<'_> {
 }
 impl Drop for TextTransaction<'_> {
     fn drop(&mut self) {
+        self.texts.marked.borrow_mut().clear();
         if !self.committed {
             self.texts.reload.set(true);
         }
