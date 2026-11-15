@@ -581,7 +581,9 @@ pub fn open_read(path: &Path) -> Result<Connection> {
         true,
     )?;
     conn.busy_timeout(std::time::Duration::from_secs(30))?;
-    crate::read::limit::ReadLimit::observe_current(&conn)?;
+    if let Some(limit) = crate::read::limit::ReadLimit::current() {
+        limit.install(&conn)?;
+    }
     // One-off readers use the setup allocation; pools override both databases
     // from their aggregate budget after attaching archive.db.
     conn.pragma_update(None, "cache_size", -(cache::SETUP * 1024))?;

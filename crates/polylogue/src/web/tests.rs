@@ -565,7 +565,11 @@ fn application_shutdown_joins_http_handlers_while_all_reader_slots_remain_held()
     runtime.stop_accepting();
     server.shutdown().unwrap();
     runtime.shutdown().unwrap();
-    assert_eq!(reader.query("SELECT 42 AS n", &[]).unwrap()[0]["n"], 42);
+    // A reader held across the stop ends with it.
+    assert!(matches!(
+        reader.query("SELECT 42 AS n", &[]),
+        Err(polylogue_store::StoreError::Stopped)
+    ));
 }
 
 #[test]

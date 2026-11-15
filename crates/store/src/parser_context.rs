@@ -48,6 +48,7 @@ impl Overlay {
             None
         } else {
             let index = crate::archive::open_read(&archive.index_db())?;
+            crate::read::limit::ReadLimit::observe_current(&index)?;
             index.execute_batch("BEGIN")?;
             Some(index)
         };
