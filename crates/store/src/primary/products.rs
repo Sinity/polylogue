@@ -1,4 +1,4 @@
-//! Original interpretations, native eligibility and durable authored facts.
+//! Parsed facts sent to Sinex and durable authored facts.
 use crate::input_rows::InputRows;
 use crate::writer::InputKey;
 use polylogue_model::authored::PreparedRequest;
@@ -7,11 +7,9 @@ use polylogue_model::{
     Session,
 };
 use serde::{Deserialize, Serialize};
-mod eligibility;
-pub use eligibility::SourceRecord;
-pub(crate) use eligibility::{
-    allowed, needs_publication, previous_reading_bound, scope_hash, selected,
-};
+mod source_record;
+pub use source_record::SourceRecord;
+pub(crate) use source_record::{needs_sending, previous_reading_bound};
 mod export;
 pub use export::ExportReadingKey;
 
@@ -50,30 +48,11 @@ impl Reading {
     }
 }
 
-/// The immutable original chain and parser range a publication interprets.
+/// The original chain and parser range one frame of parsed facts comes from.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParsedSource {
     pub root_material: String,
     pub reading: Reading,
-}
-
-/// Sinex's receipt for a fact frame, saved with the local parser checkpoint.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PublicationReceipt {
-    pub producer: String,
-    pub frame: String,
-    pub number: i64,
-    /// Native event position when this frame changed readings; absent for a no-op.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub commit_seq: Option<i64>,
-    pub root_material: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ParsedPublication {
-    Following(super::ReadingScope),
-    Pending { identity: String },
-    Admitted(PublicationReceipt),
 }
 
 /// A tool invocation as its source stated it, independent of local block rows.
@@ -393,15 +372,6 @@ pub struct ProductWrite {
     pub parents: Vec<String>,
     pub machine: Option<String>,
     pub output_index: u64,
-    /// Eligibility is a local publication instruction; it is not native payload data.
-    #[serde(default = "publish_by_default", skip_serializing_if = "is_published")]
-    pub publish: bool,
-}
-fn publish_by_default() -> bool {
-    true
-}
-fn is_published(value: &bool) -> bool {
-    *value
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

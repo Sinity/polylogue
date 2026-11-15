@@ -98,7 +98,6 @@ pub(crate) struct MessageVersion {
     #[serde(with = "shared_message_value")]
     pub value: Arc<MessageValue>,
     pub replace: bool,
-    pub admitted: Option<u64>,
     /// This step supplied a complete unmerged value. This controls selection
     /// ownership, never payload validation or transaction authority.
     complete_source: bool,
@@ -1068,14 +1067,6 @@ impl<'a> Projection<'a> {
                     value: Arc::clone(&merged),
                     replace,
                     complete_source,
-                    admitted: step
-                        .native_admission(&("message", &row.message.id, row.offset))?
-                        .max(
-                            choices
-                                .message_versions
-                                .get(&BlobHash(prepared.hash))
-                                .and_then(|version| version.admitted),
-                        ),
                 },
             );
             self.message_values.insert(prepared.hash.to_vec(), merged);
@@ -1534,15 +1525,8 @@ impl<'a> Projection<'a> {
                 event.range.or(Some((step.start, step.parsed_upto)))
             };
             let choice = EventChoice {
-                admitted: step
-                    .native_admission(&("event", &event_ids[i]))?
-                    .map(i64::try_from)
-                    .transpose()
-                    .map_err(|_| {
-                        StoreError::Invalid(
-                            "canonical event admission exceeds SQLite's integer range".into(),
-                        )
-                    })?,
+                // A new source takes the step's material acknowledgment.
+                admitted: None,
                 kind: event.kind.clone(),
                 fields,
                 imported: serde_json::to_string(&original)?,

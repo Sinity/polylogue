@@ -25,8 +25,8 @@ pub(crate) mod projection;
 pub(crate) mod scope;
 pub use products::{
     Capture, CaptureGroup, CapturedInput, Confirmed, ConfirmedChange, ExportReadingKey, Material,
-    ParsedPublication, ParsedSource, PendingCapture, PreparedInput, PreparedWrite, Product,
-    ProductWrite, PublicationReceipt, Reading, SourceLocation, SourceRecord,
+    ParsedSource, PendingCapture, PreparedInput, PreparedWrite, Product, ProductWrite, Reading,
+    SourceLocation, SourceRecord,
 };
 
 use crate::{Result, StoreError};
@@ -36,17 +36,8 @@ use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 pub type ProductEmitter<'a> = dyn FnMut(ProductWrite) -> Result<()> + 'a;
-/// The existing native replay selection whose live set the caller interpreted.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReadingScope {
-    pub family: String,
-    pub materials: Vec<String>,
-    pub event_types: Vec<String>,
-    pub expected_live_hash: String,
-}
-
-pub type ReadingProducts<'a> =
-    dyn FnMut(&ReadingScope, &mut ProductEmitter<'_>) -> Result<String> + 'a;
+/// Emits every parsed fact of a replacement reading.
+pub type ReadingProducts<'a> = dyn FnMut(&mut ProductEmitter<'_>) -> Result<()> + 'a;
 
 /// Logical names of immutable intents in the existing producer custody store.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,13 +97,14 @@ pub trait Sinex: Send + Sync {
         products: &[ProductWrite],
     ) -> Result<PreparedWrite>;
     fn prepare_products(&self, products: &[ProductWrite]) -> Result<PreparedWrite>;
-    /// Publishes interpreted facts before local rows. An admitted receipt is
-    /// durable Sinex custody, not a claim that the local parser committed.
+    /// Prepares parsed facts from a confirmed original chain in the spool,
+    /// before the local rows of the same parse commit. The frames of one chain
+    /// are sent in the order they were prepared.
     fn prepare_parsed(
         &self,
         source: &ParsedSource,
         products: &[ProductWrite],
-    ) -> Result<ParsedPublication>;
+    ) -> Result<PreparedWrite>;
     fn prepare_request(
         &self,
         request: &polylogue_model::authored::PreparedRequest,
@@ -131,13 +123,14 @@ pub trait Sinex: Send + Sync {
         &self,
         visit: &mut dyn FnMut(&crate::NewBlob) -> Result<()>,
     ) -> Result<()>;
-    /// One complete reparse replaces its exact owner-confirmed material scope.
+    /// Prepares a producer replay that replaces Sinex's parsed facts for one
+    /// chain. `None` while an earlier frame of that chain is unacknowledged.
     fn prepare_reading(
         &self,
         root: &str,
         key: &ExportReadingKey,
         visit: &mut ReadingProducts<'_>,
-    ) -> Result<ParsedPublication>;
+    ) -> Result<Option<PreparedWrite>>;
     /// Products under a caller-chosen write identity, so a retry reuses it.
     fn prepare_named_products(
         &self,
@@ -152,7 +145,6 @@ pub trait Sinex: Send + Sync {
         &self,
         state: &ReplayState,
         applied: &dyn Fn(&str) -> Result<bool>,
-        processed: &dyn Fn(&ParsedSource, &PublicationReceipt) -> Result<bool>,
     ) -> Result<()>;
 }
 

@@ -103,11 +103,9 @@ fn follow_once(
     let page = sinex.confirmed(&state, &cache)?;
     queue.apply_confirmed(page)?;
     let applied = crate::primary::projection::replay_state(index)?;
-    sinex.acknowledge(
-        &applied,
-        &|event| crate::primary::projection::has_fact(index, event),
-        &|source, receipt| crate::primary::projection::processed_source(index, source, receipt),
-    )?;
+    sinex.acknowledge(&applied, &|event| {
+        crate::primary::projection::has_fact(index, event)
+    })?;
     // A reprovisioned consumer also replays deliveries at applied positions.
     // Drain receipt progress, then wait only once a probe no longer advances.
     let backlog = applied.staged_delivery != state.staged_delivery

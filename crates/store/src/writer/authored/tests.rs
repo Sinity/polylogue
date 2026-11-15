@@ -190,7 +190,7 @@ impl crate::primary::Sinex for Producer {
         &self,
         _: &crate::primary::ParsedSource,
         _: &[crate::primary::ProductWrite],
-    ) -> Result<crate::primary::ParsedPublication> {
+    ) -> Result<PreparedWrite> {
         Err(StoreError::Invalid(
             "this synthetic adapter does not admit source interpretations".into(),
         ))
@@ -206,7 +206,6 @@ impl crate::primary::Sinex for Producer {
             parents: Vec::new(),
             machine: Some(prepared.request.machine.clone()),
             output_index: 0,
-            publish: true,
         };
         self.prepare_named_products(&format!("live:{}", prepared.request.id), &[write])?;
         let mut outcome = prepared.outcome.clone();
@@ -218,7 +217,7 @@ impl crate::primary::Sinex for Producer {
         _: &str,
         _: &crate::primary::ExportReadingKey,
         _: &mut ReadingProducts<'_>,
-    ) -> Result<crate::primary::ParsedPublication> {
+    ) -> Result<Option<crate::primary::PreparedWrite>> {
         Self::unavailable()
     }
     fn visit_named_products(
@@ -325,10 +324,6 @@ impl crate::primary::Sinex for Producer {
         &self,
         _: &crate::primary::ReplayState,
         _: &dyn Fn(&str) -> Result<bool>,
-        _: &dyn Fn(
-            &crate::primary::ParsedSource,
-            &crate::primary::PublicationReceipt,
-        ) -> Result<bool>,
     ) -> Result<()> {
         Ok(())
     }

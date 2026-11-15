@@ -27,7 +27,6 @@ use std::thread::JoinHandle;
 mod assertions;
 mod assets;
 mod dispatch;
-mod source_eligibility;
 pub use dispatch::ParentLifetime;
 #[cfg(any(test, feature = "fixture"))]
 pub use dispatch::{DispatchBarrier, DispatchPhase};
@@ -893,7 +892,7 @@ impl WriterSender {
                         }
                     }
                     self.wait_primary_blobs(&bodies)?;
-                    self.prepare_primary_batch(&mut item.batch)?;
+                    self.spool_primary_batch(&mut item.batch)?;
                     item.files.clear();
                     item.batch.blobs.clear();
                 }
@@ -915,7 +914,7 @@ impl WriterSender {
 
     pub fn send(&self, mut batch: Batch) -> Result<()> {
         if self.0.sinex.is_some() && matches!(batch.change, Change::Reparse { .. }) {
-            self.prepare_primary_batch(&mut batch)?;
+            self.spool_primary_batch(&mut batch)?;
         }
         if !self.0.resolver.location().is_primary()
             || matches!(batch.change, Change::Reparse { .. })
@@ -950,7 +949,7 @@ impl WriterSender {
     ) -> Result<Receiver<Result<u64>>> {
         reading.finish()?;
         if self.0.sinex.is_some() {
-            self.prepare_primary_reading(&input, chain, length, &mut reading)?;
+            self.spool_primary_reading(&input, chain, length, &mut reading)?;
         }
         reading.resolve(&self.0.resolver, &input, chain, length)?;
         let (reply, wait) = sync_channel(1);
@@ -1836,7 +1835,6 @@ impl Inner {
                 parents: Vec::new(),
                 machine: Some(machine),
                 output_index: 0,
-                publish: true,
             }])?;
             return Ok(());
         }
@@ -2172,15 +2170,6 @@ impl Inner {
         if primary {
             for batch in batches.clone() {
                 self.validate_primary_reading(batch)?;
-                if batch
-                    .parse
-                    .iter()
-                    .any(|step| step.publication.is_none() || step.source_eligibility.is_none())
-                {
-                    return Err(StoreError::Invalid(
-                        "a primary batch has no admitted original interpretation".into(),
-                    ));
-                }
             }
         }
         for b in batches.clone() {
@@ -2296,33 +2285,17 @@ impl Inner {
                         chain,
                         p.parsed_upto,
                     )?;
-                    stats.1 += if primary {
-                        rows::write_published_rows(
-                            &self.texts,
-                            &itx,
-                            b,
-                            p,
-                            resolution,
-                            counter,
-                            self.first_build.as_deref(),
-                            &receipt,
-                            p.publication.as_ref().expect("validated native admission"),
-                            false,
-                            &changes,
-                        )?
-                    } else {
-                        write_rows(
-                            &self.texts,
-                            &itx,
-                            b,
-                            p,
-                            resolution,
-                            counter,
-                            self.first_build.as_deref(),
-                            Some(&receipt),
-                            &changes,
-                        )?
-                    };
+                    stats.1 += write_rows(
+                        &self.texts,
+                        &itx,
+                        b,
+                        p,
+                        resolution,
+                        counter,
+                        self.first_build.as_deref(),
+                        Some(&receipt),
+                        &changes,
+                    )?;
                 }
                 if b.parse.iter().any(|p| p.progress.reached_end()) {
                     rows::prune_sessions(&itx, &b.input.id, chain, counter)?;

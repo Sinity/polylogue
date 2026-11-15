@@ -98,7 +98,7 @@ fn capture_rows(
         let index = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
         let changed = index.execute(
             "UPDATE text_fragment_source SET admitted=?2 WHERE input_pk=(SELECT pk FROM input_ref WHERE id=?1)",
-            rusqlite::params![input, admitted.map(crate::fragment::receipt).transpose().unwrap()],
+            rusqlite::params![input, admitted.map(|n| i64::try_from(n).unwrap())],
         ).unwrap();
         assert_eq!(changed, 1);
     }

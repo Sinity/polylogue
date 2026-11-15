@@ -221,7 +221,6 @@ fn grouped_capture_rejects_parser_values_and_waits_for_its_confirmed_barrier() {
                 parents: vec![],
                 machine: None,
                 output_index: 0,
-                publish: true,
             }],
         );
         assert!(
@@ -237,7 +236,6 @@ fn grouped_capture_rejects_parser_values_and_waits_for_its_confirmed_barrier() {
         parents: Vec::new(),
         machine: None,
         output_index: 0,
-        publish: true,
     };
     let grouped = sinex
         .complete_captures(std::slice::from_ref(&raw.identity), &[write])
@@ -251,8 +249,6 @@ fn grouped_capture_rejects_parser_values_and_waits_for_its_confirmed_barrier() {
         .remove_confirmed(
             &crate::tests::applied(9),
             &crate::tests::every_event_applied,
-            "fixture-producer",
-            &|_, _| Ok(false),
         )
         .unwrap();
     assert_eq!(sinex.pending_captures().unwrap().len(), 1);
@@ -263,8 +259,6 @@ fn grouped_capture_rejects_parser_values_and_waits_for_its_confirmed_barrier() {
         .remove_confirmed(
             &crate::tests::applied(10),
             &crate::tests::every_event_applied,
-            "fixture-producer",
-            &|_, _| Ok(false),
         )
         .unwrap();
     assert!(sinex.pending_captures().unwrap().is_empty());

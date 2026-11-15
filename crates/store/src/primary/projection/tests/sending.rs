@@ -1,5 +1,5 @@
 use super::*;
-use crate::primary::products::{SourceRecord, allowed, needs_publication};
+use crate::primary::products::{SourceRecord, needs_sending};
 
 fn message(input: &str, offset: u64) -> Product {
     let mut step = crate::ParseStep::new(Default::default(), Default::default(), 0..100, true);
@@ -51,47 +51,32 @@ fn live(position: i64, event: &str, product: Product) -> Confirmed {
     }
 }
 
+fn unsent(index: &Connection, reading: &crate::primary::Reading, product: &Product) -> bool {
+    needs_sending(index, reading, &SourceRecord::of(product).unwrap().unwrap()).unwrap()
+}
+
 #[test]
-fn native_lifecycle_selects_exact_original_values_and_preserves_independent_sources() {
+fn a_confirmed_fact_is_not_sent_again_whatever_its_lifecycle() {
     let directory = tempfile::tempdir().unwrap();
     let mut index = cache(&directory.path().join("index.db"));
     let archive = crate::Archive::on_sinex(directory.path(), &directory.path().join("bytes"));
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
     let first = message("first-source", 10);
     let independent = message("second-source", 10);
-    let visible = |index: &Connection, product: &Product| {
-        allowed(
-            index,
-            product.reading().unwrap(),
-            &SourceRecord::of(product).unwrap().unwrap(),
-        )
-        .unwrap()
-    };
-    assert!(
-        needs_publication(
-            &index,
-            first.reading().unwrap(),
-            &SourceRecord::of(&first).unwrap().unwrap()
-        )
-        .unwrap()
-    );
+    assert!(unsent(&index, first.reading().unwrap(), &first));
     apply(
         &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
-        &[
-            live(1, "first", first.clone()),
-            live(1, "independent", independent.clone()),
-            barrier(1),
-        ],
+        &[live(1, "first", first.clone()), barrier(1)],
     )
     .unwrap();
-    assert!(visible(&index, &first));
-    assert!(visible(&index, &independent));
-    for (position, change, kept) in [
-        (2, ConfirmedChange::Archived, false),
-        (3, ConfirmedChange::Restored, true),
-        (4, ConfirmedChange::Tombstoned, false),
+    assert!(!unsent(&index, first.reading().unwrap(), &first));
+    assert!(unsent(&index, independent.reading().unwrap(), &independent));
+    for (position, change) in [
+        (2, ConfirmedChange::Archived),
+        (3, ConfirmedChange::Restored),
+        (4, ConfirmedChange::Tombstoned),
     ] {
         apply(
             &crate::text_rows::TextIds::new(&index, false).unwrap(),
@@ -109,25 +94,12 @@ fn native_lifecycle_selects_exact_original_values_and_preserves_independent_sour
             ],
         )
         .unwrap();
-        assert_eq!(visible(&index, &first), kept);
-        assert!(
-            !needs_publication(
-                &index,
-                first.reading().unwrap(),
-                &SourceRecord::of(&first).unwrap().unwrap()
-            )
-            .unwrap()
-        );
-        assert!(visible(&index, &independent));
+        assert!(!unsent(&index, first.reading().unwrap(), &first));
     }
-    drop(index);
-    let index = Connection::open(directory.path().join("index.db")).unwrap();
-    assert!(!visible(&index, &first));
-    assert!(visible(&index, &independent));
 }
 
 #[test]
-fn covered_absence_does_not_hide_an_unread_tail_or_a_new_parser_interpretation() {
+fn a_covered_absent_fact_is_not_sent_but_an_unread_tail_or_new_parser_is() {
     let directory = tempfile::tempdir().unwrap();
     let mut index = cache(&directory.path().join("index.db"));
     let archive = crate::Archive::on_sinex(directory.path(), &directory.path().join("bytes"));
@@ -148,10 +120,8 @@ fn covered_absence_does_not_hide_an_unread_tail_or_a_new_parser_interpretation()
         &[live(1, "covered", progress), barrier(1)],
     )
     .unwrap();
-    let record = SourceRecord::of(&original).unwrap().unwrap();
-    assert!(!allowed(&index, &reading, &record).unwrap());
-    let tail = SourceRecord::of(&message("source", 40)).unwrap().unwrap();
-    assert!(allowed(&index, &reading, &tail).unwrap());
+    assert!(!unsent(&index, &reading, &original));
+    assert!(unsent(&index, &reading, &message("source", 40)));
     reading.reading_version = "synthetic=2".into();
-    assert!(allowed(&index, &reading, &record).unwrap());
+    assert!(unsent(&index, &reading, &original));
 }

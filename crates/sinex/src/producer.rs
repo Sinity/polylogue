@@ -373,14 +373,16 @@ impl Sinex {
         self.prepare_named_products(&identity, writes)
     }
 
-    /// Serialize interpretations of one immutable original chain. A pending
-    /// older interpretation must settle before a newer frame can be prepared.
+    /// Prepares parsed facts from one confirmed original chain in the spool.
+    /// The queue sends the frames of one chain one at a time in the order they
+    /// were prepared, so the caller does not wait for an acknowledgment before
+    /// preparing the next step. Preparing the same facts again returns the
+    /// operation already in the spool.
     pub(crate) fn prepare_parsed(
         &self,
         source: &polylogue_store::primary::ParsedSource,
         writes: &[ProductWrite],
-    ) -> Result<polylogue_store::primary::ParsedPublication> {
-        use polylogue_store::primary::ParsedPublication;
+    ) -> Result<PreparedWrite> {
         let reading = &source.reading;
         if source.root_material.parse::<uuid::Uuid>().is_err()
             || reading.start > reading.parsed_upto
@@ -407,20 +409,20 @@ impl Sinex {
             }
             if write.product.reading() != Some(reading) || write.location.is_none() {
                 return Err(Error::Invalid(
-                    "native fact differs from its original reading".into(),
+                    "a parsed fact differs from its original reading".into(),
                 ));
             }
         }
-        let scope = (&source.root_material, &reading.input.id, reading.chain);
-        let prefix = format!(
-            "parsed:{}:",
-            blake3::hash(&serde_json::to_vec(&scope)?).to_hex()
-        );
-        let mut original = blake3::Hasher::new();
-        serde_json::to_writer(&mut original, &(source, crate::source_reference()))?;
+        let prefix = polylogue_store::primary::queue::parsed_chain_prefix(
+            &source.root_material,
+            &reading.input.id,
+            reading.chain,
+        )?;
+        let mut contents = blake3::Hasher::new();
+        serde_json::to_writer(&mut contents, &(source, crate::source_reference()))?;
         for write in writes {
             serde_json::to_writer(
-                &mut original,
+                &mut contents,
                 &(
                     &write.product,
                     &write.location,
@@ -429,13 +431,13 @@ impl Sinex {
                     write.output_index,
                 ),
             )?;
-            original.update(b"\n");
+            contents.update(b"\n");
         }
-        let desired = format!("{prefix}{}:", original.finalize().to_hex());
+        let desired = format!("{prefix}{}:", contents.finalize().to_hex());
         let queue = self.queue()?;
         if let Some(entry) = queue
             .lookup(
-                Lookup::IdentityPrefix(&prefix),
+                Lookup::IdentityPrefix(&desired),
                 None,
                 None,
                 Order::NewestFirst,
@@ -444,28 +446,24 @@ impl Sinex {
             .into_iter()
             .next()
         {
-            if entry.identity.starts_with(&desired) {
-                return queue.publication(&entry.identity, &self.config.producer);
-            }
-            if matches!(entry.phase, polylogue_store::primary::queue::Phase::Pending) {
-                return Ok(ParsedPublication::Pending {
-                    identity: entry.record.identity,
-                });
-            }
+            return Ok(PreparedWrite {
+                identity: entry.record.identity,
+                pending: entry.phase.is_pending(),
+            });
         }
         let identity = format!("{desired}{}", uuid::Uuid::now_v7());
-        queue.prepare_parsed(
-            Ingress::Events {
-                source: Some(crate::source_reference()),
-                frame: identity.clone(),
-                events: crate::products::events(writes)?,
-                failures: Vec::new(),
-            },
-            source,
-        )?;
+        queue.prepare(Ingress::Events {
+            source: Some(crate::source_reference()),
+            frame: identity.clone(),
+            events: crate::products::events(writes)?,
+            failures: Vec::new(),
+        })?;
         drop(queue);
         self.send_pending();
-        Ok(ParsedPublication::Pending { identity })
+        Ok(PreparedWrite {
+            identity,
+            pending: true,
+        })
     }
 
     pub(crate) fn prepare_named_products(
@@ -914,7 +912,7 @@ impl Sinex {
             self.visit_matching(Lookup::Blobs(Some(&attachment.blob.to_string())), |queue,entry|{
                     if matches!(entry.capture(),Some(Capture::Blob{hash,..}) if *hash==attachment.blob) {
                         if let Some(material)=Self::capture_material(queue,&entry)? {
-                            writes.push(ProductWrite{publish:true,location:Some(SourceLocation{material:material.id.clone(),anchor:0}),product:Product::Blob(material),parents:Vec::new(),machine:Some(request.request.machine.clone()),output_index:writes.len() as u64});
+                            writes.push(ProductWrite{location:Some(SourceLocation{material:material.id.clone(),anchor:0}),product:Product::Blob(material),parents:Vec::new(),machine:Some(request.request.machine.clone()),output_index:writes.len() as u64});
                             if queue.capture_group(&entry.identity)?.is_none() {dependencies.push(entry.record.identity);}
                         } else {waiting=true;}
                     }
@@ -935,7 +933,6 @@ impl Sinex {
             parents: Vec::new(),
             machine: Some(request.request.machine),
             output_index: writes.len() as u64,
-            publish: true,
         });
         self.complete_captures(&dependencies, &writes)?;
         Ok(())

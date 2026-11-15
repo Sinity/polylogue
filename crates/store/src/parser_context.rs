@@ -338,7 +338,6 @@ pub(crate) fn apply(
             .get(&version.0)?
             .response_key(&version.0, message, session)
     };
-    let mut unavailable = false;
     let mut seen = std::collections::BTreeSet::new();
     for entry in &delta.entries {
         if !seen.insert(entry.key.clone()) {
@@ -374,12 +373,6 @@ pub(crate) fn apply(
                 continue;
             }
             let Some((body, _)) = crate::versions::read_message(tx, &version.0)? else {
-                if step.source_eligibility.is_some() {
-                    // Native eligibility can omit an original response from
-                    // this receiver. Its cache cannot supply that response.
-                    unavailable = true;
-                    continue;
-                }
                 return Err(StoreError::Invalid(
                     "response context has no archived message version".into(),
                 ));
@@ -398,20 +391,13 @@ pub(crate) fn apply(
             }
         }
     }
-    if unavailable || delta.base == 0 {
+    if delta.base == 0 {
         for table in ["parser_context_response", "parser_context_alias"] {
             tx.prepare_cached(&format!(
                 "DELETE FROM {table} WHERE input_pk=?1 AND chain=?2"
             ))?
             .execute(params![input, chain])?;
         }
-    }
-    if unavailable {
-        tx.execute(
-            "DELETE FROM parser_context_state WHERE input_pk=?1 AND chain=?2",
-            params![input, chain],
-        )?;
-        return Ok(false);
     }
     // A key changed at this checkpoint replaces its earlier value in place.
     for entry in &delta.entries {

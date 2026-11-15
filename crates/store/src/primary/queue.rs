@@ -276,16 +276,45 @@ fn entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<Entry> {
     })
 }
 
-fn refresh_ready(connection: &Connection, identity: &str) -> Result<()> {
-    connection.execute(
-        "UPDATE operation AS current SET ready=(
-      phase='pending' AND unresolved=0 AND kind!='acquisition'
+/// Identities of parsed frames for one original chain begin with this prefix:
+/// `parsed:`, the chain's 64-digit hash and a colon. Sinex numbers readings in
+/// the order it admits them, so the frames of one chain are sent one at a time
+/// in queue order: a frame is ready only when no earlier frame of its chain is
+/// still pending. Frames of different chains proceed concurrently.
+pub fn parsed_chain_prefix(root_material: &str, input: &str, chain: i64) -> Result<String> {
+    Ok(format!(
+        "parsed:{}:",
+        blake3::hash(&serde_json::to_vec(&(root_material, input, chain))?).to_hex()
+    ))
+}
+const PARSED_CHAIN_PREFIX_LENGTH: usize = 72;
+
+/// Whether the operation `current` may be sent now: its group members and its
+/// previous material are acknowledged, and no earlier frame of its parsed
+/// chain is pending.
+fn ready_condition() -> String {
+    format!(
+        "phase='pending' AND unresolved=0 AND kind!='acquisition'
       AND NOT EXISTS(SELECT 1 FROM operation AS member
         WHERE member.confirmed_group=current.identity
           AND (member.phase!='acknowledged' OR member.unresolved!=0))
       AND NOT EXISTS(SELECT 1 FROM operation AS previous
-        WHERE previous.material=current.previous_material AND previous.phase!='acknowledged'))
-      WHERE identity=?1",
+        WHERE previous.material=current.previous_material AND previous.phase!='acknowledged')
+      AND NOT (current.identity LIKE 'parsed:%' AND EXISTS(SELECT 1 FROM operation AS earlier
+        WHERE earlier.identity>substr(current.identity,1,{n})
+          AND earlier.identity<substr(current.identity,1,{m})||';'
+          AND earlier.ordering<current.ordering AND earlier.phase='pending'))",
+        n = PARSED_CHAIN_PREFIX_LENGTH,
+        m = PARSED_CHAIN_PREFIX_LENGTH - 1,
+    )
+}
+
+fn refresh_ready(connection: &Connection, identity: &str) -> Result<()> {
+    connection.execute(
+        &format!(
+            "UPDATE operation AS current SET ready=({}) WHERE identity=?1",
+            ready_condition()
+        ),
         [identity],
     )?;
     Ok(())
@@ -388,9 +417,13 @@ impl Queue {
             tx.execute("INSERT INTO operation(identity,directory,metadata,kind,material,previous_material,phase,position,offered,admitted,logical_name,acquisition,ordinal,confirmed_group,group_hash,unresolved,source,raw,raw_generation,raw_predecessor,raw_root,input,format,stored_bytes,completion,captured,blob)
                 SELECT identity,?1 || '/' || directory,metadata,kind,material,previous_material,phase,position,offered,admitted,logical_name,?2,ordering-1,confirmed_group,group_hash,?3,source,raw,raw_generation,raw_predecessor,raw_root,input,format,stored_bytes,completion,captured,blob FROM staged.operation ORDER BY ordering",
                 params![header.directory, header.identity, header.unresolved])?;
-            tx.execute("UPDATE operation AS current SET ready=(phase='pending' AND unresolved=0 AND kind!='acquisition'
-                AND NOT EXISTS(SELECT 1 FROM operation AS member WHERE member.confirmed_group=current.identity AND (member.phase!='acknowledged' OR member.unresolved!=0))
-                AND NOT EXISTS(SELECT 1 FROM operation AS previous WHERE previous.material=current.previous_material AND previous.phase!='acknowledged')) WHERE acquisition=?1", [&header.identity])?;
+            tx.execute(
+                &format!(
+                    "UPDATE operation AS current SET ready=({}) WHERE acquisition=?1",
+                    ready_condition()
+                ),
+                [&header.identity],
+            )?;
             tx.commit()?;
             Ok(())
         })();
@@ -723,13 +756,28 @@ impl Queue {
                 "acknowledgement has no pending operation".into(),
             ));
         }
-        let dependents = {
+        let mut dependents = {
             let mut query = transaction.prepare_cached("SELECT confirmed_group FROM operation WHERE identity=?1 AND confirmed_group IS NOT NULL
           UNION SELECT child.identity FROM operation AS child JOIN operation AS parent ON parent.material=child.previous_material WHERE parent.identity=?1")?;
             query
                 .query_map([identity], |row| row.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?
         };
+        if identity.starts_with("parsed:") && identity.len() > PARSED_CHAIN_PREFIX_LENGTH {
+            let prefix = &identity[..PARSED_CHAIN_PREFIX_LENGTH];
+            let mut upper = prefix[..PARSED_CHAIN_PREFIX_LENGTH - 1].to_owned();
+            upper.push(';');
+            let next: Option<String> = transaction
+                .query_row(
+                    "SELECT identity FROM operation WHERE identity>?1 AND identity<?2 AND phase='pending'
+                       AND ordering>(SELECT ordering FROM operation WHERE identity=?3)
+                     ORDER BY ordering LIMIT 1",
+                    params![prefix, upper, identity],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            dependents.extend(next);
+        }
         for dependent in dependents {
             refresh_ready(&transaction, &dependent)?;
         }

@@ -1302,11 +1302,10 @@ fn a_late_other_host_original_is_parsed_with_an_empty_local_home() {
                 .ready(&[], 32)
                 .unwrap()
                 .into_iter()
-                .filter(|entry| entry.parsed().is_some())
+                .filter(|entry| entry.identity.starts_with("parsed:"))
                 .collect::<Vec<_>>();
             parsed.first().map(|entry| {
                 (
-                    entry.parsed().unwrap().clone(),
                     serde_json::to_string(&queue.decode_frame(&entry.identity).unwrap()).unwrap(),
                     parsed.len(),
                 )
@@ -1317,15 +1316,13 @@ fn a_late_other_host_original_is_parsed_with_an_empty_local_home() {
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     };
-    // The ordinary writer waits for authoritative admission, which this offline
-    // planner control deliberately does not provide. Stop it after inspecting
-    // the actual immutable publication, before joining the parser thread.
+    // This offline control never acknowledges the frame. Stop the pass after
+    // inspecting the spooled frame, before joining the parser thread.
     stop.cancel();
     let pass = parsing.join().unwrap();
-    let (source, frame, count) = publication.expect("the late original reached native publication");
+    let (frame, count) = publication.expect("the late original's parsed facts reached the spool");
     assert_eq!(count, 1);
-    assert_eq!(source.reading.input.id, input);
-    assert_eq!(source.reading.parsed_upto, bytes.len() as u64);
+    assert!(frame.contains(input), "{frame}");
     assert!(
         frame.contains("confirmed original words"),
         "{frame}; {pass:?}"
