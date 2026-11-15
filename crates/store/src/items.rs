@@ -1435,7 +1435,9 @@ impl<'c> Run<'c> {
     /// Finds the unit start at or before `seq` in the index, records it and
     /// returns its place.
     fn start_before(&mut self, seq: i64) -> Result<i64> {
-        let found: Option<(i64, Vec<u8>, Option<String>, Option<String>)> = self
+        // Its place, entry, call ID and message ID.
+        type StartRow = (i64, Vec<u8>, Option<String>, Option<String>);
+        let found: Option<StartRow> = self
             .conn
             .prepare_cached(
                 "SELECT i.seq, i.entry, i.call_id, m.id
