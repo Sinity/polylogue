@@ -1733,7 +1733,7 @@ impl Inner {
         self.derive.stop();
         let closed = self.refresh_chain_progress().and_then(|()| {
             if self.sinex.is_none() {
-                crate::chain_progress::close(&self.index)?;
+                crate::chain_progress::mark_current(&self.index)?;
             }
             Ok(())
         });

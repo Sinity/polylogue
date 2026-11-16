@@ -110,6 +110,8 @@ fn clear(
         "INSERT INTO meta(key,value) VALUES ('confirmed_scope',?1)",
         [scope],
     )?;
+    crate::chain_progress::install_triggers(&tx, true)?;
+    crate::chain_progress::mark_current(&tx)?;
     crate::fault::check("primary.scope_reset_commit", "")?;
     tx.commit()?;
     archive.read_scope.finish_reset();
