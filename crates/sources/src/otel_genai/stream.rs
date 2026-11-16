@@ -1,6 +1,7 @@
 //! Validate a whole OTLP document, otherwise account independent JSONL lines.
 use super::*;
 use crate::export::{Input, ItemSink, ScanError, ScanStats};
+use polylogue_model::JsonExt;
 use std::io::{self, Read};
 
 const PATH: &[&str] = &["resourceSpans", "scopeSpans", "spans"];
@@ -47,12 +48,7 @@ fn order_key(span: &Json) -> Vec<u8> {
     if let Some(at) = at {
         key.extend(at.to_be_bytes());
     }
-    key.extend(
-        span.get("spanId")
-            .and_then(Json::as_str)
-            .unwrap_or("")
-            .as_bytes(),
-    );
+    key.extend(span.str("spanId").unwrap_or("").as_bytes());
     key
 }
 

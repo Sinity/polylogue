@@ -4,6 +4,7 @@ use super::Client;
 use crate::{Error, Result};
 use async_nats::jetstream;
 use futures_util::{StreamExt, stream};
+use polylogue_model::LockExt;
 use polylogue_store::primary::{
     self as local, Confirmed, ConfirmedChange, ReplayControl, ReplayState,
 };
@@ -169,11 +170,11 @@ impl Client {
         let end = request.end.unwrap_or(metadata.length);
         let length = end
             .checked_sub(request.offset)
-            .ok_or_else(|| Error::Invalid("material fetch has a reversed range".into()))?;
+            .ok_or_else(|| Error::invalid("material fetch has a reversed range"))?;
         let expected = length.min(request.byte_budget);
         let through = offset
             .checked_add(bytes.len() as u64)
-            .ok_or_else(|| Error::Invalid("material page offset overflow".into()))?;
+            .ok_or_else(|| Error::invalid("material page offset overflow"))?;
         if metadata.id != request.material
             || offset != request.offset
             || end > metadata.length
@@ -181,15 +182,15 @@ impl Client {
             || bytes.len() as u64 != expected
             || next_offset != (through < end).then_some(through)
         {
-            return Err(Error::Invalid(
-                "material fetch changed its identity or byte range".into(),
+            return Err(Error::invalid(
+                "material fetch changed its identity or byte range",
             ));
         }
         metadata
             .blob
             .strip_prefix("blake3:")
             .and_then(|hash| polylogue_model::BlobHash::parse(hash).ok())
-            .ok_or_else(|| Error::Invalid("material has no BLAKE3 digest".into()))?;
+            .ok_or_else(|| Error::invalid("material has no BLAKE3 digest"))?;
         Ok(crate::MaterialPage {
             material: metadata,
             offset,
@@ -223,8 +224,8 @@ impl Client {
                     || erased.original_commit_seq != original_position
                     || erased.commit_seq <= original_position
                 {
-                    return Err(Error::Invalid(
-                        "event erasure differs from its confirmed position".into(),
+                    return Err(Error::invalid(
+                        "event erasure differs from its confirmed position",
                     ));
                 }
                 return Ok(None);
@@ -232,8 +233,8 @@ impl Client {
             FetchEventReply::Event(event) => *event,
         };
         if event.id != id || !event.projection.verifies(&event.payload) {
-            return Err(Error::Invalid(
-                "event fetch changed identity or projected payload hash".into(),
+            return Err(Error::invalid(
+                "event fetch changed identity or projected payload hash",
             ));
         }
         Ok(Some(event))
@@ -329,8 +330,8 @@ impl Client {
             } => (position, stream, stream_instance, consumer, scope),
         };
         if stream != self.subjects.confirmed_stream() || consumer.is_empty() || scope.is_empty() {
-            return Err(Error::Invalid(
-                "the confirmed consumer reply has no stream, consumer or scope".into(),
+            return Err(Error::invalid(
+                "the confirmed consumer reply has no stream, consumer or scope",
             ));
         }
         if state.snapshot_progress.is_some() {
@@ -339,7 +340,8 @@ impl Client {
             self.consumer_instance = None;
             return Ok(vec![control_event(ReplayControl::Reset { scope })]);
         }
-        if let Ok(mut health) = self.health.lock() {
+        {
+            let mut health = self.health.locked();
             health.sinex_position = Some(position);
             health.position_observed = Some(std::time::Instant::now());
             health.sinex_scope = Some(scope.clone());
@@ -352,7 +354,7 @@ impl Client {
         if !provisioned {
             let instance = stream_instance
                 .filter(|instance| !instance.is_empty())
-                .ok_or_else(|| Error::Invalid("confirmed stream instance is unavailable".into()))?;
+                .ok_or_else(|| Error::invalid("confirmed stream instance is unavailable"))?;
             self.consumer = Some(
                 jetstream::new(self.client.clone())
                     .get_consumer_from_stream(consumer, stream)
@@ -382,11 +384,9 @@ impl Client {
             let message = message.map_err(|error| Error::Unreachable(error.to_string()))?;
             let info = message
                 .info()
-                .map_err(|error| Error::Invalid(error.to_string()))?;
+                .map_err(|error| Error::invalid(error.to_string()))?;
             if info.stream != self.subjects.confirmed_stream() {
-                return Err(Error::Invalid(
-                    "a stream delivery came from another stream".into(),
-                ));
+                return Err(Error::invalid("a stream delivery came from another stream"));
             }
             let sequence = info.stream_sequence;
             self.pending.push(message.clone());
@@ -443,8 +443,8 @@ impl Client {
             sinex_protocol::Confirmed::Event(event) if event.commit_seq > after => {
                 let event = *event;
                 if !event.projection.verifies(&event.payload) {
-                    return Err(Error::Invalid(
-                        "a confirmed event's payload differs from its hash".into(),
+                    return Err(Error::invalid(
+                        "a confirmed event's payload differs from its hash",
                     ));
                 }
                 confirmed_event(&event)?
@@ -460,8 +460,8 @@ impl Client {
                         &event.to_string(),
                         format!("{}@{}", fetched.event_type, fetched.kind_version),
                         None,
-                        Err(Error::Invalid(
-                            "a fetched event differs from its confirmed position".into(),
+                        Err(Error::invalid(
+                            "a fetched event differs from its confirmed position",
                         )),
                     )?,
                     Ok(None) => Confirmed {
@@ -501,14 +501,14 @@ impl Client {
                 event, commit_seq, ..
             } => Confirmed {
                 position: commit_seq
-                    .ok_or_else(|| Error::Invalid("a tombstone has no position".into()))?,
+                    .ok_or_else(|| Error::invalid("a tombstone has no position"))?,
                 event: event.to_string(),
                 output_index: 0,
                 sinex_context: None,
                 change: ConfirmedChange::Tombstoned,
             },
             sinex_protocol::Confirmed::Gap { reason } => {
-                return Err(Error::Invalid(format!("confirmed history gap: {reason}")));
+                return Err(Error::invalid(format!("confirmed history gap: {reason}")));
             }
             sinex_protocol::Confirmed::PositionComplete { commit_seq } => {
                 if commit_seq >= after {
@@ -534,14 +534,14 @@ impl Client {
         for message in &self.pending {
             let info = message
                 .info()
-                .map_err(|error| Error::Invalid(error.to_string()))?;
+                .map_err(|error| Error::invalid(error.to_string()))?;
             let committed = state.staged_delivery.as_ref().is_some_and(|delivery| {
                 Some(delivery.stream_instance.as_str()) == self.consumer_instance.as_deref()
                     && delivery.stream_sequence >= info.stream_sequence
             });
             if !committed {
-                return Err(Error::Invalid(
-                    "confirmed delivery has not been staged in the index".into(),
+                return Err(Error::invalid(
+                    "confirmed delivery has not been staged in the index",
                 ));
             }
             message
@@ -555,15 +555,11 @@ impl Client {
             .map_err(|error| Error::Unreachable(error.to_string()))?;
         self.pending.clear();
         let confirmed_removal = {
-            let health = self
-                .health
-                .lock()
-                .map_err(|_| Error::Invalid("producer health panicked".into()))?;
+            let health = self.health.locked();
             confirmed_removal_state(state, &health)
         };
         self.spool
-            .lock()
-            .map_err(|_| Error::Invalid("producer spool panicked".into()))?
+            .locked()
             .remove_confirmed(&confirmed_removal, applied)?;
         Ok(())
     }

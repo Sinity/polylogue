@@ -212,10 +212,10 @@ fn values_outside_the_field_are_refused() {
     );
     assert_eq!(
         filter("sessions where cost > cheap").unwrap_err().kind(),
-        "bad_value"
+        polylogue_model::Code::BadValue
     );
     assert_eq!(
         filter("sessions where colour:red").unwrap_err().kind(),
-        "unknown_field"
+        polylogue_model::Code::UnknownField
     );
 }

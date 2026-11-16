@@ -2,6 +2,7 @@
 //! `test_codex_compaction_and_turn_context.py`, through the public parser.
 
 use crate::support::{events, jsonl, messages, parse};
+use polylogue_model::JsonExt;
 use serde_json::{Value, json};
 
 const PATH: &str = ".codex/sessions/2026/03/01/rollout-2026-03-01T10-00-00-019a0000-0000-7000-8000-000000000001.jsonl";
@@ -203,13 +204,7 @@ fn compaction_does_not_reintroduce_a_skipped_self_parent() {
             ),
             message("own", "user", "own tail"),
         ]);
-        assert_eq!(
-            parsed["output"]
-                .get("links")
-                .and_then(Value::as_array)
-                .map_or(0, Vec::len),
-            0
-        );
+        assert_eq!(parsed["output"].array("links").map_or(0, Vec::len), 0);
         assert_eq!(messages(&parsed).len(), 1);
         assert_eq!(events(&parsed, "compaction").len(), 1);
     }

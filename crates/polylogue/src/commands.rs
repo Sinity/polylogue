@@ -15,6 +15,7 @@ use crate::daemon::measure::{MEASURES, Measure};
 use crate::daemon::service::handlers as H;
 use crate::daemon::service::{acts, browser, feeds, follow, read};
 use command_surface::ArgumentForm;
+use polylogue_model::JsonExt as _;
 use serde_json::{Map, Value};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -1980,8 +1981,7 @@ fn attach_files(
 ) -> Result<(), String> {
     let mut files = Vec::new();
     for path in values
-        .get("attach")
-        .and_then(serde_json::Value::as_array)
+        .array("attach")
         .into_iter()
         .flatten()
         .filter_map(|value| value.as_str().map(str::to_owned))
@@ -2096,12 +2096,10 @@ pub fn declarations() -> &'static std::sync::Arc<command_surface::OperationDecla
                 command_surface::OperationDeclarations::builder(PRODUCT, deadlines());
             declarations.accept(command_surface::RequestOption::Cursor);
             declarations.accept(command_surface::RequestOption::BudgetTokens);
-            for (kind, codes) in crate::protocol::FAILURE_CLASSES {
-                for code in *codes {
-                    declarations
-                        .register_failure_code(*code, *kind)
-                        .expect("failure classification is unique");
-                }
+            for code in polylogue_model::Code::ALL {
+                declarations
+                    .register_failure_code(code.as_str(), crate::protocol::kind(*code))
+                    .expect("failure classification is unique");
             }
             for tool in Tool::ALL {
                 if COMMANDS

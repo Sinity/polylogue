@@ -2,6 +2,7 @@
 //! bytes; this module never looks up a pathname or fetches a pointer.
 use crate::export::ScanError;
 use polylogue_model::Json;
+use polylogue_model::JsonExt;
 use serde::Deserializer as _;
 use serde::de::{Error as _, MapAccess, Visitor};
 use std::io::Read;
@@ -68,8 +69,7 @@ pub fn metadata(
         return crate::export::scan(reader, |_, raw| {
             let value: Json = serde_json::from_str(raw.get()).map_err(|e| e.to_string())?;
             let source_id = value
-                .get("file_id")
-                .and_then(Json::as_str)
+                .str("file_id")
                 .filter(|id| !id.is_empty())
                 .ok_or("library entry has no string file_id")?;
             emit(AssetMetadata {

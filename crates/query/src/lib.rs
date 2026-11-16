@@ -98,6 +98,13 @@ fn hint(similar: &[String]) -> String {
 }
 
 impl QueryError {
+    pub fn invalid(message: impl Into<String>) -> Self {
+        Self::Invalid {
+            message: message.into(),
+            position: 0,
+        }
+    }
+
     pub fn language(error: query_language::Error, source: &str) -> Self {
         let diagnostic = error.diagnostic(source);
         Self::Language {
@@ -120,16 +127,24 @@ impl QueryError {
     }
 
     /// The stable machine name of the error, as surfaces report it.
-    pub fn kind(&self) -> &'static str {
+    pub fn kind(&self) -> polylogue_model::Code {
+        use polylogue_model::Code;
         match self {
-            QueryError::Language { error, .. } => error.kind.code(),
-            QueryError::Syntax { .. } | QueryError::Invalid { .. } => "invalid_query",
-            QueryError::UnknownField { .. } => "unknown_field",
-            QueryError::BadValue { .. } => "bad_value",
-            QueryError::NotAQuery { .. } => "not_a_query",
-            QueryError::NotBuilt { .. } => "not_built",
-            QueryError::Unavailable { .. } => "not_yet_available",
-            QueryError::Ambiguous { .. } => "ambiguous",
+            QueryError::Language { error, .. } => match error.kind {
+                query_language::ErrorKind::InvalidQuery => Code::InvalidQuery,
+                query_language::ErrorKind::UnknownField => Code::UnknownField,
+                query_language::ErrorKind::BadValue => Code::BadValue,
+                query_language::ErrorKind::NotAQuery => Code::NotAQuery,
+                query_language::ErrorKind::Ambiguous => Code::Ambiguous,
+                query_language::ErrorKind::StaleCursor => Code::StaleCursor,
+            },
+            QueryError::Syntax { .. } | QueryError::Invalid { .. } => Code::InvalidQuery,
+            QueryError::UnknownField { .. } => Code::UnknownField,
+            QueryError::BadValue { .. } => Code::BadValue,
+            QueryError::NotAQuery { .. } => Code::NotAQuery,
+            QueryError::NotBuilt { .. } => Code::NotBuilt,
+            QueryError::Unavailable { .. } => Code::NotYetAvailable,
+            QueryError::Ambiguous { .. } => Code::Ambiguous,
         }
     }
 

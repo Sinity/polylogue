@@ -253,7 +253,7 @@ pub(crate) fn column(row: &rusqlite::Row<'_>, at: usize) -> Result<Option<String
 
 /// The text an inner join selected into columns `at..at + 3`.
 pub(crate) fn joined(row: &rusqlite::Row<'_>, at: usize) -> Result<String> {
-    column(row, at)?.ok_or_else(|| StoreError::Invalid("a text row has no group".into()))
+    column(row, at)?.ok_or_else(|| crate::StoreError::stored(0, "a text row has no group"))
 }
 
 /// One stored text.
@@ -263,9 +263,7 @@ pub(crate) fn read(conn: &Connection, id: i64) -> Result<String> {
             "SELECT g.body,t.start,t.length FROM text t JOIN text_group g ON g.id=t.group_id
              WHERE t.id=?1",
         )?
-        .query_row([id], |r| {
-            Ok((r.get::<_, Vec<u8>>(0)?, r.get(1)?, r.get(2)?))
-        })?;
+        .query_row([id], |r| <(Vec<u8>, _, _)>::try_from(r))?;
     slice(&body, start, length)
 }
 
@@ -286,7 +284,7 @@ pub(crate) fn slice(body: &[u8], start: i64, length: i64) -> Result<String> {
         .ok()
         .zip(usize::try_from(length).ok())
         .and_then(|(start, length)| Some(start..start.checked_add(length)?))
-        .ok_or_else(|| StoreError::Invalid("a stored text has an invalid place".into()))?;
+        .ok_or_else(|| crate::StoreError::stored(0, "a stored text has an invalid place"))?;
     LAST_GROUP.with(|last| {
         let mut last = last.borrow_mut();
         if last.0 != body {
@@ -307,7 +305,7 @@ fn decode(body: &[u8]) -> Result<Vec<u8>> {
 fn text_of(group: &[u8], range: std::ops::Range<usize>) -> Result<String> {
     let bytes = group
         .get(range)
-        .ok_or_else(|| StoreError::Invalid("a stored text lies outside its group".into()))?;
+        .ok_or_else(|| crate::StoreError::stored(0, "a stored text lies outside its group"))?;
     String::from_utf8(bytes.to_vec()).map_err(|e| StoreError::Io(std::io::Error::other(e)))
 }
 

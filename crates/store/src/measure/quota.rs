@@ -195,13 +195,7 @@ pub fn quota(reader: &Reader<'_>, now: i64, known: &[(&str, &[QuotaLimit])]) -> 
                AND json_extract(m.attrs_json, '$.production.quota') IS NOT NULL
              ORDER BY m.at",
         )?;
-        let rows = stmt.query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, i64>(1)?,
-                r.get::<_, String>(2)?,
-            ))
-        })?;
+        let rows = stmt.query_map([], |r| <(String, i64, String)>::try_from(r))?;
         for row in rows {
             let (tool, at, reading) = row?;
             let reading: QuotaReading = serde_json::from_str(&reading)?;

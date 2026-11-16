@@ -1,15 +1,10 @@
 //! A changed read scope clears the cache; the stream is then read again from 0.
+use crate::ConnExt as _;
 use crate::{Archive, Result, StoreError};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 
 pub(crate) fn current(index: &Connection) -> Result<Option<String>> {
-    Ok(index
-        .query_row(
-            "SELECT value FROM meta WHERE key='confirmed_scope'",
-            [],
-            |row| row.get(0),
-        )
-        .optional()?)
+    Ok(crate::meta_get(&index, "confirmed_scope")?)
 }
 
 pub(crate) fn require_readable(index: &Connection) -> Result<()> {
@@ -56,7 +51,7 @@ pub(crate) fn reset(
         let synchronous: i64 = index.pragma_query_value(None, "synchronous", |row| row.get(0))?;
         previous = Some(synchronous);
         index.pragma_update(None, "synchronous", synchronous.max(2))?;
-        index.execute("INSERT INTO meta(key,value) VALUES ('confirmed_scope_pending',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [scope])?;
+        crate::meta_set(&index, "confirmed_scope_pending", scope)?;
         Ok(())
     })();
     let invalidated = reset.invalidate();

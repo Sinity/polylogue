@@ -69,5 +69,11 @@ pub enum ReadError {
     UnknownShowWord { word: String, kinds: String },
 }
 
+impl ReadError {
+    pub fn invalid(message: impl Into<String>) -> Self {
+        Self::InvalidPreparedData(message.into())
+    }
+}
+
 #[cfg(test)]
 mod tests;

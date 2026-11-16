@@ -1,6 +1,7 @@
 //! Authored statements and their one set of typed links. Which revisions are
 //! current follows the shared descendant rule of the `authored` crate over
 //! these links; the store keeps that in an index written with each record.
+use crate::JsonExt;
 pub mod policy;
 pub mod uniqueness;
 pub mod values;
@@ -407,9 +408,6 @@ impl AssertionFact {
         }
         Ok(value)
     }
-    pub fn expired_at(&self, now: Timestamp) -> bool {
-        self.valid_until.is_some_and(|until| until < now)
-    }
     pub fn about(&self) -> impl Iterator<Item = &Reference> {
         self.links
             .iter()
@@ -419,12 +417,8 @@ impl AssertionFact {
     pub fn text(&self) -> Option<&str> {
         let value = self.value.as_ref()?;
         match self.kind.spec().value {
-            ValueShape::Rubric | ValueShape::Role => {
-                value.get("instructions").and_then(crate::Json::as_str)
-            }
-            ValueShape::Judgment => value
-                .as_str()
-                .or_else(|| value.get("reason").and_then(crate::Json::as_str)),
+            ValueShape::Rubric | ValueShape::Role => value.str("instructions"),
+            ValueShape::Judgment => value.as_str().or_else(|| value.str("reason")),
             _ => values::text(value),
         }
     }
@@ -448,17 +442,6 @@ pub struct NewAssertion {
     pub value: Option<Json>,
     pub valid_until: Option<Timestamp>,
     pub links: Vec<NewAssertionLink>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TargetState {
-    Current,
-    /// The text changed, but the quoted text was found once in the new text.
-    Moved,
-    ChangedSince,
-    Waiting,
-    Missing,
 }
 
 /// A writer resolves text hashes against its accepting read snapshot.

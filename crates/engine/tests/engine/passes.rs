@@ -20,7 +20,6 @@ mod reading_version;
 mod returning_files;
 mod rewritten_documents;
 mod started_inputs;
-mod tool_captures;
 
 #[test]
 fn a_first_build_stores_and_parses_and_a_second_pass_reads_nothing() {

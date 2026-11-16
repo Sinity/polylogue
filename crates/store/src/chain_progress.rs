@@ -15,6 +15,7 @@
 //! and then forgets them ([`forget`]). A writer that stops without doing so
 //! leaves `meta.chain_progress` other than `kept`, and the next writer
 //! start recomputes every chain ([`open`]).
+use crate::ConnExt as _;
 use crate::Result;
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -122,12 +123,7 @@ fn input_sql(input: &str) -> [String; 2] {
 pub(crate) fn open(index: &Connection, standalone: bool) -> Result<()> {
     install_triggers(index, !standalone)?;
     let kept: bool = index
-        .query_row(
-            "SELECT value = 'kept' FROM meta WHERE key = ?1",
-            [KEPT],
-            |row| row.get(0),
-        )
-        .optional()?
+        .scalar_optional("SELECT value = 'kept' FROM meta WHERE key = ?1", [KEPT])?
         .unwrap_or(false);
     if kept && !standalone {
         return Ok(());

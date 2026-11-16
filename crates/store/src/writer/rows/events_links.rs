@@ -1,5 +1,6 @@
 //! Apply worker-resolved event and link values and their compact memberships.
 use super::*;
+use crate::ConnExt as _;
 
 impl RowWriter<'_, '_> {
     pub(super) fn refresh_event(&self, pk: i64) -> Result<()> {
@@ -7,7 +8,7 @@ impl RowWriter<'_, '_> {
             .choices
             .events
             .get(&pk)
-            .ok_or_else(|| StoreError::Invalid("unresolved event version".into()))?;
+            .or_invalid("unresolved event version")?;
         let Some(choice) = choice else {
             self.changes.event(self.tx, pk)?;
             self.tx.execute("DELETE FROM event WHERE pk=?1", [pk])?;
@@ -23,13 +24,10 @@ impl RowWriter<'_, '_> {
             Some(seq) => seq,
             None => after
                 .map(|pk| {
-                    self.tx
-                        .query_row(
+                    self.tx.scalar(
                             "SELECT coalesce(s.seq,0) FROM message m LEFT JOIN message_source s
                              ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain WHERE m.pk=?1",
-                            [pk],
-                            |row| row.get(0),
-                        )
+                            [pk])
                 })
                 .transpose()?
                 .unwrap_or(0),
@@ -91,7 +89,7 @@ impl RowWriter<'_, '_> {
             .choices
             .links
             .get(&pk)
-            .ok_or_else(|| StoreError::Invalid("unresolved link version".into()))?;
+            .or_invalid("unresolved link version")?;
         let Some(choice) = choice else {
             self.tx.execute("DELETE FROM link WHERE pk=?1", [pk])?;
             return Ok(());

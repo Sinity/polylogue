@@ -2,6 +2,7 @@
 //! `hermes_trajectory` event. Its run ID is not a session ID, and a step's
 //! role does not say who wrote it.
 use crate::fields::ExpectedType as T;
+use polylogue_model::JsonExt;
 mod step;
 
 use super::{Event, Json, Parse, Sink, identity};
@@ -151,15 +152,9 @@ impl ExportParser for Trajectory {
         )?;
         let mut ids = BTreeSet::new();
         for object in objects {
-            let native = object
-                .fields
-                .get("trajectory_id")
-                .and_then(Json::as_str)
-                .filter(|s| !s.is_empty());
+            let native = object.fields.str("trajectory_id").filter(|s| !s.is_empty());
             let unique = native.is_none_or(|id| ids.insert((object.parent, id.to_owned())));
-            let diagnostic = if object.fields.get("schema_version").and_then(Json::as_str)
-                != Some("ATIF-v1.7")
-            {
+            let diagnostic = if object.fields.str("schema_version") != Some("ATIF-v1.7") {
                 Some("unsupported ATIF version; original trajectory kept")
             } else if !object.fields.get("steps").is_some_and(Json::is_array)
                 || !object.fields.get("agent").is_some_and(Json::is_object)
@@ -264,10 +259,7 @@ impl ExportParser for Trajectory {
         }
         sink.records.fields("atif_step", &value, &STEP);
         let (blocks, mut limits) = step::blocks(&value);
-        if !matches!(
-            value.get("source").and_then(Json::as_str),
-            Some("system" | "user" | "agent")
-        ) {
+        if !matches!(value.str("source"), Some("system" | "user" | "agent")) {
             limits.push("unrecognized source role remains a source descriptor");
         }
         if let Some(count) = value.get("llm_call_count").filter(|v| !v.is_null()) {
@@ -284,10 +276,7 @@ impl ExportParser for Trajectory {
                 limits.push("deterministic dispatch carries conflicting inference fields; authorship stays unknown");
             }
         }
-        let step_id = value
-            .get("step_id")
-            .and_then(Json::as_u64)
-            .filter(|n| *n > 0);
+        let step_id = value.u64("step_id").filter(|n| *n > 0);
         let suffix = if let Some(n) = step_id {
             let occurrence = self.seen_steps.entry((item.parent, n)).or_default();
             let suffix = format!("step-{n}:occurrence-{occurrence}");
@@ -301,8 +290,7 @@ impl ExportParser for Trajectory {
         };
         let trajectory = facts
             .fields
-            .get("trajectory_id")
-            .and_then(Json::as_str)
+            .str("trajectory_id")
             .filter(|s| !s.is_empty())
             .map(identity::component)
             .unwrap_or_else(|| format!("~at-{}", facts.start));
@@ -363,7 +351,7 @@ impl ExportParser for Trajectory {
                 }
             }
         }
-        if let Some(calls) = value.get("tool_calls").and_then(Json::as_array) {
+        if let Some(calls) = value.array("tool_calls") {
             let call_ids:Vec<_> = calls.iter().filter_map(|call| {
                 let provider = call.get("extra")?.get("provider_data")?;
                 let ids = selected(provider,&["call_id","response_item_id"]);

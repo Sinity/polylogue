@@ -288,12 +288,6 @@ impl Engine {
         Ok(total)
     }
 
-    /// Services files and starts or observes an independent database read.
-    pub fn run_turn(&mut self) -> Result<Pass, EngineError> {
-        self.one_pass(true, &Default::default())
-            .map(|(pass, _)| pass)
-    }
-
     pub(super) fn discard_confirmed_state(&mut self) {
         for state in self.inputs.values_mut() {
             state.discard_confirmed();
@@ -332,7 +326,7 @@ impl Engine {
             if let Err(error) = scope.check() {
                 if !result.0.errors.is_empty() {
                     return Err(
-                        polylogue_store::StoreError::Invalid(result.0.errors.join("; ")).into(),
+                        polylogue_store::StoreError::invalid(result.0.errors.join("; ")).into(),
                     );
                 }
                 return Err(error.into());
@@ -363,7 +357,7 @@ impl Engine {
             // writer error must remain observable instead of an endless wait.
             match self.flush_writes() {
                 Ok(report) if !report.errors.is_empty() => {
-                    return polylogue_store::StoreError::Invalid(report.errors.join("; ")).into();
+                    return polylogue_store::StoreError::invalid(report.errors.join("; ")).into();
                 }
                 Err(error) => return error,
                 _ => {}
@@ -1087,7 +1081,7 @@ impl Engine {
             if st.tail.is_none() && *from > 0 {
                 let reader = self.reads.reader()?;
                 let progress = reader.input_progress(&st.input_id)?.ok_or_else(|| {
-                    polylogue_store::StoreError::Invalid("append has no stored prefix".into())
+                    polylogue_store::StoreError::invalid("append has no stored prefix")
                 })?;
                 st.tail = Some(reader.stored_range(
                     &st.input_id,
@@ -1470,9 +1464,7 @@ impl Engine {
             .reads
             .reader()?
             .input_progress(&input_id)?
-            .ok_or_else(|| {
-                polylogue_store::StoreError::Invalid("the stored revision disappeared".into())
-            })?
+            .ok_or_else(|| polylogue_store::StoreError::invalid("the stored revision disappeared"))?
             .imported
             || origin.route.is_imported();
         Ok(Some(self.reparse_plan(
@@ -2136,9 +2128,7 @@ impl Engine {
         lifetime: Lifetime,
     ) -> Result<RunSummary, EngineError> {
         let busy = |busy: bool| {
-            if let Ok(mut s) = status.lock() {
-                s.busy = busy;
-            }
+            status.locked().busy = busy;
         };
         let mut summary = RunSummary::default();
         let mut discover = true;
@@ -2203,7 +2193,8 @@ impl Engine {
             finished.errors.append(&mut watch_errors);
             summary.passes += 1;
             summary.work.add(finished.clone());
-            if let Ok(mut s) = status.lock() {
+            {
+                let mut s = status.locked();
                 s.full_scans += finished.full_scans;
                 if finished.full_scans > 0
                     || finished.inputs_seen > 0

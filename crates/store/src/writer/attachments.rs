@@ -39,7 +39,7 @@ pub(super) fn remember(
                 .flat_map(|row| &row.document.blocks),
         )
     {
-        for attachment in attachments(block) {
+        for attachment in block.attachments() {
             if let Some(hash) = attachment.blob
                 && let std::collections::hash_map::Entry::Vacant(slot) = known.entry(hash)
             {
@@ -61,17 +61,11 @@ fn size(archive: &Connection, hash: BlobHash) -> Result<Option<u64>> {
         )
         .optional()?
         .map(|size| {
-            u64::try_from(size).map_err(|_| StoreError::Invalid("negative blob size".into()))
+            u64::try_from(size).map_err(|_| crate::StoreError::stored(0, "negative blob size"))
         })
         .transpose()
 }
-fn attachments(block: &Block) -> &[polylogue_model::Attachment] {
-    match block {
-        Block::File(attachment) | Block::Image(attachment) => std::slice::from_ref(attachment),
-        Block::ToolResult { attachments, .. } => attachments,
-        _ => &[],
-    }
-}
+
 fn normalize_using(
     steps: &mut [ParseStep],
     mut available: impl FnMut(BlobHash) -> Result<Option<u64>>,
@@ -115,7 +109,7 @@ fn stored_blocks(
     let mut changed = false;
     let mut normalized = Vec::new();
     for (index, block) in blocks.iter().enumerate() {
-        let attachments = attachments(block);
+        let attachments = block.attachments();
         for (attachment_index, attachment) in attachments.iter().enumerate() {
             let Some(hash) = attachment.blob else {
                 continue;

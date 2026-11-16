@@ -11,14 +11,14 @@ struct ReverseRefs {
 impl ReverseRefs {
     fn push(&mut self, identity: &str) -> Result<()> {
         let length = u64::try_from(identity.len())
-            .map_err(|_| Error::Invalid("body reference length overflow".into()))?;
+            .map_err(|_| Error::invalid("body reference length overflow"))?;
         self.file.write_all(identity.as_bytes())?;
         self.file.write_all(&length.to_le_bytes())?;
         self.end = self
             .end
             .checked_add(length)
             .and_then(|end| end.checked_add(8))
-            .ok_or_else(|| Error::Invalid("body reference stack overflow".into()))?;
+            .ok_or_else(|| Error::invalid("body reference stack overflow"))?;
         Ok(())
     }
     fn pop(&mut self) -> Result<Option<String>> {
@@ -28,22 +28,22 @@ impl ReverseRefs {
         let footer = self
             .end
             .checked_sub(8)
-            .ok_or_else(|| Error::Invalid("invalid body reference stack".into()))?;
+            .ok_or_else(|| Error::invalid("invalid body reference stack"))?;
         self.file.seek(SeekFrom::Start(footer))?;
         let mut length = [0; 8];
         self.file.read_exact(&mut length)?;
         let length = u64::from_le_bytes(length);
         let start = footer
             .checked_sub(length)
-            .ok_or_else(|| Error::Invalid("invalid body reference length".into()))?;
+            .ok_or_else(|| Error::invalid("invalid body reference length"))?;
         let size = usize::try_from(length)
-            .map_err(|_| Error::Invalid("body reference length overflow".into()))?;
+            .map_err(|_| Error::invalid("body reference length overflow"))?;
         let mut identity = vec![0; size];
         self.file.seek(SeekFrom::Start(start))?;
         self.file.read_exact(&mut identity)?;
         self.end = start;
         Ok(Some(
-            String::from_utf8(identity).map_err(|error| Error::Invalid(error.to_string()))?,
+            String::from_utf8(identity).map_err(|error| Error::invalid(error.to_string()))?,
         ))
     }
 }
@@ -112,7 +112,7 @@ impl Sinex {
             check.push(pinned.verify()?)?;
             count = count
                 .checked_add(1)
-                .ok_or_else(|| Error::Invalid("body chain length overflow".into()))?;
+                .ok_or_else(|| Error::invalid("body chain length overflow"))?;
         }
         current = tail;
         loop {
@@ -131,7 +131,7 @@ impl Sinex {
             check.push(pinned.verify()?)?;
             count = count
                 .checked_add(1)
-                .ok_or_else(|| Error::Invalid("body chain length overflow".into()))?;
+                .ok_or_else(|| Error::invalid("body chain length overflow"))?;
             current = child;
         }
         if query.tail_body.is_none() && self.queue()?.body_count(generation, through)? != count {

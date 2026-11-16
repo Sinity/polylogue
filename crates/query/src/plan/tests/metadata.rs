@@ -155,7 +155,7 @@ fn metadata_preparation_uses_shared_binding_before_value_and_reference_formattin
         |_| Ok(()),
     )
     .unwrap_err();
-    assert_eq!(failure.kind(), "bad_value");
+    assert_eq!(failure.kind(), polylogue_model::Code::BadValue);
     let QueryError::Language { error, .. } = failure else {
         panic!("shared typed refusal")
     };

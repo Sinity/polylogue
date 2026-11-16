@@ -29,7 +29,7 @@ pub(crate) fn kind_reference(name: &str) -> crate::Result<sinex_model::KindRef> 
         .iter()
         .find(|kind| kind.name == name)
         .cloned()
-        .ok_or_else(|| crate::Error::Invalid(format!("undeclared Polylogue event type {name}")))
+        .ok_or_else(|| crate::Error::invalid(format!("undeclared Polylogue event type {name}")))
 }
 
 /// The definition hash of a declared kind, computed once per process.
@@ -72,6 +72,7 @@ pub fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> {
 
 /// The adapter declaration the operator installs; the producer never registers
 /// it from its own requested permissions.
+#[cfg(any(test, feature = "fixture"))]
 pub fn source_declaration() -> sinex_model::SourceDeclaration {
     sinex_model::SourceDeclaration {
         source: crate::source_reference(),

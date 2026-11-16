@@ -6,6 +6,7 @@
 //! writer refuses to start once one is recorded, and the daemon stops with
 //! its storage exit code and remembers the boot (docs/operations.md,
 //! storage failure).
+use polylogue_model::LockExt;
 use std::path::PathBuf;
 use std::sync::{Condvar, Mutex};
 
@@ -52,9 +53,7 @@ static RECORDED: Condvar = Condvar::new();
 
 /// Records the first failure of this process; later ones keep the first.
 pub(crate) fn record(failure: StorageFailure) {
-    let mut failed = FAILED
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut failed = FAILED.locked();
     if failed.is_none() {
         eprintln!("polylogue: {failure}");
         *failed = Some(failure);
@@ -64,23 +63,16 @@ pub(crate) fn record(failure: StorageFailure) {
 
 /// The failure this process recorded, if any.
 pub fn recorded() -> Option<StorageFailure> {
-    FAILED
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone()
+    FAILED.locked().clone()
 }
 
 /// Waits until this process records a failure.
 pub fn wait() -> StorageFailure {
-    let mut failed = FAILED
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut failed = FAILED.locked();
     loop {
         if let Some(failure) = failed.as_ref() {
             return failure.clone();
         }
-        failed = RECORDED
-            .wait(failed)
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        failed = polylogue_model::unpoisoned(RECORDED.wait(failed));
     }
 }

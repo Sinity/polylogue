@@ -30,8 +30,8 @@ impl Client {
     ) -> Result<Vec<Confirmed>> {
         if origin < 0 || latest_position < origin || scope.is_empty() || stream_instance.is_empty()
         {
-            return Err(Error::Invalid(
-                "the snapshot origin has an inconsistent stream identity".into(),
+            return Err(Error::invalid(
+                "the snapshot origin has an inconsistent stream identity",
             ));
         }
         self.consumer = None;
@@ -58,9 +58,7 @@ impl Client {
             )
             .await?;
         let ReplayReply::Snapshot { reply } = reply else {
-            return Err(Error::Invalid(
-                "a snapshot request returned another mode".into(),
-            ));
+            return Err(Error::invalid("a snapshot request returned another mode"));
         };
         let (events, next) = match reply {
             SnapshotReply::Page { events, next } => (events, next),
@@ -87,8 +85,8 @@ impl Client {
             || *next_instance != stream_instance
             || progress.position.is_some_and(|old| old != position)
         {
-            return Err(Error::Invalid(
-                "a snapshot page changed its position, scope or stream".into(),
+            return Err(Error::invalid(
+                "a snapshot page changed its position, scope or stream",
             ));
         }
         // Withheld readings are fetched with a bound on requests in flight.
@@ -105,8 +103,8 @@ impl Client {
                     .is_some_and(|changed| changed < commit_seq || changed > position)
                 || entry.archived && entry.lifecycle_position.is_none()
             {
-                return Err(Error::Invalid(
-                    "a snapshot reading has inconsistent positions".into(),
+                return Err(Error::invalid(
+                    "a snapshot reading has inconsistent positions",
                 ));
             }
             let event = match entry.event {
@@ -122,8 +120,8 @@ impl Client {
                 || event.commit_seq != commit_seq
                 || !event.projection.verifies(&event.payload)
             {
-                return Err(Error::Invalid(
-                    "a snapshot reading differs from its position or payload hash".into(),
+                return Err(Error::invalid(
+                    "a snapshot reading differs from its position or payload hash",
                 ));
             }
             let live = confirmed_event(&event)?;
@@ -158,7 +156,7 @@ impl Client {
         page.push(control_event(match next {
             SnapshotNext::More { cursor: next } => {
                 if cursor.as_ref() == Some(&next) {
-                    return Err(Error::Invalid("the snapshot cursor did not advance".into()));
+                    return Err(Error::invalid("the snapshot cursor did not advance"));
                 }
                 ReplayControl::SnapshotPage {
                     position,

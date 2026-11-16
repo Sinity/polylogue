@@ -24,9 +24,9 @@ fn export_over_a_corrupt_stored_link_kind_is_a_store_failure() {
     let child = SessionId::parse("test:child").unwrap();
     let export = |fixture: &Fixture| {
         let pool = ReadPool::open(&fixture.archive).unwrap();
-        pool.reader().unwrap().session_export(&child)
+        pool.reader().unwrap().links(&child)
     };
-    assert_eq!(export(&fixture).unwrap().unwrap().links.len(), 1);
+    assert_eq!(export(&fixture).unwrap().len(), 1);
     fixture
         .link("test:parent", "test:child", "unheard-of", None)
         .unwrap();
@@ -35,7 +35,7 @@ fn export_over_a_corrupt_stored_link_kind_is_a_store_failure() {
         matches!(error, crate::StoreError::StoredValue { column: 0, .. }),
         "{error:?}"
     );
-    assert_eq!(error.code(), "store");
+    assert_eq!(error.code(), polylogue_model::Code::Store);
 }
 
 // The original query is the independent result and negative work control.

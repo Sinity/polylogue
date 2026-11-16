@@ -13,7 +13,7 @@ pub(super) fn card(reader: &Reader<'_>, session: &str, now: i64) -> Result<Card,
     let detail = reader
         .live_detail(session, now)
         .map_err(Failure::from)?
-        .ok_or_else(|| Failure::new("not_found", format!("no session {session}")))?;
+        .ok_or_else(|| Failure::not_found(format!("no session {session}")))?;
     Ok(render(&detail, now))
 }
 

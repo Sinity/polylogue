@@ -11,7 +11,9 @@
 //! ordered by input and number, so that a manifest computed independently
 //! from another copy of the same inputs can be compared byte for byte.
 
+use crate::ConnExt as _;
 use crate::{ReadPool, Result, StoreError};
+use polylogue_model::hex;
 use rusqlite::params;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -183,7 +185,7 @@ fn count(n: i64) -> u64 {
 fn rows(pool: &ReadPool, found: &mut Verification) -> Result<()> {
     let reader = pool.reader()?;
     let conn = reader.conn()?;
-    let one = |sql: &str| -> Result<i64> { Ok(conn.query_row(sql, [], |row| row.get(0))?) };
+    let one = |sql: &str| -> Result<i64> { Ok(conn.scalar(sql, [])?) };
     found.counts = Counts {
         inputs: count(one("SELECT count(*) FROM source_input")?),
         revisions: count(one("SELECT count(*) FROM source_revision")?),
@@ -351,7 +353,7 @@ fn blob_bytes(
             )?;
             statement
                 .query_map(params![after, BLOB_BATCH], |row| {
-                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                    <(_, _, _, _)>::try_from(row)
                 })?
                 .collect::<rusqlite::Result<_>>()?
         };
@@ -558,16 +560,6 @@ fn hash_prefixes(
         hashes.push(digest.clone().finalize().to_hex().to_string());
     }
     Ok((hashes, at, None))
-}
-
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    bytes
-        .iter()
-        .fold(String::with_capacity(bytes.len() * 2), |mut out, byte| {
-            let _ = write!(out, "{byte:02x}");
-            out
-        })
 }
 
 #[cfg(test)]

@@ -1,4 +1,5 @@
 //! Packed readings and their shared text. Source rows choose what is shown.
+use crate::{OptionExt as _, ResultExt as _};
 use crate::{Result, encoding, first_build::FirstBuild};
 use polylogue_model::{BlobHash, Block, Message, bundle::MessageProjection};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -219,11 +220,7 @@ fn store_value(
         "INSERT OR IGNORE INTO {name}_version_blob({column},blob_hash) VALUES(?1,?2)"
     ))?;
     for block in blocks {
-        let attachments: &[polylogue_model::Attachment] = match block {
-            Block::Image(a) | Block::File(a) => std::slice::from_ref(a),
-            Block::ToolResult { attachments, .. } => attachments,
-            _ => &[],
-        };
+        let attachments = block.attachments();
         for attachment in attachments {
             if let Some(hash) = attachment.blob {
                 blob.execute(params![key, hash.0.as_slice()])?;
@@ -285,9 +282,7 @@ pub(crate) fn store_message<'a>(
             committed
                 .map(i64::try_from)
                 .transpose()
-                .map_err(|_| crate::StoreError::Invalid(
-                    "message commit position exceeds SQLite's integer range".into()
-                ))?
+                .or_invalid("message commit position exceeds SQLite's integer range")?
     ])?;
     Ok(RegisteredMessage {
         pk,
@@ -330,7 +325,7 @@ fn read_body<T: DeserializeOwned>(
     body: &[u8],
 ) -> Result<T> {
     let mut value: serde_json::Value = encoding::unpack_json(body)?;
-    let column = if kind == "message" {
+    let column = if kind == polylogue_model::Code::Message {
         "version_pk"
     } else {
         "version_hash"
@@ -367,13 +362,7 @@ pub(crate) fn read_message(
          LEFT JOIN message_version_body b ON b.version_pk=v.pk
          LEFT JOIN message_block_selection p ON p.version_pk=v.pk WHERE v.version_hash=?1",
             [hash],
-            |row| {
-                Ok((
-                    row.get::<_, Option<Vec<u8>>>(0)?,
-                    row.get::<_, Option<Vec<u8>>>(1)?,
-                    row.get::<_, i64>(2)?,
-                ))
-            },
+            |row| <(Option<Vec<u8>>, Option<Vec<u8>>, i64)>::try_from(row),
         )
         .optional()?;
     let Some((body, layout, pk)) = stored else {

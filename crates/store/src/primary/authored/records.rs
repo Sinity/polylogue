@@ -1,20 +1,17 @@
 //! Typed authored row codecs shared by preparation, confirmation and restore.
 use super::*;
+use crate::ConnExt as _;
 use polylogue_model::Timestamp;
 use polylogue_model::authored::*;
 use polylogue_model::user::{BackfillJob, ChatAction, UserWrite};
 use std::collections::BTreeSet;
 
 fn event_index(n: i64) -> Result<usize> {
-    usize::try_from(
-        n.checked_sub(1)
-            .ok_or_else(|| StoreError::Invalid("event order is out of range".into()))?,
-    )
-    .map_err(|_| StoreError::Invalid("event order starts at one".into()))
+    usize::try_from(n.checked_sub(1).or_invalid("event order is out of range")?)
+        .or_invalid("event order starts at one")
 }
 fn time(at: i64) -> Result<Timestamp> {
-    Timestamp::from_unix_ms(at)
-        .ok_or_else(|| StoreError::Invalid("authored timestamp is out of range".into()))
+    Timestamp::from_unix_ms(at).or_invalid("authored timestamp is out of range")
 }
 fn ids(conn: &Connection, table: &str, filter: &str, seq: Option<i64>) -> Result<Vec<String>> {
     let source = Source::reading(conn)?;
@@ -170,7 +167,7 @@ pub(super) fn capture(
                     .events
                     .get(event_index(n)?)
                     .cloned()
-                    .ok_or_else(|| StoreError::Invalid("chat event order has a gap".into()))
+                    .or_invalid("chat event order has a gap")
             })
             .collect::<Result<_>>()?;
         effect.chats.push(ChatChange {
@@ -188,7 +185,7 @@ pub(super) fn capture(
                 job.events
                     .get(event_index(n)?)
                     .cloned()
-                    .ok_or_else(|| StoreError::Invalid("backfill event order has a gap".into()))
+                    .or_invalid("backfill event order has a gap")
             })
             .collect::<Result<_>>()?;
         effect.backfills.push(BackfillChange { job, added_events });
@@ -229,7 +226,7 @@ pub(super) fn insert_delivery(
         }
         return Ok(());
     }
-    conn.execute(&source.sql("INSERT INTO @source.delivery(id,recipient_kind,recipient_id,sender,event,cwd,at,content_hash,bytes,body,refs_json,left_out_json,commit_seq) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)"),params![value.id,d.recipient_kind,d.recipient_id,d.sender,d.event,d.cwd,value.at.unix_ms(),&blake3::hash(d.text.as_bytes()).as_bytes()[..],i64::try_from(d.text.len()).map_err(|_|StoreError::Invalid("delivery size is out of range".into()))?,crate::encoding::pack_text(&d.text)?,serde_json::to_string(&d.refs)?,serde_json::to_string(&d.left_out)?,counter])?;
+    conn.execute(&source.sql("INSERT INTO @source.delivery(id,recipient_kind,recipient_id,sender,event,cwd,at,content_hash,bytes,body,refs_json,left_out_json,commit_seq) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)"),params![value.id,d.recipient_kind,d.recipient_id,d.sender,d.event,d.cwd,value.at.unix_ms(),&blake3::hash(d.text.as_bytes()).as_bytes()[..],crate::to_i64(d.text.len(), "delivery size is out of range")?,crate::encoding::pack_text(&d.text)?,serde_json::to_string(&d.refs)?,serde_json::to_string(&d.left_out)?,counter])?;
     if let Some(mut signal) = value.signal.clone() {
         if historical {
             signal.execution = ExecutionEligibility::Historical;
@@ -287,7 +284,7 @@ fn insert_chat(
     };
     conn.execute(&source.sql("INSERT INTO @source.chat_action(id,request_key,request_hash,request_json,stage_only,needs_approval,created_at,execution,commit_seq) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)"),params![value.id,value.request_key,&value.request_hash.0[..],serde_json::to_string(&value.request)?,value.stage_only,value.needs_approval,value.created_at,execution.as_str(),counter])?;
     for a in &value.attachments {
-        conn.execute(&source.sql("INSERT INTO @source.chat_action_attachment(action,id,blob,name,media_type,size) VALUES(?1,?2,?3,?4,?5,?6)"),params![value.id,a.id,&a.blob.0[..],a.name,a.media_type,i64::try_from(a.size).map_err(|_|StoreError::Invalid("attachment size is out of range".into()))?])?;
+        conn.execute(&source.sql("INSERT INTO @source.chat_action_attachment(action,id,blob,name,media_type,size) VALUES(?1,?2,?3,?4,?5,?6)"),params![value.id,a.id,&a.blob.0[..],a.name,a.media_type,crate::to_i64(a.size, "attachment size is out of range")?])?;
     }
     Ok(())
 }
@@ -298,10 +295,9 @@ fn append_chat(
     counter: i64,
 ) -> Result<()> {
     let source = Source::of(conn)?;
-    let mut n: i64 = conn.query_row(
+    let mut n: i64 = conn.scalar(
         &source.sql("SELECT COALESCE(max(n),0) FROM @source.chat_action_event WHERE action=?1"),
         [id],
-        |r| r.get(0),
     )?;
     let known = crate::chat_actions::read(conn, source.prefix(), id)?
         .ok_or_else(|| StoreError::NotFound(id.into()))?
@@ -315,7 +311,7 @@ fn append_chat(
         }
         n = n
             .checked_add(1)
-            .ok_or_else(|| StoreError::Invalid("chat event order is out of range".into()))?;
+            .or_invalid("chat event order is out of range")?;
         conn.execute(&source.sql("INSERT INTO @source.chat_action_event(action,n,at,kind,phase,detail,by,receipt_json,request,commit_seq) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)"),params![id,n,event.at,event.kind,event.phase,event.detail,event.by,event.receipt.as_ref().map(serde_json::to_string).transpose()?,event.request,counter])?;
     }
     Ok(())
@@ -351,10 +347,9 @@ fn append_backfill(
     counter: i64,
 ) -> Result<()> {
     let source = Source::of(conn)?;
-    let mut n: i64 = conn.query_row(
+    let mut n: i64 = conn.scalar(
         &source.sql("SELECT COALESCE(max(n),0) FROM @source.backfill_job_event WHERE job=?1"),
         [id],
-        |r| r.get(0),
     )?;
     let known = crate::backfill_jobs::read(conn, source.prefix(), id)?
         .ok_or_else(|| StoreError::NotFound(id.into()))?
@@ -368,11 +363,8 @@ fn append_backfill(
         }
         n = n
             .checked_add(1)
-            .ok_or_else(|| StoreError::Invalid("backfill event order is out of range".into()))?;
-        let count = |value: u64| {
-            i64::try_from(value)
-                .map_err(|_| StoreError::Invalid("backfill count is out of range".into()))
-        };
+            .or_invalid("backfill event order is out of range")?;
+        let count = |value: u64| crate::to_i64(value, "backfill count is out of range");
         conn.execute(&source.sql("INSERT INTO @source.backfill_job_event(job,n,at,kind,by,position,listed,captured,unchanged,failed,detail,request,commit_seq) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)"),params![id,n,event.at,event.kind,event.by,event.position,count(event.counts.listed)?,count(event.counts.captured)?,count(event.counts.unchanged)?,count(event.counts.failed)?,event.detail,event.request,counter])?;
     }
     Ok(())

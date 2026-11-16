@@ -3,6 +3,7 @@
 //! A reading's coverage and counts commit with its parsed rows. The saved
 //! cursor accepts each byte range once; a new reading version gets separate
 //! rows. Occurrences state order, identity and optional time.
+use crate::{OptionExt as _, ResultExt as _};
 use crate::{ParseStep, Result, StoreError};
 use polylogue_model::WireShape;
 use polylogue_model::batch::{ExportCursor, ExportDeliverySource, ReadRange, StepProgress};
@@ -519,7 +520,7 @@ fn apply_inner(
                 .as_ref()
                 .map(|delivery| delivery.cursor())
                 .transpose()
-                .map_err(|error| StoreError::Invalid(error.to_string()))?
+                .map_err(crate::StoreError::invalid)?
         },
     };
     if let Some(old) = &previous
@@ -648,12 +649,11 @@ fn declare(
 
 /// A count as SQLite stores it; sums that leave the range are refused there.
 fn stored_count(count: u64) -> Result<i64> {
-    i64::try_from(count)
-        .map_err(|_| StoreError::Invalid("wire count exceeds its representation".into()))
+    crate::to_i64(count, "wire count exceeds its representation")
 }
 fn add(left: u64, right: u64) -> Result<u64> {
     left.checked_add(right)
-        .ok_or_else(|| StoreError::Invalid("wire count exceeds its representation".into()))
+        .or_invalid("wire count exceeds its representation")
 }
 fn invalid<T>(what: &str) -> Result<T> {
     Err(StoreError::Invalid(what.into()))

@@ -283,7 +283,7 @@ fn build_on_sinex(example: &Morrow, home: &Path, sinex: &Arc<Sinex>, running: &R
     );
 }
 
-/// Every session as the export format holds it, and every note.
+/// Every session as current bundle records, and every note.
 fn answers(archive: &Archive) -> (BTreeMap<String, serde_json::Value>, Vec<serde_json::Value>) {
     read_answers(archive).unwrap()
 }
@@ -298,7 +298,7 @@ fn read_answers(
         .into_iter()
         .map(|row| {
             let id = polylogue_model::SessionId::parse(row["id"].as_str().unwrap()).unwrap();
-            let export = reader.session_export(&id)?.unwrap();
+            let export = polylogue_testkit::session_bundle(&reader, &id)?;
             Ok((id.to_string(), serde_json::to_value(export).unwrap()))
         })
         .collect::<polylogue_store::Result<_>>()?;
@@ -851,7 +851,7 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
         .collect::<std::collections::BTreeSet<_>>()
     };
     let original_tool_ids = sinex_tool_ids();
-    let before = reader.session_export(&session).unwrap().unwrap();
+    let before = polylogue_testkit::session_bundle(&reader, &session).unwrap();
     drop(reader);
     drop(pool);
     // Every removed path belongs to this fixture; the original files remain.
@@ -860,13 +860,11 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
     let empty = home.dir.path().join("empty-home");
     fs::create_dir(&empty).unwrap();
     let rebuilt = build("independent SQLite rebuild", &empty, &expected_messages);
-    let after = ReadPool::open(&rebuilt)
-        .unwrap()
-        .reader()
-        .unwrap()
-        .session_export(&session)
-        .unwrap()
-        .unwrap();
+    let after = polylogue_testkit::session_bundle(
+        &ReadPool::open(&rebuilt).unwrap().reader().unwrap(),
+        &session,
+    )
+    .unwrap();
     assert_eq!(after, before);
     assert_eq!(sinex_tool_ids(), original_tool_ids);
 
@@ -914,13 +912,11 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
     assert_eq!(restored["outcome"], "ok", "{restored}");
     let restored = build("restore AI reading", &empty, &expected_messages);
     assert_eq!(
-        ReadPool::open(&restored)
-            .unwrap()
-            .reader()
-            .unwrap()
-            .session_export(&session)
-            .unwrap()
-            .unwrap(),
+        polylogue_testkit::session_bundle(
+            &ReadPool::open(&restored).unwrap().reader().unwrap(),
+            &session,
+        )
+        .unwrap(),
         before
     );
     let preceding_revision = source_revision(&restored);

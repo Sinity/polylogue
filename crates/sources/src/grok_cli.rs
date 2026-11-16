@@ -8,10 +8,11 @@
 //! every unchanged message; unknown times stay unknown. A `reasoning` line belongs to the assistant
 //! message after it.
 
+use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 2;
 
-use crate::document::{first_key, session_id, str_of, string_of};
+use crate::document::{first_key, session_id};
 use crate::fields::ExpectedType as T;
 use crate::fields::{Fields, Rule};
 use crate::lines::Record;
@@ -157,7 +158,10 @@ fn text_of(content: Option<&Json>) -> Option<String> {
     match content? {
         Json::String(s) if !s.is_empty() => Some(s.clone()),
         Json::Array(parts) => {
-            let texts: Vec<&str> = parts.iter().filter_map(|p| str_of(p, "text")).collect();
+            let texts: Vec<&str> = parts
+                .iter()
+                .filter_map(|p| p.str("text").filter(|s| !s.is_empty()))
+                .collect();
             (!texts.is_empty()).then(|| texts.join("\n"))
         }
         _ => None,
@@ -168,7 +172,11 @@ impl Parser for GrokCli {
     type ParserState = ParserState;
 
     fn kind(&self, value: &Json) -> String {
-        str_of(value, "type").unwrap_or("?").to_owned()
+        value
+            .str("type")
+            .filter(|s| !s.is_empty())
+            .unwrap_or("?")
+            .to_owned()
     }
 
     fn parse_record(
@@ -195,11 +203,10 @@ impl Parser for GrokCli {
         let end = record.offset + record.bytes.len() as u64;
         if kind == "reasoning" {
             let summaries: Vec<&str> = value
-                .get("summary")
-                .and_then(Json::as_array)
+                .array("summary")
                 .into_iter()
                 .flatten()
-                .filter_map(|s| str_of(s, "text"))
+                .filter_map(|s| s.str("text").filter(|s| !s.is_empty()))
                 .collect();
             let text = (!summaries.is_empty()).then(|| summaries.join("\n"));
             parser_state.thinking.push(Block::Thinking {
@@ -254,12 +261,7 @@ impl Parser for GrokCli {
                 if let Some(text) = text_of(value.get("content")) {
                     blocks.push(Block::Text { text });
                 }
-                for call in value
-                    .get("tool_calls")
-                    .and_then(Json::as_array)
-                    .into_iter()
-                    .flatten()
-                {
+                for call in value.array("tool_calls").into_iter().flatten() {
                     let raw = call.get("arguments");
                     // Arguments are a JSON string; kept as written when not JSON.
                     let input = match raw.and_then(Json::as_str) {
@@ -269,13 +271,13 @@ impl Parser for GrokCli {
                     blocks.push(Block::ToolCall {
                         written_text: None,
                         run_by_script: false,
-                        call_id: string_of(call, "id"),
-                        tool: string_of(call, "name"),
-                        action: action(str_of(call, "name").unwrap_or("")),
-                        command: input
-                            .get("command")
-                            .and_then(Json::as_str)
+                        call_id: call.str("id").filter(|s| !s.is_empty()).map(str::to_owned),
+                        tool: call
+                            .str("name")
+                            .filter(|s| !s.is_empty())
                             .map(str::to_owned),
+                        action: action(call.str("name").filter(|s| !s.is_empty()).unwrap_or("")),
+                        command: input.str("command").map(str::to_owned),
                         path: input
                             .get("target_file")
                             .or_else(|| input.get("path"))
@@ -293,7 +295,10 @@ impl Parser for GrokCli {
                 Some(PromptKind::Harness),
                 vec![Block::ToolResult {
                     reported_duration_ms: None,
-                    call_id: string_of(value, "tool_call_id"),
+                    call_id: value
+                        .str("tool_call_id")
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned),
                     outcome: ToolOutcome::Ok,
                     output: text_of(value.get("content")),
                     data: None,
@@ -306,7 +311,10 @@ impl Parser for GrokCli {
             return RecordOutcome::unreadable("unusable message ID");
         };
         let production = polylogue_model::Production {
-            effort: string_of(value, "reasoning_effort"),
+            effort: value
+                .str("reasoning_effort")
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned),
             ..Default::default()
         };
         out.messages.push(MessageRow {
@@ -325,7 +333,10 @@ impl Parser for GrokCli {
                     at_quality: time_evidence.quality,
                     at_precision: time_evidence.precision,
                     at_until: time_evidence.until,
-                    model: string_of(value, "model_id"),
+                    model: value
+                        .str("model_id")
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned),
                     prompt_kind,
                     blocks,
                     usage: Default::default(),

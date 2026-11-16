@@ -1,5 +1,6 @@
 //! Bounded catalog rows from one read, consumed by the catalog publisher.
 use super::catalog::Session;
+use crate::ConnExt as _;
 use crate::source::Source;
 use crate::{Reader, Result, StoreError};
 use polylogue_model::ChangePosition;
@@ -102,7 +103,7 @@ impl Reader<'_> {
         let mut rows = if after.is_some() {
             statement.query(rusqlite::params![
                 since,
-                serde_json::to_string(&retitled).map_err(|e| StoreError::Invalid(e.to_string()))?
+                serde_json::to_string(&retitled).map_err(crate::StoreError::invalid)?
             ])?
         } else {
             statement.query([since])?
@@ -250,7 +251,7 @@ impl Reader<'_> {
         };
         for root in roots {
             self.check()?;
-            let relevant = conn.query_row("SELECT EXISTS(SELECT 1 FROM source_assertion WHERE root=?1 AND kind IN ('saved_query','tag'))", [&root], |row| row.get::<_,bool>(0))?;
+            let relevant = conn.scalar::<bool>("SELECT EXISTS(SELECT 1 FROM source_assertion WHERE root=?1 AND kind IN ('saved_query','tag'))", [&root])?;
             if relevant {
                 visit(self.completion_definition(&root)?)?;
             }
@@ -304,9 +305,7 @@ impl Reader<'_> {
         }
         if let (AssertionKind::Tag, values::Value::Tag(value)) = (
             row.fact.kind,
-            row.fact
-                .validate()
-                .map_err(|error| StoreError::Invalid(error.to_string()))?,
+            row.fact.validate().map_err(crate::StoreError::invalid)?,
         ) {
             let value = value
                 .fields

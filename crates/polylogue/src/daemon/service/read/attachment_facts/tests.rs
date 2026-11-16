@@ -227,6 +227,6 @@ fn attachment_metadata_preserves_parent_cancellation() {
             panic!("cancelled attachment preparation did not refuse: {result:?}");
         };
         let kind = failure.code().to_owned();
-        assert_eq!(kind, StoreError::ReadCancelled.code());
+        assert_eq!(kind, StoreError::ReadCancelled.code().as_str());
     });
 }

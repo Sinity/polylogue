@@ -29,12 +29,7 @@ pub fn files(bytes: &[u8]) -> Result<Json, String> {
         let id = row.message.id.to_string();
         let message = id.split_once(':').map_or(id.as_str(), |(_, native)| native);
         for block in &row.message.blocks {
-            let found: Vec<&Attachment> = match block {
-                Block::File(a) | Block::Image(a) => vec![a],
-                Block::ToolResult { attachments, .. } => attachments.iter().collect(),
-                _ => Vec::new(),
-            };
-            for file in found {
+            for file in block.attachments() {
                 files.push(json!({
                     "id": file
                         .source_id

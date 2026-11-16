@@ -5,12 +5,6 @@ use query_language::identity;
 use std::collections::{BTreeSet, VecDeque};
 use std::sync::Arc;
 
-fn invalid(message: impl Into<String>) -> QueryError {
-    QueryError::Invalid {
-        message: message.into(),
-        position: 0,
-    }
-}
 fn language(error: query_language::Error) -> QueryError {
     QueryError::language(error, "")
 }
@@ -45,14 +39,14 @@ fn parse_id(name: &str) -> Result<QuestionId, QueryError> {
             .bytes()
             .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
     {
-        return Err(invalid(format!(
+        return Err(QueryError::invalid(format!(
             "saved source {name:?} has no resolved question identity"
         )));
     }
     let mut bytes = [0; 32];
     for (at, byte) in bytes.iter_mut().enumerate() {
         *byte = u8::from_str_radix(&name[at * 2..at * 2 + 2], 16)
-            .map_err(|_| invalid("invalid question identity"))?;
+            .map_err(|_| QueryError::invalid("invalid question identity"))?;
     }
     Ok(QuestionId(bytes))
 }
@@ -61,7 +55,7 @@ pub fn question_id_from_reference(reference: &str) -> Result<QuestionId, QueryEr
     polylogue_model::Reference::parse(reference)
         .ok()
         .and_then(|reference| reference.question_id())
-        .ok_or_else(|| invalid("expected an exact lowercase query:<hash> reference"))
+        .ok_or_else(|| QueryError::invalid("expected an exact lowercase query:<hash> reference"))
 }
 /// Saved names used by typed source and condition nodes, including nested
 /// queries. Payload strings are not names. This inspects syntax only and does
@@ -160,7 +154,7 @@ fn used_outputs(
         let schema = catalog
             .source_output(&source)
             .cloned()
-            .ok_or_else(|| invalid("source needs exactly one saved output schema"))?;
+            .ok_or_else(|| QueryError::invalid("source needs exactly one saved output schema"))?;
         let output = query_language::catalog::SourceOutput {
             source: key,
             schema,
@@ -312,7 +306,7 @@ fn all_outputs(object: &QueryObject) -> Result<Vec<SourceOutput>, QueryError> {
         let output = output.clone();
         if let Some(previous) = outputs.iter().find(|old| old.source == output.source) {
             if previous != &output {
-                return Err(invalid("conflicting saved output schemas"));
+                return Err(QueryError::invalid("conflicting saved output schemas"));
             }
         } else {
             outputs.push(output);
@@ -376,7 +370,7 @@ pub(super) fn definition_with_dependencies(
             .iter()
             .find(|node| node.question == question)
             .cloned()
-            .ok_or_else(|| invalid("saved query differs from its declared hash"))?
+            .ok_or_else(|| QueryError::invalid("saved query differs from its declared hash"))?
     };
     let catalog = runtime_catalog(object)?;
     let mut queue = VecDeque::from(dependencies(&edges(&node.query, &catalog)?));
@@ -390,7 +384,7 @@ pub(super) fn definition_with_dependencies(
             .definitions
             .iter()
             .find(|node| node.question == id)
-            .ok_or_else(|| invalid(format!("missing saved query:{id}")))?;
+            .ok_or_else(|| QueryError::invalid(format!("missing saved query:{id}")))?;
         queue.extend(dependencies(&edges(&dependency.query, &catalog)?));
         dependency_nodes.push(dependency.clone());
     }
@@ -432,7 +426,7 @@ fn replay_bindings(object: &QueryObject, catalog: &Catalog) -> Result<Bindings, 
         if let OutputSource::Result { reference, part } = &output.source {
             let id = reference
                 .strip_prefix("result:")
-                .ok_or_else(|| invalid("kept output has no stored result identity"))?;
+                .ok_or_else(|| QueryError::invalid("kept output has no stored result identity"))?;
             let unit = output.schema.unit.clone().unwrap_or_default();
             let columns = output
                 .schema
@@ -479,7 +473,9 @@ fn replay_bindings(object: &QueryObject, catalog: &Catalog) -> Result<Bindings, 
                     match_columns: vec![],
                 });
             if !kept.unit.is_empty() && !unit.is_empty() && kept.unit != unit {
-                return Err(invalid("kept output parts disagree about their row domain"));
+                return Err(QueryError::invalid(
+                    "kept output parts disagree about their row domain",
+                ));
             }
             if kept.unit.is_empty() {
                 kept.unit = unit;
@@ -515,19 +511,19 @@ fn check_node(
     let catalog = catalog(outputs);
     let actual = identity::question_id_from_normal_form(form, parameters).map_err(language)?;
     if actual != id || identity::normal_form(query, &catalog).map_err(language)? != *form {
-        return Err(invalid(
+        return Err(QueryError::invalid(
             "question identity, normal form and typed syntax disagree",
         ));
     }
     let bound = query_language::bind::bind(query, &catalog).map_err(language)?;
     if identity::normal_form(bound.query(), &catalog).map_err(language)? != *form {
-        return Err(invalid(
+        return Err(QueryError::invalid(
             "saved question changes when bound to built-in declarations",
         ));
     }
     let recorded: Vec<_> = outputs.iter().map(SourceOutput::catalog_output).collect();
     if used_outputs(query, &catalog)? != recorded {
-        return Err(invalid(
+        return Err(QueryError::invalid(
             "question contains unused or unordered output schemas",
         ));
     }
@@ -539,14 +535,16 @@ pub fn validate_object(object: &QueryObject) -> Result<(), QueryError> {
     let actual = identity::question_id_from_normal_form(&object.normal_form, &object.parameters)
         .map_err(language)?;
     if actual != object.id {
-        return Err(invalid("saved question hash differs from its normal form"));
+        return Err(QueryError::invalid(
+            "saved question hash differs from its normal form",
+        ));
     }
     for node in &object.definitions {
         if identity::question_id_from_normal_form(&node.normal_form, &node.parameters)
             .map_err(language)?
             != node.question
         {
-            return Err(invalid(
+            return Err(QueryError::invalid(
                 "saved dependency hash differs from its normal form",
             ));
         }
@@ -561,7 +559,7 @@ pub fn validate_object(object: &QueryObject) -> Result<(), QueryError> {
     )?;
     let actual_edges = edges(&object.query, &catalog)?;
     if actual_edges != object.edges || dependencies(&actual_edges) != object.dependencies {
-        return Err(invalid(
+        return Err(QueryError::invalid(
             "question composition edges do not match its syntax",
         ));
     }
@@ -575,7 +573,7 @@ pub fn validate_object(object: &QueryObject) -> Result<(), QueryError> {
             &node.source_outputs,
         )?;
         if by_id.insert(node.question.to_string(), node).is_some() {
-            return Err(invalid("duplicate saved question body"));
+            return Err(QueryError::invalid("duplicate saved question body"));
         }
     }
     let mut seen = BTreeSet::new();
@@ -587,11 +585,13 @@ pub fn validate_object(object: &QueryObject) -> Result<(), QueryError> {
         }
         let node = by_id
             .get(&key)
-            .ok_or_else(|| invalid(format!("missing saved question {id}")))?;
+            .ok_or_else(|| QueryError::invalid(format!("missing saved question {id}")))?;
         queue.extend(dependencies(&edges(&node.query, &catalog)?));
     }
     if seen.len() != by_id.len() {
-        return Err(invalid("question contains an unrelated saved definition"));
+        return Err(QueryError::invalid(
+            "question contains an unrelated saved definition",
+        ));
     }
     let bindings = replay_bindings(object, &catalog)?;
     // A supplied schema cannot add a field outside the relation its saved
@@ -611,7 +611,7 @@ pub fn validate_object(object: &QueryObject) -> Result<(), QueryError> {
             let expanded = expand(&source, &catalog, &bindings)?;
             let (_, actual) = crate::compile::schema::output_metadata(&expanded, &catalog)?;
             if actual != output.schema {
-                return Err(invalid(
+                return Err(QueryError::invalid(
                     "saved output schema differs from its saved definition",
                 ));
             }

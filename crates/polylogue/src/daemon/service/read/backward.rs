@@ -5,7 +5,7 @@ use polylogue_model::read::{ReadRecordKind, ReadRecordLocator, ReadTarget};
 use polylogue_store::Reader;
 
 fn stale() -> Failure {
-    Failure::new("stale_cursor", "the previous record coordinate changed")
+    Failure::stale_cursor("the previous record coordinate changed")
 }
 
 pub(super) fn last_record(

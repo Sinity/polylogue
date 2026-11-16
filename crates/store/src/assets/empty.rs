@@ -123,7 +123,7 @@ pub(crate) fn read(reader: &Reader<'_>, source: &AssetSource) -> Result<Vec<u8>>
     let hash = source
         .blob
         .filter(|hash| source.length == 0 && *hash == BlobHash::of(b""))
-        .ok_or_else(|| StoreError::Invalid("empty attachment has no bound body".into()))?;
+        .or_invalid("empty attachment has no bound body")?;
     let extent = crate::blobs::load_extent(reader.conn()?, "source_", &hashed_blobs::Hash(hash.0))?
         .ok_or_else(|| StoreError::NotFound("empty attachment body".into()))?;
     if extent.decoded_len != 0

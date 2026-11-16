@@ -239,7 +239,7 @@ fn identical_event_repairs_old_item_metadata() {
 fn equal_length_context_boundary_changes_refresh_typed_event_items() {
     for kind in ["compaction", "microcompaction"] {
         let w = test_archive();
-        let (before, after) = if kind == "compaction" {
+        let (before, after) = if kind == polylogue_model::Code::Compaction {
             (
                 serde_json::to_value(polylogue_model::CompactionBoundary {
                     pre_tokens: Some(111),

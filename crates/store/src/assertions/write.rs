@@ -29,7 +29,9 @@ fn exact_fact(conn: &Connection, reference: &Reference) -> Result<AssertionFact>
         revision: Some(id),
     }) = reference
     else {
-        return Err(invalid("expected an exact assertion revision"));
+        return Err(crate::StoreError::invalid(
+            "expected an exact assertion revision",
+        ));
     };
     get(conn, id)?
         .filter(|row| row.fact.root == *root)
@@ -47,7 +49,7 @@ fn validate_value(
 ) -> Result<(values::Value, Option<Reference>)> {
     statement
         .validate_links()
-        .map_err(|error| invalid(&error.to_string()))?;
+        .map_err(|error| crate::StoreError::invalid(&error.to_string()))?;
     let mut value = if live_value {
         values::decode_live(
             statement.kind,
@@ -61,7 +63,7 @@ fn validate_value(
             statement.value.as_ref(),
         )
     }
-    .map_err(|error| invalid(&error.to_string()))?;
+    .map_err(|error| crate::StoreError::invalid(&error.to_string()))?;
     if let values::Value::Setting(setting) = &mut value {
         setting.fields = setting
             .fields
@@ -71,7 +73,7 @@ fn validate_value(
                 &request.machine,
                 mode,
             )
-            .map_err(|error| invalid(&error.to_string()))?;
+            .map_err(|error| crate::StoreError::invalid(&error.to_string()))?;
         statement.value = Some(serde_json::to_value(setting)?);
     }
     if let values::Value::SavedQuery(value) = &value {
@@ -88,20 +90,26 @@ fn validate_value(
                 .iter()
                 .map(|link| (link.role, &link.reference)),
         )?
-        .ok_or_else(|| invalid("annotation needs its exact derived_from rubric"))?;
+        .ok_or_else(|| {
+            crate::StoreError::invalid("annotation needs its exact derived_from rubric")
+        })?;
         let values::Value::Rubric(rubric) = exact_fact(conn, &reference)?
             .validate()
-            .map_err(|error| invalid(&error.to_string()))?
+            .map_err(|error| crate::StoreError::invalid(&error.to_string()))?
         else {
-            return Err(invalid("annotation rubric is not a rubric"));
+            return Err(crate::StoreError::invalid(
+                "annotation rubric is not a rubric",
+            ));
         };
         let values::Value::Annotation(annotation) = &value else {
-            return Err(invalid("annotation value is not a field value"));
+            return Err(crate::StoreError::invalid(
+                "annotation value is not a field value",
+            ));
         };
         let key = statement.key.as_deref().expect("annotation key checked");
         if key == "abstain" {
             if !rubric.fields.abstain || !annotation.fields.value.is_string() {
-                return Err(invalid(
+                return Err(crate::StoreError::invalid(
                     "not_allowed_by_rubric: abstention requires an allowed text reason",
                 ));
             }
@@ -111,16 +119,24 @@ fn validate_value(
                 .fields
                 .iter()
                 .find(|field| field.name == key)
-                .ok_or_else(|| invalid("not_allowed_by_rubric: unknown field"))?;
+                .ok_or_else(|| {
+                    crate::StoreError::invalid("not_allowed_by_rubric: unknown field")
+                })?;
             if !field.allows(&annotation.fields.value) {
-                return Err(invalid("not_allowed_by_rubric: field value"));
+                return Err(crate::StoreError::invalid(
+                    "not_allowed_by_rubric: field value",
+                ));
             }
         }
         if annotation.fields.confidence.is_some() && !rubric.fields.confidence {
-            return Err(invalid("not_allowed_by_rubric: confidence"));
+            return Err(crate::StoreError::invalid(
+                "not_allowed_by_rubric: confidence",
+            ));
         }
         if annotation.fields.rationale.is_some() && rubric.fields.rationale == Some(false) {
-            return Err(invalid("not_allowed_by_rubric: rationale"));
+            return Err(crate::StoreError::invalid(
+                "not_allowed_by_rubric: rationale",
+            ));
         }
         let mut pass_found = false;
         for origin in statement
@@ -130,23 +146,29 @@ fn validate_value(
         {
             let pass = exact_fact(conn, &origin.reference)?;
             if pass.kind != AssertionKind::Pass || pass.author != request.authorship.author {
-                return Err(invalid(
+                return Err(crate::StoreError::invalid(
                     "annotation origin must be a pass opened by its author",
                 ));
             }
             let values::Value::Pass(pass) = pass
                 .validate()
-                .map_err(|error| invalid(&error.to_string()))?
+                .map_err(|error| crate::StoreError::invalid(&error.to_string()))?
             else {
-                return Err(invalid("annotation origin is not a pass"));
+                return Err(crate::StoreError::invalid(
+                    "annotation origin is not a pass",
+                ));
             };
             if pass.fields.rubric.as_ref() != Some(&reference) {
-                return Err(invalid("annotation pass names another rubric"));
+                return Err(crate::StoreError::invalid(
+                    "annotation pass names another rubric",
+                ));
             }
             pass_found = true;
         }
         if !pass_found {
-            return Err(invalid("annotation needs an exact pass origin"));
+            return Err(crate::StoreError::invalid(
+                "annotation needs an exact pass origin",
+            ));
         }
         Some(reference)
     } else {
@@ -200,7 +222,7 @@ fn refusal(kind: &NewAssertion, refused: Refused<StoreError>) -> StoreError {
         Refusal::UnknownTarget(target) => {
             StoreError::NotFound(target_reference(&target).to_string())
         }
-        Refusal::BasesSpanRoots(_) => invalid(
+        Refusal::BasesSpanRoots(_) => crate::StoreError::invalid(
             "one revision must name bases of one assertion family, or of families holding one slot",
         ),
         Refusal::Ambiguous { holders } => StoreError::Ambiguous {
@@ -215,11 +237,15 @@ fn refusal(kind: &NewAssertion, refused: Refused<StoreError>) -> StoreError {
             kind.kind.as_str(),
             list(holders).join(", ")
         )),
-        Refusal::Count { declared, written } => invalid(&format!(
+        Refusal::Count { declared, written } => crate::StoreError::invalid(&format!(
             "the request declared {declared} writes and carries {written}"
         )),
-        Refusal::Abandoned(write) => invalid(&format!("write {write} of this request was refused")),
-        Refusal::Cycle(revision) => invalid(&format!("withdrawals of {revision} form a cycle")),
+        Refusal::Abandoned(write) => {
+            crate::StoreError::invalid(&format!("write {write} of this request was refused"))
+        }
+        Refusal::Cycle(revision) => {
+            crate::StoreError::invalid(&format!("withdrawals of {revision} form a cycle"))
+        }
         Refusal::Links(error) => error,
     }
 }
@@ -365,7 +391,9 @@ fn accept(
         mode,
     } = context;
     if statements.is_empty() {
-        return Err(invalid("assert needs at least one statement"));
+        return Err(crate::StoreError::invalid(
+            "assert needs at least one statement",
+        ));
     }
     // Each write is checked against the archive as it stands after the
     // request's earlier writes, so a later write may name an earlier one (a
@@ -413,12 +441,14 @@ fn accept(
                     && let Some(base) = get(conn, id)?
                     && base.fact.kind != statement.kind
                 {
-                    return Err(invalid("revision cannot change assertion kind"));
+                    return Err(crate::StoreError::invalid(
+                        "revision cannot change assertion kind",
+                    ));
                 }
             }
             let unique = statement
                 .unique(&value, &request.authorship.author, rubric.as_ref())
-                .map_err(|error| invalid(&error.to_string()))?;
+                .map_err(|error| crate::StoreError::invalid(&error.to_string()))?;
             // Only a write that a later one could name is previewed.
             if index + 1 < statements.len() {
                 let id = authored::write_id(&request.id, index + 1, statements.len());
@@ -587,7 +617,9 @@ pub(crate) fn revision_statement(
     patch: &AssertionPatch,
 ) -> Result<NewAssertion> {
     if bases.is_empty() {
-        return Err(invalid("revise needs at least one exact base"));
+        return Err(crate::StoreError::invalid(
+            "revise needs at least one exact base",
+        ));
     }
     let mut facts = Vec::new();
     for base in bases {
@@ -597,14 +629,16 @@ pub(crate) fn revision_statement(
     // A revised withdrawal would keep withdrawing what the old one named;
     // restoring is withdrawing the withdrawal.
     if first.kind == polylogue_model::assertion::AssertionKind::Withdrawal {
-        return Err(invalid(
+        return Err(crate::StoreError::invalid(
             "a withdrawal cannot be revised; withdraw it to restore what it withdrew",
         ));
     }
     // Bases of several families are accepted when they hold one slot of a
     // single-valued kind; the authored plan checks that.
     if facts.iter().any(|fact| fact.kind != first.kind) {
-        return Err(invalid("one revision must name bases of one kind"));
+        return Err(crate::StoreError::invalid(
+            "one revision must name bases of one kind",
+        ));
     }
     fn change<T: Clone>(old: Option<T>, change: &Change<T>) -> Option<T> {
         match change {
@@ -635,7 +669,7 @@ pub(crate) fn revision_statement(
         .iter()
         .any(|link| link.role == LinkRole::Revises)
     {
-        return Err(invalid(
+        return Err(crate::StoreError::invalid(
             "revision bases belong in bases, not the link patch",
         ));
     }

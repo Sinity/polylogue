@@ -4,6 +4,7 @@ use crate::fields::{ExpectedType as T, Fields, Rule};
 use crate::parse::{Output, Parse, Parser};
 use crate::{Record, RecordOutcome, Records};
 use polylogue_model::Json;
+use polylogue_model::JsonExt;
 use serde::{Deserialize, Serialize};
 
 pub const VERSION: u32 = 2;
@@ -73,7 +74,7 @@ impl Parser for RowDump {
             }
             return invalid.map_or(RecordOutcome::Used, RecordOutcome::unreadable);
         }
-        let Some(table) = value.get("t").and_then(Json::as_str) else {
+        let Some(table) = value.str("t") else {
             records.fields("row", value, &INVALID);
             return RecordOutcome::unreadable("row-dump record has no table identifier");
         };

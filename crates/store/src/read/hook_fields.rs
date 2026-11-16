@@ -32,9 +32,7 @@ impl Reader<'_> {
                 .parse()
                 .ok()
                 .filter(|n: &u64| n.to_string() == ordinal)
-                .ok_or_else(|| {
-                    StoreError::Invalid("invalid stored injection block ordinal".into())
-                })?;
+                .ok_or_else(|| StoreError::stored(0, "invalid stored injection block ordinal"))?;
             let field: NativeHookField = serde_json::from_str(&row.get::<_, String>(1)?)?;
             if block_selection.is_none() {
                 let layout: Vec<u8> = row.get(2)?;

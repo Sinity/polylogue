@@ -1,5 +1,6 @@
 //! Derived import associations. The engine parses the sources; reads check
 //! the archive's current state before returning any bytes.
+use crate::ConnExt as _;
 use crate::{ImportMember, Reader, Result, StoreError, export_items::ExportItems};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -36,7 +37,7 @@ fn asset_source(
         return Ok(None);
     };
     let length =
-        u64::try_from(length).map_err(|_| StoreError::Invalid("negative asset length".into()))?;
+        u64::try_from(length).map_err(|_| crate::StoreError::stored(0, "negative asset length"))?;
     if length == 0 {
         return empty::source(index, conn, schema, input, chain, None, None);
     }
@@ -70,12 +71,12 @@ fn asset_source(
         let current = polylogue_model::BlobHash(
             bytes
                 .try_into()
-                .map_err(|_| StoreError::Invalid("invalid asset extent hash".into()))?,
+                .map_err(|_| crate::StoreError::stored(2, "invalid asset extent hash"))?,
         );
         count += 1;
         end = end
             .checked_add(size as u64)
-            .ok_or_else(|| StoreError::Invalid("asset extent overflow".into()))?;
+            .ok_or_else(|| crate::StoreError::stored(1, "asset extent overflow"))?;
         hash.update(&offset.to_le_bytes());
         hash.update(&size.to_le_bytes());
         hash.update(&current.0);
@@ -181,12 +182,7 @@ impl Reader<'_> {
         )?;
         let mut pending = Vec::new();
         for row in stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<u32>>(2)?,
-                row.get::<_, Option<String>>(3)?,
-            ))
+            <(String, String, Option<u32>, Option<String>)>::try_from(row)
         })? {
             let (input, sidecar, version, recorded) = row?;
             let current = asset_source(conn, conn, "source_", &input)?.map(|source| source.version);
@@ -241,10 +237,9 @@ pub(crate) fn visit_import_members(
     input: Option<&str>,
     mut visit: impl FnMut(ObservedMember) -> Result<()>,
 ) -> Result<Option<i64>> {
-    let through: i64 = conn.query_row(
+    let through: i64 = conn.scalar(
         &format!("SELECT COALESCE(max(rowid),0) FROM {prefix}observation"),
         [],
-        |row| row.get(0),
     )?;
     // A ZIP is the source of its members, not one of the attachments among them.
     let mut originals =
@@ -256,7 +251,7 @@ pub(crate) fn visit_import_members(
           AND json_type(o.details_json,'$.import.import_id')='text'"
     ))?;
     for row in roots.query_map(params![after, through, input], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        <(String, String)>::try_from(row)
     })? {
         let (input, import_id) = row?;
         originals.entry(input).or_default().insert(import_id);
@@ -267,11 +262,7 @@ pub(crate) fn visit_import_members(
           AND o.details_json IS NOT NULL ORDER BY o.rowid"
     ))?;
     for row in observations.query_map(params![after, through, input], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-        ))
+        <(String, String, String)>::try_from(row)
     })? {
         let (observation, input, details) = row?;
         let details: serde_json::Value = serde_json::from_str(&details)?;
@@ -486,8 +477,7 @@ pub(crate) fn install(
                 media_type,
                 size,
             } => {
-                let ordinal = i64::try_from(ordinal)
-                    .map_err(|_| StoreError::Invalid("too many asset metadata entries".into()))?;
+                let ordinal = crate::to_i64(ordinal, "too many asset metadata entries")?;
                 let row = MetadataRow {
                     input: &input,
                     sidecar: &sidecar,

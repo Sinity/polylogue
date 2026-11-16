@@ -1,4 +1,5 @@
 //! Membership in stored container bytes: member names and positions.
+use crate::ConnExt as _;
 use crate::{Batch, InContainer, Result, StoreError};
 use rusqlite::Connection;
 pub(crate) fn container_of(batch: &Batch) -> Option<&InContainer> {
@@ -6,10 +7,9 @@ pub(crate) fn container_of(batch: &Batch) -> Option<&InContainer> {
 }
 pub(crate) fn require_original(conn: &Connection, input: &str) -> Result<()> {
     let source = crate::source::Source::of(conn)?;
-    let stored: bool = conn.query_row(
+    let stored: bool = conn.scalar(
         &source.sql("SELECT EXISTS(SELECT 1 FROM @source.revision WHERE input=?1)"),
         [input],
-        |r| r.get(0),
     )?;
     if !stored {
         return Err(StoreError::Invalid(

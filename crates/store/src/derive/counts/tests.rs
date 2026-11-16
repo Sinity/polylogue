@@ -176,7 +176,7 @@ fn append_update_equals_full_recompute() {
         at_until: None,
         after: after.map(|id| polylogue_model::MessageId::parse(id).unwrap()),
         range: None,
-        data: if kind == "compaction" {
+        data: if kind == polylogue_model::Code::Compaction {
             serde_json::to_value(polylogue_model::CompactionBoundary::default()).unwrap()
         } else {
             Json::Null

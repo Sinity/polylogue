@@ -86,139 +86,13 @@ pub(crate) fn parts_while(
     }
     Ok(())
 }
-pub(super) fn parts_for(
-    conn: &Connection,
-    id: &str,
-    source_reference: &str,
-    mut visit: impl FnMut(VariantPart) -> Result<()>,
-) -> Result<()> {
-    parts_for_while(conn, id, source_reference, |part| {
-        visit(part)?;
-        Ok(true)
-    })
-}
-pub(super) fn parts_for_while(
-    conn: &Connection,
-    id: &str,
-    source_reference: &str,
-    mut visit: impl FnMut(VariantPart) -> Result<bool>,
-) -> Result<()> {
-    let source = Source::reading(conn)?;
-    let mut statement = conn.prepare_cached(&source.sql(
-        "SELECT variant,n,of,of_hash,relation,body FROM @source.variant_part WHERE variant=?1 AND of=?2 ORDER BY n",
-    ))?;
-    let mut rows = statement.query(params![id, source_reference])?;
-    while let Some(row) = rows.next()? {
-        if !visit(part(row)?)? {
-            break;
-        }
-    }
-    Ok(())
-}
-/// Indexed record-local targets, grouped by exact original address then part n.
-pub(super) fn parts_in(
-    conn: &Connection,
-    id: &str,
-    record: &polylogue_model::Reference,
-    mut visit: impl FnMut(VariantPart) -> Result<()>,
-) -> Result<()> {
-    let (root, intervals) = record_intervals(record)?;
-    let source = Source::reading(conn)?;
-    let mut statement=conn.prepare_cached(&source.sql("SELECT variant,n,of,of_hash,relation,body FROM @source.variant_part WHERE variant=?1 AND of=?2 UNION ALL SELECT variant,n,of,of_hash,relation,body FROM @source.variant_part WHERE variant=?1 AND of>=?3 AND of<?4 UNION ALL SELECT variant,n,of,of_hash,relation,body FROM @source.variant_part WHERE variant=?1 AND of>=?5 AND of<?6 UNION ALL SELECT variant,n,of,of_hash,relation,body FROM @source.variant_part WHERE variant=?1 AND of>=?7 AND of<?8 ORDER BY of,n"))?;
-    let mut rows = statement.query(params![
-        id,
-        root,
-        intervals[0].0,
-        intervals[0].1,
-        intervals[1].0,
-        intervals[1].1,
-        intervals[2].0,
-        intervals[2].1
-    ])?;
-    while let Some(row) = rows.next()? {
-        let original = polylogue_model::Reference::parse(&row.get::<_, String>(2)?)
-            .map_err(|error| StoreError::Invalid(error.to_string()))?;
-        if within(&original, record) {
-            visit(part(row)?)?;
-        }
-    }
-    Ok(())
-}
-
-fn within(original: &polylogue_model::Reference, record: &polylogue_model::Reference) -> bool {
-    let mut current = Some(original.clone());
-    while let Some(reference) = current {
-        if &reference == record {
-            return true;
-        }
-        current = reference.container();
-    }
-    false
-}
-fn record_intervals(
-    record: &polylogue_model::Reference,
-) -> Result<(String, Vec<(String, String)>)> {
-    use polylogue_model::Reference;
-    let root = record.to_string();
-    let mut prefixes = vec![format!("span:{root}#")];
-    match record {
-        Reference::Message(message) => {
-            prefixes.push(format!("block:{message}#"));
-            prefixes.push(format!("span:block:{message}#"));
-        }
-        Reference::Document(_) => {}
-        _ => {
-            return Err(StoreError::Invalid(
-                "rendition record scope must be a message or document".into(),
-            ));
-        }
-    }
-    let mut intervals = Vec::new();
-    for prefix in prefixes {
-        let mut end = prefix.clone();
-        end.pop();
-        end.push('$');
-        intervals.push((prefix, end));
-    }
-    while intervals.len() < 3 {
-        intervals.push((String::new(), String::new()));
-    }
-    Ok((root, intervals))
-}
-pub(super) fn sources_in(
-    conn: &Connection,
-    record: &polylogue_model::Reference,
-    mut visit: impl FnMut(polylogue_model::Reference) -> Result<()>,
-) -> Result<()> {
-    let (root, intervals) = record_intervals(record)?;
-    let source = Source::reading(conn)?;
-    let mut statement=conn.prepare_cached(&source.sql("SELECT source FROM @source.variant WHERE source=?1 UNION SELECT source FROM @source.variant WHERE source>=?2 AND source<?3 UNION SELECT source FROM @source.variant WHERE source>=?4 AND source<?5 UNION SELECT source FROM @source.variant WHERE source>=?6 AND source<?7 ORDER BY source"))?;
-    let mut rows = statement.query(params![
-        root,
-        intervals[0].0,
-        intervals[0].1,
-        intervals[1].0,
-        intervals[1].1,
-        intervals[2].0,
-        intervals[2].1
-    ])?;
-    while let Some(row) = rows.next()? {
-        let reference = polylogue_model::Reference::parse(&row.get::<_, String>(0)?)
-            .map_err(|error| StoreError::Invalid(error.to_string()))?;
-        if within(&reference, record) {
-            visit(reference)?;
-        }
-    }
-    Ok(())
-}
 
 pub(super) fn get_part(conn: &Connection, id: &str, n: u64) -> Result<Option<VariantPart>> {
     let source = Source::reading(conn)?;
     let mut statement=conn.prepare_cached(&source.sql("SELECT variant,n,of,of_hash,relation,body FROM @source.variant_part WHERE variant=?1 AND n=?2"))?;
     let mut rows = statement.query(params![
         id,
-        i64::try_from(n)
-            .map_err(|_| StoreError::Invalid("variant part number is out of range".into()))?
+        crate::to_i64(n, "variant part number is out of range")?
     ])?;
     rows.next()?.map(part).transpose()
 }
@@ -249,6 +123,6 @@ pub(super) fn insert_part(conn: &Connection, p: &VariantPart) -> Result<()> {
         };
     }
     let source = Source::of(conn)?;
-    conn.execute(&source.sql("INSERT INTO @source.variant_part(variant,n,of,of_hash,relation,body) VALUES(?1,?2,?3,?4,?5,?6)"),params![p.variant,i64::try_from(p.n).map_err(|_|StoreError::Invalid("variant part number is out of range".into()))?,p.of,&p.of_hash.0[..],p.relation.as_str(),crate::encoding::pack_text(&p.body)?])?;
+    conn.execute(&source.sql("INSERT INTO @source.variant_part(variant,n,of,of_hash,relation,body) VALUES(?1,?2,?3,?4,?5,?6)"),params![p.variant,crate::to_i64(p.n, "variant part number is out of range")?,p.of,&p.of_hash.0[..],p.relation.as_str(),crate::encoding::pack_text(&p.body)?])?;
     Ok(())
 }

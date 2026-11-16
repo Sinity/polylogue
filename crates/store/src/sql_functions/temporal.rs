@@ -83,7 +83,7 @@ pub(super) fn register(conn: &Connection) -> rusqlite::Result<()> {
         let bytes: Option<Vec<u8>> = ctx.get(0)?;
         let storage: String = ctx.get(1)?;
         let attribute: String = ctx.get(2)?;
-        let attribute = TimeAttribute::from_code(&attribute)
+        let attribute = TimeAttribute::from_name(&attribute)
             .ok_or_else(|| rusqlite::Error::UserFunctionError("unknown time attribute".into()))?;
         let time =
             source_time(bytes.as_deref(), &storage).map_err(rusqlite::Error::UserFunctionError)?;

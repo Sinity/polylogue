@@ -1,4 +1,5 @@
 //! Process, terminal and Git observations the hook command makes and states in its spool line.
+use polylogue_model::JsonExt as _;
 use serde_json::{Value, json};
 use std::path::Path;
 use std::time::Duration;
@@ -47,7 +48,7 @@ pub(super) fn snapshot(event: &str, payload: &Value, environment: &Environment) 
                 .and_then(Value::as_bool)
                 == Some(true));
     if starting {
-        if let Some(cwd) = payload.get("cwd").and_then(Value::as_str) {
+        if let Some(cwd) = payload.str("cwd") {
             match git_identity(Path::new(cwd), GIT_BUDGET) {
                 Ok((identity, repository, unavailable)) => {
                     result["git_identity"] = identity;

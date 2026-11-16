@@ -23,7 +23,7 @@ pub trait ResultExt<T> {
 }
 impl<T, E> ResultExt<T> for std::result::Result<T, E> {
     fn or_invalid(self, what: impl ToString) -> Result<T> {
-        self.map_err(|_| StoreError::invalid(what))
+        self.map_err(|_| crate::StoreError::invalid(what))
     }
 }
 pub trait OptionExt<T> {
@@ -31,7 +31,7 @@ pub trait OptionExt<T> {
 }
 impl<T> OptionExt<T> for Option<T> {
     fn or_invalid(self, what: impl ToString) -> Result<T> {
-        self.ok_or_else(|| StoreError::invalid(what))
+        self.ok_or_else(|| crate::StoreError::invalid(what))
     }
 }
 pub fn to_i64<T: TryInto<i64>>(value: T, what: impl ToString) -> Result<i64> {

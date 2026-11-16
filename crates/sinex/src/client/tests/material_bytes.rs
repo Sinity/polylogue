@@ -1,5 +1,6 @@
 use super::*;
 use futures_util::StreamExt;
+use polylogue_model::LockExt;
 use sinex_protocol::{FetchMaterial, FetchMaterialReply, Ingress, MaterialFrame};
 use std::os::unix::fs::MetadataExt;
 use std::sync::{Arc, Mutex};
@@ -52,15 +53,10 @@ fn delivery(remote: bool) {
             material: Box::new(metadata.clone()),
         };
         let prepared = spool
-            .lock()
-            .unwrap()
+            .locked()
             .prepare_material(frame.clone(), bytes.as_slice())
             .unwrap();
-        let source = spool
-            .lock()
-            .unwrap()
-            .encoded_body(&prepared.identity)
-            .unwrap()[0]
+        let source = spool.locked().encoded_body(&prepared.identity).unwrap()[0]
             .0
             .clone();
         let source_inode = std::fs::metadata(&source).unwrap().ino();

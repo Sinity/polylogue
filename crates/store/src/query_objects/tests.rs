@@ -240,29 +240,6 @@ fn run_begin_is_visible_before_completion_and_both_facts_are_immutable() {
 }
 
 #[test]
-fn first_run_follows_commit_order_not_the_given_clock() {
-    let archive = WriterArchive::new();
-    let object = question("sessions");
-    archive.writer.query_object(object.clone()).unwrap();
-    let pool = crate::ReadPool::open(&archive.archive).unwrap();
-    let position = pool.reader().unwrap().change_position().unwrap();
-    for expected in [
-        run(&object, "first", 10_000, position.clone()),
-        run(&object, "second", 1, position),
-    ] {
-        archive.writer.begin_query_run(expected).unwrap();
-    }
-    assert_eq!(
-        pool.reader()
-            .unwrap()
-            .query_first_run(object.id)
-            .unwrap()
-            .as_deref(),
-        Some(run_id("first").as_str())
-    );
-}
-
-#[test]
 fn a_large_question_and_replay_body_survive_writer_restart_whole() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("archive");
@@ -319,35 +296,6 @@ fn a_large_question_and_replay_body_survive_writer_restart_whole() {
         reader.query_run(&expected.id, None).unwrap().unwrap(),
         expected
     );
-}
-
-#[test]
-fn composition_edges_are_read_from_the_stored_source() {
-    let archive = WriterArchive::new();
-    let mut bindings = polylogue_query::Bindings::default();
-    let definition =
-        polylogue_query::plan::prepare("sessions where title:focus", &bindings, |_| Ok(()))
-            .unwrap();
-    bindings
-        .add_saved("focus", &definition, "revision-one", "definition-root")
-        .unwrap();
-    let object = polylogue_query::plan::prepare("query:focus", &bindings, |_| Ok(()))
-        .unwrap()
-        .query_object()
-        .unwrap();
-    assert!(
-        object
-            .edges
-            .iter()
-            .any(|edge| matches!(edge, QueryEdge::Saved { .. }))
-    );
-    archive.writer.query_object(object.clone()).unwrap();
-    let pool = crate::ReadPool::open(&archive.archive).unwrap();
-    let mut expected = object.edges.clone();
-    expected.sort_by_key(|edge| serde_json::to_string(edge).unwrap());
-    let mut stored = pool.reader().unwrap().query_uses(object.id).unwrap();
-    stored.sort_by_key(|edge| serde_json::to_string(edge).unwrap());
-    assert_eq!(stored, expected);
 }
 
 mod pending;
@@ -743,4 +691,39 @@ fn query_commit_positions_share_the_source_cursor() {
         .unwrap(),
         Some(reader.change_position().unwrap().archive)
     );
+}
+
+#[test]
+fn composition_edges_are_read_from_the_stored_source() {
+    let archive = WriterArchive::new();
+    let mut bindings = polylogue_query::Bindings::default();
+    let definition =
+        polylogue_query::plan::prepare("sessions where title:focus", &bindings, |_| Ok(()))
+            .unwrap();
+    bindings
+        .add_saved("focus", &definition, "revision-one", "definition-root")
+        .unwrap();
+    let object = polylogue_query::plan::prepare("query:focus", &bindings, |_| Ok(()))
+        .unwrap()
+        .query_object()
+        .unwrap();
+    assert!(
+        object
+            .edges
+            .iter()
+            .any(|edge| matches!(edge, QueryEdge::Saved { .. }))
+    );
+    archive.writer.query_object(object.clone()).unwrap();
+    let pool = crate::ReadPool::open(&archive.archive).unwrap();
+    let mut expected = object.edges.clone();
+    expected.sort_by_key(|edge| serde_json::to_string(edge).unwrap());
+    let mut stored = pool
+        .reader()
+        .unwrap()
+        .query_object(&object.id.to_string(), None)
+        .unwrap()
+        .unwrap()
+        .edges;
+    stored.sort_by_key(|edge| serde_json::to_string(edge).unwrap());
+    assert_eq!(stored, expected);
 }

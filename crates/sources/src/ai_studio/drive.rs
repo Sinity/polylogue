@@ -10,6 +10,7 @@
 //! Hidden pending bodies survive restart; their cleanup leaves the watched
 //! prompt in place. `files.json` holds the folder listing.
 
+use polylogue_model::JsonExt;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -138,13 +139,8 @@ impl Drive {
                 query.push(("pageToken", p.as_str()));
             }
             let v = json(get(&files_url, &query)?, &files_url)?;
-            files.extend(
-                v.get("files")
-                    .and_then(serde_json::Value::as_array)
-                    .cloned()
-                    .unwrap_or_default(),
-            );
-            match v.get("nextPageToken").and_then(serde_json::Value::as_str) {
+            files.extend(v.array("files").cloned().unwrap_or_default());
+            match v.str("nextPageToken") {
                 Some(p) => page = Some(p.to_owned()),
                 None => break,
             }
@@ -161,13 +157,13 @@ impl Drive {
             ..SyncReport::default()
         };
         for f in &files {
-            let Some(id) = f.get("id").and_then(serde_json::Value::as_str) else {
+            let Some(id) = f.str("id") else {
                 continue;
             };
             if pending.contains_key(id) {
                 continue;
             }
-            let head = f.get("headRevisionId").and_then(serde_json::Value::as_str);
+            let head = f.str("headRevisionId");
             if head.is_some() && state.revision(id) == head {
                 continue;
             }
@@ -188,7 +184,7 @@ impl Drive {
                     .map_err(|e| DriveError::Http(rev_url.clone(), e.to_string()))?
                     .unwrap_or_default();
                 revisions.extend(batch);
-                match v.get("nextPageToken").and_then(serde_json::Value::as_str) {
+                match v.str("nextPageToken") {
                     Some(token) => page = Some(token.to_owned()),
                     None => break,
                 }
@@ -231,8 +227,7 @@ impl Drive {
             .body_mut()
             .read_json()
             .map_err(|e| err(format!("refresh reply: {e}")))?;
-        v.get("access_token")
-            .and_then(serde_json::Value::as_str)
+        v.str("access_token")
             .map(str::to_owned)
             .ok_or_else(|| err("refresh reply has no access_token".into()))
     }
@@ -294,15 +289,19 @@ impl Drive {
                 modified: Some(modified),
             }) => format!(
                 "{}-{}-{}.json",
-                encode(id),
-                encode(revision),
-                encode(modified)
+                polylogue_model::hex(id.as_bytes()),
+                polylogue_model::hex(revision.as_bytes()),
+                polylogue_model::hex(modified.as_bytes())
             ),
             Some(Accepted {
                 revision,
                 modified: None,
-            }) => format!("{}-{}.json", encode(id), encode(revision)),
-            None => format!("{}.json", encode(id)),
+            }) => format!(
+                "{}-{}.json",
+                polylogue_model::hex(id.as_bytes()),
+                polylogue_model::hex(revision.as_bytes())
+            ),
+            None => format!("{}.json", polylogue_model::hex(id.as_bytes())),
         };
         let pending = PendingRevision {
             file: id.to_owned(),
@@ -522,14 +521,6 @@ struct PendingRevision {
     file: String,
     revision: Option<Accepted>,
     body: PathBuf,
-}
-
-fn encode(value: &str) -> String {
-    value
-        .as_bytes()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
 }
 
 fn decode(value: &str) -> Option<String> {

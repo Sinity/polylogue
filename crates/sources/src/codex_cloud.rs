@@ -1,10 +1,11 @@
 //! Codex Cloud tasks from ChatGPT's codex.json. Task and turn IDs are the
 //! provider's task_e_ namespace, separate from local Codex rollouts.
 use crate::RecordOutcome;
-use crate::document::{Sink, message_id, session_id, str_of};
+use crate::document::{Sink, message_id, session_id};
 use crate::export::{ExportParser, ExportState};
 use crate::fields::{ExpectedType as T, Fields, KnownKinds, Rule};
 use crate::parse::{MessageRow, Parse};
+use polylogue_model::JsonExt;
 use polylogue_model::{
     Block, Event, Json, Message, PromptKind, Role, Session, SessionKind, TitleSource, Usage,
 };
@@ -116,17 +117,20 @@ static FIELDS: Fields = Fields::new(
 
 pub fn task_shape(task: &Json) -> bool {
     task.get("mapping").is_none()
-        && str_of(task, "id").is_some_and(|id| id.starts_with("task_e_"))
         && task
-            .get("turns")
-            .and_then(Json::as_array)
-            .is_some_and(|turns| {
-                !turns.is_empty()
-                    && turns.iter().all(|turn| {
-                        str_of(turn, "id").is_some()
-                            && matches!(str_of(turn, "role"), Some("user" | "assistant"))
-                    })
-            })
+            .str("id")
+            .filter(|s| !s.is_empty())
+            .is_some_and(|id| id.starts_with("task_e_"))
+        && task.array("turns").is_some_and(|turns| {
+            !turns.is_empty()
+                && turns.iter().all(|turn| {
+                    turn.str("id").filter(|s| !s.is_empty()).is_some()
+                        && matches!(
+                            turn.str("role").filter(|s| !s.is_empty()),
+                            Some("user" | "assistant")
+                        )
+                })
+        })
 }
 
 impl ExportParser for Cloud {
@@ -154,14 +158,17 @@ impl ExportParser for Cloud {
             return Ok(());
         }
         sink.records.fields("task", &task, &FIELDS);
-        let native = str_of(&task, "id").expect("validated task ID");
+        let native = task
+            .str("id")
+            .filter(|s| !s.is_empty())
+            .expect("validated task ID");
         let Some(sid) = session_id(ORIGIN, native) else {
             sink.records
                 .record("task", &RecordOutcome::unreadable("unusable task ID"));
             return Ok(());
         };
         let mut session = Session::new(sid.clone(), SessionKind::Main);
-        if let Some(title) = str_of(&task, "title") {
+        if let Some(title) = task.str("title").filter(|s| !s.is_empty()) {
             session.offer_title(title, TitleSource::Generated);
         }
         for turn in task["turns"].as_array().expect("validated turns") {
@@ -170,9 +177,17 @@ impl ExportParser for Cloud {
             } else {
                 Role::Assistant
             };
-            let id = message_id(ORIGIN, str_of(turn, "id").expect("validated turn ID"))
-                .ok_or("unusable turn ID")?;
-            let parent = str_of(turn, "previous_turn_id").and_then(|id| message_id(ORIGIN, id));
+            let id = message_id(
+                ORIGIN,
+                turn.str("id")
+                    .filter(|s| !s.is_empty())
+                    .expect("validated turn ID"),
+            )
+            .ok_or("unusable turn ID")?;
+            let parent = turn
+                .str("previous_turn_id")
+                .filter(|s| !s.is_empty())
+                .and_then(|id| message_id(ORIGIN, id));
             let mut blocks = Vec::new();
             let items = turn
                 .get(if role == Role::User {
@@ -182,15 +197,10 @@ impl ExportParser for Cloud {
                 })
                 .and_then(Json::as_array);
             for item in items.into_iter().flatten() {
-                for part in item
-                    .get("content")
-                    .and_then(Json::as_array)
-                    .into_iter()
-                    .flatten()
-                {
-                    match str_of(part, "content_type") {
+                for part in item.array("content").into_iter().flatten() {
+                    match part.str("content_type").filter(|s| !s.is_empty()) {
                         Some("text") => {
-                            if let Some(text) = part.get("text").and_then(Json::as_str) {
+                            if let Some(text) = part.str("text") {
                                 blocks.push(Block::Text { text: text.into() });
                             }
                         }
@@ -205,10 +215,14 @@ impl ExportParser for Cloud {
                     }
                 }
             }
-            if let Some(instructions) = str_of(turn, "custom_instructions") {
+            if let Some(instructions) = turn.str("custom_instructions").filter(|s| !s.is_empty()) {
                 session.instructions = Some(instructions.into());
             }
-            if let Some(branch) = str_of(turn, "branch").or_else(|| str_of(turn, "branch_name")) {
+            if let Some(branch) = turn
+                .str("branch")
+                .filter(|s| !s.is_empty())
+                .or_else(|| turn.str("branch_name").filter(|s| !s.is_empty()))
+            {
                 session.git_branch = Some(branch.into());
             }
             let mut attrs = turn.as_object().cloned().unwrap_or_default();

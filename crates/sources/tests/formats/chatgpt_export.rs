@@ -2,6 +2,7 @@
 //! `test_parsers_chatgpt.py`, restated against this parser's model.
 
 use crate::support::{blocks, events, message, messages, parse};
+use polylogue_model::JsonExt;
 use serde_json::{Value, json};
 
 const PATH: &str = "Downloads/chatgpt-export/conversations.json";
@@ -492,7 +493,7 @@ fn optional_duration_keeps_seconds_units_zero_and_unknown_distinct() {
             json!({}),
         ));
         let answer = message(&parsed, ":answer");
-        assert_eq!(answer.get("duration_ms").and_then(Value::as_u64), expected);
+        assert_eq!(answer.u64("duration_ms"), expected);
         assert_eq!(answer["blocks"][0]["text"], "Neutral authored answer");
         assert_eq!(messages(&parsed).len(), 1);
     }

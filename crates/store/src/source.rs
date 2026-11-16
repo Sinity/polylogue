@@ -1,4 +1,6 @@
 //! Source rows have one schema, in the standalone archive or the primary cache.
+use crate::ConnExt as _;
+use crate::{OptionExt as _, ResultExt as _};
 use crate::{Result, StoreError};
 use rusqlite::{Connection, OptionalExtension};
 use std::sync::OnceLock;
@@ -40,10 +42,9 @@ pub(crate) fn from_archive(archive: &str) -> Result<SourceSchema> {
         .query_map([],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?.collect::<rusqlite::Result<_>>()?;
     let mut views = String::new();
     for name in &tables {
-        let declaration: String = conn.query_row(
+        let declaration: String = conn.scalar(
             "SELECT sql FROM sqlite_schema WHERE name=?1",
             [format!("source_{name}")],
-            |row| row.get(0),
         )?;
         let rowid = if declaration.to_ascii_uppercase().contains("WITHOUT ROWID") {
             ""
@@ -88,7 +89,7 @@ pub(crate) enum Source {
 }
 impl Source {
     pub(crate) fn of(conn: &Connection) -> Result<Self> {
-        Ok(if conn.query_row("SELECT EXISTS(SELECT 1 FROM main.sqlite_schema WHERE type='table' AND name='source_input')",[],|row|row.get::<_,bool>(0))? { Self::Cache } else { Self::Standalone })
+        Ok(if conn.scalar::<bool>("SELECT EXISTS(SELECT 1 FROM main.sqlite_schema WHERE type='table' AND name='source_input')",[])? { Self::Cache } else { Self::Standalone })
     }
     /// The commit position by which every stored extent covering the requested
     /// prefix was committed.
@@ -115,24 +116,24 @@ impl Source {
             }
             covered = offset
                 .checked_add(length)
-                .ok_or_else(|| StoreError::Invalid("source extent endpoint overflow".into()))?;
+                .or_invalid("source extent endpoint overflow")?;
             committed = committed.max(position);
             if covered >= through {
                 return Ok(Some(committed as u64));
             }
         }
         if through == 0 {
-            let position: Option<i64> = conn.query_row(
+            let position: Option<i64> = conn.scalar(
                 &source.sql(
                     "SELECT min(commit_seq) FROM @source.revision WHERE input=?1 AND chain=?2",
                 ),
                 rusqlite::params![input, chain],
-                |row| row.get(0),
             )?;
             return position
                 .map(|position| {
-                    u64::try_from(position)
-                        .map_err(|_| StoreError::Invalid("negative source commit position".into()))
+                    u64::try_from(position).map_err(|_| {
+                        crate::StoreError::stored(0, "negative source commit position")
+                    })
                 })
                 .transpose();
         }

@@ -257,7 +257,7 @@ fn a_value_outside_a_closed_set_is_refused() {
             .map(|v| panic!("{bad} was answered ({}) instead of refused", v["outcome"]))
             .unwrap_err();
         assert_eq!(
-            f.kind(),
+            f.kind().as_str(),
             query_language::ErrorKind::BadValue.code(),
             "{bad}"
         );
@@ -301,9 +301,9 @@ fn a_value_outside_a_closed_set_is_refused() {
             let text = format!("{unit} where {}:{value}", field.name);
             if let Err(f) = run(&r, &text) {
                 assert!(
-                    f.kind() == "not_built",
+                    f.kind() == polylogue_model::Code::NotBuilt,
                     "{text} refused: {} {}",
-                    f.kind(),
+                    f.kind().as_str(),
                     f
                 );
             }

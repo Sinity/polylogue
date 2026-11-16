@@ -2,6 +2,7 @@
 //! when the chain was loaded.
 use super::{BlobHash, Result};
 use crate::StoreError;
+use crate::{OptionExt as _, ResultExt as _};
 use rusqlite::Connection;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -89,11 +90,8 @@ impl StoredChain {
     /// Read a range-sized result; missing or corrupt selected bytes are errors.
     pub fn read_range(&self, store: &crate::blobs::Blobs, start: u64, end: u64) -> Result<Vec<u8>> {
         let end = end.min(self.length);
-        let length = end
-            .checked_sub(start)
-            .ok_or_else(|| StoreError::Invalid("invalid stored range".into()))?;
-        let length = usize::try_from(length)
-            .map_err(|_| StoreError::Invalid("stored range exceeds address space".into()))?;
+        let length = end.checked_sub(start).or_invalid("invalid stored range")?;
+        let length = usize::try_from(length).or_invalid("stored range exceeds address space")?;
         let mut out = Vec::new();
         out.try_reserve_exact(length)
             .map_err(|e| StoreError::Invalid(format!("allocate stored range: {e}")))?;

@@ -300,7 +300,7 @@ pub fn run(
 }
 
 fn bad_request(message: String) -> Failure {
-    Failure::new("bad_request", message)
+    Failure::bad_request(message)
 }
 
 pub fn find_checked(what: &str) -> Result<(&'static Measure, &str), Failure> {

@@ -7,6 +7,7 @@
 //! sends back.
 use super::{Daemon, Failure, accepting};
 use crate::protocol::follow::{Line, Marks, step};
+use polylogue_model::JsonExt as _;
 use polylogue_model::SessionId;
 use std::sync::Arc;
 use std::time::Duration;
@@ -88,8 +89,7 @@ fn run(
                 };
                 let (lines, mark) = step(&session, mark, &snapshot, now);
                 for line in &lines {
-                    crate::protocol::stream::event(output, "record", line)
-                        .map_err(|e| Failure::new("io", e))?;
+                    crate::protocol::stream::event(output, "record", line).map_err(Failure::io)?;
                 }
                 marks.sessions.insert(session, mark);
             }
@@ -101,7 +101,7 @@ fn run(
             .map(|left| left.saturating_sub(MARKS_MARGIN));
         if left.is_some_and(|left| left.is_zero()) {
             return crate::protocol::stream::event(output, "record", &Line::Marks { marks })
-                .map_err(|e| Failure::new("io", e));
+                .map_err(Failure::io);
         }
         // Waiting for the next commit is not work: the executor place goes
         // to other requests meanwhile.
@@ -150,19 +150,18 @@ pub(crate) fn selected(
     };
     let mut options = crate::daemon::query::options(reader, &ask, 0)?;
     options.clock = query_language::time::Clock::new(
-        jiff::Timestamp::from_millisecond(now).map_err(|e| Failure::new("internal", e))?,
+        jiff::Timestamp::from_millisecond(now).map_err(Failure::internal)?,
         options.clock.day.clone(),
     );
     let program = polylogue_store::query::compile(query, &options)?;
     if program.unit != polylogue_query::ast::Unit::Sessions {
-        return Err(Failure::new(
-            "bad_request",
+        return Err(Failure::bad_request(
             "follow takes a session reference or a sessions query",
         ));
     }
     let mut out = Vec::new();
     reader.visit_query_values(&program, None, |row| -> Result<_, Failure> {
-        if let Some(id) = row.get("id").and_then(serde_json::Value::as_str) {
+        if let Some(id) = row.str("id") {
             out.push(id.to_owned());
         }
         Ok(std::ops::ControlFlow::Continue(()))

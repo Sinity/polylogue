@@ -4,11 +4,12 @@
 //! `session_index.jsonl` names threads (`{id, thread_name, updated_at}`);
 //! a later line renames.
 
-use super::{items::str_field, session_id};
+use super::session_id;
 use crate::lines::Record;
 use crate::parse::{Output, Parser};
 use crate::time;
 use crate::{RecordOutcome, Records};
+use polylogue_model::JsonExt;
 use polylogue_model::{Event, Json, Session, SessionKind, TitleSource};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -51,10 +52,14 @@ impl Parser for History {
         out: &mut Output,
         _: &mut Records,
     ) -> RecordOutcome {
-        let Some(session) = str_field(v, "session_id").and_then(session_id) else {
+        let Some(session) = v
+            .str("session_id")
+            .filter(|s| !s.is_empty())
+            .and_then(session_id)
+        else {
             return RecordOutcome::unreadable("prompt without a session ID");
         };
-        if v.get("text").and_then(Json::as_str).is_none() {
+        if v.str("text").is_none() {
             return RecordOutcome::skipped("prompt without text");
         }
         out.events.push({
@@ -101,7 +106,10 @@ impl Parser for SessionIndex {
         _: &mut Output,
         records: &mut Records,
     ) -> RecordOutcome {
-        let (Some(id), Some(name)) = (str_field(v, "id"), str_field(v, "thread_name")) else {
+        let (Some(id), Some(name)) = (
+            v.str("id").filter(|s| !s.is_empty()),
+            v.str("thread_name").filter(|s| !s.is_empty()),
+        ) else {
             return RecordOutcome::skipped("index line without a thread ID or name");
         };
         if session_id(id).is_none() {

@@ -19,7 +19,9 @@
 //! build's, serving readers keep reading it until the rename; otherwise reads
 //! answer [`StoreError::IndexBuilding`].
 
+use crate::ConnExt as _;
 use crate::{Result, StoreError, archive::Archive, schema};
+use polylogue_model::LockExt;
 use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
@@ -106,10 +108,7 @@ pub(crate) fn state(root: &Path) -> Arc<State> {
     static ARCHIVES: OnceLock<Mutex<std::collections::HashMap<PathBuf, Weak<State>>>> =
         OnceLock::new();
     let key = crate::read::scope::root_key(root);
-    let mut archives = ARCHIVES
-        .get_or_init(Default::default)
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut archives = ARCHIVES.get_or_init(Default::default).locked();
     archives.retain(|_, state| state.strong_count() > 0);
     if let Some(state) = archives.get(&key).and_then(Weak::upgrade) {
         return state;
@@ -125,9 +124,7 @@ pub(crate) fn state(root: &Path) -> Arc<State> {
 
 impl State {
     fn inner(&self) -> std::sync::MutexGuard<'_, Inner> {
-        self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.inner.locked()
     }
 
     pub(crate) fn building(&self) -> bool {
@@ -158,10 +155,7 @@ impl State {
     /// `release` runs before the build file is renamed; dropping the
     /// returned handle unregisters it.
     pub(crate) fn on_release(&self, release: Arc<Release>) {
-        let mut releases = self
-            .releases
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut releases = self.releases.locked();
         releases.retain(|release| release.strong_count() > 0);
         releases.push(Arc::downgrade(&release));
     }
@@ -169,8 +163,7 @@ impl State {
     fn release(&self) {
         let releases: Vec<_> = self
             .releases
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .locked()
             .iter()
             .filter_map(Weak::upgrade)
             .collect();
@@ -347,7 +340,7 @@ pub(crate) fn finish(archive: &Archive) -> Result<()> {
     File::open(&paths.build)?.sync_all()?;
     {
         let conn = open_setup(&paths.build)?;
-        let mode: String = conn.query_row("PRAGMA main.journal_mode = wal", [], |r| r.get(0))?;
+        let mode: String = conn.scalar("PRAGMA main.journal_mode = wal", [])?;
         if mode != "wal" {
             return Err(StoreError::Invalid(format!(
                 "the built index stayed in journal mode {mode}"

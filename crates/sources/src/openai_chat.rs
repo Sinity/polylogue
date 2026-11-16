@@ -6,11 +6,12 @@
 //! Messages carry no IDs, so each keeps its identity by its place. The
 //! session is the object's `id` when it has one, else the file name.
 
+use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 1;
 
 use crate::chatgpt::first_byte;
-use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of};
+use crate::document::{Sink, first_key, message_id, session_id};
 use crate::export::{ExportParser, ExportState, ItemSink, ScanError, ScanStats};
 use crate::fields::ExpectedType as T;
 use crate::fields::{Fields, Rule};
@@ -150,7 +151,11 @@ impl ExportParser for OpenAiChat {
         let native = sid.native().as_str();
         let i = self.state.position;
         self.state.position += 1;
-        let kind = str_of(m, "role").unwrap_or("?").to_owned();
+        let kind = m
+            .str("role")
+            .filter(|s| !s.is_empty())
+            .unwrap_or("?")
+            .to_owned();
         sink.records.fields(&kind, m, &MESSAGE_FIELDS);
         let Some(id) = message_id(ORIGIN, &format!("{native}#{i}")) else {
             sink.records
@@ -223,7 +228,7 @@ impl OpenAiChat {
     fn start_session(&mut self, doc: &Json, sink: &mut Sink<'_>) {
         let header = match doc {
             Json::Array(_) => None,
-            Json::Object(_) => match doc.get("messages").and_then(Json::as_array) {
+            Json::Object(_) => match doc.array("messages") {
                 Some(_) => Some(doc),
                 None => {
                     return sink
@@ -241,7 +246,7 @@ impl OpenAiChat {
             sink.records.fields("chat", h, &DOCUMENT_FIELDS);
         }
         let native = header
-            .and_then(|h| str_of(h, "id"))
+            .and_then(|h| h.str("id").filter(|s| !s.is_empty()))
             .unwrap_or(&self.file)
             .to_owned();
         let Some(sid) = session_id(ORIGIN, &native) else {
@@ -250,20 +255,21 @@ impl OpenAiChat {
                 .record("chat", &RecordOutcome::unreadable("unusable session name"));
         };
         let mut session = Session::new(sid.clone(), SessionKind::Main);
-        if let Some(title) = header.and_then(|h| str_of(h, "title")) {
+        if let Some(title) = header.and_then(|h| h.str("title").filter(|s| !s.is_empty())) {
             session.offer_title(title, TitleSource::Generated);
         }
         sink.out.sessions.push(session);
         sink.records.record("chat", &RecordOutcome::Used);
         self.state.session = Some(sid);
-        self.state.model = header.and_then(|h| string_of(h, "model"));
+        self.state.model =
+            header.and_then(|h| h.str("model").filter(|s| !s.is_empty()).map(str::to_owned));
     }
 }
 
 fn blocks(m: &Json, role: Role) -> Vec<Block> {
     let mut blocks = Vec::new();
     for key in ["reasoning_content", "reasoning"] {
-        if let Some(text) = str_of(m, key) {
+        if let Some(text) = m.str(key).filter(|s| !s.is_empty()) {
             blocks.push(Block::Thinking {
                 text: Some(text.to_owned()),
                 signature: None,
@@ -283,9 +289,9 @@ fn blocks(m: &Json, role: Role) -> Vec<Block> {
         }
         Some(Json::Array(parts)) => {
             for p in parts {
-                match str_of(p, "type") {
+                match p.str("type").filter(|s| !s.is_empty()) {
                     Some("text") | Some("input_text") | Some("output_text") => {
-                        if let Some(text) = str_of(p, "text") {
+                        if let Some(text) = p.str("text").filter(|s| !s.is_empty()) {
                             content.push(Block::Text {
                                 text: text.to_owned(),
                             });
@@ -310,7 +316,7 @@ fn blocks(m: &Json, role: Role) -> Vec<Block> {
         }
         _ => {}
     }
-    if let Some(call_id) = str_of(m, "tool_call_id") {
+    if let Some(call_id) = m.str("tool_call_id").filter(|s| !s.is_empty()) {
         blocks.push(Block::ToolResult {
             reported_duration_ms: None,
             call_id: Some(call_id.to_owned()),
@@ -328,33 +334,31 @@ fn blocks(m: &Json, role: Role) -> Vec<Block> {
     } else {
         blocks.extend(content);
     }
-    if let Some(refusal) = str_of(m, "refusal") {
+    if let Some(refusal) = m.str("refusal").filter(|s| !s.is_empty()) {
         blocks.push(Block::Other {
             type_name: "refusal".into(),
             data: Json::String(refusal.to_owned()),
         });
     }
-    let calls = m
-        .get("tool_calls")
-        .and_then(Json::as_array)
-        .cloned()
-        .unwrap_or_default();
+    let calls = m.array("tool_calls").cloned().unwrap_or_default();
     let older = m
         .get("function_call")
         .map(|f| serde_json::json!({"function": f}));
     for call in calls.iter().chain(older.iter()) {
         let function = call.get("function").cloned().unwrap_or(Json::Null);
         let input = function
-            .get("arguments")
-            .and_then(Json::as_str)
+            .str("arguments")
             .and_then(|a| serde_json::from_str(a).ok())
             .or_else(|| function.get("arguments").cloned())
             .unwrap_or(Json::Null);
         blocks.push(Block::ToolCall {
             written_text: None,
             run_by_script: false,
-            call_id: string_of(call, "id"),
-            tool: string_of(&function, "name"),
+            call_id: call.str("id").filter(|s| !s.is_empty()).map(str::to_owned),
+            tool: function
+                .str("name")
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned),
             action: ToolAction::Other,
             input,
             command: None,

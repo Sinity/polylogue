@@ -3,6 +3,7 @@
 
 use crate::parse::ExtractedBlob;
 use base64::Engine;
+use polylogue_model::JsonExt;
 use polylogue_model::{
     Attachment, AttachmentDirection, BlobHash, Block, ErrorReason, Json, PromptKind, ToolAction,
     ToolOutcome, UnknownReason,
@@ -24,7 +25,7 @@ pub fn blocks(record: &Json, content: &Json, blobs: &mut Vec<ExtractedBlob>) -> 
 }
 
 fn ty(item: &Json) -> &str {
-    item.get("type").and_then(Json::as_str).unwrap_or("")
+    item.str("type").unwrap_or("")
 }
 
 fn is_result(kind: &str) -> bool {
@@ -40,22 +41,18 @@ fn is_result(kind: &str) -> bool {
     )
 }
 
-fn string(v: &Json, key: &str) -> Option<String> {
-    v.get(key).and_then(Json::as_str).map(str::to_owned)
-}
-
 /// File content carried by a declared file-changing tool, without interpreting other arguments.
 fn written_text(tool: &str, input: &Json) -> Option<String> {
     match tool {
-        "Write" => string(input, "content"),
-        "Edit" => string(input, "new_string"),
-        "NotebookEdit" => string(input, "new_source"),
+        "Write" => input.str("content").map(str::to_owned),
+        "Edit" => input.str("new_string").map(str::to_owned),
+        "NotebookEdit" => input.str("new_source").map(str::to_owned),
         "MultiEdit" => {
             let bodies: Vec<_> = input
                 .get("edits")?
                 .as_array()?
                 .iter()
-                .filter_map(|edit| edit.get("new_string").and_then(Json::as_str))
+                .filter_map(|edit| edit.str("new_string"))
                 .collect();
             (!bodies.is_empty()).then(|| bodies.join("\n\n"))
         }
@@ -83,31 +80,31 @@ pub fn action(tool: &str) -> ToolAction {
 fn block(record: &Json, item: &Json, sole_result: bool, blobs: &mut Vec<ExtractedBlob>) -> Block {
     match ty(item) {
         "text" => Block::Text {
-            text: string(item, "text").unwrap_or_default(),
+            text: item.str("text").map(str::to_owned).unwrap_or_default(),
         },
         "thinking" => Block::Thinking {
-            text: string(item, "thinking"),
-            signature: string(item, "signature"),
+            text: item.str("thinking").map(str::to_owned),
+            signature: item.str("signature").map(str::to_owned),
             redacted: false,
         },
         "redacted_thinking" => Block::Thinking {
             text: None,
-            signature: string(item, "data"),
+            signature: item.str("data").map(str::to_owned),
             redacted: true,
         },
         "tool_use" | "server_tool_use" => {
             let input = item.get("input").cloned().unwrap_or(Json::Null);
-            let tool = string(item, "name");
+            let tool = item.str("name").map(str::to_owned);
             Block::ToolCall {
                 written_text: written_text(tool.as_deref().unwrap_or(""), &input),
                 run_by_script: false,
-                call_id: string(item, "id"),
+                call_id: item.str("id").map(str::to_owned),
                 action: action(tool.as_deref().unwrap_or("")),
                 tool,
-                command: string(&input, "command"),
+                command: input.str("command").map(str::to_owned),
                 path: ["file_path", "notebook_path", "path"]
                     .iter()
-                    .find_map(|k| string(&input, k)),
+                    .find_map(|k| input.str(k).map(str::to_owned)),
                 input,
             }
         }
@@ -129,13 +126,13 @@ fn image(
 ) -> Attachment {
     let source = item.get("source").unwrap_or(&Json::Null);
     let mut attachment = Attachment {
-        media_type: string(source, "media_type"),
-        url: string(source, "url"),
+        media_type: source.str("media_type").map(str::to_owned),
+        url: source.str("url").map(str::to_owned),
         direction,
         ..Attachment::default()
     };
-    if string(source, "type").as_deref() == Some("base64")
-        && let Some(data) = source.get("data").and_then(Json::as_str)
+    if source.str("type").map(str::to_owned).as_deref() == Some("base64")
+        && let Some(data) = source.str("data")
         && let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data)
     {
         let hash = BlobHash::of(&bytes);
@@ -167,16 +164,13 @@ fn tool_result(
             {
                 attachments.push(image(part, AttachmentDirection::Output, blobs));
             }
-            let texts: Vec<&str> = parts
-                .iter()
-                .filter_map(|p| p.get("text").and_then(Json::as_str))
-                .collect();
+            let texts: Vec<&str> = parts.iter().filter_map(|p| p.str("text")).collect();
             Some(texts.join("\n"))
         }
         Some(Json::Object(content)) => {
             let streams: Vec<&str> = ["stdout", "stderr"]
                 .iter()
-                .filter_map(|key| content.get(*key).and_then(Json::as_str))
+                .filter_map(|key| content.str(key))
                 .filter(|text| !text.is_empty())
                 .collect();
             (!streams.is_empty()).then(|| streams.join("\n"))
@@ -187,7 +181,7 @@ fn tool_result(
         reported_duration_ms: meta
             .and_then(|m| m.get("durationMs").or_else(|| m.get("duration_ms")))
             .and_then(Json::as_u64),
-        call_id: string(item, "tool_use_id"),
+        call_id: item.str("tool_use_id").map(str::to_owned),
         outcome: outcome(record, item, meta, output.as_deref()),
         output,
         data: match item.get("content") {
@@ -204,12 +198,12 @@ fn tool_result(
 /// unkeyed result belongs to a block only when the record has one result.
 fn result_metadata<'a>(record: &'a Json, item: &Json, sole: bool) -> Option<&'a Json> {
     let result = record.get("toolUseResult")?;
-    let id = item.get("tool_use_id").and_then(Json::as_str);
+    let id = item.str("tool_use_id");
     let matches = |value: &&Json| {
         id.is_some_and(|id| {
             ["tool_use_id", "toolUseId", "call_id", "id"]
                 .iter()
-                .any(|key| value.get(key).and_then(Json::as_str) == Some(id))
+                .any(|key| value.str(key) == Some(id))
         })
     };
     if let Some(items) = result.as_array() {
@@ -220,11 +214,7 @@ fn result_metadata<'a>(record: &'a Json, item: &Json, sole: bool) -> Option<&'a 
             return Some(value);
         }
         for key in ["results", "toolResults"] {
-            if let Some(value) = result
-                .get(key)
-                .and_then(Json::as_array)
-                .and_then(|list| list.iter().find(matches))
-            {
+            if let Some(value) = result.array(key).and_then(|list| list.iter().find(matches)) {
                 return Some(value);
             }
         }
@@ -253,7 +243,7 @@ pub fn outcome(
             reason: Some(ErrorReason::Denied(kind.to_owned())),
         };
     }
-    let meta_bool = |k| meta.and_then(|m| m.get(k)).and_then(Json::as_bool);
+    let meta_bool = |k| meta.and_then(|m| m.bool(k));
     if meta_bool("interrupted") == Some(true) {
         return ToolOutcome::Error {
             reason: Some(ErrorReason::Interrupted),
@@ -336,10 +326,7 @@ pub fn prompt_kind(record: &Json, content: &Json) -> PromptKind {
             if !items.is_empty() && items.iter().all(|i| ty(i) == "tool_result") {
                 return PromptKind::Harness;
             }
-            items
-                .iter()
-                .find_map(|i| i.get("text").and_then(Json::as_str))
-                .unwrap_or("")
+            items.iter().find_map(|i| i.str("text")).unwrap_or("")
         }
         _ => "",
     };
@@ -352,14 +339,11 @@ pub fn prompt_kind(record: &Json, content: &Json) -> PromptKind {
     if t.starts_with("Base directory for this skill:") || t.starts_with("<system-reminder>") {
         return PromptKind::InjectedContext;
     }
-    if record.get("isMeta").and_then(Json::as_bool) == Some(true) {
+    if record.bool("isMeta") == Some(true) {
         return PromptKind::Harness;
     }
     // Newer versions state who wrote the prompt.
-    if let Some(kind) = record
-        .get("origin")
-        .and_then(|o| o.get("kind"))
-        .and_then(Json::as_str)
+    if let Some(kind) = record.get("origin").and_then(|o| o.str("kind"))
         && kind != "human"
     {
         return if kind == "peer" {

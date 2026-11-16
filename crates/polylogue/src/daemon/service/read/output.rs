@@ -165,14 +165,12 @@ impl<'a> Stream<'a> {
 
     fn emit(&mut self, name: &str, payload: &impl serde::Serialize) -> Result<(), Failure> {
         (self.check)()?;
-        crate::protocol::stream::event(self.output, name, payload)
-            .map_err(|e| Failure::new("io", e))
+        crate::protocol::stream::event(self.output, name, payload).map_err(Failure::io)
     }
 
     pub(super) fn record(&mut self, record: &ReadRecord) -> Result<(), Failure> {
         if matches!(record.record(), Some(Record::Manifest(_))) {
-            return Err(Failure::new(
-                "bad_request",
+            return Err(Failure::bad_request(
                 "a read cannot emit an embedded manifest",
             ));
         }
@@ -191,8 +189,7 @@ impl<'a> Stream<'a> {
                 Record::TextFragment(_) => self.counts.text_fragments += 1,
                 Record::Blob(_) => self.counts.blobs += 1,
                 Record::Manifest(_) => {
-                    return Err(Failure::new(
-                        "bad_request",
+                    return Err(Failure::bad_request(
                         "a read cannot emit an embedded manifest",
                     ));
                 }
@@ -224,7 +221,7 @@ impl<'a> Stream<'a> {
 pub(super) fn read_error(error: ReadError) -> Failure {
     let (code, hint) = match &error {
         ReadError::UnsupportedTarget { accepted_views, .. } => (
-            "bad_request",
+            polylogue_model::Code::BadRequest,
             Some(format!(
                 "views that read it: {}",
                 accepted_views
@@ -234,11 +231,12 @@ pub(super) fn read_error(error: ReadError) -> Failure {
                     .join(", ")
             )),
         ),
-        ReadError::RequiredExpansion { option, .. } => {
-            ("bad_request", Some(format!("set {option} to full")))
-        }
-        ReadError::MissingPreparedData { .. } => ("not_yet_available", None),
-        _ => ("bad_request", None),
+        ReadError::RequiredExpansion { option, .. } => (
+            polylogue_model::Code::BadRequest,
+            Some(format!("set {option} to full")),
+        ),
+        ReadError::MissingPreparedData { .. } => (polylogue_model::Code::NotYetAvailable, None),
+        _ => (polylogue_model::Code::BadRequest, None),
     };
     let mut failure = Failure::new(code, &error);
     failure.error.hint = hint;

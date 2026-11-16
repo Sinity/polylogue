@@ -1,5 +1,6 @@
 //! One stored export cursor checks each callback before its parsed rows apply.
 use super::*;
+use crate::ConnExt as _;
 
 #[derive(Clone)]
 pub(crate) struct ExportPrefix {
@@ -24,10 +25,9 @@ pub(crate) fn load_prefix(
     chain: i64,
     version: &str,
 ) -> Result<Option<ExportPrefix>> {
-    let previous: Option<String> = conn.query_row(
+    let previous: Option<String> = conn.scalar_optional(
         "SELECT w.state FROM wire_reading w JOIN input_ref i ON i.pk=w.input_pk WHERE i.id=?1 AND w.chain=?2 AND w.reading_version=?3",
-        params![input,chain,version], |row| row.get(0),
-    ).optional()?;
+        params![input,chain,version])?;
     previous
         .map(|json| {
             let old: Reading = serde_json::from_str(&json)?;
@@ -122,9 +122,7 @@ fn accept(previous: Option<&ExportPrefix>, length: u64, step: &ParseStep) -> Res
                 "historical byte control cannot authenticate an export callback prefix".into(),
             )
         })?;
-        cursor
-            .validate()
-            .map_err(|error| StoreError::Invalid(error.to_string()))?;
+        cursor.validate().map_err(crate::StoreError::invalid)?;
         if refused {
             return invalid("an unreadable scan cannot replace a stored export callback prefix");
         }
@@ -150,14 +148,13 @@ fn accept(previous: Option<&ExportPrefix>, length: u64, step: &ParseStep) -> Res
         }
         cursor
             .advance(delivery)
-            .map_err(|error| StoreError::Invalid(error.to_string()))?;
+            .map_err(crate::StoreError::invalid)?;
         if step.reset {
             return invalid("an export continuation cannot reset committed callback effects");
         }
         old.first
     } else {
-        ExportCursor::from_first(delivery)
-            .map_err(|error| StoreError::Invalid(error.to_string()))?;
+        ExportCursor::from_first(delivery).map_err(crate::StoreError::invalid)?;
         if !step.reset {
             return invalid("the first export callback must begin its reading");
         }

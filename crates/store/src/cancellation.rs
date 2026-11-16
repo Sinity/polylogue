@@ -11,6 +11,7 @@
 //! store opens there and the byte reads that call [`check_current`] observe it
 //! without being handed it.
 use crate::{Result, StoreError};
+use polylogue_model::LockExt;
 use rusqlite::Connection;
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -62,8 +63,7 @@ impl Drop for CancellationWake {
             cancellation
                 .0
                 .wakers
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .locked()
                 .retain(|(registered, _)| registered != id);
         }
     }
@@ -91,8 +91,7 @@ impl Cancellation {
         let wakers: Vec<_> = self
             .0
             .wakers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .locked()
             .iter()
             .map(|(_, wake)| Arc::clone(wake))
             .collect();
@@ -139,12 +138,7 @@ impl Cancellation {
         let mut registered = Vec::new();
         let mut current = Some(self.clone());
         while let Some(cancellation) = current {
-            cancellation
-                .0
-                .wakers
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push((id, Arc::clone(&wake)));
+            cancellation.0.wakers.locked().push((id, Arc::clone(&wake)));
             current = cancellation.0.parent.clone();
             registered.push((cancellation, id));
         }

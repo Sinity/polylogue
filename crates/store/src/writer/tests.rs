@@ -45,15 +45,19 @@ fn write_test_rows(
     resolve::prepare_index(tx, &mut batch, chain, first.is_some())?;
     let changes = crate::change_summary::ChangeSummary::start(tx)?;
     let written = write_rows(
-        &crate::text_rows::TextIds::new(tx, false).unwrap(),
         tx,
         &batch,
         &batch.parse[0],
-        batch.parse[0].resolution.as_ref().unwrap(),
-        counter,
-        first,
-        Some(&fixture_commit()),
-        &changes,
+        rows::ReadingWrite {
+            texts: &crate::text_rows::TextIds::new(tx, false).unwrap(),
+            resolution: batch.parse[0].resolution.as_ref().unwrap(),
+            counter: counter,
+            first_build: first,
+            source_commit: Some(&fixture_commit()),
+            changes: &changes,
+            retraction: false,
+            replacement: false,
+        },
     )?;
     changes.finish_summaries(tx, Some(counter))?;
     Ok(written)

@@ -1,5 +1,7 @@
 //! The producer spool's queue. Encoded payload files never change; this
 //! database holds scheduling, acknowledgments and membership.
+use crate::ConnExt as _;
+use crate::{OptionExt as _, ResultExt as _};
 use crate::{Result, StoreError, archive};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -393,7 +395,7 @@ impl Queue {
         refresh_ready(&transaction, &operation.identity)?;
         transaction.commit()?;
         self.get(&operation.identity)?
-            .ok_or_else(|| StoreError::Invalid("queued operation disappeared".into()))
+            .or_invalid("queued operation disappeared")
     }
 
     /// Adds a staged capture group to the queue in one commit. The adapter has synced and
@@ -437,9 +439,9 @@ impl Queue {
         let mut groups = Vec::new();
         {
             let mut query = tx.prepare_cached("SELECT directory,acquisition FROM operation WHERE identity=?1 OR confirmed_group=?1")?;
-            for row in query.query_map([identity], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
-            })? {
+            for row in
+                query.query_map([identity], |row| <(String, Option<String>)>::try_from(row))?
+            {
                 let (path, acquisition) = row?;
                 paths.push(path);
                 if let Some(group) = acquisition {
@@ -452,19 +454,14 @@ impl Queue {
             [identity],
         )?;
         for group in groups {
-            if tx.query_row(
+            if tx.scalar::<bool>(
                 "SELECT NOT EXISTS(SELECT 1 FROM operation WHERE acquisition=?1)",
                 [&group],
-                |row| row.get::<_, bool>(0),
             )? {
-                if let Some(path) = tx
-                    .query_row(
-                        "SELECT directory FROM operation WHERE identity=?1",
-                        [&group],
-                        |row| row.get::<_, String>(0),
-                    )
-                    .optional()?
-                {
+                if let Some(path) = tx.scalar_optional::<String>(
+                    "SELECT directory FROM operation WHERE identity=?1",
+                    [&group],
+                )? {
                     paths.push(path);
                 }
                 tx.execute("DELETE FROM operation WHERE identity=?1", [&group])?;
@@ -674,7 +671,7 @@ impl Queue {
         let number = |value: u64| {
             i64::try_from(value)
                 .map(Value::Integer)
-                .map_err(|_| StoreError::Invalid("queue order is out of range".into()))
+                .or_invalid("queue order is out of range")
         };
         parameters.push(number(after.unwrap_or(0))?);
         parameters.push(number(through.unwrap_or(i64::MAX as u64))?);

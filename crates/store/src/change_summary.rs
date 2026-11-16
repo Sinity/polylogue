@@ -206,9 +206,7 @@ impl ChangeSummary {
         }
         let before = conn
             .prepare_cached("SELECT session_pk,kind='compaction' FROM event WHERE pk = ?1")?
-            .query_row([pk], |row| {
-                Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, bool>(1)?))
-            })
+            .query_row([pk], |row| <(Option<i64>, bool)>::try_from(row))
             .optional()?
             .and_then(|(session, compaction)| session.map(|session| (session, compaction)));
         if let Some((session, _)) = before {

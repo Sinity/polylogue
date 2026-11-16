@@ -8,6 +8,7 @@
 
 use super::{Class, Derivation, Output, Version};
 use crate::Result;
+use polylogue_model::JsonExt;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 pub(super) const DERIVATION: Derivation = Derivation {
@@ -74,10 +75,7 @@ fn subagent_description(conn: &Connection, session_pk: i64) -> Result<Option<Str
         return Ok(None);
     };
     let value: serde_json::Value = serde_json::from_slice(&crate::encoding::unpack_bytes(&data)?)?;
-    Ok(value
-        .get("description")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned))
+    Ok(value.str("description").map(str::to_owned))
 }
 
 pub(crate) fn title_of(prompt: &str) -> Option<String> {

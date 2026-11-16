@@ -11,6 +11,7 @@
 //! transactions take no lock, so a reader waits at most for one register
 //! commit's write into its log. The file is stable while open, so readers
 //! need no writable directory or extra lock file.
+use crate::ConnExt as _;
 use crate::{Archive, Result, StoreError};
 use rusqlite::Connection;
 use std::cell::Cell;
@@ -52,10 +53,9 @@ pub(crate) fn hold(conn: &Connection) -> Result<WriteLock> {
     };
     let path = Path::new(path);
     if path.file_name().and_then(|name| name.to_str()) == Some("index.db")
-        && conn.query_row(
+        && conn.scalar::<bool>(
             "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='confirmed_event')",
             [],
-            |row| row.get::<_, bool>(0),
         )?
     {
         return Ok(WriteLock { file: None });

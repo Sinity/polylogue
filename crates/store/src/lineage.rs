@@ -99,20 +99,20 @@ pub(crate) fn compute(conn: &Connection, session: i64) -> Result<Option<SessionL
     let row = conn
         .prepare_cached(&sql)?
         .query_row([session], |r| {
-            Ok((
-                r.get::<_, Option<String>>(0)?,
-                r.get::<_, Option<u64>>(1)?,
-                r.get::<_, bool>(2)?,
-                r.get::<_, Option<String>>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, String>(5)?,
-            ))
+            <(
+                Option<String>,
+                Option<u64>,
+                bool,
+                Option<String>,
+                String,
+                String,
+            )>::try_from(r)
         })
         .optional()?;
     let Some((root, depth, root_pending, problem, at, parents)) = row else {
         return Ok(None);
     };
-    let parse = |id: &str| SessionId::parse(id).map_err(|e| StoreError::Invalid(e.to_string()));
+    let parse = |id: &str| SessionId::parse(id).map_err(crate::StoreError::invalid);
     let child = parse(&at)?;
     let parents: Vec<String> = serde_json::from_str(&parents)?;
     let issue = match problem.as_deref() {
@@ -221,7 +221,7 @@ impl crate::read::Reader<'_> {
         match cached {
             Some((root, depth, root_pending, issue)) => Ok(Some(SessionLineage {
                 root: root
-                    .map(|id| SessionId::parse(&id).map_err(|e| StoreError::Invalid(e.to_string())))
+                    .map(|id| SessionId::parse(&id).map_err(crate::StoreError::invalid))
                     .transpose()?,
                 depth,
                 root_pending,
@@ -263,9 +263,7 @@ impl crate::read::Reader<'_> {
                 .parent_links(&session)?
                 .into_iter()
                 .filter(|link| link.kind != "reference")
-                .map(|link| {
-                    SessionId::parse(&link.parent).map_err(|e| StoreError::Invalid(e.to_string()))
-                })
+                .map(|link| SessionId::parse(&link.parent).map_err(crate::StoreError::invalid))
                 .collect::<Result<Vec<_>>>()?
                 .into_iter()
                 .filter(|id| unique.insert(id.clone()))

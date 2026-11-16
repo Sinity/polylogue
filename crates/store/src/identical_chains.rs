@@ -5,6 +5,7 @@
 //! gives the reading the other chain had at that point, so the older chain's
 //! reading is recorded from the newer chain's rows instead of parsed.
 use crate::{Result, StoreError, source::Source};
+use polylogue_model::JsonExt;
 use rusqlite::{Connection, OptionalExtension, params};
 
 /// One chain of an input: its stored length, where its bytes come from and
@@ -409,16 +410,13 @@ fn retake_occurrences(
 ) -> Result<bool> {
     match value {
         serde_json::Value::Object(object) => {
-            let occurrence = object.get("input").and_then(serde_json::Value::as_str) == Some(input)
-                && object.get("chain").and_then(serde_json::Value::as_i64) == Some(from)
+            let occurrence = object.str("input") == Some(input)
+                && object.i64("chain") == Some(from)
                 && object.contains_key("sequence")
                 && object.contains_key("covered");
             if occurrence {
                 let covered = &object["covered"];
-                let (Some("bytes"), Some(end)) = (
-                    covered.get("kind").and_then(serde_json::Value::as_str),
-                    covered.get("end").and_then(serde_json::Value::as_u64),
-                ) else {
+                let (Some("bytes"), Some(end)) = (covered.str("kind"), covered.u64("end")) else {
                     return Ok(false);
                 };
                 let taken = match commits.get(&end) {

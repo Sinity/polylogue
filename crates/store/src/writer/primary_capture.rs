@@ -1,6 +1,7 @@
 //! A capture read is saved in the SDK spool before its temporary bytes are
 //! released. Only a confirmed Input frame changes the source cache.
 use super::*;
+use crate::ConnExt as _;
 use crate::input_rows::{InputRows, Revision};
 use crate::primary::{
     Capture, CaptureGroup, CapturedInput, Material, PendingCapture, Product, ProductWrite,
@@ -57,7 +58,7 @@ fn source_name(
     {
         return Ok(name);
     }
-    index.query_row("SELECT path,host FROM source_observation o JOIN source_machine m ON m.id=o.machine WHERE input=?1 ORDER BY o.rowid DESC LIMIT 1",[&batch.input.id],|row|Ok(crate::primary::InputName{origin:batch.input.format.clone(),path:row.get(0)?,host:row.get(1)?})).optional()?.ok_or_else(||StoreError::Invalid("a continuing primary capture has no source observation".into()))
+    index.query_row("SELECT path,host FROM source_observation o JOIN source_machine m ON m.id=o.machine WHERE input=?1 ORDER BY o.rowid DESC LIMIT 1",[&batch.input.id],|row|Ok(crate::primary::InputName{origin:batch.input.format.clone(),path:row.get(0)?,host:row.get(1)?})).optional()?.or_invalid("a continuing primary capture has no source observation")
 }
 
 fn material_reader(archive: &Archive, material: &Material) -> Result<hashed_blobs::BlobReader> {
@@ -97,7 +98,7 @@ impl Placed {
             start,
             end: start
                 .checked_add(length)
-                .ok_or_else(|| StoreError::Invalid("capture endpoint overflow".into()))?,
+                .or_invalid("capture endpoint overflow")?,
             material: material.clone(),
             at,
         }))
@@ -219,8 +220,7 @@ fn capture_group_identity(group: &[PreparedBatch], immutable: bool) -> Result<St
             Change::Reparse { chain } => ("reparse", 0, chain),
             Change::Appended { from } => (
                 "appended",
-                i64::try_from(from)
-                    .map_err(|_| StoreError::Invalid("capture offset overflow".into()))?,
+                crate::to_i64(from, "capture offset overflow")?,
                 0,
             ),
             Change::Rewritten => ("rewritten", 0, 0),
@@ -661,7 +661,7 @@ impl Inner {
             params![input, chain],
             |row| row.get(0),
         )?;
-        let previous=self.index.query_row("SELECT id FROM source_material WHERE input=?1 AND chain=?2 ORDER BY offset DESC LIMIT 1",params![input,chain],|row|row.get(0)).optional()?;
+        let previous=self.index.scalar_optional("SELECT id FROM source_material WHERE input=?1 AND chain=?2 ORDER BY offset DESC LIMIT 1",params![input,chain])?;
         Ok((
             u32::try_from(count).map_err(|_| {
                 StoreError::Invalid("capture part index exceeds source address space".into())
@@ -680,7 +680,7 @@ impl Inner {
         let sinex = Arc::clone(
             self.sinex
                 .as_ref()
-                .ok_or_else(|| StoreError::Invalid("primary drain requires a producer".into()))?,
+                .or_invalid("primary drain requires a producer")?,
         );
         let pending = sinex.pending_captures()?;
         let Some(first) = pending.first() else {
@@ -861,8 +861,7 @@ impl Inner {
         if input.rows.extents.is_empty() {
             return Ok(Some(rows));
         }
-        let material = material
-            .ok_or_else(|| StoreError::Invalid("ready source extent has no material".into()))?;
+        let material = material.or_invalid("ready source extent has no material")?;
         let original = Placed::of(&rows.input, &input.rows.extents, material)?
             .expect("source extents are present");
         let current = match ready_revisions.get(&rows.input) {
@@ -877,7 +876,7 @@ impl Inner {
         };
         let (start, end) = (original.start, original.end);
         let stored = u64::try_from(current.length)
-            .map_err(|_| StoreError::Invalid("negative confirmed source length".into()))?;
+            .map_err(|_| crate::StoreError::stored(0, "negative confirmed source length"))?;
         if start > stored {
             return Ok(None);
         }
@@ -947,7 +946,7 @@ impl Inner {
             let number = current
                 .number
                 .checked_add(1)
-                .ok_or_else(|| StoreError::Invalid("revision number overflow".into()))?;
+                .or_invalid("revision number overflow")?;
             if let Some(revision) = &mut rows.revision {
                 revision.number = number;
                 revision.chain = number;
@@ -965,7 +964,7 @@ impl Inner {
             rows.revision = None;
             rows.extents.clear();
             if let Some(observation) = &mut rows.observation {
-                let same_length=self.index.query_row("SELECT number FROM source_revision WHERE input=?1 AND chain=?2 AND length=?3 ORDER BY number DESC LIMIT 1",params![rows.input,current.chain,end as i64],|row|row.get(0)).optional()?;
+                let same_length=self.index.scalar_optional("SELECT number FROM source_revision WHERE input=?1 AND chain=?2 AND length=?3 ORDER BY number DESC LIMIT 1",params![rows.input,current.chain,end as i64])?;
                 observation.revision =
                     same_length.or_else(|| (end == stored).then_some(current.number));
                 observation.chain = observation.revision.is_none().then_some(current.chain);
@@ -983,7 +982,7 @@ impl Inner {
                 current
                     .number
                     .checked_add(1)
-                    .ok_or_else(|| StoreError::Invalid("revision number overflow".into()))?
+                    .or_invalid("revision number overflow")?
             };
             rows.revision = Some(Revision {
                 number,

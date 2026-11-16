@@ -65,6 +65,8 @@ fn stored_name_round_trips_for_every_enum() {
     check!(EmbeddingProvider);
     check!(VariantKind);
     check!(VariantRelation);
+    check!(crate::read::IndicatorKind);
+    check!(crate::read::TargetKind);
 }
 
 #[test]

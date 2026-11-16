@@ -115,13 +115,7 @@ fn repeated(conn: &Connection, session_pk: i64) -> Result<HashMap<i64, String>> 
     )?;
     let rows = statement
         .query_map(params![session_pk, CAPTURE], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, i64>(3)?,
-                r.get::<_, i64>(4)?,
-            ))
+            <(i64, String, String, i64, i64)>::try_from(r)
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut captured = Vec::new();

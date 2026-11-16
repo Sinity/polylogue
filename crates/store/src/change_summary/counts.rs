@@ -152,9 +152,7 @@ impl ChangeSummary {
             }
             let after = conn
                 .prepare_cached("SELECT session_pk,kind='compaction' FROM event WHERE pk=?1")?
-                .query_row([pk], |row| {
-                    Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, bool>(1)?))
-                })
+                .query_row([pk], |row| <(Option<i64>, bool)>::try_from(row))
                 .optional()?;
             if let Some((Some(session), compaction)) = after {
                 deltas.entry(session).or_default().compactions += i64::from(compaction);

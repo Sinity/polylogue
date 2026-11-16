@@ -1,5 +1,6 @@
 //! Session attribution the source states, without interpreting prose or resolving cwd paths.
 use crate::kinds::{GitIdentity, Objective, RecordRef, TerminalIdentity};
+use polylogue_model::JsonExt;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -134,8 +135,7 @@ impl SessionAttribution {
             }
         }
         out.unavailable.extend(
-            body.get("native_unavailable")
-                .and_then(Value::as_array)
+            body.array("native_unavailable")
                 .into_iter()
                 .flatten()
                 .filter_map(named),

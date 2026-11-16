@@ -5,7 +5,7 @@
 //! most one job in flight, so its parser state passes from job to job.
 
 use crate::read;
-use polylogue_model::Json;
+use polylogue_model::{Json, LockExt, spawn_named};
 use polylogue_sources::OriginSpec;
 use polylogue_store::staging::PreparedBatch;
 use polylogue_store::writer::WriterSender;
@@ -181,10 +181,10 @@ impl Pool {
         };
         let (acknowledge, pending) = channel();
         let acknowledged = done.clone();
-        let acknowledgments = std::thread::Builder::new()
-            .name("polylogue-acknowledgments".into())
-            .spawn(move || acknowledge_groups(pending, acknowledged))
-            .expect("spawn acknowledgment reader");
+        let acknowledgments = spawn_named("polylogue-acknowledgments", move || {
+            acknowledge_groups(pending, acknowledged)
+        })
+        .expect("spawn acknowledgment reader");
         let workers = (0..workers)
             .map(|i| {
                 let shared = Arc::clone(&shared);
@@ -192,14 +192,12 @@ impl Pool {
                 let blobs = Arc::clone(&blobs);
                 let archive = archive.clone();
                 let acknowledge = acknowledge.clone();
-                std::thread::Builder::new()
-                    .name(format!("polylogue-parse-{i}"))
-                    .spawn(move || {
-                        polylogue_store::cancellation::under(archive.stop(), || {
-                            work(i, &shared, &writer, &blobs, &archive, &acknowledge);
-                        });
-                    })
-                    .expect("spawn a parse worker")
+                spawn_named(format!("polylogue-parse-{i}"), move || {
+                    polylogue_store::cancellation::under(archive.stop(), || {
+                        work(i, &shared, &writer, &blobs, &archive, &acknowledge);
+                    });
+                })
+                .expect("spawn a parse worker")
             })
             .collect();
         drop(acknowledge);
@@ -214,7 +212,7 @@ impl Pool {
     /// Whether a job of `bytes` would be queued now, without waiting for
     /// bytes in flight to commit.
     pub fn has_room(&self, bytes: u64) -> bool {
-        let q = self.shared.queue.lock().expect("pool lock");
+        let q = self.shared.queue.locked();
         q.in_flight == 0 || q.in_flight + bytes <= self.shared.limit
     }
 
@@ -225,7 +223,7 @@ impl Pool {
     /// would never end.
     #[must_use]
     pub fn submit(&self, job: Job) -> bool {
-        let mut q = self.shared.queue.lock().expect("pool lock");
+        let mut q = self.shared.queue.locked();
         loop {
             if self.shared.stop.is_cancelled() {
                 return false;
@@ -250,7 +248,7 @@ impl Pool {
     /// Takes back the jobs no worker has started and returns how many: they
     /// never report. Jobs being parsed finish and commit as usual.
     pub fn cancel_queued(&self) -> usize {
-        let mut guard = self.shared.queue.lock().expect("pool lock");
+        let mut guard = self.shared.queue.locked();
         let q = &mut *guard;
         let jobs: Vec<Job> = q.live.drain(..).chain(q.bulk.drain(..)).collect();
         q.in_flight -= jobs.iter().map(Job::bytes).sum::<u64>();
@@ -263,9 +261,7 @@ impl Pool {
 
 impl Drop for Pool {
     fn drop(&mut self) {
-        if let Ok(mut q) = self.shared.queue.lock() {
-            q.closed = true;
-        }
+        self.shared.queue.locked().closed = true;
         for wake in &self.shared.wake {
             wake.notify_all();
         }
@@ -293,7 +289,7 @@ impl Shared {
     /// the queue lock first means a submitter that checked the request
     /// before it was made is already waiting.
     fn wake_for_stop(&self) {
-        drop(self.queue.lock());
+        drop(self.queue.locked());
         self.room.notify_all();
     }
 }
@@ -303,9 +299,7 @@ fn release(shared: &Shared, bytes: u64) {
     if bytes == 0 {
         return;
     }
-    if let Ok(mut q) = shared.queue.lock() {
-        q.in_flight -= bytes;
-    }
+    shared.queue.locked().in_flight -= bytes;
     shared.room.notify_all();
 }
 
@@ -324,7 +318,7 @@ fn work(
     };
     loop {
         let job = {
-            let mut q = shared.queue.lock().expect("pool lock");
+            let mut q = shared.queue.locked();
             let mut woken = false;
             loop {
                 // After a stop request the queue is left for `cancel_queued`.
@@ -547,10 +541,7 @@ pub(crate) fn run(
     let started = std::time::Instant::now();
     let mut file_snapshot = None;
     let read = match &job.source {
-        Bytes::Import(source) => source
-            .lock()
-            .expect("import reader lock")
-            .read_range(job.start, job.end),
+        Bytes::Import(source) => source.locked().read_range(job.start, job.end),
         Bytes::Stored(chain) => chain
             .read_range(store, job.start, job.end)
             .map_err(std::io::Error::other),
@@ -879,7 +870,7 @@ pub(crate) fn run(
         } else {
             job.end
         };
-        source.lock().expect("import reader lock").consume(upto);
+        source.locked().consume(upto);
     }
     if out.cancelled {
         parse.clear();

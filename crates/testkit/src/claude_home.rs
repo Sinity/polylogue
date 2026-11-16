@@ -2,7 +2,6 @@
 //! archive beside it, for tests that write their own session lines.
 
 use polylogue_engine::{Config, Engine};
-use polylogue_model::export::SessionExport;
 use polylogue_model::{Message, SessionId};
 use polylogue_store::{Archive, ArchiveLock, ReadPool};
 use std::fs::{self, OpenOptions};
@@ -111,14 +110,11 @@ impl ClaudeHome {
             .expect("an integer `n`")
     }
 
-    /// A session as the export format holds it.
-    pub fn export(&self, session: &str) -> SessionExport {
-        self.reads()
-            .reader()
-            .expect("a reader")
-            .session_export(&SessionId::parse(session).expect("session ID"))
-            .expect("export")
-            .expect("the session exists")
+    /// A session's current bundle records, read from the stored rows.
+    pub fn export(&self, session: &str) -> Vec<polylogue_model::bundle::Record> {
+        self.read(|reader| {
+            crate::session_bundle(reader, &SessionId::parse(session).expect("session ID"))
+        })
     }
 }
 

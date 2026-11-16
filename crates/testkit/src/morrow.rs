@@ -23,8 +23,6 @@ pub enum Set {
     /// Sessions #1–#8: Claude Code, Codex with its state database, the
     /// hook spool, and the ChatGPT and claude.ai exports.
     Main,
-    /// The Claude-Code-only home: #1–#4 and the parents set L1–L8.
-    ClaudeCodeOnly,
     /// The live set V1–V3 with its hook spool files.
     Live,
     /// The main set plus the annotation session.
@@ -38,11 +36,6 @@ const MAIN: &[(&str, &str)] = &[
     ("codex/sessions", ".codex/sessions"),
     ("codex/state_5.sqlite", ".codex/state_5.sqlite"),
     ("hooks", ".local/state/polylogue/hooks"),
-];
-/// The parents set adds its sessions to the main Claude Code sessions #1–#4.
-const CLAUDE_CODE_ONLY: &[(&str, &str)] = &[
-    ("claude-code", ".claude"),
-    ("claude-code-only/claude-code", ".claude"),
 ];
 const LIVE: &[(&str, &str)] = &[
     ("live/claude-code", ".claude"),
@@ -74,7 +67,6 @@ impl Morrow {
         let src = morrow_dir();
         let parts: Vec<&(&str, &str)> = match set {
             Set::Main => MAIN.iter().collect(),
-            Set::ClaudeCodeOnly => CLAUDE_CODE_ONLY.iter().collect(),
             Set::Live => LIVE.iter().collect(),
             Set::Annotation => MAIN.iter().chain(ANNOTATION).collect(),
         };
@@ -151,7 +143,7 @@ impl Morrow {
         ReadPool::open(&Archive::at(&self.root)).expect("open readers")
     }
 
-    /// Every session as the export format holds it, by ID: what tests
+    /// Every session as current bundle records, by ID: what tests
     /// compare when they say "the view is unchanged".
     pub fn view(&self) -> BTreeMap<String, serde_json::Value> {
         let pool = self.reads();
@@ -161,7 +153,7 @@ impl Morrow {
             .into_iter()
             .filter_map(|row| {
                 let id = SessionId::parse(row["id"].as_str()?).ok()?;
-                let doc = r.session_export(&id).expect("export a session")?;
+                let doc = crate::session_bundle(&r, &id).expect("read session bundle");
                 Some((
                     id.to_string(),
                     serde_json::to_value(doc).expect("serialize"),

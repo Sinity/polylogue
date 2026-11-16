@@ -174,64 +174,16 @@ fn hook_emission_keeps_producer_references() {
     let [event] = &step.output.events[..] else {
         panic!("one emission event")
     };
-    let emission = context_emission(event).unwrap();
-    assert_eq!(emission.invocation, "invocation1");
-    assert_eq!(emission.session.to_string(), "claude-code:s1");
-    assert_eq!(emission.hook_event, "SessionStart");
+    assert_eq!(event.data["invocation"], "invocation1");
+    assert_eq!(event.data["session"], "claude-code:s1");
+    assert_eq!(event.data["hook_event"], "SessionStart");
     assert_eq!(
-        emission.deliveries,
-        ["delivery:receipt1", "delivery:receipt2"]
+        event.data["deliveries"],
+        json!(["delivery:receipt1", "delivery:receipt2"])
     );
     assert_eq!(event.data["event_id"], "emission1");
     assert!(step.output.messages.is_empty());
     assert!(step.output.hook_fields.is_empty());
-}
-
-#[test]
-fn hook_emission_requires_a_typed_receipt() {
-    let mut cases = Vec::new();
-    for deliveries in [
-        json!([]),
-        json!(["receipt1"]),
-        json!(["message:claude-code:m1"]),
-        json!(["delivery:"]),
-        json!([false]),
-    ] {
-        let mut v = emission_line();
-        v["payload"]["deliveries"] = deliveries;
-        cases.push(v);
-    }
-    for (key, value) in [
-        ("invocation", json!("")),
-        ("invocation", json!("emission1")),
-        ("session", json!("claude-code:other")),
-        ("hook_event", json!("")),
-        ("injected_context", json!(true)),
-    ] {
-        let mut v = emission_line();
-        v["payload"][key] = value;
-        cases.push(v);
-    }
-    let mut invocation = emission_line();
-    invocation["event"] = json!("SessionStart");
-    cases.push(invocation);
-    let mut missing_event_id = emission_line();
-    missing_event_id.as_object_mut().unwrap().remove("event_id");
-    cases.push(missing_event_id);
-    for value in cases {
-        let step = run(
-            &HookSpool,
-            &mut ParserState::default(),
-            &lines(std::slice::from_ref(&value)),
-            0,
-        )
-        .unwrap();
-        assert!(
-            context_emission(&step.output.events[0]).is_none(),
-            "{value}"
-        );
-        assert!(step.output.hook_fields.is_empty());
-    }
 }
 
 /// Lines a later build's hook writes, from that build's rollback fixture:

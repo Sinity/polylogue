@@ -12,10 +12,7 @@ use polylogue_store::Reader;
 use std::ops::ControlFlow;
 
 fn stale() -> Failure {
-    Failure::new(
-        "stale_cursor",
-        "the continued document block is no longer selected",
-    )
+    Failure::stale_cursor("the continued document block is no longer selected")
 }
 
 fn check(reader: &Reader<'_>) -> Result<(), Failure> {
@@ -135,13 +132,12 @@ pub(super) fn visit(
     check(reader)?;
     let selected = reader
         .select_document(id)?
-        .ok_or_else(|| Failure::new("not_found", format!("no document {id}")))?;
+        .ok_or_else(|| Failure::not_found(format!("no document {id}")))?;
     let reference = format!("document:{id}");
     if reader.document_commit(id)?.is_none() {
-        return Err(Failure::new(
-            "not_yet_available",
-            format!("{reference} has no stored commit position for its source"),
-        ));
+        return Err(Failure::not_yet_available(format!(
+            "{reference} has no stored commit position for its source"
+        )));
     }
     if start.is_some_and(|start| {
         start.selection.row != row || start.selection.record.kind != ReadRecordKind::Presentation

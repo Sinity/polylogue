@@ -4,7 +4,7 @@ fn answer(
     d: &test_daemon::TestDaemon,
     request: crate::test_daemon::Call,
 ) -> command_surface::Answer<serde_json::Value> {
-    (request).answer(&d.daemon)
+    request.answer(&d.daemon)
 }
 
 #[track_caller]

@@ -76,24 +76,12 @@ fn watched_gemini_turns_keep_tools_notices_and_header_facts_through_rewrites_and
     }
     fs::remove_file(&path).unwrap();
     let sid = polylogue_model::SessionId::parse("gemini-cli:native-session").unwrap();
-    let before = w
-        .reads()
-        .reader()
-        .unwrap()
-        .session_export(&sid)
-        .unwrap()
-        .unwrap();
+    let before = polylogue_testkit::session_bundle(&w.reads().reader().unwrap(), &sid).unwrap();
     polylogue_testkit::delete_index(&w.root);
     let (mut e, _lock) = engine(&w, 8);
     let pass = e.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
-    let after = e
-        .reads
-        .reader()
-        .unwrap()
-        .session_export(&sid)
-        .unwrap()
-        .unwrap();
+    let after = polylogue_testkit::session_bundle(&e.reads.reader().unwrap(), &sid).unwrap();
     assert_eq!(
         serde_json::to_value(after).unwrap(),
         serde_json::to_value(before).unwrap()

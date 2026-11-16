@@ -69,14 +69,7 @@ pub(crate) fn message(conn: &Connection, pk: i64) -> Result<Option<(i64, Counts)
          FROM message WHERE pk=?1",
         )?
         .query_row([pk], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, bool>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, Option<String>>(3)?,
-                row.get::<_, i64>(4)?,
-                row.get::<_, bool>(5)?,
-            ))
+            <(i64, bool, String, Option<String>, i64, bool)>::try_from(row)
         })
         .optional()?;
     let Some((session, shown, author, prompt, words, thinking)) = row else {

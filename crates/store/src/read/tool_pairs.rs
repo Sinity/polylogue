@@ -115,15 +115,20 @@ impl Reader<'_> {
             ..
         } = crate::encoding::unpack_block(&body)?
         else {
-            return Err(invalid("indexed result is not a tool result"));
+            return Err(crate::StoreError::stored(
+                0,
+                "indexed result is not a tool result",
+            ));
         };
         if call_id != fact.call.call_id {
-            return Err(invalid(
+            return Err(crate::StoreError::stored(
+                0,
                 "indexed result identity differs from its stored block",
             ));
         }
-        let count = u64::try_from(attachments.len())
-            .map_err(|_| invalid("attachment count exceeds its address space"))?;
+        let count = u64::try_from(attachments.len()).map_err(|_| {
+            crate::StoreError::stored(0, "attachment count exceeds its address space")
+        })?;
         self.check()?;
         Ok(Some((data, count)))
     }
@@ -165,10 +170,14 @@ impl Reader<'_> {
         }
         let call = self.tool_pair_block(&fact.call, full)?;
         let Block::ToolCall { call_id, .. } = &call.block else {
-            return Err(invalid("indexed call is not a tool call"));
+            return Err(crate::StoreError::stored(
+                0,
+                "indexed call is not a tool call",
+            ));
         };
         if call_id != &fact.call.call_id {
-            return Err(invalid(
+            return Err(crate::StoreError::stored(
+                0,
                 "indexed call identity differs from its stored block",
             ));
         }
@@ -182,10 +191,14 @@ impl Reader<'_> {
         };
         if let Some(result) = &result {
             let Block::ToolResult { call_id, .. } = &result.block else {
-                return Err(invalid("indexed result is not a tool result"));
+                return Err(crate::StoreError::stored(
+                    0,
+                    "indexed result is not a tool result",
+                ));
             };
             if call_id != &fact.call.call_id {
-                return Err(invalid(
+                return Err(crate::StoreError::stored(
+                    0,
                     "indexed result identity differs from its stored block",
                 ));
             }
@@ -210,7 +223,7 @@ impl Reader<'_> {
             edit: None,
         };
         pair.validate()
-            .map_err(|error| invalid(&error.to_string()))?;
+            .map_err(|error| crate::StoreError::stored(0, &error.to_string()))?;
         self.check()?;
         Ok(Some(pair))
     }
@@ -235,7 +248,8 @@ impl Reader<'_> {
         };
         let input = BlockFact::read(row, 0)?;
         if rows.next()?.is_some() {
-            return Err(invalid(
+            return Err(crate::StoreError::stored(
+                0,
                 "one original block ordinal has conflicting current rows",
             ));
         }
@@ -286,7 +300,8 @@ impl Reader<'_> {
                 .transpose()?
                 .unwrap_or(false);
         if rows.next()?.is_some() {
-            return Err(invalid(
+            return Err(crate::StoreError::stored(
+                0,
                 "one source block has conflicting current tool relations",
             ));
         }
@@ -343,9 +358,6 @@ impl Reader<'_> {
             block,
         })
     }
-}
-fn invalid(message: &str) -> StoreError {
-    StoreError::Invalid(message.into())
 }
 
 #[cfg(test)]

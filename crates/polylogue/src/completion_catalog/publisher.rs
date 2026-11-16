@@ -33,77 +33,76 @@ impl Publisher {
         let expected_exit = Arc::new(AtomicBool::new(false));
         let completed = Arc::clone(&expected_exit);
         let wake = subscription.as_ref().map(CommitSubscription::wake_handle);
-        let thread = std::thread::Builder::new()
-            .name("polylogue-completion".into())
-            .spawn(move || {
-                let _exit = crate::daemon::lifecycle::WorkerExit::new(
-                    worker_events,
-                    "completion worker terminated",
-                    Some(Arc::clone(&completed)),
-                );
-                let mut publisher =
-                    State::new(daemon.archive.is_primary(), daemon.config.requests.clone());
-                let mut last_error = None;
-                loop {
-                    if stopped.load(Ordering::Acquire) {
-                        completed.store(true, Ordering::Release);
-                        return;
-                    }
-                    let result = (|| {
-                        let reader = daemon.reads.reader()?;
-                        publisher.refresh(
-                            &reader,
-                            &daemon.completion_path,
-                            &crate::runtime_dir::archive_key(&daemon.archive.root),
-                        )
-                    })();
-                    match result {
-                        Ok(()) => last_error = None,
-                        Err(error) => {
-                            if stopped.load(Ordering::Acquire) {
-                                completed.store(true, Ordering::Release);
-                                return;
-                            }
-                            let building =
-                                matches!(error, polylogue_store::StoreError::IndexBuilding(_));
-                            let error = error.to_string();
-                            if last_error.as_ref() != Some(&error) {
-                                eprintln!("polylogue: completion catalog: {error}");
-                                last_error = Some(error);
-                            }
-                            // Nothing is readable until the index being built is
-                            // installed, which is a commit: wait for it.
-                            if building && let Some(subscription) = &subscription {
-                                if subscription.recv().is_err() {
-                                    if stopped.load(Ordering::Acquire) {
-                                        completed.store(true, Ordering::Release);
-                                    }
-                                    return;
-                                }
-                                continue;
-                            }
-                            // Retry a failed write without advancing its position.
-                            // Successful idle publishers wait solely on commit events.
-                            std::thread::sleep(std::time::Duration::from_millis(100));
-                            continue;
-                        }
-                    }
-                    match &subscription {
-                        Some(subscription) => {
-                            if subscription.recv().is_err() {
-                                if stopped.load(Ordering::Acquire) {
-                                    completed.store(true, Ordering::Release);
-                                }
-                                return;
-                            }
-                        }
-                        None => {
+        let thread = polylogue_model::spawn_named("polylogue-completion", move || {
+            let _exit = crate::daemon::lifecycle::WorkerExit::new(
+                worker_events,
+                "completion worker terminated",
+                Some(Arc::clone(&completed)),
+            );
+            let mut publisher =
+                State::new(daemon.archive.is_primary(), daemon.config.requests.clone());
+            let mut last_error = None;
+            loop {
+                if stopped.load(Ordering::Acquire) {
+                    completed.store(true, Ordering::Release);
+                    return;
+                }
+                let result = (|| {
+                    let reader = daemon.reads.reader()?;
+                    publisher.refresh(
+                        &reader,
+                        &daemon.completion_path,
+                        &crate::runtime_dir::archive_key(&daemon.archive.root),
+                    )
+                })();
+                match result {
+                    Ok(()) => last_error = None,
+                    Err(error) => {
+                        if stopped.load(Ordering::Acquire) {
                             completed.store(true, Ordering::Release);
                             return;
                         }
+                        let building =
+                            matches!(error, polylogue_store::StoreError::IndexBuilding(_));
+                        let error = error.to_string();
+                        if last_error.as_ref() != Some(&error) {
+                            eprintln!("polylogue: completion catalog: {error}");
+                            last_error = Some(error);
+                        }
+                        // Nothing is readable until the index being built is
+                        // installed, which is a commit: wait for it.
+                        if building && let Some(subscription) = &subscription {
+                            if !crate::daemon::lifecycle::wait_for_index(
+                                subscription,
+                                &stopped,
+                                &completed,
+                            ) {
+                                return;
+                            }
+                            continue;
+                        }
+                        // Retry a failed write without advancing its position.
+                        // Successful idle publishers wait solely on commit events.
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                        continue;
                     }
                 }
-            })?;
+                match &subscription {
+                    Some(subscription) => {
+                        if subscription.recv().is_err() {
+                            if stopped.load(Ordering::Acquire) {
+                                completed.store(true, Ordering::Release);
+                            }
+                            return;
+                        }
+                    }
+                    None => {
+                        completed.store(true, Ordering::Release);
+                        return;
+                    }
+                }
+            }
+        })?;
         Ok(Self {
             stop,
             expected_exit,

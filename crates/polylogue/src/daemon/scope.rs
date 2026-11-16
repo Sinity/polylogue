@@ -4,11 +4,12 @@
 //! A caller copies what it needs out under the lock and reads the archive
 //! after letting go of it.
 
+use polylogue_model::LockExt as _;
 use polylogue_store::completion::CommitSubscription;
 use polylogue_store::{Reader, Result, ScopeIndex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::SyncSender;
-use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
@@ -25,13 +26,12 @@ impl SharedScopeIndex {
     pub fn refresh(&self, reader: &Reader<'_>) -> Result<()> {
         let after = self
             .index
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+            .locked()
             .as_ref()
             .and_then(|index| index.position().cloned());
         // Read without the lock: briefs keep answering from the last state.
         let changes = reader.scope_changes(after.as_ref())?;
-        let mut held = self.index.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut held = self.index.locked();
         match held.as_mut() {
             // Another refresh already applied a newer snapshot.
             Some(index) if index.is_newer_than(&changes) => {}
@@ -54,7 +54,7 @@ impl SharedScopeIndex {
         until: Option<Instant>,
         read: impl FnOnce(&ScopeIndex) -> T,
     ) -> Option<T> {
-        let mut held = self.index.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut held = self.index.locked();
         while held.is_none() {
             match until {
                 Some(until) => {
@@ -62,17 +62,10 @@ impl SharedScopeIndex {
                     if left.is_zero() {
                         return None;
                     }
-                    held = self
-                        .loaded
-                        .wait_timeout(held, left)
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .0;
+                    held = polylogue_model::unpoisoned(self.loaded.wait_timeout(held, left)).0;
                 }
                 None => {
-                    held = self
-                        .loaded
-                        .wait(held)
-                        .unwrap_or_else(PoisonError::into_inner);
+                    held = polylogue_model::unpoisoned(self.loaded.wait(held));
                 }
             }
         }
@@ -104,79 +97,77 @@ impl ScopeWorker {
         let expected_exit = Arc::new(AtomicBool::new(false));
         let completed = Arc::clone(&expected_exit);
         let wake = subscription.as_ref().map(CommitSubscription::wake_handle);
-        let thread = std::thread::Builder::new()
-            .name("polylogue-scope".into())
-            .spawn(move || {
-                let _exit = super::lifecycle::WorkerExit::new(
-                    worker_events,
-                    "scope worker terminated",
-                    Some(Arc::clone(&completed)),
-                );
-                let mut last_error = None;
-                loop {
-                    if stopped.load(Ordering::Acquire) {
+        let thread = polylogue_model::spawn_named("polylogue-scope", move || {
+            let _exit = super::lifecycle::WorkerExit::new(
+                worker_events,
+                "scope worker terminated",
+                Some(Arc::clone(&completed)),
+            );
+            let mut last_error = None;
+            loop {
+                if stopped.load(Ordering::Acquire) {
+                    completed.store(true, Ordering::Release);
+                    return;
+                }
+                let result = daemon
+                    .reads
+                    .reader()
+                    .and_then(|reader| daemon.scope.refresh(&reader));
+                if let Err(error) = result {
+                    // The daemon's stop request ends the worker as its
+                    // own stop does.
+                    if stopped.load(Ordering::Acquire)
+                        || matches!(error, polylogue_store::StoreError::Stopped)
+                    {
                         completed.store(true, Ordering::Release);
                         return;
                     }
-                    let result = daemon
-                        .reads
-                        .reader()
-                        .and_then(|reader| daemon.scope.refresh(&reader));
-                    if let Err(error) = result {
-                        // The daemon's stop request ends the worker as its
-                        // own stop does.
-                        if stopped.load(Ordering::Acquire)
-                            || matches!(error, polylogue_store::StoreError::Stopped)
-                        {
-                            completed.store(true, Ordering::Release);
+                    let building = matches!(error, polylogue_store::StoreError::IndexBuilding(_));
+                    let error = error.to_string();
+                    if last_error.as_ref() != Some(&error) {
+                        eprintln!("polylogue: scope index: {error}");
+                        last_error = Some(error);
+                    }
+                    // Nothing is readable until the index being built is
+                    // installed, which is a commit: wait for it.
+                    if building && let Some(subscription) = &subscription {
+                        if !crate::daemon::lifecycle::wait_for_index(
+                            subscription,
+                            &stopped,
+                            &completed,
+                        ) {
                             return;
                         }
-                        let building =
-                            matches!(error, polylogue_store::StoreError::IndexBuilding(_));
-                        let error = error.to_string();
-                        if last_error.as_ref() != Some(&error) {
-                            eprintln!("polylogue: scope index: {error}");
-                            last_error = Some(error);
-                        }
-                        // Nothing is readable until the index being built is
-                        // installed, which is a commit: wait for it.
-                        if building && let Some(subscription) = &subscription {
-                            if subscription.recv().is_err() {
-                                if stopped.load(Ordering::Acquire) {
-                                    completed.store(true, Ordering::Release);
-                                }
-                                return;
-                            }
-                            continue;
-                        }
-                        // Retry from the same position; a commit cue is not needed.
-                        std::thread::sleep(std::time::Duration::from_millis(100));
                         continue;
                     }
-                    last_error = None;
-                    // A commit leaves room in the writer's queue for records
-                    // that found it full.
-                    if let Some(writes) = &daemon.writes
-                        && let Err(error) = daemon.queued_deliveries.hand_over(writes)
-                    {
-                        eprintln!("polylogue: queued deliveries: {error}");
-                    }
-                    match &subscription {
-                        Some(subscription) => {
-                            if subscription.recv().is_err() {
-                                if stopped.load(Ordering::Acquire) {
-                                    completed.store(true, Ordering::Release);
-                                }
-                                return;
+                    // Retry from the same position; a commit cue is not needed.
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    continue;
+                }
+                last_error = None;
+                // A commit leaves room in the writer's queue for records
+                // that found it full.
+                if let Some(writes) = &daemon.writes
+                    && let Err(error) = daemon.queued_deliveries.hand_over(writes)
+                {
+                    eprintln!("polylogue: queued deliveries: {error}");
+                }
+                match &subscription {
+                    Some(subscription) => {
+                        if subscription.recv().is_err() {
+                            if stopped.load(Ordering::Acquire) {
+                                completed.store(true, Ordering::Release);
                             }
-                        }
-                        None => {
-                            completed.store(true, Ordering::Release);
                             return;
                         }
                     }
+                    None => {
+                        completed.store(true, Ordering::Release);
+                        return;
+                    }
                 }
-            })?;
+            }
+        })?;
         Ok(Self {
             stop,
             expected_exit,

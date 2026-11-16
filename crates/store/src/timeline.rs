@@ -1,4 +1,5 @@
 //! Chronological metadata and calendar counts, without loading message bodies.
+use crate::{OptionExt as _, ResultExt as _};
 use crate::{Reader, Result, SqlValue};
 use query_language::time::{Clock, DaySetting};
 use serde::{Deserialize, Serialize};
@@ -341,11 +342,10 @@ pub fn page(
     size: u64,
 ) -> Result<Value> {
     let day = &clock.day;
-    let limit = i64::try_from(
-        size.checked_add(1)
-            .ok_or_else(|| crate::StoreError::Invalid("page size exceeds i64".into()))?,
-    )
-    .map_err(|_| crate::StoreError::Invalid("page size exceeds i64".into()))?;
+    let limit = crate::to_i64(
+        size.checked_add(1).or_invalid("page size exceeds i64")?,
+        "page size exceeds i64",
+    )?;
     let mut found = Vec::new();
     if !selection.undated && !after.is_some_and(|p| p.undated) {
         let ranges = match selection.date {

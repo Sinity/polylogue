@@ -273,7 +273,7 @@ fn saved_forks_do_not_poison_unit_queries() {
         prepare("query:project", &snapshot, |_| Ok(()))
             .unwrap_err()
             .kind(),
-        "not_yet_available"
+        polylogue_model::Code::NotYetAvailable
     );
     prepare("sessions", &snapshot, |_| Ok(())).unwrap();
     let fork = snapshot.saved.get_mut("alias").unwrap();

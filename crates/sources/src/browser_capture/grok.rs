@@ -1,4 +1,5 @@
 use super::*;
+use polylogue_model::JsonExt;
 
 /// Grok exposes metadata and responses through separate endpoints. Keep
 /// provider IDs and parent links when reading those answers as turns.
@@ -20,17 +21,17 @@ pub(super) fn conversation(raw: &Json, fallback: &Json, sink: &mut Sink<'_>) {
     session["title"] = metadata.get("title").cloned().unwrap_or(Json::Null);
     session["created_at"] = metadata.get("createTime").cloned().unwrap_or(Json::Null);
     session["turns"] = Json::Array(responses.into_iter().flatten().enumerate().map(|(ordinal, r)| {
-        let role = str_of(r, "sender").unwrap_or("").to_ascii_lowercase();
+        let role = r.str("sender").filter(|s| !s.is_empty()).unwrap_or("").to_ascii_lowercase();
         let mut files = Vec::new();
-        for f in r.get("fileAttachmentsMetadata").and_then(Json::as_array).into_iter().flatten() {
+        for f in r.array("fileAttachmentsMetadata").into_iter().flatten() {
             files.push(serde_json::json!({"provider_attachment_id": f.get("fileMetadataId"), "name": f.get("fileName"), "mime_type": f.get("fileMimeType"), "url": f.get("fileUri")}));
         }
-        for image in r.get("imageAttachments").and_then(Json::as_array).into_iter().flatten() {
-            let url = image.as_str().or_else(|| str_of(image, "url"));
+        for image in r.array("imageAttachments").into_iter().flatten() {
+            let url = image.as_str().or_else(|| image.str("url").filter(|s| !s.is_empty()));
             files.push(serde_json::json!({"provider_attachment_id": url, "url": url, "mime_type": "image/*"}));
         }
-        let mut blocks = vec![serde_json::json!({"type": "text", "text": r.get("message").and_then(Json::as_str).unwrap_or("")})];
-        for step in r.get("steps").and_then(Json::as_array).into_iter().flatten() {
+        let mut blocks = vec![serde_json::json!({"type": "text", "text": r.str("message").unwrap_or("")})];
+        for step in r.array("steps").into_iter().flatten() {
             blocks.push(serde_json::json!({"type":"grok_step", "step":step}));
         }
         serde_json::json!({"provider_turn_id":r.get("responseId"), "parent_turn_id":r.get("parentResponseId"), "role":role, "timestamp":r.get("createTime"), "model":r.get("model"), "ordinal":ordinal, "blocks":blocks, "attachments":files})

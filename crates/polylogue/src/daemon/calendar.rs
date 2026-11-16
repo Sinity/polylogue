@@ -12,19 +12,18 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-fn invalid(message: impl ToString) -> Failure {
-    Failure::new("bad_request", message)
-}
-
 fn date(text: Option<&str>, clock: &Clock) -> Result<jiff::civil::Date, Failure> {
     text.map_or_else(
         || {
             clock
                 .day
                 .logical_day(clock.now)
-                .map_err(|error| invalid(error.to_string()))
+                .map_err(|error| Failure::bad_request((error.to_string())))
         },
-        |text| text.parse().map_err(|_| invalid("date must be YYYY-MM-DD")),
+        |text| {
+            text.parse()
+                .map_err(|_| Failure::bad_request(("date must be YYYY-MM-DD")))
+        },
     )
 }
 
@@ -33,7 +32,8 @@ fn fingerprint(domain: &str, value: &impl Serialize) -> Result<blake3::Hash, Fai
     digest.update(b"polylogue.calendar.cursor-context.v1\0");
     digest.update(domain.as_bytes());
     digest.update(b"\0");
-    serde_json::to_writer(&mut digest, value).map_err(|error| invalid(error.to_string()))?;
+    serde_json::to_writer(&mut digest, value)
+        .map_err(|error| Failure::bad_request((error.to_string())))?;
     Ok(digest.finalize())
 }
 struct Paging {
@@ -102,18 +102,23 @@ fn paging(
     let (context, after) = match continuation {
         Some(cursor) => {
             let [position] = cursor.after.values.as_slice() else {
-                return Err(invalid("the calendar cursor position is invalid"));
+                return Err(Failure::bad_request(
+                    ("the calendar cursor position is invalid"),
+                ));
             };
-            let identity = serde_json::to_string(position)
-                .map_err(|_| invalid("the calendar cursor position cannot be encoded"))?;
+            let identity = serde_json::to_string(position).map_err(|_| {
+                Failure::bad_request(("the calendar cursor position cannot be encoded"))
+            })?;
             if cursor.after.row_identity != identity {
-                return Err(invalid("the calendar cursor row identity is invalid"));
+                return Err(Failure::bad_request(
+                    ("the calendar cursor row identity is invalid"),
+                ));
             }
             (
                 cursor.context,
                 Some(
                     serde_json::from_value(position.clone())
-                        .map_err(|error| invalid(error.to_string()))?,
+                        .map_err(|error| Failure::bad_request((error.to_string())))?,
                 ),
             )
         }
@@ -144,10 +149,7 @@ fn paging(
         request_context
             .replay_clock(context.clock.clone())
             .map_err(|_| {
-                Failure::new(
-                    "stale_cursor",
-                    "the calendar context changed; run without the cursor",
-                )
+                Failure::stale_cursor("the calendar context changed; run without the cursor")
             })?,
     );
     Ok(Paging {
@@ -163,8 +165,7 @@ fn resolved(
     values: Vec<query_language::time::ResolvedTime>,
 ) -> Result<(), Failure> {
     if paging.resuming && paging.context.resolved_times != values {
-        return Err(Failure::new(
-            "stale_cursor",
+        return Err(Failure::stale_cursor(
             "the resolved calendar times changed; run without the cursor",
         ));
     }
@@ -180,8 +181,7 @@ fn ranking(paging: &mut Paging, program: &polylogue_store::query::Program) -> Re
         .as_ref()
         .map(|_| polylogue_store::vectors::writes().to_string());
     if paging.resuming && paging.context.versions.get("ranking") != current.as_ref() {
-        return Err(Failure::new(
-            "stale_cursor",
+        return Err(Failure::stale_cursor(
             "the ranking changed; run without the cursor",
         ));
     }
@@ -198,7 +198,7 @@ fn activity(
 ) -> Result<Value, Failure> {
     let size = size.unwrap_or(50);
     if size == 0 {
-        return Err(invalid("page size must be positive"));
+        return Err(Failure::bad_request(("page size must be positive")));
     }
     let mut result = timeline::page(
         reader,
@@ -277,7 +277,9 @@ pub fn timeline(
         if cell == date.last_of_month() {
             break;
         }
-        cell = cell.tomorrow().map_err(|e| invalid(e.to_string()))?;
+        cell = cell
+            .tomorrow()
+            .map_err(|e| Failure::bad_request((e.to_string())))?;
     }
     let (since, until) = polylogue_store::calendar::range(day, date)?;
     let usage = if undated || across_years {
@@ -364,13 +366,17 @@ pub fn cost(
     let day = &clock.day;
     let now = clock.now.as_millisecond();
     if undated && text.is_some() {
-        return Err(invalid("undated records cannot be placed within a date"));
+        return Err(Failure::bad_request(
+            ("undated records cannot be placed within a date"),
+        ));
     }
     if unknown_model && model.is_some() {
-        return Err(invalid("choose a recorded model or unknown model"));
+        return Err(Failure::bad_request(
+            ("choose a recorded model or unknown model"),
+        ));
     }
     if size == Some(0) {
-        return Err(invalid("page size must be positive"));
+        return Err(Failure::bad_request(("page size must be positive")));
     }
     let chosen = text.map(|s| date(Some(s), &clock)).transpose()?;
     let bounds = chosen
@@ -379,7 +385,9 @@ pub fn cost(
     let month = date(month.or(text), &clock)?.first_of_month();
     let month_bounds = polylogue_store::calendar::month(day, month)?;
     if month_bounds.1 <= month_bounds.0 {
-        return Err(invalid("calendar month has no representable interval"));
+        return Err(Failure::bad_request(
+            ("calendar month has no representable interval"),
+        ));
     }
     let program = polylogue_store::query::lower(&plan, &query_options)?;
     let mut times = program.resolved_times.clone();

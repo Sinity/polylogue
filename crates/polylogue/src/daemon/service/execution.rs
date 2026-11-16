@@ -32,7 +32,7 @@ pub(super) fn record<T>(
     let outcome = QueryRunOutcome {
         run: run.id.clone(),
         binding_hash,
-        run_hash: run.record_hash().map_err(|e| Failure::new("internal", e))?,
+        run_hash: run.record_hash().map_err(Failure::internal)?,
         at: completed_at(),
         outcome: match &result {
             Ok(_) => RunOutcome::Ok,

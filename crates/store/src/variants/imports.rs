@@ -85,32 +85,7 @@ pub fn declare_imports(
     }
     Ok(())
 }
-pub(super) fn history(conn: &Connection, reference: &Reference) -> Result<Option<ImportHistory>> {
-    if identify(conn, reference)?.is_none() {
-        return Ok(None);
-    }
-    let source = Source::reading(conn)?;
-    let mut statement=conn.prepare_cached(&source.sql("SELECT observed,input,chain,machine,actor,at FROM @source.variant_import WHERE ref=?1 ORDER BY machine,input,chain,actor,at,observed"))?;
-    let mut rows = statement.query([reference.to_string()])?;
-    let mut history = ImportHistory::default();
-    while let Some(row) = rows.next()? {
-        let at: String = row.get(5)?;
-        let attribution = ImportAttribution {
-            input: row.get(1)?,
-            chain: row.get(2)?,
-            machine: row.get(3)?,
-            actor: crate::encoding::Columns::id(row, 4)?,
-            at: Timestamp::parse_rfc3339(&at)
-                .ok_or_else(|| StoreError::stored(5, "import time is not an RFC 3339 time"))?,
-        };
-        if row.get::<_, bool>(0)? {
-            history.observed.push(attribution);
-        } else {
-            history.declared.push(attribution);
-        }
-    }
-    Ok(Some(history))
-}
+
 pub(super) fn copy(from: &Connection, to: &Connection) -> Result<()> {
     let source = Source::reading(from)?;
     let mut statement=from.prepare_cached(&source.sql("SELECT ref,variant,observed,input,chain,machine,actor,at FROM @source.variant_import ORDER BY ref,machine,input,chain,actor,at,observed"))?;
@@ -133,8 +108,4 @@ pub(super) fn copy(from: &Connection, to: &Connection) -> Result<()> {
     }
     Ok(())
 }
-impl Reader<'_> {
-    pub fn variant_imports(&self, reference: &Reference) -> Result<Option<ImportHistory>> {
-        history(self.conn()?, reference)
-    }
-}
+impl Reader<'_> {}

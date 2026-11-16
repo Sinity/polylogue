@@ -38,21 +38,13 @@ pub(crate) enum Component {
     Index,
 }
 
-fn invalid(message: &str) -> Failure {
-    Failure::new("bad_request", message)
-}
-
-fn io(error: impl ToString) -> Failure {
-    Failure::new("io", error.to_string())
-}
-
 fn write(file: &mut File, line: Line) -> Result<(), Failure> {
     let name = match &line {
         Line::Begin { .. } => "begin",
         Line::Change { .. } => "record",
         Line::Complete { .. } => "complete",
     };
-    crate::protocol::stream::event(file, name, &line).map_err(io)
+    crate::protocol::stream::event(file, name, &line).map_err(Failure::io)
 }
 
 fn check_change(
@@ -74,7 +66,7 @@ fn check_change(
         || !change["seq"].as_i64().is_some_and(|n| n >= 0 && n <= bound)
     {
         return Err(Failure::new(
-            "store",
+            polylogue_model::Code::Store,
             "a change reference is outside its declared component or view",
         ));
     }
@@ -89,7 +81,10 @@ pub(crate) fn prepare_with(
     mut file: File,
 ) -> Result<File, Failure> {
     let previous = since
-        .map(|s| ChangePosition::parse(s).ok_or_else(|| invalid("since takes GEN:COUNTER:ARCHIVE")))
+        .map(|s| {
+            ChangePosition::parse(s)
+                .ok_or_else(|| Failure::bad_request(("since takes GEN:COUNTER:ARCHIVE")))
+        })
         .transpose()?;
     let target = reader.change_position()?;
     let generation_changed = previous
@@ -101,7 +96,9 @@ pub(crate) fn prepare_with(
             .as_ref()
             .is_some_and(|p| p.index > target.index || p.archive > target.archive)
     {
-        return Err(invalid("the change position is ahead of the archive"));
+        return Err(Failure::bad_request(
+            ("the change position is ahead of the archive"),
+        ));
     }
     let position = previous.as_ref().map(ToString::to_string);
     write(
@@ -180,8 +177,8 @@ pub(crate) fn prepare_with(
             replacement,
         },
     )?;
-    file.flush().map_err(io)?;
-    file.seek(SeekFrom::Start(0)).map_err(io)?;
+    file.flush().map_err(Failure::io)?;
+    file.seek(SeekFrom::Start(0)).map_err(Failure::io)?;
     Ok(file)
 }
 

@@ -94,13 +94,7 @@ pub fn process(reader: &Reader<'_>, selection: &Selection, top: usize) -> Result
          ORDER BY m.session_pk, m.session_order, m.id, b.idx"
     ))?;
     let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| {
-        Ok((
-            r.get::<_, String>(0)?,
-            r.get::<_, String>(1)?,
-            r.get::<_, String>(2)?,
-            r.get::<_, String>(3)?,
-            r.get::<_, Option<i64>>(4)?,
-        ))
+        <(String, String, String, String, Option<i64>)>::try_from(r)
     })?;
     let mut pairs: HashMap<(String, String), (u64, u64)> = HashMap::new();
     let mut triples: HashMap<String, u64> = HashMap::new();

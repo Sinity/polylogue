@@ -2,6 +2,7 @@
 //! through its ingress, and one confirmed-stream consumer writes the local
 //! index. Captures and authored writes wait in the producer spool through
 //! outages and retries, under their original identities.
+use polylogue_model::LockExt;
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -45,6 +46,11 @@ pub enum Error {
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
+impl Error {
+    pub fn invalid(message: impl ToString) -> Self {
+        Self::Invalid(message.to_string())
+    }
+}
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -63,9 +69,9 @@ impl From<Error> for polylogue_store::StoreError {
     fn from(error: Error) -> Self {
         match error {
             Error::Store(error) => error,
-            Error::Invalid(reason) => polylogue_store::StoreError::Invalid(reason),
+            Error::Invalid(reason) => polylogue_store::StoreError::invalid(reason),
             Error::Refused { name, reason } => {
-                polylogue_store::StoreError::Invalid(format!("{name}: {reason}"))
+                polylogue_store::StoreError::invalid(format!("{name}: {reason}"))
             }
             other => polylogue_store::StoreError::Sinex(other.to_string()),
         }
@@ -148,7 +154,7 @@ impl Config {
     /// belong to the startup boundary.
     pub fn parse(text: &str) -> Result<Self> {
         let config: Self =
-            toml::from_str(text).map_err(|error| Error::Invalid(error.to_string()))?;
+            toml::from_str(text).map_err(|error| Error::invalid(error.to_string()))?;
         config.check().map_err(Error::Invalid)?;
         Ok(config)
     }
@@ -199,9 +205,7 @@ impl Sinex {
     /// Capture can prepare writes while Sinex is unavailable.
     pub fn open(config: &Config, authentication: &Authentication, host: &str) -> Result<Self> {
         if host.trim().is_empty() {
-            return Err(Error::Invalid(
-                "a configured host identity is required".into(),
-            ));
+            return Err(Error::invalid("a configured host identity is required"));
         }
         // Backup control must remain responsive while the synchronous archive
         // loop is idle. One runtime worker also drives the NATS connection.
@@ -240,7 +244,7 @@ impl Sinex {
             client: Mutex::new(
                 self.client
                     .get_mut()
-                    .map_err(|_| Error::Invalid("the Sinex connection panicked".into()))?
+                    .map_err(|_| Error::invalid("the Sinex connection panicked"))?
                     .take(),
             ),
             host: self.host.clone(),
@@ -249,10 +253,7 @@ impl Sinex {
             stopping: Some(stop.clone()),
         };
         let sender = sender::Sender::start(worker, stop)?;
-        self.spool
-            .lock()
-            .map_err(|_| Error::Invalid("producer spool panicked".into()))?
-            .set_waker(sender.waker());
+        self.spool.locked().set_waker(sender.waker());
         self.sender = Some(sender);
         self.stopping = None;
         self.send_pending();
@@ -269,7 +270,8 @@ impl Sinex {
     /// Reads and connection checks record their outcome apart from sending.
     fn read_client<T>(&self, work: impl AsyncFnOnce(&mut Client) -> Result<T>) -> Result<T> {
         let result = self.client_operation(work);
-        if let Ok(mut health) = self.health.lock() {
+        {
+            let mut health = self.health.locked();
             health.error = result.as_ref().err().map(ToString::to_string);
         }
         result
@@ -277,10 +279,7 @@ impl Sinex {
 
     /// Executes one operation under this connection's lock. Sending uses its own connection.
     fn client_operation<T>(&self, work: impl AsyncFnOnce(&mut Client) -> Result<T>) -> Result<T> {
-        let mut client = self
-            .client
-            .lock()
-            .map_err(|_| Error::Invalid("the Sinex connection panicked".into()))?;
+        let mut client = self.client.locked();
         if client.is_none() {
             let connect = Client::connect_shared(
                 &self.config,
@@ -299,7 +298,8 @@ impl Sinex {
             match connected {
                 Ok(connected) => *client = Some(connected),
                 Err(error) => {
-                    if let Ok(mut health) = self.health.lock() {
+                    {
+                        let mut health = self.health.locked();
                         health.reachable = Some(!matches!(error, Error::Unreachable(_)));
                     }
                     return Err(error);
@@ -313,7 +313,8 @@ impl Sinex {
                 None => future.await,
             }
         });
-        if let Ok(mut health) = self.health.lock() {
+        {
+            let mut health = self.health.locked();
             health.reachable = Some(!matches!(result, Err(Error::Unreachable(_))));
         }
         if matches!(result, Err(Error::Unreachable(_))) {
@@ -327,6 +328,7 @@ impl Sinex {
 
     /// Fetch a decoded material range in byte-budgeted pages. Continue using
     /// the returned offset and the same exclusive end until `next_offset` is absent.
+    #[cfg(any(test, feature = "fixture"))]
     pub fn fetch_material_bytes(
         &self,
         material: sinex_model::MaterialId,
@@ -344,11 +346,6 @@ impl Sinex {
                 })
                 .await
         })
-    }
-
-    /// Sinex's store root.
-    pub fn store_root(&self) -> Result<PathBuf> {
-        Ok(self.config.store.clone())
     }
 
     /// Whether Sinex answers.

@@ -76,3 +76,62 @@ fn explicit_unknown_attachment_direction_keeps_known_wire_values() {
     }
     assert_eq!(Attachment::default().direction, AttachmentDirection::Input);
 }
+
+#[test]
+fn attachments_keep_direct_and_tool_result_source_order() {
+    let first = Attachment {
+        name: Some("first.png".into()),
+        media_type: Some("image/png".into()),
+        direction: AttachmentDirection::Input,
+        ..Attachment::default()
+    };
+    let second = Attachment {
+        name: Some("second.txt".into()),
+        direction: AttachmentDirection::Output,
+        ..Attachment::default()
+    };
+    assert_eq!(
+        Block::Image(first.clone()).attachments(),
+        std::slice::from_ref(&first)
+    );
+    assert_eq!(
+        Block::File(second.clone()).attachments(),
+        std::slice::from_ref(&second)
+    );
+    let result = Block::ToolResult {
+        reported_duration_ms: None,
+        call_id: None,
+        outcome: ToolOutcome::Ok,
+        output: None,
+        data: None,
+        attachments: vec![first.clone(), second.clone()],
+    };
+    assert_eq!(result.attachments(), &[first, second]);
+    let without_attachments = [
+        Block::Text {
+            text: "text".into(),
+        },
+        Block::Thinking {
+            text: Some("thought".into()),
+            signature: None,
+            redacted: false,
+        },
+        Block::ToolCall {
+            call_id: None,
+            tool: None,
+            action: ToolAction::Other,
+            input: serde_json::json!({"attachments": [{"name": "input.json"}]}),
+            written_text: None,
+            command: None,
+            path: None,
+            run_by_script: false,
+        },
+        Block::Other {
+            type_name: "outside".into(),
+            data: serde_json::json!({}),
+        },
+    ];
+    for block in without_attachments {
+        assert_eq!(block.attachments(), &[]);
+    }
+}

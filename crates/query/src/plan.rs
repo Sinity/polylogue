@@ -129,6 +129,7 @@ impl Plan {
     pub fn bound_query(&self) -> &BoundQuery {
         &self.original
     }
+    #[cfg(test)]
     pub fn identity_query(&self) -> &Query {
         &self.identity
     }
@@ -239,10 +240,9 @@ fn prepare_inner(
                 continue;
             }
             if stack.contains(&name) {
-                return Err(QueryError::Invalid {
-                    message: format!("recursive saved query {name:?}"),
-                    position: 0,
-                });
+                return Err(QueryError::invalid(format!(
+                    "recursive saved query {name:?}"
+                )));
             }
             let definition = crate::compile::saved_definition(text, 0, &name, options)?;
             if let crate::SavedQueryBody::Available {
@@ -258,11 +258,9 @@ fn prepare_inner(
                         .find(|existing| existing.question == node.question)
                     {
                         if *existing != node {
-                            return Err(QueryError::Invalid {
-                                message: "one saved question has conflicting captured bodies"
-                                    .into(),
-                                position: 0,
-                            });
+                            return Err(QueryError::invalid(
+                                "one saved question has conflicting captured bodies",
+                            ));
                         }
                     } else {
                         saved_definitions.push(node);
@@ -281,10 +279,9 @@ fn prepare_inner(
             let nested = prepare_inner(definition.executable_text()?, options, resolve, stack)?;
             stack.pop();
             if nested.question_id != definition.hash {
-                return Err(QueryError::Invalid {
-                    message: format!("saved query {name:?} differs from its declared hash"),
-                    position: 0,
-                });
+                return Err(QueryError::invalid(format!(
+                    "saved query {name:?} differs from its declared hash"
+                )));
             }
             let object = nested.query_object()?;
             saved_definitions.push(objects::root_definition(&object));

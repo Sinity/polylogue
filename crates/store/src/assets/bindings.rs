@@ -5,6 +5,7 @@
 //! and pinned source versions; a binding stated by an older reading cannot
 //! create one.
 use super::{AssetSource, AttachmentState, ObservedMember};
+use crate::ConnExt as _;
 use crate::{Reader, Result, StoreError};
 use polylogue_model::{
     BlobHash, MessageId, attachment_binding::AttachmentBinding, bundle::MessageRecord,
@@ -65,6 +66,7 @@ impl ValidatedMember {
     pub fn observation(&self) -> &str {
         &self.observation
     }
+    #[cfg(any(test, feature = "fixture"))]
     pub fn for_candidate(self, candidate: u64) -> CandidateMember {
         CandidateMember {
             candidate,
@@ -106,15 +108,17 @@ impl AttachmentBindingRecord {
     ) -> Result<Self> {
         record
             .validate()
-            .map_err(|_| invalid("invalid attachment binding record"))?;
+            .map_err(|_| crate::StoreError::invalid("invalid attachment binding record"))?;
         if context.message != record.message.id || context.source_version != record.source_version {
-            return Err(invalid("binding context differs from its message source"));
+            return Err(crate::StoreError::invalid(
+                "binding context differs from its message source",
+            ));
         }
         let claim = record
             .bindings
             .get(binding)
             .cloned()
-            .ok_or_else(|| invalid("missing attachment binding slot"))?;
+            .ok_or_else(|| crate::StoreError::invalid("missing attachment binding slot"))?;
         let value = Self {
             context,
             claim,
@@ -141,21 +145,25 @@ impl AttachmentBindingRecord {
     pub(crate) fn validate(&self) -> Result<()> {
         self.claim
             .validate()
-            .map_err(|_| invalid("invalid stated attachment binding"))?;
+            .map_err(|_| crate::StoreError::invalid("invalid stated attachment binding"))?;
         if self.context.input.is_empty()
             || self.context.chain <= 0
             || self.context.import_id.is_empty()
             || self.context.source_version != self.claim.source_version
             || self.claim.source_id.is_empty()
         {
-            return Err(invalid("invalid attachment binding context"));
+            return Err(crate::StoreError::invalid(
+                "invalid attachment binding context",
+            ));
         }
         for association in &self.members {
             let byte_match = &association.witness;
             let candidate = usize::try_from(association.candidate)
                 .ok()
                 .and_then(|index| self.claim.candidates.get(index))
-                .ok_or_else(|| invalid("attachment byte match has no candidate"))?;
+                .ok_or_else(|| {
+                    crate::StoreError::invalid("attachment byte match has no candidate")
+                })?;
             if byte_match.version != 1
                 || byte_match.observation.is_empty()
                 || byte_match.member.import_id != self.context.import_id
@@ -166,7 +174,7 @@ impl AttachmentBindingRecord {
                 || byte_match.member.hash != candidate.hash
                 || byte_match.member.size != candidate.size
             {
-                return Err(invalid(
+                return Err(crate::StoreError::invalid(
                     "attachment byte match differs from its receiving candidate",
                 ));
             }
@@ -203,7 +211,9 @@ impl PinnedMember<'_, '_> {
     }
     pub fn read_range(&self, range: Range<u64>) -> Result<Vec<u8>> {
         if range.start > range.end || range.end > self.member.size {
-            return Err(invalid("attachment range is outside its pinned bytes"));
+            return Err(crate::StoreError::invalid(
+                "attachment range is outside its pinned bytes",
+            ));
         }
         if self.member.size == 0 {
             let pin = pinned_source(
@@ -215,7 +225,9 @@ impl PinnedMember<'_, '_> {
                 None,
                 Some(&self.member.source_version),
             )?
-            .ok_or_else(|| invalid("pinned empty attachment source is unavailable"))?;
+            .ok_or_else(|| {
+                crate::StoreError::invalid("pinned empty attachment source is unavailable")
+            })?;
             return super::empty::read(self.reader, &pin);
         }
         let blobs = self.reader.blob_reader()?;
@@ -237,10 +249,10 @@ impl PinnedMember<'_, '_> {
             None,
             Some(&self.member.source_version),
         )?
-        .ok_or_else(|| invalid("pinned attachment source is unavailable"))?;
+        .ok_or_else(|| crate::StoreError::invalid("pinned attachment source is unavailable"))?;
         let hash = hash_member(self.reader, &self.member.input, self.member.chain, &pin)?;
         if hash != self.member.hash {
-            return Err(invalid(
+            return Err(crate::StoreError::invalid(
                 "pinned attachment hash differs from its byte match",
             ));
         }
@@ -265,9 +277,6 @@ impl AttachmentPin<'_, '_> {
     }
 }
 
-fn invalid(message: &str) -> StoreError {
-    StoreError::Invalid(message.into())
-}
 fn source_prefix(conn: &Connection) -> Result<&'static str> {
     Ok(match crate::source::Source::of(conn)? {
         crate::source::Source::Standalone => "",
@@ -289,9 +298,9 @@ fn pinned_source(
     if size == 0 {
         return super::empty::source(index, conn, prefix, input, chain, observation, version);
     }
-    let size_sql =
-        i64::try_from(size).map_err(|_| invalid("attachment exceeds archive address space"))?;
-    let exists = conn.query_row(&format!("SELECT EXISTS(SELECT 1 FROM {prefix}revision WHERE input=?1 AND chain=?2 AND length=?3)"), params![input,chain,size_sql], |row| row.get::<_,bool>(0))?;
+    let size_sql = i64::try_from(size)
+        .map_err(|_| crate::StoreError::invalid("attachment exceeds archive address space"))?;
+    let exists = conn.scalar::<bool>(&format!("SELECT EXISTS(SELECT 1 FROM {prefix}revision WHERE input=?1 AND chain=?2 AND length=?3)"), params![input,chain,size_sql])?;
     if !exists {
         return Ok(None);
     }
@@ -321,11 +330,11 @@ fn pinned_source(
         }
         let hash = BlobHash(
             hash.try_into()
-                .map_err(|_| invalid("invalid pinned attachment hash"))?,
+                .map_err(|_| crate::StoreError::invalid("invalid pinned attachment hash"))?,
         );
         end = offset
             .checked_add(length)
-            .ok_or_else(|| invalid("attachment extent overflow"))?;
+            .ok_or_else(|| crate::StoreError::invalid("attachment extent overflow"))?;
         count += 1;
         digest.update(&offset.to_le_bytes());
         digest.update(&length.to_le_bytes());
@@ -397,10 +406,12 @@ pub(super) fn hash_member(
         digest.update(&buffer[..read]);
         length = length
             .checked_add(read as u64)
-            .ok_or_else(|| invalid("attachment size overflow"))?;
+            .ok_or_else(|| crate::StoreError::invalid("attachment size overflow"))?;
     }
     if length != size {
-        return Err(invalid("pinned attachment length differs"));
+        return Err(crate::StoreError::invalid(
+            "pinned attachment length differs",
+        ));
     }
     Ok(BlobHash(*digest.finalize().as_bytes()))
 }
@@ -509,7 +520,7 @@ pub(super) fn asset_match(
         Some(&member.source_version),
     )?
     .filter(|pin| pin.version == member.source_version)
-    .ok_or_else(|| invalid("attachment member pin is unavailable"))?;
+    .ok_or_else(|| crate::StoreError::invalid("attachment member pin is unavailable"))?;
     Ok(super::AssetMatch {
         input: member.input.clone(),
         chain: member.chain,
@@ -585,7 +596,7 @@ fn stored_bindings(
         let encoded_claim: Vec<u8> = row.get(9)?;
         let claim: AttachmentBinding = serde_json::from_slice(&encoded_claim)?;
         if serde_json::to_vec(&claim)? != encoded_claim {
-            return Err(invalid(
+            return Err(crate::StoreError::invalid(
                 "attachment binding key is not in canonical JSON form",
             ));
         }
@@ -595,29 +606,28 @@ fn stored_bindings(
             || claim.namespace.chain != row.get::<_, i64>(7)?
             || claim.namespace.import_id != row.get::<_, String>(8)?
         {
-            return Err(invalid(
+            return Err(crate::StoreError::invalid(
                 "attachment binding key differs from its declared namespace or slot",
             ));
         }
-        let selection = BindingSelection {
-            context: BindingContext {
-                message: message.clone(),
-                source_version: BlobHash(
-                    version
-                        .try_into()
-                        .map_err(|_| invalid("invalid binding source version"))?,
-                ),
-                input: row.get(1)?,
-                chain: row.get(2)?,
-                import_id: row.get(3)?,
-            },
-            claim,
-        };
+        let selection =
+            BindingSelection {
+                context: BindingContext {
+                    message: message.clone(),
+                    source_version: BlobHash(version.try_into().map_err(|_| {
+                        crate::StoreError::invalid("invalid binding source version")
+                    })?),
+                    input: row.get(1)?,
+                    chain: row.get(2)?,
+                    import_id: row.get(3)?,
+                },
+                claim,
+            };
         let body: Vec<u8> = row.get(10)?;
         let record: AttachmentBindingRecord = crate::encoding::unpack_json(&body)?;
         record.validate()?;
         if record.selection() != selection {
-            return Err(invalid(
+            return Err(crate::StoreError::invalid(
                 "attachment binding key differs from its stored record",
             ));
         }
@@ -688,6 +698,7 @@ pub(crate) fn project(
 
 impl Reader<'_> {
     /// Hashes the stored bytes in fixed-size chunks before recording a byte match.
+    #[cfg(any(test, feature = "fixture"))]
     pub fn validate_attachment_member(
         &self,
         source: &ObservedMember,
@@ -698,13 +709,19 @@ impl Reader<'_> {
             || source.membership.import_id.is_empty()
             || source.membership.member.is_empty()
         {
-            return Err(invalid("invalid receiving import member"));
+            return Err(crate::StoreError::invalid(
+                "invalid receiving import member",
+            ));
         }
         let Some((chain, length)) = observed_pin(self.conn()?, "source_", source)? else {
-            return Err(invalid("receiving member has no source observation"));
+            return Err(crate::StoreError::invalid(
+                "receiving member has no source observation",
+            ));
         };
         if length != size {
-            return Err(invalid("receiving member size differs from its candidate"));
+            return Err(crate::StoreError::invalid(
+                "receiving member size differs from its candidate",
+            ));
         }
         let pin = pinned_source(
             (self.conn()?, self.conn()?),
@@ -715,9 +732,13 @@ impl Reader<'_> {
             Some(&source.observation),
             None,
         )?
-        .ok_or_else(|| invalid("receiving member has no pinned stored endpoint"))?;
+        .ok_or_else(|| {
+            crate::StoreError::invalid("receiving member has no pinned stored endpoint")
+        })?;
         if hash_member(self, &source.input, chain, &pin)? != hash {
-            return Err(invalid("receiving member hash differs from its candidate"));
+            return Err(crate::StoreError::invalid(
+                "receiving member hash differs from its candidate",
+            ));
         }
         Ok(ValidatedMember {
             version: 1,
@@ -746,7 +767,7 @@ impl Reader<'_> {
         let record: AttachmentBindingRecord = crate::encoding::unpack_json(&body)?;
         record.validate()?;
         if record.selection() != *selection {
-            return Err(invalid(
+            return Err(crate::StoreError::invalid(
                 "attachment binding key differs from its stored record",
             ));
         }
@@ -830,6 +851,7 @@ impl Reader<'_> {
 }
 
 impl<'pool> Reader<'pool> {
+    #[cfg(any(test, feature = "fixture"))]
     pub fn pin_attachment<'reader>(
         &'reader self,
         selection: &BindingSelection,

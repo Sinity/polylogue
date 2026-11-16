@@ -22,7 +22,7 @@ pub(super) fn run(d: &Daemon, manifest: Option<&Path>) -> Answer<crate::protocol
         Some(path) => {
             let mut file = match new_manifest(path) {
                 Ok(file) => file,
-                Err(message) => return error("bad_request", message),
+                Err(message) => return error(polylogue_model::Code::BadRequest, message),
             };
             let found = {
                 let mut out = std::io::BufWriter::new(file.as_file_mut());

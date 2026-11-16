@@ -312,25 +312,20 @@ pub enum IndicatorKind {
     Variant,
 }
 
-impl IndicatorKind {
-    /// The stored name, as JSON spells it.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Continues => "continues",
-            Self::Branches => "branches",
-            Self::Compacted => "compacted",
-            Self::Microcompacted => "microcompacted",
-            Self::RateLimited => "rate_limited",
-            Self::ModelSwitch => "model_switch",
-            Self::AwaySummary => "away_summary",
-            Self::Harness => "harness",
-            Self::Turn => "turn",
-            Self::LinkIssue => "link_issue",
-            Self::Stale => "stale",
-            Self::Variant => "variant",
-        }
-    }
-}
+stored_names!(IndicatorKind {
+    Continues => "continues",
+    Branches => "branches",
+    Compacted => "compacted",
+    Microcompacted => "microcompacted",
+    RateLimited => "rate_limited",
+    ModelSwitch => "model_switch",
+    AwaySummary => "away_summary",
+    Harness => "harness",
+    Turn => "turn",
+    LinkIssue => "link_issue",
+    Stale => "stale",
+    Variant => "variant",
+});
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -540,21 +535,16 @@ pub enum TargetKind {
     Authored,
     Query,
 }
-impl TargetKind {
-    /// The stored name, as JSON spells it.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Session => "session",
-            Self::Message => "message",
-            Self::Block => "block",
-            Self::Document => "document",
-            Self::TextFragment => "text_fragment",
-            Self::Event => "event",
-            Self::Authored => "authored",
-            Self::Query => "query",
-        }
-    }
-}
+stored_names!(TargetKind {
+    Session => "session",
+    Message => "message",
+    Block => "block",
+    Document => "document",
+    TextFragment => "text_fragment",
+    Event => "event",
+    Authored => "authored",
+    Query => "query",
+});
 /// A bounded page. Full reads emit the same parts without collecting a session.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]

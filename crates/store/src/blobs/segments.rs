@@ -1,4 +1,6 @@
 //! Product hash lookup over immutable extents in the shared segment container.
+use crate::ConnExt as _;
+use crate::{OptionExt as _, ResultExt as _};
 use crate::{Result, StoreError};
 use polylogue_model::BlobHash;
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
@@ -75,7 +77,7 @@ impl Blobs {
         let mut slot = self
             .connection
             .lock()
-            .map_err(|_| StoreError::Invalid("blob catalog lock poisoned".into()))?;
+            .or_invalid("blob catalog lock poisoned")?;
         if slot.is_none() {
             *slot = Some(Connection::open_with_flags(
                 &self.catalog,
@@ -176,13 +178,10 @@ pub(crate) fn load_extent(
     schema: &str,
     hash: &hashed_blobs::Hash,
 ) -> Result<Option<hashed_blobs::Extent>> {
-    let bytes: Option<Vec<u8>> = conn
-        .query_row(
-            &format!("SELECT storage FROM {schema}blob WHERE hash=?1"),
-            [hash.0.as_slice()],
-            |row| row.get(0),
-        )
-        .optional()?;
+    let bytes: Option<Vec<u8>> = conn.scalar_optional(
+        &format!("SELECT storage FROM {schema}blob WHERE hash=?1"),
+        [hash.0.as_slice()],
+    )?;
     bytes
         .map(|bytes| hashed_blobs::Extent::decode(&bytes).map_err(StoreError::from))
         .transpose()
@@ -211,15 +210,13 @@ pub(crate) fn insert_extent(conn: &Connection, extent: &hashed_blobs::Extent) ->
 
 pub(crate) fn open_writer(conn: &Connection, root: &Path) -> Result<hashed_blobs::SegmentWriter> {
     let end: i64 = conn
-        .query_row(
+        .scalar_optional(
             "SELECT committed_end FROM segment WHERE name=?1",
             ["segments/current.hb"],
-            |row| row.get(0),
-        )
-        .optional()?
+        )?
         .unwrap_or(0);
     let end = u64::try_from(end)
-        .map_err(|_| StoreError::Invalid("negative committed segment end".into()))?;
+        .map_err(|_| crate::StoreError::stored(0, "negative committed segment end"))?;
     Ok(hashed_blobs::SegmentWriter::open(
         root,
         "segments/current.hb",

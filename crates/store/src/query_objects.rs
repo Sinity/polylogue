@@ -1,5 +1,6 @@
 //! Questions and their executions, shared by the writer and the confirmed stream.
 
+use crate::ConnExt as _;
 use crate::{Reader, Result, StoreError, primary::Product, source::Source};
 use polylogue_model::query_objects::{
     ExecutionBinding, QueryEdge, QueryObject, QueryRun, QueryRunOutcome, RunBinding,
@@ -8,43 +9,46 @@ use query_language::identity::{QuestionId, question_id_from_normal_form};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::BTreeMap;
 
-fn invalid(message: impl Into<String>) -> StoreError {
-    StoreError::Invalid(message.into())
-}
-
 fn hash(
     normal_form: &serde_json::Value,
     parameters: &BTreeMap<String, String>,
 ) -> Result<QuestionId> {
     question_id_from_normal_form(normal_form, parameters)
-        .map_err(|error| invalid(error.to_string()))
+        .map_err(|error| crate::StoreError::invalid(error.to_string()))
 }
 
 pub(crate) fn validate_object(object: &QueryObject) -> Result<()> {
-    polylogue_query::plan::validate_object(object).map_err(|error| invalid(error.to_string()))?;
+    polylogue_query::plan::validate_object(object)
+        .map_err(|error| crate::StoreError::invalid(error.to_string()))?;
     validate_integrity(object)
 }
 
 pub(crate) fn validate_integrity(object: &QueryObject) -> Result<()> {
     if hash(&object.normal_form, &object.parameters)? != object.id {
-        return Err(invalid("query hash does not identify its normal form"));
+        return Err(crate::StoreError::invalid(
+            "query hash does not identify its normal form",
+        ));
     }
     let mut definitions = BTreeMap::new();
     for definition in &object.definitions {
         if hash(&definition.normal_form, &definition.parameters)? != definition.question {
-            return Err(invalid(
+            return Err(crate::StoreError::invalid(
                 "query definition hash does not identify its normal form",
             ));
         }
         if let Some(prior) = definitions.insert(definition.question.to_string(), definition)
             && prior != definition
         {
-            return Err(invalid("one query definition has conflicting saved bodies"));
+            return Err(crate::StoreError::invalid(
+                "one query definition has conflicting saved bodies",
+            ));
         }
     }
     for dependency in &object.dependencies {
         if !definitions.contains_key(&dependency.to_string()) {
-            return Err(invalid("a query dependency has no saved definition"));
+            return Err(crate::StoreError::invalid(
+                "a query dependency has no saved definition",
+            ));
         }
     }
     for edge in &object.edges {
@@ -52,10 +56,12 @@ pub(crate) fn validate_integrity(object: &QueryObject) -> Result<()> {
             QueryEdge::Saved { query } | QueryEdge::Combine { query } | QueryEdge::In { query }
                 if !object.dependencies.contains(query) =>
             {
-                return Err(invalid("a composition edge has no saved query dependency"));
+                return Err(crate::StoreError::invalid(
+                    "a composition edge has no saved query dependency",
+                ));
             }
             QueryEdge::Result { result } if result.is_empty() => {
-                return Err(invalid(
+                return Err(crate::StoreError::invalid(
                     "a query composition edge has an empty result identity",
                 ));
             }
@@ -118,7 +124,7 @@ pub(crate) fn validate_result_bindings(
             )));
         };
         if bound.schema != output.schema {
-            return Err(invalid(format!(
+            return Err(crate::StoreError::invalid(format!(
                 "saved result schema {reference} differs from its bound column metadata"
             )));
         }
@@ -128,28 +134,34 @@ pub(crate) fn validate_result_bindings(
 
 pub(crate) fn validate_run(run: &QueryRun) -> Result<()> {
     if run.machine.trim().is_empty() {
-        return Err(invalid("a query run requires its accepting machine"));
+        return Err(crate::StoreError::invalid(
+            "a query run requires its accepting machine",
+        ));
     }
     if polylogue_model::ChangePosition::parse(&run.read_at.to_string()).as_ref()
         != Some(&run.read_at)
     {
-        return Err(invalid("a query run has an invalid read position"));
+        return Err(crate::StoreError::invalid(
+            "a query run has an invalid read position",
+        ));
     }
     match &run.binding {
         RunBinding::Original { execution } => validate_execution(run, execution),
         RunBinding::OriginalObject { execution } => {
             if run.question.is_some() {
-                return Err(invalid("an object read has no query question"));
+                return Err(crate::StoreError::invalid(
+                    "an object read has no query question",
+                ));
             }
             execution
                 .validate()
-                .map_err(|error| invalid(error.to_string()))
+                .map_err(|error| crate::StoreError::invalid(error.to_string()))
         }
     }
 }
 fn validate_execution(run: &QueryRun, execution: &ExecutionBinding) -> Result<()> {
     if Some(execution.replay.context.question) != run.question {
-        return Err(invalid(
+        return Err(crate::StoreError::invalid(
             "a query run's replay context names another question",
         ));
     }
@@ -165,7 +177,7 @@ fn validate_execution(run: &QueryRun, execution: &ExecutionBinding) -> Result<()
             .get(key)
             .is_some_and(|recorded| recorded != &expected)
         {
-            return Err(invalid(
+            return Err(crate::StoreError::invalid(
                 "a query run's replay context contradicts its read position",
             ));
         }
@@ -173,13 +185,13 @@ fn validate_execution(run: &QueryRun, execution: &ExecutionBinding) -> Result<()
     if let Some(scope) = execution.replay.context.versions.get("scope")
         && execution.replay.scope_fingerprint.as_ref() != Some(scope)
     {
-        return Err(invalid(
+        return Err(crate::StoreError::invalid(
             "a query run's replay context contradicts its grant scope",
         ));
     }
     execution
         .validate_presentation()
-        .map_err(|error| invalid(error.to_string()))?;
+        .map_err(|error| crate::StoreError::invalid(error.to_string()))?;
     Ok(())
 }
 
@@ -192,13 +204,10 @@ pub(crate) fn equivalent(left: &QueryObject, right: &QueryObject) -> bool {
 
 pub(crate) fn known_object(conn: &Connection, object: &QueryObject) -> Result<bool> {
     let source = Source::of(conn)?;
-    let bytes: Option<Vec<u8>> = conn
-        .query_row(
-            &source.sql("SELECT object FROM @source.query WHERE hash=?1"),
-            [object.id.to_string()],
-            |row| row.get(0),
-        )
-        .optional()?;
+    let bytes: Option<Vec<u8>> = conn.scalar_optional(
+        &source.sql("SELECT object FROM @source.query WHERE hash=?1"),
+        [object.id.to_string()],
+    )?;
     let Some(bytes) = bytes else {
         return Ok(false);
     };
@@ -251,7 +260,7 @@ pub(crate) fn known_run_outcome(conn: &Connection, outcome: &QueryRunOutcome) ->
 
 fn check_outcome_integrity(value: &QueryRunOutcome, action: &str, intent: &str) -> Result<()> {
     if value.binding_hash.to_string() != action || value.run_hash.to_string() != intent {
-        return Err(invalid(
+        return Err(crate::StoreError::invalid(
             "stored run outcome failed its action or invocation integrity check",
         ));
     }
@@ -371,8 +380,9 @@ pub(crate) fn apply_run(
             };
         }
     }
-    let order = i64::try_from(source_order)
-        .map_err(|_| invalid("query run order exceeds SQLite's integer range"))?;
+    let order = i64::try_from(source_order).map_err(|_| {
+        crate::StoreError::invalid("query run order exceeds SQLite's integer range")
+    })?;
     let object_ref = match &run.binding {
         RunBinding::OriginalObject { execution } => Some(execution.reference.to_string()),
         _ => None,
@@ -389,14 +399,16 @@ pub(crate) fn apply_run(
 
 pub(crate) fn validate_run_outcome(outcome: &QueryRunOutcome) -> Result<()> {
     if outcome.exact && outcome.count.is_none() {
-        return Err(invalid(
+        return Err(crate::StoreError::invalid(
             "a run outcome requires its run and a known exact count",
         ));
     }
     if let polylogue_model::query_objects::RunOutcome::Error { kind } = &outcome.outcome
         && kind.is_empty()
     {
-        return Err(invalid("a failed query run requires its error kind"));
+        return Err(crate::StoreError::invalid(
+            "a failed query run requires its error kind",
+        ));
     }
     Ok(())
 }
@@ -458,7 +470,7 @@ pub(crate) fn clear(conn: &Connection) -> Result<()> {
 
 fn prefix(prefix: &str) -> Result<String> {
     if !(12..=64).contains(&prefix.len()) || !prefix.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(invalid(
+        return Err(crate::StoreError::invalid(
             "a query hash requires 12 to 64 hexadecimal characters",
         ));
     }
@@ -482,7 +494,7 @@ pub(crate) fn lookup_run(
                 || value.binding_hash()?.to_string() != action
                 || value.record_hash()?.to_string() != intent
             {
-                return Err(invalid(
+                return Err(crate::StoreError::invalid(
                     "stored run beginning failed its action or invocation integrity check",
                 ));
             }
@@ -525,15 +537,13 @@ pub(crate) fn query_object_on(
     let mut statement = conn.prepare(&source.sql(
         "SELECT hash,object FROM @source.query WHERE hash LIKE ?1 || '%' ORDER BY hash LIMIT 2",
     ))?;
-    let bodies = statement.query_map([&key], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
-    })?;
+    let bodies = statement.query_map([&key], |row| <(String, Vec<u8>)>::try_from(row))?;
     for body in bodies {
         let (stored, body) = body?;
         let object: QueryObject = crate::encoding::unpack_json(&body)?;
         validate_integrity(&object)?;
         if object.id.to_string() != stored {
-            return Err(invalid(
+            return Err(crate::StoreError::invalid(
                 "saved query body disagrees with its stored identity",
             ));
         }
@@ -564,7 +574,9 @@ pub(crate) fn query_object_on(
         })?;
     }
     if found.len() > 1 {
-        return Err(invalid(format!("query hash prefix {key} is ambiguous")));
+        return Err(crate::StoreError::invalid(format!(
+            "query hash prefix {key} is ambiguous"
+        )));
     }
     Ok(found.into_values().next())
 }
@@ -633,31 +645,6 @@ impl Reader<'_> {
         }
         self.conn()?;
         Ok(found)
-    }
-
-    pub fn query_uses(&self, question: QuestionId) -> Result<Vec<QueryEdge>> {
-        let mut statement = self
-            .conn()?
-            .prepare("SELECT edge FROM source_query_edge WHERE query=?1 ORDER BY how,uses")?;
-        let rows = statement.query_map([question.to_string()], |row| row.get::<_, Vec<u8>>(0))?;
-        let mut edges = Vec::new();
-        for row in rows {
-            edges.push(crate::encoding::unpack_json(&row?)?);
-        }
-        self.conn()?;
-        Ok(edges)
-    }
-
-    pub fn query_first_run(&self, question: QuestionId) -> Result<Option<String>> {
-        Ok(self
-            .conn()?
-            .query_row(
-                "SELECT first_run FROM source_query WHERE hash=?1",
-                [question.to_string()],
-                |row| row.get(0),
-            )
-            .optional()?
-            .flatten())
     }
 }
 

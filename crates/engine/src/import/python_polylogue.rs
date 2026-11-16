@@ -16,6 +16,7 @@
 
 use super::older_archive::{ClassCount, RefusedRow, keep, refusal, restored, tally};
 use super::*;
+use polylogue_model::hex;
 use polylogue_store::python_polylogue::user_db::{self, UserDb};
 pub use polylogue_store::python_polylogue::vectors::request_address as address;
 use polylogue_store::python_polylogue::vectors::{Layout, VectorStore};
@@ -72,10 +73,6 @@ fn embedding_key(model: &str, dims: usize) -> Option<String> {
     model
         .starts_with("voyage")
         .then(|| format!("voyage/{model}/{dims}/document/unit"))
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 impl PythonImportReport {
@@ -327,12 +324,12 @@ impl Engine {
         };
         store.for_each(dims, |id, values| {
             let Some(address) = parse_address(id) else {
-                return Err(polylogue_store::StoreError::Invalid(format!(
+                return Err(polylogue_store::StoreError::invalid(format!(
                     "vector {id} is not named by a 32-byte address"
                 )));
             };
             let Some(identity) = by_address.get(&address) else {
-                return Err(polylogue_store::StoreError::Invalid(format!(
+                return Err(polylogue_store::StoreError::invalid(format!(
                     "vector {id} has no metadata row"
                 )));
             };

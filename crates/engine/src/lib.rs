@@ -22,6 +22,7 @@ mod watch;
 
 use databases::Databases;
 use plan::{InputState, Plan};
+use polylogue_model::LockExt;
 use polylogue_model::batch::StoppedAttempt;
 use polylogue_sources::{ORIGINS, OriginSpec, Support};
 use polylogue_store::{
@@ -150,11 +151,11 @@ impl Config {
     /// per parse worker and one per client slot.
     pub fn reader_memory_per_connection(&self) -> polylogue_store::Result<u64> {
         if self.workers == 0 {
-            return Err(polylogue_store::StoreError::Invalid(
-                "workers must be positive".into(),
+            return Err(polylogue_store::StoreError::invalid(
+                "workers must be positive",
             ));
         }
-        let overflow = || polylogue_store::StoreError::Invalid("reader slot count overflow".into());
+        let overflow = || polylogue_store::StoreError::invalid("reader slot count overflow");
         let workers = u64::try_from(self.workers).map_err(|_| overflow())?;
         let slots = workers.checked_add(1).ok_or_else(overflow)?;
         let chains = workers
@@ -162,8 +163,8 @@ impl Config {
             .ok_or_else(overflow)?;
         let bytes = self.reader_memory_bytes.saturating_sub(chains) / slots;
         if bytes < 3 * 1024 {
-            return Err(polylogue_store::StoreError::Invalid(
-                "reader memory budget needs at least 3 KiB per connection".into(),
+            return Err(polylogue_store::StoreError::invalid(
+                "reader memory budget needs at least 3 KiB per connection",
             ));
         }
         Ok(bytes)

@@ -7,6 +7,7 @@
 //! connection and the buffered bytes, never a reader, an executor place or the
 //! write-ahead log. The transport takes chunks in order, outside the reader.
 use super::Failure;
+use polylogue_model::LockExt as _;
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::Write;
@@ -82,12 +83,6 @@ pub(crate) fn buffer(spill_dir: PathBuf) -> (StreamOutput, StreamInput) {
 }
 
 impl Shared {
-    fn lock(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
     fn wake(&self) {
         self.ready.notify_all();
         self.ready_async.notify_one();
@@ -99,7 +94,7 @@ impl StreamOutput {
     /// written is sent as the stream's error event.
     pub(crate) fn finish(mut self, result: Result<(), Failure>) {
         let failure = result.err();
-        let written = self.shared.lock().written;
+        let written = self.shared.state.locked().written;
         let ending = match failure {
             None => Ending::Complete,
             Some(failure) if !written => Ending::Failed(failure),
@@ -108,7 +103,7 @@ impl StreamOutput {
                 Ending::Complete
             }
         };
-        self.shared.lock().end = Some(ending);
+        self.shared.state.locked().end = Some(ending);
         self.shared.wake();
     }
 }
@@ -118,7 +113,7 @@ impl Write for StreamOutput {
         if bytes.is_empty() {
             return Ok(0);
         }
-        let mut state = self.shared.lock();
+        let mut state = self.shared.state.locked();
         if state.input_gone {
             return Err(std::io::ErrorKind::BrokenPipe.into());
         }
@@ -153,7 +148,7 @@ impl Drop for StreamOutput {
     /// A producer that ends without [`StreamOutput::finish`] ends the stream
     /// where it stopped.
     fn drop(&mut self) {
-        let mut state = self.shared.lock();
+        let mut state = self.shared.state.locked();
         if state.end.is_none() {
             state.end = Some(Ending::Complete);
         }
@@ -166,7 +161,7 @@ impl StreamInput {
     /// The next chunk if one is ready; `None` while the producer is still
     /// working.
     fn take(&self) -> std::io::Result<Option<Next>> {
-        let mut state = self.shared.lock();
+        let mut state = self.shared.state.locked();
         if let Some(bytes) = state.memory.pop_front() {
             state.in_memory -= bytes.len();
             return Ok(Some(Next::Bytes(bytes)));
@@ -214,14 +209,9 @@ impl StreamInput {
             if let Some(next) = self.take()? {
                 return Ok(next);
             }
-            let state = self.shared.lock();
+            let state = self.shared.state.locked();
             if state.memory.is_empty() && state.spilled == state.taken && state.end.is_none() {
-                drop(
-                    self.shared
-                        .ready
-                        .wait(state)
-                        .unwrap_or_else(std::sync::PoisonError::into_inner),
-                );
+                drop(polylogue_model::unpoisoned(self.shared.ready.wait(state)));
             }
         }
     }
@@ -240,7 +230,7 @@ impl StreamInput {
 
 impl Drop for StreamInput {
     fn drop(&mut self) {
-        self.shared.lock().input_gone = true;
+        self.shared.state.locked().input_gone = true;
     }
 }
 

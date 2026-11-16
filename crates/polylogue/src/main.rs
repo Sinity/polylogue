@@ -61,6 +61,9 @@ pub const EXIT_SCHEMA_REFUSED: u8 = 78;
 pub const EXIT_STORAGE_FAILED: u8 = 74;
 
 fn main() -> ExitCode {
+    polylogue_store::timing::set_workers_enabled(
+        std::env::var_os("POLYLOGUE_TIMING_WORKERS").is_some(),
+    );
     // A harness treats a non-zero hook exit as a refusal of its tool call, so
     // a hook that cannot start says why on stderr and exits 0.
     let hook = hook_invocation(&std::env::args_os().collect::<Vec<_>>());
@@ -117,11 +120,7 @@ fn main() -> ExitCode {
         // Shell function names must distinguish '-' from '_' and other bytes.
         let name = format!(
             "polylogue_{}",
-            basename
-                .as_encoded_bytes()
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>()
+            polylogue_model::hex(basename.as_encoded_bytes())
         );
         clap_complete::CompleteEnv::with_factory(move || {
             cli::command().name(name.clone()).bin_name(bin_name.clone())

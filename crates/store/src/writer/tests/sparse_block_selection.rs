@@ -103,7 +103,7 @@ fn sparse_original_positions_survive_reopen_and_streaming_reads() {
     reader
         .select_messages(&sid("s"), false)
         .unwrap()
-        .visit_with_block_selection(|message, block_selection| {
+        .visit_from_with_record_arrival(Default::default(), |message, block_selection, _, _| {
             streamed.push((message, block_selection));
             std::ops::ControlFlow::Continue(())
         })
@@ -276,15 +276,19 @@ fn primary_readings_preserve_every_known_block() {
     for input in &readings {
         for step in &input.parse {
             write_rows(
-                &crate::text_rows::TextIds::new(&tx, false).unwrap(),
                 &tx,
                 input,
                 step,
-                step.resolution.as_ref().unwrap(),
-                1,
-                None,
-                Some(&fixture_commit()),
-                &crate::change_summary::ChangeSummary::start(&tx).unwrap(),
+                rows::ReadingWrite {
+                    texts: &crate::text_rows::TextIds::new(&tx, false).unwrap(),
+                    resolution: step.resolution.as_ref().unwrap(),
+                    counter: 1,
+                    first_build: None,
+                    source_commit: Some(&fixture_commit()),
+                    changes: &crate::change_summary::ChangeSummary::start(&tx).unwrap(),
+                    retraction: false,
+                    replacement: false,
+                },
             )
             .unwrap();
         }
@@ -315,10 +319,13 @@ fn primary_readings_preserve_every_known_block() {
     reader
         .select_messages(&sid("s"), false)
         .unwrap()
-        .visit_with_arrival(|value, block_selection, committed| {
-            streamed.push((value, block_selection, committed));
-            std::ops::ControlFlow::Continue(())
-        })
+        .visit_from_with_record_arrival(
+            Default::default(),
+            |value, block_selection, committed, _| {
+                streamed.push((value, block_selection, committed));
+                std::ops::ControlFlow::Continue(())
+            },
+        )
         .unwrap();
     assert_eq!(
         streamed,

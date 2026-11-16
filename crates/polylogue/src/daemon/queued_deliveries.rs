@@ -7,12 +7,13 @@
 //! compaction brief that follows right away reports only what changed since.
 
 use crate::briefing::LastBrief;
+use polylogue_model::LockExt as _;
 use polylogue_model::user::{UserOutcome, UserRequest};
 use polylogue_store::writer::Queued;
 use polylogue_store::{ReadScopeToken, StoreError, WriterSender};
 use std::collections::{HashMap, VecDeque};
+use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, TryRecvError};
-use std::sync::{Mutex, PoisonError};
 
 type Committed = Receiver<Result<UserOutcome, StoreError>>;
 
@@ -61,7 +62,7 @@ impl QueuedDeliveries {
         scope: Option<ReadScopeToken>,
         recipient: Option<(String, LastBrief)>,
     ) -> Result<(), StoreError> {
-        let mut state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.0.locked();
         submit(&mut state, writes, request, scope, recipient)
     }
 
@@ -105,14 +106,14 @@ impl QueuedDeliveries {
 
     /// Hands waiting requests to the writer while its queue has room.
     pub fn hand_over(&self, writes: &WriterSender) -> Result<(), StoreError> {
-        let mut state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.0.locked();
         hand_over(&mut state, writes)
     }
 
     /// Only a true answer means anything: false says nothing about a preparation already
     /// committed or an invocation still running. Never acquires an archive reader.
     pub fn owns_preparation(&self, id: &str) -> bool {
-        let state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let state = self.0.locked();
         state.advice.contains_key(id)
             || state.latest.values().any(|latest| {
                 latest.request == id
@@ -135,7 +136,7 @@ impl QueuedDeliveries {
     /// The latest delivered brief to `recipient` whose record is not
     /// committed.
     pub fn latest(&self, recipient: &str) -> Option<LastBrief> {
-        let mut state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.0.locked();
         prune(&mut state);
         state
             .latest

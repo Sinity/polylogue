@@ -23,7 +23,13 @@ fn a_session_past_the_parameter_limit_exports_whole() {
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
 
     let export = w.export("claude-code:big");
-    assert_eq!(export.messages.len(), PAST_THE_PARAMETER_LIMIT);
+    assert_eq!(
+        export
+            .iter()
+            .filter(|record| matches!(record, polylogue_model::bundle::Record::Message(_)))
+            .count(),
+        PAST_THE_PARAMETER_LIMIT
+    );
 
     assert_eq!(w.texts("small"), ["kept"]);
 }

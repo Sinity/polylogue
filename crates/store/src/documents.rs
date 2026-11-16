@@ -1,8 +1,10 @@
 //! Text documents: one shown version each, with source time before route
 //! precedence, and reads in the reader's read transaction.
-use crate::encoding::hex;
+use crate::ConnExt as _;
 use crate::encoding::{PreparedDocument, restore_text, unpack_block, unpack_json};
+use crate::{OptionExt as _, ResultExt as _};
 use crate::{Reader, Result, StoreError};
+use polylogue_model::hex;
 use polylogue_model::{Block, Document, DocumentId, DocumentRow, Json};
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde::Serialize;
@@ -103,7 +105,7 @@ pub(crate) fn apply_choice(
         let prepared = choice
             .prepared
             .as_ref()
-            .ok_or_else(|| StoreError::Invalid("a changed document has no prepared body".into()))?;
+            .or_invalid("a changed document has no prepared body")?;
         let row = DocumentRow {
             offset: choice.start as u64,
             end: choice.end as u64,
@@ -337,42 +339,6 @@ impl DocumentRead<'_, '_> {
         )
     }
 
-    pub fn visit_blocks_before(
-        &self,
-        end: usize,
-        visit: impl FnMut(Block) -> ControlFlow<()>,
-    ) -> Result<()> {
-        self.visit_blocks_until(Some(end), visit)
-    }
-
-    /// Seek to the selected source block immediately before `before`.
-    pub fn previous_block(
-        &self,
-        before: usize,
-        kinds: &[polylogue_model::BlockKind],
-    ) -> Result<Option<usize>> {
-        let kinds = kinds
-            .iter()
-            .map(|kind| format!("'{}'", kind.as_str()))
-            .collect::<Vec<_>>()
-            .join(",");
-        let sql = format!(
-            "SELECT idx FROM document_block WHERE document_pk=?1 AND idx<?2 AND kind IN ({kinds}) ORDER BY idx DESC LIMIT 1"
-        );
-        let index = self
-            .reader
-            .conn()?
-            .prepare_cached(&sql)?
-            .query_row(params![self.pk, before as i64], |row| row.get::<_, i64>(0))
-            .optional()?;
-        index
-            .map(|index| {
-                usize::try_from(index).map_err(|_| {
-                    StoreError::Invalid("the document block index is outside address space".into())
-                })
-            })
-            .transpose()
-    }
     pub fn sources(&self) -> Result<Vec<DocumentSource>> {
         let mut statement=self.reader.conn()?.prepare("SELECT r.id,s.chain,s.source_start,s.source_end,s.version_hash,s.shown FROM document_source s JOIN input_ref r ON r.pk=s.input_pk WHERE s.document_pk=?1 ORDER BY r.id,s.chain,s.source_start,s.version_hash")?;
         let mut rows = statement.query([self.pk])?;
@@ -426,13 +392,8 @@ pub(crate) fn text_read<'a>(
     conn: &'a rusqlite::Connection,
     id: &DocumentId,
 ) -> Result<Option<TextRead<'a>>> {
-    let pk = conn
-        .query_row(
-            "SELECT pk FROM document WHERE id=?1",
-            [id.to_string()],
-            |row| row.get::<_, i64>(0),
-        )
-        .optional()?;
+    let pk =
+        conn.scalar_optional::<i64>("SELECT pk FROM document WHERE id=?1", [id.to_string()])?;
     Ok(pk.map(|pk| TextRead { conn, pk }))
 }
 impl TextRead<'_> {
@@ -484,8 +445,8 @@ fn visit_blocks_selected_from(
         if let Some(limit) = crate::read::limit::ReadLimit::current() {
             limit.check()?;
         }
-        let ordinal = u64::try_from(row.get::<_, i64>(5)?)
-            .map_err(|_| StoreError::Invalid("negative document block ordinal".into()))?;
+        let ordinal =
+            u64::try_from(row.get::<_, i64>(5)?).or_invalid("negative document block ordinal")?;
         if visit(ordinal, decoded_block(row)?).is_break() {
             break;
         }

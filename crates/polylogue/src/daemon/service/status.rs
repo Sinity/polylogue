@@ -1,5 +1,5 @@
 //! One typed status constructor over current archive and runtime observations.
-use super::{Daemon, error, now_ms, store_error};
+use super::{Daemon, error, store_error};
 
 /// Status over an index that is not current is a degraded answer.
 pub(super) fn answer(
@@ -24,13 +24,13 @@ pub(super) fn answer(
         .unwrap_or_default();
     let signals = match serde_json::from_value(signals) {
         Ok(signals) => signals,
-        Err(problem) => return error("internal", problem),
+        Err(problem) => return error(polylogue_model::Code::Internal, problem),
     };
-    let notices = match serde_json::from_value(crate::signals::recent(reader, now_ms())) {
+    let notices = match serde_json::from_value(crate::signals::recent(reader, d.clock.now_ms())) {
         Ok(notices) => notices,
-        Err(problem) => return error("internal", problem),
+        Err(problem) => return error(polylogue_model::Code::Internal, problem),
     };
-    let running = match reader.running(now_ms()) {
+    let running = match reader.running(d.clock.now_ms()) {
         Ok(sessions) => crate::protocol::status::Running::Measured {
             waiting: sessions
                 .iter()
@@ -107,7 +107,7 @@ pub(super) fn building(
         .unwrap_or_default();
     let signals = match serde_json::from_value(signals) {
         Ok(signals) => signals,
-        Err(problem) => return error("internal", problem),
+        Err(problem) => return error(polylogue_model::Code::Internal, problem),
     };
     let freshness = ReadFreshness {
         local: ReadCompleteness {

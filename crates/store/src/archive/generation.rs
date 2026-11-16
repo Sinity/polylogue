@@ -1,5 +1,6 @@
 //! The index generation: a fresh ID for each index build, so a change feed
 //! position from an earlier build is recognized as one.
+use crate::ConnExt as _;
 use crate::Result;
 use rusqlite::{Connection, OptionalExtension};
 
@@ -54,9 +55,7 @@ fn begin(
     let result = (|| {
         let tx = index.unchecked_transaction()?;
         let value = |key| -> Result<Option<String>> {
-            Ok(tx
-                .query_row("SELECT value FROM meta WHERE key=?1", [key], |r| r.get(0))
-                .optional()?)
+            Ok(tx.scalar_optional("SELECT value FROM meta WHERE key=?1", [key])?)
         };
         let generation = value("generation")?;
         let mut changed = false;
@@ -73,7 +72,7 @@ fn begin(
             rotate(&tx)?;
             tx.execute("DELETE FROM removed_session", [])?;
         }
-        tx.execute("INSERT INTO meta(key,value) VALUES ('boot_id',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [boot])?;
+        crate::meta_set(&tx, "boot_id", boot)?;
         tx.commit()?;
         if changed && let Some(scope) = scope {
             scope.finish_reset();

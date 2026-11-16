@@ -1,6 +1,7 @@
 //! Complete Polylogue events built from parser output. The source
 //! reading is part of every parsed event; indexed summaries are never an input.
 use crate::{Error, Result};
+use polylogue_model::JsonExt;
 use polylogue_model::user::UserWrite;
 use polylogue_store::primary::products::Product;
 use serde_json::{Value, json};
@@ -14,10 +15,10 @@ pub(crate) fn decode_source(
 ) -> Result<Product> {
     match crate::kinds::declared_definition(kind) {
         Some(current) if current == definition_hash => decode(kind, payload),
-        Some(_) => Err(Error::Invalid(
-            "a confirmed event's kind definition differs from Polylogue's".into(),
+        Some(_) => Err(Error::invalid(
+            "a confirmed event's kind definition differs from Polylogue's",
         )),
-        None => Err(Error::Invalid(format!(
+        None => Err(Error::invalid(format!(
             "unsupported Polylogue kind {}@{}",
             kind.name, kind.version
         ))),
@@ -26,9 +27,7 @@ pub(crate) fn decode_source(
 
 pub(crate) fn require_source(product: &Product) -> Result<()> {
     if matches!(product, Product::Interpreted { .. }) {
-        return Err(Error::Invalid(
-            "contribution metadata is not a domain fact".into(),
-        ));
+        return Err(Error::invalid("contribution metadata is not a domain fact"));
     }
     if product
         .reading()
@@ -48,7 +47,7 @@ pub(crate) fn require_reading(
 ) -> Result<()> {
     let reading = product
         .reading()
-        .ok_or_else(|| Error::Invalid("export contains a product without a reading".into()))?;
+        .ok_or_else(|| Error::invalid("export contains a product without a reading"))?;
     if reading.input.id != key.input.id
         || reading.input.format != key.input.format
         || reading.chain != key.chain
@@ -58,14 +57,14 @@ pub(crate) fn require_reading(
             .is_some_and(|length| length != key.length)
         || (reading.delivery.is_some() && reading.source_length != Some(key.length))
     {
-        return Err(Error::Invalid(
-            "export product differs from its immutable reading key".into(),
+        return Err(Error::invalid(
+            "export product differs from its immutable reading key",
         ));
     }
     if let Some(delivery) = &reading.delivery {
         delivery
             .validate()
-            .map_err(|error| Error::Invalid(error.to_string()))?;
+            .map_err(|error| Error::invalid(error.to_string()))?;
     }
     Ok(())
 }
@@ -374,7 +373,7 @@ fn source_kind(kind: &str) -> bool {
 /// declare is refused, never read through the current shape.
 pub(crate) fn decode(event_kind: &sinex_model::KindRef, payload: Value) -> Result<Product> {
     if crate::kinds::kind_reference(&event_kind.name)?.version != event_kind.version {
-        return Err(Error::Invalid(format!(
+        return Err(Error::invalid(format!(
             "unsupported Polylogue kind {}@{}",
             event_kind.name, event_kind.version
         )));
@@ -398,18 +397,16 @@ pub(crate) fn decode(event_kind: &sinex_model::KindRef, payload: Value) -> Resul
             || record.start > record.end
             || record.end > reading.parsed_upto
         {
-            return Err(Error::Invalid(
-                "parsed event differs from its original source".into(),
+            return Err(Error::invalid(
+                "parsed event differs from its original source",
             ));
         }
         if let Some(delivery) = &reading.delivery {
             delivery
                 .validate()
-                .map_err(|error| Error::Invalid(error.to_string()))?;
+                .map_err(|error| Error::invalid(error.to_string()))?;
             if reading.source_length.is_none() {
-                return Err(Error::Invalid(
-                    "export reading has no actual source length".into(),
-                ));
+                return Err(Error::invalid("export reading has no actual source length"));
             }
         }
         if event_type == "polylogue.parse_progress"
@@ -420,18 +417,18 @@ pub(crate) fn decode(event_kind: &sinex_model::KindRef, payload: Value) -> Resul
                     | polylogue_model::batch::StepProgress::Refused { .. }
             )
         {
-            return Err(Error::Invalid(
-                "only stopped progress has a stopped attempt".into(),
+            return Err(Error::invalid(
+                "only stopped progress has a stopped attempt",
             ));
         }
         return Ok(Product::Interpreted { reading, record });
     }
     let product: Product =
         serde_json::from_value(payload.get("record").cloned().ok_or_else(|| {
-            Error::Invalid(format!("confirmed {event_type} has no complete facts"))
+            Error::invalid(format!("confirmed {event_type} has no complete facts"))
         })?)?;
     if kind(&product) != event_type {
-        return Err(Error::Invalid(format!(
+        return Err(Error::invalid(format!(
             "confirmed {event_type} carries another product kind"
         )));
     }
@@ -443,8 +440,7 @@ fn reachable_definitions(root: &Value, definitions: &Value) -> Value {
         match value {
             Value::Object(object) => {
                 if let Some(reference) = object
-                    .get("$ref")
-                    .and_then(Value::as_str)
+                    .str("$ref")
                     .and_then(|reference| reference.strip_prefix("#/$defs/"))
                 {
                     found.insert(reference.into());
@@ -800,7 +796,7 @@ pub(crate) fn events(
                             &facts.data,
                             crate::kinds::RecordRef {
                                 material: MaterialId(source.material.parse().map_err(|error| {
-                                    Error::Invalid(format!("source material: {error}"))
+                                    Error::invalid(format!("source material: {error}"))
                                 })?),
                                 anchor: source.anchor,
                             },
@@ -852,7 +848,7 @@ pub(crate) fn events(
                 .map(|source| -> Result<_> {
                     Ok(RecordLocation {
                         material: MaterialId(source.material.parse().map_err(|error| {
-                            Error::Invalid(format!("source material: {error}"))
+                            Error::invalid(format!("source material: {error}"))
                         })?),
                         anchor: source.anchor,
                     })
@@ -871,7 +867,7 @@ pub(crate) fn events(
                         parent
                             .parse()
                             .map(sinex_model::EventId)
-                            .map_err(|error| Error::Invalid(format!("parent event: {error}")))
+                            .map_err(|error| Error::invalid(format!("parent event: {error}")))
                     })
                     .collect::<Result<Vec<_>>>()?,
                 reading_order: None,

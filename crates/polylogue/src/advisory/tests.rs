@@ -202,7 +202,7 @@ fn advisory_bounds_intersect_parent_and_an_expired_request_prepares_nothing() {
     // docs/agents.md, Advisories: "preparation is capped at 20 ms, intersected
     // with the caller's bound, or the hook says nothing". Past the bound the
     // answer is the empty advisory on every surface, never a timeout.
-    let answer = (request).limit(limit.clone()).answer(&w.daemon);
+    let answer = request.limit(limit.clone()).answer(&w.daemon);
     assert!(answer.failure().is_none(), "{answer:?}");
     let value = crate::test_answers::ok(answer);
     assert_eq!(value["delivery"], serde_json::Value::Null);

@@ -24,6 +24,7 @@
 use crate::daemon::Failure;
 use crate::daemon::service::{error, ok, store_error};
 use command_surface::Answer;
+use polylogue_model::JsonExt as _;
 use polylogue_store::Reader;
 use polylogue_store::vectors::{Vector, Vectors};
 use serde::Serialize;
@@ -56,6 +57,7 @@ impl std::fmt::Debug for Credentials {
     }
 }
 pub struct Context<'a> {
+    pub clock: &'a polylogue_model::WallClock,
     pub settings: &'a polylogue_model::settings::Snapshot,
     pub credentials: &'a Credentials,
     pub operation: &'a std::sync::Arc<crate::operation::Context>,
@@ -333,8 +335,7 @@ pub enum EmbedError {
 fn batch_vectors(response: &Value, inputs: usize) -> Result<Vec<Vec<f32>>, EmbedError> {
     let invalid = |why: &str| EmbedError::Transport(format!("invalid embedding response: {why}"));
     let data = response
-        .get("data")
-        .and_then(Value::as_array)
+        .array("data")
         .ok_or_else(|| invalid("missing data array"))?;
     if data.len() != inputs {
         return Err(invalid("vector count differs from input count"));
@@ -343,8 +344,7 @@ fn batch_vectors(response: &Value, inputs: usize) -> Result<Vec<Vec<f32>>, Embed
     let mut dimensions = None;
     for item in data {
         let index = item
-            .get("index")
-            .and_then(Value::as_u64)
+            .u64("index")
             .ok_or_else(|| invalid("missing or invalid input index"))?;
         let index = usize::try_from(index).map_err(|_| invalid("input index is out of range"))?;
         let slot = out
@@ -354,8 +354,7 @@ fn batch_vectors(response: &Value, inputs: usize) -> Result<Vec<Vec<f32>>, Embed
             return Err(invalid("duplicate input index"));
         }
         let values = item
-            .get("embedding")
-            .and_then(Value::as_array)
+            .array("embedding")
             .ok_or_else(|| invalid("missing embedding array"))?;
         if dimensions.is_some_and(|dimensions| dimensions != values.len()) {
             return Err(invalid("inconsistent vector dimensions"));
@@ -572,6 +571,7 @@ fn purchase_estimate(
 }
 
 pub fn build(
+    clock: &polylogue_model::WallClock,
     reader: &Reader<'_>,
     provider: &Provider,
     sessions: Option<&[String]>,
@@ -621,7 +621,7 @@ pub fn build(
                         }),
                         Err(EmbedError::Rejected(why)) => {
                             let key = selected_key.clone().unwrap_or_else(|| provider.key(0));
-                            vectors.fail(&key, hash, &why)?;
+                            vectors.fail(&key, hash, &why, clock)?;
                             out.failed += 1;
                         }
                         Err(e) => return Err(e),
@@ -649,7 +649,7 @@ pub fn build(
             }
             selected_key.get_or_insert_with(|| key.clone());
             out.key.get_or_insert_with(|| key.clone());
-            vectors.put(&key, &stored)?;
+            vectors.put(&key, &stored, clock)?;
             out.vectors += stored.len() as u64;
         }
         batch.clear();
@@ -733,23 +733,19 @@ fn query_sessions(
         };
         let answer = crate::daemon::query::run(reader, ask)?;
         let crate::protocol::query::Answer::Rows(page) = &answer.value else {
-            return Err(Failure::new("bad_request", "embed takes session rows"));
+            return Err(Failure::bad_request("embed takes session rows"));
         };
         if page.unit != "sessions" || page.shape != polylogue_query::Shape::Rows {
-            return Err(Failure::new("bad_request", "embed takes session rows"));
+            return Err(Failure::bad_request("embed takes session rows"));
         }
         if answer.outcome == crate::daemon::query::Outcome::Incomplete {
-            return Err(Failure::new(
-                "not_yet_available",
+            return Err(Failure::not_yet_available(
                 "embedding selection requires complete query results",
             ));
         }
         for row in &page.rows {
-            let id = row.get("id").and_then(Value::as_str).ok_or_else(|| {
-                Failure::new(
-                    "bad_request",
-                    "embedding selection requires session identities",
-                )
+            let id = row.str("id").ok_or_else(|| {
+                Failure::bad_request("embedding selection requires session identities")
             })?;
             ids.push(id.to_owned());
         }
@@ -771,7 +767,7 @@ pub fn handle(
 ) -> Answer<Value> {
     let provider = match Provider::from_settings(context.settings, context.credentials) {
         Ok(p) => p,
-        Err(e) => return error("bad_request", e),
+        Err(e) => return error(polylogue_model::Code::BadRequest, e),
     };
     if what == "status" {
         let vectors = reader.vectors().and_then(|v| v.status());
@@ -787,7 +783,7 @@ pub fn handle(
     }
     let Some(provider) = provider else {
         return error(
-            "embeddings_off",
+            polylogue_model::Code::EmbeddingsOff,
             "embeddings are off; `polylogue setting embed.provider local` (or `voyage`) turns them on",
         );
     };
@@ -812,23 +808,23 @@ pub fn handle(
         "build" => {
             if provider.kind == ProviderKind::Voyage && !yes {
                 return error(
-                    "confirm",
+                    polylogue_model::Code::Confirm,
                     "Voyage is paid: `polylogue embed preview` shows the cost; build with --yes",
                 );
             }
-            build(reader, &provider, sessions.as_deref(), limit)
+            build(context.clock, reader, &provider, sessions.as_deref(), limit)
                 .map(|b| serde_json::to_value(b).unwrap_or_default())
         }
         other => {
             return error(
-                "bad_request",
+                polylogue_model::Code::BadRequest,
                 format!("embed {other}: status, preview or build"),
             );
         }
     };
     match result {
         Ok(v) => ok(v),
-        Err(e) => error("embed", e),
+        Err(e) => error(polylogue_model::Code::Embed, e),
     }
 }
 

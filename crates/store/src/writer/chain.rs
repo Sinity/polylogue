@@ -445,8 +445,8 @@ impl History {
         let path = self.paths.borrow()[location.path].clone();
         let mut reader = BufReader::new(std::fs::File::open(path)?);
         reader.seek(SeekFrom::Start(location.offset))?;
-        let (mut step, choices) = read_step(&mut reader)?
-            .ok_or_else(|| StoreError::Invalid("a scratch offset has no chain step".into()))?;
+        let (mut step, choices) =
+            read_step(&mut reader)?.or_invalid("a scratch offset has no chain step")?;
         attachments::normalize_known(&mut step, &self.available)?;
         Ok((step, choices))
     }
@@ -491,7 +491,7 @@ impl resolve::membership::ValueSource for History {
         let choices = self
             .step(location)?
             .1
-            .ok_or_else(|| StoreError::Invalid("a value offset has no prepared choices".into()))?;
+            .or_invalid("a value offset has no prepared choices")?;
         let values = if kind == resolve::Kind::EventValue {
             choices.event_values
         } else {
@@ -685,15 +685,19 @@ impl Inner {
                 write_rows
             };
             written += write(
-                &self.texts,
                 &tx,
                 &batch,
                 &step,
-                &resolution,
-                counter,
-                self.first_build.as_deref(),
-                Some(&source_commit),
-                &changes,
+                rows::ReadingWrite {
+                    texts: &self.texts,
+                    resolution: &resolution,
+                    counter: counter,
+                    first_build: self.first_build.as_deref(),
+                    source_commit: Some(&source_commit),
+                    changes: &changes,
+                    retraction: false,
+                    replacement: false,
+                },
             )?;
         }
         if first {

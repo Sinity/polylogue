@@ -1,6 +1,7 @@
 //! Worker-owned natural keys. A key lock covers the batch until its commit result,
 //! so a following worker opens its snapshot after overlapping work has finished.
 use super::*;
+use crate::ConnExt as _;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Condvar;
 pub(crate) mod membership;
@@ -88,7 +89,7 @@ impl ResolvedKeys {
 
 /// The key a copy's session, message or link key resolves to.
 pub(super) fn resolved_key(identities: &crate::session_alias::Identities, key: Key) -> Result<Key> {
-    let text = || std::str::from_utf8(&key.bytes).map_err(|e| StoreError::Invalid(e.to_string()));
+    let text = || std::str::from_utf8(&key.bytes).map_err(crate::StoreError::invalid);
     Ok(match key.kind {
         Kind::Session => {
             let id = text()?;
@@ -195,19 +196,17 @@ impl Resolver {
             Kind::EventValue,
             Kind::LinkValue,
         ] {
-            let max: i64 = index.query_row(
+            let max: i64 = index.scalar(
                 &format!(
                     "SELECT coalesce(max({}),0) FROM {}",
                     kind.pk(),
                     kind.table()
                 ),
                 [],
-                |r| r.get(0),
             )?;
             next.insert(
                 kind,
-                max.checked_add(1)
-                    .ok_or_else(|| StoreError::Invalid("row identity exhausted".into()))?,
+                max.checked_add(1).or_invalid("row identity exhausted")?,
             );
         }
         Ok(Arc::new(Self {
@@ -244,9 +243,7 @@ impl Resolver {
         let mut active = self.active.lock().expect("resolver lock");
         let next = active.next.get_mut(&kind).expect("row allocator");
         let pk = *next;
-        *next = next
-            .checked_add(1)
-            .ok_or_else(|| StoreError::Invalid("row identity exhausted".into()))?;
+        *next = next.checked_add(1).or_invalid("row identity exhausted")?;
         Ok(pk)
     }
 
@@ -299,24 +296,21 @@ impl Resolver {
                     Option<String>,
                     Option<String>,
                 ) = serde_json::from_slice(&key.bytes)?;
-                Ok(index.query_row("SELECT pk FROM link WHERE parent_id=?1 AND child_id=?2 AND kind=?3 AND how IS ?4 AND branch_point IS ?5 AND spawning_call IS ?6",params![parent,child,kind,how,at,call],|r|r.get(0)).optional()?)
+                Ok(index.scalar_optional("SELECT pk FROM link WHERE parent_id=?1 AND child_id=?2 AND kind=?3 AND how IS ?4 AND branch_point IS ?5 AND spawning_call IS ?6",params![parent,child,kind,how,at,call])?)
             }
             kind => {
                 let column = "id";
                 let value: rusqlite::types::Value = String::from_utf8(key.bytes.clone())
                     .expect("string key")
                     .into();
-                Ok(index
-                    .query_row(
-                        &format!(
-                            "SELECT {} FROM {} WHERE {column}=?1",
-                            kind.pk(),
-                            kind.table()
-                        ),
-                        [value],
-                        |r| r.get(0),
-                    )
-                    .optional()?)
+                Ok(index.scalar_optional(
+                    &format!(
+                        "SELECT {} FROM {} WHERE {column}=?1",
+                        kind.pk(),
+                        kind.table()
+                    ),
+                    [value],
+                )?)
             }
         }
     }
@@ -716,9 +710,7 @@ impl Resolver {
             None => {
                 let next = active.next.get_mut(&key.kind).expect("identity allocator");
                 let pk = *next;
-                *next = next
-                    .checked_add(1)
-                    .ok_or_else(|| StoreError::Invalid("row identity exhausted".into()))?;
+                *next = next.checked_add(1).or_invalid("row identity exhausted")?;
                 pk
             }
         };
@@ -739,13 +731,10 @@ impl Resolver {
             canonical_json::canonical_json(value).map_err(crate::encoding::identity_encoding)?;
         let hash = *blake3::hash(&canonical).as_bytes();
         let body = crate::encoding::RowPacker::new()?.pack_json(value)?;
-        let pk = index
-            .query_row(
-                &format!("SELECT pk FROM {} WHERE hash=?1", kind.table()),
-                [hash.as_slice()],
-                |r| r.get::<_, i64>(0),
-            )
-            .optional()?;
+        let pk = index.scalar_optional::<i64>(
+            &format!("SELECT pk FROM {} WHERE hash=?1", kind.table()),
+            [hash.as_slice()],
+        )?;
         let key = self.identity(Key::new(kind, hash.as_slice()), pk)?;
         Ok(PackedValue { key, hash, body })
     }

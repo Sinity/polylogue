@@ -31,7 +31,7 @@ impl Reader<'_> {
             .map(|(events, links)| {
                 let checked = |count| {
                     u64::try_from(count)
-                        .map_err(|_| StoreError::Invalid("negative physical record count".into()))
+                        .map_err(|_| crate::StoreError::stored(0, "negative physical record count"))
                 };
                 Ok(PhysicalRecordCounts {
                     events: checked(events)?,

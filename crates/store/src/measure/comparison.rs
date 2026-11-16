@@ -72,11 +72,7 @@ pub fn compare(reader: &Reader<'_>, selection: &Selection, options: &str) -> Res
             "SELECT s.pk,s.id,s.origin FROM session s WHERE {condition} ORDER BY s.id"
         ))?
         .query_map(rusqlite::params_from_iter(params.iter()), |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-            ))
+            <(i64, String, String)>::try_from(r)
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let single = keys.len() == 1;

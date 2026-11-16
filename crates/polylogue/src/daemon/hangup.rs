@@ -1,5 +1,6 @@
 //! One thread watches every connected client for a hang-up, even while the
 //! client's request is inside SQLite, and cancels that client's reads.
+use polylogue_model::LockExt as _;
 use polylogue_store::cancellation::Cancellation;
 use rustix::event::epoll;
 use std::collections::HashMap;
@@ -49,12 +50,10 @@ impl Watcher {
         });
         let thread = {
             let shared = Arc::clone(&shared);
-            std::thread::Builder::new()
-                .name("polylogue-hangup".into())
-                .spawn(move || {
-                    let _stopped = stopped;
-                    shared.run();
-                })?
+            polylogue_model::spawn_named("polylogue-hangup", move || {
+                let _stopped = stopped;
+                shared.run();
+            })?
         };
         Ok(Self {
             shared,
@@ -71,7 +70,7 @@ impl Watcher {
     ) -> std::io::Result<Watched> {
         let id = self.shared.next.fetch_add(1, Ordering::Relaxed);
         let fd = socket.as_fd().try_clone_to_owned()?;
-        self.shared.lock().insert(id, cancellation);
+        self.shared.watched.locked().insert(id, cancellation);
         // Level-triggered: a peer that hung up before registration is seen.
         if let Err(error) = epoll::add(
             &self.shared.epoll,
@@ -79,7 +78,7 @@ impl Watcher {
             epoll::EventData::new_u64(id),
             epoll::EventFlags::HUP | epoll::EventFlags::ERR | epoll::EventFlags::ONESHOT,
         ) {
-            self.shared.lock().remove(&id);
+            self.shared.watched.locked().remove(&id);
             return Err(error.into());
         }
         Ok(Watched {
@@ -91,12 +90,6 @@ impl Watcher {
 }
 
 impl Shared {
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<u64, Cancellation>> {
-        self.watched
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
     fn run(&self) {
         let mut events = Vec::with_capacity(64);
         loop {
@@ -112,7 +105,7 @@ impl Shared {
                     eprintln!("polylogue: hang-up watcher: {error}");
                     // Without a watcher no read could notice its client
                     // leave; cancel what is watched rather than leave it.
-                    for cancellation in self.lock().values() {
+                    for cancellation in self.watched.locked().values() {
                         cancellation.cancel();
                     }
                     return;
@@ -125,7 +118,7 @@ impl Shared {
                 }
                 // A one-shot registration fires once; the entry stays until
                 // its connection drops it.
-                if let Some(cancellation) = self.lock().get(&id) {
+                if let Some(cancellation) = self.watched.locked().get(&id) {
                     cancellation.cancel();
                 }
             }
@@ -136,7 +129,7 @@ impl Shared {
 impl Drop for Watched {
     fn drop(&mut self) {
         let _ = epoll::delete(&self.shared.epoll, &self.fd);
-        self.shared.lock().remove(&self.id);
+        self.shared.watched.locked().remove(&self.id);
     }
 }
 

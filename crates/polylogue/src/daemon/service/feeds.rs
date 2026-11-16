@@ -20,7 +20,7 @@ impl crate::daemon::handler::Feed for Changes {
         output: &mut dyn std::io::Write,
     ) -> Result<(), Failure> {
         let mut file = read(d, arguments.since.as_deref(), operation)?;
-        std::io::copy(&mut file, output).map_err(|e| Failure::new("io", e))?;
+        std::io::copy(&mut file, output).map_err(Failure::io)?;
         Ok(())
     }
 }
@@ -31,9 +31,8 @@ fn read(
     operation: &Arc<crate::operation::Context>,
 ) -> Result<std::fs::File, Failure> {
     let reader = d.reads.reader()?;
-    let file = tempfile::NamedTempFile::new_in(d.archive.staging_dir())
-        .map_err(|e| Failure::new("io", e))?;
-    let output = file.reopen().map_err(|e| Failure::new("io", e))?;
+    let file = tempfile::NamedTempFile::new_in(d.archive.staging_dir()).map_err(Failure::io)?;
+    let output = file.reopen().map_err(Failure::io)?;
     super::super::query::feed::prepare_with(&reader, since, &operation.clock, output)?;
-    file.reopen().map_err(|e| Failure::new("io", e))
+    file.reopen().map_err(Failure::io)
 }

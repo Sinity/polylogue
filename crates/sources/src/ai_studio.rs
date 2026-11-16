@@ -11,11 +11,12 @@
 //! the same message. `parts` split a model chunk into thoughts and answer
 //! text; joined, they equal the chunk's `text`.
 
+use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 4;
 
 use crate::chatgpt::first_byte;
-use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
+use crate::document::{Sink, first_key, message_id, session_id, time_of};
 use crate::export::{ExportParser, ExportState, ItemSink, ScanError, ScanStats};
 use crate::fields::ExpectedType as T;
 use crate::fields::{Fields, Rule};
@@ -331,7 +332,7 @@ impl ExportParser for AiStudio {
             }
             self.state.model = doc
                 .get("runSettings")
-                .and_then(|v| str_of(v, "model"))
+                .and_then(|v| v.str("model").filter(|s| !s.is_empty()))
                 .map(|m| m.strip_prefix("models/").unwrap_or(m).to_owned());
         }
         Ok(Some(crate::parse::Step {
@@ -482,7 +483,10 @@ impl ExportParser for AiStudio {
 }
 
 fn chunk_role(chunk: &Json) -> Option<&str> {
-    str_of(chunk, "role").or_else(|| str_of(chunk, "author"))
+    chunk
+        .str("role")
+        .filter(|s| !s.is_empty())
+        .or_else(|| chunk.str("author").filter(|s| !s.is_empty()))
 }
 
 /// `systemInstruction` is `{}` when empty, `{"text": …}` or
@@ -492,14 +496,13 @@ fn system_text(value: Option<&Json>) -> Option<String> {
     if let Some(text) = v.as_str() {
         return Some(text.to_owned());
     }
-    if let Some(t) = str_of(v, "text") {
+    if let Some(t) = v.str("text").filter(|s| !s.is_empty()) {
         return Some(t.to_owned());
     }
     let joined: String = v
-        .get("parts")
-        .and_then(Json::as_array)?
+        .array("parts")?
         .iter()
-        .filter_map(|p| str_of(p, "text"))
+        .filter_map(|p| p.str("text").filter(|s| !s.is_empty()))
         .collect();
     (!joined.is_empty()).then_some(joined)
 }
@@ -524,7 +527,7 @@ impl AiStudio {
         };
         // A chunk without an ID is named by its content, so deleting or
         // inserting a chunk leaves the others' IDs alone.
-        let (id, id_kind) = match str_of(chunk, "id") {
+        let (id, id_kind) = match chunk.str("id").filter(|s| !s.is_empty()) {
             Some(id) => (
                 message_id(ORIGIN, &message_key(&self.native, "id", id)),
                 IdKind::Native,
@@ -533,17 +536,13 @@ impl AiStudio {
         };
         let id = id.ok_or_else(|| RecordOutcome::unreadable("unusable id"))?;
         let native = id.native().as_str().to_owned();
-        let thought = chunk.get("isThought").and_then(Json::as_bool) == Some(true);
+        let thought = chunk.bool("isThought") == Some(true);
 
         let mut blocks = text_blocks(chunk, thought);
         blocks.extend(media_blocks(chunk, role, sink));
         // Code execution and generated files sit on the chunk or in its
         // parts; each result answers the call before it.
-        let parts = chunk
-            .get("parts")
-            .and_then(Json::as_array)
-            .map(Vec::as_slice)
-            .unwrap_or_default();
+        let parts = chunk.array("parts").map(Vec::as_slice).unwrap_or_default();
         let mut calls = 0;
         for item in std::iter::once(chunk).chain(parts) {
             if let Some(code) = item.get("executableCode") {
@@ -562,7 +561,10 @@ impl AiStudio {
                     tool: Some("code_execution".into()),
                     action: ToolAction::Code,
                     input: code.clone(),
-                    command: string_of(code, "code"),
+                    command: code
+                        .str("code")
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned),
                     path: None,
                 });
             }
@@ -571,7 +573,7 @@ impl AiStudio {
                 // several unanswered calls leave its call unknown.
                 let call_id = self.state.pending_call.take();
                 self.state.ambiguous_calls = false;
-                let outcome = match str_of(result, "outcome") {
+                let outcome = match result.str("outcome").filter(|s| !s.is_empty()) {
                     Some("OUTCOME_OK") => ToolOutcome::Ok,
                     Some("OUTCOME_FAILED") => ToolOutcome::Error { reason: None },
                     Some("OUTCOME_DEADLINE_EXCEEDED") => ToolOutcome::Error {
@@ -585,7 +587,10 @@ impl AiStudio {
                     reported_duration_ms: None,
                     call_id,
                     outcome,
-                    output: string_of(result, "output"),
+                    output: result
+                        .str("output")
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned),
                     data: Some(result.clone()),
                     attachments: Vec::new(),
                 });
@@ -596,8 +601,14 @@ impl AiStudio {
             // A file the part names by URI (`fileData`) rather than inlines.
             if let Some(file) = item.get("fileData") {
                 blocks.push(Block::File(Attachment {
-                    media_type: string_of(file, "mimeType"),
-                    url: string_of(file, "fileUri"),
+                    media_type: file
+                        .str("mimeType")
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned),
+                    url: file
+                        .str("fileUri")
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned),
                     direction: if role == Role::User {
                         AttachmentDirection::Input
                     } else {
@@ -607,7 +618,7 @@ impl AiStudio {
                 }));
             }
         }
-        if let Some(error) = str_of(chunk, "errorMessage") {
+        if let Some(error) = chunk.str("errorMessage").filter(|s| !s.is_empty()) {
             blocks.push(Block::Other {
                 type_name: "error".into(),
                 data: Json::String(error.to_owned()),
@@ -629,8 +640,11 @@ impl AiStudio {
             .expect("decoded source time is valid");
         if role == Role::Assistant {
             message.model = self.state.model.clone();
-            message.stop_reason = string_of(chunk, "finishReason");
-            let tokens = chunk.get("tokenCount").and_then(Json::as_u64);
+            message.stop_reason = chunk
+                .str("finishReason")
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned);
+            let tokens = chunk.u64("tokenCount");
             message.usage = Usage {
                 output: tokens.filter(|_| !thought),
                 reasoning: tokens.filter(|_| thought),
@@ -639,7 +653,7 @@ impl AiStudio {
         } else {
             message.prompt_kind = Some(PromptKind::Prose);
             message.usage = Usage {
-                input: chunk.get("tokenCount").and_then(Json::as_u64),
+                input: chunk.u64("tokenCount"),
                 ..Usage::default()
             };
         }
@@ -690,13 +704,16 @@ fn plain(
 /// split and the thought signatures), else from `text` and `isThought`.
 fn text_blocks(chunk: &Json, thought: bool) -> Vec<Block> {
     let mut blocks = Vec::new();
-    if let Some(parts) = chunk.get("parts").and_then(Json::as_array) {
+    if let Some(parts) = chunk.array("parts") {
         for part in parts {
-            let Some(text) = str_of(part, "text") else {
+            let Some(text) = part.str("text").filter(|s| !s.is_empty()) else {
                 continue;
             };
-            let is_thought = part.get("thought").and_then(Json::as_bool) == Some(true);
-            let signature = string_of(part, "thoughtSignature");
+            let is_thought = part.bool("thought") == Some(true);
+            let signature = part
+                .str("thoughtSignature")
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned);
             // Consecutive parts of one kind join into one block.
             match (blocks.last_mut(), is_thought) {
                 (
@@ -725,7 +742,7 @@ fn text_blocks(chunk: &Json, thought: bool) -> Vec<Block> {
         }
         return blocks;
     }
-    if let Some(text) = str_of(chunk, "text") {
+    if let Some(text) = chunk.str("text").filter(|s| !s.is_empty()) {
         blocks.push(if thought {
             Block::Thinking {
                 text: Some(text.to_owned()),
@@ -745,8 +762,14 @@ fn text_blocks(chunk: &Json, thought: bool) -> Vec<Block> {
 /// type says so, else a file.
 fn inline_block(inline: &Json, role: Role, sink: &mut Sink<'_>) -> Block {
     let mut a = Attachment {
-        media_type: string_of(inline, "mimeType"),
-        name: string_of(inline, "name"),
+        media_type: inline
+            .str("mimeType")
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned),
+        name: inline
+            .str("name")
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned),
         direction: if role == Role::User {
             AttachmentDirection::Input
         } else {
@@ -754,7 +777,9 @@ fn inline_block(inline: &Json, role: Role, sink: &mut Sink<'_>) -> Block {
         },
         ..Attachment::default()
     };
-    if let Some(bytes) = str_of(inline, "data")
+    if let Some(bytes) = inline
+        .str("data")
+        .filter(|s| !s.is_empty())
         .and_then(|d| base64::engine::general_purpose::STANDARD.decode(d).ok())
     {
         let hash = BlobHash::of(&bytes);
@@ -793,9 +818,28 @@ fn media_blocks(chunk: &Json, role: Role, sink: &mut Sink<'_>) -> Vec<Block> {
     ] {
         if let Some(doc) = chunk.get(key) {
             let a = Attachment {
-                name: string_of(doc, "name").or_else(|| string_of(doc, "title")),
-                media_type: string_of(doc, "mimeType"),
-                source_id: string_of(doc, "id").or_else(|| string_of(doc, "fileId")),
+                name: doc
+                    .str("name")
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+                    .or_else(|| {
+                        doc.str("title")
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_owned)
+                    }),
+                media_type: doc
+                    .str("mimeType")
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned),
+                source_id: doc
+                    .str("id")
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+                    .or_else(|| {
+                        doc.str("fileId")
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_owned)
+                    }),
                 url: None,
                 direction,
                 ..Attachment::default()
@@ -810,12 +854,20 @@ fn media_blocks(chunk: &Json, role: Role, sink: &mut Sink<'_>) -> Vec<Block> {
     for (key, image) in [("inlineImage", true), ("inlineFile", false)] {
         if let Some(inline) = chunk.get(key) {
             let mut a = Attachment {
-                media_type: string_of(inline, "mimeType"),
-                name: string_of(inline, "name"),
+                media_type: inline
+                    .str("mimeType")
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned),
+                name: inline
+                    .str("name")
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned),
                 direction,
                 ..Attachment::default()
             };
-            if let Some(bytes) = str_of(inline, "data")
+            if let Some(bytes) = inline
+                .str("data")
+                .filter(|s| !s.is_empty())
                 .and_then(|d| base64::engine::general_purpose::STANDARD.decode(d).ok())
             {
                 let hash = BlobHash::of(&bytes);
@@ -915,13 +967,17 @@ impl ExportParser for Listing {
         let f: Json = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
         let f = &f;
         sink.records.fields("file", f, &LISTING_FIELDS);
-        let Some(sid) = str_of(f, "id").and_then(|id| session_id(ORIGIN, id)) else {
+        let Some(sid) = f
+            .str("id")
+            .filter(|s| !s.is_empty())
+            .and_then(|id| session_id(ORIGIN, id))
+        else {
             sink.records
                 .record("file", &RecordOutcome::unreadable("no id"));
             return Ok(());
         };
         let mut session = Session::new(sid, SessionKind::Main);
-        if let Some(name) = str_of(f, "name") {
+        if let Some(name) = f.str("name").filter(|s| !s.is_empty()) {
             session.offer_title(name, TitleSource::Generated);
         }
         if let Some(at) = f

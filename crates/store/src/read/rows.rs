@@ -17,10 +17,7 @@ impl Reader<'_> {
             .map(|row| Ok::<_, rusqlite::Error>((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))
             .transpose()?
             .unwrap_or_default();
-        let count = |value| {
-            u64::try_from(value)
-                .map_err(|_| StoreError::Invalid("query returned a negative count".into()))
-        };
+        let count = |value| crate::to_u64(value, "query returned a negative count");
         Ok((count(total)?, count(without)?))
     }
 

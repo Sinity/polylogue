@@ -1,4 +1,4 @@
-//! Types every Polylogue crate shares, their rules, the export codec and
+//! Types every Polylogue crate shares, their rules and
 //! crash-safe file replacement.
 
 #[macro_use]
@@ -6,7 +6,7 @@ mod stored_names;
 pub use stored_names::StoredName;
 
 mod helpers;
-pub use helpers::{JsonExt, LockExt, WriteLockExt, hex, spawn_named};
+pub use helpers::{JsonExt, LockExt, WriteLockExt, hex, spawn_named, unpoisoned};
 pub mod failure;
 pub use failure::Code;
 
@@ -29,7 +29,6 @@ pub mod context;
 mod delivery;
 mod document;
 mod event;
-pub mod export;
 mod id;
 pub mod injection;
 pub mod kept;

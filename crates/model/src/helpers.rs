@@ -1,5 +1,10 @@
 use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
+/// Recover the value returned by a lock or condition-variable wait after a panic.
+pub fn unpoisoned<T>(result: std::sync::LockResult<T>) -> T {
+    result.unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Access shared state even when an earlier owner panicked.
 pub trait LockExt {
     type Guard<'a>
@@ -13,8 +18,7 @@ impl<T: ?Sized> LockExt for Mutex<T> {
     where
         T: 'a;
     fn locked(&self) -> Self::Guard<'_> {
-        self.lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        unpoisoned(self.lock())
     }
 }
 impl<T: ?Sized> LockExt for RwLock<T> {
@@ -23,8 +27,7 @@ impl<T: ?Sized> LockExt for RwLock<T> {
     where
         T: 'a;
     fn locked(&self) -> Self::Guard<'_> {
-        self.read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        unpoisoned(self.read())
     }
 }
 /// Exclusive access to an RwLock, with the same poisoning policy as LockExt.
@@ -40,8 +43,7 @@ impl<T: ?Sized> WriteLockExt for RwLock<T> {
     where
         T: 'a;
     fn write_locked(&self) -> Self::Guard<'_> {
-        self.write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        unpoisoned(self.write())
     }
 }
 

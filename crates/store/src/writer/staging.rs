@@ -337,8 +337,7 @@ impl Inner {
                 b.new_blob = None;
             }
             let (chain, _) = write_bytes(&tx, b, seq)?;
-            let chain = chain
-                .ok_or_else(|| StoreError::Invalid("stored bytes produced no chain".into()))?;
+            let chain = chain.or_invalid("stored bytes produced no chain")?;
             crate::fault::check("import.rows", &b.input.id)?;
             let already_stored =
                 again || matches!(b.change, Change::Unchanged | Change::Observed { .. });
@@ -411,8 +410,7 @@ impl Inner {
         if b.input.id.is_empty() {
             return Err(StoreError::Invalid("stored bytes need an input".into()));
         }
-        i64::try_from(b.length)
-            .map_err(|_| StoreError::Invalid("input exceeds archive address space".into()))?;
+        crate::to_i64(b.length, "input exceeds archive address space")?;
         check_import_format(
             &self.archive,
             &b.input.id,

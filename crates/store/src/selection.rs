@@ -38,7 +38,10 @@ pub enum SelectionError {
     #[error(transparent)]
     Language(#[from] query_language::Error),
     #[error("{message}")]
-    Invalid { kind: &'static str, message: String },
+    Invalid {
+        kind: polylogue_model::Code,
+        message: String,
+    },
 }
 impl SelectionError {
     /// Preserve typed query diagnostics and Store control failures at accepting
@@ -59,16 +62,23 @@ impl SelectionError {
     }
     /// The product failure code: the store's one mapping for a store error,
     /// and the diagnostic's own code otherwise.
-    pub fn code(&self) -> &'static str {
+    pub fn code(&self) -> polylogue_model::Code {
         match self {
             Self::Store(error) => error.code(),
             Self::Query(error) => error.kind(),
-            Self::Language(error) => error.kind.code(),
-            Self::Invalid { kind, .. } => kind,
+            Self::Language(error) => match error.kind {
+                query_language::ErrorKind::InvalidQuery => polylogue_model::Code::InvalidQuery,
+                query_language::ErrorKind::UnknownField => polylogue_model::Code::UnknownField,
+                query_language::ErrorKind::BadValue => polylogue_model::Code::BadValue,
+                query_language::ErrorKind::NotAQuery => polylogue_model::Code::NotAQuery,
+                query_language::ErrorKind::Ambiguous => polylogue_model::Code::Ambiguous,
+                query_language::ErrorKind::StaleCursor => polylogue_model::Code::StaleCursor,
+            },
+            Self::Invalid { kind, .. } => *kind,
         }
     }
 }
-fn invalid(kind: &'static str, message: impl Into<String>) -> SelectionError {
+fn invalid(kind: polylogue_model::Code, message: impl Into<String>) -> SelectionError {
     SelectionError::Invalid {
         kind,
         message: message.into(),
@@ -118,19 +128,6 @@ impl PreparedSelection<'_> {
     }
     pub fn scope_token(&self) -> ReadScopeToken {
         self.scope.clone()
-    }
-}
-/// Natural source coordinates emitted by the compiler's own selected relation.
-/// These are not Sinex parents; the lifecycle rows resolve the unit rows they name.
-#[derive(Debug, Clone)]
-pub struct SelectionFactKey {
-    pub unit: Unit,
-    pub values: Vec<Value>,
-}
-
-impl SelectionFactKey {
-    pub fn target(&self) -> Option<ReadTarget> {
-        identity_target(self.unit, &self.values)
     }
 }
 #[derive(Debug, Clone)]
@@ -275,7 +272,10 @@ impl Reader<'_> {
                 None => false,
             };
             if !present {
-                return Err(invalid("not_found", "referenced source is unavailable"));
+                return Err(invalid(
+                    polylogue_model::Code::NotFound,
+                    "referenced source is unavailable",
+                ));
             }
         }
         let text = direct
@@ -304,35 +304,16 @@ impl Reader<'_> {
         self.finish_selection(plan, program, direct, &options)
     }
 
-    /// Replay an acknowledged saved object using its authenticated catalog
-    /// version and the caller's already captured operation clock.
-    pub fn prepare_query_object_selection<'read>(
-        &'read self,
-        object: &polylogue_model::query_objects::QueryObject,
-        options: &Options,
-        expected_catalog: &str,
-    ) -> Result<PreparedSelection<'read>, SelectionError> {
-        self.with_clock(&options.clock, || {
-            self.check()?;
-            crate::query_objects::validate_result_bindings(
-                self.conn()?,
-                crate::source::Source::Cache,
-                object,
-            )?;
-            let plan = polylogue_query::plan::replay(object, expected_catalog)?;
-            let program = self.lower_plan(&plan, options)?;
-            self.validate_selection(&program)?;
-            self.finish_selection(plan, program, None, options)
-        })
-    }
-
     /// The one point where a selected reference becomes a read target: an
     /// assertion family binds its current revision, other kinds are refused.
     fn bind_direct_reference(&self, reference: Reference) -> Result<ReadTarget, SelectionError> {
         let reference = match reference {
             Reference::Assertion(revision) if revision.revision.is_none() => {
                 let row = self.assertion(&revision)?.ok_or_else(|| {
-                    invalid("not_found", "assertion family has no current revision")
+                    invalid(
+                        polylogue_model::Code::NotFound,
+                        "assertion family has no current revision",
+                    )
                 })?;
                 Reference::Assertion(RevisionReference {
                     root: row.fact.root,
@@ -341,7 +322,8 @@ impl Reader<'_> {
             }
             reference => reference,
         };
-        ReadTarget::try_from(reference).map_err(|error| invalid("invalid_query", error.to_string()))
+        ReadTarget::try_from(reference)
+            .map_err(|error| invalid(polylogue_model::Code::InvalidQuery, error.to_string()))
     }
 
     fn finish_selection<'read>(
@@ -453,7 +435,7 @@ impl Reader<'_> {
             || selection.reader != std::ptr::from_ref(self).cast::<()>() as usize
         {
             return Err(E::from(invalid(
-                "scope_changed",
+                polylogue_model::Code::ScopeChanged,
                 "selection belongs to another access scope",
             )));
         }
@@ -461,7 +443,7 @@ impl Reader<'_> {
         let program = &selection.program;
         if after.is_some_and(|after| after.values.len() != program.order.len()) {
             return Err(E::from(invalid(
-                "invalid_cursor",
+                polylogue_model::Code::InvalidCursor,
                 "selection order position has the wrong arity",
             )));
         }
@@ -537,7 +519,7 @@ impl Reader<'_> {
             || !selection.scope.same(&self.scope_token())
         {
             return Err(E::from(invalid(
-                "scope_changed",
+                polylogue_model::Code::ScopeChanged,
                 "selection belongs to another access scope",
             )));
         }
@@ -554,57 +536,6 @@ impl Reader<'_> {
         })
     }
 
-    /// Stream the complete selected unit rows without answer field selection
-    /// or body decoding. Aggregated populations need a kept compiler base.
-    pub fn visit_selection_facts<E>(
-        &self,
-        selection: &PreparedSelection<'_>,
-        near: Option<&NearFn<'_>>,
-        mut visit: impl FnMut(SelectionFactKey) -> Result<ControlFlow<()>, E>,
-    ) -> Result<(), E>
-    where
-        E: From<SelectionError>,
-    {
-        self.in_selection_context(selection, near, || {
-            self.selection_facts_scoped(selection, &mut visit)
-        })
-    }
-    fn selection_facts_scoped<E>(
-        &self,
-        selection: &PreparedSelection<'_>,
-        visit: &mut impl FnMut(SelectionFactKey) -> Result<ControlFlow<()>, E>,
-    ) -> Result<(), E>
-    where
-        E: From<SelectionError>,
-    {
-        let RowKind::UnitRows { unit, columns } = &selection.program.row_kind else {
-            return Err(E::from(invalid(
-                "not_yet_available",
-                "the query does not keep its criterion population",
-            )));
-        };
-        let sql = selection.program.statements.member_columns(columns);
-        let result = self.query_each(&sql, &values(&selection.program.params), |row| {
-            selection
-                .scope
-                .check()
-                .map_err(SelectionError::from)
-                .map_err(VisitError::Selection)?;
-            let fact = SelectionFactKey {
-                unit: *unit,
-                values: columns.iter().map(|c| row[c].clone()).collect(),
-            };
-            match visit(fact).map_err(VisitError::Consumer)? {
-                ControlFlow::Continue(()) => Ok(()),
-                ControlFlow::Break(()) => Err(VisitError::Stop),
-            }
-        });
-        match result {
-            Ok(()) | Err(VisitError::Stop) => Ok(()),
-            Err(VisitError::Consumer(e)) => Err(e),
-            Err(VisitError::Selection(e)) => Err(E::from(e)),
-        }
-    }
     /// Visit all recorded conversation memberships without hydrating
     /// message bodies. The shown message's chosen session does not show it is the only one.
     pub fn visit_message_sessions(
@@ -658,19 +589,19 @@ impl Reader<'_> {
         selection.scope.check()?;
         if selection.reader != std::ptr::from_ref(self).cast::<()>() as usize {
             return Err(invalid(
-                "scope_changed",
+                polylogue_model::Code::ScopeChanged,
                 "selection belongs to another reader",
             ));
         }
         if selection.program.near.is_some() && !selection.visiting.get() {
             return Err(invalid(
-                "embed",
+                polylogue_model::Code::Embed,
                 "ranked membership needs the active selection visit",
             ));
         }
         if selection.program.shape != Shape::Rows {
             return Err(invalid(
-                "invalid_query",
+                polylogue_model::Code::InvalidQuery,
                 "grouped or summarized rows have no member records",
             ));
         }
@@ -725,7 +656,7 @@ impl Reader<'_> {
             .any(|generation| generation != &position.generation)
         {
             return Err(SelectionError::Invalid {
-                kind: "resync_required",
+                kind: polylogue_model::Code::ResyncRequired,
                 message: format!(
                     "the index generation changed to {}; read the current state again",
                     position.generation
@@ -742,7 +673,7 @@ impl Reader<'_> {
                 1 => {}
                 0 => {
                     return Err(SelectionError::Invalid {
-                        kind: "not_found",
+                        kind: polylogue_model::Code::NotFound,
                         message: format!(
                             "no session or message has an ID starting {:?}",
                             check.word
@@ -974,7 +905,12 @@ fn direct_reference(
                 polylogue_model::ReferenceError::NoKind(_)
                 | polylogue_model::ReferenceError::UnknownKind(_),
             ) => return Ok(None),
-            Err(error) => return Err(invalid("invalid_query", error.to_string())),
+            Err(error) => {
+                return Err(invalid(
+                    polylogue_model::Code::InvalidQuery,
+                    error.to_string(),
+                ));
+            }
         },
         ConditionKind::Match {
             field,
@@ -992,7 +928,7 @@ fn direct_reference(
         ) =>
         {
             Reference::parse(&format!("{field}:{text}"))
-                .map_err(|error| invalid("invalid_query", error.to_string()))?
+                .map_err(|error| invalid(polylogue_model::Code::InvalidQuery, error.to_string()))?
         }
         _ => return Ok(None),
     };

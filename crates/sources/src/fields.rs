@@ -100,10 +100,6 @@ pub struct Accounting {
     pub shapes: BTreeMap<String, polylogue_model::WireShape>,
 }
 
-pub fn unaccounted(value: &Json, fields: &Fields) -> Vec<String> {
-    inspect(value, fields).unused
-}
-
 /// One walk accounts for leaves and observes shape without keeping scalar bodies.
 pub fn inspect(value: &Json, fields: &Fields) -> Accounting {
     let mut unused = Vec::new();

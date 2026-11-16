@@ -52,9 +52,16 @@ fn stores_scans_and_survives_reopening() {
                 values: unit(&[0.9, 0.1, 0.0]),
             },
         ],
+        &polylogue_model::WallClock::fixed(jiff::Timestamp::UNIX_EPOCH),
     )
     .unwrap();
-    v.fail(key, &[3], "too long").unwrap();
+    v.fail(
+        key,
+        &[3],
+        "too long",
+        &polylogue_model::WallClock::fixed(jiff::Timestamp::UNIX_EPOCH),
+    )
+    .unwrap();
     drop(v);
     drop(reader);
     drop(pool);
@@ -150,6 +157,7 @@ fn vector_write_upgrade_keeps_its_cache_and_its_read_results() {
                 chunk: 0,
                 values: vec![1.0],
             }],
+            &polylogue_model::WallClock::fixed(jiff::Timestamp::UNIX_EPOCH),
         )
         .unwrap();
     drop(vectors);
@@ -180,10 +188,16 @@ fn the_smallest_vector_writer_budget_keeps_its_total_cache_target() {
                 chunk: 0,
                 values: vec![1.0],
             }],
+            &polylogue_model::WallClock::fixed(jiff::Timestamp::UNIX_EPOCH),
         )
         .unwrap();
     vectors
-        .fail("synthetic", &[2; 32], "synthetic failure")
+        .fail(
+            "synthetic",
+            &[2; 32],
+            "synthetic failure",
+            &polylogue_model::WallClock::fixed(jiff::Timestamp::UNIX_EPOCH),
+        )
         .unwrap();
     assert!(missing(&vectors, "synthetic", &[1; 32], 1).is_empty());
     assert!(
@@ -212,6 +226,7 @@ fn pl_similarity_answers_only_inside_its_query() {
                 chunk: 0,
                 values: unit(&[1.0, 0.0]),
             }],
+            &polylogue_model::WallClock::fixed(jiff::Timestamp::UNIX_EPOCH),
         )
         .unwrap();
     let loaded = std::sync::Arc::new(reader.vectors().unwrap().load(key).unwrap());
@@ -243,6 +258,7 @@ fn purchased_vectors_are_kept_when_their_text_has_no_current_index_row() {
                 chunk: 0,
                 values: vec![1.0],
             }],
+            &polylogue_model::WallClock::fixed(jiff::Timestamp::UNIX_EPOCH),
         )
         .unwrap();
     assert!(missing(&vectors, key, &[9; 32], 1).is_empty());
@@ -266,6 +282,7 @@ fn loaded_vectors_keep_their_database_snapshot_revision_after_a_concurrent_write
                 chunk: 0,
                 values: vec![1., 0.],
             }],
+            &polylogue_model::WallClock::fixed(jiff::Timestamp::UNIX_EPOCH),
         )
         .unwrap();
     let old_reader = pool.reader().unwrap();
@@ -280,6 +297,7 @@ fn loaded_vectors_keep_their_database_snapshot_revision_after_a_concurrent_write
                 chunk: 0,
                 values: vec![0., 1.],
             }],
+            &polylogue_model::WallClock::fixed(jiff::Timestamp::UNIX_EPOCH),
         )
         .unwrap();
     let old_load = Arc::new(old.load(key).unwrap());
@@ -317,6 +335,7 @@ fn missing_chunks_keep_holes_and_dimension_keys_separate() {
                     values: vec![0.0, 1.0],
                 },
             ],
+            &polylogue_model::WallClock::fixed(jiff::Timestamp::UNIX_EPOCH),
         )
         .unwrap();
     vectors
@@ -327,6 +346,7 @@ fn missing_chunks_keep_holes_and_dimension_keys_separate() {
                 chunk: 1,
                 values: vec![1.0, 0.0, 0.0],
             }],
+            &polylogue_model::WallClock::fixed(jiff::Timestamp::UNIX_EPOCH),
         )
         .unwrap();
     assert_eq!(missing(&vectors, key, &[1; 32], 3), HashSet::from([1]));
@@ -341,7 +361,12 @@ fn missing_chunks_keep_holes_and_dimension_keys_separate() {
     assert_eq!(page[&vec![1; 32]], HashSet::from([1]));
     assert_eq!(page[&vec![2; 32]], HashSet::from([0, 1, 2]));
     vectors
-        .fail(key, &[2; 32], "permanent provider refusal")
+        .fail(
+            key,
+            &[2; 32],
+            "permanent provider refusal",
+            &polylogue_model::WallClock::fixed(jiff::Timestamp::UNIX_EPOCH),
+        )
         .unwrap();
     assert!(vectors.rejected(key).unwrap().contains(&vec![2; 32]));
     assert!(!vectors.rejected(other).unwrap().contains(&vec![2; 32]));
@@ -388,15 +413,31 @@ fn put_refuses_different_vector() {
             .collect::<rusqlite::Result<_>>()
             .unwrap()
     };
-    vectors.put(key, &[vector(1, vec![1.0, 0.0])]).unwrap();
+    vectors
+        .put(
+            key,
+            &[vector(1, vec![1.0, 0.0])],
+            &polylogue_model::WallClock::fixed(jiff::Timestamp::UNIX_EPOCH),
+        )
+        .unwrap();
     let first = stored();
     // The same vector again is already stored.
-    vectors.put(key, &[vector(1, vec![1.0, 0.0])]).unwrap();
+    vectors
+        .put(
+            key,
+            &[vector(1, vec![1.0, 0.0])],
+            &polylogue_model::WallClock::fixed(jiff::Timestamp::UNIX_EPOCH),
+        )
+        .unwrap();
     assert_eq!(stored(), first);
     // A different one for the same text, key and chunk is refused, and
     // nothing else the call carried is stored.
     let error = vectors
-        .put(key, &[vector(2, vec![0.0, 1.0]), vector(1, vec![0.0, 1.0])])
+        .put(
+            key,
+            &[vector(2, vec![0.0, 1.0]), vector(1, vec![0.0, 1.0])],
+            &polylogue_model::WallClock::fixed(jiff::Timestamp::UNIX_EPOCH),
+        )
         .unwrap_err();
     assert!(matches!(error, crate::StoreError::Conflict(_)), "{error}");
     assert_eq!(stored(), first);
@@ -471,7 +512,11 @@ fn ranked_archive(
     reader
         .vectors_writer()
         .unwrap()
-        .put("local/test/2/document/unit", &vectors)
+        .put(
+            "local/test/2/document/unit",
+            &vectors,
+            &polylogue_model::WallClock::fixed(jiff::Timestamp::UNIX_EPOCH),
+        )
         .unwrap();
     drop(reader);
     drop(pool);
@@ -581,11 +626,21 @@ fn query_vectors_are_stored_once_by_key_and_text() {
     let prefix = "local/synthetic/";
     assert_eq!(writer.query_vector(prefix, "parser").unwrap(), None);
     writer
-        .put_query_vector("local/synthetic/2/query/unit", "parser", &[0.6, 0.8])
+        .put_query_vector(
+            "local/synthetic/2/query/unit",
+            "parser",
+            &[0.6, 0.8],
+            &polylogue_model::WallClock::fixed(jiff::Timestamp::UNIX_EPOCH),
+        )
         .unwrap();
     // The vector stored first stays: every earlier ranking used it.
     writer
-        .put_query_vector("local/synthetic/2/query/unit", "parser", &[0.8, 0.6])
+        .put_query_vector(
+            "local/synthetic/2/query/unit",
+            "parser",
+            &[0.8, 0.6],
+            &polylogue_model::WallClock::fixed(jiff::Timestamp::UNIX_EPOCH),
+        )
         .unwrap();
     drop(writer);
     let snapshot = Vectors::snapshot(&archive, 256).unwrap();

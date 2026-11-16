@@ -39,15 +39,19 @@ fn write_local(index: &mut Connection, archive: &Archive, mut batch: Batch) {
     let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
     let step = &batch.parse[0];
     write_rows(
-        &texts,
         &tx,
         &batch,
         step,
-        step.resolution.as_ref().unwrap(),
-        counter,
-        None,
-        Some(&fixture_commit()),
-        &changes,
+        rows::ReadingWrite {
+            texts: &texts,
+            resolution: step.resolution.as_ref().unwrap(),
+            counter: counter,
+            first_build: None,
+            source_commit: Some(&fixture_commit()),
+            changes: &changes,
+            retraction: false,
+            replacement: false,
+        },
     )
     .unwrap();
     rows::finish(&tx, &changes, None, &texts, counter).unwrap();

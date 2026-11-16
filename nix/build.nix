@@ -101,7 +101,7 @@ let
     nextest = craneLib.cargoNextest (
       application
       // {
-        cargoExtraArgs = "--locked --workspace --exclude polylogue-sinex --features polylogue-engine/faults,polylogue-store/faults";
+        cargoExtraArgs = "--locked --workspace --exclude polylogue-sinex --features polylogue-model/fixture,polylogue-query/fixture,polylogue-store/fixture,polylogue-engine/faults,polylogue-store/faults";
         # Shell completion stays offline; the remaining real-process tests need
         # an OS identity. Checks outside Nix keep every e2e; the VM covers transports.
         cargoNextestExtraArgs = "-E 'not (package(polylogue) and binary(e2e) and not test(/^completion::/))'";
@@ -120,17 +120,7 @@ let
         '';
       }
     );
-    boundaries = craneLib.mkCargoDerivation (
-      application
-      // {
-        pname = "polylogue-boundaries";
-        nativeBuildInputs = common.nativeBuildInputs ++ [ pkgs.git ];
-        preBuild = ''
-          export XDG_STATE_HOME="$TMPDIR/state"
-        '';
-        buildPhaseCargoCommand = "cargoWithProfile run --locked -p xtask -- boundaries";
-      }
-    );
+
     extension = extension;
     nix-fmt =
       pkgs.runCommand "polylogue-nix-format"

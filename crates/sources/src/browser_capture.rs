@@ -13,11 +13,12 @@
 //! attachment; a file whose bytes an earlier capture already stored is named
 //! by its blob hash instead.
 
+use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 4;
 
 use crate::chatgpt::first_byte;
-use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
+use crate::document::{Sink, first_key, message_id, session_id, time_of};
 use crate::fields::ExpectedType as T;
 use crate::fields::{Fields, Rule};
 use crate::parse::{DocumentParser, ExtractedBlob, MessageRow, Output, Parse};
@@ -339,7 +340,7 @@ impl DocumentParser for Capture {
 /// The extension's normalized turns, for a provider page that exposed no
 /// conversation JSON.
 fn turns(origin: &str, session: &Json, sink: &mut Sink<'_>) {
-    let Some(native) = str_of(session, "provider_session_id") else {
+    let Some(native) = session.str("provider_session_id").filter(|s| !s.is_empty()) else {
         sink.records.record(
             "session",
             &RecordOutcome::unreadable("no provider_session_id"),
@@ -352,7 +353,7 @@ fn turns(origin: &str, session: &Json, sink: &mut Sink<'_>) {
         return;
     };
     let mut facts = Session::new(sid.clone(), SessionKind::Main);
-    if let Some(title) = str_of(session, "title") {
+    if let Some(title) = session.str("title").filter(|s| !s.is_empty()) {
         facts.offer_title(title, TitleSource::Generated);
     }
     if let Some(at) = session.get("created_at").and_then(time_of) {
@@ -362,29 +363,23 @@ fn turns(origin: &str, session: &Json, sink: &mut Sink<'_>) {
     }
     sink.out.sessions.push(facts);
     sink.records.record("session", &RecordOutcome::Used);
-    let mut list: Vec<&Json> = session
-        .get("turns")
-        .and_then(Json::as_array)
-        .into_iter()
-        .flatten()
-        .collect();
-    list.sort_by_key(|t| t.get("ordinal").and_then(Json::as_i64).unwrap_or(i64::MAX));
+    let mut list: Vec<&Json> = session.array("turns").into_iter().flatten().collect();
+    list.sort_by_key(|t| t.i64("ordinal").unwrap_or(i64::MAX));
     let mut ids = crate::content_ids::ContentIds::default();
     for turn in list {
-        let role_name = str_of(turn, "role").unwrap_or("?").to_owned();
+        let role_name = turn
+            .str("role")
+            .filter(|s| !s.is_empty())
+            .unwrap_or("?")
+            .to_owned();
         let header = crate::fields::header(turn, &["attachments", "blocks"]);
         sink.records.fields("turn", &header, &TURN_FIELDS);
-        for block in turn
-            .get("blocks")
-            .and_then(Json::as_array)
-            .into_iter()
-            .flatten()
-        {
+        for block in turn.array("blocks").into_iter().flatten() {
             sink.records.fields(
                 "block",
                 block,
                 if matches!(
-                    str_of(block, "type"),
+                    block.str("type").filter(|s| !s.is_empty()),
                     Some("text" | "markdown" | "thinking" | "reasoning" | "image")
                 ) {
                     &TURN_BLOCK_FIELDS
@@ -408,23 +403,20 @@ fn turns(origin: &str, session: &Json, sink: &mut Sink<'_>) {
             }
         };
         let mut blocks: Vec<Block> = turn
-            .get("blocks")
-            .and_then(Json::as_array)
+            .array("blocks")
             .into_iter()
             .flatten()
             .filter_map(|b| turn_block(b, direction))
             .collect();
         if blocks.is_empty()
-            && let Some(text) = string_of(turn, "text")
+            && let Some(text) = turn
+                .str("text")
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
         {
             blocks.push(Block::Text { text });
         }
-        for a in turn
-            .get("attachments")
-            .and_then(Json::as_array)
-            .into_iter()
-            .flatten()
-        {
+        for a in turn.array("attachments").into_iter().flatten() {
             sink.records.fields("attachment", a, &ATTACHMENT_FIELDS);
             let stored = attachment_bytes(a, sink);
             blocks.extend(attachment(a, direction, stored));
@@ -432,7 +424,7 @@ fn turns(origin: &str, session: &Json, sink: &mut Sink<'_>) {
         // A turn the page shows without an ID is named by its text, so a
         // capture holding only the later turns, or one taken after a turn
         // was edited, names every other turn the same.
-        let (id, id_kind) = match str_of(turn, "provider_turn_id") {
+        let (id, id_kind) = match turn.str("provider_turn_id").filter(|s| !s.is_empty()) {
             Some(native) => (message_id(origin, native), IdKind::Native),
             None => (
                 ids.next(&sid, role, &crate::content_ids::text(&blocks)),
@@ -449,13 +441,19 @@ fn turns(origin: &str, session: &Json, sink: &mut Sink<'_>) {
             Message {
                 id,
                 session: sid.clone(),
-                parent: str_of(turn, "parent_turn_id").and_then(|p| message_id(origin, p)),
+                parent: turn
+                    .str("parent_turn_id")
+                    .filter(|s| !s.is_empty())
+                    .and_then(|p| message_id(origin, p)),
                 role,
                 at,
                 at_quality: time_evidence.quality,
                 at_precision: time_evidence.precision,
                 at_until: time_evidence.until,
-                model: string_of(turn, "model"),
+                model: turn
+                    .str("model")
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned),
                 prompt_kind,
                 blocks,
                 usage: Default::default(),
@@ -481,20 +479,23 @@ fn turns(origin: &str, session: &Json, sink: &mut Sink<'_>) {
 
 /// One block of a normalized turn.
 fn turn_block(b: &Json, direction: AttachmentDirection) -> Option<Block> {
-    let kind = str_of(b, "type").unwrap_or("");
+    let kind = b.str("type").filter(|s| !s.is_empty()).unwrap_or("");
     Some(match kind {
         "text" | "markdown" => Block::Text {
-            text: string_of(b, "text")?,
+            text: b.str("text").filter(|s| !s.is_empty()).map(str::to_owned)?,
         },
         "thinking" | "reasoning" => Block::Thinking {
-            text: string_of(b, "text"),
+            text: b.str("text").filter(|s| !s.is_empty()).map(str::to_owned),
             signature: None,
             redacted: false,
         },
         "image" => Block::Image(Attachment {
-            name: string_of(b, "name"),
-            media_type: string_of(b, "mime_type"),
-            url: string_of(b, "url"),
+            name: b.str("name").filter(|s| !s.is_empty()).map(str::to_owned),
+            media_type: b
+                .str("mime_type")
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned),
+            url: b.str("url").filter(|s| !s.is_empty()).map(str::to_owned),
             direction,
             ..Attachment::default()
         }),
@@ -512,15 +513,21 @@ fn attachment(
     direction: AttachmentDirection,
     stored: Option<(BlobHash, Option<u64>)>,
 ) -> Vec<Block> {
-    let media_type = string_of(a, "mime_type");
+    let media_type = a
+        .str("mime_type")
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
     let file = Attachment {
-        name: string_of(a, "name"),
+        name: a.str("name").filter(|s| !s.is_empty()).map(str::to_owned),
         size: stored
             .and_then(|(_, size)| size)
-            .or_else(|| a.get("size_bytes").and_then(Json::as_u64)),
+            .or_else(|| a.u64("size_bytes")),
         blob: stored.map(|(hash, _)| hash),
-        url: string_of(a, "url"),
-        source_id: string_of(a, "provider_attachment_id"),
+        url: a.str("url").filter(|s| !s.is_empty()).map(str::to_owned),
+        source_id: a
+            .str("provider_attachment_id")
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned),
         direction,
         media_type,
     };
@@ -533,18 +540,21 @@ fn attachment(
     } else {
         Block::File(file)
     }];
-    if let Some(text) = string_of(a, "extracted_content") {
+    if let Some(text) = a
+        .str("extracted_content")
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+    {
         out.push(Block::Other {
             type_name: "attachment_text".into(),
-            data: serde_json::json!({ "file_name": str_of(a, "name"), "text": text }),
+            data: serde_json::json!({ "file_name": a.str("name").filter(|s| !s.is_empty()), "text": text }),
         });
     }
     out
 }
 
 fn attachment_bytes(a: &Json, sink: &mut Sink<'_>) -> Option<(BlobHash, Option<u64>)> {
-    a.get("content_base64")
-        .and_then(Json::as_str)
+    a.str("content_base64")
         .and_then(|data| base64::engine::general_purpose::STANDARD.decode(data).ok())
         .map(|bytes| {
             let hash = BlobHash::of(&bytes);
@@ -553,8 +563,8 @@ fn attachment_bytes(a: &Json, sink: &mut Sink<'_>) -> Option<(BlobHash, Option<u
             (hash, Some(size))
         })
         .or_else(|| {
-            let hash = BlobHash::parse(str_of(a, "blob")?).ok()?;
-            Some((hash, a.get("size_bytes").and_then(Json::as_u64)))
+            let hash = BlobHash::parse(a.str("blob").filter(|s| !s.is_empty())?).ok()?;
+            Some((hash, a.u64("size_bytes")))
         })
 }
 
@@ -573,9 +583,12 @@ fn attach_files(capture: &Json, origin: &str, first_message: usize, sink: &mut S
     {
         sink.records.fields("attachment", a, &ATTACHMENT_FIELDS);
         let stored = attachment_bytes(a, sink);
-        let file_id = str_of(a, "provider_attachment_id");
-        let name = str_of(a, "name");
-        let Some(msg_id) = str_of(a, "message_provider_id").and_then(|m| message_id(origin, m))
+        let file_id = a.str("provider_attachment_id").filter(|s| !s.is_empty());
+        let name = a.str("name").filter(|s| !s.is_empty());
+        let Some(msg_id) = a
+            .str("message_provider_id")
+            .filter(|s| !s.is_empty())
+            .and_then(|m| message_id(origin, m))
         else {
             continue;
         };

@@ -15,6 +15,7 @@
 //! is stored once, in the parent: copied items that carry an ID keep it
 //! and their parent session, and the rest is accounted as copied.
 
+use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 6;
 
@@ -29,7 +30,7 @@ use crate::origin::Root;
 use crate::parse::{BackgroundUpdate, MessageRow, Output, Parse, Parser};
 use crate::time;
 use crate::{RecordOutcome, Records};
-use items::{Completed, str_field};
+use items::Completed;
 use polylogue_model::{
     Block, Event, IdKind, Json, Link, LinkKind, Message, MessageId, NativeId, Origin, Production,
     PromptKind, QuotaLimit, QuotaReading, QuotaWindow, Role, Session, SessionId, SessionKind,
@@ -67,15 +68,17 @@ pub fn recognize(path: &Path, head: &[u8]) -> bool {
 /// seconds. Relative resets lack the provider observation time needed to
 /// place them: token records can be emitted after draining tools.
 fn quota(q: &Json) -> Option<QuotaReading> {
-    let limit = str_field(q, "limit_id").unwrap_or("codex");
+    let limit = q
+        .str("limit_id")
+        .filter(|s| !s.is_empty())
+        .unwrap_or("codex");
     let windows = ["primary", "secondary"]
         .iter()
         .filter_map(|slot| {
             let w = q.get(*slot)?;
-            let minutes = w.get("window_minutes").and_then(Json::as_i64)?;
+            let minutes = w.i64("window_minutes")?;
             let resets_at = w
-                .get("resets_at")
-                .and_then(Json::as_i64)
+                .i64("resets_at")
                 .and_then(|s| s.checked_mul(1000))
                 .and_then(polylogue_model::Timestamp::from_unix_ms);
             let used = w.get("used_percent").and_then(|u| {
@@ -95,10 +98,13 @@ fn quota(q: &Json) -> Option<QuotaReading> {
         })
         .collect();
     let reading = QuotaReading {
-        plan: str_field(q, "plan_type").map(str::to_owned),
+        plan: q
+            .str("plan_type")
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned),
         credits: q
             .get("credits")
-            .and_then(|c| str_field(c, "balance"))
+            .and_then(|c| c.str("balance").filter(|s| !s.is_empty()))
             .map(str::to_owned),
         windows,
     };
@@ -257,10 +263,10 @@ const BARE_ITEMS: &[&str] = &[
 
 fn unwrap(v: &Json) -> Rec<'_> {
     let at = v.get("timestamp").and_then(time::rfc3339);
-    let ordinal = v.get("ordinal").and_then(Json::as_u64);
+    let ordinal = v.u64("ordinal");
     if let Some(payload) = v.get("payload").filter(|p| p.is_object()) {
         return Rec {
-            ty: str_field(v, "type").unwrap_or("?"),
+            ty: v.str("type").filter(|s| !s.is_empty()).unwrap_or("?"),
             payload,
             // Some writers put the time on the item, not the outer record.
             at: at.or_else(|| payload.get("timestamp").and_then(time::rfc3339)),
@@ -268,7 +274,7 @@ fn unwrap(v: &Json) -> Rec<'_> {
         };
     }
     // Mid-2025 rollouts: a header, then bare items and state markers.
-    let ty = match str_field(v, "type") {
+    let ty = match v.str("type").filter(|s| !s.is_empty()) {
         Some(t) if BARE_ITEMS.contains(&t) => "response_item",
         Some(_) => "?",
         None if v.get("record_type").is_some() => "state",
@@ -317,7 +323,11 @@ impl Rollout {
         out: &mut Output,
     ) -> RecordOutcome {
         let at = at.or_else(|| p.get("timestamp").and_then(time::rfc3339));
-        let Some(thread) = str_field(p, "id").or(self.thread.as_deref()) else {
+        let Some(thread) = p
+            .str("id")
+            .filter(|s| !s.is_empty())
+            .or(self.thread.as_deref())
+        else {
             return RecordOutcome::unreadable("session_meta without a thread ID");
         };
         let Some(id) = session_id(thread) else {
@@ -342,7 +352,7 @@ impl Rollout {
             );
             return self.event(parser_state, p, "session_meta", at, out);
         }
-        let subagent = str_field(p, "thread_source") == Some("subagent")
+        let subagent = p.str("thread_source").filter(|s| !s.is_empty()) == Some("subagent")
             || p.get("source").and_then(|s| s.get("subagent")).is_some();
         let kind = if subagent {
             SessionKind::Subagent
@@ -359,23 +369,33 @@ impl Rollout {
             s.offer_start(at.timestamp(), at.accuracy())
                 .expect("decoded source time is valid");
         }
-        if let Some(cwd) = str_field(p, "cwd") {
+        if let Some(cwd) = p.str("cwd").filter(|s| !s.is_empty()) {
             s.offer_cwd(cwd);
         }
-        if let Some(v) = str_field(p, "cli_version") {
+        if let Some(v) = p.str("cli_version").filter(|s| !s.is_empty()) {
             s.tool_version = Some(v.to_owned());
         }
-        if let Some(branch) = p.get("git").and_then(|g| str_field(g, "branch")) {
+        if let Some(branch) = p
+            .get("git")
+            .and_then(|g| g.str("branch").filter(|s| !s.is_empty()))
+        {
             s.git_branch = Some(branch.to_owned());
         }
-        if let Some(url) = p.get("git").and_then(|g| str_field(g, "repository_url")) {
+        if let Some(url) = p
+            .get("git")
+            .and_then(|g| g.str("repository_url").filter(|s| !s.is_empty()))
+        {
             s.repo = Some(url.to_owned());
         }
-        s.instructions = str_field(p, "instructions")
+        s.instructions = p
+            .str("instructions")
+            .filter(|s| !s.is_empty())
             .or_else(|| p.pointer("/base_instructions/text").and_then(Json::as_str))
             .map(str::to_owned)
             .or(s.instructions.take());
-        s.model_provider = str_field(p, "model_provider")
+        s.model_provider = p
+            .str("model_provider")
+            .filter(|s| !s.is_empty())
             .map(str::to_owned)
             .or(s.model_provider.take());
         s.git_commit = p
@@ -383,16 +403,19 @@ impl Rollout {
             .and_then(Json::as_str)
             .map(str::to_owned)
             .or(s.git_commit.take());
-        if let Some(name) = str_field(p, "agent_nickname") {
+        if let Some(name) = p.str("agent_nickname").filter(|s| !s.is_empty()) {
             s.offer_title(name, TitleSource::AgentName);
         }
-        let parent = str_field(p, "parent_thread_id").or_else(|| {
-            p.get("source")
-                .and_then(|s| s.get("subagent"))
-                .and_then(|s| s.get("thread_spawn"))
-                .and_then(|t| str_field(t, "parent_thread_id"))
-        });
-        let forked = str_field(p, "forked_from_id");
+        let parent = p
+            .str("parent_thread_id")
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                p.get("source")
+                    .and_then(|s| s.get("subagent"))
+                    .and_then(|s| s.get("thread_spawn"))
+                    .and_then(|t| t.str("parent_thread_id").filter(|s| !s.is_empty()))
+            });
+        let forked = p.str("forked_from_id").filter(|s| !s.is_empty());
         if let Some(parent_id) = parent.and_then(session_id) {
             link(
                 parser_state,
@@ -434,10 +457,7 @@ impl Rollout {
                 evidence: evidence.into(),
             });
         }
-        if let Some(start) = p
-            .get("subagent_history_start_ordinal")
-            .and_then(Json::as_u64)
-        {
+        if let Some(start) = p.u64("subagent_history_start_ordinal") {
             parser_state.copied_until = Some(start);
             parser_state.copied_history_complete = false;
             parser_state.copied_from = forked.or(parent).map(str::to_owned);
@@ -525,13 +545,15 @@ impl Rollout {
         ordinal: Option<u64>,
         out: &mut Output,
     ) -> RecordOutcome {
-        let ty = str_field(item, "type").unwrap_or("?");
+        let ty = item.str("type").filter(|s| !s.is_empty()).unwrap_or("?");
         let copied = Self::copied(parser_state, ordinal);
         let session = if copied {
             // Stored once, in the parent; only items with an ID can be
             // recognized there.
-            let (Some(parent), Some(_)) = (parser_state.copied_from.clone(), str_field(item, "id"))
-            else {
+            let (Some(parent), Some(_)) = (
+                parser_state.copied_from.clone(),
+                item.str("id").filter(|s| !s.is_empty()),
+            ) else {
                 return RecordOutcome::skipped("copied from the parent thread, which stores it");
             };
             match session_id(&parent) {
@@ -553,7 +575,7 @@ impl Rollout {
         else {
             return RecordOutcome::skipped("item with no content");
         };
-        let (id, id_kind) = match str_field(item, "id") {
+        let (id, id_kind) = match item.str("id").filter(|s| !s.is_empty()) {
             Some(native) => (message_id(native), IdKind::Native),
             None => (
                 parser_state.ids.next_blocks(&session, role, &mut blocks),
@@ -585,7 +607,10 @@ impl Rollout {
                 duration_ms: None,
                 attrs: Default::default(),
                 production: Production {
-                    phase: str_field(item, "phase").map(str::to_owned),
+                    phase: item
+                        .str("phase")
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned),
                     response_boundary_unknown: (role == Role::Assistant).then_some(true),
                     effort: (role == Role::Assistant && !copied)
                         .then(|| parser_state.effort.clone())
@@ -636,8 +661,9 @@ impl Rollout {
         out: &mut Output,
     ) -> Option<(Role, Option<PromptKind>, Vec<Block>)> {
         let call_id = || {
-            str_field(item, "call_id")
-                .or(str_field(item, "id"))
+            item.str("call_id")
+                .filter(|s| !s.is_empty())
+                .or(item.str("id").filter(|s| !s.is_empty()))
                 .map(str::to_owned)
         };
         Some(match ty {
@@ -645,13 +671,13 @@ impl Rollout {
                 Role::User,
                 Some(PromptKind::CompactionSummary),
                 vec![Block::Text {
-                    text: str_field(item, "message")?.to_owned(),
+                    text: item.str("message").filter(|s| !s.is_empty())?.to_owned(),
                 }],
             ),
             "message" => {
                 let content = item.get("content").unwrap_or(&Json::Null);
                 let blocks = items::message_blocks(content, &mut out.blobs);
-                match str_field(item, "role") {
+                match item.str("role").filter(|s| !s.is_empty()) {
                     Some("user") => (Role::User, Some(items::prompt_kind(content)), blocks),
                     Some("assistant") => (Role::Assistant, None, blocks),
                     _ => (Role::System, None, blocks),
@@ -729,7 +755,7 @@ impl Rollout {
             "web_search_call" => {
                 // One item holds both the search and that it ran.
                 let id = call_id();
-                let outcome = match str_field(item, "status") {
+                let outcome = match item.str("status").filter(|s| !s.is_empty()) {
                     Some("completed") => ToolOutcome::Ok,
                     Some("failed") => ToolOutcome::Error { reason: None },
                     _ => ToolOutcome::Unknown {
@@ -825,10 +851,7 @@ impl Rollout {
         }
         if tool.ends_with("spawn_agent")
             && let Ok(Json::Object(reply)) = serde_json::from_str::<Json>(text.trim())
-            && let Some(child) = reply
-                .get("agent_id")
-                .and_then(Json::as_str)
-                .and_then(session_id)
+            && let Some(child) = reply.str("agent_id").and_then(session_id)
         {
             link(
                 parser_state,
@@ -859,7 +882,7 @@ impl Rollout {
         out: &mut Output,
     ) -> RecordOutcome {
         let item = p.get("item").unwrap_or(&Json::Null);
-        let ty = str_field(item, "type").unwrap_or("?");
+        let ty = item.str("type").filter(|s| !s.is_empty()).unwrap_or("?");
         match ty {
             "AgentMessage" | "UserMessage" | "Reasoning" => {
                 RecordOutcome::skipped("mirrors the response item, which is stored")
@@ -873,7 +896,7 @@ impl Rollout {
                         "no thread ID in the file name or its header",
                     );
                 };
-                let id = str_field(item, "id").unwrap_or("");
+                let id = item.str("id").filter(|s| !s.is_empty()).unwrap_or("");
                 if let Some(call) = parser_state.calls.get_mut(id) {
                     let Some(done) = items::completed(item) else {
                         return RecordOutcome::skipped("call item without a status");
@@ -939,9 +962,11 @@ impl Rollout {
             "SubAgentActivity" => {
                 if let (Some(parent), Some(child)) = (
                     self.own(parser_state),
-                    str_field(item, "agent_thread_id").and_then(session_id),
+                    item.str("agent_thread_id")
+                        .filter(|s| !s.is_empty())
+                        .and_then(session_id),
                 ) {
-                    let call = str_field(item, "id").map(str::to_owned);
+                    let call = item.str("id").filter(|s| !s.is_empty()).map(str::to_owned);
                     link(
                         parser_state,
                         out,
@@ -971,7 +996,7 @@ impl Rollout {
         out: &mut Output,
         records: &mut Records,
     ) -> RecordOutcome {
-        let sub = str_field(p, "type").unwrap_or("?");
+        let sub = p.str("type").filter(|s| !s.is_empty()).unwrap_or("?");
         match sub {
             "token_count" => {
                 // Keep the observation as reported, including malformed,
@@ -1033,7 +1058,7 @@ impl Rollout {
             }
             "exec_command_end" | "patch_apply_end" | "mcp_tool_call_end" => {
                 // Older rollouts: how a call ended, before item_completed.
-                let id = str_field(p, "call_id").unwrap_or("");
+                let id = p.str("call_id").filter(|s| !s.is_empty()).unwrap_or("");
                 if let (Some(call), Some(done)) =
                     (parser_state.calls.get_mut(id), items::completed(p))
                 {
@@ -1067,16 +1092,17 @@ impl Rollout {
             "thread_settings" => {
                 if let Some(tier) = p
                     .get("thread_settings")
-                    .and_then(|s| str_field(s, "service_tier"))
+                    .and_then(|s| s.str("service_tier").filter(|s| !s.is_empty()))
                 {
                     parser_state.tier = Some(tier.to_owned());
                 }
                 self.event(parser_state, p, sub, at, out)
             }
             "thread_name_updated" => {
-                if let (Some(name), Some(s)) =
-                    (str_field(p, "thread_name"), parser_state.session.as_mut())
-                {
+                if let (Some(name), Some(s)) = (
+                    p.str("thread_name").filter(|s| !s.is_empty()),
+                    parser_state.session.as_mut(),
+                ) {
                     s.offer_title(name, TitleSource::Generated);
                 }
                 self.event(parser_state, p, sub, at, out)
@@ -1089,7 +1115,9 @@ impl Rollout {
 /// The text of a user message item, for pairing it with a `user_message`
 /// event that records the same prompt.
 fn user_text(item: &Json) -> Option<String> {
-    if str_field(item, "type") != Some("message") || str_field(item, "role") != Some("user") {
+    if item.str("type").filter(|s| !s.is_empty()) != Some("message")
+        || item.str("role").filter(|s| !s.is_empty()) != Some("user")
+    {
         return None;
     }
     let Json::Array(parts) = item.get("content")? else {
@@ -1098,7 +1126,7 @@ fn user_text(item: &Json) -> Option<String> {
     Some(
         parts
             .iter()
-            .filter_map(|c| str_field(c, "text"))
+            .filter_map(|c| c.str("text").filter(|s| !s.is_empty()))
             .collect::<Vec<_>>()
             .join("\n"),
     )
@@ -1166,7 +1194,10 @@ impl Parser for Rollout {
                 format!(
                     "{}/{}",
                     rec.ty,
-                    str_field(rec.payload, "type").unwrap_or("?")
+                    rec.payload
+                        .str("type")
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or("?")
                 )
             }
             ty => ty.to_owned(),
@@ -1192,11 +1223,14 @@ impl Parser for Rollout {
         {
             parser_state.copied_history_complete = true;
         }
-        if rec.ty == "response_item" && str_field(p, "type") != Some("token_count") {
-            let ty = str_field(p, "type").unwrap_or("?");
+        if rec.ty == "response_item"
+            && p.str("type").filter(|s| !s.is_empty()) != Some("token_count")
+        {
+            let ty = p.str("type").filter(|s| !s.is_empty()).unwrap_or("?");
             records.fields(&format!("response_item/{ty}"), p, fields::for_item(ty));
         }
-        if rec.ty == "event_msg" && str_field(p, "type") == Some("user_message") {
+        if rec.ty == "event_msg" && p.str("type").filter(|s| !s.is_empty()) == Some("user_message")
+        {
             records.fields("event_msg/user_message", p, &fields::USER_MESSAGE);
         }
         parser_state.current = Some((record.offset, record.offset + record.bytes.len() as u64));
@@ -1207,7 +1241,7 @@ impl Parser for Rollout {
             .then(|| parser_state.copied_from.as_deref().and_then(session_id))
             .flatten();
         let token_observation =
-            rec.ty == "event_msg" && str_field(p, "type") == Some("token_count");
+            rec.ty == "event_msg" && p.str("type").filter(|s| !s.is_empty()) == Some("token_count");
         if Self::copied(parser_state, rec.ordinal)
             && token_observation
             && parser_state.copied_from.is_none()
@@ -1228,7 +1262,9 @@ impl Parser for Rollout {
             return RecordOutcome::skipped("copied from the parent thread, which stores it");
         }
         let prev = parser_state.prompt.take();
-        if rec.ty == "response_item" && str_field(p, "type") == Some("token_count") {
+        if rec.ty == "response_item"
+            && p.str("type").filter(|s| !s.is_empty()) == Some("token_count")
+        {
             return self.event_by_time(parser_state, p, "token_count_item", rec.at, out);
         }
         let same = |text: &str, from_event: bool| {
@@ -1252,8 +1288,13 @@ impl Parser for Rollout {
             }
             return d;
         }
-        if rec.ty == "event_msg" && str_field(p, "type") == Some("user_message") {
-            let text = str_field(p, "message").unwrap_or_default().to_owned();
+        if rec.ty == "event_msg" && p.str("type").filter(|s| !s.is_empty()) == Some("user_message")
+        {
+            let text = p
+                .str("message")
+                .filter(|s| !s.is_empty())
+                .unwrap_or_default()
+                .to_owned();
             if same(&text, false) {
                 return RecordOutcome::skipped(
                     "same prompt as the user message item before it, which is stored",
@@ -1271,7 +1312,7 @@ impl Parser for Rollout {
             }
             let mut item =
                 serde_json::json!({"type": "message", "role": "user", "content": content});
-            if let Some(id) = str_field(p, "client_id") {
+            if let Some(id) = p.str("client_id").filter(|s| !s.is_empty()) {
                 item["id"] = Json::String(id.to_owned());
             }
             let d = self.response_item(parser_state, record, &item, rec.at, rec.ordinal, out);
@@ -1293,20 +1334,26 @@ impl Parser for Rollout {
             }
             "event_msg" => self.event_msg(parser_state, record, p, rec.at, out, records),
             "turn_context" => {
-                if let Some(model) = str_field(p, "model") {
+                if let Some(model) = p.str("model").filter(|s| !s.is_empty()) {
                     parser_state.model = Some(model.to_owned());
                 }
-                parser_state.effort = str_field(p, "effort").map(str::to_owned);
-                if let Some(tier) = str_field(p, "service_tier") {
+                parser_state.effort = p.str("effort").filter(|s| !s.is_empty()).map(str::to_owned);
+                if let Some(tier) = p.str("service_tier").filter(|s| !s.is_empty()) {
                     parser_state.tier = Some(tier.to_owned());
                 }
-                if let (Some(cwd), Some(s)) = (str_field(p, "cwd"), parser_state.session.as_mut()) {
+                if let (Some(cwd), Some(s)) = (
+                    p.str("cwd").filter(|s| !s.is_empty()),
+                    parser_state.session.as_mut(),
+                ) {
                     s.offer_cwd(cwd);
                 }
                 if let Some(s) = parser_state.session.as_mut()
                     && s.instructions.is_none()
                 {
-                    s.instructions = str_field(p, "user_instructions").map(str::to_owned);
+                    s.instructions = p
+                        .str("user_instructions")
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned);
                 }
                 self.event(parser_state, p, "turn_context", rec.at, out)
             }
@@ -1319,19 +1366,21 @@ impl Parser for Rollout {
                 // identified item is where it branched. Keep that history
                 // as source data, without creating authored messages.
                 if parser_state.last.is_none()
-                    && let Some(history) = p.get("replacement_history").and_then(Json::as_array)
-                    && let Some(at) = history.iter().rev().find_map(|i| str_field(i, "id"))
+                    && let Some(history) = p.array("replacement_history")
+                    && let Some(at) = history
+                        .iter()
+                        .rev()
+                        .find_map(|i| i.str("id").filter(|s| !s.is_empty()))
                 {
                     parser_state.branch_point = message_id(at);
                 }
                 let outcome = self.event(parser_state, &Json::Null, "compaction", rec.at, out);
                 let mut boundary = polylogue_model::CompactionBoundary {
                     kept: p
-                        .get("replacement_history")
-                        .and_then(Json::as_array)
+                        .array("replacement_history")
                         .into_iter()
                         .flatten()
-                        .filter_map(|item| str_field(item, "id"))
+                        .filter_map(|item| item.str("id").filter(|s| !s.is_empty()))
                         .filter_map(message_id)
                         .collect(),
                     replacement_history: p
@@ -1340,7 +1389,7 @@ impl Parser for Rollout {
                         .unwrap_or(Json::Null),
                     ..Default::default()
                 };
-                if let Some(summary) = str_field(p, "message") {
+                if let Some(summary) = p.str("message").filter(|s| !s.is_empty()) {
                     let item = serde_json::json!({"type":"compaction_summary", "message":summary});
                     if self.response_item(parser_state, record, &item, rec.at, None, out)
                         == RecordOutcome::Used

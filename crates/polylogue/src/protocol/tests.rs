@@ -24,30 +24,38 @@ fn a_pending_write_is_degraded_with_its_note_and_http_success() {
 #[test]
 fn failures_follow_the_shared_table() {
     for (code, exit, http) in [
-        ("invalid_query", 2, Some(400)),
-        ("invalid_cursor", 2, Some(400)),
-        ("stale_cursor", 2, Some(400)),
-        ("not_built", 2, Some(501)),
-        ("refused", 3, Some(403)),
-        ("conflict", 4, Some(409)),
-        ("scope_changed", 4, Some(409)),
-        ("not_the_claimant", 4, Some(409)),
-        ("job_ended", 4, Some(409)),
-        ("browser_actions_off", 4, Some(409)),
-        ("unknown_chat_action", 4, Some(404)),
-        ("attachment_unavailable", 4, Some(404)),
-        ("unsupported_provider", 2, Some(400)),
-        ("submission_receipt_required", 2, Some(400)),
-        ("submission_conversation_mismatch", 2, Some(400)),
-        ("io", 4, Some(500)),
-        ("stopped_early", 5, Some(500)),
-        ("daemon_required", 6, None),
-        ("deadline_exceeded", 7, Some(504)),
-        ("cancelled", 7, None),
+        (polylogue_model::Code::InvalidQuery, 2, Some(400)),
+        (polylogue_model::Code::InvalidCursor, 2, Some(400)),
+        (polylogue_model::Code::StaleCursor, 2, Some(400)),
+        (polylogue_model::Code::NotBuilt, 2, Some(501)),
+        (polylogue_model::Code::Refused, 3, Some(403)),
+        (polylogue_model::Code::Conflict, 4, Some(409)),
+        (polylogue_model::Code::ScopeChanged, 4, Some(409)),
+        (polylogue_model::Code::NotTheClaimant, 4, Some(409)),
+        (polylogue_model::Code::JobEnded, 4, Some(409)),
+        (polylogue_model::Code::BrowserActionsOff, 4, Some(409)),
+        (polylogue_model::Code::UnknownChatAction, 4, Some(404)),
+        (polylogue_model::Code::AttachmentUnavailable, 4, Some(404)),
+        (polylogue_model::Code::UnsupportedProvider, 2, Some(400)),
+        (
+            polylogue_model::Code::SubmissionReceiptRequired,
+            2,
+            Some(400),
+        ),
+        (
+            polylogue_model::Code::SubmissionConversationMismatch,
+            2,
+            Some(400),
+        ),
+        (polylogue_model::Code::Io, 4, Some(500)),
+        (polylogue_model::Code::StoppedEarly, 5, Some(500)),
+        (polylogue_model::Code::DaemonRequired, 6, None),
+        (polylogue_model::Code::DeadlineExceeded, 7, Some(504)),
+        (polylogue_model::Code::Cancelled, 7, None),
     ] {
         let answer = Answer::<Value>::error(failure(code, "failed"));
-        assert_eq!(answer.exit_code(), exit, "{code}");
-        assert_eq!(answer.http_status(), http, "{code}");
+        assert_eq!(answer.exit_code(), exit, "{code:?}");
+        assert_eq!(answer.http_status(), http, "{code:?}");
         assert!(answer.value().is_none());
     }
 }
@@ -99,7 +107,7 @@ fn an_ambiguous_reference_names_every_candidate() {
         ["session:test:7f3a-1", "session:test:7f3a-2"]
     );
     let selection = polylogue_store::StoreError::Selection {
-        code: "stale_cursor",
+        code: polylogue_model::Code::StaleCursor,
         message: "the selected row position is unavailable".into(),
     };
     assert_eq!(store_failure(&selection).kind, FailureKind::StaleCursor);
@@ -178,4 +186,34 @@ fn pending_browser_results_keep_their_kind_on_the_wire() {
         serde_json::from_value::<ChatAnswer>(json!({"identity":"capture:synthetic","action":null}))
             .is_err()
     );
+}
+
+#[test]
+fn typed_failure_codes_keep_their_wire_names_and_classes() {
+    use polylogue_model::Code;
+    for (code, wire, expected) in [
+        (Code::Io, "io", FailureKind::Io),
+        (Code::Store, "store", FailureKind::Io),
+        (Code::Internal, "internal", FailureKind::Io),
+        (
+            Code::InvalidQuery,
+            "invalid_query",
+            FailureKind::InvalidQuery,
+        ),
+        (Code::StaleCursor, "stale_cursor", FailureKind::StaleCursor),
+        (
+            Code::NotYetAvailable,
+            "not_yet_available",
+            FailureKind::NotYetAvailable,
+        ),
+    ] {
+        let result = failure(code, "synthetic failure");
+        assert_eq!(result.kind, expected);
+        assert_eq!(result.code.as_deref(), Some(wire));
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["code"], wire);
+        let decoded: command_surface::Failure = serde_json::from_value(json).unwrap();
+        assert_eq!(decoded.kind, expected);
+        assert_eq!(decoded.code.as_deref(), Some(wire));
+    }
 }

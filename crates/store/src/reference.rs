@@ -2,6 +2,7 @@
 //! hashes stream these same chunks and never load a whole session at once.
 mod source_text;
 
+use crate::{OptionExt as _, ResultExt as _};
 use crate::{Reader, Result, StoreError};
 use polylogue_model::{
     BlobHash, Block, Reference, SpanBounds, SpanError, SpanUnit, TEXT_BODY_SEPARATOR,
@@ -145,7 +146,7 @@ impl<'a> ReferenceText<'a> {
             &hash,
             layout.as_deref(),
             usize::try_from(blocks)
-                .map_err(|_| StoreError::Invalid("invalid stored block count".into()))?,
+                .map_err(|_| crate::StoreError::stored(2, "invalid stored block count"))?,
         )
     }
     pub(crate) fn require_complete_message(
@@ -276,7 +277,7 @@ impl<'a> ReferenceText<'a> {
             if let Some(Reference::Assertion(head)) = heads.first() {
                 head.revision
                     .clone()
-                    .ok_or_else(|| StoreError::Invalid("assertion head names no revision".into()))?
+                    .or_invalid("assertion head names no revision")?
             } else {
                 if crate::assertions::family_present(self.authored, &revision.root)? {
                     return Err(unavailable(
@@ -295,7 +296,7 @@ impl<'a> ReferenceText<'a> {
         assertion
             .fact
             .validate()
-            .map_err(|error| StoreError::Invalid(error.to_string()))?;
+            .map_err(crate::StoreError::invalid)?;
         let Some(text) = assertion.fact.text() else {
             return Ok(TextState::NotApplicable);
         };

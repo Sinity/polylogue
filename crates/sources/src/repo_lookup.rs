@@ -3,10 +3,10 @@
 //! an input keeps the join to sessions a function of stored bytes, so a
 //! rebuild gives every session the same repository.
 
+use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 2;
 
-use crate::document::{str_of, string_of};
 use crate::parse::{DocumentParser, Output, Parse};
 use crate::{RecordOutcome, Records};
 use polylogue_model::{Json, RepoLookup};
@@ -37,7 +37,7 @@ impl DocumentParser for Lookup {
                 return;
             }
         };
-        let Some(path) = string_of(&v, "path") else {
+        let Some(path) = v.str("path").filter(|s| !s.is_empty()).map(str::to_owned) else {
             records.record("repo_lookup", &RecordOutcome::unreadable("no path"));
             return;
         };
@@ -45,7 +45,7 @@ impl DocumentParser for Lookup {
         // it found.
         out.repo_lookups.push(RepoLookup {
             path,
-            remote: str_of(&v, "remote").map(str::to_owned),
+            remote: v.str("remote").filter(|s| !s.is_empty()).map(str::to_owned),
             root_commits: v["root_commits"]
                 .as_array()
                 .map(|roots| {

@@ -4,6 +4,7 @@
 //! field invents nothing.
 
 use crate::support::{blocks, events, jsonl, message, messages, parse};
+use polylogue_model::JsonExt;
 use serde_json::{Value, json};
 
 const PATH: &str = ".claude/projects/p/s1.jsonl";
@@ -662,7 +663,7 @@ fn assistant_text_or_a_missing_model_does_not_mark_a_harness_notice() {
         let real = message(&parsed, ":real");
         assert_eq!(real["role"], "assistant");
         assert!(real.get("prompt_kind").is_none());
-        assert_eq!(real.get("model").and_then(Value::as_str), model);
+        assert_eq!(real.str("model"), model);
         assert_eq!(
             real["blocks"][0]["text"],
             "The prose quotes <synthetic> and API Error."
@@ -702,7 +703,7 @@ fn synthetic_notices_do_not_join_real_response_fragments_even_without_a_model() 
         let parsed = run(&records);
         assert_eq!(messages(&parsed).len(), 2);
         let real = message(&parsed, ":first");
-        assert_eq!(real.get("model").and_then(Value::as_str), model);
+        assert_eq!(real.str("model"), model);
         assert!(real.get("prompt_kind").is_none());
         assert!(real["production"].get("api_error").is_none());
         assert_eq!(

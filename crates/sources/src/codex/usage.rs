@@ -1,6 +1,7 @@
 //! Recorded usage is independent of output-item membership. The producer
 //! persists items before completion and can retry without writing a boundary.
 use super::*;
+use polylogue_model::JsonExt;
 use polylogue_model::{BlobHash, UsageReport};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -15,11 +16,11 @@ struct Counters {
 impl Counters {
     fn read(value: &Json) -> Option<Self> {
         let counters = Self {
-            input: value.get("input_tokens")?.as_u64()?,
-            cached: value.get("cached_input_tokens")?.as_u64()?,
-            output: value.get("output_tokens")?.as_u64()?,
-            reasoning: value.get("reasoning_output_tokens")?.as_u64()?,
-            total: value.get("total_tokens")?.as_u64()?,
+            input: value.u64("input_tokens")?,
+            cached: value.u64("cached_input_tokens")?,
+            output: value.u64("output_tokens")?,
+            reasoning: value.u64("reasoning_output_tokens")?,
+            total: value.u64("total_tokens")?,
         };
         (counters.cached <= counters.input
             && counters.reasoning <= counters.output
@@ -116,7 +117,7 @@ impl Observer {
         if self.recorded.as_ref() == Some(&report_id) {
             return None;
         }
-        let n = |key: &str| raw.get(key).and_then(Json::as_u64);
+        let n = |key: &str| raw.u64(key);
         let input = n("input_tokens");
         let output = n("output_tokens");
         let cached =

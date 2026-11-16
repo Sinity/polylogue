@@ -105,9 +105,7 @@ fn compute(conn: &Connection, session_pk: i64) -> Result<Links> {
              WHERE t.session_pk = ?1 AND t.outcome = 'ok' AND t.command IS NOT NULL
              ORDER BY t.at IS NULL, t.at, t.pk",
         )?
-        .query_map([session_pk], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
-        })?
+        .query_map([session_pk], |r| <(i64, String)>::try_from(r))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     links_of(conn, calls)
 }
@@ -145,7 +143,7 @@ pub(crate) fn add_finished_links(
         )?;
         for message_pk in &change.messages {
             for call in finished.query_map(rusqlite::params![message_pk, session_pk], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+                <(i64, String)>::try_from(r)
             })? {
                 calls.push(call?);
             }

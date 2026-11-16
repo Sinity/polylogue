@@ -1,4 +1,5 @@
 //! The derived offline completion catalog and cues from committed index changes.
+use polylogue_model::LockExt;
 use std::sync::{Arc, Mutex, mpsc};
 
 /// What the commits since a subscriber last looked changed, by the kinds of
@@ -65,13 +66,10 @@ impl CommitEvents {
     pub fn subscribe(&self) -> CommitSubscription {
         let (wake, receiver) = mpsc::sync_channel(1);
         let pending = Arc::default();
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(Subscriber {
-                pending: Arc::clone(&pending),
-                wake: wake.clone(),
-            });
+        self.0.locked().push(Subscriber {
+            pending: Arc::clone(&pending),
+            wake: wake.clone(),
+        });
         CommitSubscription {
             pending,
             receiver,
@@ -82,20 +80,13 @@ impl CommitEvents {
     /// Called after a successful logical index commit, including derivations,
     /// with what it changed.
     pub(crate) fn committed(&self, changed: Committed) {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|subscriber| {
-                subscriber
-                    .pending
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .merge(changed);
-                !matches!(
-                    subscriber.wake.try_send(()),
-                    Err(mpsc::TrySendError::Disconnected(()))
-                )
-            });
+        self.0.locked().retain(|subscriber| {
+            subscriber.pending.locked().merge(changed);
+            !matches!(
+                subscriber.wake.try_send(()),
+                Err(mpsc::TrySendError::Disconnected(()))
+            )
+        });
     }
 }
 impl CommitSubscription {
@@ -117,12 +108,7 @@ impl CommitSubscription {
         Ok(self.take())
     }
     fn take(&self) -> Committed {
-        std::mem::take(
-            &mut *self
-                .pending
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        )
+        std::mem::take(&mut *self.pending.locked())
     }
     /// The caller sets its stop flag before waking a sleeping publisher.
     pub fn wake_handle(&self) -> mpsc::SyncSender<()> {

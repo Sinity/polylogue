@@ -13,101 +13,50 @@ mod retract;
 pub(super) use retract::prune_sessions;
 
 /// Writes a parse step's rows; returns the number of message rows written.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn write_rows(
-    texts: &crate::text_rows::TextIds,
     tx: &Transaction<'_>,
     b: &Batch,
     p: &ParseStep,
-    resolution: &resolve::Resolution,
-    counter: i64,
-    first_build: Option<&FirstBuild>,
-    source_commit: Option<&crate::wire_shapes::ReadingCommit>,
-    changes: &ChangeSummary,
+    mut context: ReadingWrite<'_>,
 ) -> Result<u64> {
-    apply_rows(
-        tx,
-        b,
-        p,
-        ReadingWrite {
-            resolution,
-            texts,
-            counter,
-            first_build,
-            retraction: false,
-            replacement: false,
-            source_commit,
-            changes,
-        },
-    )
+    context.retraction = false;
+    context.replacement = false;
+    apply_rows(tx, b, p, context)
 }
 
 /// A complete replacement uses this entry point for its first chunk. Later chunks use the continuation path.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn write_replacement_rows(
-    texts: &crate::text_rows::TextIds,
     tx: &Transaction<'_>,
     b: &Batch,
     p: &ParseStep,
-    resolution: &resolve::Resolution,
-    counter: i64,
-    first_build: Option<&FirstBuild>,
-    source_commit: Option<&crate::wire_shapes::ReadingCommit>,
-    changes: &ChangeSummary,
+    mut context: ReadingWrite<'_>,
 ) -> Result<u64> {
-    apply_rows(
-        tx,
-        b,
-        p,
-        ReadingWrite {
-            resolution,
-            texts,
-            counter,
-            first_build,
-            retraction: false,
-            replacement: true,
-            source_commit,
-            changes,
-        },
-    )
+    context.retraction = false;
+    context.replacement = true;
+    apply_rows(tx, b, p, context)
 }
 
 /// Retract a source's contribution and show the surviving readings.
 pub(super) fn retract_source(
-    texts: &crate::text_rows::TextIds,
     tx: &Transaction<'_>,
     b: &Batch,
     p: &ParseStep,
-    resolution: &resolve::Resolution,
-    counter: i64,
-    changes: &ChangeSummary,
+    mut context: ReadingWrite<'_>,
 ) -> Result<u64> {
-    apply_rows(
-        tx,
-        b,
-        p,
-        ReadingWrite {
-            resolution,
-            texts,
-            counter,
-            first_build: None,
-            retraction: true,
-            replacement: false,
-            source_commit: None,
-            changes,
-        },
-    )
+    context.retraction = true;
+    context.replacement = false;
+    apply_rows(tx, b, p, context)
 }
 
-struct ReadingWrite<'a> {
-    texts: &'a crate::text_rows::TextIds,
-    resolution: &'a resolve::Resolution,
-    counter: i64,
-    first_build: Option<&'a FirstBuild>,
-    retraction: bool,
-    replacement: bool,
-    source_commit: Option<&'a crate::wire_shapes::ReadingCommit>,
-    changes: &'a ChangeSummary,
+pub(super) struct ReadingWrite<'a> {
+    pub(super) texts: &'a crate::text_rows::TextIds,
+    pub(super) resolution: &'a resolve::Resolution,
+    pub(super) counter: i64,
+    pub(super) first_build: Option<&'a FirstBuild>,
+    pub(super) retraction: bool,
+    pub(super) replacement: bool,
+    pub(super) source_commit: Option<&'a crate::wire_shapes::ReadingCommit>,
+    pub(super) changes: &'a ChangeSummary,
 }
 
 fn apply_rows(
@@ -203,7 +152,7 @@ fn apply_rows(
         source_commit
             .map(|source_commit| {
                 u64::try_from(source_commit.sequence)
-                    .map_err(|_| StoreError::Invalid("negative source commit sequence".into()))
+                    .map_err(|_| crate::StoreError::stored(0, "negative source commit sequence"))
             })
             .transpose()?
     };
@@ -578,8 +527,7 @@ fn apply_rows(
         )?;
         return Ok(written);
     }
-    let source_commit = source_commit
-        .ok_or_else(|| StoreError::Invalid("an indexed reading has no source commit".into()))?;
+    let source_commit = source_commit.or_invalid("an indexed reading has no source commit")?;
     let apply_wire = if replacement {
         crate::wire_shapes::replace
     } else {
@@ -797,17 +745,7 @@ impl RowWriter<'_, '_> {
             .prepare_cached(
                 "SELECT pk,parent_id,child_id,kind,how,branch_point,spawning_call FROM link WHERE parent_id=?1 OR child_id=?1",
             )?
-            .query_map([&copy], |r| {
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, String>(3)?,
-                    r.get::<_, Option<String>>(4)?,
-                    r.get::<_, Option<String>>(5)?,
-                    r.get::<_, Option<String>>(6)?,
-                ))
-            })?
+            .query_map([&copy], |r| <(i64, String, String, String, Option<String>, Option<String>, Option<String>)>::try_from(r))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         for (pk, parent, child, kind, how, at, call) in links {
             let name = |id: String| if id == copy { session.clone() } else { id };
@@ -847,7 +785,7 @@ impl RowWriter<'_, '_> {
     /// messages and events move with their readings
     /// (`Choices::released_messages`, `Choices::released_events`).
     fn release_session(&self, from: i64, to: i64, copy: &str, chains: &[(i64, i64)]) -> Result<()> {
-        let id = SessionId::parse(copy).map_err(|e| StoreError::Invalid(e.to_string()))?;
+        let id = SessionId::parse(copy).map_err(crate::StoreError::invalid)?;
         self.session_row(&id, false)?;
         self.tx
             .prepare_cached("DELETE FROM removed_session WHERE session_id=?1")?
@@ -909,7 +847,7 @@ impl RowWriter<'_, '_> {
             .choices
             .sessions
             .get(&pk)
-            .ok_or_else(|| StoreError::Invalid("unresolved session facts".into()))?;
+            .or_invalid("unresolved session facts")?;
         self.tx
             .prepare_cached(
                 "INSERT INTO session_record(session_pk, input_pk, chain, facts, committed) VALUES (?1, ?2, ?3, ?4, ?5)
@@ -998,7 +936,7 @@ impl RowWriter<'_, '_> {
                 let write = self
                     .messages
                     .get(&self.keys.get(resolve::Kind::Message, id.as_bytes())?.pk)
-                    .ok_or_else(|| StoreError::Invalid("unresolved message version".into()))?;
+                    .or_invalid("unresolved message version")?;
                 let pk = if let Some(choice) = write.choice.filter(|choice| choice.changed) {
                     let selected = write.value.map(|value| &value.message).ok_or_else(|| {
                         StoreError::Invalid("a changed version has no prepared message".into())
@@ -1051,7 +989,7 @@ impl RowWriter<'_, '_> {
         let write = self
             .messages
             .get(&pk)
-            .ok_or_else(|| StoreError::Invalid("unresolved message version".into()))?;
+            .or_invalid("unresolved message version")?;
         let choice = write.choice;
         let value = write.value;
         let created = write.created.take();
@@ -1356,9 +1294,7 @@ impl RowWriter<'_, '_> {
              WHERE after_message_id=?1 AND (after_message_pk IS NOT NULL
                 OR (seq_from_message=1 AND seq IS NOT 0)) RETURNING pk, session_pk",
             )?
-            .query_map([id], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?))
-            })?
+            .query_map([id], |r| <(i64, Option<i64>)>::try_from(r))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         self.apply_event_moves(events)
     }
@@ -1687,9 +1623,7 @@ impl RowWriter<'_, '_> {
                  WHERE b.session_pk = ?1 AND b.call_id = ?2 AND b.kind = 'tool_result'
                  ORDER BY b.pk LIMIT 1",
             )?
-            .query_row(params![session_pk, call_id], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-            })
+            .query_row(params![session_pk, call_id], |r| <(_, _, _)>::try_from(r))
             .optional()?;
         if let Some((result_pk, body, result_at)) = result
             && let Ok(Block::ToolResult {

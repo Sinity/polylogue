@@ -8,7 +8,7 @@ pub fn resolved_times_digest(times: &[ResolvedTime]) -> Result<String, Selection
     let mut digest = blake3::Hasher::new();
     digest.update(b"polylogue.query.resolved-times\0");
     serde_json::to_writer(&mut digest, times).map_err(|error| SelectionError::Invalid {
-        kind: "internal",
+        kind: polylogue_model::Code::Internal,
         message: format!("resolved query times cannot be encoded: {error}"),
     })?;
     Ok(digest.finalize().to_hex().to_string())
@@ -36,7 +36,7 @@ pub fn check_resolved_times(
         || context.versions.get("resolved_times") != Some(&resolved_times_digest(times)?)
     {
         return Err(SelectionError::Invalid {
-            kind: "stale_cursor",
+            kind: polylogue_model::Code::StaleCursor,
             message: "the resolved query times changed".into(),
         });
     }

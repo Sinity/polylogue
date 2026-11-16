@@ -232,20 +232,22 @@ fn saved_queries_from(
                         .map_err(SelectionError::from)
                 })
                 .transpose()?;
-            let mut value =
-                SavedQuery {
-                    text: definition.value.text,
-                    revision: definition.reference.revision.clone().ok_or_else(|| {
-                        invalid("store", "saved definition does not name a revision")
-                    })?,
-                    root: definition.reference.root,
-                    hash,
-                    denominator,
-                    conflicts: definition.conflicts,
-                    body: SavedQueryBody::Unavailable {
-                        reason: format!("saved query:{hash} stored body"),
-                    },
-                };
+            let mut value = SavedQuery {
+                text: definition.value.text,
+                revision: definition.reference.revision.clone().ok_or_else(|| {
+                    invalid(
+                        polylogue_model::Code::Store,
+                        "saved definition does not name a revision",
+                    )
+                })?,
+                root: definition.reference.root,
+                hash,
+                denominator,
+                conflicts: definition.conflicts,
+                body: SavedQueryBody::Unavailable {
+                    reason: format!("saved query:{hash} stored body"),
+                },
+            };
             if value.conflicts.is_empty() {
                 match stored_bindings(original, conn, pending, provisional, hash) {
                     Ok(Some(saved_nodes)) => {

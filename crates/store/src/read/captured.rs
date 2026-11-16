@@ -90,11 +90,7 @@ impl Reader<'_> {
         let mut found: BTreeMap<String, StoredFile> = BTreeMap::new();
         while let Some(row) = rows.next()? {
             let block = unpack_block(&row.get::<_, Vec<u8>>(0)?)?;
-            let attachments = match &block {
-                Block::Image(a) | Block::File(a) => std::slice::from_ref(a),
-                Block::ToolResult { attachments, .. } => attachments.as_slice(),
-                _ => &[],
-            };
+            let attachments = block.attachments();
             for a in attachments {
                 if let (Some(id), Some(blob)) = (&a.source_id, a.blob) {
                     found.entry(id.clone()).or_insert(StoredFile {

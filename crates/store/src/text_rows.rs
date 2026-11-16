@@ -2,6 +2,7 @@
 //! in their own transaction; indexing consumes committed queue entries.
 
 use crate::Result;
+use crate::{OptionExt as _, ResultExt as _};
 mod groups;
 mod identities;
 #[cfg(any(test, feature = "fixture"))]
@@ -58,7 +59,7 @@ pub(crate) fn intern(
                 prepared,
                 marked,
             )?
-            .ok_or_else(|| crate::StoreError::Invalid("the text row already exists".into()))?;
+            .or_invalid("the text row already exists")?;
             (id, marked)
         }
     };

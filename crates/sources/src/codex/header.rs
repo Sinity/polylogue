@@ -1,5 +1,6 @@
 //! A rollout's recorded identity, independent of its location or encoding.
 use polylogue_model::Json;
+use polylogue_model::JsonExt;
 use std::io::BufRead;
 
 /// Reads the first nonempty record. Only a rollout header establishes
@@ -17,16 +18,12 @@ pub fn rollout_id(mut reader: impl BufRead) -> std::io::Result<Option<String>> {
         let Ok(value) = serde_json::from_slice::<Json>(&line) else {
             return Ok(None);
         };
-        if !matches!(
-            value.get("type").and_then(Json::as_str),
-            Some("session_meta" | "older_header")
-        ) {
+        if !matches!(value.str("type"), Some("session_meta" | "older_header")) {
             return Ok(None);
         }
         return Ok(value
             .get("payload")
-            .and_then(|p| p.get("id"))
-            .and_then(Json::as_str)
+            .and_then(|p| p.str("id"))
             .filter(|id| !id.is_empty())
             .map(str::to_owned));
     }

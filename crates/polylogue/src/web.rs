@@ -127,7 +127,7 @@ fn start_on(
         token,
     };
     access::write_access_files(&server.directory, &server.token, port)?;
-    server.thread = Some(std::thread::Builder::new().name("polylogue-http".into()).spawn(move || {
+    server.thread = Some(polylogue_model::spawn_named("polylogue-http", move || {
         runtime.block_on(async move {
             tokio::select! {
                 result = axum::serve(OwnerListener { inner: listener, uid, stop: stop_request }, router(web).into_make_service_with_connect_info::<connection::Peer>()).into_future() => result,
@@ -276,7 +276,7 @@ async fn guard(State(web): State<Arc<Web>>, req: HttpRequest, next: Next) -> Htt
                 return web_shell::assets::secure(json_answer(
                     &web,
                     crate::daemon::service::error(
-                        "bad_request",
+                        polylogue_model::Code::BadRequest,
                         "x-polylogue-deadline-ms must be Unix milliseconds",
                     ),
                 ));

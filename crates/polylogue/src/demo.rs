@@ -1,5 +1,6 @@
 //! A guided tour through everyday commands over a separate Morrow archive.
 
+use polylogue_model::JsonExt as _;
 mod files;
 
 use crate::commands::{self, Caller, Command, Surface};
@@ -44,8 +45,7 @@ pub fn tour(
     let directory = values
         .request
         .arguments
-        .get("directory")
-        .and_then(serde_json::Value::as_str)
+        .str("directory")
         .map(str::to_owned)
         .unwrap_or_default();
     match run(Path::new(&directory), startup) {
@@ -63,7 +63,9 @@ pub fn tour(
             }
             ExitCode::SUCCESS
         }
-        Err(error) => crate::cli::fail(startup.output, json, "demo", &error, 1),
+        Err(error) => {
+            crate::cli::fail(startup.output, json, polylogue_model::Code::Demo, &error, 1)
+        }
     }
 }
 

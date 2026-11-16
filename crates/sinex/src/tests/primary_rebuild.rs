@@ -1,4 +1,5 @@
 use super::*;
+use polylogue_model::LockExt;
 use polylogue_model::authored::{AuthoredEffect, PreparedRequest};
 use polylogue_model::user::{UserOutcome, UserWrite};
 use polylogue_store::{Archive, ReadPool};
@@ -24,12 +25,7 @@ fn rebuilding_the_source7_cache_preserves_pending_authored_intent() {
     };
     previous.prepare_request(&request).unwrap();
     let identity = "request:pending-through-primary-cache-rebuild";
-    let mut original = previous
-        .spool
-        .lock()
-        .unwrap()
-        .decode_frame(identity)
-        .unwrap();
+    let mut original = previous.spool.locked().decode_frame(identity).unwrap();
     let sinex_protocol::Ingress::Material { material, .. } = &mut original else {
         panic!("authored intent must keep its original material");
     };
@@ -42,7 +38,7 @@ fn rebuilding_the_source7_cache_preserves_pending_authored_intent() {
     drop(queue);
     let sdk = client(&store);
     let queued = || {
-        let queue = sdk.spool.lock().unwrap();
+        let queue = sdk.spool.locked();
         let entry = queue.get(identity).unwrap().unwrap();
         let frame = queue.decode_frame(identity).unwrap();
         let mut body = Vec::new();

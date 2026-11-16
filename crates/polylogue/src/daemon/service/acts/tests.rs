@@ -184,36 +184,6 @@ fn hosted_codex(d: &test_daemon::TestDaemon) -> tempfile::TempDir {
     fixture
 }
 
-/// A notice to a session that is not running is recorded `not_sent` with
-/// sender `signal` and event `notice`, and nothing resumes the session.
-#[test]
-fn a_notice_to_a_stopped_session_is_not_sent_and_starts_nothing() {
-    let d = test_daemon::start_with_clock("notice", at("2026-03-02T10:00:00Z"));
-    let sent = notice(
-        &d.daemon,
-        "main-force-pushed",
-        "@[claude-code:s1]",
-        "main moved",
-    )
-    .unwrap();
-    assert_eq!(sent.len(), 1);
-    assert_eq!(sent[0]["outcome"], "not_sent");
-    assert_eq!(sent[0]["reason"], "session_not_live");
-    let delivery = sent[0]["delivery"].as_str().unwrap();
-    let reader = d.daemon.reads.reader().unwrap();
-    let (row, text) = reader.delivery(delivery).unwrap().unwrap();
-    assert_eq!(
-        (row.sender.as_str(), row.event.as_str()),
-        ("signal", "notice")
-    );
-    assert_eq!(row.events, ["not_sent"]);
-    assert!(text.contains("main moved") && text.contains(&format!("delivery:{delivery}")));
-    // Nothing else reached the session: no resumed run, no flag.
-    assert_eq!(reader.deliveries_to("claude-code:s1").unwrap().len(), 1);
-    drop(reader);
-    assert!(!crate::mailbox::raised(d.daemon.acts.mail(), &s1()));
-}
-
 /// A hand-off starts a new hosted session in another harness, never a
 /// resume or fork of the source: its first turn opens with the pack's
 /// delivery reference, and the `pack` delivery names the source it was

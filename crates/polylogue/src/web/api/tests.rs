@@ -21,7 +21,7 @@ fn stream_failure_before_first_event_uses_the_shared_http_status() {
         _: &std::sync::Arc<crate::operation::Context>,
         _: &mut dyn Write,
     ) -> Result<(), crate::daemon::Failure> {
-        Err(Failure::new("bad_request", "invalid selection"))
+        Err(Failure::bad_request("invalid selection"))
     }
     let daemon = crate::test_daemon::start("synthetic stream refusal");
     tokio::runtime::Builder::new_multi_thread()
@@ -73,7 +73,7 @@ fn stream_failure_after_begin_delivers_error_without_final_completion() {
             &serde_json::json!({"snapshot":"synthetic"}),
         )
         .unwrap();
-        Err(Failure::new("conflict", "source changed"))
+        Err(Failure::conflict("source changed"))
     }
     let daemon = crate::test_daemon::start("synthetic stream late failure");
     tokio::runtime::Builder::new_multi_thread()
@@ -130,7 +130,7 @@ fn stream_headers_arrive_before_the_body_of_a_large_stream_is_read() {
             crate::protocol::stream::event(output, "record", &"x".repeat(128 * 1024))?;
             crate::protocol::stream::event(output, "complete", &serde_json::json!({}))
         })();
-        result.map_err(|error| Failure::new("io", error))
+        result.map_err(Failure::io)
     }
     let daemon = crate::test_daemon::start("synthetic stream backpressure");
     tokio::runtime::Builder::new_multi_thread()
@@ -276,7 +276,7 @@ fn scope_reset_ends_a_begun_http_stream_unfinished() {
             crate::protocol::stream::event(output, "complete", &serde_json::json!({}))?;
             Ok::<(), Box<dyn std::error::Error>>(())
         })();
-        result.map_err(|error| Failure::new("io", error))
+        result.map_err(Failure::io)
     }
     let daemon = crate::test_daemon::start("generation stream example");
     tokio::runtime::Builder::new_multi_thread()

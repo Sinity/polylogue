@@ -104,7 +104,13 @@ fn the_operator_accepts_or_rejects_an_agents_note() {
         .unwrap();
     let reader = d.daemon.reads.reader().unwrap();
     let brief = crate::briefing::prepare(
-        &reader,
+        crate::briefing::BriefContext {
+            reader: &reader,
+            delivery_id: "d1",
+            context: &operation,
+            ranking_identity: None,
+            near: None,
+        },
         &d.daemon.scope,
         None,
         &[],
@@ -113,10 +119,6 @@ fn the_operator_accepts_or_rejects_an_agents_note() {
             session: Some(polylogue_model::SessionId::parse("claude-code:s1").unwrap()),
             source: crate::briefing::StartSource::Startup,
         },
-        "d1",
-        &operation,
-        None,
-        None,
         Default::default(),
     )
     .unwrap();

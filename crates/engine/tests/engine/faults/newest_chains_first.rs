@@ -29,12 +29,7 @@ fn chains(w: &ClaudeHome, file: &str) -> Vec<serde_json::Value> {
 /// What the index holds, named by natural keys rather than by row keys,
 /// which follow the order of writes: every session's export, every
 /// message's sources, and every chain's parse state.
-fn readings(
-    w: &ClaudeHome,
-) -> (
-    Vec<polylogue_model::export::SessionExport>,
-    serde_json::Value,
-) {
+fn readings(w: &ClaudeHome) -> (Vec<Vec<polylogue_model::bundle::Record>>, serde_json::Value) {
     let reads = w.reads();
     let reader = reads.reader().unwrap();
     let sessions: Vec<String> = reader

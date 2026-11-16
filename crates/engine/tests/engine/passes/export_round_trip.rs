@@ -160,11 +160,14 @@ fn export_file(w: &ClaudeHome, sessions: &[&str]) -> std::path::PathBuf {
             })));
             counts.messages += 1;
         }
-        for event in reader.event_records(&id).unwrap() {
-            records.push(Record::Event(event));
-            counts.events += 1;
-        }
-        for link in reader.session_export(&id).unwrap().unwrap().links {
+        reader
+            .visit_event_records_from_ordinal(&id, 0, |event| {
+                records.push(Record::Event(event));
+                counts.events += 1;
+                std::ops::ControlFlow::Continue(())
+            })
+            .unwrap();
+        for link in reader.links(&id).unwrap() {
             let reference = LinkRecord::reference(&link);
             if seen_links.insert(reference.clone()) {
                 records.push(Record::Link(LinkRecord {
@@ -382,11 +385,7 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
     assert_eq!(report.imported, std::slice::from_ref(&file), "{report:?}");
     assert!(report.pass.errors.is_empty(), "{report:?}");
     let back = fresh.export("claude-code:s1");
-    assert_eq!(back.session.id, original.session.id);
-    assert_eq!(back.session.title, original.session.title);
-    assert_eq!(back.messages, original.messages);
-    assert_eq!(back.events, original.events);
-    assert_eq!(back.links, original.links);
+    assert_eq!(back, original);
     assert_eq!(user_state(&fresh), source_state);
     assert_eq!(stored_authored(&fresh), source_authored);
     assert_eq!(

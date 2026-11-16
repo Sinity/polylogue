@@ -38,7 +38,7 @@ fn the_producer_never_waits_for_the_transport_and_bytes_arrive_in_order() {
 fn a_failure_before_the_first_byte_is_the_answer_and_after_it_an_error_event() {
     let directory = tempfile::tempdir().unwrap();
     let (output, input) = buffer(directory.path().to_owned());
-    output.finish(Err(Failure::new("bad_request", "synthetic refusal")));
+    output.finish(Err(Failure::bad_request("synthetic refusal")));
     let Next::Failed(failure) = input.next_blocking().unwrap() else {
         panic!("a failure before any byte is reported as such");
     };
@@ -46,7 +46,7 @@ fn a_failure_before_the_first_byte_is_the_answer_and_after_it_an_error_event() {
 
     let (mut output, input) = buffer(directory.path().to_owned());
     output.write_all(b"event: record\ndata: {}\n\n").unwrap();
-    output.finish(Err(Failure::new("io", "synthetic failure")));
+    output.finish(Err(Failure::io("synthetic failure")));
     let mut text = Vec::new();
     while let Next::Bytes(bytes) = input.next_blocking().unwrap() {
         text.extend(bytes);

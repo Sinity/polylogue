@@ -32,7 +32,9 @@ fn candidates(
                 revision: Some(id), ..
             }) = reference
             else {
-                return Err(invalid("setting head is not an exact assertion"));
+                return Err(crate::StoreError::invalid(
+                    "setting head is not an exact assertion",
+                ));
             };
             let row = get(conn, id)?.ok_or_else(|| StoreError::NotFound(reference.to_string()))?;
             if row.fact.kind != AssertionKind::Setting || row.fact.key.as_deref() != Some(key) {
@@ -41,9 +43,11 @@ fn candidates(
             let values::Value::Setting(value) = row
                 .fact
                 .validate()
-                .map_err(|error| invalid(&error.to_string()))?
+                .map_err(|error| crate::StoreError::invalid(&error.to_string()))?
             else {
-                return Err(invalid("setting assertion has another value shape"));
+                return Err(crate::StoreError::invalid(
+                    "setting assertion has another value shape",
+                ));
             };
             if value.fields.machine.as_deref() == target {
                 matched = true;
@@ -114,7 +118,8 @@ fn history_boundaries(
 
 impl crate::Reader<'_> {
     pub fn setting_current(&self, key: &str, machine: &str) -> Result<settings::Current> {
-        let spec = settings::declaration(key).map_err(|error| invalid(&error.to_string()))?;
+        let spec = settings::declaration(key)
+            .map_err(|error| crate::StoreError::invalid(&error.to_string()))?;
         let conn = self.conn()?;
         let primary = matches!(Source::of(conn)?, Source::Cache);
         if primary && spec.standalone_only {
@@ -147,7 +152,7 @@ impl crate::Reader<'_> {
             .default
             .map(|text| settings::parse(key, text, settings::SettingMode::Standalone))
             .transpose()
-            .map_err(|error| invalid(&error.to_string()))?;
+            .map_err(|error| crate::StoreError::invalid(&error.to_string()))?;
         let (value, authored) = if conflicts.is_empty() {
             if let Some((reference, fact, value)) = candidates.pop() {
                 (
@@ -185,9 +190,10 @@ impl crate::Reader<'_> {
         key: &str,
         until: Timestamp,
     ) -> Result<Vec<(Timestamp, SettingAt)>> {
-        let spec = settings::declaration(key).map_err(|error| invalid(&error.to_string()))?;
+        let spec = settings::declaration(key)
+            .map_err(|error| crate::StoreError::invalid(&error.to_string()))?;
         if spec.scope != settings::Scope::Archive {
-            return Err(invalid(
+            return Err(crate::StoreError::invalid(
                 "archive setting history requires an archive-scoped key",
             ));
         }
@@ -208,7 +214,7 @@ pub(crate) enum SettingAt {
 
 fn history(conn: &Connection, key: &str, until: Timestamp) -> Result<Vec<(Timestamp, SettingAt)>> {
     if conn.is_autocommit() {
-        return Err(invalid(
+        return Err(crate::StoreError::invalid(
             "setting history requires a pinned read transaction",
         ));
     }

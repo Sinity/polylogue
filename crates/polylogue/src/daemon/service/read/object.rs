@@ -9,7 +9,7 @@ fn accepted(operation: &crate::operation::Context) -> Result<Option<serde_json::
         .accepted_request()
         .map(serde_json::to_value)
         .transpose()
-        .map_err(|e| Failure::new("internal", e))
+        .map_err(Failure::internal)
 }
 
 pub(super) fn target(request: &ReadRequest) -> Option<Result<Reference, Failure>> {
@@ -17,7 +17,7 @@ pub(super) fn target(request: &ReadRequest) -> Option<Result<Reference, Failure>
         target, options, ..
     } = request;
     (target.starts_with("request:") || options.view == View::Raw && target.starts_with("run:"))
-        .then(|| Reference::parse(target).map_err(|error| Failure::new("bad_request", error)))
+        .then(|| Reference::parse(target).map_err(Failure::bad_request))
 }
 
 fn execute<T>(
@@ -44,16 +44,14 @@ fn execute<T>(
         budget,
         ..
     } = request;
-    options
-        .validate()
-        .map_err(|error| Failure::new("bad_request", error))?;
+    options.validate().map_err(Failure::bad_request)?;
     let format =
-        Format::parse(format).ok_or_else(|| Failure::new("bad_request", "unknown read format"))?;
+        Format::parse(format).ok_or_else(|| Failure::bad_request("unknown read format"))?;
     let budget = if *delivery == ReadDelivery::Page {
         let mut resolved = PageBudget::default();
         if let Some(tokens) = budget {
             resolved.tokens = NonZeroU64::new(*tokens as u64)
-                .ok_or_else(|| Failure::new("bad_request", "read budget must be positive"))?;
+                .ok_or_else(|| Failure::bad_request("read budget must be positive"))?;
         }
         Some(resolved)
     } else {
@@ -78,13 +76,9 @@ fn execute<T>(
         },
         accepted_request: accepted(operation)?,
     };
-    binding
-        .validate()
-        .map_err(|error| Failure::new("bad_request", error))?;
+    binding.validate().map_err(Failure::bad_request)?;
     let id = crate::operation::new_run_id();
-    let hash = binding
-        .hash()
-        .map_err(|error| Failure::new("internal", error))?;
+    let hash = binding.hash().map_err(Failure::internal)?;
     let begin = QueryRun {
         id: id.clone(),
         question: None,
@@ -99,7 +93,7 @@ fn execute<T>(
     let writer = d
         .writes
         .as_ref()
-        .ok_or_else(|| Failure::new("not_yet_available", "the read's run record is unavailable"))?;
+        .ok_or_else(|| Failure::not_yet_available("the read's run record is unavailable"))?;
     reader.check()?;
     scope.check()?;
     super::super::execution::record(
@@ -186,17 +180,15 @@ pub(super) fn page(
         operation,
         reference,
         |record, snapshot, header, format, budget, id, footer, facts| {
-            let mut budget = budget.ok_or_else(|| {
-                Failure::new("bad_request", "streaming reads require stream delivery")
-            })?;
+            let mut budget = budget
+                .ok_or_else(|| Failure::bad_request("streaming reads require stream delivery"))?;
             let framing_size = serde_json::to_vec(&ReadPageSnapshot::from(&snapshot))
-                .map_err(|error| Failure::new("internal", error))?
+                .map_err(Failure::internal)?
                 .len();
             budget.bytes =
                 std::num::NonZeroUsize::new(budget.bytes.get().saturating_sub(framing_size))
                     .ok_or_else(|| {
-                        Failure::new(
-                            "bad_request",
+                        Failure::bad_request(
                             "reading metadata exceeds page framing; use streaming delivery",
                         )
                     })?;
@@ -213,8 +205,7 @@ pub(super) fn page(
             // object reading has no message attachments to open.
             let selected = |_: &Source| Ok(false);
             let ready_attachment = |_: &polylogue_model::MessageId, _, _, _: Option<&str>| {
-                Err(Failure::new(
-                    "not_yet_available",
+                Err(Failure::not_yet_available(
                     "an object reading has no message attachments",
                 ))
             };
@@ -232,8 +223,7 @@ pub(super) fn page(
             let more = pager.position().is_some();
             let document = pager.finish(footer).map_err(page_error)?;
             if more {
-                return Err(Failure::new(
-                    "bad_request",
+                return Err(Failure::bad_request(
                     "this object exceeds the page budget; use streaming delivery for the complete stored record",
                 ));
             }

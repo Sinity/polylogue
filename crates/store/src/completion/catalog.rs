@@ -1,4 +1,6 @@
 //! A private derived SQLite file; readers never open the source archive.
+use crate::ConnExt as _;
+use crate::{OptionExt as _, ResultExt as _};
 use crate::{Result, StoreError};
 use polylogue_model::ChangePosition;
 use query_language::catalog::OutputSchema;
@@ -118,8 +120,7 @@ fn persist_wal(conn: &Connection) -> Result<()> {
     Ok(())
 }
 fn count(value: u64) -> Result<i64> {
-    i64::try_from(value)
-        .map_err(|_| StoreError::Invalid("completion count exceeds SQLite's integer range".into()))
+    crate::to_i64(value, "completion count exceeds SQLite's integer range")
 }
 fn text_key(value: &str) -> String {
     polylogue_model::text::key(value)
@@ -145,7 +146,7 @@ impl CatalogWriter {
     ) -> Result<Self> {
         let parent = path
             .parent()
-            .ok_or_else(|| StoreError::Invalid("completion catalog has no parent".into()))?;
+            .or_invalid("completion catalog has no parent")?;
         fs::create_dir_all(parent)?;
         let temporary = parent.join(format!(".catalog-{}", uuid::Uuid::now_v7()));
         let guard = Temporary(temporary.clone());
@@ -361,13 +362,7 @@ impl CatalogWriter {
         let old = self
             .conn
             .prepare("SELECT field,value,n FROM contribution WHERE session=?1")?
-            .query_map([id], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)?,
-                ))
-            })?
+            .query_map([id], |row| <(String, String, i64)>::try_from(row))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         for (field, value, n) in old {
             self.conn.execute(
@@ -389,11 +384,7 @@ impl CatalogWriter {
             "SELECT id FROM session WHERE id<?1 ORDER BY id DESC LIMIT 1",
             "SELECT id FROM session WHERE id>?1 ORDER BY id LIMIT 1",
         ] {
-            if let Some(value) = self
-                .conn
-                .query_row(sql, [id], |row| row.get(0))
-                .optional()?
-            {
+            if let Some(value) = self.conn.scalar_optional(sql, [id])? {
                 values.push(value);
             }
         }
@@ -525,7 +516,7 @@ impl CatalogReader {
             position: serde_json::from_str(&get("position")?)?,
             written_at: get("written_at")?
                 .parse()
-                .map_err(|_| StoreError::Invalid("invalid completion time".into()))?,
+                .or_invalid("invalid completion time")?,
         };
         let reader = Self {
             conn,
@@ -587,14 +578,10 @@ impl CatalogReader {
             .collect()
     }
     pub fn kept(&self, id: &str) -> Result<Option<Kept>> {
-        let payload = self
-            .conn
-            .query_row(
-                "SELECT payload FROM item WHERE kind='kept' AND id=?1",
-                [id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?;
+        let payload = self.conn.scalar_optional::<String>(
+            "SELECT payload FROM item WHERE kind='kept' AND id=?1",
+            [id],
+        )?;
         payload
             .map(|payload| Ok(serde_json::from_str(&payload)?))
             .transpose()

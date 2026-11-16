@@ -35,7 +35,7 @@ impl Encoding {
     fn descriptor(&self) -> Result<EncodedBlob> {
         let bytes = BASE64
             .decode(&self.0)
-            .map_err(|error| Error::Invalid(format!("invalid encoded descriptor: {error}")))?;
+            .map_err(|error| Error::invalid(format!("invalid encoded descriptor: {error}")))?;
         Ok(EncodedBlob::decode(&bytes)?)
     }
 }
@@ -50,7 +50,9 @@ impl Bytes {
     fn descriptor(&self) -> Result<EncodedBlob> {
         let descriptor = self.encoding.descriptor()?;
         if descriptor.hash.to_string() != self.blob || descriptor.decoded_len != self.length {
-            return invalid("encoded descriptor differs from its decoded identity");
+            return Err(Error::invalid(
+                "encoded descriptor differs from its decoded identity",
+            ));
         }
         Ok(descriptor)
     }
@@ -244,7 +246,9 @@ impl StagedCaptureGroup {
     }
     pub fn finish(&self) -> Result<()> {
         if self.queue.queue.len()? != self.count {
-            return invalid("capture read member count differs from its plan");
+            return Err(Error::invalid(
+                "capture read member count differs from its plan",
+            ));
         }
         sync(self.temporary.path())?;
         Ok(())
@@ -253,7 +257,7 @@ impl StagedCaptureGroup {
 
 fn check_backup_cancelled(cancelled: &AtomicBool) -> Result<()> {
     if cancelled.load(Ordering::Acquire) {
-        return invalid("producer backup copy cancelled");
+        return Err(Error::invalid("producer backup copy cancelled"));
     }
     Ok(())
 }
@@ -291,7 +295,9 @@ fn pin_backup_tree(source: &Path, destination: &Path, cancelled: &AtomicBool) ->
         }
         sync(destination)?;
     } else {
-        return invalid("producer backup contains a non-regular member");
+        return Err(Error::invalid(
+            "producer backup contains a non-regular member",
+        ));
     }
     Ok(())
 }
@@ -361,7 +367,7 @@ impl Spool {
             .write(true)
             .open(root.join("lock"))?;
         lock.try_lock()
-            .map_err(|error| Error::Invalid(format!("producer spool is already open: {error}")))?;
+            .map_err(|error| Error::invalid(format!("producer spool is already open: {error}")))?;
         let queue = Queue::open(&root.join("queue.db"))?;
         let spool = Self {
             root,
@@ -430,7 +436,7 @@ impl Spool {
     fn prepared(&self, entry: queue::Entry) -> Result<Prepared> {
         let record: Record = serde_json::from_slice(&entry.metadata)?;
         if record.identity != entry.identity {
-            return invalid("queue record has another identity");
+            return Err(Error::invalid("queue record has another identity"));
         }
         Ok(Prepared {
             order: entry.order,
@@ -541,7 +547,7 @@ impl Spool {
         let prepared = self.required(identity)?;
         let body = prepared
             .body()
-            .ok_or_else(|| Error::Invalid("operation has no material body".into()))?;
+            .ok_or_else(|| Error::invalid("operation has no material body"))?;
         let directory = self.operation(identity)?;
         body.parts()
             .iter()
@@ -573,20 +579,26 @@ impl Spool {
     fn stored_acknowledgment(&self, identity: &str) -> Result<Option<StoredAcknowledgment>> {
         let directory = self.operation(identity)?.join("ack");
         if directory.try_exists()? && !fs::symlink_metadata(&directory)?.file_type().is_dir() {
-            return invalid("published acknowledgment is not a directory");
+            return Err(Error::invalid(
+                "published acknowledgment is not a directory",
+            ));
         }
         let acknowledgment =
             read_checked::<StoredAcknowledgment>(&directory.join("acknowledgment.json"))?;
         if let Some(acknowledgment) = &acknowledgment {
             if acknowledgment.phase.is_pending() {
-                return invalid("published acknowledgment has no finished outcome");
+                return Err(Error::invalid(
+                    "published acknowledgment has no finished outcome",
+                ));
             }
             check_length(
                 &directory.join("payload.zst"),
                 acknowledgment.payload.descriptor()?.stored_len,
             )?;
         } else if directory.try_exists()? {
-            return invalid("published acknowledgment has no acknowledgment");
+            return Err(Error::invalid(
+                "published acknowledgment has no acknowledgment",
+            ));
         }
         Ok(acknowledgment)
     }
@@ -606,7 +618,9 @@ impl Spool {
         let prepared = self.required(identity)?;
         validate_ack(&prepared, &acknowledgment)?;
         if summary.phase != acknowledgment_phase(&acknowledgment) {
-            return invalid("acknowledgment summary differs from its immutable acknowledgment");
+            return Err(Error::invalid(
+                "acknowledgment summary differs from its immutable acknowledgment",
+            ));
         }
         Ok(Some(acknowledgment))
     }
@@ -615,19 +629,23 @@ impl Spool {
         if let Some(prepared) = self.get(frame.frame())? {
             let desired = encoded_hash(&frame)?;
             if desired != (prepared.frame.blob.clone(), prepared.frame.length) {
-                return invalid("prepared identity changed immutable frame contents");
+                return Err(Error::invalid(
+                    "prepared identity changed immutable frame contents",
+                ));
             }
             return Ok(prepared);
         }
         if matches!(&frame, Ingress::Material { .. }) {
-            return invalid("material must have its immutable body prepared before sending");
+            return Err(Error::invalid(
+                "material must have its immutable body prepared before sending",
+            ));
         }
         self.prepare_operation(frame, None::<std::io::Empty>, None, None, None)
     }
 
     pub fn prepare_material(&self, frame: Ingress, bytes: impl Read) -> Result<Prepared> {
         if !matches!(&frame, Ingress::Material { .. }) {
-            return invalid("only a material frame has captured bytes");
+            return Err(Error::invalid("only a material frame has captured bytes"));
         }
         self.prepare_operation(frame, Some(bytes), None, None, None)
     }
@@ -641,7 +659,9 @@ impl Spool {
         capture: &Capture,
     ) -> Result<Prepared> {
         if !matches!(&frame, Ingress::Material { .. }) {
-            return invalid("only a material frame can own an encoded capture");
+            return Err(Error::invalid(
+                "only a material frame can own an encoded capture",
+            ));
         }
         self.prepare_operation(
             frame,
@@ -690,7 +710,7 @@ impl Spool {
             .as_ref()
             .is_some_and(|header| header.identity != identity)
         {
-            return invalid("capture group header has another identity");
+            return Err(Error::invalid("capture group header has another identity"));
         }
         Ok(header.map(|header| header.disposition))
     }
@@ -744,7 +764,9 @@ impl Spool {
     ) -> Result<()> {
         if self.queue.get(&staged.identity)?.is_some() {
             if self.matching_capture_group(&staged)? != Some(outcome) {
-                return invalid("capture group identity changed its recorded capture or outcome");
+                return Err(Error::invalid(
+                    "capture group identity changed its recorded capture or outcome",
+                ));
             }
             return Ok(());
         }
@@ -805,7 +827,7 @@ impl Spool {
         self.required(identity)?
             .capture()
             .cloned()
-            .ok_or_else(|| Error::Invalid("operation has no capture metadata".into()))
+            .ok_or_else(|| Error::invalid("operation has no capture metadata"))
     }
 
     /// One queue commit records the complete capture set with the group's frame;
@@ -815,27 +837,35 @@ impl Spool {
             &frame,
             Ingress::Events { .. } | Ingress::ReplaySequence { .. }
         ) {
-            return invalid("capture products need one Events or ReplaySequence frame");
+            return Err(Error::invalid(
+                "capture products need one Events or ReplaySequence frame",
+            ));
         }
         if captures.is_empty() {
-            return invalid("capture group is empty");
+            return Err(Error::invalid("capture group is empty"));
         }
         let captures = sorted_members(captures)?;
         let group_hash = captures_hash(&captures)?;
         if let Some(existing) = self.group_for_sorted(&group_hash)?
             && existing.identity != frame.frame()
         {
-            return invalid("capture group already has another frame identity");
+            return Err(Error::invalid(
+                "capture group already has another frame identity",
+            ));
         }
         for identity in &captures {
             let member = self.required(identity)?;
             if member.material().is_none() {
-                return invalid("capture group member is not a spooled material");
+                return Err(Error::invalid(
+                    "capture group member is not a spooled material",
+                ));
             }
             if let Some(existing) = self.capture_group(identity)?
                 && existing.group().map(|group| &group.captures_hash) != Some(&group_hash)
             {
-                return invalid("capture already belongs to another product group");
+                return Err(Error::invalid(
+                    "capture already belongs to another product group",
+                ));
             }
         }
         self.prepare_operation(
@@ -921,7 +951,7 @@ impl Spool {
         Option<u64>,
     )> {
         if limit == 0 {
-            return invalid("capture group page limit is zero");
+            return Err(Error::invalid("capture group page limit is zero"));
         }
         let Some(outcome) = self.capture_group_outcome(group)? else {
             return Ok((None, Vec::new(), None));
@@ -958,7 +988,9 @@ impl Spool {
         validate_ack(&prepared, &acknowledgment)?;
         if let Some(previous) = self.acknowledgment(&prepared.identity)? {
             if encoded_hash(&previous)? != encoded_hash(&acknowledgment)? {
-                return invalid("acknowledgment changed for an immutable operation");
+                return Err(Error::invalid(
+                    "acknowledgment changed for an immutable operation",
+                ));
             }
             if prepared.phase.is_pending() {
                 self.finish_acknowledgment(
@@ -970,7 +1002,9 @@ impl Spool {
             return Ok(());
         }
         if !prepared.phase.is_pending() {
-            return invalid("a finished operation cannot change its outcome");
+            return Err(Error::invalid(
+                "a finished operation cannot change its outcome",
+            ));
         }
         let phase = acknowledgment_phase(&acknowledgment);
         let directory = self.operation(&prepared.identity)?;
@@ -1022,7 +1056,7 @@ impl Spool {
         validate_conflict(&prepared, offered_hash, acknowledgment)?;
         if let Some(old) = self.conflict_acknowledgment(identity)? {
             if encoded_hash(&old)? != encoded_hash(acknowledgment)? {
-                return invalid("conflicting acknowledgment changed");
+                return Err(Error::invalid("conflicting acknowledgment changed"));
             }
             if prepared.phase.is_pending() {
                 self.finish_acknowledgment(
@@ -1036,7 +1070,9 @@ impl Spool {
             return Ok(());
         }
         if !prepared.phase.is_pending() {
-            return invalid("a finished operation cannot change its outcome");
+            return Err(Error::invalid(
+                "a finished operation cannot change its outcome",
+            ));
         }
         let phase = Phase::Conflicted {
             offered: offered_hash.into(),
@@ -1117,7 +1153,7 @@ impl Spool {
         if state.applied_position.is_some_and(|position| position < 0)
             || state.latest_position.is_some_and(|position| position < 0)
         {
-            return invalid("confirmed position is negative");
+            return Err(Error::invalid("confirmed position is negative"));
         }
         let caught_up = state.scope.as_ref().is_some_and(|scope| !scope.is_empty())
             && state
@@ -1162,7 +1198,7 @@ impl Spool {
 
     fn required(&self, identity: &str) -> Result<Prepared> {
         self.get(identity)?
-            .ok_or_else(|| Error::Invalid(format!("operation is not prepared: {identity}")))
+            .ok_or_else(|| Error::invalid(format!("operation is not prepared: {identity}")))
     }
 
     fn prepare_operation<R: Read>(
@@ -1177,22 +1213,30 @@ impl Spool {
         if let Some(previous) = self.get(&identity)? {
             let desired = encoded_hash(&frame)?;
             if previous.frame.identity() != (desired.0.as_str(), desired.1) {
-                return invalid("prepared identity changed immutable frame contents");
+                return Err(Error::invalid(
+                    "prepared identity changed immutable frame contents",
+                ));
             }
             if previous.body().is_some() != (body.is_some() || encoded_body.is_some()) {
-                return invalid("prepared identity changed its body contract");
+                return Err(Error::invalid(
+                    "prepared identity changed its body contract",
+                ));
             }
             if previous.group().map(|group| group.captures_hash.as_str())
                 != captures.as_ref().map(|(_, digest)| digest.as_str())
             {
-                return invalid("prepared identity changed its capture group");
+                return Err(Error::invalid(
+                    "prepared identity changed its capture group",
+                ));
             }
             if let Some(input) = body.as_mut() {
                 let mut output = HashWriter::new(std::io::sink());
                 std::io::copy(input, &mut output)?;
                 let (blob, length) = output.finish();
                 if previous.body().map(Body::identity) != Some(vec![(blob.as_str(), length)]) {
-                    return invalid("prepared identity changed immutable body contents");
+                    return Err(Error::invalid(
+                        "prepared identity changed immutable body contents",
+                    ));
                 }
             }
             if let Some(encoded) = encoded_body {
@@ -1215,13 +1259,17 @@ impl Spool {
                             .collect(),
                     )
                 {
-                    return invalid("prepared identity changed immutable encoded body contents");
+                    return Err(Error::invalid(
+                        "prepared identity changed immutable encoded body contents",
+                    ));
                 }
             }
             if let Some(capture) = full_capture
                 && previous.capture() != Some(capture)
             {
-                return invalid("prepared identity changed immutable capture metadata");
+                return Err(Error::invalid(
+                    "prepared identity changed immutable capture metadata",
+                ));
             }
             return Ok(previous);
         }
@@ -1234,12 +1282,14 @@ impl Spool {
         if let Some(capture) = full_capture
             && facts.as_ref().and_then(|facts| facts.capture.as_ref()) != Some(capture)
         {
-            return invalid("capture metadata differs from its material manifest");
+            return Err(Error::invalid(
+                "capture metadata differs from its material manifest",
+            ));
         }
         let body = if body.is_some() || encoded_body.is_some() {
             let descriptor = facts
                 .as_ref()
-                .ok_or_else(|| Error::Invalid("body has no material descriptor".into()))?;
+                .ok_or_else(|| Error::invalid("body has no material descriptor"))?;
             let body = match encoded_body {
                 Some(mut encoded) if encoded.len() == 1 => Body::Whole(write_prepared(
                     &temporary.path().join("body.zst"),
@@ -1288,7 +1338,9 @@ impl Spool {
                 }
             };
             if !matches {
-                return invalid("captured bytes differ from their prepared material");
+                return Err(Error::invalid(
+                    "captured bytes differ from their prepared material",
+                ));
             }
             boundary("body_synced");
             Some(body)
@@ -1304,7 +1356,7 @@ impl Spool {
                 blob: facts.blob,
                 length: facts.length,
                 body: body.ok_or_else(|| {
-                    Error::Invalid("material must have its immutable body prepared".into())
+                    Error::invalid("material must have its immutable body prepared")
                 })?,
                 capture: facts.capture,
                 named: facts.named,
@@ -1316,7 +1368,9 @@ impl Spool {
             (Ingress::RegisterKinds { .. }, _) => Payload::RegisterKinds,
             (Ingress::Chunk { .. }, _) => Payload::Chunk,
             (Ingress::LargeFrame { .. }, _) => Payload::LargeFrame,
-            (Ingress::Material { .. }, None) => return invalid("material has no descriptor"),
+            (Ingress::Material { .. }, None) => {
+                return Err(Error::invalid("material has no descriptor"));
+            }
         };
         let prepared = Record {
             identity: identity.clone(),
@@ -1572,22 +1626,26 @@ fn material_facts(frame: &Ingress) -> Result<Option<MaterialFacts>> {
 /// fixes. Serde has already refused every reply that is not one result.
 fn validate_ack(prepared: &Prepared, acknowledgment: &Acknowledgment) -> Result<()> {
     if acknowledgment.frame != prepared.identity {
-        return invalid("acknowledgment names another prepared operation");
+        return Err(Error::invalid(
+            "acknowledgment names another prepared operation",
+        ));
     }
     if acknowledgment
         .commit_seq()
         .is_some_and(|position| position < 0)
     {
-        return invalid("acknowledgment has a negative confirmed position");
+        return Err(Error::invalid(
+            "acknowledgment has a negative confirmed position",
+        ));
     }
     match (&acknowledgment.result, &prepared.payload) {
         (FrameResult::Refused { .. }, _) => Ok(()),
         (FrameResult::KindsRegistered { .. }, Payload::RegisterKinds) => {
             matches_frame(prepared, acknowledgment)
         }
-        (FrameResult::KindsRegistered { .. }, _) => {
-            invalid("event acknowledgment claims kind registration")
-        }
+        (FrameResult::KindsRegistered { .. }, _) => Err(Error::invalid(
+            "event acknowledgment claims kind registration",
+        )),
         // Sinex records a registration that declares nothing as an empty
         // admission.
         (
@@ -1605,21 +1663,23 @@ fn validate_ack(prepared: &Prepared, acknowledgment: &Acknowledgment) -> Result<
         {
             matches_frame(prepared, acknowledgment)
         }
-        (_, Payload::RegisterKinds) => {
-            invalid("kind registration acknowledgment claims an event admission outcome")
-        }
+        (_, Payload::RegisterKinds) => Err(Error::invalid(
+            "kind registration acknowledgment claims an event admission outcome",
+        )),
         (FrameResult::Replayed { commit_seq, .. }, Payload::ReplaySequence { .. }) => {
             if commit_seq.is_none() {
                 matches_frame(prepared, acknowledgment)?;
                 if !acknowledgment.admitted().is_empty() {
-                    return invalid("newly admitted or replaced events need a confirmed position");
+                    return Err(Error::invalid(
+                        "newly admitted or replaced events need a confirmed position",
+                    ));
                 }
             }
             Ok(())
         }
-        (FrameResult::Replayed { .. }, _) | (_, Payload::ReplaySequence { .. }) => {
-            invalid("acknowledgment answers another kind of operation")
-        }
+        (FrameResult::Replayed { .. }, _) | (_, Payload::ReplaySequence { .. }) => Err(
+            Error::invalid("acknowledgment answers another kind of operation"),
+        ),
         (
             FrameResult::Admitted {
                 material,
@@ -1634,19 +1694,23 @@ fn validate_ack(prepared: &Prepared, acknowledgment: &Acknowledgment) -> Result<
                 && material.as_ref().map(ToString::to_string).as_deref()
                     != Some(expected.id.as_str())
             {
-                return invalid("material acknowledgment has another material identity");
+                return Err(Error::invalid(
+                    "material acknowledgment has another material identity",
+                ));
             }
             // An absent position is an explicit Sinex outcome, not an empty
             // or partial acknowledgment.
             if commit_seq.is_none() && matches!(payload, Payload::Events { .. }) {
                 matches_frame(prepared, acknowledgment)?;
                 if !admitted.is_empty() || material.is_some() || !material_extents.is_empty() {
-                    return invalid(
+                    return Err(Error::invalid(
                         "unpositioned acknowledgment does not match the frame's number and hash",
-                    );
+                    ));
                 }
                 if counts.admitted != 0 || counts.replaced != 0 {
-                    return invalid("newly admitted or replaced events need a confirmed position");
+                    return Err(Error::invalid(
+                        "newly admitted or replaced events need a confirmed position",
+                    ));
                 }
             }
             Ok(())
@@ -1659,7 +1723,9 @@ fn matches_frame(prepared: &Prepared, acknowledgment: &Acknowledgment) -> Result
     if acknowledgment.number <= 0
         || acknowledgment.content_hash.as_deref() != Some(prepared.frame.blob.as_str())
     {
-        return invalid("unpositioned acknowledgment does not match the frame's number and hash");
+        return Err(Error::invalid(
+            "unpositioned acknowledgment does not match the frame's number and hash",
+        ));
     }
     Ok(())
 }
@@ -1674,7 +1740,9 @@ fn validate_conflict(
         || acknowledgment.number <= 0
         || acknowledgment.content_hash.as_deref() == Some(offered)
     {
-        return invalid("conflicting acknowledgment does not match the offered operation");
+        return Err(Error::invalid(
+            "conflicting acknowledgment does not match the offered operation",
+        ));
     }
     Ok(())
 }
@@ -1683,7 +1751,7 @@ fn sorted_members(captures: &[String]) -> Result<Vec<&str>> {
     let mut sorted: Vec<_> = captures.iter().map(String::as_str).collect();
     sorted.sort_unstable();
     if sorted.windows(2).any(|pair| pair[0] == pair[1]) {
-        return invalid("a capture group repeats a member");
+        return Err(Error::invalid("a capture group repeats a member"));
     }
     Ok(sorted)
 }
@@ -1701,22 +1769,21 @@ fn hash(bytes: &[u8]) -> String {
 fn hash_name(digest: blake3::Hash) -> String {
     format!("blake3:{digest}")
 }
-fn invalid<T>(reason: &str) -> Result<T> {
-    Err(Error::Invalid(reason.into()))
-}
 fn sync(path: &Path) -> Result<()> {
     File::open(path)?.sync_all()?;
     Ok(())
 }
 fn regular(path: &Path) -> Result<File> {
     if !fs::symlink_metadata(path)?.file_type().is_file() {
-        return invalid("spool payload is not a regular file");
+        return Err(Error::invalid("spool payload is not a regular file"));
     }
     Ok(File::open(path)?)
 }
 fn check_length(path: &Path, length: u64) -> Result<()> {
     if regular(path)?.metadata()?.len() != length {
-        return invalid("spool payload length differs from its metadata");
+        return Err(Error::invalid(
+            "spool payload length differs from its metadata",
+        ));
     }
     Ok(())
 }
@@ -1735,7 +1802,9 @@ fn read_checked<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>
         return Ok(None);
     };
     if hash_name(blake3::hash(checked.value.get().as_bytes())) != checked.digest {
-        return invalid("spool metadata checksum differs from its contents");
+        return Err(Error::invalid(
+            "spool metadata checksum differs from its contents",
+        ));
     }
     Ok(Some(serde_json::from_str(checked.value.get())?))
 }

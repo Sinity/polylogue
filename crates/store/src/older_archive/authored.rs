@@ -5,6 +5,7 @@
 //! here is refused with the reason, never changed to fit.
 
 use super::{Delivery, DeliveryEvent, KeptResult, Machine, Note, Request, Setting};
+use polylogue_model::JsonExt;
 use polylogue_model::assertion::{
     AssertionFact, AssertionKind, AssertionLink, LinkRole, ValueShape,
 };
@@ -87,7 +88,7 @@ pub fn roots(notes: &[Note]) -> BTreeMap<String, String> {
 /// A note as an assertion fact, checked against this archive's rules for
 /// its kind. `roots` is [`roots`] of every note in the older archive.
 pub fn note(note: &Note, roots: &BTreeMap<String, String>) -> Mapped<AssertionFact> {
-    let kind = if note.kind == "tag" && note.key.as_deref() == Some("hidden") {
+    let kind = if note.kind == polylogue_model::Code::Tag && note.key.as_deref() == Some("hidden") {
         AssertionKind::Hidden
     } else {
         kind(&note.kind)?
@@ -386,8 +387,8 @@ pub fn requests(
                 body.at.unix_ms(),
             ),
             "delivery_event" => {
-                let delivery = body.payload.get("delivery").and_then(|d| d.as_str());
-                let what = body.payload.get("what").and_then(|w| w.as_str());
+                let delivery = body.payload.str("delivery");
+                let what = body.payload.str("what");
                 let (Some(delivery), Some(what)) = (delivery, what) else {
                     continue;
                 };
@@ -492,14 +493,12 @@ pub fn requests(
                     Some(RequestClass::DeliveryEvent) => (|| {
                         let delivery = body
                             .payload
-                            .get("delivery")
-                            .and_then(|d| d.as_str())
+                            .str("delivery")
                             .ok_or("it names no delivery")?
                             .to_owned();
                         let outcome_of = what(
                             body.payload
-                                .get("what")
-                                .and_then(|w| w.as_str())
+                                .str("what")
                                 .ok_or("it names no outcome")?,
                         )?;
                         let detail = match body.payload.get("detail") {
@@ -550,8 +549,7 @@ pub fn requests(
                         };
                         let query = body
                             .payload
-                            .get("query")
-                            .and_then(|q| q.as_str())
+                            .str("query")
                             .ok_or("it names no query")?
                             .to_owned();
                         if name != row.name || query != row.query {

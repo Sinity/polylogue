@@ -20,3 +20,11 @@ fn fixed_clock_has_no_environment_or_day_default() {
     let instant = "2026-03-29T01:00:00Z".parse().unwrap();
     assert_eq!(WallClock::fixed(instant).now(), instant);
 }
+
+#[test]
+fn milliseconds_keep_the_supplied_instant_precision() {
+    for milliseconds in [-1_234, 1_234] {
+        let instant = jiff::Timestamp::from_millisecond(milliseconds).unwrap();
+        assert_eq!(WallClock::fixed(instant).now_ms(), milliseconds);
+    }
+}

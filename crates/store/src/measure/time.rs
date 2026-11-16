@@ -847,7 +847,7 @@ pub fn times(reader: &Reader<'_>, selection: &Selection) -> Result<Vec<SessionTi
             "SELECT s.pk,s.id FROM session s WHERE {condition} ORDER BY s.id"
         ))?
         .query_map(rusqlite::params_from_iter(params.iter()), |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            <(i64, String)>::try_from(r)
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let single = rows.len() == 1;

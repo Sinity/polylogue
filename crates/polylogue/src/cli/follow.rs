@@ -6,6 +6,7 @@
 //! recorded.
 use super::{Archive, fail};
 use crate::protocol::follow::{Line, Marks};
+use polylogue_model::JsonExt as _;
 use polylogue_model::read::{HeaderKind, ReadPage, ReadyCall};
 use std::collections::HashSet;
 use std::io::{self, Write};
@@ -22,17 +23,11 @@ pub fn run(
 ) -> ExitCode {
     let json = values.json;
     let output = startup.output;
-    let Some(target) = values
-        .request
-        .arguments
-        .get("target")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned)
-    else {
+    let Some(target) = values.request.arguments.str("target").map(str::to_owned) else {
         return fail(
             output,
             json,
-            "bad_request",
+            polylogue_model::Code::BadRequest,
             "follow needs a session or a query",
             2,
         );
@@ -46,15 +41,10 @@ pub fn run(
                 | polylogue_model::Reference::MessageRange { .. })
         );
     if !session_target {
-        if values
-            .calling_process
-            .get("until_idle")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false)
+        if values.calling_process.bool("until_idle").unwrap_or(false)
             || !values
                 .calling_process
-                .get("show")
-                .and_then(serde_json::Value::as_array)
+                .array("show")
                 .into_iter()
                 .flatten()
                 .filter_map(|value| value.as_str().map(str::to_owned))
@@ -62,8 +52,7 @@ pub fn run(
                 .is_empty()
             || !values
                 .calling_process
-                .get("hide")
-                .and_then(serde_json::Value::as_array)
+                .array("hide")
                 .into_iter()
                 .flatten()
                 .filter_map(|value| value.as_str().map(str::to_owned))
@@ -73,7 +62,7 @@ pub fn run(
             return fail(
                 output,
                 json,
-                "bad_request",
+                polylogue_model::Code::BadRequest,
                 "--until-idle, --show and --hide apply to following a session",
                 2,
             );
@@ -93,11 +82,7 @@ fn follow_session(
     output: crate::config::OutputConfig,
     json: bool,
 ) -> ExitCode {
-    let until_idle = values
-        .calling_process
-        .get("until_idle")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
+    let until_idle = values.calling_process.bool("until_idle").unwrap_or(false);
     let mut arguments = serde_json::json!({
         "target": target,
         "format": "json",
@@ -160,7 +145,15 @@ fn follow_session(
                 &mut out,
             ) {
                 Ok(started) => encoder = Some(started),
-                Err(error) => return fail(output, json, "internal", &error.to_string(), 1),
+                Err(error) => {
+                    return fail(
+                        output,
+                        json,
+                        polylogue_model::Code::Internal,
+                        &error.to_string(),
+                        1,
+                    );
+                }
             }
         }
         let started = encoder.as_mut().expect("started above");
@@ -266,7 +259,7 @@ fn follow_query(
             return fail(
                 output,
                 json,
-                "bad_request",
+                polylogue_model::Code::BadRequest,
                 "follow takes a query of rows, not a measure",
                 2,
             );
@@ -390,13 +383,19 @@ fn live_query(
                 return fail(
                     startup.output,
                     true,
-                    "io",
+                    polylogue_model::Code::Io,
                     "the daemon ended the follow without its marks",
                     1,
                 );
             }
             (Err(error), _) => {
-                return fail(startup.output, true, "io", &error.to_string(), 1);
+                return fail(
+                    startup.output,
+                    true,
+                    polylogue_model::Code::Io,
+                    &error.to_string(),
+                    1,
+                );
             }
         }
     }

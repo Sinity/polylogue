@@ -4,6 +4,7 @@ mod no_sources;
 mod parent_check;
 mod returning;
 mod scope_lifecycle;
+mod tool_captures;
 use super::*;
 use polylogue_testkit::{ClaudeHome, claude_user};
 use std::io::Read;

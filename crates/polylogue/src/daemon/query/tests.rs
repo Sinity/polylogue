@@ -978,7 +978,12 @@ fn query_failure_detail(
     position: usize,
 ) -> Value {
     assert_eq!(failure.code(), kind.code());
-    assert_eq!(failure.kind, crate::protocol::kind(kind.code()));
+    assert_eq!(
+        failure.kind,
+        crate::protocol::kind(
+            polylogue_model::Code::from_name(kind.code()).expect("shared language failure code")
+        )
+    );
     assert_eq!(failure.position.as_ref().unwrap().offset, position);
     let mut detail = serde_json::to_value(&failure.error).unwrap();
     // The message carries the source line and caret below its first line.

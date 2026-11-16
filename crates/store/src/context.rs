@@ -278,16 +278,7 @@ impl Reader<'_> {
                                    WHERE c.session_pk = s.pk ORDER BY c.pk DESC LIMIT 1), 0)
                    FROM session s WHERE s.id = ?1",
             )?
-            .query_row([session], |r| {
-                Ok((
-                    r.get::<_, bool>(0)?,
-                    r.get::<_, Option<String>>(1)?,
-                    r.get::<_, Option<String>>(2)?,
-                    r.get::<_, Option<String>>(3)?,
-                    r.get::<_, Option<String>>(4)?,
-                    r.get::<_, bool>(5)?,
-                ))
-            })
+            .query_row([session], |r| <(bool, Option<String>, Option<String>, Option<String>, Option<String>, bool)>::try_from(r))
             .optional()?;
         Ok(row.map(
             |(live_tool, todo, waiting_on, last_by, last_kind, unpaired)| OpenItems {
@@ -369,9 +360,7 @@ impl Reader<'_> {
                 AND NOT EXISTS (SELECT 1 FROM source_delivery_event e WHERE e.delivery = d.id)
               ORDER BY d.at, d.id",
         )?;
-        let rows = stmt.query_map([session], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
-        })?;
+        let rows = stmt.query_map([session], |r| <(String, Vec<u8>)>::try_from(r))?;
         let mut out = Vec::new();
         for row in rows {
             let (id, body) = row?;
@@ -505,7 +494,7 @@ impl Reader<'_> {
         Ok((
             candidates,
             u64::try_from(inspect_count)
-                .map_err(|_| crate::StoreError::Invalid("negative notice count".into()))?,
+                .map_err(|_| crate::StoreError::stored(0, "negative notice count"))?,
         ))
     }
 

@@ -85,5 +85,5 @@ fn an_unreadable_stored_value_is_a_store_failure_not_a_bad_request() {
         matches!(error, crate::StoreError::StoredValue { column: 0, .. }),
         "{error:?}"
     );
-    assert_eq!(error.code(), "store");
+    assert_eq!(error.code(), polylogue_model::Code::Store);
 }

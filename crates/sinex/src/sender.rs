@@ -15,11 +15,11 @@ pub(crate) struct Stop {
 impl Stop {
     pub(crate) async fn until<T>(&self, work: impl Future<Output = Result<T>>) -> Result<T> {
         if self.requested.load(Ordering::Acquire) {
-            return Err(Error::Invalid("producer sender stopped".into()));
+            return Err(Error::invalid("producer sender stopped"));
         }
         tokio::select! {
             result = work => result,
-            _ = self.wake.notified() => Err(Error::Invalid("producer sender stopped".into())),
+            _ = self.wake.notified() => Err(Error::invalid("producer sender stopped")),
         }
     }
 }
@@ -44,25 +44,23 @@ impl Sender {
     pub(crate) fn start(worker: Sinex, stop: Arc<Stop>) -> Result<Self> {
         let (wake, requests) = sync_channel(1);
         let thread_stop = stop.clone();
-        let thread = std::thread::Builder::new()
-            .name("polylogue-send".into())
-            .spawn(move || {
-                let mut retry = false;
-                loop {
-                    let awake = if retry {
-                        match requests.recv_timeout(std::time::Duration::from_secs(1)) {
-                            Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Timeout) => true,
-                            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => false,
-                        }
-                    } else {
-                        requests.recv().is_ok()
-                    };
-                    if !awake || thread_stop.requested.load(Ordering::Acquire) {
-                        break;
+        let thread = polylogue_model::spawn_named("polylogue-send", move || {
+            let mut retry = false;
+            loop {
+                let awake = if retry {
+                    match requests.recv_timeout(std::time::Duration::from_secs(1)) {
+                        Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Timeout) => true,
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => false,
                     }
-                    retry = worker.drain_pending().as_ref().is_err_and(retryable);
+                } else {
+                    requests.recv().is_ok()
+                };
+                if !awake || thread_stop.requested.load(Ordering::Acquire) {
+                    break;
                 }
-            })?;
+                retry = worker.drain_pending().as_ref().is_err_and(retryable);
+            }
+        })?;
         Ok(Self {
             wake: Some(wake),
             stop,

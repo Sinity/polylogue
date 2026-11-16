@@ -1,5 +1,6 @@
 use crate::{Authentication, Config, Mode, Sinex};
 use polylogue_model::BlobHash;
+use polylogue_model::LockExt;
 use polylogue_store::primary::{Capture, CapturedInput, Product, ProductWrite, SourceLocation};
 use serde_json::json;
 
@@ -170,12 +171,7 @@ fn grouped_capture_rejects_parser_values_and_awaits_marker() {
         .unwrap();
     let stored = extent(root.path(), bytes);
     let acknowledgment=serde_json::from_value(json!({"number":1,"frame":raw.identity,"material":crate::material_id("polylogue-test", &raw.identity),"material_extents":[stored.encode()],"admitted":[],"content_hash":null,"result":"admitted","counts":crate::tests::zero_counts(),"commit_seq":null})).unwrap();
-    sinex
-        .spool
-        .lock()
-        .unwrap()
-        .acknowledge(acknowledgment)
-        .unwrap();
+    sinex.spool.locked().acknowledge(acknowledgment).unwrap();
     let pending = sinex.pending_captures().unwrap();
     let material = pending[0].material.clone().unwrap();
     let mut step = polylogue_store::ParseStep::new(
@@ -241,11 +237,10 @@ fn grouped_capture_rejects_parser_values_and_awaits_marker() {
         .complete_captures(std::slice::from_ref(&raw.identity), &[write])
         .unwrap();
     assert_eq!(sinex.pending_captures().unwrap()[0].identity, raw.identity);
-    sinex.spool.lock().unwrap().acknowledge(serde_json::from_value(json!({"number":2,"frame":grouped.identity,"material":null,"admitted":[],"content_hash":null,"result":"admitted","counts":crate::tests::zero_counts(),"commit_seq":10})).unwrap()).unwrap();
+    sinex.spool.locked().acknowledge(serde_json::from_value(json!({"number":2,"frame":grouped.identity,"material":null,"admitted":[],"content_hash":null,"result":"admitted","counts":crate::tests::zero_counts(),"commit_seq":10})).unwrap()).unwrap();
     sinex
         .spool
-        .lock()
-        .unwrap()
+        .locked()
         .remove_confirmed(
             &crate::tests::applied(9),
             &crate::tests::every_event_applied,
@@ -254,8 +249,7 @@ fn grouped_capture_rejects_parser_values_and_awaits_marker() {
     assert_eq!(sinex.pending_captures().unwrap().len(), 1);
     sinex
         .spool
-        .lock()
-        .unwrap()
+        .locked()
         .remove_confirmed(
             &crate::tests::applied(10),
             &crate::tests::every_event_applied,

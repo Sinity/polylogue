@@ -30,15 +30,19 @@ fn item_commit_uses_prepared_content_without_reading_payloads() {
     let texts = crate::text_rows::TextIds::new(&tx, false).unwrap();
     let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
     write_rows(
-        &texts,
         &tx,
         &b,
         &b.parse[0],
-        b.parse[0].resolution.as_ref().unwrap(),
-        1,
-        None,
-        Some(&fixture_commit()),
-        &changes,
+        rows::ReadingWrite {
+            texts: &texts,
+            resolution: b.parse[0].resolution.as_ref().unwrap(),
+            counter: 1,
+            first_build: None,
+            source_commit: Some(&fixture_commit()),
+            changes: &changes,
+            retraction: false,
+            replacement: false,
+        },
     )
     .unwrap();
     tx.flush_prepared_statement_cache();

@@ -98,6 +98,7 @@ pub fn time<T>(stage: Stage, f: impl FnOnce() -> T) -> T {
 }
 
 /// Seconds per stage since the process started (or the last [`reset`]).
+#[cfg(any(test, feature = "fixture"))]
 pub fn stage_seconds() -> Vec<(Stage, f64)> {
     STAGES
         .iter()
@@ -105,6 +106,7 @@ pub fn stage_seconds() -> Vec<(Stage, f64)> {
         .collect()
 }
 
+#[cfg(any(test, feature = "fixture"))]
 pub fn reset() {
     READING_WAITING.store(0, Ordering::Relaxed);
     READING_PREPARED.store(0, Ordering::Relaxed);
@@ -183,6 +185,7 @@ impl Drop for WriterTime {
 }
 
 /// Queue depths and completed worker time for a benchmark's time series.
+#[cfg(any(test, feature = "fixture"))]
 pub fn reading_pipeline() -> serde_json::Value {
     let workers = READING_WORKERS.lock().expect("reading times");
     serde_json::json!({
@@ -222,6 +225,7 @@ pub fn queue(queue: Queue, count: i64) {
     }
     .fetch_add(count, Ordering::Relaxed);
 }
+#[cfg(any(test, feature = "fixture"))]
 pub fn queues() -> [(&'static str, i64); 2] {
     [
         ("parse", PARSE_WAITING.load(Ordering::Relaxed)),
@@ -254,8 +258,14 @@ struct WorkerStart {
     scheduled: Option<(u64, u64)>,
 }
 pub struct WorkerTimeGuard(Option<WorkerStart>);
+static WORKERS_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_workers_enabled(enabled: bool) {
+    WORKERS_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
 pub fn worker() -> WorkerTimeGuard {
-    WorkerTimeGuard(std::env::var_os("POLYLOGUE_TIMING_WORKERS").map(|_| {
+    WorkerTimeGuard(WORKERS_ENABLED.load(Ordering::Relaxed).then(|| {
         WorkerStart {
             name: std::thread::current()
                 .name()
@@ -291,6 +301,7 @@ impl Drop for WorkerTimeGuard {
         }
     }
 }
+#[cfg(any(test, feature = "fixture"))]
 pub fn workers() -> Vec<WorkerTime> {
     WORKER_TIMES.lock().map(|v| v.clone()).unwrap_or_default()
 }

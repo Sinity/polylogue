@@ -12,7 +12,7 @@ fn pending(queue: &crate::spool::Spool, entry: crate::spool::Prepared) -> Result
     let captured = entry
         .capture()
         .cloned()
-        .ok_or_else(|| Error::Invalid("source operation has no capture header".into()))?;
+        .ok_or_else(|| Error::invalid("source operation has no capture header"))?;
     let acknowledged = if entry.phase.is_refused() {
         None
     } else {
@@ -59,8 +59,8 @@ impl Sinex {
         for base in &plan.bases {
             if let Some(entry) = queue.latest_pending(&base.source)?.latest {
                 let Some(Capture::Input(input)) = entry.capture() else {
-                    return Err(Error::Invalid(
-                        "latest pending source operation has no input".into(),
+                    return Err(Error::invalid(
+                        "latest pending source operation has no input",
                     ));
                 };
                 latest.insert(
@@ -116,8 +116,8 @@ impl Sinex {
         {
             members(&mut |mut input, body| {
                 if ordinal >= plan.count {
-                    return Err(polylogue_store::StoreError::Invalid(
-                        "capture read emitted more members than declared".into(),
+                    return Err(polylogue_store::StoreError::invalid(
+                        "capture read emitted more members than declared",
                     ));
                 }
                 let named = match body.as_slice() {
@@ -134,23 +134,23 @@ impl Sinex {
                     }
                 };
                 if !named {
-                    return Err(polylogue_store::StoreError::Invalid(
-                        "captured body differs from its declared identity".into(),
+                    return Err(polylogue_store::StoreError::invalid(
+                        "captured body differs from its declared identity",
                     ));
                 }
                 if input
                     .raw_range
                     .is_some_and(|range| range.length().ok() != Some(input.length))
                 {
-                    return Err(polylogue_store::StoreError::Invalid(
-                        "captured body differs from its original byte range".into(),
+                    return Err(polylogue_store::StoreError::invalid(
+                        "captured body differs from its original byte range",
                     ));
                 }
                 if let Some(base) = &input.basis
                     && !plan.bases.iter().any(|expected| expected == base)
                 {
-                    return Err(polylogue_store::StoreError::Invalid(
-                        "capture read member has no declared source base".into(),
+                    return Err(polylogue_store::StoreError::invalid(
+                        "capture read member has no declared source base",
                     ));
                 }
                 input.group = Some(CaptureGroup {
@@ -181,8 +181,8 @@ impl Sinex {
                 };
                 if let Some(kept) = kept {
                     let Capture::Input(original) = kept else {
-                        return Err(polylogue_store::StoreError::Invalid(
-                            "capture read retry replaced a source capture".into(),
+                        return Err(polylogue_store::StoreError::invalid(
+                            "capture read retry replaced a source capture",
                         ));
                     };
                     // The accepted capture read fixed the original observation and
@@ -220,8 +220,8 @@ impl Sinex {
                 Ok(())
             })?;
             if ordinal != plan.count {
-                return Err(polylogue_store::StoreError::Invalid(
-                    "capture read emitted fewer members than declared".into(),
+                return Err(polylogue_store::StoreError::invalid(
+                    "capture read emitted fewer members than declared",
                 )
                 .into());
             }
@@ -286,14 +286,12 @@ impl Sinex {
             for entry in page {
                 after = Some(entry.order);
                 let Capture::Input(mut input) = staging.capture(&entry.identity)? else {
-                    return Err(Error::Invalid(
-                        "capture read contains a non-input member".into(),
-                    ));
+                    return Err(Error::invalid("capture read contains a non-input member"));
                 };
                 let group = input
                     .group
                     .as_mut()
-                    .ok_or_else(|| Error::Invalid("capture read member has no ordinal".into()))?;
+                    .ok_or_else(|| Error::invalid("capture read member has no ordinal"))?;
                 let member = format!("{spooled_identity}:{}", group.ordinal);
                 group.identity = spooled_identity.clone();
                 if let Some(previous) = input.raw_predecessor.as_ref()
@@ -318,15 +316,13 @@ impl Sinex {
                 };
                 if let Some(original) = original {
                     let Capture::Input(original) = original else {
-                        return Err(Error::Invalid(
-                            "the spooled group has a non-input member".into(),
-                        ));
+                        return Err(Error::invalid("the spooled group has a non-input member"));
                     };
                     if compared_fields(&input, plan.mode)? != compared_fields(&original, plan.mode)?
                         || (plan.mode == CaptureMode::Mutable && input.basis != original.basis)
                     {
-                        return Err(Error::Invalid(
-                            "spooled group identity changed its recorded observation".into(),
+                        return Err(Error::invalid(
+                            "spooled group identity changed its recorded observation",
                         ));
                     }
                     input = original;

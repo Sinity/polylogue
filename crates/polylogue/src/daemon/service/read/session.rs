@@ -34,11 +34,10 @@ pub(super) struct Scope {
 /// the logical session whose root is REF.
 pub(super) fn scope(reader: &Reader<'_>, target: &str) -> Result<Option<Scope>, Failure> {
     if let Some(root) = target.strip_prefix("root:") {
-        let reference = Reference::parse(&format!("session:{root}"))
-            .map_err(|e| Failure::new("bad_request", e))?;
+        let reference =
+            Reference::parse(&format!("session:{root}")).map_err(Failure::bad_request)?;
         let Reference::Session(session) = reference else {
-            return Err(Failure::new(
-                "bad_request",
+            return Err(Failure::bad_request(
                 "root: names a session, the root of a logical session",
             ));
         };
@@ -54,7 +53,7 @@ pub(super) fn scope(reader: &Reader<'_>, target: &str) -> Result<Option<Scope>, 
     let session_of = |message: &MessageId| -> Result<SessionId, Failure> {
         reader
             .message_session(message)?
-            .ok_or_else(|| Failure::new("not_found", format!("no message {message}")))
+            .ok_or_else(|| Failure::not_found(format!("no message {message}")))
     };
     Ok(match reference {
         Reference::Session(session) => Some(Scope {
@@ -70,8 +69,7 @@ pub(super) fn scope(reader: &Reader<'_>, target: &str) -> Result<Option<Scope>, 
         Reference::MessageRange { first, last } => {
             let session = session_of(&first)?;
             if session_of(&last)? != session {
-                return Err(Failure::new(
-                    "bad_request",
+                return Err(Failure::bad_request(
                     "a message range is read inside one session",
                 ));
             }
@@ -390,7 +388,7 @@ fn compose(
 ) -> Result<Composed, Failure> {
     let around = options.around.unwrap_or(0) as usize;
     let own = session_index(reader, &scope.session)?
-        .ok_or_else(|| Failure::new("not_found", format!("no session {}", scope.session)))?;
+        .ok_or_else(|| Failure::not_found(format!("no session {}", scope.session)))?;
     let mut composed = Composed {
         parts: Vec::new(),
         indexes: Vec::new(),
@@ -410,17 +408,13 @@ fn compose(
                     .item_place(own.pk, &EntryKey::header(message))?
                     .map(|seq| seq as usize)
                     .ok_or_else(|| {
-                        Failure::new(
-                            "not_found",
-                            format!("message {message} is not in the reading"),
-                        )
+                        Failure::not_found(format!("message {message} is not in the reading"))
                     })
             };
             let start = header(first)?;
             let last_at = header(last)?;
             if last_at < start {
-                return Err(Failure::new(
-                    "bad_request",
+                return Err(Failure::bad_request(
                     "a message range ends before it starts",
                 ));
             }
@@ -849,12 +843,8 @@ fn runs(reader: &Reader<'_>, composed: &Composed, options: &ReadOptions) -> Resu
         entry: composed.parts[last].end.saturating_sub(1),
     };
     let place_of = |message: &MessageId| -> Result<Place, Failure> {
-        find(&composed.parts, entries, &EntryKey::header(message)).ok_or_else(|| {
-            Failure::new(
-                "not_found",
-                format!("message {message} is not in the reading"),
-            )
-        })
+        find(&composed.parts, entries, &EntryKey::header(message))
+            .ok_or_else(|| Failure::not_found(format!("message {message} is not in the reading")))
     };
     let at = match &options.at {
         Some(message) => place_of(message)?,
@@ -874,11 +864,10 @@ fn runs(reader: &Reader<'_>, composed: &Composed, options: &ReadOptions) -> Resu
         let back: usize = match rest.strip_prefix(':') {
             Some(n) => n
                 .parse()
-                .map_err(|_| Failure::new("bad_request", "compaction:N takes a count"))?,
+                .map_err(|_| Failure::bad_request("compaction:N takes a count"))?,
             None if rest.is_empty() => 1,
             None => {
-                return Err(Failure::new(
-                    "bad_request",
+                return Err(Failure::bad_request(
                     "diff takes a message or compaction[:N]",
                 ));
             }
@@ -898,19 +887,16 @@ fn runs(reader: &Reader<'_>, composed: &Composed, options: &ReadOptions) -> Resu
         let boundary = back
             .checked_sub(1)
             .and_then(|from_end| boundaries.iter().rev().nth(from_end))
-            .ok_or_else(|| Failure::new("not_found", "the reading has no such compaction"))?;
+            .ok_or_else(|| Failure::not_found("the reading has no such compaction"))?;
         if boundary.entry == composed.parts[boundary.part].start {
-            return Err(Failure::new(
-                "not_found",
-                "the compaction is the first entry",
-            ));
+            return Err(Failure::not_found("the compaction is the first entry"));
         }
         Place {
             part: boundary.part,
             entry: boundary.entry - 1,
         }
     } else {
-        place_of(&MessageId::parse(diff).map_err(|e| Failure::new("bad_request", e))?)?
+        place_of(&MessageId::parse(diff).map_err(Failure::bad_request)?)?
     };
     let (earlier, later) = if other < at {
         (context_at(&composed.parts, entries, other), context)
@@ -964,11 +950,11 @@ pub(super) fn page(
         ..
     } = request;
     let format =
-        Format::parse(format).ok_or_else(|| Failure::new("bad_request", "unknown read format"))?;
+        Format::parse(format).ok_or_else(|| Failure::bad_request("unknown read format"))?;
     let mut limits = PageBudget::default();
     if let Some(tokens) = budget {
         limits.tokens = std::num::NonZeroU64::new(*tokens as u64)
-            .ok_or_else(|| Failure::new("bad_request", "read budget must be positive"))?;
+            .ok_or_else(|| Failure::bad_request("read budget must be positive"))?;
     }
     let digest = options_digest(&(options, format));
     let key = super::cursor_seal(reader)?;
@@ -981,8 +967,7 @@ pub(super) fn page(
         })
         .transpose()?;
     if options.physical && !target.starts_with("root:") {
-        return Err(Failure::new(
-            "bad_request",
+        return Err(Failure::bad_request(
             "--physical applies to root:REF; a session reference is already one physical session",
         ));
     }
@@ -994,17 +979,14 @@ pub(super) fn page(
     still_wanted()?;
     let read_session = reader
         .session(&scope.session)?
-        .ok_or_else(|| Failure::new("not_found", format!("no session {}", scope.session)))?;
+        .ok_or_else(|| Failure::not_found(format!("no session {}", scope.session)))?;
     let versions = PageCursor::version(&composed.versions(reader)?);
     if let Some(opened) = &opened
         && opened.rewritten(&versions)
     {
-        return Err(Failure::new(
-            "stale_cursor",
-            format!(
-                "the composed reading changed since this cursor was issued; read {target} again"
-            ),
-        ));
+        return Err(Failure::stale_cursor(format!(
+            "the composed reading changed since this cursor was issued; read {target} again"
+        )));
     }
     still_wanted()?;
     let runs = runs(reader, &composed, options)?;
@@ -1065,16 +1047,12 @@ pub(super) fn page(
         }
         Some(opened) => {
             let PagePosition::Entry { key, inside } = &opened.position else {
-                return Err(Failure::new(
-                    "invalid_query",
+                return Err(Failure::invalid_query(
                     "the cursor names a row position, not a session entry",
                 ));
             };
             let place = locate(key)?.ok_or_else(|| {
-                Failure::new(
-                    "stale_cursor",
-                    "the cursor's entry is no longer in the reading",
-                )
+                Failure::stale_cursor("the cursor's entry is no longer in the reading")
             })?;
             let after = (place.0, place.1 + 1);
             match opened.direction {
@@ -1085,7 +1063,7 @@ pub(super) fn page(
                         .first_at(place)?
                         .filter(|entry| entry.place() == place)
                         .ok_or_else(|| {
-                            Failure::new("stale_cursor", "the cursor's entry is no longer shown")
+                            Failure::stale_cursor("the cursor's entry is no longer shown")
                         })?;
                     (vec![entry], shown.first_at(after)?)
                 }
@@ -1298,7 +1276,7 @@ pub(super) fn header(
 ) -> Result<ReadHeader, Failure> {
     let stored = reader
         .session(session)?
-        .ok_or_else(|| Failure::new("not_found", format!("no session {session}")))?;
+        .ok_or_else(|| Failure::not_found(format!("no session {session}")))?;
     let title = reader
         .display_title(session)?
         .map(ValueState::known)
@@ -1429,17 +1407,15 @@ fn fragments(
 ) -> Result<Option<ItemPlace>, Failure> {
     let first = from.map_or(0, |place| place.item as usize);
     if first >= items.len() && !items.is_empty() {
-        return Err(Failure::new(
-            "stale_cursor",
+        return Err(Failure::stale_cursor(
             "the cursor's item is no longer in its entry",
         ));
     }
     let mut used = 0;
     let mut placed = false;
     for (index, item) in items.into_iter().enumerate().skip(first) {
-        let encoded =
-            polylogue_render::json_bytes(&item).map_err(|e| Failure::new("internal", e))?;
-        let text = String::from_utf8(encoded).map_err(|e| Failure::new("internal", e))?;
+        let encoded = polylogue_render::json_bytes(&item).map_err(Failure::internal)?;
+        let text = String::from_utf8(encoded).map_err(Failure::internal)?;
         let item_hash = polylogue_model::BlobHash::of(text.as_bytes());
         let place = |character: usize| ItemPlace {
             selection: SelectionLocator {
@@ -1453,8 +1429,7 @@ fn fragments(
         let start = match from {
             Some(from) if index == first => {
                 if from.item_hash != item_hash {
-                    return Err(Failure::new(
-                        "stale_cursor",
+                    return Err(Failure::stale_cursor(
                         "the cursor's item changed since the cursor was issued",
                     ));
                 }
@@ -1478,7 +1453,7 @@ fn fragments(
             .collect();
         let total = boundaries.len() - 1;
         if start >= total {
-            return Err(Failure::new("stale_cursor", "the cursor is past its item"));
+            return Err(Failure::stale_cursor("the cursor is past its item"));
         }
         // A fragment is sourced at the reading, as the row pager's are;
         // its position names the item.
@@ -1492,8 +1467,8 @@ fn fragments(
             },
         };
         let fits = |until: usize| -> Result<bool, Failure> {
-            let candidate = polylogue_render::json_bytes(&make(until))
-                .map_err(|e| Failure::new("internal", e))?;
+            let candidate =
+                polylogue_render::json_bytes(&make(until)).map_err(Failure::internal)?;
             let payload = &text[boundaries[start]..boundaries[until]];
             Ok(used + candidate.len() <= room && estimate_tokens(payload) as u64 <= tokens)
         };
@@ -1509,7 +1484,7 @@ fn fragments(
         }
         let fragment = make(low);
         used += polylogue_render::json_bytes(&fragment)
-            .map_err(|e| Failure::new("internal", e))?
+            .map_err(Failure::internal)?
             .len();
         placed = true;
         out.push(fragment);
@@ -1601,9 +1576,9 @@ fn lay_out(
             input: input.map(str::to_owned),
             length: crate::daemon::attachment::PAGE_BYTES as u64,
         })
-        .map_err(|e| Failure::new("internal", e))?;
+        .map_err(Failure::internal)?;
         let identity = canonical_json::canonical_hash("polylogue-attachment-call", &arguments)
-            .map_err(|e| Failure::new("internal", e))?;
+            .map_err(Failure::internal)?;
         d.ready_call(&command_surface::RunnableRequest {
             operation: "attachment".into(),
             arguments,
@@ -1639,9 +1614,9 @@ fn lay_out(
                     }
                 }
                 EntryKey::Event { event } => {
-                    let record = reader.event_record(event)?.ok_or_else(|| {
-                        Failure::new("stale_cursor", format!("event {event} is gone"))
-                    })?;
+                    let record = reader
+                        .event_record(event)?
+                        .ok_or_else(|| Failure::stale_cursor(format!("event {event} is gone")))?;
                     emit(
                         reader,
                         Record::Event(record),
@@ -1663,9 +1638,9 @@ fn lay_out(
             continue;
         }
         let selection = reader.select_messages(&part.session, false)?;
-        let start = selection.locate(Some(&messages[0]))?.ok_or_else(|| {
-            Failure::new("stale_cursor", format!("message {} is gone", messages[0]))
-        })?;
+        let start = selection
+            .locate(Some(&messages[0]))?
+            .ok_or_else(|| Failure::stale_cursor(format!("message {} is gone", messages[0])))?;
         let wanted_messages: HashSet<&MessageId> = messages.iter().collect();
         let last_message = messages.last().expect("one message").clone();
         let mut result = Ok(());
@@ -1676,12 +1651,9 @@ fn lay_out(
                 if wanted_messages.contains(&id) {
                     let step = (|| {
                         let commit = commit.ok_or_else(|| {
-                            Failure::new(
-                                "not_yet_available",
-                                format!(
-                                    "message:{id} has no stored commit position for its source"
-                                ),
-                            )
+                            Failure::not_yet_available(format!(
+                                "message:{id} has no stored commit position for its source"
+                            ))
                         })?;
                         let record =
                             message_record(reader, message, block_selection, commit, order)?;
@@ -1785,10 +1757,10 @@ fn decorate(
             };
             if let Some((table, id)) = record {
                 let stored = reader.stored_record(table, &id)?.ok_or_else(|| {
-                    Failure::new(
-                        "not_yet_available",
-                        format!("{} has no stored record", entry.key.reference()),
-                    )
+                    Failure::not_yet_available(format!(
+                        "{} has no stored record",
+                        entry.key.reference()
+                    ))
                 })?;
                 let media_type = if stored.bytes.first() == Some(&b'{') {
                     "application/json"
@@ -1937,10 +1909,10 @@ fn context_meter(
                 for &(other, other_start, other_end) in &ranges {
                     for stored in reader.item_calls(composed.indexes[other].pk, call)? {
                         let place = (other, stored.seq as usize);
-                        if stored.entry.kind == EntryKind::Result
-                            && (other_start..other_end).contains(&place.1)
-                            && place < (index, micro as usize)
-                            && removed.insert((other, stored.seq))
+                        if stored.entry.kind == EntryKind::Result && other_start
+                            ..other_end.contains(&place.1)
+                                && place < (index, micro as usize)
+                                && removed.insert((other, stored.seq))
                         {
                             estimate = estimate.saturating_sub(stored.entry.tokens_full);
                         }
@@ -1983,8 +1955,8 @@ fn place_cards(
             .parts
             .iter()
             .position(|bounds| {
-                bounds.session == card_slot.session
-                    && (bounds.start..bounds.end).contains(&card_slot.seq)
+                bounds.session == card_slot.session && bounds.start
+                    ..bounds.end.contains(&card_slot.seq)
             })
             .map(|part| (part, card_slot.seq))
         else {

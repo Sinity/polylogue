@@ -602,7 +602,7 @@ impl<'a> Compiler<'a> {
         let exact = format!(
             "pl_time_test({}, '{}', {parameter})",
             stored.bytes,
-            stored.storage.code()
+            stored.storage.as_str()
         );
         if broad == "1" {
             exact
@@ -610,7 +610,7 @@ impl<'a> Compiler<'a> {
             format!(
                 "(({broad} OR NOT pl_time_is_point({}, '{}')) AND {exact})",
                 stored.bytes,
-                stored.storage.code()
+                stored.storage.as_str()
             )
         }
     }

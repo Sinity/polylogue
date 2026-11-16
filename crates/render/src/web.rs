@@ -2,6 +2,7 @@
 //! already resolved by the operation; this module formats no cursors.
 use command_surface::{Failure, FailureKind, OperationDeclarations, RunnableRequest};
 use maud::{Markup, html};
+use polylogue_model::JsonExt;
 use polylogue_model::{
     freshness::{FreshnessState, IndexFreshness},
     read::{ReadError, ReadOptions, ReadPage, ReadyCall, View},
@@ -28,8 +29,7 @@ pub fn read(
     )?;
     let query = request
         .arguments
-        .get("target")
-        .and_then(Value::as_str)
+        .str("target")
         .unwrap_or(&page.snapshot.query);
     let query_display = crate::terminal::json(&Value::String(query.into()), false);
     frame.query = &query_display[1..query_display.len() - 1];

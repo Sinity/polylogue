@@ -48,3 +48,25 @@ fn thread_runs_with_its_name() {
     .unwrap();
     assert_eq!(thread.join().unwrap(), ("helper-test".to_owned(), 7));
 }
+
+#[test]
+fn large_numbers_in_opaque_json_are_lossless() {
+    let value: crate::Json =
+        serde_json::from_str(r#"{"n":123456789012345678901234567890}"#).unwrap();
+    assert_eq!(
+        serde_json::to_string(&value).unwrap(),
+        r#"{"n":123456789012345678901234567890}"#
+    );
+}
+
+#[test]
+fn poisoned_condition_wait_keeps_the_stored_value() {
+    let mutex = Mutex::new(0);
+    let _ = std::panic::catch_unwind(|| {
+        *mutex.lock().unwrap() = 7;
+        panic!("poison");
+    });
+    let condition = std::sync::Condvar::new();
+    let (value, _) = unpoisoned(condition.wait_timeout(mutex.locked(), std::time::Duration::ZERO));
+    assert_eq!(*value, 7);
+}

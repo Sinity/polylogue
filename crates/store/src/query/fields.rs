@@ -92,43 +92,13 @@ pub(crate) enum TimeStorage {
     Event,
     Latest,
 }
-impl TimeStorage {
-    pub(crate) fn code(self) -> &'static str {
-        match self {
-            Self::Tuple => "tuple",
-            Self::Event => "event",
-            Self::Latest => "latest",
-        }
-    }
-    pub(crate) fn from_code(code: &str) -> Option<Self> {
-        match code {
-            "tuple" => Some(Self::Tuple),
-            "event" => Some(Self::Event),
-            "latest" => Some(Self::Latest),
-            _ => None,
-        }
-    }
-}
+polylogue_model::stored_names!(TimeStorage { Tuple => "tuple", Event => "event", Latest => "latest" });
 #[derive(Clone, Copy)]
 pub enum TimeAttribute {
     Quality,
     Precision,
 }
-impl TimeAttribute {
-    pub(crate) fn code(self) -> &'static str {
-        match self {
-            Self::Quality => "quality",
-            Self::Precision => "precision",
-        }
-    }
-    pub(crate) fn from_code(code: &str) -> Option<Self> {
-        match code {
-            "quality" => Some(Self::Quality),
-            "precision" => Some(Self::Precision),
-            _ => None,
-        }
-    }
-}
+polylogue_model::stored_names!(TimeAttribute { Quality => "quality", Precision => "precision" });
 pub(crate) struct StoredTime {
     pub cache: String,
     pub bytes: String,
@@ -139,8 +109,8 @@ impl StoredTime {
         format!(
             "pl_time_attribute({}, '{}', '{}')",
             self.bytes,
-            self.storage.code(),
-            attribute.code()
+            self.storage.as_str(),
+            attribute.as_str()
         )
     }
 }

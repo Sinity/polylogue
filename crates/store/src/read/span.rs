@@ -1,5 +1,6 @@
 //! A portable span observes only selected original bytes. Resolving a known
 //! prefix never establishes completeness or hashes the unavailable remainder.
+use crate::{OptionExt as _, ResultExt as _};
 use crate::{Reader, Result, StoreError};
 use polylogue_model::bundle::{
     TextSpanOrigin,
@@ -118,19 +119,17 @@ impl<'pool> Reader<'pool> {
         let Some((version, committed)) = self.span_identity(container)? else {
             return Ok(None);
         };
-        let mut bounds = SpanBounds::new(*unit, *start, *end)
-            .map_err(|error| StoreError::Invalid(error.to_string()))?;
+        let mut bounds =
+            SpanBounds::new(*unit, *start, *end).map_err(crate::StoreError::invalid)?;
         let mut bytes = 0u64;
         let mut stopped = false;
         let mut start_position = None;
         let mut end_position = None;
         let found = self.source_text_while(container, false, None, &mut |piece, text| {
-            bounds
-                .push(text)
-                .map_err(|error| StoreError::Invalid(error.to_string()))?;
+            bounds.push(text).map_err(crate::StoreError::invalid)?;
             let next = bytes
                 .checked_add(text.len() as u64)
-                .ok_or_else(|| StoreError::Invalid("span text length overflows".into()))?;
+                .or_invalid("span text length overflows")?;
             if let Some(bound) = bounds.resolved_start()
                 && bound >= bytes
                 && bound <= next
@@ -162,9 +161,7 @@ impl<'pool> Reader<'pool> {
         if !found {
             return Ok(None);
         }
-        let range = bounds
-            .finish()
-            .map_err(|error| StoreError::Invalid(error.to_string()))?;
+        let range = bounds.finish().map_err(crate::StoreError::invalid)?;
         let empty = NativeTextPosition {
             piece: NativeTextPiece::Empty,
             byte: 0,
@@ -203,14 +200,14 @@ impl<'pool> Reader<'pool> {
         };
         version
             .validate_container(container)
-            .map_err(|error| StoreError::Invalid(error.to_string()))?;
+            .map_err(crate::StoreError::invalid)?;
         let coverage = TextCoverage {
             start: origin.start,
             end: origin.end,
             total_bytes: None,
         };
         seek.validate(container, &coverage)
-            .map_err(|error| StoreError::Invalid(error.to_string()))?;
+            .map_err(crate::StoreError::invalid)?;
         let Some((current, committed)) = self.span_identity(container)? else {
             return Err(stale(&origin.reference));
         };
@@ -283,8 +280,8 @@ impl<'pool> Reader<'pool> {
                 let Some(document) = self.select_document(id)? else {
                     return Ok(None);
                 };
-                let hash = BlobHash::parse(&document.version())
-                    .map_err(|error| StoreError::Invalid(error.to_string()))?;
+                let hash =
+                    BlobHash::parse(&document.version()).map_err(crate::StoreError::invalid)?;
                 Ok(Some((
                     TextSourceVersion::ContentHash {
                         record: container.clone(),

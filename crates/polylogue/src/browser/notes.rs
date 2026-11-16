@@ -25,10 +25,6 @@ pub(crate) struct SelectionNote {
     pub(crate) source: Source,
 }
 
-fn invalid(message: &str) -> Failure {
-    Failure::new("bad_request", message)
-}
-
 pub(super) fn save(host: &BrowserHost, input: SelectionNote) -> Answer<Value> {
     if let Err(failure) = input.references() {
         return failure.answer();
@@ -45,7 +41,7 @@ pub(super) fn save(host: &BrowserHost, input: SelectionNote) -> Answer<Value> {
     host.ask_as("selection-note", arguments, input.request_id)
         .unwrap_or_else(|| {
             crate::daemon::service::error(
-                "daemon_required",
+                polylogue_model::Code::DaemonRequired,
                 "save outcome unknown; retry this draft with the same ID",
             )
         })
@@ -61,17 +57,19 @@ impl SelectionNote {
             || source.message_id.is_empty()
             || source.selected_at.parse::<jiff::Timestamp>().is_err()
         {
-            return Err(invalid(
-                "the note needs a draft ID, a body, a selection and its source",
+            return Err(Failure::bad_request(
+                ("the note needs a draft ID, a body, a selection and its source"),
             ));
         }
         let Ok(url) = source.page_url.parse::<axum::http::Uri>() else {
-            return Err(invalid("the source page URL is invalid"));
+            return Err(Failure::bad_request(("the source page URL is invalid")));
         };
         let Some(chat) = polylogue_sources::origin::by_extension_name(&source.provider)
             .and_then(|origin| origin.web.as_ref())
         else {
-            return Err(invalid("this provider has no selection-note target"));
+            return Err(Failure::bad_request(
+                ("this provider has no selection-note target"),
+            ));
         };
         let parts: Vec<_> = url.path().split('/').filter(|s| !s.is_empty()).collect();
         if url.scheme_str() != Some("https")
@@ -82,19 +80,21 @@ impl SelectionNote {
             || parts[0] != chat.path
             || parts[1] != source.conversation_id
         {
-            return Err(invalid(
-                "the source page does not identify the supplied provider conversation",
+            return Err(Failure::bad_request(
+                ("the source page does not identify the supplied provider conversation"),
             ));
         }
         let Some(session) = polylogue_sources::browser_capture::session_for(
             &source.provider,
             &source.conversation_id,
         ) else {
-            return Err(invalid("the supplied conversation ID is invalid"));
+            return Err(Failure::bad_request(
+                ("the supplied conversation ID is invalid"),
+            ));
         };
         let origin = polylogue_sources::browser_capture::origin_of(&source.provider);
         let Ok(message) = MessageId::parse(&format!("{origin}:{}", source.message_id)) else {
-            return Err(invalid("the supplied message ID is invalid"));
+            return Err(Failure::bad_request(("the supplied message ID is invalid")));
         };
         Ok((Reference::Session(session), message))
     }

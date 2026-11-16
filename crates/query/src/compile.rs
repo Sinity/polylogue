@@ -202,6 +202,7 @@ pub fn definition_parameters(
     let mut query = crate::parse::with_catalog(text, catalog)?;
     Parameters::names(&mut query)
 }
+#[cfg(any(test, feature = "fixture"))]
 pub fn columns_schema(unit: &str, columns: &[Column]) -> query_language::catalog::OutputSchema {
     kept::physical_schema(unit, columns)
 }
@@ -233,6 +234,7 @@ pub struct Bindings {
 impl Bindings {
     /// Add an accepted query object under a saved assertion's name.
     /// Executable text comes from its saved AST, never current dependency names.
+    #[cfg(any(test, feature = "fixture"))]
     pub fn add_saved(
         &mut self,
         name: &str,

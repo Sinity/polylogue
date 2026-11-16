@@ -279,8 +279,8 @@ fn failed_group_is_not_visible_and_immutable_imports_keep_content_identity() {
                 let mut input = capture(b"first");
                 input.basis = Some(source_base(&selector, None));
                 emit(input, vec![body(root.path(), b"first")])?;
-                Err(polylogue_store::StoreError::Invalid(
-                    "second member unavailable".into(),
+                Err(polylogue_store::StoreError::invalid(
+                    "second member unavailable",
                 ))
             })
             .is_err()

@@ -29,9 +29,6 @@ pub(crate) use write::{WriteContext, revise_preparing, write_preparing};
 pub const SCHEMA: &str = include_str!("schema/assertions.sql");
 const COLUMNS: &str = "id,root,kind,key,value,author,via,machine,created_at,valid_until,commit_seq";
 
-fn invalid(message: &str) -> StoreError {
-    StoreError::Invalid(message.into())
-}
 fn record(row: &rusqlite::Row<'_>) -> Result<Assertion> {
     let value: Option<String> = row.get(4)?;
     Ok(Assertion {
@@ -106,10 +103,9 @@ pub fn visit(
     after: Option<u64>,
     mut visit: impl FnMut(Assertion) -> Result<()>,
 ) -> Result<()> {
-    let after = after
-        .map(i64::try_from)
-        .transpose()
-        .map_err(|_| invalid("assertion counter exceeds SQLite's integer range"))?;
+    let after = after.map(i64::try_from).transpose().map_err(|_| {
+        crate::StoreError::invalid("assertion counter exceeds SQLite's integer range")
+    })?;
     let source = Source::reading(conn)?;
     let predicate = if after.is_some() {
         "commit_seq>?1"
@@ -131,7 +127,8 @@ pub fn visit(
 /// Families whose current revisions can change when these newly committed facts arrive.
 /// Includes withdrawal/reinstatement targets through the owning link rules.
 pub(crate) fn changed_roots(conn: &Connection, after: i64) -> Result<BTreeSet<String>> {
-    let after = u64::try_from(after).map_err(|_| invalid("negative assertion cursor"))?;
+    let after = u64::try_from(after)
+        .map_err(|_| crate::StoreError::invalid("negative assertion cursor"))?;
     let mut links = StoredLinks::new(conn)?;
     let mut roots = BTreeSet::new();
     visit(conn, Some(after), |assertion| {
@@ -146,7 +143,7 @@ pub(crate) fn changed_roots(conn: &Connection, after: i64) -> Result<BTreeSet<St
 
 pub(crate) fn canonical_fact(fact: &AssertionFact) -> Result<AssertionFact> {
     fact.canonicalized()
-        .map_err(|error| invalid(&error.to_string()))
+        .map_err(|error| crate::StoreError::invalid(&error.to_string()))
 }
 
 /// The exact rubric revision an annotation was derived from: the one
@@ -215,7 +212,7 @@ fn slots_of(conn: &Connection, fact: &AssertionFact) -> Result<Vec<UniqueSlot>> 
     };
     Ok(fact
         .unique(rubric.as_ref())
-        .map_err(|error| invalid(&error.to_string()))?
+        .map_err(|error| crate::StoreError::invalid(&error.to_string()))?
         .map(|unique| unique.slots)
         .unwrap_or_default())
 }
@@ -269,7 +266,7 @@ fn target(revision: &RevisionReference) -> Target {
 /// nothing; a different fact under a stored ID is refused.
 pub fn apply(conn: &Connection, assertions: &[AssertionFact], counter: i64) -> Result<()> {
     if counter < 0 {
-        return Err(invalid("negative assertion counter"));
+        return Err(crate::StoreError::invalid("negative assertion counter"));
     }
     let source = Source::of(conn)?;
     let mut written = Vec::new();
@@ -595,7 +592,7 @@ pub(crate) fn currency_error(error: CurrencyError<StoreError>) -> StoreError {
     match error {
         CurrencyError::Source(error) => error,
         CurrencyError::Cycle(revision) => {
-            invalid(&format!("withdrawals of {revision} form a cycle"))
+            crate::StoreError::invalid(&format!("withdrawals of {revision} form a cycle"))
         }
     }
 }
@@ -630,7 +627,9 @@ pub fn heads(conn: &Connection, root: &Reference) -> Result<Vec<Reference>> {
                 })
                 .collect())
         }
-        _ => Err(invalid("heads require an assertion or variant root")),
+        _ => Err(crate::StoreError::invalid(
+            "heads require an assertion or variant root",
+        )),
     }
 }
 

@@ -1,5 +1,7 @@
 //! Access-scope changes invalidate in-flight reads before the cache changes.
+use crate::{OptionExt as _, ResultExt as _};
 use crate::{Result, StoreError};
+use polylogue_model::LockExt;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -67,10 +69,7 @@ pub struct ReadScopeToken {
 pub(crate) fn state(root: &Path) -> Arc<ReadScopeState> {
     static ARCHIVES: OnceLock<Mutex<HashMap<PathBuf, Weak<ReadScopeState>>>> = OnceLock::new();
     let key = root_key(root);
-    let mut archives = ARCHIVES
-        .get_or_init(Default::default)
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut archives = ARCHIVES.get_or_init(Default::default).locked();
     archives.retain(|_, state| state.strong_count() > 0);
     if let Some(state) = archives.get(&key).and_then(Weak::upgrade) {
         return state;
@@ -125,10 +124,7 @@ impl ReadScopeState {
     /// Calls `wake` at the start of every reset for as long as the caller
     /// keeps it.
     pub(crate) fn on_reset(&self, wake: &Arc<ResetWake>) {
-        let mut wakes = self
-            .wakes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut wakes = self.wakes.locked();
         wakes.retain(|wake| wake.strong_count() > 0);
         wakes.push(Arc::downgrade(wake));
     }
@@ -137,8 +133,7 @@ impl ReadScopeState {
         self.resetting.store(true, Ordering::Release);
         let wakes: Vec<_> = self
             .wakes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .locked()
             .iter()
             .filter_map(Weak::upgrade)
             .collect();
@@ -150,7 +145,7 @@ impl ReadScopeState {
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
                 epoch.checked_add(1)
             })
-            .map_err(|_| StoreError::Invalid("read scope epoch exhausted".into()))?;
+            .or_invalid("read scope epoch exhausted")?;
         Ok(ScopeReset { callbacks })
     }
     pub(crate) fn finish_reset(&self) {

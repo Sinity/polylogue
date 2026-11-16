@@ -1,3 +1,4 @@
+use crate::ConnExt as _;
 use crate::{Archive, Result, StoreError};
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -38,11 +39,7 @@ impl SourceBoundary {
             };
             BoundaryKind::Standalone { through }
         };
-        let generation = index.query_row(
-            "SELECT value FROM main.meta WHERE key='generation'",
-            [],
-            |row| row.get(0),
-        )?;
+        let generation = index.scalar("SELECT value FROM main.meta WHERE key='generation'", [])?;
         Ok(Some(Self {
             generation,
             scope_root: scope_root(archive),
@@ -51,11 +48,8 @@ impl SourceBoundary {
     }
 
     pub(crate) fn through(&self, index: &Connection, archive: &Archive) -> Result<u64> {
-        let generation: String = index.query_row(
-            "SELECT value FROM main.meta WHERE key='generation'",
-            [],
-            |row| row.get(0),
-        )?;
+        let generation: String =
+            index.scalar("SELECT value FROM main.meta WHERE key='generation'", [])?;
         if generation != self.generation || scope_root(archive) != self.scope_root {
             return Err(StoreError::ScopeChanged);
         }
@@ -80,10 +74,8 @@ impl SourceBoundary {
 
 fn primary_position(index: &Connection) -> Result<Option<(u64, String)>> {
     crate::primary::scope::require_readable(index)?;
-    let unreadable: bool = index.query_row(
-        "SELECT EXISTS(SELECT 1 FROM primary_refused r LEFT JOIN confirmed_event f ON f.event=r.event WHERE r.unreadable_input=1 AND (f.event IS NULL OR (f.state='live' AND f.product IS NULL)))",
-        [], |row| row.get(0),
-    )?;
+    let unreadable: bool = index.exists("SELECT EXISTS(SELECT 1 FROM primary_refused r LEFT JOIN confirmed_event f ON f.event=r.event WHERE r.unreadable_input=1 AND (f.event IS NULL OR (f.state='live' AND f.product IS NULL)))",
+        [])?;
     if unreadable {
         return Ok(None);
     }
@@ -99,8 +91,9 @@ fn applied_prefix(index: &Connection) -> Result<Option<(u64, String)>> {
     let Some(scope) = state.scope.filter(|scope| !scope.is_empty()) else {
         return Ok(None);
     };
-    let through = u64::try_from(position)
-        .map_err(|_| StoreError::Invalid("confirmed source position cannot be negative".into()))?;
+    let through = u64::try_from(position).map_err(|_| {
+        crate::StoreError::stored(0, "confirmed source position cannot be negative")
+    })?;
     if crate::primary::confirmed::checkpoint(index)? != Some(position)
         || crate::primary::scope::current(index)?.as_deref() != Some(scope.as_str())
         || source_position(index)? != Some(through)
@@ -112,22 +105,18 @@ fn applied_prefix(index: &Connection) -> Result<Option<(u64, String)>> {
 
 fn source_position(conn: &Connection) -> Result<Option<u64>> {
     let source = super::Source::reading(conn)?;
-    let position: Option<String> = conn
-        .query_row(
-            &source.sql("SELECT value FROM @source.meta WHERE key='write_counter'"),
-            [],
-            |row| row.get(0),
-        )
-        .optional()?;
+    let position: Option<String> = conn.scalar_optional(
+        &source.sql("SELECT value FROM @source.meta WHERE key='write_counter'"),
+        [],
+    )?;
     if let Some(position) = position {
         return position.parse::<u64>().map(Some).map_err(|_| {
             StoreError::Invalid("source commit position is not a nonnegative integer".into())
         });
     }
-    let empty: bool = conn.query_row(
+    let empty: bool = conn.scalar(
         &source.sql("SELECT NOT EXISTS(SELECT 1 FROM @source.input)"),
         [],
-        |row| row.get(0),
     )?;
     Ok(empty.then_some(0))
 }

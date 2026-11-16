@@ -2,6 +2,7 @@
 //! observations, numbered by the archive's write counter.
 
 use super::*;
+use crate::ConnExt as _;
 use crate::input_rows::{Extent, InputRows, ObservationRow, Revision};
 
 /// Stores the bytes' rows and returns the revision chain the batch's
@@ -37,8 +38,7 @@ pub(super) fn stored_reading_chain(conn: &Connection, batch: &Batch) -> Result<i
             "a stored reading must name its chain".into(),
         ));
     };
-    let length = i64::try_from(batch.length)
-        .map_err(|_| StoreError::Invalid("input exceeds archive address space".into()))?;
+    let length = crate::to_i64(batch.length, "input exceeds archive address space")?;
     let latest: Option<(i64, i64)> = conn
         .prepare_cached(
             "SELECT chain,length FROM revision WHERE input=?1 ORDER BY number DESC LIMIT 1",
@@ -74,9 +74,7 @@ fn input_rows(tx: &Connection, b: &Batch, seq: i64) -> Result<(Option<i64>, Inpu
             "SELECT number, chain, length, produced FROM @source.revision WHERE input = ?1
              ORDER BY number DESC LIMIT 1",
         ))?
-        .query_row([&b.input.id], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-        })
+        .query_row([&b.input.id], |r| <(_, _, _, _)>::try_from(r))
         .optional()?;
     input_rows_at(tx, b, seq, latest, &std::collections::BTreeSet::new())
 }
@@ -135,7 +133,7 @@ fn input_rows_at(
             ));
         }
         let source = crate::source::Source::of(tx)?;
-        let stored:bool=tx.query_row(&source.sql("SELECT EXISTS(SELECT 1 FROM @source.revision WHERE input=?1 AND number=?2 AND chain=?3 AND length=?4)"),params![b.input.id,number,chain,b.length as i64],|row|row.get(0))?;
+        let stored:bool=tx.scalar(&source.sql("SELECT EXISTS(SELECT 1 FROM @source.revision WHERE input=?1 AND number=?2 AND chain=?3 AND length=?4)"),params![b.input.id,number,chain,b.length as i64])?;
         if !stored {
             return Err(StoreError::Invalid(
                 "observed revision point is not stored".into(),
@@ -167,7 +165,7 @@ fn input_rows_at(
                 // A repeated committed append may name the same extent, but
                 // stale source state must not grow a prefix over later bytes.
                 let retry = b.length == length as u64
-                    && tx.query_row(
+                    && tx.scalar::<bool>(
                         &crate::source::Source::of(tx)?.sql(
                             "SELECT EXISTS(SELECT 1 FROM @source.extent WHERE input=?1 AND chain=?2
                          AND offset=?3 AND length=?4 AND blob=?5 AND blob_offset=0)",
@@ -179,7 +177,6 @@ fn input_rows_at(
                             blob.size as i64,
                             &blob.hash.0[..]
                         ],
-                        |r| r.get::<_, bool>(0),
                     )?;
                 if !retry {
                     return Err(StoreError::Invalid(
@@ -243,13 +240,10 @@ pub(super) fn extents(new_blob: &NewBlob, chain: i64, offset: u64) -> Vec<Extent
 }
 
 fn insert_blob(tx: &Transaction<'_>, new_blob: crate::Chunk) -> Result<()> {
-    let size: Option<i64> = tx
-        .query_row(
-            "SELECT size FROM blob WHERE hash=?1",
-            [&new_blob.hash.0[..]],
-            |r| r.get(0),
-        )
-        .optional()?;
+    let size: Option<i64> = tx.scalar_optional(
+        "SELECT size FROM blob WHERE hash=?1",
+        [&new_blob.hash.0[..]],
+    )?;
     if size.is_some_and(|size| size != new_blob.size as i64) {
         return Err(StoreError::BlobCorrupt(new_blob.hash));
     }
@@ -282,10 +276,10 @@ pub(super) fn check_import_format(
     else {
         return Ok(());
     };
-    let competing: bool = tx.query_row(&crate::source::Source::of(tx)?.sql("SELECT EXISTS(SELECT 1 FROM @source.input WHERE id=?1 AND format NOT IN ('export-file',?2))
+    let competing: bool = tx.scalar(&crate::source::Source::of(tx)?.sql("SELECT EXISTS(SELECT 1 FROM @source.input WHERE id=?1 AND format NOT IN ('export-file',?2))
         OR EXISTS(SELECT 1 FROM @source.observation WHERE input=?1 AND class='imported' AND json_valid(details_json)
             AND json_type(details_json,'$.import_format')='text' AND json_extract(details_json,'$.import_format') NOT IN ('export-file',?2))"),
-        params![input,format], |r|r.get(0))?;
+        params![input,format])?;
     if competing {
         return Err(StoreError::Conflict(
             "this import was already parsed as another origin; changing its format is unsupported"

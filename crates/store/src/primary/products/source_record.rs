@@ -1,5 +1,6 @@
 //! The identity of one parsed event, and which events Sinex already holds.
 use super::*;
+use crate::ConnExt as _;
 use crate::Result;
 use rusqlite::{Connection, params};
 
@@ -120,13 +121,7 @@ impl SourceRecord {
         let value_hash = BlobHash::of(&serde_json::to_vec(&value)?);
         let mut blobs = std::collections::BTreeSet::new();
         for block in blocks {
-            let attachments = match block {
-                polylogue_model::Block::File(value) | polylogue_model::Block::Image(value) => {
-                    std::slice::from_ref(value)
-                }
-                polylogue_model::Block::ToolResult { attachments, .. } => attachments,
-                _ => &[],
-            };
+            let attachments = block.attachments();
             blobs.extend(attachments.iter().filter_map(|value| value.blob));
         }
         let (start, end) = range.unwrap_or((reading.start, reading.parsed_upto));
@@ -143,17 +138,14 @@ impl SourceRecord {
 }
 
 fn known(index: &Connection, reading: &Reading, record: &SourceRecord) -> Result<bool> {
-    Ok(index.query_row(
-        "SELECT EXISTS(SELECT 1 FROM confirmed_event WHERE input=?1 AND chain=?2 AND reading_version=?3 AND reference=?4 AND value_hash=?5)",
-        params![reading.input.id,reading.chain,reading.reading_version,record.reference,record.value_hash.0.as_slice()], |row| row.get(0),
-    )?)
+    Ok(index.exists("SELECT EXISTS(SELECT 1 FROM confirmed_event WHERE input=?1 AND chain=?2 AND reading_version=?3 AND reference=?4 AND value_hash=?5)",
+        params![reading.input.id,reading.chain,reading.reading_version,record.reference,record.value_hash.0.as_slice()])?)
 }
 
 fn uncovered(index: &Connection, reading: &Reading, record: &SourceRecord) -> Result<bool> {
-    Ok(!index.query_row(
+    Ok(!index.scalar::<bool>(
         "SELECT EXISTS(SELECT 1 FROM confirmed_event WHERE kind='reading_progress' AND input=?1 AND chain=?2 AND reading_version=?3 AND step_start<=?4 AND step_end>=?5)",
-        params![reading.input.id,reading.chain,reading.reading_version,record.start,record.end], |row| row.get::<_,bool>(0),
-    )?)
+        params![reading.input.id,reading.chain,reading.reading_version,record.start,record.end])?)
 }
 
 /// Whether a parsed event still has to be sent to Sinex: no confirmed Sinex

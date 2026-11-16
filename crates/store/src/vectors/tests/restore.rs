@@ -276,7 +276,13 @@ fn seeded_old_revision_and_failed_first_loads_do_not_loop() {
     let appended = v.append(&base).unwrap();
     assert_eq!((appended.vectors(), appended.rows_read), (4, 1));
     let other = "synthetic/failure/2/document/unit";
-    v.fail(other, &[9], "refused").unwrap();
+    v.fail(
+        other,
+        &[9],
+        "refused",
+        &polylogue_model::WallClock::fixed(jiff::Timestamp::UNIX_EPOCH),
+    )
+    .unwrap();
     let empty = v.load(other).unwrap();
     assert_eq!(empty.vectors(), 0);
     assert!(empty.revision > 0);

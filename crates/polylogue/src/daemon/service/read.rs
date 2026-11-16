@@ -119,7 +119,7 @@ impl crate::daemon::handler::Handler for Read {
     ) -> Result<Answer<Self::Answer>, Failure> {
         let request = match ReadRequest::from_arguments(arguments, call.cursor.map(str::to_owned)) {
             Ok(request) => request,
-            Err(message) => return Ok(error("bad_request", message)),
+            Err(message) => return Ok(error(polylogue_model::Code::BadRequest, message)),
         };
         let history = if request.cursor.is_none() && object::target(&request).is_none() {
             call.daemon
@@ -147,12 +147,10 @@ impl crate::daemon::handler::Streams for Read {
         context: &Arc<crate::operation::Context>,
         output: &mut dyn Write,
     ) -> Result<(), Failure> {
-        let request = ReadRequest::from_arguments(arguments, None)
-            .map_err(|message| Failure::new("bad_request", message))?;
+        let request = ReadRequest::from_arguments(arguments, None).map_err(Failure::bad_request)?;
         let request = with_variants(&call.reader()?, call.daemon, request)?;
         produce(&request, call.daemon, context, output).unwrap_or_else(|| {
-            Err(Failure::new(
-                "bad_request",
+            Err(Failure::bad_request(
                 "streaming reads require stream delivery",
             ))
         })
@@ -183,7 +181,7 @@ pub(crate) fn with_variants(
         None => reader
             .settings_snapshot(d.config.requests.machine())?
             .reading_variants()
-            .map_err(|error| Failure::new("conflict", error))?
+            .map_err(Failure::conflict)?
             .to_vec(),
     };
     Ok(request)
@@ -200,16 +198,16 @@ fn cursor_seal(reader: &polylogue_store::Reader<'_>) -> Result<CursorSeal, Failu
 /// one of another reading, is `invalid_query` (docs/query.md, Paging).
 fn cursor_failure(error: CursorError) -> Failure {
     match error {
-        CursorError::Stale => Failure::new("stale_cursor", error),
-        CursorError::Invalid | CursorError::OtherReading(_) => Failure::new("invalid_query", error),
+        CursorError::Stale => Failure::stale_cursor(error),
+        CursorError::Invalid | CursorError::OtherReading(_) => Failure::invalid_query(error),
     }
 }
 
 fn page_error(error: PageError) -> Failure {
     let kind = if matches!(error, PageError::ItemChanged | PageError::InvalidPosition) {
-        "stale_cursor"
+        polylogue_model::Code::StaleCursor
     } else {
-        "bad_request"
+        polylogue_model::Code::BadRequest
     };
     Failure::new(kind, error)
 }
@@ -240,24 +238,21 @@ fn reading(request: &ReadRequest) -> Result<(Reading, Option<&str>), Failure> {
         cursor,
         ..
     } = request;
-    options
-        .validate()
-        .map_err(|e| Failure::new("bad_request", e))?;
+    options.validate().map_err(Failure::bad_request)?;
     let format =
-        Format::parse(format).ok_or_else(|| Failure::new("bad_request", "unknown read format"))?;
+        Format::parse(format).ok_or_else(|| Failure::bad_request("unknown read format"))?;
     let budget = if *delivery == ReadDelivery::Page {
         let mut resolved = PageBudget::default();
         if let Some(tokens) = budget {
             resolved.tokens = NonZeroU64::new(*tokens as u64)
-                .ok_or_else(|| Failure::new("bad_request", "read budget must be positive"))?;
+                .ok_or_else(|| Failure::bad_request("read budget must be positive"))?;
         }
         Some(resolved)
     } else {
         None
     };
     if cursor.is_some() && budget.is_none() {
-        return Err(Failure::new(
-            "bad_request",
+        return Err(Failure::bad_request(
             "streaming reads do not have paged continuations",
         ));
     }
@@ -332,7 +327,7 @@ fn prepared<T>(
                 Some(ReadTarget::Session(id)) => {
                     let session = reader
                         .session(id)?
-                        .ok_or_else(|| Failure::new("not_found", format!("no session {id}")))?;
+                        .ok_or_else(|| Failure::not_found(format!("no session {id}")))?;
                     let title = reader
                         .display_title(id)?
                         .map(ValueState::known)
@@ -399,8 +394,8 @@ fn selected_source(
             .locate(Some(message))?
             .is_some());
     }
-    let reference = polylogue_model::Reference::parse(&source.reference)
-        .map_err(|e| Failure::new("not_yet_available", e))?;
+    let reference =
+        polylogue_model::Reference::parse(&source.reference).map_err(Failure::not_yet_available)?;
     reader
         .selection_contains(selection, &reference, near)
         .map_err(Failure::from)
@@ -468,8 +463,7 @@ fn visit(
                         if position
                             .is_some_and(|position| position.selection != at || position.item != 0)
                         {
-                            return Err(Failure::new(
-                                "stale_cursor",
+                            return Err(Failure::stale_cursor(
                                 "the continued document omission changed",
                             ));
                         }
@@ -506,8 +500,7 @@ fn visit(
                         };
                         if let Some(expected) = pending {
                             if expected != at {
-                                return Err(Failure::new(
-                                    "stale_cursor",
+                                return Err(Failure::stale_cursor(
                                     "the continued record coordinate changed",
                                 ));
                             }
@@ -542,10 +535,7 @@ fn visit(
                     },
                 };
                 if pending.is_some_and(|expected| expected != at) {
-                    return Err(Failure::new(
-                        "stale_cursor",
-                        "the continued result row changed",
-                    ));
+                    return Err(Failure::stale_cursor("the continued result row changed"));
                 }
                 pending = None;
                 emit(&presentation(selection, &row.values), at, Some(0))?
@@ -558,8 +548,7 @@ fn visit(
         },
     )?;
     if pending.is_some() {
-        return Err(Failure::new(
-            "stale_cursor",
+        return Err(Failure::stale_cursor(
             "the continued record is no longer selected",
         ));
     }
@@ -602,9 +591,9 @@ fn attachment_call(
         input: input.map(str::to_owned),
         length: crate::daemon::attachment::PAGE_BYTES as u64,
     })
-    .map_err(|e| Failure::new("internal", e))?;
+    .map_err(Failure::internal)?;
     let identity = canonical_json::canonical_hash("polylogue-attachment-call", &arguments)
-        .map_err(|e| Failure::new("internal", e))?;
+        .map_err(Failure::internal)?;
     d.ready_call(&command_surface::RunnableRequest {
         operation: "attachment".into(),
         arguments,
@@ -707,7 +696,7 @@ fn record_compiled(
         .accepted_request()
         .map(serde_json::to_value)
         .transpose()
-        .map_err(|e| Failure::new("internal", e))?;
+        .map_err(Failure::internal)?;
     let mut binding = selection.execution_binding(
         query_options,
         ExecutionPresentation::Read {
@@ -737,10 +726,8 @@ fn record_compiled(
     };
     let outcome = QueryRunOutcome {
         run: run.id.clone(),
-        binding_hash: run
-            .binding_hash()
-            .map_err(|e| Failure::new("internal", e))?,
-        run_hash: run.record_hash().map_err(|e| Failure::new("internal", e))?,
+        binding_hash: run.binding_hash().map_err(Failure::internal)?,
+        run_hash: run.record_hash().map_err(Failure::internal)?,
         at: d.config.requests.now(),
         outcome: RunOutcome::Ok,
         count: None,
@@ -794,12 +781,12 @@ fn next_call(
         with_blobs: *with_blobs,
         cursor: Some(cursor),
     };
-    let arguments = crate::protocol::read::Arguments::from_request(&continued)
-        .map_err(|e| Failure::new("internal", e))?;
-    let arguments = serde_json::to_value(arguments).map_err(|e| Failure::new("internal", e))?;
+    let arguments =
+        crate::protocol::read::Arguments::from_request(&continued).map_err(Failure::internal)?;
+    let arguments = serde_json::to_value(arguments).map_err(Failure::internal)?;
     let cursor = continued.cursor.clone();
     let identity = canonical_json::canonical_hash("polylogue-read-call", &(&arguments, &cursor))
-        .map_err(|e| Failure::new("internal", e))?;
+        .map_err(Failure::internal)?;
     d.ready_call(&command_surface::RunnableRequest {
         operation: "read".into(),
         arguments,
@@ -827,7 +814,10 @@ pub(crate) fn page(
             ..
         }
     ) {
-        return error("bad_request", "with_blobs requires streaming delivery");
+        return error(
+            polylogue_model::Code::BadRequest,
+            "with_blobs requires streaming delivery",
+        );
     }
     if let Some(response) = self::object::page(reader, d, request, operation) {
         return response;
@@ -835,8 +825,7 @@ pub(crate) fn page(
     let result = (|| {
         let (reading, cursor) = reading(request)?;
         if reading.budget.is_none() {
-            return Err(Failure::new(
-                "bad_request",
+            return Err(Failure::bad_request(
                 "streaming reads require stream delivery",
             ));
         }
@@ -891,8 +880,7 @@ fn rows_page(
                 .check(&reading.target, &reading.digest)
                 .map_err(cursor_failure)?;
             if opened.direction == ReadDirection::Past {
-                return Err(Failure::new(
-                    "invalid_query",
+                return Err(Failure::invalid_query(
                     "a row reading continues forward or backward only",
                 ));
             }
@@ -900,10 +888,9 @@ fn rows_page(
                 PagePosition::Record { start_row, place } => {
                     Ok::<_, Failure>((start_row, place, opened.direction))
                 }
-                PagePosition::Entry { .. } | PagePosition::Links { .. } => Err(Failure::new(
-                    "invalid_query",
-                    "the cursor names a session place, not a row position",
-                )),
+                PagePosition::Entry { .. } | PagePosition::Links { .. } => Err(
+                    Failure::invalid_query("the cursor names a session place, not a row position"),
+                ),
             }
         })
         .transpose()?;
@@ -927,13 +914,11 @@ fn rows_page(
             let scope = selection.scope_token();
             let mut budget = reading.budget.expect("a paged reading has a budget");
             let snapshot_bytes = serde_json::to_vec(&ReadPageSnapshot::from(&snapshot))
-                .map_err(|e| Failure::new("internal", e))?
+                .map_err(Failure::internal)?
                 .len();
             budget.bytes =
                 std::num::NonZeroUsize::new(budget.bytes.get().saturating_sub(snapshot_bytes))
-                    .ok_or_else(|| {
-                        Failure::new("bad_request", "reading metadata exceeds page framing")
-                    })?;
+                    .ok_or_else(|| Failure::bad_request("reading metadata exceeds page framing"))?;
             let framing = ReadFraming::Query {
                 question: selection.question_id(),
             };
@@ -964,8 +949,7 @@ fn rows_page(
                     return Ok(true);
                 };
                 let Some(ReadPart::Item(item)) = record.parts().first() else {
-                    return Err(Failure::new(
-                        "stale_cursor",
+                    return Err(Failure::stale_cursor(
                         "continued layout item is unavailable",
                     ));
                 };

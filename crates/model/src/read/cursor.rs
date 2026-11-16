@@ -2,7 +2,7 @@
 //! key or a selected row's order values, never by a row number, and it binds
 //! the rewrite version of every session the reading composes. An append to a
 //! session never stales a cursor; a rewrite of anything already indexed does.
-use crate::{BlobHash, MessageId, SessionId};
+use crate::{BlobHash, MessageId, SessionId, hex};
 use query_language::cursor::OrderPosition;
 pub use query_language::identity::QuestionId;
 use serde::{Deserialize, Serialize};
@@ -351,15 +351,6 @@ pub fn options_digest(parts: &impl Serialize) -> String {
     blake3::hash(&bytes).to_hex().to_string()
 }
 
-fn hex(bytes: &[u8]) -> String {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        out.push(DIGITS[usize::from(byte >> 4)] as char);
-        out.push(DIGITS[usize::from(byte & 15)] as char);
-    }
-    out
-}
 fn unhex(text: &str) -> Option<Vec<u8>> {
     if !text.len().is_multiple_of(2) {
         return None;

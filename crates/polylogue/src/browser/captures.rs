@@ -36,7 +36,10 @@ pub(super) fn append(path: &Path, bytes: &[u8]) -> io::Result<bool> {
         complete_tail(&mut file, 0, &[MAGIC, &encoded, bytes])?;
         return synced(&file, dir);
     } else if &prefix[..read] != MAGIC {
-        return Err(invalid("capture file is not a capture log"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "capture file is not a capture log".to_string(),
+        ));
     }
     let length = file.metadata()?.len();
     let mut position = MAGIC.len() as u64;
@@ -51,11 +54,17 @@ pub(super) fn append(path: &Path, bytes: &[u8]) -> io::Result<bool> {
             }
             Err(error) => return Err(error),
         }
-        let header = Header::decode(&header).map_err(invalid)?;
+        let header = Header::decode(&header)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
         let end = position
             .checked_add(HEADER_LEN as u64)
             .and_then(|start| start.checked_add(header.length))
-            .ok_or_else(|| invalid("capture range overflow"))?;
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "capture range overflow".to_string(),
+                )
+            })?;
         if end > length {
             complete_tail(&mut file, position, &[&encoded, bytes])?;
             return synced(&file, dir);
@@ -64,7 +73,10 @@ pub(super) fn append(path: &Path, bytes: &[u8]) -> io::Result<bool> {
             let mut previous = vec![0; bytes.len()];
             file.read_exact(&mut previous)?;
             if previous != bytes {
-                return Err(invalid("capture hash differs from the stored bytes"));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "capture hash differs from the stored bytes".to_string(),
+                ));
             }
             synced(&file, dir)?;
             return Ok(false);
@@ -80,14 +92,18 @@ pub(super) fn append(path: &Path, bytes: &[u8]) -> io::Result<bool> {
 /// A tail can contain only common framing, so equality of all existing bytes
 /// is the only check available. Compare before writing and append only a suffix.
 fn complete_tail(file: &mut File, start: u64, parts: &[&[u8]]) -> io::Result<()> {
-    let length = file
-        .metadata()?
-        .len()
-        .checked_sub(start)
-        .ok_or_else(|| invalid("capture tail starts beyond the end of the file"))?;
+    let length = file.metadata()?.len().checked_sub(start).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "capture tail starts beyond the end of the file".to_string(),
+        )
+    })?;
     let expected: usize = parts.iter().map(|part| part.len()).sum();
     if length > expected as u64 {
-        return Err(invalid("existing tail exceeds submitted frame"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "existing tail exceeds submitted frame".to_string(),
+        ));
     }
     file.seek(SeekFrom::Start(start))?;
     let mut remaining = length as usize;
@@ -97,7 +113,10 @@ fn complete_tail(file: &mut File, start: u64, parts: &[&[u8]]) -> io::Result<()>
         for chunk in part[..take].chunks(buffer.len()) {
             file.read_exact(&mut buffer[..chunk.len()])?;
             if &buffer[..chunk.len()] != chunk {
-                return Err(invalid("existing tail differs from submitted frame"));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "existing tail differs from submitted frame".to_string(),
+                ));
             }
         }
         remaining -= take;
@@ -126,10 +145,6 @@ fn open(path: &Path) -> io::Result<File> {
         .truncate(false)
         .mode(0o600)
         .open(path)
-}
-
-fn invalid(error: impl std::fmt::Display) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, error.to_string())
 }
 
 #[cfg(test)]

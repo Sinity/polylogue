@@ -9,6 +9,7 @@ pub use search::{SCHEMA, VariantMatch, project};
 mod tests;
 
 use crate::source::Source;
+use crate::{OptionExt as _, ResultExt as _};
 use crate::{Reader, Result, StoreError};
 use polylogue_model::user::{UserOutcome, UserRequest};
 use polylogue_model::{
@@ -47,7 +48,7 @@ pub(crate) fn heads(conn: &Connection, root: &str) -> Result<Vec<Variant>> {
             };
             let id = revision
                 .revision
-                .ok_or_else(|| StoreError::Invalid("variant head is not exact".into()))?;
+                .ok_or_else(|| StoreError::stored(0, "variant head is not exact"))?;
             rows::get(conn, &id)?.ok_or_else(|| StoreError::NotFound(reference_string(root, &id)))
         })
         .collect()
@@ -63,8 +64,8 @@ pub(crate) fn write(
     new: &NewVariant,
     counter: i64,
 ) -> Result<UserOutcome> {
-    let source = polylogue_model::Reference::parse(&new.source)
-        .map_err(|error| StoreError::Invalid(error.to_string()))?;
+    let source =
+        polylogue_model::Reference::parse(&new.source).map_err(crate::StoreError::invalid)?;
     if !matches!(
         source,
         polylogue_model::Reference::Session(_)
@@ -94,8 +95,7 @@ pub(crate) fn write(
         ));
     }
     for part in &new.parts {
-        polylogue_model::Reference::parse(&part.of)
-            .map_err(|error| StoreError::Invalid(error.to_string()))?;
+        polylogue_model::Reference::parse(&part.of).map_err(crate::StoreError::invalid)?;
     }
     let root = if let Some(base) = &new.base {
         let previous = rows::get(conn, base)?
@@ -138,9 +138,7 @@ pub(crate) fn write(
         method: new.method.clone(),
         machine: r.machine.clone(),
         created_at: r.at,
-        commit_seq: counter
-            .try_into()
-            .map_err(|_| StoreError::Invalid("negative variant counter".into()))?,
+        commit_seq: counter.try_into().or_invalid("negative variant counter")?,
     };
     rows::insert(conn, &v, counter)?;
     for (n, p) in new.parts.iter().enumerate() {
@@ -203,87 +201,10 @@ pub fn copy(from: &Connection, to: &Connection) -> Result<()> {
 }
 
 impl Reader<'_> {
-    /// This indexed metadata check avoids streaming an unrelated source's text
-    /// merely to discover that it has no rendition rows.
-    pub fn has_variant_source(&self, source_reference: &str) -> Result<bool> {
-        let conn = self.conn()?;
-        let source = Source::reading(conn)?;
-        Ok(conn.query_row(
-            &source.sql("SELECT EXISTS(SELECT 1 FROM @source.variant WHERE source=?1)"),
-            [source_reference],
-            |row| row.get(0),
-        )?)
-    }
     pub fn variant(&self, id: &str) -> Result<Option<Variant>> {
         rows::get(self.conn()?, id)
     }
-    pub fn visit_variant_parts(
-        &self,
-        id: &str,
-        visit: impl FnMut(VariantPart) -> Result<()>,
-    ) -> Result<()> {
-        rows::parts(self.conn()?, id, visit)
-    }
-    /// Ascending rendition order. False stops before the next body is decoded.
-    pub fn visit_variant_parts_while(
-        &self,
-        id: &str,
-        visit: impl FnMut(VariantPart) -> Result<bool>,
-    ) -> Result<()> {
-        rows::parts_while(self.conn()?, id, visit)
-    }
-    /// Exact source-address lookup. Part numbers describe rendition order;
-    /// they never stand in for the original source block's ordinal.
-    pub fn visit_variant_parts_for(
-        &self,
-        id: &str,
-        source_reference: &str,
-        visit: impl FnMut(VariantPart) -> Result<()>,
-    ) -> Result<()> {
-        rows::parts_for(self.conn()?, id, source_reference, visit)
-    }
-    /// Visit exact-source parts in ascending n. False stops before the next
-    /// stored body is decoded; true continues.
-    pub fn visit_variant_parts_for_while(
-        &self,
-        id: &str,
-        source_reference: &str,
-        visit: impl FnMut(VariantPart) -> Result<bool>,
-    ) -> Result<()> {
-        rows::parts_for_while(self.conn()?, id, source_reference, visit)
-    }
-    /// Stream only parts addressed to this message/document or its exact children.
-    /// Original references are grouped in lexical order, each group's n ascending.
-    pub fn visit_variant_parts_in(
-        &self,
-        id: &str,
-        record: &polylogue_model::Reference,
-        visit: impl FnMut(VariantPart) -> Result<()>,
-    ) -> Result<()> {
-        rows::parts_in(self.conn()?, id, record, visit)
-    }
-    /// Distinct captured-text rendition sources within one message/document.
-    /// This visits metadata only; currentness and preference use selected_variant.
-    pub fn visit_variant_sources_in(
-        &self,
-        record: &polylogue_model::Reference,
-        visit: impl FnMut(polylogue_model::Reference) -> Result<()>,
-    ) -> Result<()> {
-        rows::sources_in(self.conn()?, record, visit)
-    }
-    pub fn current_variants(&self, root: &str) -> Result<Vec<Variant>> {
-        heads(self.conn()?, root)
-    }
-    /// Select one unambiguous current rendition, in preference order. The
-    /// caller supplies the text hash of its exact source reading.
-    pub fn enabled_variant(
-        &self,
-        source: &str,
-        source_hash: BlobHash,
-        enabled: &[String],
-    ) -> Result<Option<Variant>> {
-        self.selected_variant(source, source_hash, enabled, false)
-    }
+
     /// An explicit read may show an earlier source revision. Fresh matches
     /// take precedence within each key; clocks never break an ambiguity.
     pub fn selected_variant(

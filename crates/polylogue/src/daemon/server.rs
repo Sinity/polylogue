@@ -9,6 +9,7 @@
 //! never while holding a reader or an executor place.
 
 use super::service::{self, Daemon, error};
+use polylogue_model::LockExt as _;
 use std::io::{BufRead, BufReader, Write};
 use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -106,13 +107,7 @@ struct Clients {
     panicked: std::sync::atomic::AtomicBool,
 }
 
-impl Clients {
-    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<(u64, UnixStream)>> {
-        self.open
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-}
+impl Clients {}
 
 fn serve_client(stream: UnixStream, shared: &Shared) {
     let d = &shared.daemon;
@@ -136,7 +131,7 @@ fn serve_client(stream: UnixStream, shared: &Shared) {
             Some(Ok(incoming)) => incoming,
             Some(Err(error)) => {
                 let answer = command_surface::Answer::error(crate::protocol::failure(
-                    "bad_request",
+                    polylogue_model::Code::BadRequest,
                     error.to_string(),
                 ));
                 if !write_answer(&mut out, &answer) {
@@ -145,7 +140,10 @@ fn serve_client(stream: UnixStream, shared: &Shared) {
                 continue;
             }
             None => {
-                let answer = error("bad_request", "a request names its operation");
+                let answer = error(
+                    polylogue_model::Code::BadRequest,
+                    "a request names its operation",
+                );
                 if !write_answer(&mut out, &answer) {
                     return;
                 }
@@ -196,7 +194,7 @@ fn serve_client(stream: UnixStream, shared: &Shared) {
         };
         let Some(command) = crate::commands::command(&request.operation) else {
             let answer = error(
-                "bad_request",
+                polylogue_model::Code::BadRequest,
                 format!("unknown operation {}", request.operation),
             );
             if !write_answer(&mut out, &answer) {
@@ -229,7 +227,7 @@ fn serve_client(stream: UnixStream, shared: &Shared) {
         }
         let Some(registration) = command.registration() else {
             let answer = error(
-                "bad_request",
+                polylogue_model::Code::BadRequest,
                 format!("{} runs in the calling process", command.name),
             );
             if !write_answer(&mut out, &answer) {
@@ -376,11 +374,8 @@ fn send_stream(
         let next = match input.next_blocking() {
             Ok(next) => next,
             Err(error) => {
-                return crate::protocol::stream::error(
-                    out,
-                    crate::daemon::Failure::new("io", error),
-                )
-                .is_ok();
+                return crate::protocol::stream::error(out, crate::daemon::Failure::io(error))
+                    .is_ok();
             }
         };
         match next {
@@ -516,11 +511,10 @@ impl Server {
             #[cfg(test)]
             wakeups,
         };
-        server.thread = Some(
-            std::thread::Builder::new()
-                .name("polylogue-socket".into())
-                .spawn(move || listen(accept, shared, stopped_sender))?,
-        );
+        server.thread = Some(polylogue_model::spawn_named(
+            "polylogue-socket",
+            move || listen(accept, shared, stopped_sender),
+        )?);
         Ok(server)
     }
 
@@ -655,21 +649,17 @@ fn listen(
     // Stop receiving new input while complete queued requests can still receive
     // their refusal and an accepted write can send its stored result.
     let clients = &shared.clients;
-    for (_, stream) in clients.lock().iter() {
+    for (_, stream) in clients.open.locked().iter() {
         let _ = stream.shutdown(Shutdown::Read);
     }
     let drain_until = Instant::now() + Duration::from_secs(5);
-    let mut open = clients.lock();
+    let mut open = clients.open.locked();
     while !open.is_empty() {
         let left = drain_until.saturating_duration_since(Instant::now());
         if left.is_zero() {
             break;
         }
-        open = clients
-            .closed
-            .wait_timeout(open, left)
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .0;
+        open = polylogue_model::unpoisoned(clients.closed.wait_timeout(open, left)).0;
     }
     // Unresponsive peers cannot hold shutdown past the response drain window:
     // the shutdown ends blocked sends and the hang-up cancels their reads.
@@ -677,10 +667,7 @@ fn listen(
         let _ = stream.shutdown(Shutdown::Both);
     }
     while !open.is_empty() {
-        open = clients
-            .closed
-            .wait(open)
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        open = polylogue_model::unpoisoned(clients.closed.wait(open));
     }
     drop(open);
     if clients.panicked.load(std::sync::atomic::Ordering::Acquire) {
@@ -697,7 +684,7 @@ fn start_client(shared: &Arc<Shared>, stream: UnixStream) -> std::io::Result<()>
         .clients
         .next
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    shared.clients.lock().push((id, stream.try_clone()?));
+    shared.clients.open.locked().push((id, stream.try_clone()?));
     struct Close<'a>(&'a Clients, u64);
     impl Drop for Close<'_> {
         fn drop(&mut self) {
@@ -706,19 +693,17 @@ fn start_client(shared: &Arc<Shared>, stream: UnixStream) -> std::io::Result<()>
                     .panicked
                     .store(true, std::sync::atomic::Ordering::Release);
             }
-            self.0.lock().retain(|(id, _)| *id != self.1);
+            self.0.open.locked().retain(|(id, _)| *id != self.1);
             self.0.closed.notify_all();
         }
     }
     let worker = Arc::clone(shared);
-    let started = std::thread::Builder::new()
-        .name("polylogue-client".into())
-        .spawn(move || {
-            let _close = Close(&worker.clients, id);
-            serve_client(stream, &worker);
-        });
+    let started = polylogue_model::spawn_named("polylogue-client", move || {
+        let _close = Close(&worker.clients, id);
+        serve_client(stream, &worker);
+    });
     if let Err(error) = started {
-        shared.clients.lock().retain(|(open, _)| *open != id);
+        shared.clients.open.locked().retain(|(open, _)| *open != id);
         return Err(error);
     }
     Ok(())

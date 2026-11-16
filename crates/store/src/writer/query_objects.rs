@@ -179,14 +179,8 @@ impl Inner {
         crate::query_objects::validate_run_outcome(outcome)?;
         if run.question != Some(object.id)
             || outcome.run != run.id
-            || outcome.binding_hash
-                != run
-                    .binding_hash()
-                    .map_err(|error| StoreError::Invalid(error.to_string()))?
-            || outcome.run_hash
-                != run
-                    .record_hash()
-                    .map_err(|error| StoreError::Invalid(error.to_string()))?
+            || outcome.binding_hash != run.binding_hash().map_err(crate::StoreError::invalid)?
+            || outcome.run_hash != run.record_hash().map_err(crate::StoreError::invalid)?
         {
             return Err(StoreError::Invalid(
                 "query history has inconsistent execution identities".into(),

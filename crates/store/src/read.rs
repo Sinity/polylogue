@@ -6,6 +6,7 @@ use crate::archive::{Archive, open_read};
 use crate::blobs::FileFacts;
 use crate::encoding::{Columns, restore_text, unpack_block};
 use crate::{Result, StoreError};
+use polylogue_model::LockExt;
 use polylogue_model::{
     Block, Message, MessageId, PromptKind, Role, Session, SessionId, Usage,
     bundle::MessageProjection,
@@ -30,11 +31,7 @@ pub use completeness::ReadingContract;
 mod captured;
 mod cursor_generation;
 pub use cursor_generation::open_cursor;
-mod fragment;
 mod hook_fields;
-pub use fragment::{
-    FragmentAgreement, FragmentAvailability, FragmentConflict, FragmentSelection, StatedFragment,
-};
 mod parser_checkpoint;
 pub use parser_checkpoint::StoredParserCheckpoint;
 mod import_counts;
@@ -67,9 +64,10 @@ struct MessageArrival {
 
 impl MessageArrival {
     fn record(self, conn: &Connection) -> Result<(Option<u64>, u64)> {
-        let order = order::checked(self.order.ok_or_else(|| {
-            StoreError::Invalid("message snapshot ordinal was not selected".into())
-        })?)?;
+        let order =
+            order::checked(self.order.ok_or_else(|| {
+                StoreError::stored(0, "message snapshot ordinal was not selected")
+            })?)?;
         Ok((self.resolve(conn)?, order))
     }
 
@@ -77,13 +75,13 @@ impl MessageArrival {
         if let Some(fact) = self.fact {
             return u64::try_from(fact)
                 .map(Some)
-                .map_err(|_| StoreError::Invalid("negative message commit".into()));
+                .map_err(|_| StoreError::stored(0, "negative message commit"));
         }
         let Some((input, chain, end)) = self.source else {
             return Ok(None);
         };
         let end = u64::try_from(end)
-            .map_err(|_| StoreError::Invalid("negative message source endpoint".into()))?;
+            .map_err(|_| StoreError::stored(0, "negative message source endpoint"))?;
         crate::source::Source::committed_through(conn, &input, chain, end)
     }
 }
@@ -306,7 +304,7 @@ impl ReadPool {
         let release = (reads == Reads::Pipeline).then(|| {
             let state = Arc::clone(&state);
             let release: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
-                let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+                let mut state = state.locked();
                 state.live -= state.idle.len();
                 state.idle.clear();
             });
@@ -556,7 +554,7 @@ impl ReadPool {
     /// Readers that have started keep their read; a slot not yet used must
     /// pass the closed check at its first read.
     pub fn close(&self) {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let mut state = self.state.locked();
         state.closed = true;
         state.live -= state.idle.len();
         state.idle.clear();
@@ -566,9 +564,7 @@ impl ReadPool {
 
 fn wake_all(state: &Mutex<PoolState>, available: &Condvar) {
     // Taking the lock orders the wake after a waiter's last check.
-    let _held = state
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _held = state.locked();
     available.notify_all();
 }
 
@@ -590,11 +586,7 @@ impl Drop for Reader<'_> {
             matches!(self.state.get(), ReadState::Deferred | ReadState::Ready)
                 && conn.execute_batch("ROLLBACK").is_ok()
         });
-        let mut state = self
-            .pool
-            .state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut state = self.pool.state.locked();
         if let Some(held) = state.holders.get_mut(&self.holder) {
             *held -= 1;
             if *held == 0 {
@@ -654,9 +646,9 @@ pub(crate) fn stored_parse_progress(
     let at_length = at_length
         .map(u64::try_from)
         .transpose()
-        .map_err(|_| StoreError::Invalid("a stored waiting length is negative".into()))?;
+        .map_err(|_| StoreError::stored(0, "a stored waiting length is negative"))?;
     polylogue_model::batch::ParseProgress::from_stored(status, at_length, reason)
-        .map_err(StoreError::Invalid)
+        .map_err(|error| StoreError::stored(0, error))
 }
 
 impl Reader<'_> {
@@ -665,6 +657,7 @@ impl Reader<'_> {
     /// call, which resets the count. Tests bound a request's reads with it.
     #[cfg(any(test, feature = "fixture"))]
     #[allow(unsafe_code)]
+    #[cfg(any(test, feature = "fixture"))]
     pub fn take_page_reads(&self) -> Result<u64> {
         let conn = self.conn()?;
         let (mut current, mut highest) = (0, 0);
@@ -866,18 +859,7 @@ impl Reader<'_> {
         Ok((u64::try_from(count).unwrap_or_default(), latest))
     }
 
-    /// The context Sinex recorded for the event, whether or not its source
-    /// contributes now. Missing older metadata stays unknown.
-    pub fn sinex_event_context(
-        &self,
-        event: &str,
-    ) -> Result<Option<crate::primary::SinexEventContext>> {
-        if !self.pool.archive.is_primary() {
-            return Ok(None);
-        }
-        crate::primary::confirmed::sinex_context(self.conn()?, event)
-    }
-
+    #[cfg(any(test, feature = "fixture"))]
     pub fn confirmed_replay_state(&self) -> Result<crate::primary::ReplayState> {
         crate::primary::confirmed::replay_state(self.conn()?)
     }
@@ -891,10 +873,6 @@ impl Reader<'_> {
         let scope = crate::primary::scope::current(self.conn()?)?;
         self.conn()?;
         Ok(scope)
-    }
-
-    pub fn primary_cache_identity(&self) -> Result<String> {
-        crate::primary::cache_identity(self.conn()?)
     }
 
     /// The index file this reader's read transaction started on.
@@ -1017,9 +995,7 @@ impl Reader<'_> {
         ).optional()?;
         match hash {
             Some(Some(hash)) => crate::versions::read_message(conn, &hash),
-            Some(None) => Err(StoreError::Invalid(
-                "the message has no source reading".into(),
-            )),
+            Some(None) => Err(StoreError::stored(0, "the message has no source reading")),
             None => Ok(None),
         }
     }
@@ -1064,17 +1040,6 @@ impl Reader<'_> {
         let selected = self.select_messages(id, with_parents)?;
         selected.require_complete()?;
         selected.visit(&mut visit)
-    }
-
-    pub fn visit_messages_with_block_selection(
-        &self,
-        id: &SessionId,
-        with_parents: bool,
-        mut visit: impl FnMut(Message, MessageProjection) -> std::ops::ControlFlow<()>,
-    ) -> Result<()> {
-        let selected = self.select_messages(id, with_parents)?;
-        selected.require_complete()?;
-        selected.visit_with_block_selection(&mut visit)
     }
 
     /// The keys of the messages a session shows with its parents, each once.
@@ -1166,9 +1131,7 @@ impl Reader<'_> {
                     "SELECT session_order, id FROM message
                      WHERE pk = ?1 AND session_pk = ?2",
                 )?
-                .query_row(rusqlite::params![pk, session_pk], |r| {
-                    Ok((r.get(0)?, r.get(1)?))
-                })
+                .query_row(rusqlite::params![pk, session_pk], |r| <(_, _)>::try_from(r))
                 .optional()?,
             None => None,
         };
@@ -1264,13 +1227,14 @@ impl Reader<'_> {
                 source_end,
                 record_order,
             ) = row?;
-            let id = MessageId::parse(&id)
-                .map_err(|_| StoreError::Invalid(format!("message row {pk} has an invalid ID")))?;
+            let id = MessageId::parse(&id).map_err(|_| {
+                StoreError::stored(1, format!("message row {pk} has an invalid ID"))
+            })?;
             if !keep(pk) {
                 continue;
             }
             let named = id.to_string();
-            let invalid = |what: &str| StoreError::Invalid(format!("message {named} has {what}"));
+            let invalid = |what: &str| StoreError::stored(0, format!("message {named} has {what}"));
             let attrs: Option<serde_json::Value> = attrs
                 .map(|a| serde_json::from_str(&a))
                 .transpose()
@@ -1349,9 +1313,7 @@ impl Reader<'_> {
                             message.blocks.len()
                         } else {
                             usize::try_from(stored_block_count).map_err(|_| {
-                                StoreError::Invalid(
-                                    "a message has an invalid stored block count".into(),
-                                )
+                                StoreError::stored(0, "a message has an invalid stored block count")
                             })?
                         },
                     )?;
@@ -1672,12 +1634,7 @@ impl Reader<'_> {
             if let Some(chain) = k.chain
                 && let Some((upto, status, at_length, reason)) = stmt
                     .query_row(params![k.input_id, chain], |r| {
-                        Ok((
-                            r.get::<_, i64>(0)?,
-                            r.get::<_, String>(1)?,
-                            r.get::<_, Option<i64>>(2)?,
-                            r.get::<_, Option<String>>(3)?,
-                        ))
+                        <(i64, String, Option<i64>, Option<String>)>::try_from(r)
                     })
                     .optional()?
             {
@@ -1701,16 +1658,7 @@ impl Reader<'_> {
              LEFT JOIN parse_state p ON p.input_pk = i.pk AND p.chain = r.chain
              WHERE r.input = ?1 ORDER BY r.number DESC LIMIT 1",
             )?
-            .query_row([id], |r| {
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    r.get::<_, i64>(1)?,
-                    r.get::<_, bool>(2)?,
-                    r.get::<_, String>(3)?,
-                    r.get::<_, bool>(4)?,
-                    r.get::<_, i64>(5)?,
-                ))
-            })
+            .query_row([id], |r| <(i64, i64, bool, String, bool, i64)>::try_from(r))
             .optional()?;
         let Some((length, parsed_upto, parsed, produced, waiting, chain)) = row else {
             return Ok(None);
@@ -1719,9 +1667,10 @@ impl Reader<'_> {
             "imported" => true,
             "first" | "appended" | "rewritten" => false,
             _ => {
-                return Err(StoreError::Invalid(format!(
-                    "unknown revision source: {produced}"
-                )));
+                return Err(StoreError::stored(
+                    3,
+                    format!("unknown revision source: {produced}"),
+                ));
             }
         };
         Ok(Some(ChainProgress {

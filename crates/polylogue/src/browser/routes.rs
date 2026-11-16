@@ -11,6 +11,7 @@ use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Json, Response as HttpResponse};
 use axum::routing::{get, post};
+use polylogue_model::JsonExt as _;
 use polylogue_model::user::BackfillReport;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -129,8 +130,7 @@ fn capture_identity(v: &Value) -> Option<(String, String)> {
 /// with no messages that reads as archived.
 fn holds_conversation(v: &Value) -> bool {
     let raw = v
-        .get("raw_provider_payload")
-        .and_then(Value::as_object)
+        .object("raw_provider_payload")
         .is_some_and(|o| !o.is_empty());
     let turns = v
         .pointer("/session/turns")

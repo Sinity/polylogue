@@ -1,4 +1,5 @@
 //! Commit positions of the selected stored records.
+use crate::{OptionExt as _, ResultExt as _};
 use crate::{Reader, Result, StoreError};
 use polylogue_model::{DocumentId, Link, SessionId};
 use rusqlite::{OptionalExtension, params};
@@ -9,7 +10,7 @@ fn positive(value: Option<i64>) -> Result<Option<u64>> {
             u64::try_from(value)
                 .ok()
                 .filter(|n| *n > 0)
-                .ok_or_else(|| StoreError::Invalid("invalid stored commit position".into()))
+                .or_invalid("invalid stored commit position")
         })
         .transpose()
 }

@@ -7,11 +7,13 @@
 //!   for tests that write their own session lines
 //!   ([`claude_user`], [`claude_assistant`]).
 
+mod bundle;
 mod claude_home;
 pub mod codex;
 mod morrow;
 mod process;
 
+pub use bundle::session_bundle;
 pub use claude_home::{ClaudeHome, claude_assistant, claude_user, delete_index};
 pub use morrow::{Morrow, Set, morrow_dir, session, short};
 #[cfg(target_os = "linux")]

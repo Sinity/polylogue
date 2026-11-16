@@ -1,6 +1,7 @@
 use super::*;
 use crate::encoding::Columns;
 use crate::read::limit::ReadLimit;
+use polylogue_model::LockExt;
 use rusqlite::{OpenFlags, OptionalExtension, params};
 use std::sync::Mutex;
 
@@ -80,7 +81,7 @@ impl ExtentList {
     /// Ends the read transaction, if one is open, and closes the handle with
     /// its page cache and descriptors. The next lookup opens a new one.
     pub fn release(&self) {
-        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut conn = self.conn.locked();
         if let Some(conn) = conn.take() {
             let _ = conn.execute_batch("COMMIT");
         }
@@ -91,7 +92,7 @@ impl ExtentList {
         let mut conn = self
             .conn
             .lock()
-            .map_err(|_| invalid("stored extents lock poisoned"))?;
+            .map_err(|_| crate::StoreError::invalid("stored extents lock poisoned"))?;
         if conn.is_none() {
             *conn = Some(self.reopen()?);
         }
@@ -114,13 +115,13 @@ impl ExtentList {
                 })
             })
             .optional()?;
-        let extent = row.ok_or_else(|| invalid("stored extent missing"))?;
+        let extent = row.ok_or_else(|| crate::StoreError::invalid("stored extent missing"))?;
         if extent
             .offset
             .checked_add(extent.length)
             .is_none_or(|end| end <= at)
         {
-            return Err(invalid("stored extent gap"));
+            return Err(crate::StoreError::invalid("stored extent gap"));
         }
         Ok(extent)
     }
@@ -139,7 +140,9 @@ impl ExtentList {
             self.length,
         )?;
         if checked.rows != self.loaded {
-            return Err(invalid("stored extents changed since the chain was loaded"));
+            return Err(crate::StoreError::invalid(
+                "stored extents changed since the chain was loaded",
+            ));
         }
         Ok(conn)
     }
@@ -191,7 +194,7 @@ fn check(
             || blob_offset.checked_add(len).is_none_or(|end| end > size)
             || previous_end.is_some_and(|end| offset < end)
         {
-            return Err(invalid("invalid stored extent bounds"));
+            return Err(crate::StoreError::invalid("invalid stored extent bounds"));
         }
         previous_end = Some(offset + len);
         for value in [offset, len, blob_offset, size] {
@@ -206,8 +209,4 @@ fn check(
         rows: digest.finalize(),
         single,
     })
-}
-
-fn invalid(message: &str) -> StoreError {
-    StoreError::Invalid(message.into())
 }

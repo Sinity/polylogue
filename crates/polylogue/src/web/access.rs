@@ -17,7 +17,7 @@ use std::path::Path;
 pub fn new_token() -> io::Result<String> {
     let mut bytes = [0u8; 32];
     fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
-    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+    Ok(polylogue_model::hex(&bytes))
 }
 
 /// Writes the token and port files (mode 0600) for clients that open the

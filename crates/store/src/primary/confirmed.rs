@@ -34,6 +34,7 @@ CREATE INDEX source_material_place ON source_material(input,chain,offset);
 ", include_str!("confirmed/reference_index.sql"));
 
 use super::{Confirmed, ConfirmedChange, Material, Product};
+use crate::ConnExt as _;
 mod replay;
 use crate::{Result, StoreError};
 pub(crate) use replay::save as save_replay;
@@ -50,13 +51,10 @@ fn unpacked<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
 }
 
 pub(crate) fn checkpoint(index: &Connection) -> Result<Option<i64>> {
-    Ok(index
-        .query_row(
-            "SELECT CAST(value AS INTEGER) FROM meta WHERE key='confirmed_position'",
-            [],
-            |row| row.get(0),
-        )
-        .optional()?)
+    Ok(index.scalar_optional(
+        "SELECT CAST(value AS INTEGER) FROM meta WHERE key='confirmed_position'",
+        [],
+    )?)
 }
 pub(crate) fn position(index: &Connection) -> Result<i64> {
     Ok(checkpoint(index)?.unwrap_or(0))
@@ -388,7 +386,8 @@ fn stage_events(index: &Connection, through: i64) -> Result<()> {
             ConfirmedChange::Restored => match old {
                 Some(mut row)
                     if row.state != "tombstoned"
-                        && (row.product.is_some() || row.kind == "refused") =>
+                        && (row.product.is_some()
+                            || row.kind == polylogue_model::Code::Refused) =>
                 {
                     row.state = "live".into();
                     row.changed = position;
@@ -482,11 +481,8 @@ impl StateChange {
         if rewritten {
             return Ok(Self::Rewritten);
         }
-        let appended: bool = index.query_row(
-            "SELECT EXISTS(SELECT 1 FROM primary_staged c WHERE c.kind=?1 AND c.state='live' AND NOT EXISTS(SELECT 1 FROM main.confirmed_event f WHERE f.event=c.event))",
-            [kind],
-            |row| row.get(0),
-        )?;
+        let appended: bool = index.exists("SELECT EXISTS(SELECT 1 FROM primary_staged c WHERE c.kind=?1 AND c.state='live' AND NOT EXISTS(SELECT 1 FROM main.confirmed_event f WHERE f.event=c.event))",
+            [kind])?;
         Ok(if appended {
             Self::Appended
         } else {
@@ -532,13 +528,9 @@ fn plan(index: &Connection) -> Result<Plan> {
                 out.inputs.insert(rows.input.clone());
                 if event_row.changed != event_row.committed {
                     let mut states = index.prepare("SELECT p.chain,i.format,coalesce((SELECT max(length) FROM source_revision WHERE input=i.id AND chain=p.chain),0) FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id=?1")?;
-                    for row in states.query_map([&rows.input], |row| {
-                        Ok((
-                            row.get::<_, i64>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, u64>(2)?,
-                        ))
-                    })? {
+                    for row in states
+                        .query_map([&rows.input], |row| <(i64, String, u64)>::try_from(row))?
+                    {
                         let (chain, format, length) = row?;
                         chains.insert(
                             (rows.input.clone(), chain),
@@ -568,12 +560,7 @@ fn plan(index: &Connection) -> Result<Plan> {
     for hash in &out.materials {
         let mut affected = index.prepare("SELECT f.input,f.chain,i.format,p.parsed_upto FROM confirmed_event_blob b JOIN confirmed_event f ON f.event=b.event JOIN input_ref i ON i.id=f.input JOIN parse_state p ON p.input_pk=i.pk AND p.chain=f.chain WHERE b.hash=?1")?;
         for row in affected.query_map([hash.0.as_slice()], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, u64>(3)?,
-            ))
+            <(String, i64, String, u64)>::try_from(row)
         })? {
             let (input, chain, format, length) = row?;
             chains.insert(
@@ -873,18 +860,16 @@ fn pending(index: &Connection) -> Result<Option<i64>> {
 }
 
 fn next_position(index: &Connection) -> Result<Option<i64>> {
-    Ok(index.query_row(
+    Ok(index.scalar(
         "SELECT min(position) FROM primary_complete WHERE position>=?1",
         [checkpoint(index)?.unwrap_or(-1)],
-        |row| row.get(0),
     )?)
 }
 
 fn completion(index: &Connection, position: i64) -> Result<Option<Vec<u8>>> {
-    Ok(index.query_row(
+    Ok(index.scalar(
         "SELECT marker FROM primary_complete WHERE position=?1",
         [position],
-        |row| row.get(0),
     )?)
 }
 
@@ -952,10 +937,9 @@ pub(crate) fn apply_prepared(
     // Lifecycle changes can remove or restore sources committed before a
     // position fixed before I/O. New commits keep that position valid; changes
     // to existing rows do not.
-    let source_lifecycle: bool = tx.query_row(
+    let source_lifecycle: bool = tx.exists(
         "SELECT EXISTS(SELECT 1 FROM primary_staged WHERE kind='input' AND changed!=committed)",
         [],
-        |row| row.get(0),
     )?;
     if source_lifecycle {
         crate::archive::generation::rotate(&tx)?;
@@ -980,7 +964,7 @@ pub(crate) fn apply_prepared(
     remember_blobs(&tx)?;
     replay::complete(&tx, next)?;
     tx.execute("INSERT INTO source_meta(key,value) VALUES ('write_counter',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[next.to_string()])?;
-    tx.execute("INSERT INTO meta(key,value) VALUES ('confirmed_position',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[next.to_string()])?;
+    crate::meta_set(&tx, "confirmed_position", next.to_string())?;
     tx.execute("DELETE FROM primary_pending WHERE position<=?1", [next])?;
     tx.execute("DELETE FROM primary_complete WHERE position<=?1", [next])?;
     // Confirmed events also change sessions outside the row application.

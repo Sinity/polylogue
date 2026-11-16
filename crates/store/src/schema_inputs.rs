@@ -35,7 +35,7 @@ impl Reader<'_> {
                 revision,
                 chain,
                 length: u64::try_from(length)
-                    .map_err(|_| StoreError::Invalid("negative input length".into()))?,
+                    .map_err(|_| crate::StoreError::stored(0, "negative input length"))?,
                 path,
             })
         })
@@ -87,8 +87,9 @@ impl Reader<'_> {
                 |row| row.get(0),
             )?;
             Some(
-                u64::try_from(count)
-                    .map_err(|_| StoreError::Invalid("negative unknown-time input count".into()))?,
+                u64::try_from(count).map_err(|_| {
+                    crate::StoreError::stored(0, "negative unknown-time input count")
+                })?,
             )
         } else {
             None
@@ -122,7 +123,7 @@ impl Reader<'_> {
                     revision: number,
                     chain: row.get(3)?,
                     length: u64::try_from(length)
-                        .map_err(|_| StoreError::Invalid("negative input length".into()))?,
+                        .map_err(|_| crate::StoreError::stored(0, "negative input length"))?,
                     path: row.get(5)?,
                 });
             } else {

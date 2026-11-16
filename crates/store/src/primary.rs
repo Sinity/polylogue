@@ -30,6 +30,7 @@ pub use products::{
     SourceLocation, SourceRecord,
 };
 
+use crate::ConnExt as _;
 use crate::{Result, StoreError};
 use polylogue_model::BlobHash;
 use polylogue_model::user::UserOutcome;
@@ -158,13 +159,7 @@ pub struct InputName {
 
 /// The primary cache's persistent identity, independent of read cursor generations.
 pub fn cache_identity(index: &Connection) -> Result<String> {
-    index
-        .query_row(
-            "SELECT value FROM meta WHERE key='primary_cache'",
-            [],
-            |row| row.get(0),
-        )
-        .optional()?
+    crate::meta_get(&index, "primary_cache")?
         .filter(|value: &String| !value.is_empty())
-        .ok_or_else(|| StoreError::Invalid("the primary cache has no identity".into()))
+        .ok_or_else(|| crate::StoreError::stored(0, "the primary cache has no identity"))
 }

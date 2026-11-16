@@ -630,24 +630,3 @@ fn parse_random_seed(operand: &Expression) -> Result<Option<u64>, QueryError> {
         })
         .transpose()
 }
-
-pub(crate) struct FieldExpression {
-    pub sql: String,
-    pub kind: ColKind,
-}
-pub(crate) fn field_expression(
-    unit: Unit,
-    field: &str,
-    now: jiff::Timestamp,
-) -> Result<FieldExpression, QueryError> {
-    let (sql, kind) = expression::expression(
-        field,
-        unit,
-        Aliases::plain(),
-        field,
-        now.as_millisecond(),
-        0,
-        &mut 0,
-    )?;
-    Ok(FieldExpression { sql, kind })
-}

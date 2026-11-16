@@ -124,15 +124,19 @@ fn apply_prepared(conn: &mut Connection, b: Batch) -> (Result<u64>, Work) {
     );
     let p = &b.parse[0];
     let result = write_rows(
-        &texts,
         &tx,
         &b,
         p,
-        p.resolution.as_ref().unwrap(),
-        1,
-        None,
-        Some(&fixture_commit()),
-        &changes,
+        rows::ReadingWrite {
+            texts: &texts,
+            resolution: p.resolution.as_ref().unwrap(),
+            counter: 1,
+            first_build: None,
+            source_commit: Some(&fixture_commit()),
+            changes: &changes,
+            retraction: false,
+            replacement: false,
+        },
     );
     tx.trace_v2(TraceEventCodes::empty(), None);
     let work = WORK.with(Cell::get);

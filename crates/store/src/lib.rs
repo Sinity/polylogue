@@ -228,7 +228,10 @@ pub enum StoreError {
     ReferenceUnavailable { reference: String, reason: String },
     /// A selection refusal with the product code that classifies it.
     #[error("{message}")]
-    Selection { code: &'static str, message: String },
+    Selection {
+        code: polylogue_model::Code,
+        message: String,
+    },
 }
 
 impl StoreError {
@@ -298,29 +301,73 @@ impl StoreError {
 
     /// The product failure code for this error. Every surface classifies a
     /// store error through this one mapping.
-    pub fn code(&self) -> &'static str {
+    pub fn code(&self) -> polylogue_model::Code {
         match self {
-            Self::ScopeChanged => "scope_changed",
-            Self::Conflict(_) | Self::ReadIndexReplaced => "conflict",
-            Self::Ambiguous { .. } => "ambiguous",
-            Self::Stale { .. } => "stale",
-            Self::ReferenceUnavailable { .. } => "not_yet_available",
+            Self::ScopeChanged => polylogue_model::Code::ScopeChanged,
+            Self::Conflict(_) | Self::ReadIndexReplaced => polylogue_model::Code::Conflict,
+            Self::Ambiguous { .. } => polylogue_model::Code::Ambiguous,
+            Self::Stale { .. } => polylogue_model::Code::Stale,
+            Self::ReferenceUnavailable { .. } => polylogue_model::Code::NotYetAvailable,
             Self::Bundle(issue) => match issue {
                 polylogue_model::bundle::BundleError::BlockSelectionConflict
-                | polylogue_model::bundle::BundleError::SourceVersionMismatch => "conflict",
-                _ => "bad_request",
+                | polylogue_model::bundle::BundleError::SourceVersionMismatch => {
+                    polylogue_model::Code::Conflict
+                }
+
+                polylogue_model::bundle::BundleError::Assertion(_)
+                | polylogue_model::bundle::BundleError::TextFragment(_)
+                | polylogue_model::bundle::BundleError::WrongFormat(_)
+                | polylogue_model::bundle::BundleError::UnsupportedVersion { .. }
+                | polylogue_model::bundle::BundleError::InvalidQuery
+                | polylogue_model::bundle::BundleError::InvalidPosition
+                | polylogue_model::bundle::BundleError::BlobFlagMismatch
+                | polylogue_model::bundle::BundleError::ReadOptions(_)
+                | polylogue_model::bundle::BundleError::InvalidPath
+                | polylogue_model::bundle::BundleError::ReferenceMismatch
+                | polylogue_model::bundle::BundleError::InvalidLink(_)
+                | polylogue_model::bundle::BundleError::InvalidBlockSelection
+                | polylogue_model::bundle::BundleError::InvalidInjectionEvidence
+                | polylogue_model::bundle::BundleError::InvalidAttachmentBinding
+                | polylogue_model::bundle::BundleError::CanonicalMessage(_)
+                | polylogue_model::bundle::BundleError::Time(_)
+                | polylogue_model::bundle::BundleError::InvalidEventIdentity
+                | polylogue_model::bundle::BundleError::EventReferenceMismatch
+                | polylogue_model::bundle::BundleError::InvalidEventAssociation => {
+                    polylogue_model::Code::BadRequest
+                }
             },
-            Self::ReadDeadlineExceeded => "deadline_exceeded",
-            Self::ReadCancelled => "cancelled",
-            Self::Stopped | Self::ReadPoolClosed => "shutting_down",
-            Self::IndexBuilding(_) => "index_building",
-            Self::NotFound(_) => "not_found",
-            Self::Invalid(_) => "bad_request",
+            Self::ReadDeadlineExceeded => polylogue_model::Code::DeadlineExceeded,
+            Self::ReadCancelled => polylogue_model::Code::Cancelled,
+            Self::Stopped | Self::ReadPoolClosed => polylogue_model::Code::ShuttingDown,
+            Self::IndexBuilding(_) => polylogue_model::Code::IndexBuilding,
+            Self::NotFound(_) => polylogue_model::Code::NotFound,
+            Self::Invalid(_) => polylogue_model::Code::BadRequest,
             Self::Query(error) => error.kind(),
-            Self::Selection { code, .. } => code,
-            Self::IncompleteParents(_) => "incomplete_parents",
-            Self::PrimaryPending { .. } => "degraded",
-            _ => "store",
+            Self::Selection { code, .. } => *code,
+            Self::IncompleteParents(_) => polylogue_model::Code::IncompleteParents,
+            Self::PrimaryPending { .. } => polylogue_model::Code::Degraded,
+
+            Self::Sqlite(_)
+            | Self::Io(_)
+            | Self::Blobs(_)
+            | Self::Json(_)
+            | Self::Locked { .. }
+            | Self::NewerSchema { .. }
+            | Self::OtherFormat { .. }
+            | Self::EmbeddingsSchemaDiffers { .. }
+            | Self::OlderFormat { .. }
+            | Self::IndexVersion { .. }
+            | Self::BlobCorrupt(_)
+            | Self::Counts(_)
+            | Self::WriterGone
+            | Self::StorageFailed(_)
+            | Self::ReadPoolNested
+            | Self::ChatAction(_)
+            | Self::Backfill(_)
+            | Self::UnresolvedBasisConflict { .. }
+            | Self::Sinex(_)
+            | Self::RowsRefused { .. }
+            | Self::StoredValue { .. } => polylogue_model::Code::Store,
         }
     }
 }

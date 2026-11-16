@@ -6,11 +6,12 @@
 //! events. A tool call carries its result in the same turn, so call and
 //! result sit together in the assistant message.
 
+use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 2;
 
 use crate::chatgpt::first_byte;
-use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
+use crate::document::{Sink, first_key, message_id, session_id, time_of};
 use crate::export::{ExportParser, ExportState, ItemSink, ScanError, ScanStats};
 use crate::fields::ExpectedType as T;
 use crate::fields::{Fields, Rule};
@@ -182,7 +183,11 @@ impl ExportParser for GeminiCli {
         let Some(sid) = self.state.session.clone() else {
             return Ok(());
         };
-        let kind = str_of(m, "type").unwrap_or("?").to_owned();
+        let kind = m
+            .str("type")
+            .filter(|s| !s.is_empty())
+            .unwrap_or("?")
+            .to_owned();
         sink.records.fields(&kind, m, &MESSAGE_FIELDS);
         let role = match kind.as_str() {
             "user" => Role::User,
@@ -217,7 +222,11 @@ impl ExportParser for GeminiCli {
                 return Ok(());
             }
         };
-        let Some(id) = str_of(m, "id").and_then(|i| message_id(ORIGIN, i)) else {
+        let Some(id) = m
+            .str("id")
+            .filter(|s| !s.is_empty())
+            .and_then(|i| message_id(ORIGIN, i))
+        else {
             sink.records
                 .record(&kind, &RecordOutcome::unreadable("no id"));
             return Ok(());
@@ -233,7 +242,7 @@ impl ExportParser for GeminiCli {
                 at_quality: time_evidence.quality,
                 at_precision: time_evidence.precision,
                 at_until: time_evidence.until,
-                model: string_of(m, "model"),
+                model: m.str("model").filter(|s| !s.is_empty()).map(str::to_owned),
                 prompt_kind: (role == Role::User).then_some(PromptKind::Prose),
                 blocks: blocks(m),
                 usage: usage(m.get("tokens")),
@@ -264,17 +273,21 @@ impl GeminiCli {
                 .records
                 .record("session", &RecordOutcome::unreadable("not an object"));
         }
-        let Some(sid) = str_of(doc, "sessionId").and_then(|s| session_id(ORIGIN, s)) else {
+        let Some(sid) = doc
+            .str("sessionId")
+            .filter(|s| !s.is_empty())
+            .and_then(|s| session_id(ORIGIN, s))
+        else {
             return sink
                 .records
                 .record("session", &RecordOutcome::unreadable("no sessionId"));
         };
-        let kind = match str_of(doc, "kind") {
+        let kind = match doc.str("kind").filter(|s| !s.is_empty()) {
             Some("subagent") => SessionKind::Subagent,
             _ => SessionKind::Main,
         };
         let mut session = Session::new(sid.clone(), kind);
-        if let Some(summary) = str_of(doc, "summary") {
+        if let Some(summary) = doc.str("summary").filter(|s| !s.is_empty()) {
             session.offer_title(summary, TitleSource::Summary);
         }
         if let Some(at) = doc.get("startTime").and_then(time_of) {
@@ -283,8 +296,7 @@ impl GeminiCli {
                 .expect("decoded source time is valid");
         }
         for dir in doc
-            .get("directories")
-            .and_then(Json::as_array)
+            .array("directories")
             .into_iter()
             .flatten()
             .filter_map(Json::as_str)
@@ -293,7 +305,7 @@ impl GeminiCli {
         }
         sink.out.sessions.push(session);
         sink.records.record("session", &RecordOutcome::Used);
-        if let Some(hash) = str_of(doc, "projectHash") {
+        if let Some(hash) = doc.str("projectHash").filter(|s| !s.is_empty()) {
             sink.out.events.push({
                 let (at, time_evidence) = crate::time::parts(None);
                 Event {
@@ -319,7 +331,10 @@ fn text_of(content: Option<&Json>) -> Option<String> {
     match content? {
         Json::String(s) if !s.is_empty() => Some(s.clone()),
         Json::Array(parts) => {
-            let texts: Vec<&str> = parts.iter().filter_map(|p| str_of(p, "text")).collect();
+            let texts: Vec<&str> = parts
+                .iter()
+                .filter_map(|p| p.str("text").filter(|s| !s.is_empty()))
+                .collect();
             (!texts.is_empty()).then(|| texts.join("\n"))
         }
         _ => None,
@@ -344,13 +359,11 @@ fn action(tool: &str) -> ToolAction {
 
 fn blocks(m: &Json) -> Vec<Block> {
     let mut out = Vec::new();
-    for t in m
-        .get("thoughts")
-        .and_then(Json::as_array)
-        .into_iter()
-        .flatten()
-    {
-        let text = match (str_of(t, "subject"), str_of(t, "description")) {
+    for t in m.array("thoughts").into_iter().flatten() {
+        let text = match (
+            t.str("subject").filter(|s| !s.is_empty()),
+            t.str("description").filter(|s| !s.is_empty()),
+        ) {
             (Some(s), Some(d)) => Some(format!("{s}\n\n{d}")),
             (s, d) => s.or(d).map(str::to_owned),
         };
@@ -363,23 +376,18 @@ fn blocks(m: &Json) -> Vec<Block> {
     if let Some(text) = text_of(m.get("content")) {
         out.push(Block::Text { text });
     }
-    for call in m
-        .get("toolCalls")
-        .and_then(Json::as_array)
-        .into_iter()
-        .flatten()
-    {
+    for call in m.array("toolCalls").into_iter().flatten() {
         let args = call.get("args").cloned().unwrap_or(Json::Null);
         out.push(Block::ToolCall {
             written_text: None,
             run_by_script: false,
-            call_id: string_of(call, "id"),
-            tool: string_of(call, "name"),
-            action: action(str_of(call, "name").unwrap_or("")),
-            command: args
-                .get("command")
-                .and_then(Json::as_str)
+            call_id: call.str("id").filter(|s| !s.is_empty()).map(str::to_owned),
+            tool: call
+                .str("name")
+                .filter(|s| !s.is_empty())
                 .map(str::to_owned),
+            action: action(call.str("name").filter(|s| !s.is_empty()).unwrap_or("")),
+            command: args.str("command").map(str::to_owned),
             path: args
                 .get("file_path")
                 .or_else(|| args.get("absolute_path"))
@@ -398,7 +406,7 @@ fn usage(tokens: Option<&Json>) -> Usage {
     let Some(t) = tokens else {
         return Usage::default();
     };
-    let n = |k: &str| t.get(k).and_then(Json::as_u64);
+    let n = |k: &str| t.u64(k);
     let cached = n("cached");
     Usage {
         // Cached above input is inconsistent: the uncached part is unknown.

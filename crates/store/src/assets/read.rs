@@ -176,11 +176,7 @@ pub(super) fn scope_matches(
         ORDER BY m.input,m.member,m.observation",
     )?;
     for row in stmt.query_map(params![scope, source_id], |r| {
-        Ok((
-            r.get::<_, String>(0)?,
-            r.get::<_, String>(1)?,
-            r.get::<_, String>(2)?,
-        ))
+        <(String, String, String)>::try_from(r)
     })? {
         let (input, member, observation) = row?;
         if !known.contains_key(&input) {
@@ -223,13 +219,13 @@ pub(super) fn scope_matches(
               AND EXISTS(SELECT 1 FROM source_revision r WHERE r.input=m.input)
             ORDER BY m.input,x.ordinal")?;
         for row in meta.query_map(params![scope, source_id], |r| {
-            Ok((
-                r.get::<_, Option<String>>(0)?,
-                r.get::<_, Option<String>>(1)?,
-                r.get::<_, Option<String>>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, String>(4)?,
-            ))
+            <(
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                String,
+                String,
+            )>::try_from(r)
         })? {
             let (name, media, size, input, recorded) = row?;
             if !known.contains_key(&input) {
@@ -243,10 +239,11 @@ pub(super) fn scope_matches(
             asset.names.extend(name);
             asset.media_types.extend(media);
             if let Some(size) = size {
-                asset.declared_sizes.push(
-                    size.parse()
-                        .map_err(|_| StoreError::Invalid("invalid declared asset size".into()))?,
-                );
+                asset
+                    .declared_sizes
+                    .push(size.parse().map_err(|_| {
+                        crate::StoreError::stored(2, "invalid declared asset size")
+                    })?);
             }
         }
     }

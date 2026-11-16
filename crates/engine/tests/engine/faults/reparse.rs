@@ -39,7 +39,15 @@ fn rejected_replacement_keeps_the_committed_reading() {
             1
         );
         let before = committed_continuation(&w);
-        let messages = w.export("claude-code:s").messages;
+        let messages = w
+            .reads()
+            .reader()
+            .unwrap()
+            .messages(
+                &polylogue_model::SessionId::parse("claude-code:s").unwrap(),
+                false,
+            )
+            .unwrap();
         let mut engine = Engine::new(
             w.config(first.len() as u64),
             archive,
@@ -64,12 +72,32 @@ fn rejected_replacement_keeps_the_committed_reading() {
             before,
             "a rejected {point} changed committed progress or keyed context"
         );
-        assert_eq!(w.export("claude-code:s").messages, messages);
+        assert_eq!(
+            w.reads()
+                .reader()
+                .unwrap()
+                .messages(
+                    &polylogue_model::SessionId::parse("claude-code:s").unwrap(),
+                    false
+                )
+                .unwrap(),
+            messages
+        );
         let retried = engine.run_pass().unwrap();
         assert!(retried.errors.is_empty(), "{retried:?}");
         assert!(retried.bytes_read > 0);
         assert_eq!(retried.bytes_stored, 0, "{retried:?}");
-        assert_eq!(w.export("claude-code:s").messages, messages);
+        assert_eq!(
+            w.reads()
+                .reader()
+                .unwrap()
+                .messages(
+                    &polylogue_model::SessionId::parse("claude-code:s").unwrap(),
+                    false
+                )
+                .unwrap(),
+            messages
+        );
         let rows=w.reads().reader().unwrap().query("SELECT reading_version FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.format='claude-code'",&[]).unwrap();
         assert_eq!(
             rows[0]["reading_version"],

@@ -63,7 +63,7 @@ pub fn call(
             Some(budget) => match tokio::time::timeout(budget, work).await {
                 Ok(result) => result,
                 Err(_) => Ok(Answer::error(crate::protocol::failure(
-                    "deadline_exceeded",
+                    polylogue_model::Code::DeadlineExceeded,
                     "the daemon did not answer before the deadline",
                 ))),
             },
@@ -206,7 +206,7 @@ pub(crate) async fn call_ready_as_bounded(
             match tokio::time::timeout(budget, work).await {
                 Ok(result) => result,
                 Err(_) => Ok(command_surface::Answer::error(crate::protocol::failure(
-                    "deadline_exceeded",
+                    polylogue_model::Code::DeadlineExceeded,
                     "the daemon did not answer before the deadline",
                 ))),
             }
@@ -216,7 +216,7 @@ pub(crate) async fn call_ready_as_bounded(
     };
     tokio::select! {
         answer = work => answer,
-        _ = cancelled.cancelled() => Ok(command_surface::Answer::error(crate::protocol::failure("cancelled", "the request was cancelled"))),
+        _ = cancelled.cancelled() => Ok(command_surface::Answer::error(crate::protocol::failure(polylogue_model::Code::Cancelled, "the request was cancelled"))),
     }
 }
 

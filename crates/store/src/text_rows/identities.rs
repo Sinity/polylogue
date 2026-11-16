@@ -1,6 +1,8 @@
 //! Text identities belong to the serial writer, including IDs whose rows
 //! temporarily lose their last reference. Reusing an ID follows its hash,
 //! never whichever row number SQLite might next make available.
+use crate::ConnExt as _;
+use crate::{OptionExt as _, ResultExt as _};
 use crate::{Result, StoreError};
 use rusqlite::{Connection, OptionalExtension};
 use std::cell::{Cell, RefCell};
@@ -30,7 +32,7 @@ pub(crate) struct TextIds {
 
 impl TextIds {
     pub(crate) fn new(conn: &Connection, preload: bool) -> Result<Self> {
-        let max: i64 = conn.query_row("SELECT coalesce(max(id),0) FROM text", [], |r| r.get(0))?;
+        let max: i64 = conn.scalar("SELECT coalesce(max(id),0) FROM text", [])?;
         let ids = Self {
             known: RefCell::new(HashMap::new()),
             marked: RefCell::new(HashMap::new()),
@@ -188,8 +190,7 @@ impl TextIds {
 }
 
 fn next(id: i64) -> Result<i64> {
-    id.checked_add(1)
-        .ok_or_else(|| StoreError::Invalid("text row identity exhausted".into()))
+    id.checked_add(1).or_invalid("text row identity exhausted")
 }
 
 pub(crate) struct TextTransaction<'a> {

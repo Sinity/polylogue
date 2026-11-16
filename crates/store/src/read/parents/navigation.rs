@@ -1,9 +1,9 @@
 //! Metadata-only positions for the shared reader.
 use super::*;
+use crate::ConnExt as _;
 
 fn message_count(count: i64) -> Result<usize> {
-    usize::try_from(count)
-        .map_err(|_| StoreError::Invalid("the message count exceeds address space".into()))
+    usize::try_from(count).or_invalid("the message count exceeds address space")
 }
 
 impl MessageSelection<'_, '_> {
@@ -101,17 +101,16 @@ impl MessageSelection<'_, '_> {
         let conn = self.reader.conn()?;
         let key=match id {
             Some(id)=>self.message_key(id)?,
-            None=>conn.query_row("SELECT pk FROM message WHERE session_pk=?1 AND duplicate_of IS NULL ORDER BY session_order DESC,id DESC LIMIT 1",[pk],|r|r.get::<_,i64>(0)).optional()?,
+            None=>conn.scalar_optional::<i64>("SELECT pk FROM message WHERE session_pk=?1 AND duplicate_of IS NULL ORDER BY session_order DESC,id DESC LIMIT 1",[pk])?,
         };
         let Some(key) = key else {
             return Ok(None);
         };
-        let count = conn.query_row(
+        let count = conn.scalar::<i64>(
             "SELECT count(*) FROM message m JOIN message target ON target.pk=?2
             WHERE m.session_pk=?1 AND m.duplicate_of IS NULL
             AND (m.session_order,m.id) < (target.session_order,target.id)",
             params![pk, key],
-            |r| r.get::<_, i64>(0),
         )?;
         Ok(Some(VisitStart {
             message: message_count(count)?,
@@ -154,8 +153,8 @@ impl MessageSelection<'_, '_> {
                     continue;
                 }
                 let id: String = row.get(1)?;
-                let id = polylogue_model::MessageId::parse(&id)
-                    .map_err(|e| StoreError::Invalid(e.to_string()))?;
+                let id =
+                    polylogue_model::MessageId::parse(&id).map_err(crate::StoreError::invalid)?;
                 return self.locate(Some(&id));
             }
         }

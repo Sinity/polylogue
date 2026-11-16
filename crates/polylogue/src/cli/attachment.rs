@@ -2,6 +2,7 @@
 //! whole BLAKE3 check out. The temporary file is private and removed on failure.
 use super::*;
 use base64::Engine as _;
+use polylogue_model::JsonExt as _;
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -16,8 +17,7 @@ pub(crate) fn output(
         .expect("output handlers receive answers with values");
     if values
         .calling_process
-        .get("out")
-        .and_then(serde_json::Value::as_str)
+        .str("out")
         .map(str::to_owned)
         .is_none()
     {
@@ -47,7 +47,13 @@ pub(crate) fn output(
             }
             ExitCode::SUCCESS
         }
-        Err(e) => fail(startup.output, json, "attachment_output", &e, 1),
+        Err(e) => fail(
+            startup.output,
+            json,
+            polylogue_model::Code::AttachmentOutput,
+            &e,
+            1,
+        ),
     }
 }
 
@@ -59,8 +65,7 @@ fn write(
     let path = PathBuf::from(
         values
             .calling_process
-            .get("out")
-            .and_then(serde_json::Value::as_str)
+            .str("out")
             .map(str::to_owned)
             .ok_or("--out is required")?,
     );

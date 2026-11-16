@@ -11,12 +11,18 @@ pub fn timeout() -> Duration {
 }
 
 pub fn deadline(duration: Duration) -> i64 {
-    super::service::now_ms().saturating_add(i64::try_from(duration.as_millis()).unwrap_or(i64::MAX))
+    polylogue_model::WallClock::new(jiff::Timestamp::now)
+        .now_ms()
+        .saturating_add(i64::try_from(duration.as_millis()).unwrap_or(i64::MAX))
 }
 
 pub fn remaining(deadline_ms: Option<i64>) -> Duration {
     deadline_ms.map_or_else(timeout, |deadline| {
-        Duration::from_millis(deadline.saturating_sub(super::service::now_ms()).max(0) as u64)
+        Duration::from_millis(
+            deadline
+                .saturating_sub(polylogue_model::WallClock::new(jiff::Timestamp::now).now_ms())
+                .max(0) as u64,
+        )
     })
 }
 

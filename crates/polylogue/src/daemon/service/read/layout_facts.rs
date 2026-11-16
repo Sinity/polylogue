@@ -29,8 +29,7 @@ fn check(reader: &Reader<'_>) -> Result<(), Failure> {
 }
 fn visible(reader: &Reader<'_>, source: &Source, options: &ReadOptions) -> Result<bool, Failure> {
     let (Some(message), Some(session)) = (&source.message, &source.source_session) else {
-        return Err(Failure::new(
-            "not_yet_available",
+        return Err(Failure::not_yet_available(
             "tool source has no message identity",
         ));
     };
@@ -99,15 +98,12 @@ fn segments(
                 {
                     let (data, attachments) = reader
                         .message_tool_pair_result_shape(message, ordinal)?
-                        .ok_or_else(|| {
-                            Failure::new("stale_cursor", "paired result geometry changed")
-                        })?;
+                        .ok_or_else(|| Failure::stale_cursor("paired result geometry changed"))?;
                     count = count
                         .checked_add(u64::from(data))
                         .and_then(|value| value.checked_add(attachments))
                         .ok_or_else(|| {
-                            Failure::new(
-                                "not_yet_available",
+                            Failure::not_yet_available(
                                 "tool layout position exceeds its ordinal range",
                             )
                         })?;
@@ -120,10 +116,7 @@ fn segments(
                 .or_default();
             let current = *index;
             *index = index.checked_add(1).ok_or_else(|| {
-                Failure::new(
-                    "not_yet_available",
-                    "attachment index exceeds its ordinal range",
-                )
+                Failure::not_yet_available("attachment index exceeds its ordinal range")
             })?;
             Some(current)
         } else {
@@ -137,10 +130,7 @@ fn segments(
             attachment_index,
         });
         offset = offset.checked_add(count).ok_or_else(|| {
-            Failure::new(
-                "not_yet_available",
-                "read layout position exceeds its ordinal range",
-            )
+            Failure::not_yet_available("read layout position exceeds its ordinal range")
         })?;
     }
     Ok(segments)
@@ -161,7 +151,7 @@ fn pair_parts(
         reader.message_tool_pair_header(message, *ordinal)
     }?;
     let mut pair =
-        pair.ok_or_else(|| Failure::new("stale_cursor", "indexed tool relationship changed"))?;
+        pair.ok_or_else(|| Failure::stale_cursor("indexed tool relationship changed"))?;
     if layout.options.view == View::Context
         && let Some(result) = &pair.result
         && !(layout.selected)(&result.source)?
@@ -179,15 +169,13 @@ fn pair_parts(
             .as_ref()
             .filter(|result| result.source.reference == segment.item.source.reference)
             .cloned()
-            .ok_or_else(|| Failure::new("stale_cursor", "paired result source changed"))?
+            .ok_or_else(|| Failure::stale_cursor("paired result source changed"))?
     };
     pair.emit_at = source.source.reference.clone();
-    let original = source.source.block.ok_or_else(|| {
-        Failure::new(
-            "not_yet_available",
-            "tool source has no original block ordinal",
-        )
-    })?;
+    let original = source
+        .source
+        .block
+        .ok_or_else(|| Failure::not_yet_available("tool source has no original block ordinal"))?;
     let mut detail = layout.facts.clone();
     detail.tool_pairs.clear();
     detail.tool_pairs.insert(original, pair);
@@ -249,7 +237,7 @@ pub(super) fn visit_parts(
                 Ok(true)
             })?;
             if parts.len() as u64 != segment.count {
-                return Err(Failure::new("stale_cursor", "tool layout geometry changed"));
+                return Err(Failure::stale_cursor("tool layout geometry changed"));
             }
             for (index, (item, attachment_index)) in parts.into_iter().enumerate().rev() {
                 let ordinal = segment.start + index as u64;
@@ -284,7 +272,7 @@ pub(super) fn visit_parts(
                 return Ok(false);
             }
             if offset != segment.count {
-                return Err(Failure::new("stale_cursor", "tool layout geometry changed"));
+                return Err(Failure::stale_cursor("tool layout geometry changed"));
             }
         }
     }

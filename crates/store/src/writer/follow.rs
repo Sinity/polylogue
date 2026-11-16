@@ -26,9 +26,9 @@ impl Follower {
     ) -> Result<Self> {
         let index = crate::archive::open_read(&archive.index_db())?;
         let (requests, receive) = channel();
-        let handle = std::thread::Builder::new()
-            .name("polylogue-stream".into())
-            .spawn(move || run(sinex.as_ref(), &queue, &index, &receive))?;
+        let handle = polylogue_model::spawn_named("polylogue-stream", move || {
+            run(sinex.as_ref(), &queue, &index, &receive)
+        })?;
         Ok(Self {
             requests,
             handle: Some(handle),

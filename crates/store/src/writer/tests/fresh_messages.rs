@@ -24,15 +24,19 @@ fn apply(
 ) -> u64 {
     let step = &batch.parse[step];
     write_rows(
-        &crate::text_rows::TextIds::new(tx, false).unwrap(),
         tx,
         batch,
         step,
-        step.resolution.as_ref().unwrap(),
-        1,
-        None,
-        Some(&fixture_commit()),
-        changes,
+        rows::ReadingWrite {
+            texts: &crate::text_rows::TextIds::new(tx, false).unwrap(),
+            resolution: step.resolution.as_ref().unwrap(),
+            counter: 1,
+            first_build: None,
+            source_commit: Some(&fixture_commit()),
+            changes: changes,
+            retraction: false,
+            replacement: false,
+        },
     )
     .unwrap()
 }

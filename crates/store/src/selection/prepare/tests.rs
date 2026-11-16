@@ -109,7 +109,7 @@ fn accepting_preparation_uses_original_rows() {
         )
         .unwrap_err()
         .code(),
-        "not_yet_available"
+        polylogue_model::Code::NotYetAvailable
     );
     let refused = prepare_query_plan_on(
         original,
@@ -123,7 +123,7 @@ fn accepting_preparation_uses_original_rows() {
     .unwrap_err();
     let message = refused.to_string();
     let roundtrip = SelectionError::from(refused.into_store_error());
-    assert_eq!(roundtrip.code(), "not_yet_available");
+    assert_eq!(roundtrip.code(), polylogue_model::Code::NotYetAvailable);
     assert_eq!(roundtrip.to_string(), message);
     let mut supplied = Bindings {
         origins: vec!["test".into()],
@@ -217,7 +217,7 @@ fn accepting_preparation_uses_original_rows() {
         )
         .unwrap_err()
         .code(),
-        "not_yet_available"
+        polylogue_model::Code::NotYetAvailable
     );
     let prepared = prepare_query_plan_on(
         original,
@@ -246,7 +246,7 @@ fn accepting_preparation_uses_original_rows() {
         )
         .unwrap_err()
         .code(),
-        "not_yet_available"
+        polylogue_model::Code::NotYetAvailable
     );
     prepare_query_plan_on(
         original,
@@ -308,6 +308,6 @@ fn hash_prefix_resolves() {
         prepare(&format!("query:{other}{}", &full[1..12]))
             .unwrap_err()
             .code(),
-        "not_yet_available"
+        polylogue_model::Code::NotYetAvailable
     );
 }

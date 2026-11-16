@@ -17,15 +17,11 @@ pub enum SpanUnit {
     CodePoints,
     Utf16,
 }
-impl SpanUnit {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Bytes => "b",
-            Self::CodePoints => "c",
-            Self::Utf16 => "u16",
-        }
-    }
-}
+stored_names!(SpanUnit {
+    Bytes => "b",
+    CodePoints => "c",
+    Utf16 => "u16",
+});
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RevisionReference {
@@ -270,12 +266,7 @@ impl Reference {
                 let (unit, range) = range
                     .split_once('=')
                     .ok_or_else(|| ReferenceError::Incomplete(text.into()))?;
-                let unit = match unit {
-                    "b" => SpanUnit::Bytes,
-                    "c" => SpanUnit::CodePoints,
-                    "u16" => SpanUnit::Utf16,
-                    _ => return Err(invalid("unknown span unit")),
-                };
+                let unit = SpanUnit::from_name(unit).ok_or_else(|| invalid("unknown span unit"))?;
                 let (start, end) = range
                     .split_once('-')
                     .ok_or_else(|| ReferenceError::Incomplete(text.into()))?;

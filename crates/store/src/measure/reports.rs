@@ -2,6 +2,7 @@
 //! reading once per origin, so a copy in another input is not read twice.
 use super::Selection;
 use crate::{Reader, Result};
+use polylogue_model::JsonExt;
 use serde::de::DeserializeOwned;
 
 /// Visits every reading of `kind` in `selection`, in time order, with its
@@ -23,11 +24,7 @@ pub(super) fn visit<T: DeserializeOwned>(
     let mut rows = stmt.query(rusqlite::params_from_iter(params.iter()))?;
     while let Some(row) = rows.next()? {
         let value: serde_json::Value = crate::encoding::unpack_json(&row.get::<_, Vec<u8>>(2)?)?;
-        if value
-            .get("report_id")
-            .and_then(serde_json::Value::as_str)
-            .is_none()
-        {
+        if value.str("report_id").is_none() {
             continue;
         }
         visit(

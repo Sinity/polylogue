@@ -296,7 +296,9 @@ fn shutdown_cancels_reads_without_revoking_a_handed_over_write() {
         let outgoing = crate::protocol::wire::Outgoing {
             request: &request,
             caller: Default::default(),
-            parent_deadline_ms: Some(service::now_ms() + 60_000),
+            parent_deadline_ms: Some(
+                polylogue_model::WallClock::new(jiff::Timestamp::now).now_ms() + 60_000,
+            ),
         };
         writeln!(writing, "{}", serde_json::to_string(&outgoing).unwrap()).unwrap();
         pause.wait().unwrap();

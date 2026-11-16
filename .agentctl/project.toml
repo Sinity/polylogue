@@ -16,7 +16,7 @@ CARGO_BUILD_JOBS = "2"
 CARGO_INCREMENTAL = "0"
 
 [operations.fast]
-description = "Formatting, crate boundaries and strict Clippy"
+description = "Formatting and strict Clippy"
 exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "--quiet", "-p", "xtask", "--", "fast"]
 pool = "compile"
 environment = { CARGO_BUILD_JOBS = "4" }
@@ -37,7 +37,7 @@ scratch = "nvme"
 unit_properties = ["MemoryHigh=8G"]
 
 [operations.check]
-description = "Formatting, boundaries, both clippy configurations and all tests"
+description = "Formatting, both clippy configurations and all tests"
 exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "-p", "xtask", "--", "check"]
 pool = "bulk"
 result = "exit"

@@ -41,12 +41,14 @@ pub(crate) fn saved_definition(
     let name = fact
         .key
         .clone()
-        .ok_or_else(|| invalid("saved definition has no name"))?;
+        .ok_or_else(|| crate::StoreError::invalid("saved definition has no name"))?;
     let values::Value::SavedQuery(value) = fact
         .validate()
-        .map_err(|error| invalid(&error.to_string()))?
+        .map_err(|error| crate::StoreError::invalid(&error.to_string()))?
     else {
-        return Err(invalid("saved definition has another value shape"));
+        return Err(crate::StoreError::invalid(
+            "saved definition has another value shape",
+        ));
     };
     Ok(Some((
         name,
@@ -79,12 +81,14 @@ pub(crate) fn saved_family(conn: &Connection, root: &str) -> Result<SavedQuerySn
     let mut definitions = SavedQuerySnapshot::default();
     for reference in heads {
         let Reference::Assertion(revision) = reference else {
-            return Err(invalid("saved definition head is not an assertion"));
+            return Err(crate::StoreError::invalid(
+                "saved definition head is not an assertion",
+            ));
         };
         let id = revision
             .revision
             .as_ref()
-            .ok_or_else(|| invalid("saved definition head is not exact"))?;
+            .ok_or_else(|| crate::StoreError::invalid("saved definition head is not exact"))?;
         let row = get(conn, id)?.ok_or_else(|| {
             StoreError::NotFound(Reference::Assertion(revision.clone()).to_string())
         })?;

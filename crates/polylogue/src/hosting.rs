@@ -29,6 +29,7 @@
 //! oldest open permission request, and an interrupt is Claude's
 //! `interrupt` control request or ACP's `session/cancel`.
 
+use polylogue_model::LockExt as _;
 use polylogue_model::SessionId;
 use polylogue_model::live::channel::HostProtocol;
 use serde::{Deserialize, Serialize};
@@ -38,7 +39,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 #[cfg(test)]
@@ -47,10 +48,6 @@ mod tests;
 /// How long the daemon waits for one protocol answer while starting or
 /// reattaching to a hosted session.
 const ANSWER_WAIT: Duration = Duration::from_secs(10);
-
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(PoisonError::into_inner)
-}
 
 /// The hosted-session directory of the archive at `root`.
 pub fn dir(paths: &crate::config::Paths, root: &Path) -> PathBuf {
@@ -363,82 +360,78 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
         let stopping = Arc::clone(&stopping);
         let config = config.clone();
         let identity = identity.clone();
-        std::thread::Builder::new()
-            .name("polylogue-host-accept".into())
-            .spawn(move || {
-                for stream in listener.incoming() {
-                    if stopping.load(Ordering::SeqCst) {
-                        return;
+        polylogue_model::spawn_named("polylogue-host-accept", move || {
+            for stream in listener.incoming() {
+                if stopping.load(Ordering::SeqCst) {
+                    return;
+                }
+                let Ok(mut stream) = stream else { continue };
+                let Ok(reader) = stream.try_clone() else {
+                    continue;
+                };
+                {
+                    let mut relay = relay.locked();
+                    let mut first = hello(&relay);
+                    for line in relay.tracker.unanswered() {
+                        first.extend_from_slice(line);
+                        first.push(b'\n');
                     }
-                    let Ok(mut stream) = stream else { continue };
-                    let Ok(reader) = stream.try_clone() else {
-                        continue;
-                    };
-                    {
-                        let mut relay = lock(&relay);
-                        let mut first = hello(&relay);
-                        for line in relay.tracker.unanswered() {
-                            first.extend_from_slice(line);
-                            first.push(b'\n');
-                        }
-                        // An unanswered request that waited here is in both.
-                        for line in &relay.backlog {
-                            if relay
-                                .tracker
-                                .unanswered()
-                                .any(|open| open == line.as_slice())
-                            {
-                                continue;
-                            }
-                            first.extend_from_slice(line);
-                            first.push(b'\n');
-                        }
-                        if stream.write_all(&first).is_err() {
+                    // An unanswered request that waited here is in both.
+                    for line in &relay.backlog {
+                        if relay
+                            .tracker
+                            .unanswered()
+                            .any(|open| open == line.as_slice())
+                        {
                             continue;
                         }
-                        relay.backlog.clear();
-                        relay.client = Some(stream);
+                        first.extend_from_slice(line);
+                        first.push(b'\n');
                     }
-                    let relay = Arc::clone(&relay);
-                    let input = Arc::clone(&input);
-                    let config = config.clone();
-                    let identity = identity.clone();
-                    let _ = std::thread::Builder::new()
-                        .name("polylogue-host-client".into())
-                        .spawn(move || {
-                            for line in BufReader::new(reader).split(b'\n') {
-                                let Ok(line) = line else { return };
-                                if let Ok(message) = serde_json::from_slice::<Value>(&line) {
-                                    let mut relay = lock(&relay);
-                                    if let Some(word) = relay.tracker.client_sent(&message)
-                                        && let Some(session) = relay.session.clone()
-                                    {
-                                        status_line(
-                                            &config,
-                                            &session,
-                                            identity.as_ref(),
-                                            "HostedStatus",
-                                            Some(word),
-                                        );
-                                    }
-                                }
-                                let mut input = lock(&input);
-                                if input
-                                    .write_all(&line)
-                                    .and_then(|()| input.write_all(b"\n"))
-                                    .and_then(|()| input.flush())
-                                    .is_err()
-                                {
-                                    return;
-                                }
-                            }
-                        });
+                    if stream.write_all(&first).is_err() {
+                        continue;
+                    }
+                    relay.backlog.clear();
+                    relay.client = Some(stream);
                 }
-            })?
+                let relay = Arc::clone(&relay);
+                let input = Arc::clone(&input);
+                let config = config.clone();
+                let identity = identity.clone();
+                let _ = polylogue_model::spawn_named("polylogue-host-client", move || {
+                    for line in BufReader::new(reader).split(b'\n') {
+                        let Ok(line) = line else { return };
+                        if let Ok(message) = serde_json::from_slice::<Value>(&line) {
+                            let mut relay = relay.locked();
+                            if let Some(word) = relay.tracker.client_sent(&message)
+                                && let Some(session) = relay.session.clone()
+                            {
+                                status_line(
+                                    &config,
+                                    &session,
+                                    identity.as_ref(),
+                                    "HostedStatus",
+                                    Some(word),
+                                );
+                            }
+                        }
+                        let mut input = input.locked();
+                        if input
+                            .write_all(&line)
+                            .and_then(|()| input.write_all(b"\n"))
+                            .and_then(|()| input.flush())
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                });
+            }
+        })?
     };
     for line in BufReader::new(output).split(b'\n') {
         let Ok(line) = line else { break };
-        let mut relay = lock(&relay);
+        let mut relay = relay.locked();
         if let Ok(message) = serde_json::from_slice::<Value>(&line) {
             if relay.session.is_none() {
                 relay.session = session_named(config, &message);
@@ -471,7 +464,7 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
         }
     }
     let _ = child.wait();
-    let session = lock(&relay).session.clone();
+    let session = relay.locked().session.clone();
     if let Some(session) = session {
         status_line(config, &session, identity.as_ref(), "HostedEnded", None);
     }
@@ -481,7 +474,7 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
     let _ = accept.join();
     // The client reader holds another descriptor and an Arc to the relay.
     // Closing both directions releases that reader and lets the daemon see EOF.
-    if let Some(client) = lock(&relay).client.take() {
+    if let Some(client) = relay.locked().client.take() {
         let _ = client.shutdown(std::net::Shutdown::Both);
     }
     if let Some(dir) = config.socket.parent()
@@ -732,36 +725,34 @@ impl HostedStdio {
             std::sync::Condvar::new(),
         ));
         let shared = Arc::clone(&state);
-        std::thread::Builder::new()
-            .name("polylogue-hosted".into())
-            .spawn(move || {
-                for line in reader.split(b'\n') {
-                    let Ok(line) = line else { break };
-                    let Ok(message) = serde_json::from_slice::<Value>(&line) else {
-                        continue;
-                    };
-                    lock(&shared.0).absorb(message);
-                    shared.1.notify_all();
-                }
-                let mut state = lock(&shared.0);
-                state.closed = true;
-                // These prompts never left this connection's local queue.
-                // Already-written prompts keep their reported outcome.
-                for (_, delivery) in std::mem::take(&mut state.queued) {
-                    state.report(
-                        delivery.as_deref(),
-                        Err("the host connection closed before the queued prompt was sent".into()),
-                    );
-                }
+        polylogue_model::spawn_named("polylogue-hosted", move || {
+            for line in reader.split(b'\n') {
+                let Ok(line) = line else { break };
+                let Ok(message) = serde_json::from_slice::<Value>(&line) else {
+                    continue;
+                };
+                shared.0.locked().absorb(message);
                 shared.1.notify_all();
-            })?;
+            }
+            let mut state = shared.0.locked();
+            state.closed = true;
+            // These prompts never left this connection's local queue.
+            // Already-written prompts keep their reported outcome.
+            for (_, delivery) in std::mem::take(&mut state.queued) {
+                state.report(
+                    delivery.as_deref(),
+                    Err("the host connection closed before the queued prompt was sent".into()),
+                );
+            }
+            shared.1.notify_all();
+        })?;
         Ok(Self { state })
     }
 
     /// Sends a request and waits for its answer.
     fn call(&self, method: &str, params: Value) -> std::io::Result<Value> {
         let (mutex, ready) = &*self.state;
-        let mut state = lock(mutex);
+        let mut state = mutex.locked();
         let id = state.id();
         state.write(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))?;
         let deadline = Instant::now() + ANSWER_WAIT;
@@ -785,10 +776,7 @@ impl HostedStdio {
                     format!("the agent did not answer {method}"),
                 ));
             }
-            state = ready
-                .wait_timeout(state, left)
-                .unwrap_or_else(PoisonError::into_inner)
-                .0;
+            state = polylogue_model::unpoisoned(ready.wait_timeout(state, left)).0;
         }
     }
 
@@ -847,7 +835,7 @@ impl HostedStdio {
                     .as_str()
                     .ok_or_else(|| std::io::Error::other("session/new named no session"))?
                     .to_owned();
-                lock(&hosted.state.0).protocol_session.clone_from(&id);
+                hosted.state.0.locked().protocol_session.clone_from(&id);
                 (hosted, id)
             }
         };
@@ -882,7 +870,7 @@ impl HostedStdio {
 
     /// Reports queued messages' outcomes through `on_sent`.
     pub(crate) fn on_sent(&self, on_sent: Sent) {
-        lock(&self.state.0).on_sent = Some(on_sent);
+        self.state.0.locked().on_sent = Some(on_sent);
     }
 
     /// Sends a message: a user message to Claude (which runs it after the
@@ -891,7 +879,7 @@ impl HostedStdio {
     /// (`false`); its outcome is reported through `on_sent` when it is
     /// written or dropped.
     pub(crate) fn send(&self, text: &str, delivery: Option<&str>) -> std::io::Result<bool> {
-        let mut state = lock(&self.state.0);
+        let mut state = self.state.0.locked();
         if state.closed {
             return Err(std::io::Error::other("the hosted session's host is gone"));
         }
@@ -916,7 +904,7 @@ impl HostedStdio {
 
     /// The oldest request awaiting an answer, by the protocol's ID.
     pub(crate) fn request(&self) -> Option<String> {
-        let state = lock(&self.state.0);
+        let state = self.state.0.locked();
         let request = state.requests.front()?;
         let id = match state.protocol {
             HostProtocol::ClaudeStreamJson => &request["request_id"],
@@ -927,7 +915,7 @@ impl HostedStdio {
 
     /// Answers the oldest pending request.
     pub(crate) fn answer(&self, approve: bool, text: Option<&str>) -> std::io::Result<()> {
-        let mut state = lock(&self.state.0);
+        let mut state = self.state.0.locked();
         let request = state
             .requests
             .pop_front()
@@ -937,7 +925,7 @@ impl HostedStdio {
     }
 
     pub(crate) fn interrupt(&self) -> std::io::Result<()> {
-        let mut state = lock(&self.state.0);
+        let mut state = self.state.0.locked();
         match state.protocol {
             HostProtocol::ClaudeStreamJson => {
                 let id = state.id();
@@ -970,7 +958,7 @@ impl HostedStdio {
 
     /// Whether the host is still connected.
     pub(crate) fn open(&self) -> bool {
-        !lock(&self.state.0).closed
+        !self.state.0.locked().closed
     }
 }
 
@@ -978,7 +966,10 @@ impl Drop for HostedStdio {
     /// Closes the connection, which ends its reader; the host keeps the
     /// agent running for the next connection.
     fn drop(&mut self) {
-        let _ = lock(&self.state.0)
+        let _ = self
+            .state
+            .0
+            .locked()
             .writer
             .shutdown(std::net::Shutdown::Both);
     }

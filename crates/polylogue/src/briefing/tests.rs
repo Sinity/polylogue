@@ -1,5 +1,6 @@
 use super::*;
 use crate::daemon::scope::SharedScopeIndex;
+use polylogue_model::JsonExt as _;
 
 /// Decode the exact source quotes without confusing rendering escapes with
 /// changed archived bytes. Header and entry-map text remain visible too.
@@ -9,8 +10,7 @@ fn visible_context(text: &str) -> String {
         if let Some(encoded) = line.strip_prefix("┃ ") {
             let quote: serde_json::Value = serde_json::from_str(encoded).unwrap();
             let source = quote
-                .get("source")
-                .and_then(serde_json::Value::as_str)
+                .str("source")
                 .or_else(|| quote.as_str())
                 .expect("an archived source quote");
             out.push_str(source);
@@ -96,15 +96,17 @@ fn recall_fuses_prose_and_tool_output_in_the_querys_order() {
         cursor: None,
     };
     let p = prepare(
-        &reader,
+        crate::briefing::BriefContext {
+            reader: &reader,
+            delivery_id: "d1",
+            context: &fixture_context(Timestamp::from_unix_ms(0).unwrap()),
+            ranking_identity: None,
+            near: None,
+        },
         &SharedScopeIndex::default(),
         None,
         &[],
         &ask,
-        "d1",
-        &fixture_context(Timestamp::from_unix_ms(0).unwrap()),
-        None,
-        None,
         Default::default(),
     )
     .unwrap();
@@ -300,15 +302,17 @@ fn a_brief_reports_what_recent_sessions_did_and_what_is_open() {
     };
     let now = Timestamp::from_unix_ms(T0 + 3_600_000).unwrap();
     let p = prepare(
-        &reader,
+        crate::briefing::BriefContext {
+            reader: &reader,
+            delivery_id: "d1",
+            context: &fixture_context(now),
+            ranking_identity: None,
+            near: None,
+        },
         &scope_of(&reader),
         None,
         &[],
         &ask,
-        "d1",
-        &fixture_context(now),
-        None,
-        None,
         Default::default(),
     )
     .unwrap();
@@ -428,15 +432,17 @@ fn recall_pages_continue_by_cursor() {
             cursor: cursor.clone(),
         };
         let p = prepare(
-            &reader,
+            crate::briefing::BriefContext {
+                reader: &reader,
+                delivery_id: "d",
+                context: &fixture_context(now),
+                ranking_identity: None,
+                near: None,
+            },
             &SharedScopeIndex::default(),
             None,
             &[],
             &ask,
-            "d",
-            &fixture_context(now),
-            None,
-            None,
             Default::default(),
         )
         .unwrap();
@@ -463,16 +469,18 @@ fn recall_pages_continue_by_cursor() {
     };
     assert!(
         prepare(
-            &reader,
+            crate::briefing::BriefContext {
+                reader: &reader,
+                delivery_id: "d",
+                context: &fixture_context(now),
+                ranking_identity: None,
+                near: None
+            },
             &SharedScopeIndex::default(),
             None,
             &[],
             &ask,
-            "d",
-            &fixture_context(now),
-            None,
-            None,
-            Default::default(),
+            Default::default()
         )
         .is_err()
     );
@@ -520,7 +528,13 @@ fn a_brief_reads_a_bounded_number_of_pages_at_any_directory() {
         let reader = pool.reader().unwrap();
         reader.take_page_reads().unwrap();
         let p = prepare(
-            &reader,
+            crate::briefing::BriefContext {
+                reader: &reader,
+                delivery_id: "d1",
+                context: &fixture_context(now),
+                ranking_identity: None,
+                near: None,
+            },
             &scope,
             None,
             &[],
@@ -529,10 +543,6 @@ fn a_brief_reads_a_bounded_number_of_pages_at_any_directory() {
                 session: None,
                 source: StartSource::Startup,
             },
-            "d1",
-            &fixture_context(now),
-            None,
-            None,
             Default::default(),
         )
         .unwrap();
@@ -593,7 +603,13 @@ fn a_brief_past_its_deadline_answers_with_the_sections_it_has() {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         prepare(
-            &reader,
+            crate::briefing::BriefContext {
+                reader: &reader,
+                delivery_id: "d1",
+                context: &fixture_context(Timestamp::from_unix_ms(T0 + 3_600_000).unwrap()),
+                ranking_identity: None,
+                near: None,
+            },
             &scope,
             None,
             &[],
@@ -602,10 +618,6 @@ fn a_brief_past_its_deadline_answers_with_the_sections_it_has() {
                 session: None,
                 source: StartSource::Startup,
             },
-            "d1",
-            &fixture_context(Timestamp::from_unix_ms(T0 + 3_600_000).unwrap()),
-            None,
-            None,
             Default::default(),
         )
         .unwrap()
@@ -682,15 +694,17 @@ fn named_context_defaults_and_explicit_tight_budgets_share_one_fitter() {
         10000
     );
     let prepared = prepare(
-        &reader,
+        crate::briefing::BriefContext {
+            reader: &reader,
+            delivery_id: "tight",
+            context: &fixture_context(Timestamp::from_unix_ms(T0 + 3_600_000).unwrap()),
+            ranking_identity: None,
+            near: None,
+        },
         &scope_of(&reader),
         None,
         &[],
         &ask,
-        "tight",
-        &fixture_context(Timestamp::from_unix_ms(T0 + 3_600_000).unwrap()),
-        None,
-        None,
         command_surface::TokenBudget::Tokens(400),
     )
     .unwrap();
@@ -739,15 +753,17 @@ fn numeric_default_and_unlimited_budgets_keep_distinct_meanings() {
     let scope = scope_of(&reader);
     let prepared = |budget| {
         prepare(
-            &reader,
+            crate::briefing::BriefContext {
+                reader: &reader,
+                delivery_id: "budget-example",
+                context: &fixture_context(Timestamp::from_unix_ms(T0).unwrap()),
+                ranking_identity: None,
+                near: None,
+            },
             &scope,
             None,
             &[],
             &ask,
-            "budget-example",
-            &fixture_context(Timestamp::from_unix_ms(T0).unwrap()),
-            None,
-            None,
             budget,
         )
         .unwrap()
@@ -845,7 +861,13 @@ fn startup_manual_and_compaction_prompts_are_outside_the_fitted_budget() {
         StartSource::Resume,
     ] {
         let p = prepare(
-            &reader,
+            crate::briefing::BriefContext {
+                reader: &reader,
+                delivery_id: "protected",
+                context: &fixture_context(Timestamp::from_unix_ms(T0 + 3600000).unwrap()),
+                ranking_identity: None,
+                near: None,
+            },
             &scope,
             None,
             &[],
@@ -854,10 +876,6 @@ fn startup_manual_and_compaction_prompts_are_outside_the_fitted_budget() {
                 session: Some(polylogue_model::SessionId::parse("claude-code:protected").unwrap()),
                 source,
             },
-            "protected",
-            &fixture_context(Timestamp::from_unix_ms(T0 + 3600000).unwrap()),
-            None,
-            None,
             command_surface::TokenBudget::Tokens(1000),
         )
         .unwrap();
@@ -888,7 +906,13 @@ fn older_observed_claims_remain_visible_without_claiming_external_state() {
     let pool = f.reads().unwrap();
     let reader = pool.reader().unwrap();
     let p = prepare(
-        &reader,
+        crate::briefing::BriefContext {
+            reader: &reader,
+            delivery_id: "old-claim",
+            context: &fixture_context(Timestamp::from_unix_ms(T0 + 40 * 86400000).unwrap()),
+            ranking_identity: None,
+            near: None,
+        },
         &scope_of(&reader),
         None,
         &[],
@@ -897,10 +921,6 @@ fn older_observed_claims_remain_visible_without_claiming_external_state() {
             session: None,
             source: StartSource::Resume,
         },
-        "old-claim",
-        &fixture_context(Timestamp::from_unix_ms(T0 + 40 * 86400000).unwrap()),
-        None,
-        None,
         Default::default(),
     )
     .unwrap();
@@ -1091,7 +1111,13 @@ fn latest_human_correction_is_shown_before_the_older_model_answer() {
         Some(stale)
     );
     let prepared = prepare(
-        &reader,
+        crate::briefing::BriefContext {
+            reader: &reader,
+            delivery_id: "latest-request",
+            context: &fixture_context(Timestamp::from_unix_ms(T0).unwrap()),
+            ranking_identity: None,
+            near: None,
+        },
         &scope_of(&reader),
         None,
         &[],
@@ -1100,10 +1126,6 @@ fn latest_human_correction_is_shown_before_the_older_model_answer() {
             session: None,
             source: StartSource::Resume,
         },
-        "latest-request",
-        &fixture_context(Timestamp::from_unix_ms(T0).unwrap()),
-        None,
-        None,
         command_surface::TokenBudget::Tokens(1000),
     )
     .unwrap();

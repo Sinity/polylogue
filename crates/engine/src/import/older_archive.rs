@@ -955,11 +955,7 @@ impl Engine {
                 let row = format!(
                     "{} {} chunk {}",
                     vector.model,
-                    vector
-                        .text_hash
-                        .iter()
-                        .map(|b| format!("{b:02x}"))
-                        .collect::<String>(),
+                    polylogue_model::hex(&vector.text_hash),
                     vector.chunk
                 );
                 report.tally("embedded", 1, outcome, &row);
