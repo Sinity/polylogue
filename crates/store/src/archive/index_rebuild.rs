@@ -7,9 +7,9 @@
 //! `archive.db` is never handled here.
 
 use crate::ConnExt as _;
-use crate::{OptionExt as _, ResultExt as _};
+use crate::OptionExt as _;
 use crate::{Result, StoreError};
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 

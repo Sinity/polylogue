@@ -112,13 +112,13 @@ fn run_namespace_never_falls_back_to_an_origin() {
         crate::query::compile("run:not-a-run", &options)
             .unwrap_err()
             .kind(),
-        "invalid_query"
+        polylogue_model::Code::InvalidQuery
     );
     assert_eq!(
         crate::query::compile("run:019a2f20-1234-7000-8000-0123456789ab", &options)
             .unwrap_err()
             .kind(),
-        "not_built"
+        polylogue_model::Code::NotBuilt
     );
 }
 

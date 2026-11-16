@@ -223,8 +223,8 @@ fn variant_restoration_is_idempotent_and_refuses_changed_facts() {
 }
 
 #[test]
-fn variant_ingress_keeps_author_and_first_time_apart() {
-    use polylogue_model::{Reference, authored::ImportAttribution};
+fn restored_variant_keeps_authorship_when_copied() {
+    use polylogue_model::authored::ImportAttribution;
     let mut origin = archive();
     let request = request("first", None, "Original");
     write_request(&mut origin, &request, 1);
@@ -241,31 +241,15 @@ fn variant_ingress_keeps_author_and_first_time_apart() {
     let mut rollback = current.clone();
     rollback.at = Timestamp::from_unix_ms(0).unwrap();
     restore(&target, &effect, &rollback, 3).unwrap();
-    let reference = Reference::parse("variant:first@first").unwrap();
-    let part = Reference::parse("variant:first@first#0").unwrap();
-    let attribution = ImportAttribution {
-        machine: "sender".into(),
-        input: "declared-bundle".into(),
-        chain: 2,
-        actor: Author::Script("importer.service".into()),
-        at: Timestamp::from_unix_ms(1).unwrap(),
-    };
-    declare_imports(&target, &reference, std::slice::from_ref(&attribution), 4).unwrap();
-    let history = imports::history(&target, &reference).unwrap().unwrap();
-    assert_eq!(history.observed.as_slice(), std::slice::from_ref(&current));
-    assert_eq!(history.declared, [attribution]);
-    assert_eq!(
-        imports::history(&target, &part).unwrap().unwrap().observed,
-        [current]
-    );
     let original = rows::get(&target, "first").unwrap().unwrap();
     assert_eq!(original.author, Author::Agent(None));
     assert_eq!(original.machine, "machine");
     let copied = archive();
     copy(&target, &copied).unwrap();
+    let copied = rows::get(&copied, "first").unwrap().unwrap();
     assert_eq!(
-        imports::history(&copied, &reference).unwrap().unwrap(),
-        history
+        (copied.author, copied.machine, copied.created_at),
+        (original.author, original.machine, original.created_at)
     );
 }
 

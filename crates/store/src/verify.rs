@@ -185,7 +185,7 @@ fn count(n: i64) -> u64 {
 fn rows(pool: &ReadPool, found: &mut Verification) -> Result<()> {
     let reader = pool.reader()?;
     let conn = reader.conn()?;
-    let one = |sql: &str| -> Result<i64> { Ok(conn.scalar(sql, [])?) };
+    let one = |sql: &str| -> Result<i64> { conn.scalar(sql, []) };
     found.counts = Counts {
         inputs: count(one("SELECT count(*) FROM source_input")?),
         revisions: count(one("SELECT count(*) FROM source_revision")?),

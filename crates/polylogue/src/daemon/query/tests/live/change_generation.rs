@@ -177,7 +177,7 @@ fn selection_output_preserves_unknown_and_empty_and_refuses_scalars() {
             shape_value(ColKind::Ids, &jiff::tz::TimeZone::UTC, &mut value)
                 .unwrap_err()
                 .code(),
-            "store"
+            polylogue_model::Code::Store
         );
     }
 }
@@ -195,7 +195,7 @@ fn scalar_sqlite_selection_values_are_not_treated_as_missing() {
             shape_value(ColKind::Ids, &jiff::tz::TimeZone::UTC, &mut value)
                 .unwrap_err()
                 .code(),
-            "store"
+            polylogue_model::Code::Store
         );
     }
 }

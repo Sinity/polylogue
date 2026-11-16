@@ -1,5 +1,5 @@
 //! Chronological metadata and calendar counts, without loading message bodies.
-use crate::{OptionExt as _, ResultExt as _};
+use crate::OptionExt as _;
 use crate::{Reader, Result, SqlValue};
 use query_language::time::{Clock, DaySetting};
 use serde::{Deserialize, Serialize};

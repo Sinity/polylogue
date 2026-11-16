@@ -33,7 +33,7 @@ fn apply(
             counter: 1,
             first_build: None,
             source_commit: Some(&fixture_commit()),
-            changes: changes,
+            changes,
             retraction: false,
             replacement: false,
         },

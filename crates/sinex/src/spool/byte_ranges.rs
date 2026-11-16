@@ -39,7 +39,9 @@ impl PinnedRange {
             && (whole.finalize().as_bytes() != &self.range.hash.0
                 || length != self.range.decoded_length)
         {
-            return invalid("captured chunks differ from their original body");
+            return Err(Error::invalid(
+                "captured chunks differ from their original body",
+            ));
         }
         Ok(self.range)
     }
@@ -60,7 +62,7 @@ fn group_outcome(
     if group.file_name().and_then(|name| name.to_str())
         != Some(hash(header.identity.as_bytes()).as_str())
     {
-        return invalid("capture group header has another identity");
+        return Err(Error::invalid("capture group header has another identity"));
     }
     Ok(Some(header.disposition))
 }
@@ -98,7 +100,7 @@ impl Spool {
     pub fn pin_body_range(&self, identity: &str) -> Result<PinnedRange> {
         let prepared = self.required(identity)?;
         let Some(Capture::Input(input)) = prepared.capture() else {
-            return invalid("body range reference is not an input");
+            return Err(Error::invalid("body range reference is not an input"));
         };
         let generation = input
             .generation
@@ -113,7 +115,9 @@ impl Spool {
             several => several.iter().map(|(_, d)| d.decoded_len).sum::<u64>() == input.length,
         };
         if !named || range.length()? != input.length {
-            return invalid("captured body differs from its original byte range");
+            return Err(Error::invalid(
+                "captured body differs from its original byte range",
+            ));
         }
         Ok(PinnedRange {
             order: prepared.order,

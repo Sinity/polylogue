@@ -130,14 +130,7 @@ impl QueryError {
     pub fn kind(&self) -> polylogue_model::Code {
         use polylogue_model::Code;
         match self {
-            QueryError::Language { error, .. } => match error.kind {
-                query_language::ErrorKind::InvalidQuery => Code::InvalidQuery,
-                query_language::ErrorKind::UnknownField => Code::UnknownField,
-                query_language::ErrorKind::BadValue => Code::BadValue,
-                query_language::ErrorKind::NotAQuery => Code::NotAQuery,
-                query_language::ErrorKind::Ambiguous => Code::Ambiguous,
-                query_language::ErrorKind::StaleCursor => Code::StaleCursor,
-            },
+            QueryError::Language { error, .. } => error.kind.into(),
             QueryError::Syntax { .. } | QueryError::Invalid { .. } => Code::InvalidQuery,
             QueryError::UnknownField { .. } => Code::UnknownField,
             QueryError::BadValue { .. } => Code::BadValue,

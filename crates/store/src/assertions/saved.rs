@@ -44,7 +44,7 @@ pub(crate) fn saved_definition(
         .ok_or_else(|| crate::StoreError::invalid("saved definition has no name"))?;
     let values::Value::SavedQuery(value) = fact
         .validate()
-        .map_err(|error| crate::StoreError::invalid(&error.to_string()))?
+        .map_err(|error| crate::StoreError::invalid(error.to_string()))?
     else {
         return Err(crate::StoreError::invalid(
             "saved definition has another value shape",

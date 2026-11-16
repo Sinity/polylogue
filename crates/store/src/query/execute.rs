@@ -1,9 +1,9 @@
 //! Executing the one compiled query and shaping declared public values.
 use super::compile::PageColumns;
 use super::{ColKind, Program};
+use crate::ResultExt as _;
 use crate::search::{SearchDriver, SnippetIndex, SnippetQuery, Within};
 use crate::selection::{sql_value, values};
-use crate::{OptionExt as _, ResultExt as _};
 use crate::{Reader, SqlValue, selection::SelectionError};
 use serde_json::Value;
 
@@ -531,13 +531,21 @@ impl Reader<'_> {
                 program
                     .measure
                     .as_ref()
-                    .ok_or_else(|| invalid("query has no measure selection"))?
+                    .ok_or_else(|| SelectionError::invalid(
+                        polylogue_model::Code::BadRequest,
+                        "query has no measure selection"
+                    ))?
                     .selection_sql
             ),
             QueryPopulation::MeasurePopulation => program
                 .measure
                 .as_ref()
-                .ok_or_else(|| invalid("query has no measure population"))?
+                .ok_or_else(|| {
+                    SelectionError::invalid(
+                        polylogue_model::Code::BadRequest,
+                        "query has no measure population",
+                    )
+                })?
                 .population_sql
                 .clone(),
         };
@@ -551,12 +559,6 @@ impl Reader<'_> {
             })
         })?;
         Ok(keys)
-    }
-}
-fn invalid(message: &str) -> SelectionError {
-    SelectionError::Invalid {
-        kind: polylogue_model::Code::BadRequest,
-        message: message.into(),
     }
 }
 
@@ -852,7 +854,9 @@ pub fn options_snapshot(
             .as_deref()
             .map(polylogue_model::SessionId::parse)
             .transpose()
-            .map_err(|error| invalid(&error.to_string()))?,
+            .map_err(|error| {
+                SelectionError::invalid(polylogue_model::Code::BadRequest, error.to_string())
+            })?,
         embeddings: options.embeddings,
         why,
         ranking_identity,
@@ -895,7 +899,10 @@ pub fn prepare_measure(
     };
     // A measured selection is a derived relation: its sessions in order.
     let super::compile::Statements::Derived(derived) = &mut program.statements else {
-        return Err(invalid("a measured query reads a derived relation"));
+        return Err(SelectionError::invalid(
+            polylogue_model::Code::BadRequest,
+            "a measured query reads a derived relation",
+        ));
     };
     match paging {
         Some(crate::measure::Paging::Sessions) => {

@@ -51,7 +51,7 @@ fn write_test_rows(
         rows::ReadingWrite {
             texts: &crate::text_rows::TextIds::new(tx, false).unwrap(),
             resolution: batch.parse[0].resolution.as_ref().unwrap(),
-            counter: counter,
+            counter,
             first_build: first,
             source_commit: Some(&fixture_commit()),
             changes: &changes,

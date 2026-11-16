@@ -274,7 +274,8 @@ fn deliver(
         serde_json::from_value(accepted.arguments.clone()).map_err(|e| e.to_string())?;
     let destination = values
         .calling_process
-        .str("to")
+        .get("to")
+        .and_then(serde_json::Value::as_str)
         .map(str::to_owned)
         .map(PathBuf::from);
     // Writing to a destination streams the reading; a terminal shows

@@ -1,5 +1,5 @@
 //! Packed readings and their shared text. Source rows choose what is shown.
-use crate::{OptionExt as _, ResultExt as _};
+use crate::ResultExt as _;
 use crate::{Result, encoding, first_build::FirstBuild};
 use polylogue_model::{BlobHash, Block, Message, bundle::MessageProjection};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -325,7 +325,7 @@ fn read_body<T: DeserializeOwned>(
     body: &[u8],
 ) -> Result<T> {
     let mut value: serde_json::Value = encoding::unpack_json(body)?;
-    let column = if kind == polylogue_model::Code::Message {
+    let column = if kind == "message" {
         "version_pk"
     } else {
         "version_hash"

@@ -45,13 +45,6 @@ fn each_line_is_an_event_on_the_harness_session() {
 }
 
 #[test]
-fn event_kinds_are_snake_case() {
-    assert_eq!(event_kind("PreToolUse"), "hook_pre_tool_use");
-    assert_eq!(event_kind("UserPromptSubmit"), "hook_user_prompt_submit");
-    assert_eq!(event_kind("session-end"), "hook_session_end");
-}
-
-#[test]
 fn recognizes_both_layouts() {
     assert!(recognize(
         Path::new("/s/polylogue/hooks/claude-code-s1.jsonl"),

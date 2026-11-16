@@ -410,8 +410,8 @@ fn retake_occurrences(
 ) -> Result<bool> {
     match value {
         serde_json::Value::Object(object) => {
-            let occurrence = object.str("input") == Some(input)
-                && object.i64("chain") == Some(from)
+            let occurrence = object.get("input").and_then(serde_json::Value::as_str) == Some(input)
+                && object.get("chain").and_then(serde_json::Value::as_i64) == Some(from)
                 && object.contains_key("sequence")
                 && object.contains_key("covered");
             if occurrence {

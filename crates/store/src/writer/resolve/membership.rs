@@ -4,7 +4,6 @@
 //! block observations before composition; the shown value of each touched
 //! item comes from `writer/compose.rs` over each input's latest chain.
 use super::*;
-use crate::ConnExt as _;
 use crate::encoding::{PreparedDocument, PreparedMessage};
 use crate::writer::compose;
 use polylogue_model::{Completion, FieldGroup, IdKind, MessageId, Route};

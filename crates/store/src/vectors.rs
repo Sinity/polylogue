@@ -484,12 +484,11 @@ impl Vectors {
     /// An embedding key starting with `prefix` that has vectors, without
     /// counting them.
     pub fn key_with_prefix(&self, prefix: &str) -> Result<Option<String>> {
-        use rusqlite::OptionalExtension;
         let _read = self.read_transaction()?;
-        Ok(self.conn.scalar_optional(
+        self.conn.scalar_optional(
             "SELECT model FROM embedded WHERE substr(model, 1, length(?1)) = ?1 LIMIT 1",
             [prefix],
-        )?)
+        )
     }
 
     /// Revision of a model in this handle's SQLite read snapshot.

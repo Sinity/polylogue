@@ -1,6 +1,6 @@
 //! Product hash lookup over immutable extents in the shared segment container.
 use crate::ConnExt as _;
-use crate::{OptionExt as _, ResultExt as _};
+use crate::ResultExt as _;
 use crate::{Result, StoreError};
 use polylogue_model::BlobHash;
 use rusqlite::{Connection, OpenFlags, OptionalExtension};

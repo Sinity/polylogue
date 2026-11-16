@@ -1,7 +1,6 @@
 //! A capture read is saved in the SDK spool before its temporary bytes are
 //! released. Only a confirmed Input frame changes the source cache.
 use super::*;
-use crate::ConnExt as _;
 use crate::input_rows::{InputRows, Revision};
 use crate::primary::{
     Capture, CaptureGroup, CapturedInput, Material, PendingCapture, Product, ProductWrite,

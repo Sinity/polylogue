@@ -1,7 +1,6 @@
 //! Primary writes prepare producer operations in the spool. Only confirmed
 //! events write the cache.
 use super::*;
-use crate::ConnExt as _;
 mod reading;
 use crate::primary::{Product, ProductWrite, SourceLocation};
 use polylogue_model::authored::PreparedRequest;

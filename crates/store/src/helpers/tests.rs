@@ -1,4 +1,5 @@
 use super::*;
+use crate::StoreError;
 #[test]
 fn scalar_and_optional_preserve_sql_results() {
     let mut conn = Connection::open_in_memory().unwrap();

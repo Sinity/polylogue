@@ -2,7 +2,6 @@
 //! test arms a point to fail or panic; without it every check compiles to
 //! nothing, and no shipped build enables the feature.
 
-use polylogue_model::LockExt;
 /// What an armed point does when reached.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
@@ -21,6 +20,7 @@ pub enum Action {
 #[cfg(feature = "faults")]
 mod armed {
     use super::Action;
+    use polylogue_model::LockExt;
     use std::sync::{Condvar, Mutex};
 
     /// `(point, subject substring, action, reaches to let pass, hits left)`.

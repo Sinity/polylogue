@@ -83,10 +83,7 @@ fn send(
             ChangePosition::parse(s)
                 .map(|p| p.to_string())
                 .ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        ("the change position is invalid"),
-                    )
+                    io::Error::new(io::ErrorKind::InvalidData, "the change position is invalid")
                 })
         })
         .transpose()?;
@@ -123,7 +120,7 @@ fn consume(
         if frame.event != expected {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                ("the stream event does not match its payload"),
+                "the stream event does not match its payload",
             ));
         }
         let complete = match line {
@@ -136,7 +133,7 @@ fn consume(
                 if begun.is_some() {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
-                        ("the change feed repeated its header"),
+                        "the change feed repeated its header",
                     ));
                 }
                 let old = previous.and_then(ChangePosition::parse);
@@ -148,7 +145,7 @@ fn consume(
                 {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
-                        ("the feed header does not continue the requested position"),
+                        "the feed header does not continue the requested position",
                     ));
                 }
                 begun = Some((position, generation, replacement));
@@ -158,20 +155,17 @@ fn consume(
                 let Some((previous, _, _)) = &begun else {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
-                        ("the change feed omitted its header"),
+                        "the change feed omitted its header",
                     ));
                 };
                 if &position != previous {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
-                        ("an event advanced the completed change position"),
+                        "an event advanced the completed change position",
                     ));
                 }
                 seen = seen.checked_add(1).ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        ("the change count is too large"),
-                    )
+                    io::Error::new(io::ErrorKind::InvalidData, "the change count is too large")
                 })?;
                 false
             }
@@ -183,13 +177,13 @@ fn consume(
                 let Some((previous, generation, expected_replacement)) = &begun else {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
-                        ("the change feed omitted its header"),
+                        "the change feed omitted its header",
                     ));
                 };
                 let target = ChangePosition::parse(&position).ok_or_else(|| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
-                        ("the completed change position is invalid"),
+                        "the completed change position is invalid",
                     )
                 })?;
                 if &target.generation != generation
@@ -198,7 +192,7 @@ fn consume(
                 {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
-                        ("the change feed completion does not describe its delivered batch"),
+                        "the change feed completion does not describe its delivered batch",
                     ));
                 }
                 if !replacement
@@ -213,7 +207,7 @@ fn consume(
                 {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
-                        ("the change feed completion moved its checkpoint backwards"),
+                        "the change feed completion moved its checkpoint backwards",
                     ));
                 }
                 true

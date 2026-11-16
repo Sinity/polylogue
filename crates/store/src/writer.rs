@@ -12,9 +12,9 @@
 //! upsert, so that changes nothing.
 
 use crate::ConnExt as _;
+use crate::OptionExt as _;
 use crate::archive::{Archive, bump_counter, open_runtime_writer};
 use crate::blobs::{Change, FileFacts, NewBlob};
-use crate::{OptionExt as _, ResultExt as _};
 use crate::{Result, StoreError};
 use polylogue_model::LockExt;
 use polylogue_model::{
@@ -2329,8 +2329,8 @@ impl Inner {
                         p,
                         rows::ReadingWrite {
                             texts: &self.texts,
-                            resolution: resolution,
-                            counter: counter,
+                            resolution,
+                            counter,
                             first_build: self.first_build.as_deref(),
                             source_commit: Some(&source_commit),
                             changes: &changes,

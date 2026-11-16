@@ -1,5 +1,5 @@
 //! Commit positions of the selected stored records.
-use crate::{OptionExt as _, ResultExt as _};
+use crate::OptionExt as _;
 use crate::{Reader, Result, StoreError};
 use polylogue_model::{DocumentId, Link, SessionId};
 use rusqlite::{OptionalExtension, params};

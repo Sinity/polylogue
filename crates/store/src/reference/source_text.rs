@@ -8,7 +8,7 @@ use polylogue_model::{
     bundle::fragments::seek::{NativeTextBody, NativeTextPiece, NativeTextPosition, TextField},
     text_body,
 };
-use rusqlite::{OptionalExtension, params};
+use rusqlite::params;
 use std::ops::ControlFlow;
 
 type Visit<'a> = dyn FnMut(NativeTextPiece, &str) -> Result<ControlFlow<()>> + 'a;

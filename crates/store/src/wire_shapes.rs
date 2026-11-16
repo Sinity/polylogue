@@ -333,7 +333,9 @@ pub fn apply(tx: &Transaction<'_>, source: Source<'_>, step: &ParseStep) -> Resu
 /// transaction. Parser reset flags alone do not grant this operation.
 pub(crate) fn replace(tx: &Transaction<'_>, source: Source<'_>, step: &ParseStep) -> Result<()> {
     if !step.reset || step.delivery.is_some() {
-        return invalid("wire replacement requires its first reset step");
+        return Err(StoreError::invalid(
+            "wire replacement requires its first reset step",
+        ));
     }
     apply_inner(tx, source, step, true)
 }
@@ -349,7 +351,9 @@ fn apply_inner(
         return Ok(());
     }
     if step.parsed_upto < step.start || step.parsed_upto > source.length {
-        return invalid("wire step lies outside its committed source");
+        return Err(StoreError::invalid(
+            "wire step lies outside its committed source",
+        ));
     }
     let mut occurrence = Occurrence::from(source);
     occurrence.covered = match step.delivery {
@@ -416,12 +420,14 @@ fn apply_inner(
             && step.start == old.last_start
             && hash != old.last_hash
         {
-            return invalid(
+            return Err(StoreError::invalid(
                 "the same wire source range has different observations under one reading version",
-            );
+            ));
         }
         if !duplicate && !step.reset && step.start < old.parsed_upto {
-            return invalid("wire step overlaps a committed source range");
+            return Err(StoreError::invalid(
+                "wire step overlaps a committed source range",
+            ));
         }
     }
     if duplicate {
@@ -655,9 +661,7 @@ fn add(left: u64, right: u64) -> Result<u64> {
     left.checked_add(right)
         .or_invalid("wire count exceeds its representation")
 }
-fn invalid<T>(what: &str) -> Result<T> {
-    Err(StoreError::Invalid(what.into()))
-}
+
 fn validate(shape: &WireShape) -> Result<()> {
     const TYPES: [&str; 6] = ["null", "boolean", "number", "string", "array", "object"];
     if shape
@@ -666,16 +670,16 @@ fn validate(shape: &WireShape) -> Result<()> {
         .chain(shape.expected.iter())
         .any(|kind| !TYPES.contains(&kind.as_str()))
     {
-        return invalid("wire shape has an unknown JSON type");
+        return Err(StoreError::invalid("wire shape has an unknown JSON type"));
     }
     if !shape.path.is_empty() && !shape.path.starts_with('/') {
-        return invalid("wire path is not canonical");
+        return Err(StoreError::invalid("wire path is not canonical"));
     }
     for part in shape.path.split('/').skip(1) {
         let mut chars = part.chars();
         while let Some(ch) = chars.next() {
             if ch == '~' && !matches!(chars.next(), Some('0' | '1' | '2' | '3')) {
-                return invalid("wire path has an invalid escape");
+                return Err(StoreError::invalid("wire path has an invalid escape"));
             }
         }
     }

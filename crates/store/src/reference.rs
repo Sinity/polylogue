@@ -2,7 +2,7 @@
 //! hashes stream these same chunks and never load a whole session at once.
 mod source_text;
 
-use crate::{OptionExt as _, ResultExt as _};
+use crate::OptionExt as _;
 use crate::{Reader, Result, StoreError};
 use polylogue_model::{
     BlobHash, Block, Reference, SpanBounds, SpanError, SpanUnit, TEXT_BODY_SEPARATOR,

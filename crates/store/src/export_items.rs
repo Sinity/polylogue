@@ -1,5 +1,5 @@
 //! Export items sorted in a temporary database, private to one import.
-use crate::{OptionExt as _, ResultExt as _};
+use crate::OptionExt as _;
 use crate::{Result, StoreError};
 use polylogue_model::{MessageId, SessionId};
 use rusqlite::{Connection, OptionalExtension, params};

@@ -87,7 +87,11 @@ impl TestDaemon {
             reader
                 .vectors_writer()
                 .unwrap()
-                .put("local/synthetic/2/document/unit", &vectors)
+                .put(
+                    "local/synthetic/2/document/unit",
+                    &vectors,
+                    &polylogue_model::WallClock::new(jiff::Timestamp::now),
+                )
                 .unwrap();
         }
         listener

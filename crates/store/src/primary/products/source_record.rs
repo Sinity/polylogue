@@ -138,8 +138,8 @@ impl SourceRecord {
 }
 
 fn known(index: &Connection, reading: &Reading, record: &SourceRecord) -> Result<bool> {
-    Ok(index.exists("SELECT EXISTS(SELECT 1 FROM confirmed_event WHERE input=?1 AND chain=?2 AND reading_version=?3 AND reference=?4 AND value_hash=?5)",
-        params![reading.input.id,reading.chain,reading.reading_version,record.reference,record.value_hash.0.as_slice()])?)
+    index.exists("SELECT EXISTS(SELECT 1 FROM confirmed_event WHERE input=?1 AND chain=?2 AND reading_version=?3 AND reference=?4 AND value_hash=?5)",
+        params![reading.input.id,reading.chain,reading.reading_version,record.reference,record.value_hash.0.as_slice()])
 }
 
 fn uncovered(index: &Connection, reading: &Reading, record: &SourceRecord) -> Result<bool> {

@@ -1,6 +1,6 @@
 //! Source rows have one schema, in the standalone archive or the primary cache.
 use crate::ConnExt as _;
-use crate::{OptionExt as _, ResultExt as _};
+use crate::OptionExt as _;
 use crate::{Result, StoreError};
 use rusqlite::{Connection, OptionalExtension};
 use std::sync::OnceLock;

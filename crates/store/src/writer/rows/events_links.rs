@@ -1,6 +1,5 @@
 //! Apply worker-resolved event and link values and their compact memberships.
 use super::*;
-use crate::ConnExt as _;
 
 impl RowWriter<'_, '_> {
     pub(super) fn refresh_event(&self, pk: i64) -> Result<()> {

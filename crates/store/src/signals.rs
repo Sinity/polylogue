@@ -2,14 +2,14 @@
 //! transaction. The evaluator and delivery worker make the decisions; this
 //! module stores them unchanged.
 use crate::ConnExt as _;
-use crate::{OptionExt as _, ResultExt as _};
+use crate::OptionExt as _;
 use crate::{Result, StoreError, source::Source};
 use polylogue_model::{
     authored::{AuthoredEffect, DeliveryRecord, ExecutionEligibility},
     signal::{Checkpoint, Commit, EventRecord, Metadata},
     user::{UserOutcome, UserRequest},
 };
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, params};
 use shared_signals::notifications::Outlets;
 use std::collections::BTreeSet;
 

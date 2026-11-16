@@ -143,7 +143,7 @@ pub(crate) fn changed_roots(conn: &Connection, after: i64) -> Result<BTreeSet<St
 
 pub(crate) fn canonical_fact(fact: &AssertionFact) -> Result<AssertionFact> {
     fact.canonicalized()
-        .map_err(|error| crate::StoreError::invalid(&error.to_string()))
+        .map_err(|error| crate::StoreError::invalid(error.to_string()))
 }
 
 /// The exact rubric revision an annotation was derived from: the one
@@ -212,7 +212,7 @@ fn slots_of(conn: &Connection, fact: &AssertionFact) -> Result<Vec<UniqueSlot>> 
     };
     Ok(fact
         .unique(rubric.as_ref())
-        .map_err(|error| crate::StoreError::invalid(&error.to_string()))?
+        .map_err(|error| crate::StoreError::invalid(error.to_string()))?
         .map(|unique| unique.slots)
         .unwrap_or_default())
 }
@@ -592,7 +592,7 @@ pub(crate) fn currency_error(error: CurrencyError<StoreError>) -> StoreError {
     match error {
         CurrencyError::Source(error) => error,
         CurrencyError::Cycle(revision) => {
-            crate::StoreError::invalid(&format!("withdrawals of {revision} form a cycle"))
+            crate::StoreError::invalid(format!("withdrawals of {revision} form a cycle"))
         }
     }
 }

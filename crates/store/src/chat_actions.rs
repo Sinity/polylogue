@@ -217,15 +217,15 @@ pub(crate) fn enqueue(
     add_event(
         tx,
         ChatEvent {
-            request: request,
+            request,
             id: &new.id,
-            at: at,
+            at,
             kind: phase,
-            phase: phase,
+            phase,
             detail: None,
             by: None,
             receipt: None,
-            seq: seq,
+            seq,
         },
     )?;
     Ok(new.id.clone())
@@ -255,15 +255,15 @@ pub(crate) fn claim(tx: &Connection, by: &str, at: i64, seq: i64, request: &str)
     add_event(
         tx,
         ChatEvent {
-            request: request,
+            request,
             id: &id,
-            at: at,
+            at,
             kind: "claimed",
             phase: "claimed",
             detail: None,
             by: Some(by),
             receipt: None,
-            seq: seq,
+            seq,
         },
     )?;
     Ok(id)
@@ -321,15 +321,15 @@ pub(crate) fn report(tx: &Connection, event: ChatEvent<'_>) -> Result<()> {
     add_event(
         tx,
         ChatEvent {
-            request: request,
-            id: id,
-            at: at,
-            kind: kind,
-            phase: phase,
-            detail: detail,
+            request,
+            id,
+            at,
+            kind,
+            phase,
+            detail,
             by: Some(by),
-            receipt: receipt,
-            seq: seq,
+            receipt,
+            seq,
         },
     )
 }
@@ -359,14 +359,14 @@ pub(crate) fn decide(
         tx,
         ChatEvent {
             request: &request.id,
-            id: id,
-            at: at,
-            kind: kind,
-            phase: phase,
-            detail: detail,
+            id,
+            at,
+            kind,
+            phase,
+            detail,
             by: Some(by),
             receipt: None,
-            seq: seq,
+            seq,
         },
     )
 }

@@ -679,7 +679,12 @@ pub fn resume_output(
     let data = answer
         .value()
         .expect("output handlers receive answers with values");
-    if !values.calling_process.bool("exec").unwrap_or(false) {
+    if !values
+        .calling_process
+        .get("exec")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+    {
         if json {
             println!("{}", polylogue_render::terminal::json(data, false));
         } else {

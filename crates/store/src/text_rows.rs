@@ -1,8 +1,8 @@
 //! Stored text identity and its deferred full-text entries. Callers group row changes
 //! in their own transaction; indexing consumes committed queue entries.
 
+use crate::OptionExt as _;
 use crate::Result;
-use crate::{OptionExt as _, ResultExt as _};
 mod groups;
 mod identities;
 #[cfg(any(test, feature = "fixture"))]

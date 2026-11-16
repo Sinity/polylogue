@@ -1,5 +1,5 @@
 //! Access-scope changes invalidate in-flight reads before the cache changes.
-use crate::{OptionExt as _, ResultExt as _};
+use crate::ResultExt as _;
 use crate::{Result, StoreError};
 use polylogue_model::LockExt;
 use std::collections::HashMap;

@@ -170,7 +170,7 @@ fn tool_result(
         Some(Json::Object(content)) => {
             let streams: Vec<&str> = ["stdout", "stderr"]
                 .iter()
-                .filter_map(|key| content.str(key))
+                .filter_map(|key| content.get(*key).and_then(Json::as_str))
                 .filter(|text| !text.is_empty())
                 .collect();
             (!streams.is_empty()).then(|| streams.join("\n"))

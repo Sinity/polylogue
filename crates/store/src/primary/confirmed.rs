@@ -38,7 +38,7 @@ use crate::ConnExt as _;
 mod replay;
 use crate::{Result, StoreError};
 pub(crate) use replay::save as save_replay;
-pub(crate) use replay::{has_confirmed_event, replay_state, sinex_context};
+pub(crate) use replay::{has_confirmed_event, replay_state};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Serialize, de::DeserializeOwned};
 use std::collections::{BTreeMap, BTreeSet};
@@ -51,10 +51,10 @@ fn unpacked<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
 }
 
 pub(crate) fn checkpoint(index: &Connection) -> Result<Option<i64>> {
-    Ok(index.scalar_optional(
+    index.scalar_optional(
         "SELECT CAST(value AS INTEGER) FROM meta WHERE key='confirmed_position'",
         [],
-    )?)
+    )
 }
 pub(crate) fn position(index: &Connection) -> Result<i64> {
     Ok(checkpoint(index)?.unwrap_or(0))
@@ -386,8 +386,7 @@ fn stage_events(index: &Connection, through: i64) -> Result<()> {
             ConfirmedChange::Restored => match old {
                 Some(mut row)
                     if row.state != "tombstoned"
-                        && (row.product.is_some()
-                            || row.kind == polylogue_model::Code::Refused) =>
+                        && (row.product.is_some() || row.kind == "refused") =>
                 {
                     row.state = "live".into();
                     row.changed = position;
@@ -860,17 +859,17 @@ fn pending(index: &Connection) -> Result<Option<i64>> {
 }
 
 fn next_position(index: &Connection) -> Result<Option<i64>> {
-    Ok(index.scalar(
+    index.scalar(
         "SELECT min(position) FROM primary_complete WHERE position>=?1",
         [checkpoint(index)?.unwrap_or(-1)],
-    )?)
+    )
 }
 
 fn completion(index: &Connection, position: i64) -> Result<Option<Vec<u8>>> {
-    Ok(index.scalar(
+    index.scalar(
         "SELECT marker FROM primary_complete WHERE position=?1",
         [position],
-    )?)
+    )
 }
 
 fn next(index: &Connection) -> Result<Step> {

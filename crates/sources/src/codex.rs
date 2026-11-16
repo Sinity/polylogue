@@ -851,7 +851,10 @@ impl Rollout {
         }
         if tool.ends_with("spawn_agent")
             && let Ok(Json::Object(reply)) = serde_json::from_str::<Json>(text.trim())
-            && let Some(child) = reply.str("agent_id").and_then(session_id)
+            && let Some(child) = reply
+                .get("agent_id")
+                .and_then(Json::as_str)
+                .and_then(session_id)
         {
             link(
                 parser_state,

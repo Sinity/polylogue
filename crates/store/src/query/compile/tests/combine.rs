@@ -231,7 +231,11 @@ fn snapshot_operands_refuse_rebuilding_current_rows() {
         "result:captured | fuse (sessions)",
     ] {
         let error = compile(text, &options).unwrap_err();
-        assert_eq!(error.kind(), "not_built", "{text}: {error}");
+        assert_eq!(
+            error.kind(),
+            polylogue_model::Code::NotBuilt,
+            "{text}: {error}"
+        );
     }
 }
 
@@ -257,7 +261,11 @@ fn projected_set_operands_refuse_reference_text_and_reference_target_mismatches(
         for operation in ["union", "diff"] {
             let text = format!("{left} | {operation} ({right})");
             let error = compile(&text, &options).unwrap_err();
-            assert_eq!(error.kind(), "invalid_query", "{text}: {error}");
+            assert_eq!(
+                error.kind(),
+                polylogue_model::Code::InvalidQuery,
+                "{text}: {error}"
+            );
         }
         // Over one row domain, intersect and except compare row
         // identities and keep the left operand's columns.

@@ -22,7 +22,14 @@ use serde_json::json;
 fn refused(e: &StoreError) -> Failure {
     match e {
         StoreError::ChatAction(code) | StoreError::Backfill(code) => {
-            let refused = actions::refusal(e.code());
+            let Some(code) = polylogue_model::Code::from_name(code) else {
+                return crate::protocol::protocol_mismatch(
+                    "browser action",
+                    format!("unknown failure code {code:?}"),
+                )
+                .into();
+            };
+            let refused = actions::refusal(code);
             Failure::new(refused.0, refused.0.as_str())
         }
         other => Failure::store(other),

@@ -1,6 +1,6 @@
 //! A portable span observes only selected original bytes. Resolving a known
 //! prefix never establishes completeness or hashes the unavailable remainder.
-use crate::{OptionExt as _, ResultExt as _};
+use crate::OptionExt as _;
 use crate::{Reader, Result, StoreError};
 use polylogue_model::bundle::{
     TextSpanOrigin,

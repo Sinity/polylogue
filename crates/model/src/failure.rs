@@ -2,6 +2,10 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Code {
+    ReadFailed,
+    Empty,
+    ModelCallsOff,
+    DaemonUnavailable,
     Query,
     Sql,
     InvalidQuery,
@@ -78,6 +82,10 @@ pub enum Code {
     PrimaryContextInvalid,
 }
 stored_names!(Code {
+    ReadFailed => "read_failed",
+    Empty => "empty",
+    ModelCallsOff => "model_calls_off",
+    DaemonUnavailable => "daemon_unavailable",
     Query => "query",
     Sql => "sql",
     InvalidQuery => "invalid_query",
@@ -153,5 +161,18 @@ stored_names!(Code {
     PrimaryContextUnavailable => "primary_context_unavailable",
     PrimaryContextInvalid => "primary_context_invalid",
 });
+impl From<query_language::ErrorKind> for Code {
+    fn from(kind: query_language::ErrorKind) -> Self {
+        match kind {
+            query_language::ErrorKind::InvalidQuery => Self::InvalidQuery,
+            query_language::ErrorKind::UnknownField => Self::UnknownField,
+            query_language::ErrorKind::BadValue => Self::BadValue,
+            query_language::ErrorKind::NotAQuery => Self::NotAQuery,
+            query_language::ErrorKind::Ambiguous => Self::Ambiguous,
+            query_language::ErrorKind::StaleCursor => Self::StaleCursor,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests;

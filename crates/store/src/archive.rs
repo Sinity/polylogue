@@ -7,9 +7,9 @@ mod metadata;
 pub use metadata::Mode;
 
 use crate::ConnExt as _;
-use crate::{OptionExt as _, ResultExt as _};
+use crate::OptionExt as _;
 use crate::{Result, StoreError, schema};
-use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction};
+use rusqlite::{Connection, OpenFlags, Transaction};
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 
@@ -23,7 +23,7 @@ pub(crate) fn bump_counter(tx: &Transaction<'_>) -> Result<i64> {
         .unwrap_or(0_i64)
         .checked_add(1)
         .or_invalid("write counter exhausted")?;
-    crate::meta_set(&tx, "write_counter", next.to_string())?;
+    crate::meta_set(tx, "write_counter", next.to_string())?;
     Ok(next)
 }
 

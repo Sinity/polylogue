@@ -235,7 +235,7 @@ fn saved_queries_from(
             let mut value = SavedQuery {
                 text: definition.value.text,
                 revision: definition.reference.revision.clone().ok_or_else(|| {
-                    invalid(
+                    SelectionError::invalid(
                         polylogue_model::Code::Store,
                         "saved definition does not name a revision",
                     )

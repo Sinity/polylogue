@@ -2,7 +2,6 @@
 //! delivery history; only uncommitted coordination lives in memory.
 use crate::briefing::Prepared;
 use crate::daemon::{query, scope::SharedScopeIndex};
-use polylogue_model::JsonExt as _;
 use polylogue_model::{Reference, SessionId, Timestamp, assertion::LinkRole};
 use polylogue_store::{Reader, StoreError};
 use std::collections::HashMap;
@@ -166,9 +165,12 @@ fn already_given(
             ));
         }
         for row in page.rows {
-            let id = row.str("id").ok_or_else(|| {
-                StoreError::Invalid("advisory history lacks a delivery identity".into())
-            })?;
+            let id = row
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    StoreError::Invalid("advisory history lacks a delivery identity".into())
+                })?;
             let refs = reader.delivery_refs(id)?.ok_or_else(|| {
                 StoreError::Invalid("advisory history changed while reading".into())
             })?;

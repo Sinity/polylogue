@@ -8,8 +8,8 @@ pub use search::{SCHEMA, VariantMatch, project};
 #[cfg(test)]
 mod tests;
 
+use crate::ResultExt as _;
 use crate::source::Source;
-use crate::{OptionExt as _, ResultExt as _};
 use crate::{Reader, Result, StoreError};
 use polylogue_model::user::{UserOutcome, UserRequest};
 use polylogue_model::{

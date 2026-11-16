@@ -129,11 +129,6 @@ static FIELDS: Fields = Fields::new(
     ],
 );
 
-/// `PreToolUse` → `hook_pre_tool_use`.
-fn event_kind(event_type: &str) -> String {
-    routed_kind(polylogue_model::live::HOOK_PREFIX, event_type)
-}
-
 /// The event kind of a line of `route`, or `None` for an unknown route.
 fn route_prefix(route: Option<&str>) -> Option<&'static str> {
     match route {

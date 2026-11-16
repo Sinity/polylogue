@@ -49,7 +49,7 @@ fn validate_value(
 ) -> Result<(values::Value, Option<Reference>)> {
     statement
         .validate_links()
-        .map_err(|error| crate::StoreError::invalid(&error.to_string()))?;
+        .map_err(|error| crate::StoreError::invalid(error.to_string()))?;
     let mut value = if live_value {
         values::decode_live(
             statement.kind,
@@ -63,7 +63,7 @@ fn validate_value(
             statement.value.as_ref(),
         )
     }
-    .map_err(|error| crate::StoreError::invalid(&error.to_string()))?;
+    .map_err(|error| crate::StoreError::invalid(error.to_string()))?;
     if let values::Value::Setting(setting) = &mut value {
         setting.fields = setting
             .fields
@@ -73,7 +73,7 @@ fn validate_value(
                 &request.machine,
                 mode,
             )
-            .map_err(|error| crate::StoreError::invalid(&error.to_string()))?;
+            .map_err(|error| crate::StoreError::invalid(error.to_string()))?;
         statement.value = Some(serde_json::to_value(setting)?);
     }
     if let values::Value::SavedQuery(value) = &value {
@@ -95,7 +95,7 @@ fn validate_value(
         })?;
         let values::Value::Rubric(rubric) = exact_fact(conn, &reference)?
             .validate()
-            .map_err(|error| crate::StoreError::invalid(&error.to_string()))?
+            .map_err(|error| crate::StoreError::invalid(error.to_string()))?
         else {
             return Err(crate::StoreError::invalid(
                 "annotation rubric is not a rubric",
@@ -152,7 +152,7 @@ fn validate_value(
             }
             let values::Value::Pass(pass) = pass
                 .validate()
-                .map_err(|error| crate::StoreError::invalid(&error.to_string()))?
+                .map_err(|error| crate::StoreError::invalid(error.to_string()))?
             else {
                 return Err(crate::StoreError::invalid(
                     "annotation origin is not a pass",
@@ -237,14 +237,14 @@ fn refusal(kind: &NewAssertion, refused: Refused<StoreError>) -> StoreError {
             kind.kind.as_str(),
             list(holders).join(", ")
         )),
-        Refusal::Count { declared, written } => crate::StoreError::invalid(&format!(
+        Refusal::Count { declared, written } => crate::StoreError::invalid(format!(
             "the request declared {declared} writes and carries {written}"
         )),
         Refusal::Abandoned(write) => {
-            crate::StoreError::invalid(&format!("write {write} of this request was refused"))
+            crate::StoreError::invalid(format!("write {write} of this request was refused"))
         }
         Refusal::Cycle(revision) => {
-            crate::StoreError::invalid(&format!("withdrawals of {revision} form a cycle"))
+            crate::StoreError::invalid(format!("withdrawals of {revision} form a cycle"))
         }
         Refusal::Links(error) => error,
     }
@@ -448,7 +448,7 @@ fn accept(
             }
             let unique = statement
                 .unique(&value, &request.authorship.author, rubric.as_ref())
-                .map_err(|error| crate::StoreError::invalid(&error.to_string()))?;
+                .map_err(|error| crate::StoreError::invalid(error.to_string()))?;
             // Only a write that a later one could name is previewed.
             if index + 1 < statements.len() {
                 let id = authored::write_id(&request.id, index + 1, statements.len());

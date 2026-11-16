@@ -2,7 +2,7 @@
 //! position from an earlier build is recognized as one.
 use crate::ConnExt as _;
 use crate::Result;
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::Connection;
 
 pub(crate) fn create(index: &Connection) -> Result<()> {
     let boot = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
@@ -55,7 +55,7 @@ fn begin(
     let result = (|| {
         let tx = index.unchecked_transaction()?;
         let value = |key| -> Result<Option<String>> {
-            Ok(tx.scalar_optional("SELECT value FROM meta WHERE key=?1", [key])?)
+            tx.scalar_optional("SELECT value FROM meta WHERE key=?1", [key])
         };
         let generation = value("generation")?;
         let mut changed = false;

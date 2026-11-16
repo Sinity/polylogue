@@ -1,6 +1,6 @@
 //! Calendar conversion at the millisecond index boundary. Logical boundaries
 //! come from the caller's already resolved shared setting.
-use crate::{Result, StoreError};
+use crate::Result;
 use jiff::{Timestamp, civil::Date};
 use query_language::time::{DaySetting, label};
 

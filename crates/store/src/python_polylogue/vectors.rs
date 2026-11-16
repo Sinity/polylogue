@@ -9,8 +9,8 @@
 //! message's stored fields (position, role and parser output among them);
 //! the text that was embedded cannot be recovered from it.
 
+use crate::ResultExt as _;
 use crate::older_archive::{open_source, tables_of};
-use crate::{OptionExt as _, ResultExt as _};
 use crate::{Result, StoreError};
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};

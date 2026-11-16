@@ -1,5 +1,5 @@
 //! One indexed ancestry walk for derived products, current reads and queries.
-use crate::{Result, StoreError};
+use crate::Result;
 use polylogue_model::{
     SessionId,
     read::{LineageIssue, SessionLineage},

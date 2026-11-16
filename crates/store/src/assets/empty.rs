@@ -1,5 +1,6 @@
 //! Empty members are backed by a receiving observation and encoded body.
 use super::*;
+use crate::OptionExt as _;
 use crate::primary::{AcquisitionReceipt, AcquisitionRoute, RawRange};
 use polylogue_model::BlobHash;
 

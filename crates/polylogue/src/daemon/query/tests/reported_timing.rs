@@ -38,6 +38,6 @@ fn reported_duration_and_result_time_keep_meaning() {
         polylogue_query::parse::with_catalog("tool_calls where duration >= 1s", &catalog)
             .unwrap_err()
             .kind(),
-        "unknown_field"
+        polylogue_model::Code::UnknownField
     );
 }

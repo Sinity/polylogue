@@ -1909,10 +1909,10 @@ fn context_meter(
                 for &(other, other_start, other_end) in &ranges {
                     for stored in reader.item_calls(composed.indexes[other].pk, call)? {
                         let place = (other, stored.seq as usize);
-                        if stored.entry.kind == EntryKind::Result && other_start
-                            ..other_end.contains(&place.1)
-                                && place < (index, micro as usize)
-                                && removed.insert((other, stored.seq))
+                        if stored.entry.kind == EntryKind::Result
+                            && (other_start..other_end).contains(&place.1)
+                            && place < (index, micro as usize)
+                            && removed.insert((other, stored.seq))
                         {
                             estimate = estimate.saturating_sub(stored.entry.tokens_full);
                         }
@@ -1955,8 +1955,8 @@ fn place_cards(
             .parts
             .iter()
             .position(|bounds| {
-                bounds.session == card_slot.session && bounds.start
-                    ..bounds.end.contains(&card_slot.seq)
+                bounds.session == card_slot.session
+                    && (bounds.start..bounds.end).contains(&card_slot.seq)
             })
             .map(|part| (part, card_slot.seq))
         else {

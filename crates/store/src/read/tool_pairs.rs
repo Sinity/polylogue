@@ -223,7 +223,7 @@ impl Reader<'_> {
             edit: None,
         };
         pair.validate()
-            .map_err(|error| crate::StoreError::stored(0, &error.to_string()))?;
+            .map_err(|error| crate::StoreError::stored(0, error.to_string()))?;
         self.check()?;
         Ok(Some(pair))
     }

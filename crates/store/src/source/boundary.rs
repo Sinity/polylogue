@@ -1,6 +1,6 @@
 use crate::ConnExt as _;
 use crate::{Archive, Result, StoreError};
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::os::unix::ffi::OsStrExt;
 

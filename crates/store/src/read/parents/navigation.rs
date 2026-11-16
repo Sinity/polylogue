@@ -1,6 +1,7 @@
 //! Metadata-only positions for the shared reader.
 use super::*;
 use crate::ConnExt as _;
+use crate::ResultExt as _;
 
 fn message_count(count: i64) -> Result<usize> {
     usize::try_from(count).or_invalid("the message count exceeds address space")

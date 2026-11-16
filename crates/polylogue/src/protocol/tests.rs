@@ -193,6 +193,14 @@ fn typed_failure_codes_keep_their_wire_names_and_classes() {
     use polylogue_model::Code;
     for (code, wire, expected) in [
         (Code::Io, "io", FailureKind::Io),
+        (Code::ReadFailed, "read_failed", FailureKind::Io),
+        (Code::Empty, "empty", FailureKind::Io),
+        (Code::ModelCallsOff, "model_calls_off", FailureKind::Io),
+        (
+            Code::DaemonUnavailable,
+            "daemon_unavailable",
+            FailureKind::Io,
+        ),
         (Code::Store, "store", FailureKind::Io),
         (Code::Internal, "internal", FailureKind::Io),
         (

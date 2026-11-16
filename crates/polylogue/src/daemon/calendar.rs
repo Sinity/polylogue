@@ -18,11 +18,11 @@ fn date(text: Option<&str>, clock: &Clock) -> Result<jiff::civil::Date, Failure>
             clock
                 .day
                 .logical_day(clock.now)
-                .map_err(|error| Failure::bad_request((error.to_string())))
+                .map_err(|error| Failure::bad_request(error.to_string()))
         },
         |text| {
             text.parse()
-                .map_err(|_| Failure::bad_request(("date must be YYYY-MM-DD")))
+                .map_err(|_| Failure::bad_request("date must be YYYY-MM-DD"))
         },
     )
 }
@@ -33,7 +33,7 @@ fn fingerprint(domain: &str, value: &impl Serialize) -> Result<blake3::Hash, Fai
     digest.update(domain.as_bytes());
     digest.update(b"\0");
     serde_json::to_writer(&mut digest, value)
-        .map_err(|error| Failure::bad_request((error.to_string())))?;
+        .map_err(|error| Failure::bad_request(error.to_string()))?;
     Ok(digest.finalize())
 }
 struct Paging {
@@ -103,22 +103,22 @@ fn paging(
         Some(cursor) => {
             let [position] = cursor.after.values.as_slice() else {
                 return Err(Failure::bad_request(
-                    ("the calendar cursor position is invalid"),
+                    "the calendar cursor position is invalid",
                 ));
             };
             let identity = serde_json::to_string(position).map_err(|_| {
-                Failure::bad_request(("the calendar cursor position cannot be encoded"))
+                Failure::bad_request("the calendar cursor position cannot be encoded")
             })?;
             if cursor.after.row_identity != identity {
                 return Err(Failure::bad_request(
-                    ("the calendar cursor row identity is invalid"),
+                    "the calendar cursor row identity is invalid",
                 ));
             }
             (
                 cursor.context,
                 Some(
                     serde_json::from_value(position.clone())
-                        .map_err(|error| Failure::bad_request((error.to_string())))?,
+                        .map_err(|error| Failure::bad_request(error.to_string()))?,
                 ),
             )
         }
@@ -198,7 +198,7 @@ fn activity(
 ) -> Result<Value, Failure> {
     let size = size.unwrap_or(50);
     if size == 0 {
-        return Err(Failure::bad_request(("page size must be positive")));
+        return Err(Failure::bad_request("page size must be positive"));
     }
     let mut result = timeline::page(
         reader,
@@ -279,7 +279,7 @@ pub fn timeline(
         }
         cell = cell
             .tomorrow()
-            .map_err(|e| Failure::bad_request((e.to_string())))?;
+            .map_err(|e| Failure::bad_request(e.to_string()))?;
     }
     let (since, until) = polylogue_store::calendar::range(day, date)?;
     let usage = if undated || across_years {
@@ -367,16 +367,16 @@ pub fn cost(
     let now = clock.now.as_millisecond();
     if undated && text.is_some() {
         return Err(Failure::bad_request(
-            ("undated records cannot be placed within a date"),
+            "undated records cannot be placed within a date",
         ));
     }
     if unknown_model && model.is_some() {
         return Err(Failure::bad_request(
-            ("choose a recorded model or unknown model"),
+            "choose a recorded model or unknown model",
         ));
     }
     if size == Some(0) {
-        return Err(Failure::bad_request(("page size must be positive")));
+        return Err(Failure::bad_request("page size must be positive"));
     }
     let chosen = text.map(|s| date(Some(s), &clock)).transpose()?;
     let bounds = chosen
@@ -386,7 +386,7 @@ pub fn cost(
     let month_bounds = polylogue_store::calendar::month(day, month)?;
     if month_bounds.1 <= month_bounds.0 {
         return Err(Failure::bad_request(
-            ("calendar month has no representable interval"),
+            "calendar month has no representable interval",
         ));
     }
     let program = polylogue_store::query::lower(&plan, &query_options)?;

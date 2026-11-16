@@ -3,7 +3,6 @@
 //! rows of the same parse commit; nothing here waits for Sinex to acknowledge
 //! them or for them to come back on the confirmed stream.
 use super::*;
-use crate::ConnExt as _;
 use crate::primary::ExportReadingKey;
 use std::time::Duration;
 
@@ -255,7 +254,7 @@ fn confirmed_blobs(index: &Connection, bodies: &[(BlobHash, u64)]) -> Result<boo
 }
 
 fn root_material(index: &Connection, input: &str, chain: i64) -> Result<String> {
-    Ok(index.scalar(
+    index.scalar(
         "SELECT id FROM source_material WHERE input=?1 AND chain=?2 AND offset=0 ORDER BY rowid LIMIT 1",
-        params![input, chain])?)
+        params![input, chain])
 }

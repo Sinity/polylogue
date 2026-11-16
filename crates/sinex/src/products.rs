@@ -1,7 +1,6 @@
 //! Complete Polylogue events built from parser output. The source
 //! reading is part of every parsed event; indexed summaries are never an input.
 use crate::{Error, Result};
-use polylogue_model::JsonExt;
 use polylogue_model::user::UserWrite;
 use polylogue_store::primary::products::Product;
 use serde_json::{Value, json};
@@ -440,7 +439,8 @@ fn reachable_definitions(root: &Value, definitions: &Value) -> Value {
         match value {
             Value::Object(object) => {
                 if let Some(reference) = object
-                    .str("$ref")
+                    .get("$ref")
+                    .and_then(Value::as_str)
                     .and_then(|reference| reference.strip_prefix("#/$defs/"))
                 {
                     found.insert(reference.into());

@@ -314,12 +314,16 @@ pub fn kind(code: polylogue_model::Code) -> FailureKind {
         | Code::DaemonProtocolMismatch => FailureKind::NotRunning,
         Code::Timeout | Code::DeadlineExceeded => FailureKind::Timeout,
         Code::Cancelled => FailureKind::Cancelled,
-        Code::Degraded
+        Code::Empty
+        | Code::ModelCallsOff
+        | Code::DaemonUnavailable
+        | Code::Degraded
         | Code::Demo
         | Code::AttachmentOutput
         | Code::ReaderUnavailable
         | Code::Schema
         | Code::ReadOutput
+        | Code::ReadFailed
         | Code::Io
         | Code::Store
         | Code::Internal

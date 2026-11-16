@@ -4,7 +4,7 @@
 //! usual `read` operation and continues with each page's `follow` call.
 //! A query prints the rows that were not in its earlier answers. Nothing is
 //! recorded.
-use super::{Archive, fail};
+use super::{Archive, fail, fail_with};
 use crate::protocol::follow::{Line, Marks};
 use polylogue_model::JsonExt as _;
 use polylogue_model::read::{HeaderKind, ReadPage, ReadyCall};
@@ -41,10 +41,15 @@ pub fn run(
                 | polylogue_model::Reference::MessageRange { .. })
         );
     if !session_target {
-        if values.calling_process.bool("until_idle").unwrap_or(false)
+        if values
+            .calling_process
+            .get("until_idle")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
             || !values
                 .calling_process
-                .array("show")
+                .get("show")
+                .and_then(serde_json::Value::as_array)
                 .into_iter()
                 .flatten()
                 .filter_map(|value| value.as_str().map(str::to_owned))
@@ -52,7 +57,8 @@ pub fn run(
                 .is_empty()
             || !values
                 .calling_process
-                .array("hide")
+                .get("hide")
+                .and_then(serde_json::Value::as_array)
                 .into_iter()
                 .flatten()
                 .filter_map(|value| value.as_str().map(str::to_owned))
@@ -82,7 +88,11 @@ fn follow_session(
     output: crate::config::OutputConfig,
     json: bool,
 ) -> ExitCode {
-    let until_idle = values.calling_process.bool("until_idle").unwrap_or(false);
+    let until_idle = values
+        .calling_process
+        .get("until_idle")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
     let mut arguments = serde_json::json!({
         "target": target,
         "format": "json",
@@ -119,7 +129,7 @@ fn follow_session(
     loop {
         let page: ReadPage = match answer(archive, &call) {
             Ok(page) => page,
-            Err((code, message)) => return fail(output, json, &code, &message, 1),
+            Err(error) => return fail_with(output, json, &error, &[]),
         };
         if session.is_none() {
             session = match &page.document.header.kind {
@@ -179,7 +189,7 @@ fn follow_session(
                         return ExitCode::SUCCESS;
                     }
                     Ok(_) => {}
-                    Err((code, message)) => return fail(output, json, &code, &message, 1),
+                    Err(error) => return fail_with(output, json, &error, &[]),
                 }
             }
             std::thread::sleep(QUIET_WAIT);
@@ -191,11 +201,14 @@ fn follow_session(
 
 /// The session's live state (`working`, `waiting`, `idle`, `unknown`,
 /// `stale` or `ended`), from the query language's `live` field.
-fn live_state(archive: &Archive, session: Option<&str>) -> Result<String, (String, String)> {
+fn live_state(
+    archive: &Archive,
+    session: Option<&str>,
+) -> Result<String, command_surface::Failure> {
     let Some(session) = session else {
-        return Err((
-            "bad_request".into(),
-            "--until-idle needs a session reading".into(),
+        return Err(crate::protocol::failure(
+            polylogue_model::Code::BadRequest,
+            "--until-idle needs a session reading",
         ));
     };
     let call = command_surface::RunnableRequest {
@@ -236,7 +249,7 @@ fn follow_query(
     let mut position = serde_json::Value::Null;
     let stdout = io::stdout();
     loop {
-        let page = |cursor: Option<&str>| -> Result<serde_json::Value, (String, String)> {
+        let page = |cursor: Option<&str>| -> Result<serde_json::Value, command_surface::Failure> {
             answer(
                 archive,
                 &command_surface::RunnableRequest {
@@ -253,7 +266,7 @@ fn follow_query(
         };
         let mut data = match page(None) {
             Ok(data) => data,
-            Err((code, message)) => return fail(output, json, &code, &message, 1),
+            Err(error) => return fail_with(output, json, &error, &[]),
         };
         if data["outcome"] == "measure" {
             return fail(
@@ -274,7 +287,7 @@ fn follow_query(
         while let Some(cursor) = next {
             let more = match page(Some(&cursor)) {
                 Ok(more) => more,
-                Err((code, message)) => return fail(output, json, &code, &message, 1),
+                Err(error) => return fail_with(output, json, &error, &[]),
             };
             rows.extend(more["rows"].as_array().cloned().unwrap_or_default());
             next = more["next"].as_str().map(str::to_owned);
@@ -309,14 +322,16 @@ fn row_identity(row: &serde_json::Value) -> String {
 fn answer<T: serde::de::DeserializeOwned>(
     archive: &Archive,
     call: &command_surface::RunnableRequest,
-) -> Result<T, (String, String)> {
-    let answer = crate::client::call_ready(archive, call)
-        .map_err(|error| ("daemon_unavailable".to_string(), error.to_string()))?;
+) -> Result<T, command_surface::Failure> {
+    let answer = crate::client::call_ready(archive, call).map_err(|error| {
+        crate::protocol::failure(polylogue_model::Code::DaemonUnavailable, error.to_string())
+    })?;
     match answer.value() {
-        Some(value) => serde_json::from_value(value.clone())
-            .map_err(|error| ("internal".to_string(), error.to_string())),
-        None => Err((
-            "read_failed".into(),
+        Some(value) => serde_json::from_value(value.clone()).map_err(|error| {
+            crate::protocol::failure(polylogue_model::Code::Internal, error.to_string())
+        }),
+        None => Err(crate::protocol::failure(
+            polylogue_model::Code::ReadFailed,
             match &answer.outcome {
                 command_surface::Outcome::Error(error) => error.message.clone(),
                 _ => "the read returned no value".into(),

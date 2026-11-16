@@ -1,8 +1,8 @@
 //! Checks that a text is gone, by plain searches that share no code with
 //! stored bytes: every stored chain, and every column of `index.db`.
 
-use crate::{OptionExt as _, ResultExt as _};
-use crate::{Result, StoreError};
+use crate::Result;
+use crate::ResultExt as _;
 use polylogue_model::BlobHash;
 use rusqlite::params;
 use std::collections::BTreeSet;

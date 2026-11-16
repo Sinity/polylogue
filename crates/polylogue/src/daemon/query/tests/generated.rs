@@ -997,7 +997,15 @@ pub(super) fn vectors_for(
         });
     }
     let key = "local/test/2/document/unit";
-    reader.vectors_writer().unwrap().put(key, &vectors).unwrap();
+    reader
+        .vectors_writer()
+        .unwrap()
+        .put(
+            key,
+            &vectors,
+            &polylogue_model::WallClock::new(jiff::Timestamp::now),
+        )
+        .unwrap();
     let loaded = std::sync::Arc::new(reader.vectors().unwrap().load(key).unwrap());
     std::sync::Arc::new(loaded.similarity(&[1.0, 0.0]).unwrap())
 }

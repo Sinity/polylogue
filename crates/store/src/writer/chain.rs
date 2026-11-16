@@ -691,7 +691,7 @@ impl Inner {
                 rows::ReadingWrite {
                     texts: &self.texts,
                     resolution: &resolution,
-                    counter: counter,
+                    counter,
                     first_build: self.first_build.as_deref(),
                     source_commit: Some(&source_commit),
                     changes: &changes,

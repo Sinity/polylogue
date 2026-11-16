@@ -4,7 +4,7 @@
 use crate::ConnExt as _;
 use crate::{Result, StoreError};
 use polylogue_model::BlobHash;
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::Connection;
 
 /// One pool batch and the private encodings its new blobs were written to.
 pub struct PreparedBatch {

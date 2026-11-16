@@ -1,4 +1,4 @@
-use crate::{Result, StoreError};
+use crate::Result;
 use rusqlite::{Connection, OptionalExtension, Params, types::FromSql};
 
 pub trait ConnExt {

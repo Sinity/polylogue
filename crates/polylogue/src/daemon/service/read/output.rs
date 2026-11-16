@@ -238,7 +238,7 @@ pub(super) fn read_error(error: ReadError) -> Failure {
         ReadError::MissingPreparedData { .. } => (polylogue_model::Code::NotYetAvailable, None),
         _ => (polylogue_model::Code::BadRequest, None),
     };
-    let mut failure = Failure::new(code, &error);
+    let mut failure = Failure::new(code, error);
     failure.error.hint = hint;
     failure
 }

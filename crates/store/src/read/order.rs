@@ -1,6 +1,7 @@
 //! Export order is metadata over the full own session, before any
 //! query, parent prefix or view subset. Source coordinates remain separate.
 use super::*;
+use crate::OptionExt as _;
 
 #[derive(Clone, Copy)]
 pub(super) enum RecordOrder {

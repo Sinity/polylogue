@@ -2,7 +2,7 @@
 //! and compare previous revisions; they never assign a source revision or a
 //! Sinex acknowledgment.
 use super::{CapturedInput, PendingCapture, PreparedBody};
-use crate::{OptionExt as _, ResultExt as _};
+use crate::OptionExt as _;
 use crate::{Result, StoreError};
 use serde::{Deserialize, Serialize};
 

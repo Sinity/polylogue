@@ -15,7 +15,6 @@ use crate::daemon::measure::{MEASURES, Measure};
 use crate::daemon::service::handlers as H;
 use crate::daemon::service::{acts, browser, feeds, follow, read};
 use command_surface::ArgumentForm;
-use polylogue_model::JsonExt as _;
 use serde_json::{Map, Value};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -1981,7 +1980,8 @@ fn attach_files(
 ) -> Result<(), String> {
     let mut files = Vec::new();
     for path in values
-        .array("attach")
+        .get("attach")
+        .and_then(serde_json::Value::as_array)
         .into_iter()
         .flatten()
         .filter_map(|value| value.as_str().map(str::to_owned))

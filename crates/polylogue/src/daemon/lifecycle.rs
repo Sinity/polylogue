@@ -512,9 +512,6 @@ fn drain(mut app: Started) -> io::Result<()> {
     failure.map_or(Ok(()), Err)
 }
 
-#[cfg(test)]
-mod tests;
-
 /// Waits for an index-install commit; a stopped worker marks its exit expected.
 pub(crate) fn wait_for_index(
     subscription: &polylogue_store::completion::CommitSubscription,
@@ -530,3 +527,6 @@ pub(crate) fn wait_for_index(
         false
     }
 }
+
+#[cfg(test)]
+mod tests;

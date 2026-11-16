@@ -1058,7 +1058,7 @@ fn event_item(
     data_bytes: u64,
     data: Option<&[u8]>,
 ) -> Result<IndexEntry> {
-    let cleared = if kind == polylogue_model::Code::Microcompaction {
+    let cleared = if kind == "microcompaction" {
         data.map(crate::encoding::unpack_json::<polylogue_model::MicrocompactionBoundary>)
             .transpose()?
             .map(|boundary| boundary.removed_calls)
@@ -1067,7 +1067,7 @@ fn event_item(
         Vec::new()
     };
     let mut entry = event_entry(id, kind, at, data_bytes, cleared);
-    if kind == polylogue_model::Code::Compaction {
+    if kind == "compaction" {
         entry.compaction = data
             .map(crate::encoding::unpack_json::<polylogue_model::CompactionBoundary>)
             .transpose()?;

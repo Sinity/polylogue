@@ -1,6 +1,6 @@
 //! Calendar billing outlooks from dated plan settings and grouped recorded usage.
 use super::{Selection, reports, usage};
-use crate::{OptionExt as _, ResultExt as _};
+use crate::OptionExt as _;
 use crate::{Reader, Result, StoreError};
 use polylogue_model::settings::PLAN_UNITS;
 use serde::Serialize;

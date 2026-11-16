@@ -226,12 +226,12 @@ pub(crate) fn current_versions() -> Result<BTreeMap<String, String>> {
 }
 
 pub(crate) fn is_current(conn: &Connection, name: &str, pk: i64) -> Result<bool> {
-    Ok(conn.scalar(
+    conn.scalar(
         "SELECT NOT EXISTS(SELECT 1 FROM derive_due WHERE session_pk = ?2)
             AND EXISTS(SELECT 1 FROM derive_state d WHERE d.name = ?1 AND d.session_pk = ?2
                        AND pl_derived_current(d.name, d.version))",
         params![name, pk],
-    )?)
+    )
 }
 
 /// Derives every due session on `index` alone, reading and writing through
@@ -308,7 +308,7 @@ impl<'a> Pass<'a> {
             .zip(&versions)
             .map(|(d, v)| (d.name, v.as_str()))
             .collect();
-        let stored: Option<String> = crate::meta_get(&index, "derived_versions")?;
+        let stored: Option<String> = crate::meta_get(index, "derived_versions")?;
         let stored: BTreeMap<String, String> = match stored {
             Some(json) => serde_json::from_str(&json)?,
             None => BTreeMap::new(),
@@ -678,7 +678,7 @@ pub(crate) fn caught_up(conn: &Connection) -> Result<bool> {
     if due {
         return Ok(false);
     }
-    let stored: Option<String> = crate::meta_get(&conn, "derived_versions")?;
+    let stored: Option<String> = crate::meta_get(conn, "derived_versions")?;
     let current = serde_json::to_string(&current_versions()?)?;
     let sessions: bool = conn.exists("SELECT EXISTS(SELECT 1 FROM session)", [])?;
     Ok(!sessions || stored.as_deref() == Some(current.as_str()))

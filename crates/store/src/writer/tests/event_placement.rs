@@ -63,7 +63,7 @@ fn apply(tx: &Transaction<'_>, mut input: Batch, counter: i64) -> Work {
         rows::ReadingWrite {
             texts: &texts,
             resolution: input.parse[0].resolution.as_ref().unwrap(),
-            counter: counter,
+            counter,
             first_build: None,
             source_commit: Some(&fixture_commit()),
             changes: &changes,

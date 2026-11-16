@@ -43,7 +43,7 @@ fn candidates(
             let values::Value::Setting(value) = row
                 .fact
                 .validate()
-                .map_err(|error| crate::StoreError::invalid(&error.to_string()))?
+                .map_err(|error| crate::StoreError::invalid(error.to_string()))?
             else {
                 return Err(crate::StoreError::invalid(
                     "setting assertion has another value shape",
@@ -119,7 +119,7 @@ fn history_boundaries(
 impl crate::Reader<'_> {
     pub fn setting_current(&self, key: &str, machine: &str) -> Result<settings::Current> {
         let spec = settings::declaration(key)
-            .map_err(|error| crate::StoreError::invalid(&error.to_string()))?;
+            .map_err(|error| crate::StoreError::invalid(error.to_string()))?;
         let conn = self.conn()?;
         let primary = matches!(Source::of(conn)?, Source::Cache);
         if primary && spec.standalone_only {
@@ -152,7 +152,7 @@ impl crate::Reader<'_> {
             .default
             .map(|text| settings::parse(key, text, settings::SettingMode::Standalone))
             .transpose()
-            .map_err(|error| crate::StoreError::invalid(&error.to_string()))?;
+            .map_err(|error| crate::StoreError::invalid(error.to_string()))?;
         let (value, authored) = if conflicts.is_empty() {
             if let Some((reference, fact, value)) = candidates.pop() {
                 (
@@ -191,7 +191,7 @@ impl crate::Reader<'_> {
         until: Timestamp,
     ) -> Result<Vec<(Timestamp, SettingAt)>> {
         let spec = settings::declaration(key)
-            .map_err(|error| crate::StoreError::invalid(&error.to_string()))?;
+            .map_err(|error| crate::StoreError::invalid(error.to_string()))?;
         if spec.scope != settings::Scope::Archive {
             return Err(crate::StoreError::invalid(
                 "archive setting history requires an archive-scoped key",

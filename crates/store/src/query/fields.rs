@@ -875,9 +875,5 @@ pub fn subtree(s: &str) -> String {
     )
 }
 
-/// Every recorded working directory, with the currently selected value kept.
-pub(crate) fn working_directories(s: &str) -> String {
-    format!("json_each(json_insert(COALESCE({s}.cwd_json,'[]'),'$[#]',{s}.cwd))")
-}
 #[cfg(test)]
 mod tests;

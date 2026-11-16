@@ -55,13 +55,13 @@ impl Reader<'_> {
     ) -> Result<Option<OrderPosition>, SelectionError> {
         let program = &selection.program;
         if program.order.is_empty() {
-            return Err(invalid(
+            return Err(SelectionError::invalid(
                 polylogue_model::Code::StaleCursor,
                 "the selected row position is unavailable",
             ));
         }
         if at.values.len() != program.order.len() {
-            return Err(invalid(
+            return Err(SelectionError::invalid(
                 polylogue_model::Code::InvalidCursor,
                 "selection order position has the wrong arity",
             ));

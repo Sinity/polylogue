@@ -3,7 +3,6 @@
 //! its hooks from `config.yaml`; its entries are listed in the README.
 
 use super::{EVENTS, Harness};
-use polylogue_model::JsonExt as _;
 use serde_json::{Value, json};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -155,7 +154,7 @@ fn validate(settings: &Value) -> io::Result<()> {
         let entries = entries.as_array().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("{}: expected {}", &path, "an array"),
+                format!("{path}: expected an array"),
             )
         })?;
         for (index, entry) in entries.iter().enumerate() {
@@ -163,33 +162,36 @@ fn validate(settings: &Value) -> io::Result<()> {
             let entry = entry.as_object().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("{}: expected {}", &path, "an object"),
+                    format!("{path}: expected an object"),
                 )
             })?;
-            let hooks = entry.array("hooks").ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("{}: expected {}", &format!("{path}.hooks"), "an array"),
-                )
-            })?;
+            let hooks = entry
+                .get("hooks")
+                .and_then(serde_json::Value::as_array)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("{path}.hooks: expected an array"),
+                    )
+                })?;
             for (index, hook) in hooks.iter().enumerate() {
                 let path = format!("{path}.hooks[{index}]");
                 let hook = hook.as_object().ok_or_else(|| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
-                        format!("{}: expected {}", &path, "an object"),
+                        format!("{path}: expected an object"),
                     )
                 })?;
-                let kind = hook.str("type").ok_or_else(|| {
+                let kind = hook.get("type").and_then(Value::as_str).ok_or_else(|| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
-                        format!("{}: expected {}", &format!("{path}.type"), "a string"),
+                        format!("{path}.type: expected a string"),
                     )
                 })?;
                 if kind == "command" && !hook.get("command").is_some_and(Value::is_string) {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
-                        format!("{}: expected {}", &format!("{path}.command"), "a string"),
+                        format!("{path}.command: expected a string"),
                     ));
                 }
             }

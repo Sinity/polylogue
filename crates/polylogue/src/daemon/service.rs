@@ -402,7 +402,7 @@ fn context(
                 delivery_id: &request_id,
                 context: operation,
                 ranking_identity: ranking_identity.as_deref(),
-                near: near,
+                near,
             },
             &d.scope,
             queued,
@@ -854,7 +854,8 @@ fn query_targets_in(
                         ));
                     }
                     if targets.is_empty() {
-                        return Err(Failure::empty(
+                        return Err(Failure::new(
+                            polylogue_model::Code::Empty,
                             "the query returns no rows; no assertion was written",
                         ));
                     }

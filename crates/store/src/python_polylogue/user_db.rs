@@ -269,7 +269,7 @@ fn value_of(row: &Row) -> Mapped<Option<Json>> {
 fn form(row: &Row) -> Mapped<Form> {
     let supersedes = json_list(row.supersedes.as_deref(), "supersedes_json")?;
     if let Some(of) = row.target.strip_prefix("assertion:")
-        && row.kind == polylogue_model::Code::Judgment
+        && row.kind == "judgment"
         && let Some(decision) = value_of(row)?
             .as_ref()
             .and_then(|value| value.get("decision"))

@@ -24,17 +24,15 @@ pub use replay::{
 };
 pub(crate) mod confirmed;
 pub(crate) mod scope;
+use crate::Result;
+use polylogue_model::BlobHash;
+use polylogue_model::user::UserOutcome;
 pub use products::{
     Capture, CaptureGroup, CapturedInput, Confirmed, ConfirmedChange, ExportReadingKey, Material,
     ParsedSource, PendingCapture, PreparedInput, PreparedWrite, Product, ProductWrite, Reading,
     SourceLocation, SourceRecord,
 };
-
-use crate::ConnExt as _;
-use crate::{Result, StoreError};
-use polylogue_model::BlobHash;
-use polylogue_model::user::UserOutcome;
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
 pub type ProductEmitter<'a> = dyn FnMut(ProductWrite) -> Result<()> + 'a;
@@ -159,7 +157,7 @@ pub struct InputName {
 
 /// The primary cache's persistent identity, independent of read cursor generations.
 pub fn cache_identity(index: &Connection) -> Result<String> {
-    crate::meta_get(&index, "primary_cache")?
+    crate::meta_get(index, "primary_cache")?
         .filter(|value: &String| !value.is_empty())
         .ok_or_else(|| crate::StoreError::stored(0, "the primary cache has no identity"))
 }

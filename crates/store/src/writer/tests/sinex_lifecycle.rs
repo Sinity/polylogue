@@ -45,7 +45,7 @@ fn write_local(index: &mut Connection, archive: &Archive, mut batch: Batch) {
         rows::ReadingWrite {
             texts: &texts,
             resolution: step.resolution.as_ref().unwrap(),
-            counter: counter,
+            counter,
             first_build: None,
             source_commit: Some(&fixture_commit()),
             changes: &changes,

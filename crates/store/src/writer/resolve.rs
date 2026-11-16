@@ -1,7 +1,6 @@
 //! Worker-owned natural keys. A key lock covers the batch until its commit result,
 //! so a following worker opens its snapshot after overlapping work has finished.
 use super::*;
-use crate::ConnExt as _;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Condvar;
 pub(crate) mod membership;

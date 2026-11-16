@@ -13,7 +13,7 @@ fn m(id: &str, at: Option<i64>, author: &str, kind: &str, end: bool) -> Message 
         prompt: (author == "human").then(|| "prose".into()),
         stop: end.then(|| "end_turn".into()),
         last_block: Some(kind.into()),
-        open_call: kind == polylogue_model::Code::ToolCall,
+        open_call: kind == "tool_call",
     }
 }
 fn party(parties: &[PartyTime], name: &str) -> i64 {
@@ -605,7 +605,7 @@ fn span_after_append_equals_full_recompute() {
         at_until: None,
         after: after.map(|id| polylogue_model::MessageId::parse(id).unwrap()),
         range: None,
-        data: if kind == polylogue_model::Code::Compaction {
+        data: if kind == "compaction" {
             serde_json::to_value(polylogue_model::CompactionBoundary::default()).unwrap()
         } else {
             Json::Null

@@ -2,7 +2,6 @@
 //! observations, numbered by the archive's write counter.
 
 use super::*;
-use crate::ConnExt as _;
 use crate::input_rows::{Extent, InputRows, ObservationRow, Revision};
 
 /// Stores the bytes' rows and returns the revision chain the batch's

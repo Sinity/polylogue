@@ -1,6 +1,6 @@
 //! Record-family cardinalities in the same pinned physical session scope as
 //! the event and link ordinal visitors. Payloads are never selected.
-use crate::{Reader, Result, StoreError};
+use crate::{Reader, Result};
 use polylogue_model::SessionId;
 use rusqlite::OptionalExtension;
 

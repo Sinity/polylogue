@@ -17,7 +17,7 @@
 //! start recomputes every chain ([`open`]).
 use crate::ConnExt as _;
 use crate::Result;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, params};
 
 /// The `meta` key whose value is `kept` while the rows reflect every
 /// committed source row.

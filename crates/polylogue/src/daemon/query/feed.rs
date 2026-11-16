@@ -83,7 +83,7 @@ pub(crate) fn prepare_with(
     let previous = since
         .map(|s| {
             ChangePosition::parse(s)
-                .ok_or_else(|| Failure::bad_request(("since takes GEN:COUNTER:ARCHIVE")))
+                .ok_or_else(|| Failure::bad_request("since takes GEN:COUNTER:ARCHIVE"))
         })
         .transpose()?;
     let target = reader.change_position()?;
@@ -97,7 +97,7 @@ pub(crate) fn prepare_with(
             .is_some_and(|p| p.index > target.index || p.archive > target.archive)
     {
         return Err(Failure::bad_request(
-            ("the change position is ahead of the archive"),
+            "the change position is ahead of the archive",
         ));
     }
     let position = previous.as_ref().map(ToString::to_string);
@@ -156,7 +156,7 @@ pub(crate) fn prepare_with(
                 check_change(&change, component, &target)?;
                 count = count
                     .checked_add(1)
-                    .ok_or_else(|| io("change count exhausted"))?;
+                    .ok_or_else(|| Failure::io("change count exhausted"))?;
                 write(
                     &mut file,
                     Line::Change {

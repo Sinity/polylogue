@@ -744,9 +744,12 @@ fn query_sessions(
             ));
         }
         for row in &page.rows {
-            let id = row.str("id").ok_or_else(|| {
-                Failure::bad_request("embedding selection requires session identities")
-            })?;
+            let id = row
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    Failure::bad_request("embedding selection requires session identities")
+                })?;
             ids.push(id.to_owned());
         }
         match &page.next {
@@ -797,7 +800,7 @@ pub fn handle(
     };
     if what == "build" && !provider.calls {
         return error(
-            "model_calls_off",
+            polylogue_model::Code::ModelCallsOff,
             "model calls are off, so no text is sent to the provider; \
              `polylogue setting embed.calls on` turns them on",
         );

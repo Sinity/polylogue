@@ -6,7 +6,7 @@ use crate::{Result, StoreError};
 use polylogue_model::{
     Reference, RevisionReference, authored::PreparedRequest, bundle::AuthoredRecord,
 };
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::Connection;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AuthoredReadIssue {

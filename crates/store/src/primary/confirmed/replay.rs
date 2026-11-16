@@ -1,7 +1,6 @@
 //! The applied position, scope and staged delivery share the transaction that
 //! applies the events.
 use super::*;
-use crate::ConnExt as _;
 use crate::primary::{
     AppliedSnapshot, CompletedDelivery, ReplayControl, ReplayState, SinexEventContext,
 };
@@ -16,7 +15,7 @@ enum CompletionMarker {
 }
 
 pub(crate) fn replay_state(conn: &Connection) -> Result<ReplayState> {
-    let value: Option<String> = crate::meta_get(&conn, "confirmed_replay")?;
+    let value: Option<String> = crate::meta_get(conn, "confirmed_replay")?;
     Ok(match value {
         Some(value) => serde_json::from_str(&value)?,
         None => ReplayState {
@@ -32,7 +31,7 @@ pub(crate) fn replay_state(conn: &Connection) -> Result<ReplayState> {
 }
 
 pub(crate) fn save(conn: &Connection, state: &ReplayState) -> Result<()> {
-    crate::meta_set(&conn, "confirmed_replay", serde_json::to_string(state)?)?;
+    crate::meta_set(conn, "confirmed_replay", serde_json::to_string(state)?)?;
     Ok(())
 }
 
@@ -40,20 +39,10 @@ pub(crate) fn save(conn: &Connection, state: &ReplayState) -> Result<()> {
 /// change, including a refusal or an erasure seen before the live event,
 /// leaves one, and rows are never deleted.
 pub(crate) fn has_confirmed_event(conn: &Connection, event: &str) -> Result<bool> {
-    Ok(conn.exists(
+    conn.exists(
         "SELECT EXISTS(SELECT 1 FROM confirmed_event WHERE event=?1)",
         [event],
-    )?)
-}
-
-pub(crate) fn sinex_context(conn: &Connection, event: &str) -> Result<Option<SinexEventContext>> {
-    let bytes: Option<Vec<u8>> = conn
-        .scalar_optional(
-            "SELECT sinex_context FROM confirmed_event WHERE event=?1",
-            [event],
-        )?
-        .flatten();
-    bytes.as_deref().map(unpacked).transpose()
+    )
 }
 
 fn hash(value: &str) -> bool {

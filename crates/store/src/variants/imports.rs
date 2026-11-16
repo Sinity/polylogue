@@ -1,9 +1,6 @@
 //! Import history never replaces the rendition's original authorship.
 use super::*;
-use polylogue_model::{
-    Reference, RevisionReference,
-    authored::{ImportAttribution, ImportHistory},
-};
+use polylogue_model::{Reference, RevisionReference, authored::ImportAttribution};
 
 fn reference(conn: &Connection, id: &str, n: Option<u64>) -> Result<Reference> {
     let variant =

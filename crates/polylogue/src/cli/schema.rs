@@ -1,7 +1,6 @@
 //! Local artifact comparison and explicit CLI output; inference runs in the daemon.
 use crate::commands::Command;
 use crate::daemon::schema::Inference;
-use polylogue_model::JsonExt as _;
 use polylogue_sources::schema;
 use std::{
     fs::File,
@@ -80,7 +79,8 @@ pub fn output(
     if json
         && values
             .calling_process
-            .str("output")
+            .get("output")
+            .and_then(serde_json::Value::as_str)
             .map(str::to_owned)
             .is_none()
     {
@@ -110,7 +110,12 @@ fn run(
             polylogue_render::Format::Terminal
         };
         polylogue_render::schema::render(&value, format, &mut bytes).map_err(|e| e.to_string())?;
-        match values.calling_process.str("output").map(str::to_owned) {
+        match values
+            .calling_process
+            .get("output")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+        {
             Some(path) => std::fs::write(path, bytes).map_err(|e| e.to_string()),
             None => io::stdout()
                 .lock()

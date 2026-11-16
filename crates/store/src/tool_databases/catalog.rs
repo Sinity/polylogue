@@ -1,5 +1,6 @@
 use super::*;
 use crate::ConnExt as _;
+use crate::OptionExt as _;
 use polylogue_model::JsonExt;
 
 /// The row-dump records whose comparison hashes commit with this step.

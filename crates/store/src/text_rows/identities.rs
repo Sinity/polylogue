@@ -2,7 +2,7 @@
 //! temporarily lose their last reference. Reusing an ID follows its hash,
 //! never whichever row number SQLite might next make available.
 use crate::ConnExt as _;
-use crate::{OptionExt as _, ResultExt as _};
+use crate::OptionExt as _;
 use crate::{Result, StoreError};
 use rusqlite::{Connection, OptionalExtension};
 use std::cell::{Cell, RefCell};

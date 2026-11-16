@@ -44,6 +44,13 @@ pub enum SelectionError {
     },
 }
 impl SelectionError {
+    pub(crate) fn invalid(kind: polylogue_model::Code, message: impl Into<String>) -> Self {
+        Self::Invalid {
+            kind,
+            message: message.into(),
+        }
+    }
+
     /// Preserve typed query diagnostics and Store control failures at accepting
     /// and metadata boundaries. No string code is reclassified here.
     pub fn into_store_error(self) -> StoreError {
@@ -66,22 +73,9 @@ impl SelectionError {
         match self {
             Self::Store(error) => error.code(),
             Self::Query(error) => error.kind(),
-            Self::Language(error) => match error.kind {
-                query_language::ErrorKind::InvalidQuery => polylogue_model::Code::InvalidQuery,
-                query_language::ErrorKind::UnknownField => polylogue_model::Code::UnknownField,
-                query_language::ErrorKind::BadValue => polylogue_model::Code::BadValue,
-                query_language::ErrorKind::NotAQuery => polylogue_model::Code::NotAQuery,
-                query_language::ErrorKind::Ambiguous => polylogue_model::Code::Ambiguous,
-                query_language::ErrorKind::StaleCursor => polylogue_model::Code::StaleCursor,
-            },
+            Self::Language(error) => error.kind.into(),
             Self::Invalid { kind, .. } => *kind,
         }
-    }
-}
-fn invalid(kind: polylogue_model::Code, message: impl Into<String>) -> SelectionError {
-    SelectionError::Invalid {
-        kind,
-        message: message.into(),
     }
 }
 
@@ -272,7 +266,7 @@ impl Reader<'_> {
                 None => false,
             };
             if !present {
-                return Err(invalid(
+                return Err(SelectionError::invalid(
                     polylogue_model::Code::NotFound,
                     "referenced source is unavailable",
                 ));
@@ -310,7 +304,7 @@ impl Reader<'_> {
         let reference = match reference {
             Reference::Assertion(revision) if revision.revision.is_none() => {
                 let row = self.assertion(&revision)?.ok_or_else(|| {
-                    invalid(
+                    SelectionError::invalid(
                         polylogue_model::Code::NotFound,
                         "assertion family has no current revision",
                     )
@@ -322,8 +316,9 @@ impl Reader<'_> {
             }
             reference => reference,
         };
-        ReadTarget::try_from(reference)
-            .map_err(|error| invalid(polylogue_model::Code::InvalidQuery, error.to_string()))
+        ReadTarget::try_from(reference).map_err(|error| {
+            SelectionError::invalid(polylogue_model::Code::InvalidQuery, error.to_string())
+        })
     }
 
     fn finish_selection<'read>(
@@ -434,7 +429,7 @@ impl Reader<'_> {
         if !selection.scope.same(&current)
             || selection.reader != std::ptr::from_ref(self).cast::<()>() as usize
         {
-            return Err(E::from(invalid(
+            return Err(E::from(SelectionError::invalid(
                 polylogue_model::Code::ScopeChanged,
                 "selection belongs to another access scope",
             )));
@@ -442,7 +437,7 @@ impl Reader<'_> {
         // The enclosing selection context has validated the program once.
         let program = &selection.program;
         if after.is_some_and(|after| after.values.len() != program.order.len()) {
-            return Err(E::from(invalid(
+            return Err(E::from(SelectionError::invalid(
                 polylogue_model::Code::InvalidCursor,
                 "selection order position has the wrong arity",
             )));
@@ -518,7 +513,7 @@ impl Reader<'_> {
         if selection.reader != std::ptr::from_ref(self).cast::<()>() as usize
             || !selection.scope.same(&self.scope_token())
         {
-            return Err(E::from(invalid(
+            return Err(E::from(SelectionError::invalid(
                 polylogue_model::Code::ScopeChanged,
                 "selection belongs to another access scope",
             )));
@@ -588,19 +583,19 @@ impl Reader<'_> {
     ) -> Result<bool, SelectionError> {
         selection.scope.check()?;
         if selection.reader != std::ptr::from_ref(self).cast::<()>() as usize {
-            return Err(invalid(
+            return Err(SelectionError::invalid(
                 polylogue_model::Code::ScopeChanged,
                 "selection belongs to another reader",
             ));
         }
         if selection.program.near.is_some() && !selection.visiting.get() {
-            return Err(invalid(
+            return Err(SelectionError::invalid(
                 polylogue_model::Code::Embed,
                 "ranked membership needs the active selection visit",
             ));
         }
         if selection.program.shape != Shape::Rows {
-            return Err(invalid(
+            return Err(SelectionError::invalid(
                 polylogue_model::Code::InvalidQuery,
                 "grouped or summarized rows have no member records",
             ));
@@ -843,16 +838,6 @@ impl Drop for VisitGuard<'_> {
         self.cell.set(self.previous);
     }
 }
-enum VisitError<E> {
-    Consumer(E),
-    Selection(SelectionError),
-    Stop,
-}
-impl<E> From<StoreError> for VisitError<E> {
-    fn from(e: StoreError) -> Self {
-        Self::Selection(e.into())
-    }
-}
 pub fn values(params: &[Param]) -> Vec<SqlValue> {
     params
         .iter()
@@ -906,7 +891,7 @@ fn direct_reference(
                 | polylogue_model::ReferenceError::UnknownKind(_),
             ) => return Ok(None),
             Err(error) => {
-                return Err(invalid(
+                return Err(SelectionError::invalid(
                     polylogue_model::Code::InvalidQuery,
                     error.to_string(),
                 ));
@@ -927,8 +912,9 @@ fn direct_reference(
                 | "delivery"
         ) =>
         {
-            Reference::parse(&format!("{field}:{text}"))
-                .map_err(|error| invalid(polylogue_model::Code::InvalidQuery, error.to_string()))?
+            Reference::parse(&format!("{field}:{text}")).map_err(|error| {
+                SelectionError::invalid(polylogue_model::Code::InvalidQuery, error.to_string())
+            })?
         }
         _ => return Ok(None),
     };

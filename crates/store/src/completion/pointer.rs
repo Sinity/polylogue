@@ -1,6 +1,6 @@
 //! A derived cache pointer follows the archive's read-scope fence.
 use super::{CatalogWriter, Metadata};
-use crate::{OptionExt as _, ResultExt as _};
+use crate::OptionExt as _;
 use crate::{ReadScopeToken, Result, StoreError};
 use std::{
     fs,
