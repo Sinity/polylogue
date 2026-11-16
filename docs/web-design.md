@@ -30,9 +30,10 @@ The visual style of MK2 (graphite and slate, dark only, Inter and JetBrains Mono
 | [06 Pastes](web/boards/mk3/index.html#a06), [07 Attachments](web/boards/mk3/index.html#a07) | how each paste kind and each attachment state renders; the pastes and attachments views |
 | [08 Inspector](web/boards/mk3/index.html#a08) | the inspector for each selection context |
 | [09 Topology](web/boards/mk3/index.html#a09) | the lineage view over the closed set of session links ([sessions.md](sessions.md#session-links)), with unresolved parents shown as waiting |
-| [10 Flows](web/boards/mk3/index.html#a10) | resuming from a message in another harness (`resume --in`), explicit and previewed; its fork and bundle flows draw no built view |
-| [13 Compare](web/boards/mk3/index.html#a13), [14 Timeline](web/boards/mk3/index.html#a14) | compare and the timeline |
-| [15 User state](web/boards/mk3/index.html#a15) | marks, notes and saved queries as the notes list shows them; marks are tags ([annotations.md](annotations.md#kinds)) |
+| [10 Flows](web/boards/mk3/index.html#a10) | resuming from a message in another harness (`resume --in`), forking (`resume --fork`) and a bundle from a selection (a `bundle` page), each explicit and previewed ([Web reader](web-reader.md#session-reader-ssession)) |
+| [11 Tabs](web/boards/mk3/index.html#a11), [12 Stack](web/boards/mk3/index.html#a12) | the workspace modes, saved as `workspace` pages ([Workspaces](web.md#workspaces)) |
+| [13 Compare](web/boards/mk3/index.html#a13), [14 Timeline](web/boards/mk3/index.html#a14) | compare with its four alignments, the timeline, and the matching workspace modes |
+| [15 User state](web/boards/mk3/index.html#a15) | marks, notes, saved queries, bundles and workspaces as the notes list shows them; marks are tags ([annotations.md](annotations.md#kinds)) |
 | [16 Palette](web/boards/mk3/index.html#a16) | the palette scoped by selection, with disabled reasons, and the keyboard help |
 | [17 State matrix](web/boards/mk3/index.html#a17) | populated, empty, partial, degraded and failed for every view ([state matrix](web.md#state-matrix)) |
 | [18 Settings](web/boards/mk3/index.html#a18) | density, show/hide defaults, keyboard, sources and access settings |
@@ -72,7 +73,12 @@ The MK2 board is drawn for Python Polylogue, so its command and module names (`p
 | [Session report](web-reader.md#session-report-ssessionreport) | [boards/report.html](web/boards/report.html) |
 | [Share an excerpt](web-reader.md#share-an-excerpt-ssessionshare) | [boards/share.html](web/boards/share.html) |
 | [Claims](web-views.md#notes-claims-and-triage-notes-claims-triage), [Review](web-views.md#review-and-compare-review-compare) | [boards/claims.html](web/boards/claims.html) |
-| [Cost](web-views.md#cost-cost) | [mockups/cost.html](web/mockups/cost.html), chosen where it differs from [boards/cost.html](web/boards/cost.html) (cost by origin, most expensive sessions, the Codex observation subset priced apart) |
+| [Pages](web-views.md#pages): a page | [boards/page.html](web/boards/page.html) (sections, slots, sessions on the page); [mockups/page.html](web/mockups/page.html) (members, the send composer, decision box, kept result, live query) |
+| [Pages](web-views.md#pages): the page list | [boards/pages.html](web/boards/pages.html) |
+| [Project story](web-views.md#project-story) | [boards/story.html](web/boards/story.html) |
+| [Judging passes](web-views.md#judging-passes-judge) | [boards/claims.html](web/boards/claims.html) (sampled items, agreement so far) |
+| [Workspaces](web.md#workspaces) | MK3.1 11–14 |
+| [Cost](web-views.md#cost) | [mockups/cost.html](web/mockups/cost.html), chosen where it differs from [boards/cost.html](web/boards/cost.html) (cost by origin, most expensive sessions, the Codex observation subset priced apart) |
 | Extension popup | [boards/extension-popup.html](web/boards/extension-popup.html) |
 | [Compare](web-views.md#review-and-compare-review-compare), [Timeline](web-views.md#timeline-days-firehose) | MK3.1 13–14 |
 | [Pastes and attachments](web-views.md#pastes-attachments-topics) | MK3.1 06–07 |
@@ -81,19 +87,15 @@ The MK2 board is drawn for Python Polylogue, so its command and module names (`p
 | [Settings](web-views.md#status-and-settings-status-settings) | MK3.1 18 |
 
 Parts of the canvas boards and mockups that do not bind, because the text decides otherwise:
-- The navigation on the boards lists Home, Running, Cost and a Pages item, which is not built; the navigation is in the [frame](web.md#frame).
+- The navigation on the boards lists Home, Running, Cost and Pages; the full navigation is in the [frame](web.md#frame).
+- On the page boards, the composer that addresses a session and its list of sent messages are the send composer (`send … --page --section`), and the table of contents is the contents view ([Pages](web-views.md#pages)).
 - The share board flags paths under the home directory and lists `has:secret` blocks; sharing writes stored text unchanged with nothing flagged ([share](web-reader.md#share-an-excerpt-ssessionshare)).
-- The claims board's judging pass (sampled items, agreement so far) draws no built view; review judges one annotation at a time or the marked ones ([Review](web-views.md#review-and-compare-review-compare)).
 - Tool durations show on shell and subagent calls only; a duration on a file read in a mockup does not bind.
 - The mockups' "export JSON" link is `read --format json`; there is no export verb ([reading.md](reading.md#formats-and-destinations)).
 - The boards' footers show a CLI line only; every view's footer also shows its MCP call ([frame](web.md#frame)).
-
-### Boards with no built view
-
-These boards draw views that are not built; their files stay as drawn: [boards/page.html](web/boards/page.html) and [mockups/page.html](web/mockups/page.html) (a page with sections, slots, members and a composer), [boards/pages.html](web/boards/pages.html) (the page list), [boards/story.html](web/boards/story.html) (a project story page), and MK3.1 [11 Tabs](web/boards/mk3/index.html#a11) and [12 Stack](web/boards/mk3/index.html#a12) (saved workspaces).
 
 ## Views without a board
 
 Views that no board draws are drawn in Claude Design before they are built, with at least two versions wherever layout is a real choice; the operator picks one, and the chosen board becomes that view's baseline.
 
-The views without a board: the heatmap, the firehose, Waiting, the note page, triage, analysis, saved and kept, the live-session control panel, the flow panel, and the extension's in-page UI. Their behaviour in [Web views](web-views.md) and [Web reader](web-reader.md) binds; their layout does not until the board exists.
+The views without a board: the heatmap, the firehose, Waiting, the note page, triage, analysis, saved and kept, the live-session control panel, the flow panel, a page's board, table, contents and history layouts, the bundle composer, the judging-pass rankings and calibration panels, the trace view, and the extension's in-page UI. Their behaviour in [Web views](web-views.md) and [Web reader](web-reader.md) binds; their layout does not until the board exists.

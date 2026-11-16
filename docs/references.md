@@ -1,6 +1,6 @@
 # References
 
-A reference names one thing in the archive, or one thing outside it, in a form every surface accepts: the CLI, MCP, HTTP, hooks, markup in transcripts, the web reader and the import of user state. One grammar and one parser serve all of them. A reference is one form of a line's selection ([query.md](query.md#selections)); how references appear inside query text is [query.md](query.md#references-inside-queries); row numbers (`@3`, `@2-5`, `@1,4`, `@all`) are the command line's own and are [terminal.md](terminal.md#row-numbers).
+A reference names one thing in the archive, or one thing outside it, in a form every surface accepts: the CLI, MCP, HTTP, hooks, markup in transcripts, the web reader and the import of user state. One grammar and one parser serve all of them. A reference is one form of a line's selection ([query.md](query.md#selections)); how references appear inside query text is [query.md](query.md#references-inside-queries); row numbers (`@3`, `@3.2`, `@2-5`, `@1,4`, `@all`) are the command line's own and are [terminal.md](terminal.md#row-numbers).
 
 ## Forms
 
@@ -24,8 +24,11 @@ A reference names one thing in the archive, or one thing outside it, in a form e
 | `result:<id>`, `result:<id>#<row>`, `result:<id>.matches` | a kept result, one of its rows, or its match rows |
 | `result:<name>` | the newest kept result saved under that name ([saved-queries.md](saved-queries.md#save)) |
 | `run:<id>` | one run of a query, by the lowercase UUID the daemon gave it ([saved-queries.md](saved-queries.md#runs)) |
+| `page:<name>`, `page:<root>[@<rev>]`, `page:<name>@builtin` | a page by name (resolved to its root), by root, one revision of its page record, or the shipped page of that name ([pages.md](pages.md#the-model)); `page:template/<name>` is a template |
+| `@<alias>` | the session a member alias resolves to when the line runs ([pages.md](pages.md#members)); `@` and a name starting with a letter, `all` excepted |
 | `delivery:<id>` | one delivery of a brief, message or notice to a session ([agent-context.md](agent-context.md#deliveries)) |
 | `file:<path>@<commit>` | a file at a commit, read through git |
+| `file:<path>#L<n>` | line n of a file as the archive's captured edits left it; a relative path is under `here`. `read --view trace` names the tool call that last wrote it ([reading.md](reading.md#views)) |
 | `repo:<name>`, `cwd:<path>` | a repository, a working directory; used as scopes |
 | `url:<absolute URL>` | an outside page, stored as text; reading the reference never fetches it |
 | `sx:<sinex reference>` | a Sinex object. Sinex owns the grammar of the string ([Sinex query](https://github.com/Sinity/sinex/blob/master/docs/query.md)); Polylogue resolves it through Sinex's API when Sinex is reachable and shows it `unavailable` otherwise |
@@ -55,7 +58,7 @@ Span offsets count in the original stored text, before view filtering or alterna
 - A Claude record UUID from a split response resolves through its recorded source association to the resolved message. Stored annotation targets hold the reference as written across re-parse.
 - **Natural keys only.** No reference contains a row number, so a reference means the same thing in every archive that holds the same data and survives re-parse and rebuild.
 - **One parser resolves pasted provider URLs** through each origin's declaration: `chatgpt.com/c/<id>` becomes `session:chatgpt:<id>`.
-- **Ambiguity is an error.** A name that two current roots carry (`role:<name>`, `query:<name>`) or a prefix that two IDs share is refused as `ambiguous`, listing the candidates. Time never picks one, because a guess would silently change what an older reference meant.
+- **Ambiguity is an error.** A name that two current roots carry (`role:<name>`, `query:<name>`, `page:<name>`, an alias) or a prefix that two IDs share is refused as `ambiguous`, listing the candidates. Time never picks one, because a guess would silently change what an older reference meant.
 - **Stored references name an exact revision where meaning requires it.** Links to annotations in the roles `revises`, `replies_to`, `challenges`, `supports`, `qualifies` and `corrects`, and every judgment, store `annotation:<root>@<rev>`. A `derived_from` link names its exact source: an annotation revision, a question or a kept result. A `withdraws` link names a revision, or a root to withdraw the whole family ([annotations.md](annotations.md#current-revisions)). A judgment of one revision therefore never moves to the next.
 - **Stored links retain the spelling they were written with.** `tool:<session>#<call>` is unchanged, and the reader of stored links also reads the stored `assertion:` spelling, while every surface prints and accepts `annotation:`.
 - **A reference may name something not stored yet.** It is held as written and attaches, with no rewrite, when the thing arrives; until then it is shown as waiting ([annotations.md](annotations.md#reading)).

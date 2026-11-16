@@ -1,6 +1,6 @@
 # Reading
 
-How `read` turns selected rows into text a person or a model acts on: what can be read, views, show and hide, ranges, paging and budgets, formats and destinations, writing a selection out to a directory, attachment bytes, alternates, neutral names, and the compare view. How a transcript is composed and rendered (parents, branches, compaction, headers, tool calls, thinking, value states, text as stored, rendering for models) is [transcripts.md](transcripts.md). What is stored is [sessions.md](sessions.md); the line grammar and the `read` verb's options are [interfaces.md](interfaces.md#verb-words); selections are [query.md](query.md); derived figures a reading shows are [measures.md](measures.md); `read --follow` is [session-control.md](session-control.md#following); `brief`, which uses this page's budgets and token estimator, is [agent-context.md](agent-context.md#brief); web pages are [web.md](web.md).
+How `read` turns selected rows into text a person or a model acts on: what can be read, views, show and hide, ranges, paging and budgets, formats and destinations, writing a selection out to a directory, attachment bytes, alternates, neutral names, the compare view, and the trace view. How a transcript is composed and rendered (parents, branches, compaction, headers, tool calls, thinking, value states, text as stored, rendering for models) is [transcripts.md](transcripts.md). What is stored is [sessions.md](sessions.md); the line grammar and the `read` verb's options are [interfaces.md](interfaces.md#verb-words); selections are [query.md](query.md); derived figures a reading shows are [measures.md](measures.md); `read --follow` is [session-control.md](session-control.md#following); `brief`, which uses this page's budgets and token estimator, is [agent-context.md](agent-context.md#brief); reading a page (its linear rendering, contents, changes and past states) is [pages.md](pages.md#reading); web pages are [web.md](web.md).
 
 Reading shows what was asked, what the model did, which commands ran and how they ended, what the model had in context, and which session grew out of which. Tool outcomes, lineage and cost are records to cite, not summaries.
 
@@ -39,6 +39,7 @@ polylogue_read {"arguments": {"selection": "tool_calls where outcome:error since
 - **A row of a word search** is read starting at its first hit.
 - **Physical and logical.** A session reference reads that physical session exactly; forks and spawned children appear as cards at their branch point or spawning call. A row of a logical listing (a row number from a default listing, or `root:REF`) names a [logical session](sessions.md#logical-sessions): its reading shows the logical header (root, the physical sessions it joins, own and inherited messages), then the root's transcript with each `continuation` and `resume` child after a `continues` indicator, in link order; `fork` and `spawn` children appear as cards, each with the line that reads the child. `--physical` reads only the named physical session. References in output always name physical sessions and messages.
 - **A query that selects messages** renders them in their sessions' context: consecutive messages share one session header, and gaps are omission lines.
+- **A page** (`page:NAME`) renders linearly with its headings, slots, open items and decision box ([pages.md](pages.md#reading)).
 - **Documents** show their purpose and authorship, then their blocks, with no chat roles. Asked for the `dialogue` view, a document replies that the view does not fit, offering `transcript` and `raw`; in a mixed selection it is an omission line with the same offer. **Events** show their payload, their session and the stored input they were read from. **Annotations, kept results, saved queries and deliveries** show the record, then the references it points at as quotations from the archive.
 - A message off the active path renders its branch with the indicator "on an abandoned branch". A missing reference is `not_found`.
 
@@ -56,7 +57,11 @@ A view chooses content. A view exists only where its output is not a list of row
 | `changes` | sessions | per file, the cumulative diff of edits in order (failed edits counted, not made); commands run with outcomes; commits and pull requests captured for the session; check runs |
 | `live` | sessions | live state, what it waits on, the open call, the task, peers, the process tree ([agents.md](live-sessions.md#live-state)) |
 | `raw` | messages, sessions | the stored input records of the selected messages as the provider wrote them |
-| `compare` | two or more rows | side by side, aligned by prompt; with `--blind`, labelled `A`, `B`, … ([Compare and blind](#compare-and-blind)) |
+| `compare` | two or more rows | side by side, aligned by prompt (`--align lineage\|time\|file` for the others); with `--blind`, labelled `A`, `B`, … ([Compare and blind](#compare-and-blind)) |
+| `contents` | a page | the generated table of contents ([pages.md](pages.md#reading)) |
+| `trace` | a message, span, block, tool call, or a file line (`file:PATH#Ln`) | where it came from ([Trace](#trace)) |
+
+On a page, `changes` is the page diff between two positions, `--from POSITION|seen [--until POSITION]` ([pages.md](pages.md#reading)).
 
 - Each view declares the options it takes; an option a view does not take is refused with the views that take it. An unknown view name is refused with the line that gives what it asked for.
 - **Readings that are queries, not views:**
@@ -78,7 +83,7 @@ One closed table of item kinds serves `--show` and `--hide`, the MCP `show` and 
 
 | Word | Default | Shows |
 |---|---|---|
-| `tools[:line\|full]` | `line` | tool calls; `full` gives the input, the output's head and tail, structured result data and diffs ([transcripts.md](transcripts.md#tool-calls)) |
+| `tools[:line\|N\|full]` | `line` | tool calls; `N` gives the input and N head and tail lines of each output, `full` the input, the whole output, structured result data and diffs ([transcripts.md](transcripts.md#tool-calls)) |
 | `thinking[:line\|full]` | `line` | thinking as one line, or its text |
 | `harness[:line\|full]` | `line` | harness-written messages (compaction summaries, injected context) as one line, or whole |
 | `inherited` | hidden | the parent's copied prefix ([transcripts.md](transcripts.md#composed-transcripts)) |
@@ -97,6 +102,8 @@ A word without a level means its fullest. Tool output cut to head and tail marks
 - `--around N` takes N messages either side of the message holding the selected item: a message, block, tool call or span.
 - Positions are message IDs underneath, so a range stays put while a session grows. A `--from` position inside an inherited message, or an item there with `--around`, shows the inherited messages of that range.
 - `--physical` reads only the named physical session, not the continuations and subagents it is grouped with.
+- `--at TIME|POSITION` renders annotations and pages as they stood then: exact at a position on one archive, approximate for a time across machines, and it says so.
+- **`--from seen`** starts where this reader last stopped. Each reader has one **seen mark** per target: a `seen` annotation whose key is the target's reference and whose value is the position read up to, one per key and author ([annotations.md](annotations.md#kinds)). A mark advances only when the item was displayed to that reader: a read rendered to a terminal or the pager, a reply returned to an agent over MCP, or the web reporting that an item was on screen (a POST, never a side effect of an HTTP GET). Output written to a pipe or a file advances nothing. The mark serves `read --from seen`, `read --view changes --from seen` on a page, the query condition `since:seen` ([query.md](query.md#units-and-fields)) and the orientation screen's marking of what is new ([terminal.md](terminal.md#the-orientation-screen)). With no mark yet, `--from seen` reads from the start.
 - Re-reading what came before the last compaction: `polylogue self read --until compaction`, over MCP `{"arguments": {"selection": "self", "steps": [{"verb": "read", "until": "compaction"}]}}`.
 
 ## Paging and budgets
@@ -196,7 +203,7 @@ An alternate is another rendering of content: a translation, transliteration, si
 
 ## Compare and blind
 
-The `compare` view shows two or more rows side by side, aligned by prompt, each column with its header facts: `polylogue '@1,2' read --view compare`.
+The `compare` view shows two or more rows side by side, each column with its header facts: `polylogue '@1,2' read --view compare`. `--align` chooses how rows line up: `prompt` (the default, matching prompts), `lineage` (shared ancestry: a fork and its parent from the branch point), `time` (wall-clock time) or `file` (edits to the same file side by side): `polylogue '@1,2' read --view compare --align file`.
 
 **Blind.** References name their provider (`session:codex:…`), so a blind comparison never shows or takes one. `--blind` works only on a kept result, so the rows and their order are fixed before anyone looks:
 
@@ -207,3 +214,18 @@ $ polylogue result:01JD7Q4M read --view compare --blind
 ```
 
 The blind reading labels the rows `A`, `B` (`1…k` beyond two) in an order drawn from a seed, removes references, origin, model, harness, author, cost, tokens, times, durations, working directories and earlier verdicts, and shows tool names by family (shell, edit, read). It prints the seed it used and the ready line `polylogue result:01JD7Q4M judge A --on correctness --seed 7`; `--seed N` shows the same labels again. `--blind` on any selection other than a kept result is refused with the `save` line. The text itself can still name a model: the reading hides fields, not what the text says. Recording the preference, and what the comparison stores, is [judging.md](judging.md#blind).
+
+## Trace
+
+The `trace` view says where an item came from. It takes a message, span, block or tool call, or a file line (`file:PATH#Ln`), and shows:
+
+- for a quote or paste, the earlier messages the same text first appeared in, and its later occurrences;
+- for a file line, the tool call that last wrote it, with the edit's diff, and the calls before it that touched the line;
+- for any item, the chain from the record to the input record it was parsed from, the stored bytes, and the reader version that read them.
+
+```console
+$ polylogue 'file:crates/store/src/writer.rs#L120' read --view trace
+$ polylogue 'span:message:codex:019d0f2a:m42#c=120-380' read --view trace
+```
+
+It reads three derived data sets: the quote and paste origin index, file-line lineage and the record-to-bytes chain ([archive.md](archive.md#trace-data)). Where one is behind, the reading is degraded and names it.

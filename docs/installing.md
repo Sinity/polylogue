@@ -4,7 +4,7 @@ Setting Polylogue up and keeping it: installing into harnesses, Chrome, shells a
 
 ## Installing
 
-`polylogue install TARGET [--remove] [--dry-run] [--extension-id ID] [--program NAME]` wires Polylogue into something once:
+`polylogue install TARGET [--remove] [--dry-run] [--instructions] [--extension-id ID] [--program NAME]` wires Polylogue into something once:
 
 | Target | Writes |
 |---|---|
@@ -20,6 +20,8 @@ Every target follows the same rules:
 - **Managed files are left to their manager.** A target file that is a symlink (a file a deployment manages) is refused with the `--dry-run` line that prints the fragment to put in that deployment instead.
 - **`--remove` takes back exactly Polylogue's entries**, with any event or `hooks` object only they filled; when the file is still exactly what the install wrote, it gets the backup's bytes back and the backup is removed. Removing a harness's hooks is how a person turns its briefs off.
 - **Running it again** changes nothing when the entries are current, and replaces Polylogue's own entries when they are not.
+
+**Instructions.** `polylogue install claude-code --instructions` also writes the harness's instructions entry: a managed block, marked as Polylogue's, in the global instructions file the harness loads itself (Claude Code's `CLAUDE.md`, Codex's `AGENTS.md`, Gemini CLI's `GEMINI.md`, each in the harness's home), saying in a few lines that Polylogue holds past sessions and naming the skill. The block follows the rules above: it is printed before writing, the file is backed up, text outside the block is kept byte for byte, `--dry-run` prints the block, and `--remove` takes the block out and restores the backed-up bytes when the file is otherwise what the install wrote. Without `--instructions` no instructions file is touched.
 
 **Hooks.** Polylogue owns one hook declaration: per harness, each event with its mode (recording or context), timeout, whether its output is injected, and the harness's measured inline cap. `install HARNESS` writes it, `install HARNESS --dry-run` prints it, and the measure `hooks` reports it against what arrived (`polylogue 'sessions | measure hooks'`): per harness and event, declared, seen in the last 7 days, last seen, and the share of sessions with a `SessionStart` line ([measures.md](measures.md#catalog)). An event counts as missing only when an opportunity for it existed. Recording entries run asynchronously where the harness supports it; context entries (session start, prompt submission, advisories, permission requests) are synchronous because the harness injects or acts on their output. What a recording entry stores is [capture.md#hooks](capture.md#hooks).
 
@@ -55,8 +57,9 @@ Configuration exists only where the operator's choice is genuinely open. Deploym
 - `polylogue set` lists every setting with its value, scope, default, who set it and when.
 - `polylogue set reading.alternates` shows one setting: its value, its type and allowed values, its scope, its default, and its history (every revision with author and time).
 - `polylogue set reading.alternates translation:pl` writes it and prints the undo line, as every write does ([annotations.md#the-write-path](annotations.md#the-write-path)).
+- `polylogue set signal.interrupts_per_hour 2 --machine laptop` writes a host-scoped setting for the named machine rather than the one running the line.
 
-A setting is an annotation of kind `setting` ([annotations.md#kinds](annotations.md#kinds)) with author, `via` and time, from a declared catalog with a type, default and scope per key; unknown keys and blank values are refused, with the keys or values that exist. A host-scoped key applies to the machine that wrote it; an archive-scoped key applies everywhere. In primary mode the keys Sinex holds (quiet hours, the interrupt budget) show Sinex as where they are set and have no local value. Any author may change a setting; `status` lists those changed by anyone but the operator that he has not judged ([operations.md#status](operations.md#status)). Withdrawing a setting's annotation returns the key to its previous value or default. Settings are listed by `set`, not by a unit of their own.
+A setting is an annotation of kind `setting` ([annotations.md#kinds](annotations.md#kinds)) with author, `via` and time, from a declared catalog with a type, default and scope per key; unknown keys and blank values are refused, with the keys or values that exist. A host-scoped key applies to the machine that wrote it, or to the machine `--machine NAME` names (the setting's stored `machine`, [annotations.md](annotations.md#kinds)); an archive-scoped key applies everywhere and refuses `--machine`. In primary mode the keys Sinex holds (quiet hours, the interrupt budget) show Sinex as where they are set and have no local value. Any author may change a setting; `status` lists those changed by anyone but the operator that he has not judged ([operations.md#status](operations.md#status)). Withdrawing a setting's annotation returns the key to its previous value or default. Settings are listed by `set`, not by a unit of their own.
 
 **Not configurable,** because a dominant option exists: provider locations (fixed per origin, honouring a tool's own documented home variable such as `CLAUDE_CONFIG_DIR` or `CODEX_HOME`; [capture.md#locations](capture.md#locations)); whether the session-start brief is injected (removing the hooks is the off switch); brief sizes and budgets; worker counts and memory targets (derived from the cgroup CPU quota and affinity); pacing; deadlines (defaults any caller lifts).
 

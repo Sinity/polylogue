@@ -1,6 +1,6 @@
 # Agent context
 
-How Polylogue packages context for an agent: the one `brief` verb and its four forms, the brief for a directory that hooks inject at session start, the brief of a session (its takeover) and of a search (its recall), budgets, deliveries, and advisories. Briefs use the [trust rendering](agents.md#trust-rendering) of the agent pages and the shared [reading pipeline](reading.md); sending text to a session is `send` ([session-control.md](session-control.md#send)), and continuing a session's work in another harness is `resume --in` ([session-control.md](session-control.md#resume)).
+How Polylogue packages context for an agent: the one `brief` verb and its forms, the brief for a directory that hooks inject at session start, the brief of a session (its takeover), of a search (its recall) and of a page (a context bundle), briefs for the operator, budgets, deliveries, and advisories. Briefs use the [trust rendering](agents.md#trust-rendering) of the agent pages and the shared [reading pipeline](reading.md); sending text to a session is `send` ([session-control.md](session-control.md#send)), and continuing a session's work in another harness is `resume --in` ([session-control.md](session-control.md#resume)).
 
 ## Brief
 
@@ -11,10 +11,12 @@ One verb packages context under a budget, and the selection's form, never its ro
 | `polylogue brief` (`--cwd DIR` for another directory) | the brief for a directory | the operator's notes here, other agents working here now, open work, what recent sessions did, failing checks with no later pass, notices ([below](#the-brief-for-a-directory)) |
 | `polylogue SESSION brief`, where SESSION is a session reference, `latest`, `self`, or a row number whose row is a session | the brief of a session: its takeover | goal, effective context, state, the last exchange, files touched, failed calls, what it left open and what was left out ([below](#the-brief-of-a-session)) |
 | `polylogue 'WORDS' brief`, where the query holds only search words or quoted phrases (no field, unit or transform), a single plain word included | the brief of a search: its recall | what is already known: hits from several ranked searches fused, grouped by session, with their annotations and judgments, the operator's decisions first ([below](#the-brief-of-a-search)) |
+| `polylogue page:NAME brief` | the brief of a page | the page's contents view, open items and decision box, and its slots' targets in budgeted depth; a page from the `bundle` template is a named context bundle ([pages.md](pages.md#pages-elsewhere)) |
 | `polylogue SELECTION brief`, any other selection | the brief of rows | what happened in these rows, decisions and findings, open ends, their annotations and judgments |
 
-- **The first line of every brief names its form**: `brief of a session: takeover of codex:019d0f2a`. A session chosen by a query rather than a reference gets the fourth form, and its footer offers the takeover line (`polylogue codex:019d0f2a brief`), so the form never depends on how many rows matched.
-- **`--for SESSION`** names who will receive the brief, so what that session has already been delivered is left out. **`--cwd DIR`** sets the directory of the first form and the ranking of the third (default the current directory). **`--budget N|none`** sets the budget ([Budgets](#budgets)). **`--to`** writes the brief to a destination such as the clipboard ([reading.md](reading.md#formats-and-destinations)): `polylogue codex:019d0f2a brief --to clipboard`.
+- **The first line of every brief names its form**: `brief of a session: takeover of codex:019d0f2a`. A session chosen by a query rather than a reference gets the brief of rows, and its footer offers the takeover line (`polylogue codex:019d0f2a brief`), so the form never depends on how many rows matched.
+- **`--for SESSION`** names who will receive the brief, so what that session has already been delivered is left out. A context bundle is built for its recipient the same way: `polylogue page:release-context brief --for codex:019d0f2a`. **`--cwd DIR`** sets the directory of the first form and the ranking of the third (default the current directory). **`--budget N|none`** sets the budget ([Budgets](#budgets)). **`--to`** writes the brief to a destination such as the clipboard ([reading.md](reading.md#formats-and-destinations)): `polylogue codex:019d0f2a brief --to clipboard`.
+- **`--for operator`** writes the brief for the operator to read rather than for a model ([Briefs for the operator](#briefs-for-the-operator)).
 - **Briefs a caller asks for itself record no delivery.** The hooks' injected briefs (session start, a prompt naming an archived session, compaction) are deliveries ([Deliveries](#deliveries)). Handing a brief to another session is `send`, and starting a briefed session in another harness is `resume --in`.
 - Over MCP, `brief` is a step of every tool; with no selection it needs `cwd`:
 
@@ -22,6 +24,7 @@ One verb packages context under a budget, and the selection's form, never its ro
 polylogue_read {"arguments": {"steps": [{"verb": "brief", "cwd": "/home/op/morrow"}]}}
 polylogue_read {"arguments": {"selection": "codex:019d0f2a", "steps": [{"verb": "brief"}]}}
 polylogue_read {"arguments": {"selection": "flaky attachment test", "steps": [{"verb": "brief"}]}}
+polylogue_read {"arguments": {"selection": "page:release-context", "steps": [{"verb": "brief", "for": "codex:019d0f2a"}]}}
 ```
 
 ### What every brief holds
@@ -65,11 +68,17 @@ A brief for continuing work lets its recipient recover the goal, the constraints
 6. **Recent sessions**, newest first, until the budget is full: title; time and harness; tool-call status; commits, pull requests and files changed; the task it still holds open; the latest observed prose request with its recorded authorship and message reference, before the stored model reply; the first lines of the last model message, datamarked.
 7. **Plan and todo list** of the most recent session, as stored, with the reference of the tool call that set it.
 8. **Claims** made here since the last brief, with author, judgment state and any check result.
-9. **Open items here** ([measures.md](measures.md#catalog)): todo and plan items left open, sessions ending on an unanswered prompt, calls without results in ended sessions, with what later resolved any of them.
-10. **Pending notices** addressed to this session or in its directory scope, without an age cutoff; any recorded outcome removes a notice, including an uncertain or failed send. Records with unknown scope or an older signal state are counted with the line that reads them; no global target or unsent state is inferred ([notices to sessions](session-control.md#notices-to-sessions)).
-11. **Code may have moved:** "HEAD is N commits past <recorded commit>" or "<recorded commit> is not in HEAD's history".
-12. **Machine section**, in primary mode only: read from a stored Sinex context under a 100 ms deadline, within a declared share of the budget. Standalone, the section is absent.
-13. **Left out:** each group with the line that lists it.
+9. **Methods that apply here:** method annotations whose conditions all hold in this repository (`applies:here` is `applicable`), each with its name and the line that reads it; unassessed ones are counted with the query that lists them ([annotations.md](annotations.md#memory)).
+10. **Pages here** ([below](#pages-here)).
+11. **Open items here** ([measures.md](measures.md#catalog)): todo and plan items left open, sessions ending on an unanswered prompt, calls without results in ended sessions, with what later resolved any of them.
+12. **Pending notices** addressed to this session or in its directory scope, without an age cutoff; any recorded outcome removes a notice, including an uncertain or failed send. Records with unknown scope or an older signal state are counted with the line that reads them; no global target or unsent state is inferred ([notices to sessions](session-control.md#notices-to-sessions)).
+13. **Code may have moved:** "HEAD is N commits past <recorded commit>" or "<recorded commit> is not in HEAD's history".
+14. **Machine section**, in primary mode only: read from a stored Sinex context under a 100 ms deadline, within a declared share of the budget. Standalone, the section is absent.
+15. **Left out:** each group with the line that lists it.
+
+### Pages here
+
+The brief for a directory lists the pages that bear on the session: pages whose `scope` links name this repository or directory, and pages that name the session's role as a member ([pages.md](pages.md#members)). Each page is one line (name, title, template, last change) followed by its open items, each with its reference, and the line that reads the page's contents (`polylogue page:flaky-ci read --view contents`). Pages are ordered by their last change, newest first, and the budget decides how many are listed; the rest are counted with the query that lists them (`polylogue 'pages where scope:here'`). When no page matches, the block is absent.
 
 **Latency.** Every form of `brief` replies within the brief latency class ([interfaces.md](latency.md#latency-classes)), at any directory (`/` and a directory nobody worked in included); the hook allows 1.5 s including connection. A brief's reads are bounded by what it reports, not by how much work happened under its directory:
 - **Scope index.** The daemon holds every main session's working directories, repository, activity, stored message count, live facts and task in memory, read once at start and brought forward from the change feed after each commit. Which sessions are under the directory, which work there now and which hold a task there costs no index read.
@@ -110,6 +119,14 @@ A prompt (`UserPromptSubmit`, Gemini `BeforeAgent`, Hermes `pre_llm_call`) that 
 - It pages by cursor with no fixed cap.
 - The brief of a search is not injected at the first prompt; it is added there only when its precision on real first prompts is shown to help.
 - The first page arrives within the search latency class, from indexes, never by scanning message bodies.
+
+### Briefs for the operator
+
+`polylogue brief --for operator` (and `--for operator` on any form) writes the same brief for the operator to read in a terminal or the web rather than for a model to take in:
+- no skill file, no trust header and no datamarking of quoted text; the wording addresses the operator, and items read as a list to act on;
+- nothing is left out as already delivered, and no left-out list of agent context is printed; each shortened section ends with the line that reads it whole;
+- unjudged agent annotations are listed, not only counted, each with its `judge` line, since the operator is who judges them; questions waiting on the operator and held web-chat turns come first, each with its `answer` line;
+- no delivery is recorded.
 
 ## Budgets
 

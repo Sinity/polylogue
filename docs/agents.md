@@ -1,6 +1,6 @@
 # Agents
 
-How Polylogue reaches agents: [context](agent-context.md) (`brief` in its forms, deliveries and advisories), the skill file, the MCP server and its three tools, how retries and next calls behave, how an agent gets going, [live sessions](live-sessions.md) (live state and control channels) and [session control](session-control.md) (`send`, `answer`, `interrupt`, `resume`, `start`, roles and notices to sessions).
+How Polylogue reaches agents: [context](agent-context.md) (`brief` in its forms, deliveries and advisories), the skill file, the MCP server with its three tools, its resources and waiting, how retries and next calls behave, how an agent gets going, [live sessions](live-sessions.md) (live state and control channels) and [session control](session-control.md) (`send`, `answer`, `interrupt`, `resume`, `start`, roles and notices to sessions).
 
 Neighbouring facts live elsewhere: who wrote a record and how the author is computed is [authorship.md](authorship.md); what hooks record is [capture.md#hooks](capture.md#hooks), and installing them is [installing.md#installing](installing.md#installing); the memory-tool adapter is [annotations.md#memory](annotations.md#memory); chat actions are [extension.md#chat-actions](extension.md#chat-actions); the web Running view and the live-session control panel are [web.md](web.md); the grammar, verbs and commands are [interfaces.md](interfaces.md).
 
@@ -100,9 +100,9 @@ Each tool's description is exactly as below. The input schemas are generated fro
 
 ```
 Read the archive. A call is {operation, arguments}; operation defaults to rows.
-rows(selection, steps?, explain?, dry_run?): selection is one query or reference: "repo:polylogue since:7d", "rate limit", "tool_calls where outcome:error | group by tool | count", session:codex:019d..., a chat URL, latest, self, query:NAME, result:ID. No steps lists the rows; each step acts on the same rows, in order:
-  read(view?, show?, hide?, from?, until?, first?, last?, around?, alternate?, blind?, seed?) view: transcript|dialogue|overview|context|tree|changes|live|raw|compare
-  brief(cwd?, for?) packaged context: of a session, to take it over; of search words, what is already known; with no selection, for the directory cwd
+rows(selection, steps?, explain?, dry_run?): selection is one query or reference: "repo:polylogue since:7d", "rate limit", "tool_calls where outcome:error | group by tool | count", session:codex:019d..., page:NAME, a chat URL, latest, self, query:NAME, result:ID. No steps lists the rows; each step acts on the same rows, in order:
+  read(view?, show?, hide?, from?, until?, first?, last?, around?, at?, alternate?, blind?, seed?) view: transcript|dialogue|overview|context|tree|changes|live|raw|compare|contents (a page's table of contents)|trace (where it came from)
+  brief(cwd?, for?) packaged context: of a session, to take it over; of search words, what is already known; of a page, the page; with no selection, for the directory cwd
 explain: true says how a call is read and what it would do, running nothing.
 status() | help(topic?) query, fields, views, kinds, a verb | set(key?) lists settings or shows one | dev sql(statement) | dev schema(...)
 Example: {"arguments":{"selection":"tool_calls where outcome:error since:1d","steps":[{"verb":"read","around":2}]}}
@@ -120,7 +120,8 @@ Everything polylogue_read does, plus annotations: notes, tags, judgments and sav
   tag(name) NAME or NAME:VALUE
   edit(text) | withdraw(reason?) on annotation rows
   judge(verdict, on?, seed?, reason?) accept|reject|defer on annotations; or the better of several rows (a reference, or blind label A, B) on a dimension
-  save(name?, watch?) names the question as query:NAME and keeps the rows as result:ID
+  save(name?, watch?) names the question as query:NAME and keeps the rows as result:ID; name page:NAME puts the rows on that page (section?, after?, fixed?, live?)
+  note(..., page?, section?) also places the note on a page; as: page creates one (template?), as: heading adds a section
 set(key, value) | import(paths)
 A query matching several rows needs all: true. Each write returns the call that undoes it.
 Example: {"arguments":{"selection":"self","steps":[{"verb":"note","text":"Catalog stays SQLite","as":"decision"}]}}
@@ -145,7 +146,30 @@ Example: {"arguments":{"selection":"session:codex:019d0f2a","steps":[{"verb":"se
 {"type":"object","properties":{"operation":{"enum":["rows","status","help","set","dev sql","dev schema","import","start","embed"]},"arguments":{"type":"object","properties":{"selection":{"type":"string"},"steps":{"type":"array","items":{"type":"object","properties":{"verb":{"enum":["read","brief","note","tag","edit","withdraw","judge","save","send","answer","interrupt","resume"]}},"required":["verb"]}},"explain":{"type":"boolean"},"dry_run":{"type":"boolean"},"all":{"type":"boolean"}}},"request_id":{"type":"string"},"deadline":{"type":["integer","null"]},"budget_tokens":{"type":["integer","null"]},"cursor":{"type":"string"}},"required":["arguments"],"additionalProperties":false}
 ```
 
-**Size.** Every agent session pays for the instructions and the tool list before it asks anything; together they are about 5.9 KB, about 1.5k tokens. Tests keep the generated tool list within 5,400 bytes as compact JSON and the instructions within 800 bytes. The `steps` items are loose in the schema; the daemon validates each step's arguments against the verb's declaration and refuses an unknown or misplaced argument with the corrected call, so the short schema costs nothing in safety.
+**Size.** Every agent session pays for the instructions and the tool list before it asks anything; together they are about 6.2 KB, about 1.6k tokens. Tests keep the generated tool list within 5,700 bytes as compact JSON and the instructions within 800 bytes. The `steps` items are loose in the schema; the daemon validates each step's arguments against the verb's declaration and refuses an unknown or misplaced argument with the corrected call, so the short schema costs nothing in safety.
+
+### Resources
+
+Resources cost no tool-list tokens: a client lists them once and reads one when it needs it.
+
+| Resource | Content |
+|---|---|
+| `polylogue://manual` | the full reference, as `help --all` prints it |
+| `polylogue://session/<id>` | a session read as `read` reads it for a model, paged with the same continuation |
+| `polylogue://annotation/<id>` | an annotation with its links, judgments and current revision |
+| `polylogue://page/<root>/contents` | a page's table of contents, as `read --view contents` ([pages.md](pages.md#reading)) |
+| `polylogue://result/<id>` | a kept result's rows |
+
+A resource read is a read like any other: the caller identity, trust rendering and budgets are the same as for the `rows` call that reads the same thing.
+
+### Waiting
+
+`"wait": "30m"` in `arguments` is the line option `--wait` ([interfaces.md](interfaces.md#chains)): a listing returns when rows match or the time passes, and `import` of a provider returns when its job finishes. One MCP call waits at most 50 seconds, so it never outlives a client's tool timeout; a call that runs out of its 50 seconds replies `empty` with the same call, its `wait` less the elapsed time, as its `next`, and an agent that runs that call keeps waiting.
+
+```json
+polylogue_read  {"arguments": {"selection": "session:codex:019d0f2a live:idle", "wait": "30m"}}
+polylogue_act   {"operation": "import", "arguments": {"provider": "chatgpt", "wait": "10m"}}
+```
 
 ## Retries never write twice
 
@@ -171,7 +195,7 @@ Pushed context is what agents use; context they would have to ask for is rarely 
 - when a prompt names an archived session or pastes a link to one, the brief of that session (its takeover);
 - at compaction, the compaction brief.
 
-An agent's first minute is then the server instructions and tool list (about 1.5k tokens), the hook's brief, and a `brief` of a search or a `rows` call; a wrong call is refused with the corrected call in `next`:
+An agent's first minute is then the server instructions and tool list (about 1.6k tokens), the hook's brief, and a `brief` of a search or a `rows` call; a wrong call is refused with the corrected call in `next`:
 
 ```json
 polylogue_read  {"arguments": {"selection": "flaky attachment test", "steps": [{"verb": "brief"}]}}

@@ -23,6 +23,7 @@ next: polylogue @1 answer allow · polylogue @2 read --follow · polylogue 'repo
 Tab completes every position · polylogue help is one screen
 ```
 
+- The screen is the shipped page `page:home` rendered for a terminal ([pages.md](pages.md#templates-and-shipped-pages)); revising that page changes the screen. Rows new since the reader's seen mark ([reading.md](reading.md#ranges)) are marked.
 - Each section is a shipped saved query's listing (`waiting`, `running`, `recent` filtered to `here`; [saved-queries.md](saved-queries.md#shipped-saved-queries)), so the same rows are one word away; rows are numbered, so row numbers work at once.
 - The `next:` line is built from what is on screen: answer the first waiting session, follow the first running one, this repository this week. With nothing waiting it offers a recent session's `read` and the `brief` of a recent phrase.
 - The last line shows while the archive has recorded fewer than about twenty runs by the operator, counted from the `runs` unit with no separate state.
@@ -73,7 +74,15 @@ The picker and the web use the same letter for the same act wherever both offer 
 | toggle the preview | `Ctrl-/` |
 | cancel | `Esc` |
 
-Writes are typed on the line, never bound to a picker key: `polylogue review pick judge accept` judges the chosen annotations.
+Over annotations, three more keys make the one-key judging loop: each records a judgment of the highlighted annotation at its shown revision and moves to the next row; moving past a row writes nothing, and each judgment prints its undo line when the picker closes ([judging.md](judging.md)).
+
+| Act, over annotations | Key |
+|---|---|
+| accept | `Ctrl-a` |
+| reject | `Ctrl-x` |
+| defer | `Ctrl-d` |
+
+Every other write is typed on the line: `polylogue review pick judge accept` judges the chosen annotations.
 
 ## Row numbers
 
@@ -82,6 +91,7 @@ Row numbers name rows of the last list printed on this terminal. The other refer
 | Form | Means |
 |---|---|
 | `@3` | row 3 of the last list printed on this terminal |
+| `@3.2` | hit 2 of row 3 of the last search printed on this terminal |
 | `@2-5`, `@1,4` | rows 2 to 5; rows 1 and 4 |
 | `@all` | every row shown |
 
@@ -165,6 +175,7 @@ annotate  note 'TEXT' --as KIND   tag NAME   edit 'TEXT'   withdraw   judge acce
 act       send 'TEXT'   answer allow|deny|'TEXT'   interrupt   resume [--in HARNESS]
 queries   'rate limit'   'repo:sinex since:7d'   'tool_calls where outcome:error | group by tool | count'
 saved     waiting · running · recent · unfinished · review · notices · yours: failing …
+pages     page:NAME read [--view contents]   ROWS save page:NAME --section S   page:NAME note 'TEXT' --section S
 commands  status · start 'TEXT' · import PATH|chatgpt · set [KEY VALUE] · web · embed · install · demo · dev
 rows      @3  @2-5  @1,4  @all   (this terminal)     a plain word searches; Tab completes everything
 any line  --explain (how it is read, runs nothing) · --dry-run (what it would do) · --all (every matched row)
