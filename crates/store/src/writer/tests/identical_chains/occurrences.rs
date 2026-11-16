@@ -40,11 +40,13 @@ fn copy_occurrences(count: i64, refuse_first: bool) -> u64 {
     ).unwrap();
     conn.execute("INSERT INTO wire_reading SELECT input_pk,chain,'older=1',format,0,state FROM wire_reading WHERE chain=3", []).unwrap();
     conn.execute("INSERT INTO wire_occurrence SELECT input_pk,chain,'older=1',number,occurrence FROM wire_occurrence WHERE chain=3 AND reading_version=?1", [&version]).unwrap();
+    let tx = conn.transaction().unwrap();
     for n in 2..=count {
         for reading in [version.as_str(), "older=1"] {
-            conn.execute("INSERT INTO wire_occurrence SELECT input_pk,chain,reading_version,?1,occurrence FROM wire_occurrence WHERE chain=3 AND reading_version=?2 AND number=1", params![n,reading]).unwrap();
+            tx.execute("INSERT INTO wire_occurrence SELECT input_pk,chain,reading_version,?1,occurrence FROM wire_occurrence WHERE chain=3 AND reading_version=?2 AND number=1", params![n,reading]).unwrap();
         }
     }
+    tx.commit().unwrap();
     let copy = crate::ReadingCopy {
         input: "doc".into(),
         from: 3,
