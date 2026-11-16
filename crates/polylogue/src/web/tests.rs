@@ -73,6 +73,48 @@ fn assert_copy_command(html: &str, command: &str) {
     );
 }
 
+fn assert_read_command(html: &str, selection: &str) {
+    let command = html
+        .split_once("<code id=\"page-command\">")
+        .expect("page command")
+        .1
+        .split_once("</code>")
+        .unwrap()
+        .0
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&");
+    let shell = std::process::Command::new("sh")
+        .args(["-c", &format!("printf '%s\\0' {command}")])
+        .output()
+        .unwrap();
+    assert!(shell.status.success());
+    let words = shell
+        .stdout
+        .strip_suffix(&[0])
+        .unwrap()
+        .split(|byte| *byte == 0)
+        .map(|word| String::from_utf8(word.to_vec()).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(words[0], "polylogue");
+    let parsed = crate::commands::declarations()
+        .parse_cli(&words[1..], "unused")
+        .unwrap();
+    assert_eq!(parsed.request.operation, "rows");
+    let rows: crate::protocol::line::Rows =
+        serde_json::from_value(parsed.request.arguments).unwrap();
+    assert_eq!(
+        rows,
+        crate::protocol::line::Rows {
+            selection: Some(selection.into()),
+            steps: vec![crate::protocol::line::Step::Read(Default::default())],
+            ..Default::default()
+        }
+    );
+}
+
 fn own_origin(b: axum::http::request::Builder) -> axum::http::request::Builder {
     b.header(header::ORIGIN, format!("http://127.0.0.1:{PORT}"))
 }
@@ -253,7 +295,7 @@ fn the_session_page_escapes_archive_text_and_matches_the_socket() {
             "{page}"
         );
         assert!(!page.contains("<script>alert"));
-        assert!(page.contains("polylogue rows --request"));
+        assert_read_command(&page, "session:claude-code:s1");
         assert!(page.contains("/assets/shell.js"));
         // A first page records its run after answering. Finish the previous
         // reading before comparing the next reading's exact snapshot position.

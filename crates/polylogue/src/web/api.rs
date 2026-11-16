@@ -397,20 +397,29 @@ async fn answer_as(
         .await;
     let scopes = crate::protocol::ReadScopes::single(read_scope.clone());
     let answer = crate::protocol::scope_answer(dispatched, &scopes);
-    let failed_step = answer
+    let line = answer
         .value()
         .filter(|_| c.name == "rows")
         .and_then(|value| {
-            let line: crate::protocol::line::LineAnswer =
-                serde_json::from_value(value.clone()).ok()?;
-            let crate::protocol::line::LineAnswer::Steps(steps) = line else {
-                return None;
-            };
-            steps.steps.into_iter().find_map(|step| match step.outcome {
-                crate::protocol::line::StepOutcome::Failed { error } => Some(error),
-                _ => None,
-            })
+            serde_json::from_value::<crate::protocol::line::LineAnswer>(value.clone()).ok()
         });
+    let failed_step = line.as_ref().and_then(|line| {
+        let crate::protocol::line::LineAnswer::Steps(steps) = line else {
+            return None;
+        };
+        steps.steps.iter().find_map(|step| match &step.outcome {
+            crate::protocol::line::StepOutcome::Failed { error } => Some(error.clone()),
+            _ => None,
+        })
+    });
+    let single_read = matches!(&line, Some(crate::protocol::line::LineAnswer::Steps(steps))
+        if steps.steps.len() == 1 && matches!(steps.steps[0].outcome,
+            crate::protocol::line::StepOutcome::Done { reply: crate::protocol::line::StepAnswer::Read(_), .. }));
+    let single_step = matches!(&line, Some(crate::protocol::line::LineAnswer::Steps(steps)) if steps.steps.len() == 1);
+    let step_status = failed_step
+        .as_ref()
+        .and_then(|error| error.kind.http_status())
+        .and_then(|status| StatusCode::from_u16(status).ok());
     let wants_html = headers
         .get(header::ACCEPT)
         .and_then(|value| value.to_str().ok())
@@ -421,8 +430,47 @@ async fn answer_as(
                     .is_some_and(|kind| kind.trim() == "text/html")
             })
         });
-    if wants_html && let Some(error) = &failed_step {
+    if wants_html
+        && single_step
+        && let Some(error) = &failed_step
+    {
         return super::failed_with(error);
+    }
+    if wants_html && c.name == "rows" && !single_read {
+        let declarations = crate::commands::declarations();
+        let rendered = declarations
+            .render_text("rows", &answer, command_surface::TextStyle::Plain)
+            .and_then(|text| declarations.cli_command(&request).map(|cli| (text, cli)));
+        let (mut text, cli) = match rendered {
+            Ok(rendered) => rendered,
+            Err(error) => {
+                return json_answer(
+                    web,
+                    command_surface::Answer::<serde_json::Value>::error(error),
+                );
+            }
+        };
+        text.push_str(&declarations.render_footer(command_surface::Via::Web, &answer));
+        let html = super::pages::layout(
+            "Polylogue",
+            "",
+            &cli,
+            &format!("<pre>{}</pre>", polylogue_render::html::escape(&text)),
+        );
+        let status = step_status
+            .or_else(|| {
+                answer
+                    .http_status()
+                    .and_then(|status| StatusCode::from_u16(status).ok())
+            })
+            .unwrap_or(StatusCode::OK);
+        return scoped_body_response(
+            web,
+            status,
+            "text/html; charset=utf-8",
+            html.into_bytes(),
+            &scopes,
+        );
     }
     if matches!(c.name, "read" | "rows")
         && wants_html
@@ -477,10 +525,7 @@ async fn answer_as(
         }
     }
     let (status, bytes) = super::prepare_json_answer(web, answer);
-    let status = failed_step
-        .and_then(|error| error.kind.http_status())
-        .and_then(|status| StatusCode::from_u16(status).ok())
-        .unwrap_or(status);
+    let status = step_status.unwrap_or(status);
     scoped_body_response(web, status, "application/json", bytes, &scopes)
 }
 

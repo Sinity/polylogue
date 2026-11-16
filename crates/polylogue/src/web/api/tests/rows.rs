@@ -193,3 +193,48 @@ fn http_get_cursor_continues_read() {
         assert_eq!(actual, vec![text]);
     });
 }
+
+#[test]
+fn http_html_renders_listing_brief_and_partial_steps() {
+    let daemon = crate::test_daemon::start("Synthetic brief <script>λ🙂</script>");
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        for (body, expected_status, expected) in [
+            (
+                json!({"selection":"sessions","fields":["id"]}),
+                StatusCode::OK,
+                vec!["claude-code:s1"],
+            ),
+            (
+                json!({"selection":"session:claude-code:s1","steps":[{"verb":"brief"}]}),
+                StatusCode::OK,
+                vec!["Synthetic brief &lt;script&gt;λ🙂&lt;/script&gt;"],
+            ),
+            (
+                json!({"selection":"session:claude-code:s1","steps":[{"verb":"note","text":"Synthetic completed write"},{"verb":"read","budget":0}]}),
+                StatusCode::BAD_REQUEST,
+                vec!["wrote_each", "undo:", "read failed:"],
+            ),
+        ] {
+            let response = super::super::super::router(web(&daemon))
+                .oneshot(
+                    axum::http::Request::post("/api/v1/rows")
+                        .header(header::HOST, "127.0.0.1:8765")
+                        .header(header::AUTHORIZATION, "Bearer synthetic")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .header(header::ACCEPT, "text/html")
+                        .body(axum::body::Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            assert_eq!(response.headers()[header::CONTENT_TYPE], "text/html; charset=utf-8");
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let html = String::from_utf8(bytes.to_vec()).unwrap();
+            assert_eq!(status, expected_status, "{html}");
+            for expected in expected {
+                assert!(html.contains(expected), "missing {expected:?}: {html}");
+            }
+        }
+    });
+}

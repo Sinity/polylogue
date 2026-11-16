@@ -61,7 +61,7 @@ fn documents_search_and_read_in_one_http_operation() {
             "{page}"
         );
         assert!(!page.contains("<script>"));
-        assert!(page.contains("polylogue rows --request"));
+        assert_read_command(&page, &target);
         let api = read_page(&r, &target, &[]).await;
         let Ok(data) = crate::protocol::into_value(
             crate::test_daemon::Call::new(
