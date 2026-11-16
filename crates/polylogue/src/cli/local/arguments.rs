@@ -39,15 +39,33 @@ pub struct Tour {
 }
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct InstallAgent {
-    /// The browser
+pub struct Install {
+    /// The harness, browser, shell or account to install into
     #[schemars(extend("argument_form" = "positional"))]
-    pub harness: String,
-    /// The ID chrome://extensions shows
-    pub extension_id: Option<String>,
-    /// Delete the manifest instead
+    pub target: String,
+    /// Remove the installation
     #[serde(default)]
     pub remove: bool,
+    /// Print what would be written
+    #[serde(default)]
+    pub dry_run: bool,
+    /// Also install the harness's instructions
+    #[serde(default)]
+    pub instructions: bool,
+    /// The ID chrome://extensions shows
+    pub extension_id: Option<String>,
+    /// The wrapper command to complete (default: polylogue)
+    pub program: Option<String>,
+    /// Use this harness settings file
+    #[schemars(extend("unlisted" = true))]
+    pub settings: Option<String>,
+}
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MoveToSinex {
+    /// Describe the move without writing
+    #[serde(default)]
+    pub dry_run: bool,
 }
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -58,15 +76,6 @@ pub struct Hook {
     /// The harness calling: its payload, output and session IDs
     #[serde(default = "claude_code_harness")]
     pub harness: crate::hook::Harness,
-}
-#[derive(Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct Hooks {
-    /// Whose settings
-    #[serde(default = "claude_code_harness")]
-    pub harness: crate::hook::Harness,
-    /// Default: `$CLAUDE_CONFIG_DIR/settings.json` (or `~/.claude/settings.json`); for Codex `$CODEX_HOME/hooks.json` (or `~/.codex/hooks.json`); for Gemini CLI `~/.gemini/settings.json`
-    pub settings: Option<String>,
 }
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
@@ -89,22 +98,4 @@ pub struct Host {
     pub spool: Option<String>,
     /// The session ID to start the agent with, where the harness takes one
     pub session_id: Option<String>,
-}
-#[derive(Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum Shell {
-    Bash,
-    Elvish,
-    Fish,
-    Powershell,
-    Zsh,
-}
-#[derive(Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct Completions {
-    /// The shell
-    #[schemars(extend("argument_form" = "positional"))]
-    pub shell: Shell,
-    /// The command to complete, when a wrapper on PATH runs Polylogue (default: polylogue)
-    pub program: Option<String>,
 }

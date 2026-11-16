@@ -10,7 +10,7 @@ pub(crate) struct Changes;
 #[serde(deny_unknown_fields)]
 pub(crate) struct ChangesArguments {
     /// The last fully applied feed position (GEN:COUNTER:ARCHIVE)
-    since: Option<String>,
+    after: Option<String>,
 }
 
 impl crate::daemon::handler::Feed for Changes {
@@ -21,7 +21,7 @@ impl crate::daemon::handler::Feed for Changes {
         operation: &Arc<polylogue_reading::operation::Context>,
         output: &mut dyn std::io::Write,
     ) -> Result<(), Failure> {
-        let mut file = read(d, arguments.since.as_deref(), operation)?;
+        let mut file = read(d, arguments.after.as_deref(), operation)?;
         std::io::copy(&mut file, output).map_err(Failure::io)?;
         Ok(())
     }
@@ -29,12 +29,12 @@ impl crate::daemon::handler::Feed for Changes {
 
 fn read(
     d: &Daemon,
-    since: Option<&str>,
+    after: Option<&str>,
     operation: &Arc<polylogue_reading::operation::Context>,
 ) -> Result<std::fs::File, Failure> {
     let reader = d.reads.reader()?;
     let file = tempfile::NamedTempFile::new_in(d.archive.staging_dir()).map_err(Failure::io)?;
     let output = file.reopen().map_err(Failure::io)?;
-    super::super::query::feed::prepare_with(&reader, since, &operation.clock, output)?;
+    super::super::query::feed::prepare_with(&reader, after, &operation.clock, output)?;
     file.reopen().map_err(Failure::io)
 }

@@ -9,9 +9,9 @@ from polylogue.client import Client, Refused
 
 client = Client()  # Or Client("/path/to/archive", executable="/path/to/polylogue")
 page = client.query("messages where parser", page_size=100)
-rows = page.data["value"]["rows"]
-if page.data["value"].get("next") is not None:
-    following = client.query("messages where parser", cursor=page.data["value"]["next"], page_size=100)
+rows = page.data["value"]["reply"]["rows"]
+if page.data["value"]["reply"].get("next") is not None:
+    following = client.query("messages where parser", cursor=page.data["value"]["reply"]["next"], page_size=100)
 
 try:
     session = client.read("session:claude-code:example")
@@ -27,8 +27,8 @@ except Refused as error:
 integer precision and complete refusals survive. Regular calls keep the whole
 shared `outcome`/`value` envelope. Empty and degraded answers keep their payloads;
 refusals expose the complete error answer. Query cursors belong to query pages.
-Read continuations use `client.follow_read(request)` for generated `read` and
-`attachment` actions, including previous pages. It preserves the original
+Read continuations use `client.follow_read(request)` for generated `rows`, `read` and
+`attachment` actions, including previous pages. A listing is the `rows` reply with `kind: "listing"`. It preserves the original
 arguments, request ID, cursor and omitted-versus-null deadline/budget fields,
 and rejects unsupported operation kinds and envelope options explicitly.
 Use `client.read(identity, page_tokens=600)` to choose the number of tokens transferred in one page.

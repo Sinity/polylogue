@@ -41,7 +41,7 @@ impl Operation for HeldCatalog {
             let limit =
                 polylogue_store::read::limit::ReadLimit::without_deadline(Default::default());
             let response = crate::daemon::handler::local(
-                "setting",
+                "set",
                 serde_json::to_value(arguments).unwrap(),
                 &crate::daemon::handler::Local {
                     daemon: &self.daemon,
@@ -68,7 +68,7 @@ fn accept_request(
     daemon: &Daemon,
     envelope: &command_surface::RunnableRequest,
 ) -> (command_surface::Caller, Option<ReadScopeToken>) {
-    let command = crate::commands::command("setting").unwrap();
+    let command = crate::commands::command("set").unwrap();
     let caller = Caller {
         surface: Surface::Mcp,
         cwd: None,
@@ -128,7 +128,7 @@ async fn each_request_answers_only_in_its_own_scope() {
     declarations
         .declare::<crate::protocol::setting::Arguments, crate::protocol::setting::Answer>(
             crate::commands::specification::<crate::protocol::setting::Arguments>(
-                crate::commands::command("setting").unwrap(),
+                crate::commands::command("set").unwrap(),
             ),
             |answer, _| serde_json::to_string(answer).unwrap(),
         )
@@ -136,7 +136,7 @@ async fn each_request_answers_only_in_its_own_scope() {
     let mut table = command_surface::OperationTable::new(declarations.finish());
     table
         .bind(
-            "setting",
+            "set",
             HeldCatalog {
                 daemon: Arc::clone(&daemon.daemon),
                 release: Arc::clone(&release),
@@ -145,7 +145,7 @@ async fn each_request_answers_only_in_its_own_scope() {
         )
         .unwrap();
     let envelope = command_surface::Request {
-        operation: "setting".into(),
+        operation: "set".into(),
         arguments: json!({}),
         request_id: "same-id-across-generation".into(),
         deadline: command_surface::Deadline::None,
@@ -208,7 +208,7 @@ async fn each_request_answers_only_in_its_own_scope() {
 
     // The same group's write form is accepted by the writer, not by a read-output token.
     let write = command_surface::Request {
-        operation: "setting".into(),
+        operation: "set".into(),
         arguments: json!({"key":"browser.actions","value":"on"}),
         request_id: "write-only-request".into(),
         deadline: command_surface::Deadline::None,

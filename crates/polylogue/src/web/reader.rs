@@ -2,11 +2,14 @@
 use super::*;
 
 fn target_url(target: &str, parameters: &[(String, String)]) -> Result<String, String> {
-    if parameters.iter().any(|(name, _)| name == "target") {
-        return Err("the object URL already supplies target".into());
+    if parameters
+        .iter()
+        .any(|(name, _)| matches!(name.as_str(), "target" | "selection" | "steps"))
+    {
+        return Err("the object URL already supplies selection and its read step".into());
     }
     let encode = polylogue_render::html::encode_path_segment;
-    let mut url = format!("/api/v1/read?target={}", encode(target));
+    let mut url = format!("/api/v1/rows?selection={}&steps=read", encode(target));
     for (name, value) in parameters {
         url.push('&');
         url.push_str(&encode(name));

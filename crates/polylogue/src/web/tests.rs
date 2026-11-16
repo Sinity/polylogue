@@ -50,7 +50,7 @@ fn authed(b: axum::http::request::Builder) -> axum::http::request::Builder {
 
 fn setting_request(id: &str) -> String {
     serde_json::to_string(&command_surface::Request {
-        operation: "setting".into(),
+        operation: "set".into(),
         arguments: serde_json::json!({"key":"reading.variants", "value":"[]"}),
         request_id: id.into(),
         deadline: command_surface::Deadline::Default,
@@ -97,7 +97,21 @@ pub(super) fn application_body(body: String) -> String {
             "error": error.code, "message": error.message,
             "detail": {"position": error.position, "suggestion": error.suggestion(), "hint": error.hint, "retryable": error.retryable},
         }).to_string(),
-        answer => answer.value().unwrap().to_string(),
+        answer => {
+            let value = answer.value().unwrap();
+            let value = match value["kind"].as_str() {
+                Some("listing") => &value["reply"],
+                Some("steps") => {
+                    let step = &value["reply"]["steps"][0]["outcome"];
+                    if step["status"] == "failed" {
+                        return serde_json::json!({"error":step["error"]["code"],"message":step["error"]["message"]}).to_string();
+                    }
+                    &step["reply"]["reply"]
+                },
+                _ => value,
+            };
+            value.to_string()
+        },
     }
 }
 
@@ -148,12 +162,12 @@ fn access_rules() {
         assert_eq!(send(&r, req).await.0, StatusCode::OK);
 
         // A write from another origin is refused even with the cookie.
-        let req = authed(post("/api/v1/setting"))
+        let req = authed(post("/api/v1/set"))
             .header(header::ORIGIN, "https://evil.example")
             .body(Body::from(setting_request("access-setting")))
             .unwrap();
         assert_eq!(send(&r, req).await.0, StatusCode::FORBIDDEN);
-        let req = own_origin(authed(post("/api/v1/setting")))
+        let req = own_origin(authed(post("/api/v1/set")))
             .body(Body::from(setting_request("access-setting")))
             .unwrap();
         assert_eq!(send(&r, req).await.0, StatusCode::OK);
@@ -239,7 +253,7 @@ fn the_session_page_escapes_archive_text_and_matches_the_socket() {
             "{page}"
         );
         assert!(!page.contains("<script>alert"));
-        assert!(page.contains("polylogue read --request"));
+        assert!(page.contains("polylogue rows --request"));
         assert!(page.contains("/assets/shell.js"));
         // A first page records its run after answering. Finish the previous
         // reading before comparing the next reading's exact snapshot position.
@@ -290,7 +304,7 @@ fn search_renders_the_cli_answer_with_session_links() {
         let (s, _, page) = send(&r, req).await;
         assert_eq!(s, StatusCode::OK, "{page}");
         assert!(page.contains("<mark>"), "{page}");
-        assert_copy_command(&page, "polylogue list parser");
+        assert_copy_command(&page, "polylogue parser");
         // A query error shows its message instead of failing the page.
         let req = authed(get("/search?q=repo%3A%28"))
             .body(Body::empty())
@@ -590,7 +604,7 @@ fn shutdown_cancels_a_started_http_read_before_joining_its_transport() {
     *runtime.daemon.read_limits.lock().unwrap() = Some(observed);
     let mut peer = std::net::TcpStream::connect(("127.0.0.1", server.port)).unwrap();
     let sql = "WITH%20RECURSIVE%20n(x)%20AS%20(SELECT%201%20UNION%20ALL%20SELECT%20x%2B1%20FROM%20n%20WHERE%20x%3C2000000000)%20SELECT%20count(*)%20FROM%20n";
-    write!(peer, "GET /api/v1/sql?statement={sql} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAuthorization: Bearer {}\r\n\r\n", server.port, server.token).unwrap();
+    write!(peer, "GET /api/v1/dev/sql?statement={sql} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAuthorization: Bearer {}\r\n\r\n", server.port, server.token).unwrap();
     let read = reads
         .recv_timeout(std::time::Duration::from_secs(5))
         .unwrap();
@@ -654,11 +668,11 @@ fn cost_uses_public_accounting_and_session_scope() {
                 send(&r, authed(get(path)).body(Body::empty()).unwrap()).await;
             assert_eq!(status, StatusCode::OK, "{html}");
             assert_eq!(headers[header::CACHE_CONTROL], "no-store");
-            let Ok(data) = crate::protocol::into_value(crate::test_daemon::Call::new("query", serde_json::json!({"query": format!("{scope} | measure usage")})).answer(&r.web.daemon)) else {
+            let Ok(data) = crate::protocol::into_value(crate::test_daemon::Call::new("rows", serde_json::json!({"selection": format!("{scope} | measure usage")})).answer(&r.web.daemon)) else {
                 panic!("usage failed")
             };
             let report =
-                polylogue_render::html::escape(&polylogue_render::measures::usage(&data["data"]));
+                polylogue_render::html::escape(&polylogue_render::measures::usage(&data["reply"]["data"]));
             assert!(html.contains(&report), "{html}");
             assert!(html.contains("API-equivalent unknown"), "{html}");
             assert!(html.contains("Browse selected sessions"));
@@ -812,7 +826,7 @@ fn priced_usage_and_drilldown_keep_selected_sessions() {
         let (status, _, api) = send(
             &r,
             authed(get(
-                "/api/v1/query?query=id%3Aclaude-code%3As1%20%7C%20measure%20usage",
+                "/api/v1/rows?selection=id%3Aclaude-code%3As1%20%7C%20measure%20usage",
             ))
             .body(Body::empty())
             .unwrap(),
@@ -875,7 +889,7 @@ mod cancellation;
 
 fn read_url(target: &str, extra: &[(&str, &str)]) -> String {
     let encode = polylogue_render::html::encode_path_segment;
-    let mut path = format!("/api/v1/read?target={}", encode(target));
+    let mut path = format!("/api/v1/rows?steps=read&selection={}", encode(target));
     for (key, value) in extra {
         path.push('&');
         path.push_str(&encode(key));
@@ -999,7 +1013,7 @@ fn setting_http_keeps_typed_write_repeat_and_current_results() {
     let reader = reader();
     rt().block_on(async {
         let invoke = || {
-            authed(own_origin(post("/api/v1/setting")))
+            authed(own_origin(post("/api/v1/set")))
                 .body(Body::from(setting_request("http-setting-write-result")))
                 .unwrap()
         };
@@ -1022,7 +1036,7 @@ fn setting_http_keeps_typed_write_repeat_and_current_results() {
         assert!(repeat.repeat);
         assert!(!repeat.pending);
         let request = command_surface::Request {
-            operation: "setting".into(),
+            operation: "set".into(),
             arguments: serde_json::json!({"key":"reading.variants"}),
             request_id: "http-setting-current".into(),
             deadline: command_surface::Deadline::None,
@@ -1031,7 +1045,7 @@ fn setting_http_keeps_typed_write_repeat_and_current_results() {
             fresh: false,
             format: Default::default(),
         };
-        let call = authed(own_origin(post("/api/v1/setting")))
+        let call = authed(own_origin(post("/api/v1/set")))
             .body(Body::from(serde_json::to_vec(&request).unwrap()))
             .unwrap();
         let (status, _, shown) = send(&reader, call).await;

@@ -3,8 +3,8 @@ use super::*;
 #[test]
 fn feed_refuses_unsupported_envelopes_before_production() {
     let daemon = crate::test_daemon::start("stream acceptance source");
-    for operation in ["changes", "follow"] {
-        let arguments = if operation == "changes" {
+    for operation in ["dev feed", "follow"] {
+        let arguments = if operation == "dev feed" {
             json!({})
         } else {
             json!({"target":"sessions"})
@@ -56,7 +56,7 @@ fn feed_refuses_unsupported_envelopes_before_production() {
             let failure = registration.admit(&envelope).unwrap_err();
             assert_eq!(failure.error.kind, command_surface::FailureKind::BadRequest);
             assert!(failure.error.message.contains(field), "{failure:?}");
-            if operation == "changes" {
+            if operation == "dev feed" {
                 let failure = daemon.daemon.ready_call(&envelope).unwrap_err();
                 assert_eq!(failure.kind, command_surface::FailureKind::BadRequest);
                 assert!(failure.message.contains(field), "{failure:?}");

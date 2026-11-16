@@ -8,6 +8,7 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct Accepted {
     pub authorship: Authorship,
+    pub calling_session: Option<String>,
     pub cancellation: polylogue_store::cancellation::Cancellation,
     /// Process-private outer request bound, captured once by its accepting transport.
     pub(crate) parent: Option<Arc<ParentLifetime>>,
@@ -29,6 +30,7 @@ impl Accepted {
         let hook = open_calls.identity(caller);
         Self {
             authorship: command_surface::author_of(caller, via, hook.as_ref()).into(),
+            calling_session: caller.session.as_ref().map(ToString::to_string),
             cancellation,
             parent: None,
             working_directory: None,

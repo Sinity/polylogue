@@ -25,9 +25,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::LazyLock;
 
-/// An MCP tool: a family of commands offered as its operations. Every
-/// command of a tool writes, or every one reads, so its hints hold for
-/// each operation.
+/// An operation's home tool. Larger tools also accept smaller tools' operations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tool {
     Read,
@@ -66,17 +64,42 @@ impl Tool {
 
     pub fn description(self) -> &'static str {
         match self {
-            Tool::Read => "Query and read the archive",
+            Tool::Read => {
+                r#"Read the archive. A call is {operation, arguments}; operation defaults to rows.
+rows(selection, steps?, explain?, dry_run?): selection is one query or reference: "repo:polylogue since:7d", "rate limit", "tool_calls where outcome:error | group by tool | count", session:codex:019d..., page:NAME, a chat URL, latest, self, query:NAME, result:ID. No steps lists the rows; each step acts on the same rows, in order:
+  read(view?, show?, hide?, from?, until?, first?, last?, around?, at?, alternate?, blind?, seed?) view: transcript|dialogue|overview|context|tree|changes|live|raw|compare|contents (a page's table of contents)|trace (where it came from)
+  brief(cwd?, for?) packaged context: of a session, to take it over; of search words, what is already known; of a page, the page; with no selection, for the directory cwd
+explain: true says how a call is read and what it would do, running nothing.
+status() | help(topic?) query, fields, views, kinds, a verb | set(key?) lists settings or shows one | dev sql(statement) | dev schema(...)
+Example: {"arguments":{"selection":"tool_calls where outcome:error since:1d","steps":[{"verb":"read","around":2}]}}"#
+            }
             Tool::Context => "Briefs, recall, takeovers and file advisories",
             Tool::Note => "Assertions, saved queries, watches, settings",
-            Tool::Write => "Annotations and settings",
-            Tool::Act => "Acts on live sessions: ping, answer, interrupt, start, hand-off",
+            Tool::Write => {
+                r#"Everything polylogue_read does, plus annotations: notes, tags, judgments and saved queries, recorded with you as author. Steps add:
+  note(text, as?) as: note|decision|finding|lesson|question|goal|problem|handoff|correction|claim|title|outcome|hidden|translation:LANG|summary|...; evidence?, replies_to?, supports?, challenges?, corrects?
+  tag(name) NAME or NAME:VALUE
+  edit(text) | withdraw(reason?) on annotation rows
+  judge(verdict, on?, seed?, reason?) accept|reject|defer on annotations; or the better of several rows (a reference, or blind label A, B) on a dimension
+  save(name?, watch?) names the question as query:NAME and keeps the rows as result:ID; name page:NAME puts the rows on that page (section?, after?, fixed?, live?, as?)
+  note(..., page?, section?) also places the note on a page; as: page creates one (template?), as: heading adds a section
+Cite in note text with footnotes: [^1]: "exact quote" <REF>; read format: citation gives them.
+set(key, value) | import(paths)
+A query matching several rows needs all: true. Each write returns the call that undoes it.
+Example: {"arguments":{"selection":"self","steps":[{"verb":"note","text":"Catalog stays SQLite","as":"decision"}]}}"#
+            }
+            Tool::Act => {
+                r#"Everything polylogue_write does, plus acts that reach live sessions, web chats and paid providers. Each act is recorded; a sent message cannot be taken back. Post into web chats only on the operator's word. Steps add:
+  send(text, about?) a running session gets it at its next tool call or prompt; one ended session is resumed with it; a web chat turn waits for the operator's approval
+  answer(value) allow|deny|"text": respond to what a session is waiting for
+  interrupt() | resume(in?, at?, cwd?, stop_source?) without in, the command that reopens it; with in: HARNESS, a new hosted session continuing its work
+start(text, in?, role?, cwd?) | import(provider, since?, cancel?) fetches a web chat's history | embed(query?, yes?)
+Example: {"arguments":{"selection":"session:codex:019d0f2a","steps":[{"verb":"send","text":"rebase on master first"}]}}"#
+            }
         }
     }
 
-    /// A retried `request_id` is applied once. Chat and backfill requests
-    /// start a new browser action each time, and acts reach a running
-    /// harness or start one.
+    /// Writes with the same request ID are applied once.
     pub fn idempotent(self) -> bool {
         !matches!(self, Tool::Act)
     }
@@ -333,12 +356,12 @@ const CLI: Command = Command {
 
 pub const GROUPS: &[Group] = &[
     Group {
-        name: "schema",
-        help: "Structure, counts and unread paths from stored revisions",
+        name: "dev",
+        help: "Developer queries, schema descriptions and change feed",
     },
     Group {
-        name: "demo",
-        help: "Explore the synthetic Morrow archive",
+        name: "dev schema",
+        help: "Structure, counts and unread paths from stored revisions",
     },
     Group {
         name: "measure",
@@ -346,11 +369,7 @@ pub const GROUPS: &[Group] = &[
     },
     Group {
         name: "embed",
-        help: "Embeddings: cost preview, build, status",
-    },
-    Group {
-        name: "hooks",
-        help: "Add or remove Polylogue's hooks in Claude Code's, Codex's or Gemini CLI's settings",
+        help: "Embeddings and stored-vector status",
     },
     Group {
         name: "chat",
@@ -363,14 +382,14 @@ pub const GROUPS: &[Group] = &[
 ];
 
 /// Every command, in the order help lists them: the written ones, with a
-/// `measure NAME` for each measurement after `setting`, then the rows the
+/// `measure NAME` for each measurement after `set`, then the rows the
 /// line replaces.
 pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
     let mut all = WRITTEN.to_vec();
     all.extend_from_slice(replaced::REPLACED);
     let at = all
         .iter()
-        .position(|c| c.name == "setting")
+        .position(|c| c.name == "set")
         .map_or(all.len(), |i| i + 1);
     all.splice(at..at, MEASURES.iter().map(measure_command));
     for c in &mut all {
@@ -392,6 +411,7 @@ fn measure_command(m: &'static Measure) -> Command {
         } else {
             daemon::<H::Measure>()
         }),
+        tool: Some(Tool::Read),
         ..CLI
     }
 }
@@ -413,6 +433,41 @@ fn query_help() -> &'static str {
 
 const WRITTEN: &[Command] = &[
     Command {
+        name: "help",
+        examples: &["polylogue help units"],
+        help: "Read a topic or verb's help, or the full reference with --all",
+        reason: "Describe the command and query language",
+        run: Run::Daemon(daemon::<H::Help>()),
+        tool: Some(Tool::Read),
+        http: true,
+        ..CLI
+    },
+    Command {
+        name: "embed",
+        examples: &["polylogue embed"],
+        reason: "Preview embedding work and build it only after confirmation",
+        help: "Preview the texts and cost; --yes builds their embedding vectors",
+        run: Run::Daemon(daemon::<H::Embed>()),
+        tool: Some(Tool::Act),
+        http: true,
+        writes: true,
+        ..CLI
+    },
+    Command {
+        name: "install",
+        help: "Install into a harness, Chrome or a shell; --dry-run prints a shell's completion script",
+        run: configured_local::<local::arguments::Install>(local::install),
+        examples: &["polylogue install zsh --dry-run"],
+        ..CLI
+    },
+    Command {
+        name: "dev move-to-sinex",
+        examples: &["polylogue dev move-to-sinex --dry-run"],
+        help: "Move the archive to primary mode",
+        run: local_command::<local::arguments::MoveToSinex>(local::not_built),
+        ..CLI
+    },
+    Command {
         name: "rows",
         reason: "Acts on selected rows with verbs, in order, on every surface",
         latency: command_surface::LatencyClass::Search,
@@ -425,7 +480,8 @@ const WRITTEN: &[Command] = &[
         ..CLI
     },
     Command {
-        name: "schema infer",
+        name: "dev schema infer",
+        examples: &["polylogue dev schema infer codex"],
         reason: "Observe stored wire structure that parsed query rows cannot reconstruct",
         latency: command_surface::LatencyClass::Local,
         help: "Observe stored inputs at idle priority; default: latest revisions of every origin",
@@ -437,7 +493,8 @@ const WRITTEN: &[Command] = &[
         ..CLI
     },
     Command {
-        name: "schema unread",
+        name: "dev schema unread",
+        examples: &["polylogue dev schema unread codex"],
         reason: "Expose stored wire paths outside the parser coverage",
         latency: command_surface::LatencyClass::Read,
         help: "Show stored wire paths neither read nor kept, with drift and coverage",
@@ -449,20 +506,23 @@ const WRITTEN: &[Command] = &[
         ..CLI
     },
     Command {
-        name: "schema diff",
+        name: "dev schema diff",
+        examples: &["polylogue dev schema diff /home/op/before.json /home/op/after.json"],
         help: "Compare explicit inferred schema files recursively, with sample differences labeled",
         calling_process: Some(calling_process::schema::<calling_process::SchemaOutput>),
         run: local_command::<local::arguments::SchemaDiff>(crate::cli::schema::diff),
         ..CLI
     },
     Command {
-        name: "demo tour",
+        name: "demo",
+        examples: &["polylogue demo /home/op/morrow-demo"],
         help: "Prepare a separate Morrow archive and walk through search, tool outcomes, parents, costs and notes",
         run: configured_local::<local::arguments::Tour>(crate::demo::tour),
         ..CLI
     },
     Command {
         name: "status",
+        examples: &["polylogue status"],
         help: "What the archive holds, what the daemon is doing and which sessions are running, waiting first",
         reason: "Orient the caller with measured archive and daemon state",
         latency: command_surface::LatencyClass::Status,
@@ -480,11 +540,12 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "import",
+        examples: &["polylogue import /home/op/morrow/export.json --origin chatgpt"],
         help: "Store explicit files, directories and bundles through the daemon, or with --from-archive an archive written before the version 1 baseline. The typed report lists imported and already stored paths, classifications and refusals, packages and authored restoration counts, and for an older archive what became of each class of row. Primary authored restores awaiting confirmation are pending",
         reason: "Capture explicitly selected source bytes and restore the notes and other user records a bundle carries",
         latency: command_surface::LatencyClass::Aggregate,
         run: Run::Daemon(daemon::<H::Import>()),
-        tool: Some(Tool::Note),
+        tool: Some(Tool::Write),
         http: true,
         writes: true,
         ..CLI
@@ -532,12 +593,13 @@ const WRITTEN: &[Command] = &[
         ..CLI
     },
     Command {
-        name: "setting",
+        name: "set",
+        examples: &["polylogue set browser.actions"],
         help: "List the typed runtime settings catalog, read KEY, or write KEY VALUE. Includes reading.variants, browser.actions, embed.* and plan.*. Standalone attention settings are local; in primary mode Sinex holds attention settings",
         reason: "Inspect declared runtime settings and author changes at their declared scope",
         latency: command_surface::LatencyClass::Local,
         run: Run::Daemon(daemon::<H::Setting>()),
-        tool: Some(Tool::Note),
+        tool: Some(Tool::Write),
         http: true,
         writes: true,
         ..CLI
@@ -561,7 +623,8 @@ const WRITTEN: &[Command] = &[
         ..CLI
     },
     Command {
-        name: "changes",
+        name: "dev feed",
+        examples: &["polylogue dev feed"],
         help: "A finite JSON-lines change feed; persist its new position only after applying the complete batch",
         run: Run::Feed {
             registration: feed::<feeds::Changes>(),
@@ -572,6 +635,9 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "start",
+        examples: &[
+            "polylogue start 'Summarize the current work' --in codex --cwd /home/op/morrow",
+        ],
         help: "Start a session Polylogue hosts on the harness's control protocol (Codex's app-server, Claude Code stream-json, Gemini CLI and Hermes ACP): its approvals, questions and turns can then be answered, steered and interrupted from anywhere, and it survives a daemon restart. With --role, an instance of that role: its harness, with its instructions",
         reason: "Starts a harness session; no query selects one that does not exist yet",
         run: Run::Daemon(daemon::<acts::Start>()),
@@ -590,28 +656,14 @@ const WRITTEN: &[Command] = &[
         ..CLI
     },
     Command {
-        name: "sql",
+        name: "dev sql",
+        examples: &["polylogue dev sql 'SELECT session_id FROM v1_sessions'"],
         help: "Read-only SQL. Programs read the views v1_sessions, v1_messages, v1_tool_calls, v1_links and v1_assertions, whose names and columns stay; the tables change with the index format",
         reason: "Run expert read-only queries over the stable archive views",
         latency: command_surface::LatencyClass::Aggregate,
         run: Run::Daemon(daemon::<H::Sql>()),
         http: true,
         tool: Some(Tool::Read),
-        ..CLI
-    },
-    Command {
-        name: "embed preview",
-        reason: "Show what an embedding build would read and cost before spending",
-        help: "What a build would embed and what it would cost",
-        run: Run::Daemon(daemon::<H::Embed>()),
-        ..CLI
-    },
-    Command {
-        name: "embed build",
-        reason: "Compute and store embedding vectors through the configured provider",
-        help: "Embed the texts not yet embedded. A paid provider needs `--yes`",
-        run: Run::Daemon(daemon::<H::Embed>()),
-        writes: true,
         ..CLI
     },
     Command {
@@ -694,12 +746,6 @@ const WRITTEN: &[Command] = &[
         ..CLI
     },
     Command {
-        name: "install-agent",
-        help: "Register Polylogue with a browser: `chrome` writes the extension's native messaging host manifest, which allows only `--extension-id`",
-        run: configured_local::<local::arguments::InstallAgent>(local::install_agent),
-        ..CLI
-    },
-    Command {
         name: "internal browser-host",
         help: "The browser extension's native messaging host; Chrome starts it",
         run: configured_local::<local::arguments::Empty>(local::browser_host),
@@ -727,24 +773,6 @@ const WRITTEN: &[Command] = &[
         run: local_command::<local::arguments::Host>(local::host),
         tool: None,
         cli: Cli::Hidden,
-        ..CLI
-    },
-    Command {
-        name: "hooks install",
-        help: "Merge Polylogue's hook entries into the settings file, keeping everything else. Installing twice changes nothing",
-        run: configured_local::<local::arguments::Hooks>(local::hooks_install),
-        ..CLI
-    },
-    Command {
-        name: "hooks uninstall",
-        help: "Remove Polylogue's hook entries, keeping everything else",
-        run: configured_local::<local::arguments::Hooks>(local::hooks_uninstall),
-        ..CLI
-    },
-    Command {
-        name: "completions",
-        help: "The shell code that registers completion: commands and options, and while you type a query, its units, fields, values seen and recent session IDs from the daemon (`source <(polylogue completions zsh)`)",
-        run: local_command::<local::arguments::Completions>(local::completions),
         ..CLI
     },
     Command {

@@ -85,7 +85,7 @@ impl BrowserHost {
     /// `status`, which counts the whole archive.
     pub fn actions_setting(&self) -> Option<bool> {
         let data = crate::protocol::into_value(
-            self.ask("setting", serde_json::json!({ "key": "browser.actions" }))?,
+            self.ask("set", serde_json::json!({ "key": "browser.actions" }))?,
         )
         .ok()?;
         let current: polylogue_model::settings::Current = serde_json::from_value(data).ok()?;

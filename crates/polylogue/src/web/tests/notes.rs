@@ -100,21 +100,25 @@ async fn send(
 async fn command(f: &Fixture, operation: &str, id: &str, arguments: Value) -> Value {
     let (status, answer) = send(f, operation, id, arguments).await;
     assert_eq!(status, StatusCode::OK, "{answer:?}");
-    answer
+    let value = answer
         .value()
-        .expect("successful answer has its typed value")
-        .clone()
+        .expect("successful answer has its typed value");
+    if operation == "rows" {
+        value["reply"].clone()
+    } else {
+        value.clone()
+    }
 }
 async fn query(f: &Fixture, text: &str) -> Value {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     command(
         f,
-        "query",
+        "rows",
         &format!(
             "web-query-{}",
             NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ),
-        json!({"query":text}),
+        json!({"selection":text}),
     )
     .await
 }
@@ -500,7 +504,7 @@ fn semantic_and_mixed_annotation_use_the_public_query_population() {
             ("embed.model", "notes-test"),
             ("embed.endpoint", endpoint.as_str()),
         ] {
-            command(&f, "setting", key, json!({"key":key,"value":value})).await;
+            command(&f, "set", key, json!({"key":key,"value":value})).await;
         }
         {
             let reader = f.daemon.daemon.reads.reader().unwrap();
@@ -662,7 +666,7 @@ fn assertion_fields_and_saved_query_edits_keep_metadata() {
             json!({"name":"morrow","query":"sessions"}),
         )
         .await;
-        let page=command(&f,"query","projection",json!({"query":"assertions where root = \"Saved:Case\" current:*","fields":["id","key","about","judged"]})).await;
+        let page=command(&f,"rows","projection",json!({"selection":"assertions where root = \"Saved:Case\" current:*","fields":["id","key","about","judged"]})).await;
         assert_eq!(page["count"], 2);
         assert_eq!(
             query(&f, "assertions where root = \"saved:case\" current:*").await["count"],

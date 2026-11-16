@@ -224,6 +224,7 @@ fn account_and_project_text_import_without_turns_or_invented_document_authorship
         &env,
         &[
             "--json",
+            "dev",
             "sql",
             "SELECT count(*) AS n FROM document_source s JOIN document d ON d.pk=s.document_pk WHERE d.id='claude-ai:project:project-a:doc:doc-a'",
         ],

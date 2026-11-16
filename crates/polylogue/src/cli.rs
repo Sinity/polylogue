@@ -32,6 +32,7 @@ fn version() -> String {
 /// their first word, and the bare query as the root's own arguments.
 pub fn command() -> clap::Command {
     let mut root = clap::Command::new("polylogue")
+        .disable_help_subcommand(true)
         .color(clap::ColorChoice::Never)
         .styles(clap::builder::Styles::plain())
         .version(version())
@@ -154,7 +155,7 @@ fn row_args(c: &Command) -> Vec<clap::Arg> {
                 Some(Value::Number(number)) => arg = arg.default_value(number.to_string()),
                 _ => {}
             }
-            if c.name == "setting" && matches!(argument.spec.name.as_str(), "key" | "value") {
+            if c.name == "set" && matches!(argument.spec.name.as_str(), "key" | "value") {
                 arg = arg.add(clap_complete::engine::ArgValueCompleter::new(
                     completion::Setting {
                         key: argument.spec.name == "key",
@@ -289,7 +290,7 @@ pub(crate) fn needs_engine(
 ) -> bool {
     chosen(matches).is_some_and(|(command, _)| match command.name {
         "daemon" => mode.needs_engine(),
-        "demo tour" => true,
+        "demo" => true,
         _ => false,
     })
 }

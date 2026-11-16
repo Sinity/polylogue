@@ -430,7 +430,7 @@ fn schema_infer_and_unread_use_the_real_daemon_socket_and_read_only_requests() {
     daemon.wait_for(|status| status["store"]["messages"] == 2);
     std::fs::remove_file(provider).unwrap();
     let request = crate::client::request(
-        "schema infer",
+        "dev schema infer",
         serde_json::json!({"origin": "claude-code", "input": [imported_input]}),
         "schema-infer".into(),
     );
@@ -452,7 +452,7 @@ fn schema_infer_and_unread_use_the_real_daemon_socket_and_read_only_requests() {
             .contains("private scalar")
     );
     let unread = crate::client::request(
-        "schema unread",
+        "dev schema unread",
         serde_json::json!({"origin": "claude-code"}),
         "schema-unread".into(),
     );

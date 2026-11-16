@@ -65,12 +65,25 @@ pub struct Start {
     /// The first turn
     #[schemars(extend("argument_form" = "words"))]
     pub text: String,
-    /// The harness to host
+    /// The harness or web chat to start
+    #[serde(rename = "in")]
     pub harness: Option<String>,
     /// Start an instance of this role
     pub role: Option<String>,
-    /// The working directory
-    pub cwd: PathBuf,
+    /// The working directory (default: the caller's directory)
+    pub cwd: Option<PathBuf>,
+    /// Attach these files to the first turn
+    #[serde(default)]
+    pub attach: Vec<PathBuf>,
+    /// The model to run
+    pub model: Option<String>,
+    /// The model's effort setting
+    pub effort: Option<String>,
+    /// The provider's project
+    pub project: Option<String>,
+    /// Send the new web chat's first turn
+    #[serde(default)]
+    pub submit: bool,
 }
 
 /// Hand a session's work to a new hosted session on `to`, briefed with its

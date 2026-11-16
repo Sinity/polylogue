@@ -68,13 +68,39 @@ pub mod embed {
     #[serde(deny_unknown_fields)]
     pub struct Arguments {
         /// A sessions query limiting the texts (default: every prose text)
-        #[schemars(extend("argument_form" = "words"))]
         pub query: Option<String>,
         /// At most this many texts
         pub limit: Option<u64>,
         /// Confirm a build with a paid provider
         #[serde(default)]
         pub yes: bool,
+    }
+}
+
+pub mod help {
+    //! Pages of the language and the full command reference.
+    use schemars::JsonSchema;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+    #[serde(deny_unknown_fields)]
+    pub struct Arguments {
+        /// The language topic or verb to describe
+        #[schemars(extend("argument_form" = "positional"))]
+        pub topic: Option<String>,
+        /// Print the full reference
+        #[serde(default)]
+        pub all: bool,
+        /// Write the reference to a file or browser
+        pub to: Option<String>,
+        /// The reference's document format
+        pub format: Option<String>,
+        /// List fields for this unit
+        #[schemars(extend("unlisted" = true))]
+        pub unit: Option<String>,
+        /// Declarations per page (default 20)
+        #[schemars(extend("unlisted" = true))]
+        pub page_size: Option<u64>,
     }
 }
 
@@ -117,13 +143,33 @@ pub mod import {
         pub paths: Vec<std::path::PathBuf>,
         /// Read the paths as this declared structure (an origin name), or as one of Python Polylogue's stores: python-archive (a folder with source.db and blob/), python-user-db (its user.db) or python-vectors (one of its vector stores)
         #[serde(default)]
-        pub format: Option<String>,
+        pub origin: Option<String>,
+        /// Withdraw page blocks missing from an imported working copy
+        #[serde(default)]
+        pub withdraw_missing: bool,
+        /// Fetch provider conversations changed since this time
+        pub since: Option<String>,
+        /// Cancel a provider import
+        #[serde(default)]
+        pub cancel: bool,
+        /// Wait this long for a provider import
+        pub wait: Option<String>,
         /// The folder of an archive written before the version 1 baseline, imported once in place of paths
         #[serde(default)]
         pub from_archive: Option<std::path::PathBuf>,
         /// With --from-archive: read and check the archive, write nothing, and report counts per class
         #[serde(default)]
         pub dry_run: bool,
+    }
+    impl Arguments {
+        /// A provider import is addressed by its single provider word.
+        pub fn provider(&self) -> Option<&str> {
+            let [path] = self.paths.as_slice() else {
+                return None;
+            };
+            path.to_str()
+                .filter(|path| matches!(*path, "chatgpt" | "claude-ai" | "grok"))
+        }
     }
     pub type Answer = polylogue_engine::ImportReport;
 }
@@ -222,7 +268,6 @@ pub mod setting {
         #[schemars(extend("argument_form" = "positional"))]
         pub value: Option<String>,
         /// A named host for host-scoped settings; default: the accepting machine
-        #[schemars(extend("unlisted" = true))]
         pub machine: Option<String>,
     }
 

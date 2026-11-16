@@ -142,78 +142,23 @@ pub fn browser_host(
     )
 }
 
-/// Prints what `COMPLETE=<shell> polylogue` prints: shell code that asks
-/// this binary for completions as the operator types.
-pub fn completions(
-    _: &Command,
-    v: &command_surface::ParsedCommand,
-    output: crate::config::OutputConfig,
-    _: bool,
-) -> ExitCode {
-    let shell = v
-        .request
-        .arguments
-        .str("shell")
-        .map(str::to_owned)
-        .unwrap_or_default();
-    let shells = clap_complete::env::Shells::builtins();
-    let Some(completer) = shells.completer(&shell) else {
-        return fail(
-            output,
-            false,
-            polylogue_model::Code::BadRequest,
-            &format!("unknown shell {shell:?}"),
-            2,
-        );
-    };
-    // A wrapper on PATH that runs this binary (Sinnix's `polylogue-live`)
-    // is completed and asked under its own name, so it keeps its archive.
-    let name = v
-        .request
-        .arguments
-        .str("program")
-        .map(str::to_owned)
-        .unwrap_or_else(|| "polylogue".into());
-    let mut registration = Vec::new();
-    match completer.write_registration("COMPLETE", &name, &name, &name, &mut registration) {
-        Ok(()) => {
-            let registration = String::from_utf8_lossy(&registration);
-            let registration = registration.replace(
-                "COMPLETE=\"zsh\"",
-                "_POLYLOGUE_COMPLETE_PREFIX=\"$PREFIX\" COMPLETE=\"zsh\"",
-            );
-            print!("{registration}");
-            ExitCode::SUCCESS
-        }
-        Err(e) => fail(output, false, polylogue_model::Code::Io, &e.to_string(), 1),
-    }
-}
-
-pub fn hooks_install(
+/// Install into a harness or Chrome, or print a shell completion script.
+pub fn install(
     _: &Command,
     v: &command_surface::ParsedCommand,
     startup: &crate::config::Startup,
     json: bool,
 ) -> ExitCode {
-    hooks(v, startup, json, true)
+    install_with_output(v, startup, json, &mut std::io::stdout().lock())
 }
 
-pub fn hooks_uninstall(
-    _: &Command,
+fn install_with_output(
     v: &command_surface::ParsedCommand,
     startup: &crate::config::Startup,
     json: bool,
+    output: &mut dyn std::io::Write,
 ) -> ExitCode {
-    hooks(v, startup, json, false)
-}
-
-fn hooks(
-    v: &command_surface::ParsedCommand,
-    startup: &crate::config::Startup,
-    json: bool,
-    on: bool,
-) -> ExitCode {
-    let arguments: arguments::Hooks = match serde_json::from_value(v.request.arguments.clone()) {
+    let arguments: arguments::Install = match serde_json::from_value(v.request.arguments.clone()) {
         Ok(arguments) => arguments,
         Err(error) => {
             return fail(
@@ -225,7 +170,58 @@ fn hooks(
             );
         }
     };
-    let harness = arguments.harness;
+    let target = arguments.target.as_str();
+    let not_built = |part: &str| {
+        fail(
+            startup.output,
+            json,
+            polylogue_model::Code::NotBuilt,
+            &format!("install {part} is not built yet"),
+            2,
+        )
+    };
+    if arguments.instructions {
+        return not_built("--instructions");
+    }
+    if matches!(target, "zsh" | "bash" | "fish") {
+        if !arguments.dry_run || arguments.remove {
+            return not_built(target);
+        }
+        return match completion_script(target, arguments.program.as_deref().unwrap_or("polylogue"))
+        {
+            Ok(script) => match output.write_all(script.as_bytes()) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => fail(
+                    startup.output,
+                    json,
+                    polylogue_model::Code::Io,
+                    &error.to_string(),
+                    1,
+                ),
+            },
+            Err(error) => fail(
+                startup.output,
+                json,
+                polylogue_model::Code::BadRequest,
+                &error,
+                2,
+            ),
+        };
+    }
+    if arguments.dry_run {
+        return not_built("--dry-run");
+    }
+    if target == "chrome" {
+        return install_chrome(
+            startup,
+            json,
+            arguments.extension_id.as_deref(),
+            arguments.remove,
+        );
+    }
+    let Some(harness) = crate::hook::Harness::parse(target) else {
+        return not_built(target);
+    };
     let path = match arguments.settings {
         Some(path) => std::path::PathBuf::from(path),
         None => match crate::hook::settings_path(harness, &startup.engine) {
@@ -241,24 +237,71 @@ fn hooks(
             }
         },
     };
-    match crate::hook::install(&path, harness, || crate::hook::probe_version(harness), on) {
+    match crate::hook::install(
+        &path,
+        harness,
+        || crate::hook::probe_version(harness),
+        !arguments.remove,
+    ) {
         Ok(()) => {
-            println!(
-                "{} Polylogue's hooks {} {}",
-                if on { "installed" } else { "removed" },
-                if on { "in" } else { "from" },
-                path.display()
-            );
-            ExitCode::SUCCESS
+            let result = if json {
+                writeln!(
+                    output,
+                    "{}",
+                    serde_json::json!({"removed":arguments.remove,"files":[path]})
+                )
+            } else {
+                writeln!(
+                    output,
+                    "{} Polylogue's hooks {} {}",
+                    if arguments.remove {
+                        "removed"
+                    } else {
+                        "installed"
+                    },
+                    if arguments.remove { "from" } else { "in" },
+                    path.display()
+                )
+            };
+            match result {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => fail(
+                    startup.output,
+                    json,
+                    polylogue_model::Code::Io,
+                    &error.to_string(),
+                    1,
+                ),
+            }
         }
-        Err(e) => fail(
+        Err(error) => fail(
             startup.output,
             json,
             polylogue_model::Code::Io,
-            &e.to_string(),
+            &error.to_string(),
             1,
         ),
     }
+}
+
+/// The shell code that asks this binary for completions while a person types.
+fn completion_script(shell: &str, program: &str) -> Result<String, String> {
+    let shells = clap_complete::env::Shells::builtins();
+    let completer = shells
+        .completer(shell)
+        .ok_or_else(|| format!("unknown shell {shell:?}"))?;
+    let mut registration = Vec::new();
+    completer
+        .write_registration("COMPLETE", program, program, program, &mut registration)
+        .map_err(|error| error.to_string())?;
+    String::from_utf8(registration)
+        .map(|registration| {
+            registration.replace(
+                "COMPLETE=\"zsh\"",
+                "_POLYLOGUE_COMPLETE_PREFIX=\"$PREFIX\" COMPLETE=\"zsh\"",
+            )
+        })
+        .map_err(|error| error.to_string())
 }
 
 /// A command declared but not built: a typed refusal.
@@ -274,29 +317,6 @@ pub fn not_built(
         polylogue_model::Code::NotBuilt,
         &format!("`{}` is not built yet", c.name),
         2,
-    )
-}
-
-pub fn install_agent(
-    _: &Command,
-    v: &command_surface::ParsedCommand,
-    startup: &crate::config::Startup,
-    json: bool,
-) -> ExitCode {
-    install_chrome(
-        startup,
-        json,
-        &v.request
-            .arguments
-            .str("harness")
-            .map(str::to_owned)
-            .unwrap_or_default(),
-        v.request
-            .arguments
-            .str("extension_id")
-            .map(str::to_owned)
-            .as_deref(),
-        v.request.arguments.bool("remove").unwrap_or(false),
     )
 }
 
@@ -322,21 +342,9 @@ pub fn host_manifest_dirs(config: &std::path::Path) -> Vec<std::path::PathBuf> {
 fn install_chrome(
     startup: &crate::config::Startup,
     json: bool,
-    harness: &str,
     extension_id: Option<&str>,
     remove: bool,
 ) -> ExitCode {
-    if harness != "chrome" {
-        return fail(
-            startup.output,
-            json,
-            polylogue_model::Code::NotBuilt,
-            &format!(
-                "`install-agent {harness}` is not built yet; for Claude Code hooks use `polylogue hooks install`"
-            ),
-            1,
-        );
-    }
     let config = startup.config.paths.config.clone();
     let file = format!("{}.json", crate::browser::HOST_NAME);
     let mut changed = Vec::new();
@@ -533,3 +541,6 @@ pub fn host(
         Err(e) => fail(output, json, polylogue_model::Code::Io, &e.to_string(), 1),
     }
 }
+
+#[cfg(test)]
+mod tests;

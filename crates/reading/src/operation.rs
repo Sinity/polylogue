@@ -24,6 +24,7 @@ pub struct Invocation {
     pub at: Timestamp,
     pub machine: String,
     pub authorship: Authorship,
+    calling_session: Option<String>,
     accepted_request: Option<Arc<command_surface::RunnableRequest>>,
     parent: Option<Arc<ParentLifetime>>,
 }
@@ -43,9 +44,15 @@ impl Invocation {
             at,
             machine,
             authorship,
+            calling_session: None,
             accepted_request: None,
             parent: None,
         }
+    }
+    /// The session whose request is being evaluated, independent of its author.
+    pub fn with_calling_session(mut self, session: Option<String>) -> Self {
+        self.calling_session = session;
+        self
     }
     pub fn with_accepted_request(
         mut self,
@@ -73,6 +80,7 @@ impl Invocation {
             at: metadata.now(),
             machine: metadata.machine().into(),
             authorship: authorship.clone(),
+            calling_session: None,
             accepted_request: None,
             parent: None,
         }
@@ -96,6 +104,7 @@ pub struct Context {
     pub machine: String,
     pub authorship: Authorship,
     sinex: SinexContext,
+    calling_session: Option<String>,
     accepted_request: Option<Arc<command_surface::RunnableRequest>>,
     parent: Option<Arc<ParentLifetime>>,
 }
@@ -115,6 +124,7 @@ impl Context {
             machine: invocation.machine,
             authorship: invocation.authorship,
             sinex: SinexContext::Standalone,
+            calling_session: invocation.calling_session,
             accepted_request: invocation.accepted_request,
             parent: invocation.parent,
         }
@@ -126,6 +136,7 @@ impl Context {
             machine: invocation.machine,
             authorship: invocation.authorship,
             sinex,
+            calling_session: invocation.calling_session,
             accepted_request: invocation.accepted_request,
             parent: invocation.parent,
         }
@@ -135,6 +146,7 @@ impl Context {
             at: self.ran_at,
             machine: self.machine.clone(),
             authorship: self.authorship.clone(),
+            calling_session: self.calling_session.clone(),
             accepted_request: self.accepted_request.clone(),
             parent: self.parent.clone(),
         }
@@ -144,6 +156,9 @@ impl Context {
     }
     pub fn check_parent_lifetime(&self) -> polylogue_store::Result<()> {
         self.parent.as_ref().map_or(Ok(()), |parent| parent.check())
+    }
+    pub fn calling_session(&self) -> Option<&str> {
+        self.calling_session.as_deref()
     }
     pub fn accepted_request(&self) -> Option<&command_surface::RunnableRequest> {
         self.accepted_request.as_deref()

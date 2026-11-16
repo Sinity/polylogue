@@ -6,7 +6,7 @@ pub fn search(
     error: Option<&command_surface::Failure>,
     cursor: Option<&str>,
 ) -> String {
-    let mut cli = format!("polylogue list {}", shell_quote(query));
+    let mut cli = format!("polylogue {}", shell_quote(query));
     if let Some(cursor) = cursor {
         cli.push_str(&format!(" --cursor {}", shell_quote(cursor)));
     }

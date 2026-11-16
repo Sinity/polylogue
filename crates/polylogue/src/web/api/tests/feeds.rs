@@ -59,8 +59,8 @@ fn http_feeds_run_generated_calls_and_keep_their_position() {
             command_surface::Deadline::Milliseconds(5000),
         ] {
             let request = command_surface::Request {
-                operation: "changes".into(),
-                arguments: json!({"since":null}),
+                operation: "dev feed".into(),
+                arguments: json!({"after":null}),
                 request_id: "HTTP feed identity".into(),
                 deadline,
                 budget_tokens: Default::default(),
@@ -74,7 +74,7 @@ fn http_feeds_run_generated_calls_and_keep_their_position() {
                 Query::<Vec<(String, String)>>::try_from_uri(&url.parse().unwrap()).unwrap();
             assert_eq!(
                 declarations
-                    .parse_http_query("changes", &pairs, "unused")
+                    .parse_http_query("dev feed", &pairs, "unused")
                     .unwrap(),
                 request
             );
@@ -106,8 +106,8 @@ fn http_feeds_run_generated_calls_and_keep_their_position() {
         }
         let position = completed.as_ref().unwrap();
         let request = crate::client::request(
-            "changes",
-            json!({"since":position}),
+            "dev feed",
+            json!({"after":position}),
             "HTTP feed continuation".into(),
         );
         let url = polylogue_render::web::http_url(declarations, &request).unwrap();
@@ -121,8 +121,8 @@ fn http_feeds_run_generated_calls_and_keep_their_position() {
         assert_eq!(received[1]["count"], 0);
     });
     let request = crate::client::request(
-        "changes",
-        json!({"since":completed.unwrap()}),
+        "dev feed",
+        json!({"after":completed.unwrap()}),
         "socket feed continuation".into(),
     );
     let mut received = Vec::new();
@@ -146,7 +146,7 @@ fn http_get_feeds_refuse_duplicates_wrong_routes_and_unsupported_options() {
     let daemon = crate::test_daemon::start("HTTP GET feed refusals");
     runtime().block_on(async {
         for (query, reason) in [
-            ("since=one&since=two", "duplicate since"),
+            ("after=one&after=two", "duplicate after"),
             ("request_id=one&request_id=two", "duplicate request_id"),
             (
                 "operation=status&arguments=%7B%7D",
@@ -154,7 +154,7 @@ fn http_get_feeds_refuse_duplicates_wrong_routes_and_unsupported_options() {
             ),
             ("request_id=", "request_id"),
             ("arguments=%5B%5D", "object"),
-            ("arguments=%7B%22since%22%3A1%7D", "string"),
+            ("arguments=%7B%22after%22%3A1%7D", "string"),
             ("cursor=ordinary-page", "cursor"),
             ("budget_tokens=null", "budget_tokens"),
             ("budget_tokens=10", "budget_tokens"),
@@ -163,7 +163,7 @@ fn http_get_feeds_refuse_duplicates_wrong_routes_and_unsupported_options() {
             ("why=true", "unknown query field why"),
             ("fields=ref", "unknown query field fields"),
         ] {
-            let (status, bytes) = get(&daemon, &format!("/api/v1/changes?{query}"), &[]).await;
+            let (status, bytes) = get(&daemon, &format!("/api/v1/dev/feed?{query}"), &[]).await;
             assert_eq!(
                 status,
                 StatusCode::BAD_REQUEST,
@@ -190,12 +190,12 @@ fn http_get_feeds_refuse_duplicates_wrong_routes_and_unsupported_options() {
 fn http_get_feeds_keep_explicit_outer_deadlines_and_authentication() {
     let daemon = crate::test_daemon::start("HTTP GET feed lifetime");
     runtime().block_on(async {
-        let (status, bytes) = get(&daemon, "/api/v1/changes?deadline=null", &[("x-polylogue-deadline-ms", "1")]).await;
+        let (status, bytes) = get(&daemon, "/api/v1/dev/feed?deadline=null", &[("x-polylogue-deadline-ms", "1")]).await;
         assert_eq!(status, StatusCode::GATEWAY_TIMEOUT, "{}", String::from_utf8_lossy(&bytes));
         let answer: command_surface::Answer<Value> = serde_json::from_slice(&bytes).unwrap();
         assert!(matches!(answer.outcome, command_surface::Outcome::Error(error) if error.kind==command_surface::FailureKind::Timeout));
         let response = super::super::super::router(web(&daemon)).oneshot(
-            axum::http::Request::get("/api/v1/changes?deadline=null")
+            axum::http::Request::get("/api/v1/dev/feed?deadline=null")
                 .header(header::HOST, "127.0.0.1:8765")
                 .body(axum::body::Body::empty()).unwrap()
         ).await.unwrap();

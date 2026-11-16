@@ -52,6 +52,7 @@ fn separate_immutable_exports_keep_older_text_when_new_collections_are_null_or_e
             &env,
             &[
                 "--json",
+                "dev",
                 "sql",
                 "SELECT r.id AS input FROM document_source s JOIN document d ON d.pk=s.document_pk JOIN input_ref r ON r.pk=s.input_pk WHERE d.id='claude-ai:project:p:doc:d'",
             ],
@@ -70,6 +71,7 @@ fn separate_immutable_exports_keep_older_text_when_new_collections_are_null_or_e
         &env,
         &[
             "--json",
+            "dev",
             "sql",
             "SELECT count(*) AS n FROM a.input WHERE format='claude-ai'",
         ],
@@ -84,12 +86,12 @@ fn separate_immutable_exports_keep_older_text_when_new_collections_are_null_or_e
             .contains("project_document")
     );
     let sources_sql = "SELECT d.id,r.id AS input,s.chain,s.source_start,s.source_end,hex(s.version_hash) AS version FROM document_source s JOIN document d ON d.pk=s.document_pk JOIN input_ref r ON r.pk=s.input_pk ORDER BY d.id,r.id,s.chain,s.source_start";
-    let sources = cli(&env, &["--json", "sql", sources_sql]);
+    let sources = cli(&env, &["--json", "dev", "sql", sources_sql]);
     assert!(sources.status.success(), "{sources:?}");
     let sources = json(&sources);
     assert_eq!(sources.as_array().unwrap().len(), 4);
     let ids_sql = "SELECT id FROM a.input WHERE format='claude-ai' ORDER BY id";
-    let ids = cli(&env, &["--json", "sql", ids_sql]);
+    let ids = cli(&env, &["--json", "dev", "sql", ids_sql]);
     assert!(ids.status.success(), "{ids:?}");
     let ids = json(&ids);
     drop(daemon);
@@ -99,10 +101,10 @@ fn separate_immutable_exports_keep_older_text_when_new_collections_are_null_or_e
     wait_status(&env, |status| {
         status["store"]["documents"] == 2 && status["store"]["search_pending"] == 0
     });
-    let after = cli(&env, &["--json", "sql", sources_sql]);
+    let after = cli(&env, &["--json", "dev", "sql", sources_sql]);
     assert!(after.status.success(), "{after:?}");
     assert_eq!(json(&after), sources);
-    let after = cli(&env, &["--json", "sql", ids_sql]);
+    let after = cli(&env, &["--json", "dev", "sql", ids_sql]);
     assert!(after.status.success(), "{after:?}");
     assert_eq!(json(&after), ids);
     let out = cli(&env, &["--json", "read", context]);

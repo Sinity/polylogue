@@ -7,7 +7,7 @@ fn object_urls_forward_target_and_parameters() {
     ];
     assert_eq!(
         target_url("message:test:session:message", &parameters).unwrap(),
-        "/api/v1/read?target=message%3Atest%3Asession%3Amessage&view=dialogue&cursor=sealed%20%2B%CE%BB%26%3F"
+        "/api/v1/rows?selection=message%3Atest%3Asession%3Amessage&steps=read&view=dialogue&cursor=sealed%20%2B%CE%BB%26%3F"
     );
 }
 #[test]

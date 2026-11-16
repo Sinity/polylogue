@@ -626,6 +626,7 @@ impl<H: Handler> Operation for Row<H> {
                     .into()
                 });
             let invocation = accepted.and_then(|caller| caller.invocation.clone());
+            let calling_session = accepted.and_then(|caller| caller.calling_session.clone());
             let parent = accepted.and_then(|caller| caller.parent.clone());
             let request_id = context.request_id.clone();
             let cursor = context.cursor().map(str::to_owned);
@@ -659,6 +660,7 @@ impl<H: Handler> Operation for Row<H> {
                 };
                 let invocation = invocation
                     .unwrap_or_else(|| daemon.invocation(&authorship))
+                    .with_calling_session(calling_session)
                     .with_parent(parent);
                 answer::<H>(
                     arguments,

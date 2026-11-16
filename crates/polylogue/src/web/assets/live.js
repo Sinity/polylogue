@@ -17,8 +17,8 @@ async function batch() {
   controller = new AbortController();
   const audience = [...ready];
   try {
-    const query = position ? "?since=" + encodeURIComponent(position) : "";
-    const response = await fetch("/api/v1/changes" + query, {
+    const query = position ? "?after=" + encodeURIComponent(position) : "";
+    const response = await fetch("/api/v1/dev/feed" + query, {
       credentials: "same-origin", signal: controller.signal,
     });
     if (response.status === 401) {
@@ -115,14 +115,14 @@ async function readCurrent(subscriber, signal) {
   let initial;
   let count = 0;
   do {
-    const query = new URLSearchParams({ query: subscriber.query, limit: "50" });
+    const query = new URLSearchParams({ selection: subscriber.query, page_size: "50" });
     if (cursor) query.set("cursor", cursor);
-    const response = await fetch("/api/v1/query?" + query, { credentials: "same-origin", signal });
+    const response = await fetch("/api/v1/rows?" + query, { credentials: "same-origin", signal });
     if (response.status === 401) { stopped = true; throw new Error("Sign-in expired. Reopen with polylogue web."); }
     if (!response.ok) throw new Error("Current references unavailable (" + response.status + ")");
     const answer = await response.json();
     if (answer.outcome === "error") throw new Error(answer.error.message);
-    const page = answer.value;
+    const page = answer.value.reply;
     if (!subscribers.has(subscriber)) return;
     if (!initial) {
       initial = page.read_at.cursor;

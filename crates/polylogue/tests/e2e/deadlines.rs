@@ -89,7 +89,7 @@ fn cli_reports_deadline_refusals_with_exit_seven() {
 #[test]
 fn a_read_timeout_does_not_turn_a_write_reply_into_a_failure() {
     let output = answer(
-        &["--request-id", "synthetic-write", "--json", "setting", "reading.variants", "[]"],
+        &["--request-id", "synthetic-write", "--json", "set", "reading.variants", "[]"],
         Duration::from_millis(1250),
         b"{\"outcome\":\"ok\",\"value\":{\"id\":\"synthetic-write\",\"repeat\":false,\"pending\":false},\"notes\":[],\"next\":[]}\n",
         command_surface::Deadline::Default,
@@ -231,7 +231,7 @@ fn a_read_stream_without_a_deadline_waits_for_the_daemon() {
 #[test]
 fn a_command_timeout_overrides_the_global_default() {
     let output = answer(
-        &["--deadline", "2000", "--json", "setting"],
+        &["--deadline", "2000", "--json", "set"],
         Duration::from_millis(1250),
         b"{\"outcome\":\"ok\",\"value\":[],\"notes\":[],\"next\":[]}\n",
         command_surface::Deadline::Milliseconds(2000),

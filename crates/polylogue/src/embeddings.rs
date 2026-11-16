@@ -5,7 +5,7 @@
 //! re-parse that yields the same text keeps them, and they are never
 //! destroyed by a reindex.
 //!
-//! Settings (`polylogue setting KEY VALUE`):
+//! Settings (`polylogue set KEY VALUE`):
 //! - `embed.provider`: `local` or `voyage`; unset means embeddings are off;
 //! - `embed.calls`: `on` lets Polylogue send text to the provider (building
 //!   vectors, embedding new `similar:` texts); default `off`, when stored
@@ -416,7 +416,7 @@ fn chunks(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// What `embed status`, `embed preview` and `embed build` answer.
+/// What `embed status` and `embed` answer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum Answer {
@@ -835,7 +835,7 @@ pub fn handle(
     let Some(provider) = provider else {
         return error(
             polylogue_model::Code::EmbeddingsOff,
-            "embeddings are off; `polylogue setting embed.provider local` (or `voyage`) turns them on",
+            "embeddings are off; `polylogue set embed.provider local` (or `voyage`) turns them on",
         );
     };
     // A query limits the work to the sessions it finds.
@@ -850,7 +850,7 @@ pub fn handle(
         return error(
             polylogue_model::Code::ModelCallsOff,
             "model calls are off, so no text is sent to the provider; \
-             `polylogue setting embed.calls on` turns them on",
+             `polylogue set embed.calls on` turns them on",
         );
     }
     let result = match what {
@@ -859,7 +859,7 @@ pub fn handle(
             if provider.kind == ProviderKind::Voyage && !yes {
                 return error(
                     polylogue_model::Code::Confirm,
-                    "Voyage is paid: `polylogue embed preview` shows the cost; build with --yes",
+                    "Voyage is paid: `polylogue embed` shows the cost; build with --yes",
                 );
             }
             build(context.clock, reader, &provider, sessions.as_deref(), limit).map(Answer::Built)

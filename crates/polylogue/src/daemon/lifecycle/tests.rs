@@ -141,7 +141,7 @@ fn sigterm_and_sigint_drain_daemons_keeping_accepted_writes() {
         until(&receiver, "READY=1");
         let archive = polylogue_store::Archive::at(&root);
         let call = command_surface::Request {
-            operation: "setting".into(),
+            operation: "set".into(),
             arguments: serde_json::json!({"key":"browser.actions", "value":"on"}),
             request_id: "accepted-before-signal".into(),
             deadline: command_surface::Deadline::Milliseconds(5000),

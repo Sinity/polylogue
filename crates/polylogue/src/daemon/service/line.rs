@@ -40,6 +40,9 @@ impl Handler for Line {
     fn default_deadline(rows: &Rows) -> bool {
         !streams(rows)
     }
+    fn tool_access(rows: &Rows, _: &Command) -> ToolAccess {
+        rows.access()
+    }
     fn access(rows: &Rows, _: Access) -> Access {
         if rows.access() > ToolAccess::Read {
             Access::Write

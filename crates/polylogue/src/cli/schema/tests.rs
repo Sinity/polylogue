@@ -10,6 +10,7 @@ fn infer_and_unread_share_typed_requests_and_keep_local_output_off_remote_surfac
     };
     let (command, wire) = arguments(&[
         "polylogue",
+        "dev",
         "schema",
         "infer",
         "claude-code",
@@ -32,7 +33,7 @@ fn infer_and_unread_share_typed_requests_and_keep_local_output_off_remote_surfac
     let declared = crate::commands::declarations()
         .descriptions()
         .iter()
-        .find(|description| description.spec.name == "schema infer")
+        .find(|description| description.spec.name == "dev schema infer")
         .unwrap();
     assert!(declared.input_schema["properties"].get("output").is_none());
     assert!(
@@ -44,19 +45,33 @@ fn infer_and_unread_share_typed_requests_and_keep_local_output_off_remote_surfac
     );
     let daemon = crate::test_daemon::start("schema arguments");
     for args in [
-        vec!["polylogue", "schema", "infer", "--revision", "0"],
-        vec!["polylogue", "schema", "infer", "--since", "2026-01-01"],
-        vec!["polylogue", "schema", "infer", "claude-code", "--all"],
+        vec!["polylogue", "dev", "schema", "infer", "--revision", "0"],
+        vec![
+            "polylogue",
+            "dev",
+            "schema",
+            "infer",
+            "--since",
+            "2026-01-01",
+        ],
+        vec![
+            "polylogue",
+            "dev",
+            "schema",
+            "infer",
+            "claude-code",
+            "--all",
+        ],
     ] {
         let (_, wire) = arguments(&args);
-        let answer = crate::test_daemon::call(&daemon.daemon, "schema infer", wire);
+        let answer = crate::test_daemon::call(&daemon.daemon, "dev schema infer", wire);
         assert_eq!(
             answer.failure().and_then(|failure| failure.code.as_deref()),
             Some("bad_request"),
             "{args:?}: {answer:?}"
         );
     }
-    let (_, wire) = arguments(&["polylogue", "schema", "unread", "claude-code"]);
+    let (_, wire) = arguments(&["polylogue", "dev", "schema", "unread", "claude-code"]);
     assert_eq!(wire, json!({"origin":"claude-code"}));
 }
 
@@ -85,6 +100,7 @@ fn explicit_local_artifacts_are_reusable_for_diff_without_archive_access() {
     .unwrap();
     let (command, values) = crate::cli::parse(&[
         "polylogue",
+        "dev",
         "schema",
         "diff",
         before.to_str().unwrap(),
@@ -146,6 +162,7 @@ fn artifact_diff_reports_type_changes_in_empty_tables() {
     }
     let (command, values) = crate::cli::parse(&[
         "polylogue",
+        "dev",
         "schema",
         "diff",
         before.to_str().unwrap(),

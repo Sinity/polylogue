@@ -71,7 +71,7 @@ fn a_read_honours_its_view_format_and_budget() {
     assert!(encoded(&page, polylogue_render::Format::Markdown).contains("a prompt long enough"));
     let page = typed(read(&w.daemon, "transcript", "json", None, None));
     assert!(page.document.items.iter().any(|item| matches!(&item.kind, ItemKind::Text { text } if text.contains("a prompt long enough"))));
-    let changes = typed(read(&w.daemon, "changes", "json", None, None));
+    let changes = typed(read(&w.daemon, "dev feed", "json", None, None));
     assert_eq!(changes.document.header.view, View::Changes);
     assert!(
         !changes
@@ -115,7 +115,7 @@ fn reading_variants_setting_is_the_default_and_is_bound_in_the_cursor() {
     let set = |value: &str| {
         crate::test_answers::ok(
             crate::test_daemon::Call::new(
-                "setting",
+                "set",
                 serde_json::json!({"key": "reading.variants", "value": value}),
             )
             .answer(&w.daemon),

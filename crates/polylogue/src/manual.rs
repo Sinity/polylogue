@@ -1,9 +1,9 @@
 //! Agent guidance: the short card MCP sends as its instructions, and the
-//! full manual (`polylogue manual`): the card, the guide and the operation
+//! full manual (`polylogue help --all`): the card, the guide and the operation
 //! reference.
 use std::fmt::Write;
 
-/// The card every MCP session receives; detail is in `explain`.
+/// The card every MCP session receives; detail is in `help --all`.
 pub fn card() -> &'static str {
     include_str!("../../../docs/agent-manual.md")
 }

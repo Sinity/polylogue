@@ -8,12 +8,13 @@ use serde_json::{Value, json};
 fn data(r: &Reader, text: &str, cursor: Option<String>) -> Value {
     crate::test_answers::ok(
         crate::test_daemon::Call::new(
-            "query",
-            serde_json::json!({"query": text, "limit": Some(50), "why": true}),
+            "rows",
+            serde_json::json!({"selection": text, "page_size": Some(50), "why": true}),
         )
         .cursor(cursor.as_deref())
         .answer(&r.web.daemon),
-    )
+    )["reply"]
+        .clone()
 }
 
 #[test]
@@ -117,7 +118,7 @@ fn filtered_semantic_and_mixed_results_keep_lower_ranked_matches() {
         let (_, _, raw) = http.block_on(send(
             &r,
             authed(get(&format!(
-                "/api/v1/query?query={}&limit=50&why=true",
+                "/api/v1/rows?selection={}&page_size=50&why=true",
                 enc(&text)
             )))
             .body(Body::empty())
@@ -125,20 +126,20 @@ fn filtered_semantic_and_mixed_results_keep_lower_ranked_matches() {
         ));
         let api: Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(api["rows"], answer["rows"]);
-        let args = json!({"query":text,"limit":50,"why":true})
+        let args = json!({"selection":text,"page_size":50,"why":true})
             .as_object()
             .unwrap()
             .clone();
         let mcp: Value = serde_json::from_str(
             &crate::mcp::tests::call(
                 &polylogue_store::Archive::at(&r.web.daemon.archive.root),
-                "query",
+                "rows",
                 args,
             )
             .unwrap(),
         )
         .unwrap();
-        assert_eq!(api["rows"], mcp["rows"]);
+        assert_eq!(api["rows"], mcp["reply"]["rows"]);
         let (status, _, raw) = http.block_on(send(
             &r,
             own_origin(authed(post("/api/v1/keep")))
@@ -174,15 +175,15 @@ fn filtered_search_has_the_same_rows_on_every_surface() {
         "messages where origin:claude-code parser similar:\"parser\"",
     ] {
         let request = crate::client::request(
-            "query",
-            serde_json::json!({"query": text, "limit": 50, "why": true}),
+            "rows",
+            serde_json::json!({"selection": text, "page_size": 50, "why": true}),
             "socket-query".into(),
         );
         let socket = crate::client::call(&r.web.daemon.archive.socket(), &request).unwrap();
         let (status, _, raw) = http.block_on(send(
             &r,
             authed(get(&format!(
-                "/api/v1/query?query={}&limit=50&why=true",
+                "/api/v1/rows?selection={}&page_size=50&why=true",
                 enc(text)
             )))
             .body(Body::empty())
@@ -192,19 +193,19 @@ fn filtered_search_has_the_same_rows_on_every_surface() {
         match crate::protocol::into_value(socket) {
             Ok(answer) => {
                 assert_eq!(status, StatusCode::OK, "{raw}");
-                assert_eq!(api["rows"], answer["rows"], "{text}");
-                let args = json!({"query":text,"limit":50,"why":true})
+                assert_eq!(api["rows"], answer["reply"]["rows"], "{text}");
+                let args = json!({"selection":text,"page_size":50,"why":true})
                     .as_object()
                     .unwrap()
                     .clone();
                 let mcp = crate::mcp::tests::call(
                     &polylogue_store::Archive::at(&r.web.daemon.archive.root),
-                    "query",
+                    "rows",
                     args,
                 )
                 .unwrap();
                 let mcp: Value = serde_json::from_str(&mcp).unwrap();
-                assert_eq!(api["rows"], mcp["rows"]);
+                assert_eq!(api["rows"], mcp["reply"]["rows"]);
             }
             Err(failure) => {
                 assert_ne!(status, StatusCode::OK, "{raw}");

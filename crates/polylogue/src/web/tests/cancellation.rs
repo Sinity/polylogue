@@ -23,7 +23,7 @@ fn http_disconnect_interrupts_sql_and_releases_the_reader_slot() {
     .unwrap();
     let mut stream = std::net::TcpStream::connect(("127.0.0.1", server.port)).unwrap();
     let sql = "WITH%20RECURSIVE%20n(x)%20AS%20(SELECT%201%20UNION%20ALL%20SELECT%20x%2B1%20FROM%20n%20WHERE%20x%3C2000000000)%20SELECT%20count(*)%20FROM%20n";
-    write!(stream, "GET /api/v1/sql?statement={sql} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAuthorization: Bearer {}\r\n\r\n", server.port, server.token).unwrap();
+    write!(stream, "GET /api/v1/dev/sql?statement={sql} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAuthorization: Bearer {}\r\n\r\n", server.port, server.token).unwrap();
     let limit = reads.recv_timeout(Duration::from_secs(5)).unwrap();
     test_daemon::TestDaemon::wait_for_sql(&limit);
     drop(stream);
@@ -43,7 +43,7 @@ fn aborting_an_http_handler_cancels_its_blocking_read() {
         .unwrap();
     let web = Arc::clone(&r.web);
     let task = runtime.spawn(async move {
-        ask(&web, "sql", serde_json::json!({"statement": "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2000000000) SELECT count(*) FROM n"}), None).await
+        ask(&web, "dev sql", serde_json::json!({"statement": "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2000000000) SELECT count(*) FROM n"}), None).await
     });
     let limit = reads.recv_timeout(Duration::from_secs(5)).unwrap();
     test_daemon::TestDaemon::wait_for_sql(&limit);
@@ -138,7 +138,7 @@ fn outer_parent_expires_during_sql_under_a_null_envelope() {
     let reads = r.w.watch_reads();
     let path = typed_url(
         &r.w,
-        "sql",
+        "dev sql",
         serde_json::json!({"statement":"WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2000000000) SELECT count(*) FROM n"}),
         "parent-during-sql",
         command_surface::Deadline::None,
@@ -214,7 +214,7 @@ fn an_expired_http_parent_never_submits_a_new_pure_write() {
     let id = "expired-parent-no-write";
     rt().block_on(async {
         let request = command_surface::Request {
-            operation: "setting".into(),
+            operation: "set".into(),
             arguments: serde_json::json!({"key":"reading.variants","value":"[]"}),
             request_id: id.into(),
             deadline: command_surface::Deadline::None,
@@ -223,7 +223,7 @@ fn an_expired_http_parent_never_submits_a_new_pure_write() {
             fresh: false,
             format: Default::default(),
         };
-        let request = own_origin(authed(post("/api/v1/setting")))
+        let request = own_origin(authed(post("/api/v1/set")))
             .header(
                 "x-polylogue-deadline-ms",
                 crate::daemon::execution::deadline(Duration::ZERO).to_string(),
@@ -266,7 +266,7 @@ fn no_header_null_sql_has_no_implicit_read_cap_and_disconnect_still_cleans_up() 
     .unwrap();
     let path = typed_url(
         &daemon,
-        "sql",
+        "dev sql",
         serde_json::json!({"statement":"WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2000000000) SELECT count(*) FROM n"}),
         "no-parent-null-sql",
         command_surface::Deadline::None,
@@ -282,7 +282,7 @@ fn no_header_null_sql_has_no_implicit_read_cap_and_disconnect_still_cleans_up() 
     TestDaemon::wait_for_sql(&observed);
     // Exceed this operation's class default without adding it to null.
     let default = crate::commands::deadlines()
-        .get(crate::commands::command("sql").unwrap().latency)
+        .get(crate::commands::command("dev sql").unwrap().latency)
         .expect("SQL has a finite class default");
     std::thread::sleep(default + Duration::from_millis(20));
     observed.check().unwrap();
