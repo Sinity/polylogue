@@ -35,7 +35,10 @@ runtime and its tests. The target card and tool descriptions are
 | [reading](reading.md) | `read`: views (including a page's contents and trace), show and hide, ranges and seen marks, paging, formats and destinations, alternates, compare and blind |
 | [transcripts](transcripts.md) | how a transcript is composed and rendered: branches, compaction, headers, tool calls, thinking, attachments, value states, rendering for models |
 | [annotations](annotations.md) | everything authored: the record, kinds, links, current revisions, the write path, `note`, `tag`, `edit`, `withdraw`, annotation lines, checked claims, memory and methods |
-| [pages](pages.md) | pages: slots, sections, members, open items, layouts, templates and shipped pages, checkpoints, the working copy, investigations, experiments |
+| [pages](pages.md) | pages: slots, sections, forms, writing and reading pages, query cells, authorship and proposals, history and checkpoints, names and renames, finding pages, members, reply placement |
+| [page text](page-text.md) | Markdown with references; links, citations, embeds and inclusions; cite by quote and the quote check; backlinks; when a source changes; grounding |
+| [page working copy](page-working-copy.md) | a page as one Markdown file: editing in your editor, grammar, check-in and conflicts, importing Markdown, writing pages out as a site |
+| [page templates](page-templates.md) | templates and parameters, shipped pages and templates, investigations, experiments |
 | [authorship](authorship.md) | who wrote a record and how each channel decides |
 | [judging](judging.md) | `judge`: verdicts, comparisons, blind judging, rankings, agreement, sampled judging, forecasts, rubrics and passes |
 | [alternates](alternates.md) | translations and other renderings of content |
@@ -48,6 +51,7 @@ runtime and its tests. The target card and tool descriptions are
 | [web](web.md) | the workbench frame, keys, inspector, live behaviour, access and routes |
 | [web designs](web-design.md) | visual baselines, artboards and views to draw |
 | [web reader](web-reader.md) | session reading and control, reports, sharing, documents and messages |
+| [web pages](web-pages.md) | the page list and page view, citing while reading, editing in place, proposals, history |
 | [web views](web-views.md) | home, running, search, notes, comparisons, judging passes, pages and workspaces, timelines, cost, analysis, status and settings |
 | [operations](operations.md) | the daemon, storage failure, idle work, `status` and `--verify`, notices, the change feed |
 | [installing](installing.md) | `install`, configuration and `set`, `embed`, `demo`, several machines, deployment, upgrades, backup and restore |
