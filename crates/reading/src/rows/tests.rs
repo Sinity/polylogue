@@ -28,39 +28,82 @@ fn at(kind: ReadRecordKind, ordinal: u64) -> ReadRecordLocator {
 #[test]
 fn previous_coordinates_invert_the_existing_session_family_order() {
     use ReadRecordKind::{Event, Link, Message, Session};
-    let root = tempfile::tempdir().unwrap();
-    let mut fixture = Fixture::new(root.path()).unwrap();
-    let target = fixture
-        .session(SessionFacts {
-            id: "test:target",
-            ..Default::default()
+    use polylogue_model::{
+        Block, Event as StoredEvent, IdKind, Link as StoredLink, LinkKind, MessageId, MessageRow,
+        Output, Role, Session as StoredSession, SessionKind, TimeQuality,
+    };
+    use polylogue_store::{
+        ReadPool,
+        fixture::writer::{WriterArchive, message},
+    };
+
+    let mut fixture = WriterArchive::new();
+    let target = SessionId::parse("test:target").unwrap();
+    let child = SessionId::parse("test:child").unwrap();
+    let messages = ["test:second", "test:first"]
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, id)| {
+            let mut message = message(
+                id,
+                "target",
+                Role::User,
+                ordinal as i64 + 1,
+                vec![Block::Text {
+                    text: "record body".into(),
+                }],
+            );
+            message.id = MessageId::parse(id).unwrap();
+            message.session = target.clone();
+            MessageRow {
+                page_text: false,
+                id_kind: IdKind::Native,
+                offset: ordinal as u64,
+                end: ordinal as u64 + 1,
+                message,
+            }
         })
-        .unwrap();
-    fixture
-        .session(SessionFacts {
-            id: "test:child",
-            ..Default::default()
+        .collect();
+    let events = (2..4)
+        .map(|offset| StoredEvent {
+            session: Some(target.clone()),
+            kind: "notice".into(),
+            at: None,
+            at_quality: TimeQuality::Unknown,
+            at_precision: None,
+            at_until: None,
+            after: None,
+            range: Some((offset, offset + 1)),
+            data: serde_json::Value::Null,
         })
-        .unwrap();
-    for id in ["test:second", "test:first"] {
-        fixture
-            .message(
-                target,
-                MessageFacts {
-                    id,
-                    role: "user",
-                    text: Some("payload is irrelevant to metadata seek"),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-    }
-    fixture.event(target, "notice", None).unwrap();
-    fixture.event(target, "notice", None).unwrap();
-    fixture
-        .link("test:target", "test:child", "fork", None)
-        .unwrap();
-    let pool = fixture.reads().unwrap();
+        .collect();
+    fixture.write_output(
+        "row-input",
+        "claude-code",
+        "/synthetic/rows.jsonl",
+        Output {
+            sessions: vec![
+                StoredSession::new(target.clone(), SessionKind::Main),
+                StoredSession::new(child.clone(), SessionKind::Main),
+            ],
+            messages,
+            events,
+            links: vec![StoredLink {
+                kind: LinkKind::Fork,
+                copies_prefix: false,
+                how: None,
+                parent: target,
+                child,
+                at: None,
+                call_id: None,
+                evidence: "fork marker".into(),
+            }],
+            ..Default::default()
+        },
+        4,
+    );
+    fixture.writer.derive().unwrap();
+    let pool = ReadPool::open(&fixture.archive).unwrap();
     let reader = pool.reader().unwrap();
     let reference = ReadTarget::Session(SessionId::parse("test:target").unwrap());
     let mut current = last_record(&reader, &reference, false).unwrap();

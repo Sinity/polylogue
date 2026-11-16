@@ -1,22 +1,16 @@
 use crate::test_daemon;
 use command_surface::{Outcome, Suggestion};
-use polylogue_model::{
-    SessionId,
-    read::{ReadPage, View},
-};
+use polylogue_model::read::{ReadPage, View};
 
-fn fingerprint(daemon: &test_daemon::TestDaemon) -> String {
-    let reader = daemon.daemon.reads.reader().unwrap();
-    let session = SessionId::parse("claude-code:s1").unwrap();
-    let index = reader.item_index(&session).unwrap().unwrap();
-    format!("{}:{}", index.rewrite_version, index.entries.len())
-}
-
-fn replace(daemon: &test_daemon::TestDaemon, source: String, messages: u64) {
-    let before = fingerprint(daemon);
+fn replace(daemon: &test_daemon::TestDaemon, source: String) {
+    let status = test_daemon::Call::new("status", serde_json::json!({})).answer(&daemon.daemon);
+    let before = status.value().unwrap()["store"]["revisions"]
+        .as_u64()
+        .unwrap();
     std::fs::write(daemon.home.join(".claude/projects/-p/s1.jsonl"), source).unwrap();
     daemon.wait_for(|status| {
-        status["store"]["messages"] == messages && fingerprint(daemon) != before
+        status["store"]["revisions"].as_u64().unwrap() > before
+            && status["store"]["search_pending"] == 0
     });
 }
 
@@ -28,7 +22,11 @@ fn stale_cursor_failures_suggest_rerun() {
             "session:claude-code:s1",
             View::Transcript,
         ),
-        ("removed row", "messages | sort by id", View::Transcript),
+        (
+            "removed row",
+            "messages where words >= 5 | sort by id",
+            View::Transcript,
+        ),
         ("changed links", "session:claude-code:s1", View::Links),
     ] {
         let daemon =
@@ -40,21 +38,10 @@ fn stale_cursor_failures_suggest_rerun() {
                 serde_json::json!({"type":"continued-in", "sessionId":"s1", "continuedInSessionId":child})
             )
         };
-        if case == "removed row" {
-            replace(
-                &daemon,
-                format!(
-                    "{}{}",
-                    user("u1", "the original first row has enough text to continue"),
-                    user("u2", "the second row remains")
-                ),
-                2,
-            );
-        } else if case == "changed links" {
+        if case == "changed links" {
             replace(
                 &daemon,
                 format!("{}{}", user("u1", "the root session"), link("first-child")),
-                1,
             );
         }
         let response = test_daemon::Call::new(
@@ -68,13 +55,11 @@ fn stale_cursor_failures_suggest_rerun() {
             "rewritten session" => replace(
                 &daemon,
                 user("u1", "the question was rewritten after its first page"),
-                1,
             ),
-            "removed row" => replace(&daemon, user("u2", "the second row remains"), 1),
+            "removed row" => replace(&daemon, user("u1", "short")),
             "changed links" => replace(
                 &daemon,
                 format!("{}{}", user("u1", "the root session"), link("second-child")),
-                1,
             ),
             _ => unreachable!(),
         }
@@ -105,5 +90,10 @@ fn stale_cursor_failures_suggest_rerun() {
         assert_eq!(repeated.cursor, None, "{case}");
         let restarted = test_daemon::Call::from_request(repeated).answer(&daemon.daemon);
         assert!(restarted.value().is_some(), "{case}: {restarted:?}");
+        if case == "removed row" {
+            let restarted: ReadPage =
+                serde_json::from_value(restarted.value().unwrap().clone()).unwrap();
+            assert_eq!(restarted.document.items, []);
+        }
     }
 }

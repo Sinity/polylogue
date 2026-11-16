@@ -253,7 +253,10 @@ fn object_read_pages_past_its_budget() {
                 key: None,
                 value: Some(serde_json::json!("SYNTHETIC λ🙂 ".repeat(64))),
                 valid_until: None,
-                links: vec![],
+                links: vec![polylogue_model::assertion::NewAssertionLink {
+                    role: polylogue_model::assertion::LinkRole::About,
+                    reference: Reference::parse("session:claude-code:s1").unwrap(),
+                }],
             }],
         },
     );
