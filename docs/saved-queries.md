@@ -81,11 +81,15 @@ Inside a saved query's definition, `result:NAME` is fixed at save time to the `r
 
 ### Saving to a page
 
-`save page:NAME` places the selection's rows on page NAME, one slot per row, creating the page when it does not exist; `--section S` and `--after SLOT` place them, `--fixed` shows exact revisions, `--live` places the question as one live query slot, `--kept` places a newly kept result as one slot, and `--template T` shapes a new page. Saving a row the page already shows in that section moves its slot. The rules are [pages.md](pages.md#writing).
+`save page:NAME` places the selection's rows on page NAME, one slot per row, creating the page when it does not exist; `--section S` and `--after SLOT` place them, `--fixed` shows exact revisions, `--live` places the question as one live query cell, `--kept` places a newly kept result as one kept cell that keeps its question beside it so it can run again, and `--template T` shapes a new page. `--as FORM` says how the slots show what they hold (`card`, `excerpt`, `text`, `full`, `table`, `list`, `count`, `value`, `chart`, `compare`); without it each kind of target takes its default form ([pages.md](pages.md#forms)). Saving a row the page already shows in that section moves its slot. The rules are [pages.md](pages.md#writing); live and kept cells are [pages.md](pages.md#queries-on-pages).
 
 ```console
 $ polylogue 'sessions where repo:morrow since:7d' save page:flaky-ci --live --section 'Recent work'
+$ polylogue @1-6 save page:reading/agents --as card
+$ polylogue 'tool_calls since:30d | measure usage' save page:report --kept --as chart --section Results
 ```
+
+A [figure](#figures) on a page is saved as a value: `polylogue errors-30d save page:report --as value` shows its value, denominator, unknown count and exactness. A figure's rows are not archive things, so without `--live` it goes on as a kept cell showing the figure as it stood when saved; with `--live` it runs each time the page is read.
 
 `save` on a page itself, `polylogue page:flaky-ci save`, writes a **checkpoint**: a kept result of unit `slots` with every reference resolved to an exact revision ([pages.md](pages.md#time-and-checkpoints)). `polylogue page:flaky-ci save --watch` watches the page's changes, named after the page ([Watches](#watches)). So one verb keeps a question, its rows, rows on a page, and a page's checkpoint.
 
@@ -109,8 +113,12 @@ Shipped saved queries are data in the code (`crates/model/src/saved_queries.rs`)
 | `triage` | `sessions where triage_score > 0 \| sort by triage_score desc` |
 | `saved` | `queries where name:* \| sort by saved_at desc` |
 | `open` | `annotations where kind:(question goal problem) open:true \| group by page` (open items across pages) |
+| `edits` | `annotations where referenced_by:page:* \| sort by at desc` (changes to pages, their slots and the annotations they show, newest first, with author and page; what changed since you looked is `polylogue 'annotations where referenced_by:page:* since:seen \| sort by at desc'`) |
+| `wanted` | `links where target_kind:page target_state:waiting \| group by target \| count` (page names linked or placed that do not exist, with how many link to each) |
+| `changed-sources` | `links where role:cites target_state:(changed missing withdrawn) \| group by page` (citations whose source changed, went missing or was withdrawn) |
+| `uncited` | `annotations where referenced_by:page:* grounding:uncited` (text on pages written by anyone but the operator with no citation) |
 
-Shipped pages (`home`, `pinned`, `cost`) and page templates sit beside the shipped saved queries, built in and overridden the same way ([pages.md](pages.md#templates-and-shipped-pages)).
+Shipped pages (`home`, `index`, `pinned`, `cost`) and page templates sit beside the shipped saved queries, built in and overridden the same way ([pages.md](pages.md#templates-and-shipped-pages)).
 
 `recent` and `unfinished` are the usual rows of `read` and `resume` with no selection ([interfaces.md](interfaces.md#a-verb-with-no-selection)).
 
@@ -176,6 +184,6 @@ A watch is a saved query that tells you when rows start matching: `save NAME --w
 - A reading taken while the index catches up, or an incomplete reply, is held as incomplete, never reported as a change.
 - Occurrences are keyed by logical session, so a re-parse never fires a watch again and one logical session fires once.
 - A watch over annotations compares by kind, target, key and value.
-- **A page watch**, `polylogue page:flaky-ci save --watch`, is named after the page and watches `annotations where referenced_by:page:flaky-ci`: its slots and the annotations they show, so a revision counts as a change ([pages.md](pages.md#time-and-checkpoints)).
+- **A page watch**, `polylogue page:flaky-ci save --watch`, is named after the page and watches `annotations where referenced_by:page:flaky-ci`: its slots and the annotations they show, so a revision counts as a change, and so does a citation on the page whose source changed ([pages.md](pages.md#time-and-checkpoints)).
 - A watch only notifies; it never starts or resumes a session ([session-control.md](session-control.md)).
 - Withdrawing the saved query withdraws its watch; withdrawing only the `signal` annotation stops the watch and leaves the name.

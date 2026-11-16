@@ -1,6 +1,6 @@
 # Reading
 
-How `read` turns selected rows into text a person or a model acts on: what can be read, views, show and hide, ranges, paging and budgets, formats and destinations, writing a selection out to a directory, attachment bytes, alternates, neutral names, the compare view, and the trace view. How a transcript is composed and rendered (parents, branches, compaction, headers, tool calls, thinking, value states, text as stored, rendering for models) is [transcripts.md](transcripts.md). What is stored is [sessions.md](sessions.md); the line grammar and the `read` verb's options are [interfaces.md](interfaces.md#verb-words); selections are [query.md](query.md); derived figures a reading shows are [measures.md](measures.md); `read --follow` is [session-control.md](session-control.md#following); `brief`, which uses this page's budgets and token estimator, is [agent-context.md](agent-context.md#brief); reading a page (its linear rendering, contents, changes and past states) is [pages.md](pages.md#reading); web pages are [web.md](web.md).
+How `read` turns selected rows into text a person or a model acts on: what can be read, views, show and hide, ranges, paging and budgets, formats and destinations, writing a selection out to a directory, attachment bytes, alternates, neutral names, the compare view, and the trace view. How a transcript is composed and rendered (parents, branches, compaction, headers, tool calls, thinking, value states, text as stored, rendering for models) is [transcripts.md](transcripts.md). What is stored is [sessions.md](sessions.md); the line grammar and the `read` verb's options are [interfaces.md](interfaces.md#verb-words); selections are [query.md](query.md); derived figures a reading shows are [measures.md](measures.md); `read --follow` is [session-control.md](session-control.md#following); `brief`, which uses this page's budgets and token estimator, is [agent-context.md](agent-context.md#brief); reading a page (its layouts, forms, contents, changes and past states) is [pages.md](pages.md#reading), and the links, citations, embeds and inclusions in its text are [page-text.md](page-text.md); web pages are [web.md](web.md).
 
 Reading shows what was asked, what the model did, which commands ran and how they ended, what the model had in context, and which session grew out of which. Tool outcomes, lineage and cost are records to cite, not summaries.
 
@@ -39,8 +39,9 @@ polylogue_read {"arguments": {"selection": "tool_calls where outcome:error since
 - **A row of a word search** is read starting at its first hit.
 - **Physical and logical.** A session reference reads that physical session exactly; forks and spawned children appear as cards at their branch point or spawning call. A row of a logical listing (a row number from a default listing, or `root:REF`) names a [logical session](sessions.md#logical-sessions): its reading shows the logical header (root, the physical sessions it joins, own and inherited messages), then the root's transcript with each `continuation` and `resume` child after a `continues` indicator, in link order; `fork` and `spawn` children appear as cards, each with the line that reads the child. `--physical` reads only the named physical session. References in output always name physical sessions and messages.
 - **A query that selects messages** renders them in their sessions' context: consecutive messages share one session header, and gaps are omission lines.
-- **A page** (`page:NAME`) renders linearly with its headings, slots, open items and decision box ([pages.md](pages.md#reading)).
+- **A page** (`page:NAME`, or one section or slot as `page:NAME#ANCHOR`) renders its sections and slots in order, each slot in its [form](pages.md#forms), with its open items and decision box ([pages.md](pages.md#reading)). Its text's citations print as footnotes under the slot that holds them ([page-text.md](page-text.md#how-a-citation-shows)); included text flows with its origin marked ([page-text.md](page-text.md#inclusions)).
 - **Documents** show their purpose and authorship, then their blocks, with no chat roles. Asked for the `dialogue` view, a document replies that the view does not fit, offering `transcript` and `raw`; in a mixed selection it is an omission line with the same offer. **Events** show their payload, their session and the stored input they were read from. **Annotations, kept results, saved queries and deliveries** show the record, then the references it points at as quotations from the archive.
+- **Cited and linked.** Every object's reading ends with a block listing the pages that place it, the notes and pages that link to it, the citations of it or inside it, and its inclusions: exact matches first, then those inside it rolled up (`2 citations inside this session`) ([page-text.md](page-text.md#backlinks)).
 - A message off the active path renders its branch with the indicator "on an abandoned branch". A missing reference is `not_found`.
 
 ## Views
@@ -70,6 +71,7 @@ On a page, `changes` is the page diff between two positions, `--from POSITION|se
   |---|---|
   | a note's history | `polylogue 'annotations where root:annotation:01JB7Q2M withdrawn:*' read` |
   | what links to a note | `polylogue 'annotations where links_to:annotation:01JB7Q2M' read` |
+  | what links to, cites or includes a session | `polylogue 'links where target:codex:01a20000-0005'` |
   | prompts only | `polylogue 'messages where written_by:human session:codex:019d0f2a' read` |
   | file edits as rows | `polylogue 'tool_calls where action:file_edit session:codex:019d0f2a' read` |
   | several sessions' openings and endings | `polylogue 'repo:sinex since:7d' read --view dialogue --first 2 --last 2` |
@@ -135,11 +137,11 @@ A format encodes a reading or a row table. It never selects content, and it esca
 | Format | For |
 |---|---|
 | `terminal` | the default on a terminal: the 16 ANSI colours only while standard output is a terminal and `NO_COLOR` is unset, control characters escaped (`\x1b`), the terminal's width; piped output has no escape codes |
-| `markdown` | the default for the clipboard and `.md` files: `## HH:MM author` headings, tool lines as list items, output in code blocks whose backtick run is longer than any run inside, thinking in `<details>`; in archived text, heading markers at line start (`#`, setext `=` and `-` underlines) are escaped with a backslash and `<`, `>`, `&` are written as entities, so raw HTML stays text; a table cell also escapes `\|` and stays on one line |
+| `markdown` | the default for the clipboard and `.md` files: `## HH:MM author` headings, tool lines as list items, output in code blocks whose backtick run is longer than any run inside, thinking in `<details>`; in archived text, heading markers at line start (`#`, setext `=` and `-` underlines) are escaped with a backslash and `<`, `>`, `&` are written as entities, so raw HTML stays text; a table cell also escapes `\|` and stays on one line; for a page, its working copy ([page-working-copy.md](page-working-copy.md#the-format)) |
 | `html` | the default for the browser and `.html` files: the same structure, all archived text and attributes escaped, no inline handlers or `javascript:` URLs; self-contained (inline CSS, no scripts), honouring `prefers-color-scheme` with the shared visual tokens ([web-shell](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/web-shell/README.md)), archived Markdown rendered with raw HTML disabled; the web reader embeds the fragment form |
 | `jsonl` | one message per line for a reading; for a bundle, every record in one file |
 | `json` | directory bundles, one file per session ([Writing out](#writing-out)) |
-| `citation` | one line per item: exact excerpt, author, local time with zone, reference, span reference, BLAKE3 text hash |
+| `citation` | footnote definitions ready to paste into page text, one per item (a query of messages gives one per hit): `[^1]: "exact text" — author, origin, local time with zone <span:…> b3:HASH`, the BLAKE3 hash of the quoted text ([page-text.md](page-text.md#citation-lines)) |
 | `bytes` | attachments, hash-checked ([Attachments](#attachments)) |
 
 `--json` on any line is the typed reply itself; `--format json` is the bundle encoding. `help` states the two meanings.
@@ -157,7 +159,7 @@ A format encodes a reading or a row table. It never selects content, and it esca
 
 ### Writing out
 
-Writing out a selection is reading it to a directory: `polylogue 'repo:sinex since:30d' read --to ~/out/sinex --format json` writes a bundle, and `read --to FILE` writes one document. Annotations are written out the same way: `polylogue annotations read --to ~/out/notes`.
+Writing out a selection is reading it to a directory: `polylogue 'repo:sinex since:30d' read --to ~/out/sinex --format json` writes a bundle, and `read --to FILE` writes one document. Annotations are written out the same way: `polylogue annotations read --to ~/out/notes`. Pages written out as a static site or a folder of Markdown files are [page-working-copy.md](page-working-copy.md#writing-pages-out).
 
 **The bundle** is a typed record stream, `polylogue-bundle` version 3:
 

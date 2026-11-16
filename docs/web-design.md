@@ -73,7 +73,7 @@ The MK2 board is drawn for Python Polylogue, so its command and module names (`p
 | [Session report](web-reader.md#session-report-ssessionreport) | [boards/report.html](web/boards/report.html) |
 | [Share an excerpt](web-reader.md#share-an-excerpt-ssessionshare) | [boards/share.html](web/boards/share.html) |
 | [Claims](web-views.md#notes-claims-and-triage-notes-claims-triage), [Review](web-views.md#review-and-compare-review-compare) | [boards/claims.html](web/boards/claims.html) |
-| [Pages](web-views.md#pages): a page | [boards/page.html](web/boards/page.html) (sections, slots, sessions on the page); [mockups/page.html](web/mockups/page.html) (members, the send composer, decision box, kept result, live query) |
+| [Pages](web-pages.md#the-page-view): a page | [boards/page.html](web/boards/page.html) (sections, slots, sessions on the page); [mockups/page.html](web/mockups/page.html) (members, the send composer, decision box, kept result, live query) |
 | [Pages](web-views.md#pages): the page list | [boards/pages.html](web/boards/pages.html) |
 | [Project story](web-views.md#project-story) | [boards/story.html](web/boards/story.html) |
 | [Judging passes](web-views.md#judging-passes-judge) | [boards/claims.html](web/boards/claims.html) (sampled items, agreement so far) |
@@ -88,7 +88,7 @@ The MK2 board is drawn for Python Polylogue, so its command and module names (`p
 
 Parts of the canvas boards and mockups that do not bind, because the text decides otherwise:
 - The navigation on the boards lists Home, Running, Cost and Pages; the full navigation is in the [frame](web.md#frame).
-- On the page boards, the composer that addresses a session and its list of sent messages are the send composer (`send … --page --section`), and the table of contents is the contents view ([Pages](web-views.md#pages)).
+- On the page boards, the composer that addresses a session and its list of sent messages are the send composer (`send … --page --section`), and the table of contents is the contents view ([Pages](web-views.md#pages)). The boards draw no citations, margin, Backlinks panel, proposals or in-place editing; those follow [web-pages.md](web-pages.md).
 - The share board flags paths under the home directory and lists `has:secret` blocks; sharing writes stored text unchanged with nothing flagged ([share](web-reader.md#share-an-excerpt-ssessionshare)).
 - Tool durations show on shell and subagent calls only; a duration on a file read in a mockup does not bind.
 - The mockups' "export JSON" link is `read --format json`; there is no export verb ([reading.md](reading.md#formats-and-destinations)).
@@ -98,4 +98,4 @@ Parts of the canvas boards and mockups that do not bind, because the text decide
 
 Views that no board draws are drawn in Claude Design before they are built, with at least two versions wherever layout is a real choice; the operator picks one, and the chosen board becomes that view's baseline.
 
-The views without a board: the heatmap, the firehose, Waiting, the note page, triage, analysis, saved and kept, the live-session control panel, the flow panel, a page's board, table, contents and history layouts, the bundle composer, the judging-pass rankings and calibration panels, the trace view, and the extension's in-page UI. Their behaviour in [Web views](web-views.md) and [Web reader](web-reader.md) binds; their layout does not until the board exists.
+The views without a board: the heatmap, the firehose, Waiting, the note page, triage, analysis, saved and kept, the live-session control panel, the flow panel, a page's board, table, contents and history layouts, the page's margin with citation sidenotes and discussion, the Backlinks panel, in-place Markdown editing with its pickers, proposals and tracked changes, the active-page header and **+ page** while reading, the bundle composer, the judging-pass rankings and calibration panels, the trace view, and the extension's in-page UI. Their behaviour in [Web views](web-views.md) and [Web reader](web-reader.md) binds; their layout does not until the board exists.

@@ -24,8 +24,8 @@ The [terminal interface](terminal.md) owns what a person sees: the orientation s
 - **Access belongs to the request.** A line's access is its highest step's, decided from the typed arguments: `set` without a value and `import` of paths are not acts. MCP tool hints describe the tool; the same operation and arguments have the same access on every surface.
 - **Replies are typed** and rendered from their types ([reading.md](reading.md)); each has one terminal printer and one JSON form, and no surface has features the others cannot reach. The handler keeps its declared reply type through execution and deadline handling. JSON serialization belongs to the transport or local wire boundary; the daemon does not serialize a reply and decode it back.
 - **The daemon is required.** The command line is a thin client: it never opens archive files, and the daemon is the only writer. Completion, `help`, grammar refusals and `--explain` of the grammar run in the CLI from its own tables and the catalog file, without the daemon.
-- **No refusal depends on who the caller is.** No act is refused because the caller is an agent or has no terminal; the only terminal-dependent behaviours are the picker and row numbers, and each refusal off a terminal names the line that works there ([terminal.md](terminal.md#the-picker)).
-- There is no REPL or terminal reader; the interactive elements in a terminal are completion, row numbers, the pager and the picker, and interactive reading is the web reader.
+- **No refusal depends on who the caller is.** No act is refused because the caller is an agent or has no terminal; the only terminal-dependent behaviours are the picker, row numbers and `edit` with no text, and each refusal off a terminal names the line that works there ([terminal.md](terminal.md#the-picker)).
+- There is no REPL or terminal reader; the interactive elements in a terminal are completion, row numbers, the pager, the picker and the editor that `edit` with no text opens, and interactive reading is the web reader.
 
 ## Grammar
 
@@ -40,10 +40,10 @@ The quotes hold which rows; the words after them say what to do.
 
 - **The selection is exactly one shell argument**: a quoted query (`'repo:sinex since:7d'`, `'tool_calls where outcome:error | group by tool | count'`), a reference, a row number or range, a saved query name, a unit name, a single plain word, or `-` ([Selections](query.md#selections)). A query is never spread over several arguments.
 - **After the selection come verbs.** A verb is its name, then exactly its declared number of words ([Verb words](#verb-words)), each one shell argument, then its own options. The next argument that is neither an option nor owed to the current verb is the next verb. Because every verb's word count is fixed, a line parses left to right with one word of lookahead and no separator word.
-- **The one optional word:** `save` takes a name or nothing. The word after `save` is its name unless it is absent, starts with `-`, or is a verb name; saved names never equal a verb or command name ([saved-queries.md](saved-queries.md#saved-names)), so this is never ambiguous.
+- **The two optional words:** `save` takes a name or nothing, and `edit` takes its text or nothing. The word after either is its argument unless it is absent, starts with `-` (other than `-` alone, which reads standard input), or is a verb name. Saved names never equal a verb or command name ([saved-queries.md](saved-queries.md#saved-names)), so `save` is never ambiguous; a note whose whole new text is one verb word is written `edit 'read.'` or `edit -`. `--explain` shows which reading a line got ([terminal.md](terminal.md#explain)).
 - **No verb lists the rows.** A selection alone lists them.
 - **Options belong where they stand.** Options before the first verb belong to the listing (`--page-size`, `--fields`, `--why`, `--to`, `--cursor`); options after a verb belong to that verb; the line options (`--json`, `--deadline`, `--request-id`, `--dry-run`, `--explain`, `--wait`, `--all`) go anywhere, on commands too. An option a verb or command does not declare is refused (exit 2) with the ones it does declare. `--` ends option parsing for a selection that begins with `-` other than `-` itself.
-- **Free text is one argument.** `note`, `send`, `edit`, `answer` and `start` take their text as one shell argument, quoted when it has spaces, or `-` to read it from standard input. A line reads standard input at most once: a `-` selection and a `-` text in one line are refused.
+- **Free text is one argument.** `note`, `send`, `edit`, `answer` and `start` take their text as one shell argument, quoted when it has spaces, or `-` to read it from standard input. The text of `note` and `edit` is Markdown with references ([page-text.md](page-text.md#markdown-with-references)). `edit` with no text on a terminal opens the selected annotations, or a page, in your editor ([page-working-copy.md](page-working-copy.md#editing-in-your-editor)). A line reads standard input at most once: a `-` selection and a `-` text in one line are refused.
 
 ### The first word
 
@@ -55,7 +55,7 @@ The CLI decides what the first argument is from its own tables and the catalog f
 4. **A verb name**: `read` and `resume` act on their usual rows through the picker, and `brief` gives the brief for this directory ([A verb with no selection](#a-verb-with-no-selection)); any other verb is refused with the forms that work, exit 2.
 5. **A saved query name**, your own first, then the shipped ones ([saved-queries.md](saved-queries.md#shipped-saved-queries)): `polylogue waiting` is `polylogue query:waiting`. A saved query with parameters is written `'query:NAME(key=value)'`.
 6. **A unit name** (`sessions`, `messages`, `tool_calls`, `annotations`, `results`, …): every row of that unit, with its defaults.
-7. **A reference shape**: a typed prefix (`session:`, `codex:`, `annotation:`, `page:`, `query:`, `result:`, `run:`, `role:`, `file:`, …), a pasted provider URL, a bare ID prefix of at least eight hexadecimal characters and dashes, a row number form (`@3`, `@3.2`, `@2-5`, `@1,4`, `@all`), a member alias (`@reviewer`: `@` and a name starting with a letter, `all` excepted; [pages.md](pages.md#members)), or a reserved word (`latest`, `self`, `here`) ([references.md](references.md#forms)).
+7. **A reference shape**: a typed prefix (`session:`, `codex:`, `annotation:`, `page:` with an optional `#ANCHOR` such as `page:flaky-ci#findings`, `query:`, `result:`, `run:`, `role:`, `file:`, …), a pasted provider URL, a bare ID prefix of at least eight hexadecimal characters and dashes, a row number form (`@3`, `@3.2`, `@2-5`, `@1,4`, `@all`), a member alias (`@reviewer`: `@` and a name starting with a letter, `all` excepted; [pages.md](pages.md#members)), or a reserved word (`latest`, `self`, `here`) ([references.md](references.md#forms)).
 8. **Query text**: an argument holding whitespace, a field condition (`word:…`) or query punctuation (`|`, `"`, `(`, `)`, `~`, `*`, `,`).
 9. **Any other single word**: a search for that word in prose and tool input and output, ranked; the footer says `searched the word "chrono"`.
 
@@ -74,19 +74,19 @@ The picker never takes a row silently and never opens for a single match: one ma
 
 ## Verb words
 
-Each verb takes a fixed number of words after it, then its options. A verb's words always complete, so a person learns them by pressing Tab.
+Each verb takes a fixed number of words after it, then its options; only `save`'s name and `edit`'s text are optional. A verb's words always complete, so a person learns them by pressing Tab.
 
 | Verb | Words after it | Options |
 |---|---|---|
 | `read` | 0 | `--view`, `--show`, `--hide`, `--from`, `--until`, `--first`, `--last`, `--around`, `--diff`, `--alternate`, `--beside`, `--blind`, `--seed`, `--physical`, `--neutral-names`, `--follow`, `--until-idle`, `--at`, `--align`, `--format`, `--to`, `--budget`, `--cursor` |
 | `pick` | 0 | — |
 | `brief` | 0 | `--cwd`, `--for`, `--budget`, `--to` |
-| `note` | 1: `TEXT` | `--as KIND`, `--key`, `--parts FILE\|-`, `--evidence`, `--replies-to`, `--supports`, `--challenges`, `--qualifies`, `--corrects`, `--derived-from`, `--blocks`, `--scope`, `--valid-until`, `--check`, `--expect`; pages: `--page`, `--section`, `--level`, `--template`, `--param`, `--layout`, `--about`, `--role`; web-chat titles: `--rename` |
+| `note` | 1: `TEXT` | `--as KIND`, `--key`, `--parts FILE\|-`, `--evidence`, `--replies-to`, `--supports`, `--challenges`, `--qualifies`, `--corrects`, `--derived-from`, `--blocks`, `--scope`, `--valid-until`, `--check`, `--expect`; pages: `--page`, `--section`, `--level`, `--template`, `--param`, `--layout`, `--about`, `--role`, `--brief`; web-chat titles: `--rename` |
 | `tag` | 1: `NAME` or `NAME:VALUE` | — |
-| `edit` | 1: `TEXT` | `--key` |
+| `edit` | 0 or 1: `TEXT` | `--key` |
 | `withdraw` | 0 | `--reason` |
 | `judge` | 1: `accept`, `reject`, `defer`; on several rows the preferred row (a reference, a row number, or a blind label `A`, `B`, …), an order (`'B>A>C'`), `tie`, `incomparable`, `abstain` or `insufficient-evidence` | `--on DIMENSION`, `--seed`, `--reason` |
-| `save` | 0 or 1: `NAME` or `page:NAME` | `--watch`, `--hold`, `--notify`, `--denominator`; on a page: `--section`, `--after`, `--fixed`, `--live`, `--kept`, `--template` |
+| `save` | 0 or 1: `NAME` or `page:NAME` | `--watch`, `--hold`, `--notify`, `--denominator`; on a page: `--section`, `--after`, `--fixed`, `--live`, `--kept`, `--template`, `--as FORM` (`card`, `excerpt`, `text`, `full`, `table`, `list`, `count`, `value`, `chart`, `compare`) |
 | `send` | 1: `TEXT` | `--about`, `--attach`, `--page`, `--section` |
 | `answer` | 1: `allow`, `deny`, or quoted text | `--reason`, `--standing` |
 | `interrupt` | 0 | — |
@@ -98,7 +98,7 @@ Line options on every line: `--json`, `--deadline MS|none`, `--request-id ID`, `
 
 - **What flows is the selection**: its query and its rows, resolved once at the read position of the first step. Every verb acts on those same rows in the same order; nothing a verb produces feeds the next verb, so a write cannot change which rows a later verb sees (`polylogue 'tag:later' withdraw read` reads the rows that were tagged). A line with one step streams; resolving once costs one pass over the keys only when a line has two or more steps.
 - **`pick` is the one verb that narrows** the rows, to those chosen in the picker. It needs a terminal; a line containing it is sent as two requests (resolve, then the remaining steps over the chosen references). `pick` as the last verb prints the chosen references, one per line.
-- **`save` takes the question as well as the rows**: the selection's query text and the rows this line resolved ([saved-queries.md](saved-queries.md#save)); `save page:NAME` places the rows, or with `--live` the question, on a page ([pages.md](pages.md#writing)).
+- **`save` takes the question as well as the rows**: the selection's query text and the rows this line resolved ([saved-queries.md](saved-queries.md#save)); `save page:NAME` places the rows, or with `--live` the question, on a page, each shown in its default form or the one `--as FORM` names ([pages.md](pages.md#forms)).
 - **`--wait D`** makes a listing return when rows match or the time passes (`polylogue 'session:codex:019d0f2a live:idle' --wait 30m`), and makes `import PROVIDER` return when its job finishes or the time passes. It raises the line's deadline to the wait; an answer that ran out of time is `empty` with the same line as its next line. Over MCP one call waits at most 50 seconds ([agents.md](agents.md#waiting)).
 - **A grouped or measured selection** (`| group by`, `| measure`, `| count`) has rows that are not archive things: only the listing, `read`, `brief` and `save` accept it; other verbs refuse before anything runs.
 - **One-row verbs** (`resume`, with or without `--in`) given several rows open the picker on a terminal and are refused `ambiguous` off it, with the candidates as ready lines. `brief` over several rows is the brief of those rows ([agent-context.md](agent-context.md#brief)), never a guess at one.
@@ -120,12 +120,12 @@ Verbs act on the selected rows. Each row states why it exists.
 | `read` | show the rows' content (sessions, pages, anything); `--follow` keeps printing what their sessions do; `--view trace` shows where something came from | rendering is not a query; every view, range and destination is an option of the one verb | [reading.md](reading.md), [pages.md](pages.md#reading), [session-control.md](session-control.md#following) |
 | `pick` | choose rows in the picker; the verbs after it act on the chosen ones | a person's choice cannot be written as a query | [terminal.md](terminal.md#the-picker) |
 | `brief` | packaged context: alone, for this directory; of a session, to take it over; of search words, what is already known; of a page, the page; of other rows, what matters in them | it packages under a budget, which no view does | [agent-context.md](agent-context.md#brief) |
-| `note TEXT` | write text about each row, of a kind (`--as decision`, `finding`, `translation:pl`, `page`, `heading`, …); `--section` places it on a page | a write | [annotations.md](annotations.md#note), [pages.md](pages.md#writing) |
+| `note TEXT` | write text about each row, of a kind (`--as decision`, `finding`, `translation:pl`, `page`, `heading`, …); on a page selection it writes discussion about the page unless `--section` places it on the page or it is `--as heading` or `--as page` | a write | [annotations.md](annotations.md#note), [pages.md](pages.md#writing) |
 | `tag NAME` | label each row (`NAME` or `NAME:VALUE`) | the most common write, with its own completion of tags in use | [annotations.md](annotations.md#tag) |
-| `edit TEXT` | write a new revision of each annotation | a write on annotations | [annotations.md](annotations.md#edit) |
+| `edit [TEXT]` | write a new revision of each annotation; with no text on a terminal, open them, or a page, in your editor and check in what you save | a write on annotations | [annotations.md](annotations.md#edit), [page-working-copy.md](page-working-copy.md#editing-in-your-editor) |
 | `withdraw` | take each annotation back; nothing is deleted | a write on annotations | [annotations.md](annotations.md#withdraw) |
 | `judge VERDICT` | accept, reject or defer each annotation; or record which of several rows is better, or their order | a write on annotations or rows | [judging.md](judging.md) |
-| `save [NAME]` | name the question and keep this line's rows; put the rows on a page (`save page:NAME`); checkpoint a page; `--watch` tells you of changes | it acts on the question as well as the rows | [saved-queries.md](saved-queries.md#save), [pages.md](pages.md#writing) |
+| `save [NAME]` | name the question and keep this line's rows; put the rows on a page (`save page:NAME`, `--as FORM` for how they show); checkpoint a page; `--watch` tells you of changes | it acts on the question as well as the rows | [saved-queries.md](saved-queries.md#save), [pages.md](pages.md#writing) |
 | `send TEXT` | send text to each session, web chats and member aliases included | an act that reaches a session | [session-control.md](session-control.md#send) |
 | `answer VALUE` | respond to what a session is waiting for: `allow`, `deny` or quoted text | an act | [session-control.md](session-control.md#answer) |
 | `interrupt` | stop a session's current turn | an act | [session-control.md](session-control.md#interrupt) |
@@ -157,7 +157,7 @@ Commands are not about selected rows.
 
 A verb or command exists only when what it does cannot be said as a selection plus an existing verb, a view, an option, or a shipped saved query that completion offers. Each row states that reason, and `help --all` prints it.
 
-Each first-level word takes a word away from plain-word search, so a command earns the first level only when a person types it as an act of its own. Explaining a line is the line option `--explain`, because it is a way of running any line. Fetching a web chat's history is `import PROVIDER`, because both bring outside conversations into the archive and only the channel differs. The deep storage check is `status --verify`, the deep form of "is my archive healthy". Shell completion and the Google Drive sign-in are `install` targets, because each wires Polylogue into something once. SQL, parser maintenance, the change feed and the move into Sinex sit under `dev`, because they are not everyday acts. Context for a directory, a session or a search is one `brief`, because the selection's form already says which. Pages add no verb: keeping rows on a page is `save page:NAME`, because a page is one more place to keep rows; a checkpoint is `save` on the page, as freezing any selection is; the table of contents is a view; and a page's working copy leaves with `read --to` and comes back with `import`, the way files already leave and enter.
+Each first-level word takes a word away from plain-word search, so a command earns the first level only when a person types it as an act of its own. Explaining a line is the line option `--explain`, because it is a way of running any line. Fetching a web chat's history is `import PROVIDER`, because both bring outside conversations into the archive and only the channel differs. The deep storage check is `status --verify`, the deep form of "is my archive healthy". Shell completion and the Google Drive sign-in are `install` targets, because each wires Polylogue into something once. SQL, parser maintenance, the change feed and the move into Sinex sit under `dev`, because they are not everyday acts. Context for a directory, a session or a search is one `brief`, because the selection's form already says which. Pages add no verb or command group: every page act is the same verbs on a `page:` selection, so a group would be a second spelling of each. Keeping rows on a page is `save page:NAME`, because a page is one more place to keep rows; a checkpoint is `save` on the page, as freezing any selection is; the table of contents is a view; writing a page in your editor is `page:NAME edit`, because `edit` takes its text or nothing as `save` takes its name or nothing; and agents and scripts take a page's working copy out with `read --to` and bring it back with `import`, the way files already leave and enter.
 
 ## Option names
 
@@ -180,6 +180,8 @@ One name per concept, on every verb and command that has the concept.
 | directory | `--cwd DIR` | `brief`, `start`, `resume --in` |
 | where a session runs | `--in HARNESS\|WEBCHAT` | `start`, `resume` |
 | the kind of a note | `--as KIND` | `note` |
+| how rows show on a page | `--as FORM` | `save page:NAME` |
+| how a page enters briefs | `--brief off\|contents\|full` | `note --as page` |
 | the dimension of a comparison | `--on DIMENSION` | `judge` |
 | a reason | `--reason TEXT` | `withdraw`, `judge`, `answer` |
 | input structure | `--origin NAME` | `import` of files |

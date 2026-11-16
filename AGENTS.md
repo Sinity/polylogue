@@ -60,8 +60,9 @@ copy.
   judgments, comparisons, saved queries, watches and settings; the current
   revision is a function of the revision graph (`docs/annotations.md`).
 - **Pages arrange the archive**: a page's sections and slots are annotations
-  that hold references, never copies, and the same verbs build and read them
-  (`docs/pages.md`).
+  that hold references, never copies of captured text; page text is Markdown
+  whose links, citations, embeds and inclusions become link rows; the same
+  verbs build and read pages (`docs/pages.md`, `docs/page-text.md`).
 - **Queries, runs, saved queries and kept results are identified objects**,
   and every run is recorded (`docs/query.md`, `docs/saved-queries.md`);
   **references** use natural keys and one parser (`docs/references.md`).
