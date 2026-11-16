@@ -64,10 +64,23 @@ impl Publisher {
                                 completed.store(true, Ordering::Release);
                                 return;
                             }
+                            let building =
+                                matches!(error, polylogue_store::StoreError::IndexBuilding(_));
                             let error = error.to_string();
                             if last_error.as_ref() != Some(&error) {
                                 eprintln!("polylogue: completion catalog: {error}");
                                 last_error = Some(error);
+                            }
+                            // Nothing is readable until the index being built is
+                            // installed, which is a commit: wait for it.
+                            if building && let Some(subscription) = &subscription {
+                                if subscription.recv().is_err() {
+                                    if stopped.load(Ordering::Acquire) {
+                                        completed.store(true, Ordering::Release);
+                                    }
+                                    return;
+                                }
+                                continue;
                             }
                             // Retry a failed publication without advancing its receipt.
                             // Successful idle publishers wait solely on commit events.

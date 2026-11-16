@@ -74,14 +74,31 @@ impl ClaudeHome {
         ReadPool::open(&Archive::at(&self.root)).expect("open readers")
     }
 
+    /// Runs `read` on a new reader, again when the index was replaced under
+    /// it, as a build's install does (`StoreError::ReadIndexReplaced`).
+    pub fn read<T>(
+        &self,
+        read: impl Fn(&polylogue_store::Reader<'_>) -> polylogue_store::Result<T>,
+    ) -> T {
+        loop {
+            let pool = self.reads();
+            match pool.reader().and_then(|reader| read(&reader)) {
+                Err(polylogue_store::StoreError::ReadIndexReplaced) => continue,
+                result => return result.expect("read the archive"),
+            }
+        }
+    }
+
+    /// The index file as the archive holds it now: the private build file
+    /// while a build runs, otherwise `index.db`.
+    pub fn index_db(&self) -> PathBuf {
+        Archive::at(&self.root).index_db()
+    }
+
     /// The texts of `claude-code:<session>`'s own messages, in order.
     pub fn texts(&self, session: &str) -> Vec<String> {
         let id = SessionId::parse(&format!("claude-code:{session}")).expect("session ID");
-        self.reads()
-            .reader()
-            .expect("a reader")
-            .messages(&id, false)
-            .expect("messages")
+        self.read(|reader| reader.messages(&id, false))
             .iter()
             .map(Message::text)
             .collect()
@@ -89,11 +106,7 @@ impl ClaudeHome {
 
     /// The `n` column of the first row `sql` returns.
     pub fn count(&self, sql: &str) -> i64 {
-        self.reads()
-            .reader()
-            .expect("a reader")
-            .query(sql, &[])
-            .expect("query")[0]["n"]
+        self.read(|reader| reader.query(sql, &[]))[0]["n"]
             .as_i64()
             .expect("an integer `n`")
     }

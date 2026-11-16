@@ -30,7 +30,7 @@ fn a_rebuilt_index_has_the_asset_lookup_before_any_message() {
         assert!(report.pass.errors.is_empty(), "{:?}", report.pass.errors);
     }
     let count = |sql: &str| -> i64 {
-        rusqlite::Connection::open(w.root.join("index.db"))
+        rusqlite::Connection::open(w.index_db())
             .unwrap()
             .query_row(sql, [], |r| r.get(0))
             .unwrap()

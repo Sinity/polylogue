@@ -196,10 +196,8 @@ fn recent_read_indexes_wait_for_first_build_completion_on_reopen() {
         )
         .unwrap()
     };
-    ensure_index(&conn).unwrap();
+    ensure_build_index(&conn).unwrap();
     assert_eq!(recent(), 0);
-    conn.execute("DELETE FROM meta WHERE key='building'", [])
-        .unwrap();
     ensure_index(&conn).unwrap();
     assert_eq!(recent(), 2);
     ensure_index(&conn).unwrap();

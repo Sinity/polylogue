@@ -109,7 +109,7 @@ impl Reader<'_> {
             CompletenessDimension::Complete
         };
         let mut search_missing = Vec::new();
-        if crate::schema::building(conn)? {
+        if self.pool.reads_build() {
             search_missing.push(CompletenessReason::FirstBuild);
         }
         if conn.query_row("SELECT EXISTS(SELECT 1 FROM search_pending)", [], |row| {

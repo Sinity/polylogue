@@ -141,10 +141,10 @@ pub enum StoreError {
     /// The importer lane matches this wording.
     #[error("older format: import with `polylogue import --from-archive PATH`")]
     OlderFormat { database: &'static str },
-    /// The archive's open sets such an index aside and builds a new one.
+    /// The archive's open builds a new index to replace it.
     #[error(
         "index.db at version {found} is not this build's version {wanted}; \
-         it is set aside and rebuilt from the archive"
+         a new index is built from the archive to replace it"
     )]
     IndexVersion { found: u32, wanted: u32 },
     #[error("blob {0} failed its check")]
@@ -174,6 +174,10 @@ pub enum StoreError {
     ScopeChanged,
     #[error("the index was replaced; acquire a new reader")]
     ReadIndexReplaced,
+    /// No index can be read until the build in progress ends
+    /// ([`archive::index_build`]).
+    #[error("{0}")]
+    IndexBuilding(Box<archive::index_build::IndexBuild>),
     #[error("request {0} was already used for different content")]
     Conflict(String),
     #[error("{reference} is stale; current revisions: {current:?}")]
@@ -302,6 +306,7 @@ impl StoreError {
             Self::ReadDeadlineExceeded => "deadline_exceeded",
             Self::ReadCancelled => "cancelled",
             Self::Stopped | Self::ReadPoolClosed => "shutting_down",
+            Self::IndexBuilding(_) => "index_building",
             Self::NotFound(_) => "not_found",
             Self::Invalid(_) => "bad_request",
             Self::Query(error) => error.kind(),

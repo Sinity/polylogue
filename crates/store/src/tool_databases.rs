@@ -411,8 +411,9 @@ fn header_current(db: &Path, archive: &Archive, input: &InputKey) -> Result<bool
         .map_err(sql_err)?;
     source.execute_batch("BEGIN").map_err(sql_err)?;
     let tables = tables(&source).map_err(sql_err)?;
-    let catalog = catalog::Catalog::open(archive, &input.id)?;
-    Ok(catalog.schema.as_ref() == Some(&signature(&tables)))
+    let index = crate::archive::open_read(&archive.index_db())?;
+    let schema = catalog::recorded_schema(&index, &input.id)?;
+    Ok(schema.as_ref() == Some(&signature(&tables)))
 }
 
 fn read_rows(

@@ -229,7 +229,7 @@ fn document_hash_uses_sorted_json_and_does_not_change_message_hash_domain() {
 #[test]
 fn a_started_document_read_keeps_one_generation_after_rewrite_and_pool_close() {
     use std::ops::ControlFlow;
-    let w = test_archive();
+    let w = installed_archive();
     let mut original = document("native", "old first block", 1);
     original.blocks.push(Block::Text {
         text: "old second block".into(),

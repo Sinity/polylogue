@@ -481,7 +481,15 @@ struct BuildDatabase {
 /// Count a benchmark's pending checkpoint work after its engine has stopped.
 /// A live reader is a failed measurement, rather than unpaid work omitted
 /// from one arm. This does not change the daemon's shutdown policy.
+/// The build's private file is installed as `index.db`, in WAL, when the
+/// pass ends its first build; a pass that left it unfinished is no
+/// measurement of a first build.
 fn checkpoint_first_build(archive: &Archive) -> polylogue_store::Result<Vec<BuildDatabase>> {
+    if let Some(build) = archive.index_build() {
+        return Err(polylogue_store::StoreError::Invalid(format!(
+            "the pass ended before installing the built index: {build}"
+        )));
+    }
     let mut databases = Vec::new();
     for (name, path) in [
         ("archive", archive.archive_db()),

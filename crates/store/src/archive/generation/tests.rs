@@ -1,4 +1,5 @@
 use super::*;
+use crate::archive::cache;
 
 fn index() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
@@ -82,6 +83,8 @@ fn a_deliberately_replaced_index_establishes_its_boot_before_restart() {
     })
     .unwrap();
     let (archive, lock) = crate::Archive::open_or_create(dir.path()).unwrap();
+    // An installed index, which is then removed by hand.
+    crate::archive::index_build::finish(&archive).unwrap();
     let publisher = archive.scope_token().unwrap();
     publisher
         .with_current(|| {

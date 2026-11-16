@@ -105,9 +105,12 @@ impl Comparison {
     }
 }
 
+/// The comparison state recorded for one input, copied out of the index
+/// in one read so no read stays open while the rows are compared and sent:
+/// during a build the index file has a rollback journal, where an open read
+/// blocks every commit of the writer that the sends wait for.
 pub(super) struct Catalog {
     conn: Connection,
-    pk: Option<i64>,
     pub schema: Option<Value>,
 }
 impl Catalog {
@@ -116,22 +119,17 @@ impl Catalog {
         conn.pragma_update(None, "temp_store", "file")?;
         conn.pragma_update(Some("temp"), "cache_size", -1024)?;
         conn.execute_batch(
-            "CREATE TEMP TABLE seen(tbl TEXT,key TEXT,PRIMARY KEY(tbl,key)) WITHOUT ROWID; BEGIN;",
+            "CREATE TEMP TABLE seen(tbl TEXT,key TEXT,PRIMARY KEY(tbl,key)) WITHOUT ROWID;
+             CREATE TEMP TABLE known(tbl TEXT,key TEXT,hash BLOB,PRIMARY KEY(tbl,key)) WITHOUT ROWID;
+             BEGIN;",
         )?;
-        let pk = conn
-            .query_row("SELECT pk FROM input_ref WHERE id=?1", [input], |r| {
-                r.get(0)
-            })
-            .optional()?;
-        let schema: Option<String> = conn
-            .query_row(
-                "SELECT schema FROM tool_database WHERE input_pk=?1",
-                [pk],
-                |r| r.get(0),
-            )
-            .optional()?;
-        let schema = schema.map(|s| serde_json::from_str(&s)).transpose()?;
-        Ok(Self { conn, pk, schema })
+        let schema = recorded_schema(&conn, input)?;
+        conn.execute(
+            "INSERT INTO temp.known(tbl,key,hash) SELECT r.tbl,r.key,r.hash FROM tool_row r JOIN input_ref i ON i.pk=r.input_pk WHERE i.id=?1",
+            [input],
+        )?;
+        conn.execute_batch("COMMIT")?;
+        Ok(Self { conn, schema })
     }
     pub fn changed(&self, table: &str, key: &Value, row: &Value) -> crate::Result<bool> {
         let key = key.to_string();
@@ -140,9 +138,10 @@ impl Catalog {
             .execute(params![table, key])?;
         let old: Option<Vec<u8>> = self
             .conn
-            .prepare_cached("SELECT hash FROM tool_row WHERE input_pk=?1 AND tbl=?2 AND key=?3")?
-            .query_row(params![self.pk, table, key], |r| r.get(0))
-            .optional()?;
+            .prepare_cached("SELECT hash FROM temp.known WHERE tbl=?1 AND key=?2")?
+            .query_row(params![table, key], |r| r.get::<_, Option<Vec<u8>>>(0))
+            .optional()?
+            .flatten();
         Ok(old.as_deref() != Some(row_hash(row).as_bytes()))
     }
     pub fn gone(
@@ -150,10 +149,8 @@ impl Catalog {
         table: &str,
         visit: &mut dyn FnMut(Value) -> Result<(), DatabaseError>,
     ) -> Result<(), DatabaseError> {
-        let mut stmt = self.conn.prepare("SELECT key FROM tool_row WHERE input_pk=?1 AND tbl=?2 AND NOT EXISTS(SELECT 1 FROM temp.seen s WHERE s.tbl=tool_row.tbl AND s.key=tool_row.key) ORDER BY key").map_err(crate::StoreError::from)?;
-        let mut rows = stmt
-            .query(params![self.pk, table])
-            .map_err(crate::StoreError::from)?;
+        let mut stmt = self.conn.prepare("SELECT key FROM temp.known k WHERE tbl=?1 AND NOT EXISTS(SELECT 1 FROM temp.seen s WHERE s.tbl=k.tbl AND s.key=k.key) ORDER BY key").map_err(crate::StoreError::from)?;
+        let mut rows = stmt.query([table]).map_err(crate::StoreError::from)?;
         while let Some(row) = rows.next().map_err(crate::StoreError::from)? {
             let key: String = row.get(0).map_err(crate::StoreError::from)?;
             visit(serde_json::from_str(&key).map_err(std::io::Error::from)?)?;
@@ -167,10 +164,10 @@ impl Catalog {
     ) -> Result<(), DatabaseError> {
         let mut stmt = self
             .conn
-            .prepare("SELECT DISTINCT tbl FROM tool_row WHERE input_pk=?1 ORDER BY tbl")
+            .prepare("SELECT DISTINCT tbl FROM temp.known ORDER BY tbl")
             .map_err(crate::StoreError::from)?;
         let names = stmt
-            .query_map([self.pk], |r| r.get::<_, String>(0))
+            .query_map([], |r| r.get::<_, String>(0))
             .map_err(crate::StoreError::from)?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(crate::StoreError::from)?;
@@ -179,4 +176,16 @@ impl Catalog {
         }
         Ok(())
     }
+}
+
+/// The header the archive's comparison state holds for `input`, if any.
+pub(super) fn recorded_schema(index: &Connection, input: &str) -> crate::Result<Option<Value>> {
+    let schema: Option<String> = index
+        .query_row(
+            "SELECT t.schema FROM tool_database t JOIN input_ref i ON i.pk=t.input_pk WHERE i.id=?1",
+            [input],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(schema.map(|s| serde_json::from_str(&s)).transpose()?)
 }

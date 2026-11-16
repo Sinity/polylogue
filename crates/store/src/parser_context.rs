@@ -57,7 +57,15 @@ impl Overlay {
         } else {
             let index = crate::archive::open_read(&archive.index_db())?;
             crate::read::limit::ReadLimit::observe_current(&index)?;
-            index.execute_batch("BEGIN")?;
+            // A build file has a rollback journal, where a read held across
+            // the parse would block every writer commit
+            // (`crate::archive::index_build`). There each lookup reads on its
+            // own: the chain's admitted context changes only by this
+            // attempt's own slices, whose values the scratch view already
+            // holds, so the lookups see what the snapshot would.
+            if archive.is_primary() || !archive.index_build.building() {
+                index.execute_batch("BEGIN")?;
+            }
             Some(index)
         };
         let selected = match (index.as_ref(), chain) {

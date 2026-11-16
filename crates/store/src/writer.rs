@@ -381,10 +381,47 @@ pub(crate) fn deferred_index_names() -> impl Iterator<Item = &'static str> {
     KEY_INDEXES.iter().chain(READ_ONLY_INDEXES).copied()
 }
 
+/// Publishes how many stored chains a build has read, from the counts the
+/// writer keeps with each change ([`crate::chain_progress`]).
+fn record_build_progress(archive: &Archive, index: &Connection) -> Result<()> {
+    if archive.is_primary() || !archive.index_build.building() {
+        return Ok(());
+    }
+    let (mut chains, mut read) = (0, 0);
+    for (_, _, state, n) in crate::chain_progress::counts(index)? {
+        chains += n;
+        if matches!(
+            state,
+            crate::chain_progress::State::Current | crate::chain_progress::State::NoParser
+        ) {
+            read += n;
+        }
+    }
+    archive.index_build.record_progress(chains, read);
+    Ok(())
+}
+
+/// The writer's index connection: the private build file while a build runs,
+/// otherwise `index.db`, with a standalone archive's register attached.
+fn open_index_writer(archive: &Archive, building: bool) -> Result<Connection> {
+    let index = if building {
+        crate::archive::index_build::open_writer(archive)?
+    } else {
+        open_runtime_writer(&archive.index_db(), crate::archive::cache::INDEX_WRITER)?
+    };
+    if !archive.is_primary() {
+        let uri = format!("file:{}?mode=ro", archive.archive_db().display());
+        index.execute("ATTACH DATABASE ?1 AS a", [uri])?;
+        crate::source::views(&index)?;
+    }
+    Ok(index)
+}
+
 impl Writer {
     /// Starts the writer thread on `archive`, which the caller has locked.
-    /// A first build defers search and secondary indexes. Each group commits
-    /// durably, and an interrupted build resumes its saved rows and positions.
+    /// A build writes the private index file and defers search and secondary
+    /// indexes; a stop keeps its committed rows and positions for the next
+    /// start, and a crash discards it ([`crate::archive::index_build`]).
     pub fn start(archive: &Archive) -> Result<Self> {
         Self::start_with(archive, None)
     }
@@ -407,22 +444,14 @@ impl Writer {
                 "the writer mode must match its archive".into(),
             ));
         }
-        let index = open_runtime_writer(&archive.index_db(), crate::archive::cache::INDEX_WRITER)?;
-        if !archive.is_primary() {
-            let uri = format!("file:{}?mode=ro", archive.archive_db().display());
-            index.execute("ATTACH DATABASE ?1 AS a", [uri])?;
-            crate::source::views(&index)?;
-        }
+        // A standalone build writes its private file ([`crate::archive::index_build`]).
+        let building = !archive.is_primary() && archive.index_build.building();
+        let index = open_index_writer(archive, building)?;
+        let installed = archive.root.join("index.db");
         let empty: bool =
             index.query_row("SELECT NOT EXISTS (SELECT 1 FROM parse_state)", [], |r| {
                 r.get(0)
             })?;
-        let building = crate::schema::building(&index)?;
-        if building {
-            // Parsed rows and their positions survive a lost process or boot.
-            index.pragma_update(None, "synchronous", "full")?;
-            index.execute("INSERT INTO meta(key,value) VALUES ('building','1') ON CONFLICT(key) DO UPDATE SET value=excluded.value", [])?;
-        }
         // A first build inserts rows without maintaining the indexes only
         // reads use, or the unique indexes on natural keys; each is built
         // once from a sorted scan when the build ends. The writer's other
@@ -465,6 +494,7 @@ impl Writer {
             conn
         };
         crate::chain_progress::open(&index, !archive.is_primary())?;
+        record_build_progress(archive, &index)?;
         let first_build = building
             .then(|| crate::first_build::FirstBuild::load(&index).map(Arc::new))
             .transpose()?;
@@ -506,12 +536,9 @@ impl Writer {
             texts,
             deferred_indexes,
             users,
-            search: Search::start(archive.index_db(), !building)?,
-            derive: derive_thread::DeriveThread::start(
-                archive.index_db(),
-                queue.clone(),
-                stop.child(),
-            )?,
+            // Both open the installed index, once a build has ended.
+            search: Search::start(installed.clone(), !building)?,
+            derive: derive_thread::DeriveThread::start(installed, queue.clone(), stop.child())?,
             location: archive.clone(),
             sinex,
             stream_error: None,
@@ -1667,12 +1694,14 @@ impl Inner {
             if let Err(error) = self.refresh_chain_progress() {
                 self.report.errors.push(format!("chain progress: {error}"));
             }
+            if let Err(error) = record_build_progress(&self.location, &self.index) {
+                self.report.errors.push(format!("build progress: {error}"));
+            }
             if !flushes.is_empty()
                 && self.location.is_primary()
                 && let Err(error) = crate::archive::index_rebuild::remove_when_built(
                     &self.index,
                     &self.location.index_db(),
-                    true,
                 )
             {
                 self.report
@@ -1709,6 +1738,13 @@ impl Inner {
         });
         if let Err(error) = closed {
             eprintln!("polylogue: writer: chain progress: {error}");
+        }
+        // A stop during a build keeps what it committed for the next start.
+        if self.sinex.is_none()
+            && self.location.index_build.building()
+            && let Err(error) = crate::archive::index_build::keep_progress(&self.location)
+        {
+            eprintln!("polylogue: writer: keep the index build: {error}");
         }
     }
 
@@ -1909,39 +1945,41 @@ impl Inner {
         }
     }
 
-    /// Clears the build marker only after every deferred index has committed.
-    /// What a finish writes is derived from rows already synced, and the
-    /// marker is cleared last; write-ahead commits survive a crash only in
-    /// order, so a finish lost with the machine is redone at the next start.
-    /// Its commits therefore need no sync of their own, which on a small
-    /// archive were most of the startup's time.
+    /// Ends a build once every deferred index has committed: the build file
+    /// is synced and installed as `index.db` ([`crate::archive::index_build`]),
+    /// and the writer continues on it. A stop or failure before the install
+    /// leaves the build to resume at the next start.
     fn finish_build(&mut self) -> Result<()> {
         if self.first_build.is_none() || self.stop.is_cancelled() {
             return Ok(());
         }
-        self.index.pragma_update(None, "synchronous", "normal")?;
-        let finished = self.until_stopped(|inner| {
-            inner.build_deferred()?;
-            inner
-                .index
-                .execute("UPDATE meta SET value = '0' WHERE key = 'building'", [])?;
-            Ok(())
-        });
+        let finished = self.until_stopped(Inner::build_deferred);
         if !matches!(finished, Ok(Some(()))) {
-            // Rows written while the build continues are synced again; a
-            // stopped ending is done at the next start.
-            self.index.pragma_update(None, "synchronous", "full")?;
             return finished.map(drop);
         }
+        self.install_build()?;
         self.first_build = None;
         self.search.ready();
         self.commits
             .committed(crate::completion::Committed::CONTENT);
-        crate::archive::index_rebuild::remove_when_built(
-            &self.index,
-            &self.location.index_db(),
-            false,
-        )
+        Ok(())
+    }
+
+    /// Closes the writer's connection to the build file, installs it and
+    /// opens the installed `index.db`. Connection-level state (the attached
+    /// register, its views and the chain-progress triggers) is set up again
+    /// on the new connection. A failed install leaves the writer on the build
+    /// file, which a later finish installs.
+    fn install_build(&mut self) -> Result<()> {
+        self.index.flush_prepared_statement_cache();
+        let built = std::mem::replace(&mut self.index, Connection::open_in_memory()?);
+        built.close().map_err(|(_, error)| error)?;
+        let synced = std::time::Instant::now();
+        let installed = crate::archive::index_build::finish(&self.location);
+        crate::timing::add(crate::timing::Stage::Sync, synced.elapsed());
+        self.index = open_index_writer(&self.location, self.location.index_build.building())?;
+        crate::chain_progress::install_triggers(&self.index, false)?;
+        installed
     }
 
     /// Ends a first build's bulk load: writes the search entries the build

@@ -371,19 +371,16 @@ fn queued_import_yields_after_admitted_capture_or_replay_and_resumes_from_durabl
                 }
                 std::thread::sleep(Duration::from_millis(5));
             }
-            let cursor = home.reads().reader().unwrap().query(
+            let cursor = home.read(|reader| reader.query(
                 "SELECT COALESCE(max(p.parsed_upto),0) AS n FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id=?1",
                 &[polylogue_store::SqlValue::Text(input.clone())],
-            ).unwrap()[0]["n"].as_u64().unwrap();
-            let captured = home
-                .reads()
-                .reader()
-                .unwrap()
-                .query(
+            ))[0]["n"].as_u64().unwrap();
+            let captured = home.read(|reader| {
+                reader.query(
                     "SELECT max(length) AS n FROM a.revision WHERE input=?1",
                     &[polylogue_store::SqlValue::Text(input.clone())],
                 )
-                .unwrap()[0]["n"]
+            })[0]["n"]
                 .as_u64()
                 .unwrap();
             let response = answer.recv_timeout(Duration::from_secs(5));
@@ -656,25 +653,25 @@ fn an_import_answers_before_queued_captures_or_replays_start_and_the_next_turn_f
         }
         // The synchronous reply keeps the loop at its real ACK boundary while
         // the committed capture and untouched queued inputs are inspected.
-        let before_reply = {
-            let reads = home.reads();
-            let reader = reads.reader().unwrap();
+        // A read that meets the first build's install starts again on the
+        // installed index.
+        let before_reply = home.read(|reader| {
             inputs.iter().map(|input| {
                 let claims = reader.query(
                     "SELECT count(*) AS n FROM message_source m JOIN input_ref i ON i.pk=m.input_pk WHERE i.id=?1",
                     &[polylogue_store::SqlValue::Text(input.id.clone())],
-                ).unwrap()[0]["n"].as_u64().unwrap();
+                )?[0]["n"].as_u64().unwrap();
                 let markers = reader.query(
                     "SELECT count(*) AS n FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id=?1 AND p.stopped_attempt IS NOT NULL",
                     &[polylogue_store::SqlValue::Text(input.id.clone())],
-                ).unwrap()[0]["n"].as_u64().unwrap();
+                )?[0]["n"].as_u64().unwrap();
                 let captured = reader.query(
                     "SELECT max(length) AS n FROM a.revision WHERE input=?1",
                     &[polylogue_store::SqlValue::Text(input.id.clone())],
-                ).unwrap()[0]["n"].as_u64().unwrap();
-                (input.path.clone(), claims, markers, captured)
-            }).collect::<Vec<_>>()
-        };
+                )?[0]["n"].as_u64().unwrap();
+                Ok((input.path.clone(), claims, markers, captured))
+            }).collect::<polylogue_store::Result<Vec<_>>>()
+        });
         let response = answer.recv_timeout(Duration::from_secs(5));
         drop(answer);
         if !entered || sent.is_err() || response.is_err() {

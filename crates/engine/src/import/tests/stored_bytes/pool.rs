@@ -78,7 +78,7 @@ fn decoded_bytes_survive_a_failed_index_write_and_a_rebuild_without_the_provider
     let hash = polylogue_model::BlobHash::of(&decoded);
     {
         let (mut engine, _lock) = engine(&home, 1 << 20);
-        let index = rusqlite::Connection::open(home.root.join("index.db")).unwrap();
+        let index = rusqlite::Connection::open(home.index_db()).unwrap();
         index.execute_batch("CREATE TRIGGER reject_decoded_message BEFORE INSERT ON message BEGIN SELECT RAISE(ABORT,'synthetic derived write refusal'); END;").unwrap();
         let pass = engine.run_pass().unwrap();
         assert!(!pass.errors.is_empty());

@@ -14,6 +14,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::ThreadId;
 
@@ -93,6 +94,8 @@ impl MessageEvidence {
 /// never wait behind a full pool.
 pub struct ReadPool {
     archive: Archive,
+    /// Which index file the pool reads.
+    reads: Reads,
     state: Arc<Mutex<PoolState>>,
     available: Arc<Condvar>,
     max_readers: usize,
@@ -100,8 +103,23 @@ pub struct ReadPool {
     counts: Mutex<crate::query::execute::CountCache>,
     /// Wakes waiting checkouts when the access scope changes.
     _scope_wake: Arc<scope::ResetWake>,
+    /// A pipeline pool closes its idle connections before a build file is
+    /// installed ([`crate::archive::index_build`]).
+    _release: Option<Arc<dyn Fn() + Send + Sync>>,
     #[cfg(test)]
     changed: Condvar,
+}
+
+/// The index file a pool reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reads {
+    /// The file the build pipeline writes: the private build file while a
+    /// build runs, otherwise `index.db`.
+    Pipeline,
+    /// The file client-facing reads are served from; while a build runs and
+    /// no previous index can be served, reads answer
+    /// [`StoreError::IndexBuilding`].
+    Serving,
 }
 
 thread_local! {
@@ -162,11 +180,10 @@ enum ReadState {
     Ready,
     IndexReplaced,
 }
-type IndexIdentity = (u64, u64);
-fn index_identity(archive: &Archive) -> Result<IndexIdentity> {
-    let metadata = std::fs::metadata(archive.index_db())?;
-    Ok((metadata.dev(), metadata.ino()))
-}
+/// The path a connection was opened through and the file it named: a build
+/// file renamed into place keeps its inode, and a connection opened through
+/// its old path must not be reused.
+type IndexIdentity = (PathBuf, u64, u64);
 
 /// What the loop knows about a path from its last look, for comparing
 /// with the file now.
@@ -234,9 +251,16 @@ pub struct Status {
 }
 
 impl ReadPool {
-    /// Standalone callers use a bounded connection and page-cache allocation.
+    /// A pipeline pool with a bounded connection and page-cache allocation.
     pub fn open(archive: &Archive) -> Result<Self> {
         Self::with_budget(archive, 4, 128 << 20)
+    }
+
+    /// The pool client-facing reads use. While an index is being built and
+    /// no previous index can be served, a checkout answers
+    /// [`StoreError::IndexBuilding`] with the build's progress.
+    pub fn serving(archive: &Archive, max_readers: usize, memory_bytes: u64) -> Result<Self> {
+        Self::create(archive, Reads::Serving, max_readers, memory_bytes)
     }
 
     /// `memory_bytes` is the combined SQLite page-cache target of the
@@ -245,7 +269,18 @@ impl ReadPool {
     /// on top. Mmap is disabled
     /// so mapped pages cannot multiply outside that allocation.
     /// This is not a process RSS limit: result values and SQLite work space vary.
+    /// The pool reads what the build pipeline writes; only the build pipeline
+    /// uses one.
     pub fn with_budget(archive: &Archive, max_readers: usize, memory_bytes: u64) -> Result<Self> {
+        Self::create(archive, Reads::Pipeline, max_readers, memory_bytes)
+    }
+
+    fn create(
+        archive: &Archive,
+        reads: Reads,
+        max_readers: usize,
+        memory_bytes: u64,
+    ) -> Result<Self> {
         let divisor = u64::try_from(max_readers)
             .ok()
             .and_then(|n| n.checked_mul(3 * 1024))
@@ -268,8 +303,20 @@ impl ReadPool {
             Arc::new(move || wake_all(&state, &available))
         };
         archive.read_scope.on_reset(&scope_wake);
+        let release = (reads == Reads::Pipeline).then(|| {
+            let state = Arc::clone(&state);
+            let release: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+                let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+                state.live -= state.idle.len();
+                state.idle.clear();
+            });
+            archive.index_build.on_release(Arc::clone(&release));
+            release
+        });
         Ok(Self {
             archive: archive.clone(),
+            reads,
+            _release: release,
             state,
             available,
             max_readers,
@@ -303,8 +350,27 @@ impl ReadPool {
             .unwrap_or(0)
     }
 
-    fn connect(&self) -> Result<Connection> {
-        let conn = open_read(&self.archive.index_db())?;
+    /// The index file this pool reads now.
+    fn index_path(&self) -> Result<PathBuf> {
+        match self.reads {
+            Reads::Pipeline => Ok(self.archive.index_db()),
+            Reads::Serving => self.archive.served_index(),
+        }
+    }
+
+    fn index_identity(&self) -> Result<IndexIdentity> {
+        let path = self.index_path()?;
+        let metadata = std::fs::metadata(&path)?;
+        Ok((path, metadata.dev(), metadata.ino()))
+    }
+
+    /// Whether this pool reads a build in progress.
+    pub(crate) fn reads_build(&self) -> bool {
+        self.reads == Reads::Pipeline && self.archive.index_build.building()
+    }
+
+    fn connect(&self, path: &Path) -> Result<Connection> {
+        let conn = open_read(path)?;
         if self.archive.is_primary() {
             crate::primary::scope::require_readable(&conn)?;
         }
@@ -352,10 +418,12 @@ impl ReadPool {
     /// within a request. Nested checkouts are allowed while capacity remains;
     /// waiting while this thread already holds a slot refuses to avoid deadlock.
     pub fn reader(&self) -> Result<Reader<'_>> {
-        self.acquire(|| self.connect())
+        self.acquire(|path| self.connect(path))
     }
 
-    fn acquire(&self, connect: impl FnOnce() -> Result<Connection>) -> Result<Reader<'_>> {
+    fn acquire(&self, connect: impl FnOnce(&Path) -> Result<Connection>) -> Result<Reader<'_>> {
+        // Refused before a slot is taken: nothing can be read until the build ends.
+        self.index_path()?;
         let scope = self.archive.read_scope.token()?;
         let limit = limit::ReadLimit::current();
         if let Some(limit) = &limit {
@@ -436,17 +504,22 @@ impl ReadPool {
         };
         // A replaced index is a new file, never an old inode reused. Compare
         // around the open without starting a read or delaying an unused slot.
-        let current = index_identity(&self.archive);
+        let current = self.index_identity();
         let idle = idle.filter(|(_, identity)| current.as_ref().is_ok_and(|now| now == identity));
         let (conn, identity) = match idle {
             Some(connection) => connection,
             None => {
-                let conn = match &reader.limit {
-                    Some(limit) => limit.scope(connect),
-                    None => connect(),
-                }?;
                 let before = current?;
-                let after = index_identity(&self.archive)?;
+                let conn = match &reader.limit {
+                    Some(limit) => limit.scope(|| connect(&before.0)),
+                    None => connect(&before.0),
+                };
+                let after = self.index_identity()?;
+                // An open that raced a build's install fails on the moved file.
+                let conn = match conn {
+                    Err(_) if before != after => return Err(StoreError::ReadIndexReplaced),
+                    conn => conn?,
+                };
                 if before != after {
                     return Err(StoreError::ReadIndexReplaced);
                 }
@@ -533,6 +606,7 @@ impl Drop for Reader<'_> {
             Some(conn) if !state.closed => state.idle.push((
                 conn,
                 self.index_identity
+                    .take()
                     .expect("opened connection has an index identity"),
             )),
             _ => state.live -= 1,
@@ -733,18 +807,28 @@ impl Reader<'_> {
                 if self.pool.state.lock().map_err(|_| pool_poisoned())?.closed {
                     return Err(StoreError::ReadPoolClosed);
                 }
-                if Some(index_identity(&self.pool.archive)?) != self.index_identity {
+                if Some(self.pool.index_identity()?) != self.index_identity {
                     self.state.set(ReadState::IndexReplaced);
                     return Err(StoreError::ReadIndexReplaced);
                 }
                 // One statement starts the read on `index.db` (`main`), then on
                 // the register (`a`). The shared lock keeps register commits
                 // out of the gap between the two, so they see a committed pair.
-                conn.query_row(
+                let started = conn.query_row(
                     "SELECT (SELECT count(*) FROM main.meta), (SELECT count(*) FROM source_meta)",
                     [],
                     |_| Ok(()),
-                )?;
+                );
+                // A build file installed between the check and this start
+                // (`crate::archive::index_build`) has left its directory; once
+                // the read has started, the install waits for it to end.
+                if let Err(error) = started {
+                    if Some(self.pool.index_identity()?) != self.index_identity {
+                        self.state.set(ReadState::IndexReplaced);
+                        return Err(StoreError::ReadIndexReplaced);
+                    }
+                    return Err(error.into());
+                }
                 self.state.set(ReadState::Ready);
             }
         }
@@ -816,7 +900,10 @@ impl Reader<'_> {
     /// The index file this reader's read transaction started on.
     pub fn index_identity(&self) -> Result<(u64, u64)> {
         self.conn()?;
-        self.index_identity.ok_or(StoreError::ReadIndexReplaced)
+        self.index_identity
+            .as_ref()
+            .map(|(_, device, inode)| (*device, *inode))
+            .ok_or(StoreError::ReadIndexReplaced)
     }
 
     /// The key read cursors are sealed with: a secret of this index
@@ -1319,10 +1406,7 @@ impl Reader<'_> {
             unused,
             search_pending: count("SELECT n FROM main.row_count WHERE name = 'search_pending'")?,
             capture_coverage: self.all_capture_coverage()?,
-            index_rebuild: crate::archive::index_rebuild::status(
-                c,
-                self.pool.archive.is_primary(),
-            )?,
+            index_rebuild: crate::archive::index_rebuild::status(c, &self.pool.archive)?,
         })
     }
 

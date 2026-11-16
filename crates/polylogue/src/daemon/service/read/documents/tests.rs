@@ -25,6 +25,10 @@ fn fixture() -> (WriterArchive, DocumentId) {
         },
         1,
     );
+    // Installs the built index: the cancellation test below holds a reader
+    // while it writes, which needs the installed index's WAL
+    // (docs/architecture.md, Durability).
+    writer.writer.derive().unwrap();
     (writer, id)
 }
 

@@ -90,18 +90,14 @@ fn a_same_boot_build_keeps_its_rows_and_resumes() {
     let (archive, lock) = Archive::open_or_create(&root).unwrap();
     let writer = crate::Writer::start(&archive).unwrap();
     writer.flush().unwrap();
+    // A stop in the middle of a build keeps it for the next start.
     drop(writer);
-    // A stop in the middle of a first build leaves the mark set.
-    open_write(&archive.index_db(), cache::SETUP)
-        .unwrap()
-        .execute("UPDATE meta SET value = '1' WHERE key = 'building'", [])
-        .unwrap();
     drop(lock);
     let (archive, _lock) = Archive::open_or_create(&root).unwrap();
-    assert!(schema::building(&open_read(&archive.index_db()).unwrap()).unwrap());
+    assert!(archive.index_build().is_some());
     let writer = crate::Writer::start(&archive).unwrap();
     writer.derive().unwrap();
-    assert!(!schema::building(&open_read(&archive.index_db()).unwrap()).unwrap());
+    assert!(archive.index_build().is_none());
 }
 
 /// Reopening an index whose first build is in progress leaves the indexes
@@ -112,8 +108,8 @@ fn reopening_a_first_build_does_not_build_its_deferred_indexes() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("a");
     let (archive, lock) = Archive::open_or_create(&root).unwrap();
-    let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
-    assert!(schema::building(&index).unwrap());
+    assert!(archive.index_build().is_some());
+    let index = rusqlite::Connection::open(archive.index_db()).unwrap();
     // As the writer leaves them while the build runs.
     for name in crate::writer::deferred_index_names() {
         index
@@ -259,13 +255,13 @@ fn a_build_from_another_boot_resumes_rows_with_a_new_generation() {
     let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
     let writer = crate::Writer::start(&archive).unwrap();
     drop(writer);
-    let conn = open_write(&archive.index_db(), cache::SETUP).unwrap();
+    let conn = rusqlite::Connection::open(archive.index_db()).unwrap();
     let before: String = conn
         .query_row("SELECT value FROM meta WHERE key='generation'", [], |r| {
             r.get(0)
         })
         .unwrap();
-    conn.execute_batch("UPDATE meta SET value='1' WHERE key='building'; UPDATE meta SET value='another-boot' WHERE key='boot_id'; INSERT INTO meta VALUES ('kept-marker','present')").unwrap();
+    conn.execute_batch("UPDATE meta SET value='another-boot' WHERE key='boot_id'; INSERT INTO meta VALUES ('kept-marker','present')").unwrap();
     drop(conn);
     drop(lock);
     let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
@@ -283,7 +279,7 @@ fn a_build_from_another_boot_resumes_rows_with_a_new_generation() {
         })
         .unwrap();
     assert_ne!(after, before);
-    assert!(schema::building(&conn).unwrap());
+    assert!(archive.index_build().is_some());
     drop(conn);
     let writer = crate::Writer::start(&archive).unwrap();
     writer.derive().unwrap();
@@ -298,7 +294,7 @@ fn a_build_from_another_boot_resumes_rows_with_a_new_generation() {
         .unwrap(),
         after
     );
-    assert!(!schema::building(&conn).unwrap());
+    assert!(archive.index_build().is_none());
 }
 
 #[test]
@@ -307,6 +303,10 @@ fn a_stopped_process_resumes_its_committed_parse_positions() {
     if let Some(path) = std::env::var_os(CHILD) {
         let (archive, _lock) = Archive::open_or_create(Path::new(&path)).unwrap();
         let writer = crate::Writer::start(&archive).unwrap();
+        // Committed positions survive a lost process once the index is
+        // installed; a build lost with its process starts over
+        // (docs/architecture.md, Durability).
+        writer.derive().unwrap();
         let output = polylogue_model::Output {
             sessions: vec![polylogue_model::Session::new(
                 crate::fixture::writer::sid("resume"),
@@ -360,20 +360,17 @@ fn a_stopped_process_resumes_its_committed_parse_positions() {
     drop(writer);
     let index = open_read(&archive.index_db()).unwrap();
     assert!(schema::same_schema(&index, schema::INDEX_SCHEMA).unwrap());
-    assert!(!schema::building(&index).unwrap());
+    assert!(archive.index_build().is_none());
 }
 
 #[test]
 fn opening_adds_model_completion_index_without_rebuilding_rows() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
+    // A finished index: a build in progress defers this index to its end.
+    index_build::finish(&archive).unwrap();
     let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
-    // A finished index: a first build in progress defers this index to its end.
-    index
-        .execute_batch(
-            "UPDATE meta SET value='0' WHERE key='building'; DROP INDEX message_model_at;",
-        )
-        .unwrap();
+    index.execute_batch("DROP INDEX message_model_at;").unwrap();
     let completion_plan = |index: &Connection| -> Vec<String> {
         index
             .prepare("EXPLAIN QUERY PLAN SELECT DISTINCT model FROM message WHERE model IS NOT NULL ORDER BY model")
@@ -436,12 +433,12 @@ fn opening_adds_model_completion_index_without_rebuilding_rows() {
 fn missing_time_indexes_are_created_without_rebuilding_the_index() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
+    // A finished index: a build in progress defers these to its end.
+    index_build::finish(&archive).unwrap();
     let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
-    // A finished index: a first build in progress defers these to its end.
     index
         .execute_batch(
-            "UPDATE meta SET value='0' WHERE key='building';
-             DROP INDEX message_at; DROP INDEX event_at;
+            "DROP INDEX message_at; DROP INDEX event_at;
              DROP INDEX message_session_at; DROP INDEX message_model_at; DROP INDEX message_session_model_at;
         INSERT INTO input_ref(id) VALUES ('synthetic');
         INSERT INTO meta VALUES ('index-marker','present');",

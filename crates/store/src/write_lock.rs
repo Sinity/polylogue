@@ -62,7 +62,14 @@ pub(crate) fn hold(conn: &Connection) -> Result<WriteLock> {
     }
     let archive_db = match path.file_name().and_then(|name| name.to_str()) {
         Some("archive.db") => path.to_path_buf(),
-        Some("index.db") => path.with_file_name("archive.db"),
+        // The private build file sits one directory below the archive root
+        // (`crate::archive::index_build`).
+        Some("index.db") => match path.parent() {
+            Some(dir) if dir.file_name() == Some(crate::archive::index_build::DIR.as_ref()) => {
+                dir.with_file_name("archive.db")
+            }
+            _ => path.with_file_name("archive.db"),
+        },
         _ => {
             return Err(StoreError::Invalid(
                 "the write lock needs a standalone archive or index connection".into(),

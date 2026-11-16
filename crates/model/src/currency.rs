@@ -205,7 +205,7 @@ impl ReadFreshness {
                         CompletenessReason::KnownRawOnly => "some stored inputs have no parser",
                         CompletenessReason::DerivationBehind => "derived values are pending",
                         CompletenessReason::SearchPending => "search text is pending",
-                        CompletenessReason::FirstBuild => "the search index is being built",
+                        CompletenessReason::FirstBuild => "the index is being built",
                         CompletenessReason::StreamNotApplied => {
                             "the confirmed stream has not been applied"
                         }

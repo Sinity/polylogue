@@ -109,7 +109,7 @@ that needs the archive with no daemon running fails with "daemon down"
 |---|---|---|
 | segment log | the bytes of every input revision, as content-addressed blobs in append-only segment files of seekable zstd frames | nothing: it is the source |
 | `archive.db` | what cannot be recomputed: inputs, revisions, chains, extents, observations; the request log (every query run and kept result); assertions, Pages and variants; settings; delivery records | nothing |
-| `index.db` | everything parsed and derived: sessions, messages, blocks, tool calls, attachments, links, derived columns and tables, the search indexes; the positions in `archive.db` and the request log it has applied | the segment log and `archive.db` |
+| `index.db` | everything parsed and derived: sessions, messages, blocks, tool calls, attachments, links, derived columns and tables, the search indexes; the positions in `archive.db` and the request log it has applied. Built whole in a private file and installed when the build ends ([durability](#durability)) | the segment log and `archive.db` |
 | embeddings store | message vectors for semantic ranking, selected by the [paid-vector restore policy](search.md#what-is-embedded), with earlier values preserved in original source stores | the model that made them (vectors bought from a paid provider are kept as data) |
 
 The segment container, blob hashing and member access are the common
@@ -163,6 +163,33 @@ so no later sync in that boot, in the same process or a new one, shows that
 they reached the disk. Recovery starts with a reboot
 ([operations.md#storage-failure](operations.md#storage-failure)).
 
+**Building `index.db`.** A build of the index, the first one or one that
+replaces an index from another schema, writes a private file,
+`index-build/index.db`, in a directory with copy-on-write (and so
+filesystem compression) off, with SQLite's
+rollback journal kept in memory and no syncs. A failed transaction still
+rolls back in the process; a lost process or boot may leave the file torn.
+Before the build's first unsynced write the writer creates and syncs the
+marker `index-build/unsynced`. A clean stop syncs the file and removes the
+marker, and the next start resumes the build in it. A start that finds the
+marker discards the file and builds again from the stored bytes, which a
+build never changes, so a crash or power loss during a build costs the build
+so far and nothing else. When the build ends, its writer syncs the file,
+closes it, switches it to WAL while nothing else has it open, renames it
+`index-build/built.db`, removes the marker and renames it over `index.db`,
+syncing the directory after each step; a start that finds `built.db`
+completes the rename. Only the build pipeline opens the private file: the
+writer, its resolver and parser-context reads, the engine's planning reads
+and tool-database catalog reads. Serving readers, the search thread and the
+derive thread open `index.db` once it is installed, so no reader can hold up
+the switch to WAL or a stop. With a rollback journal a held read blocks
+the writer, so the pipeline's reads of the build file are short: a resumed
+parse looks up its admitted context one statement at a time, and a
+tool-database comparison copies its recorded rows out in one read. While the build runs, reads are answered from
+the previous index when it has this build's schema identity, and otherwise
+answer `index_building` with the build's progress
+([operations.md](operations.md#replacing-an-index-from-another-schema)).
+
 ## Pipeline
 
 Building the archive overlaps every stage:
@@ -206,13 +233,14 @@ Building the archive overlaps every stage:
 - consumers of committed positions: derived data (computed on a thread of
   its own and written by the writer only if its inputs are unchanged), the
   request-log projection and the completion catalog;
-- at the end of a first build, both full-text indexes written from one
+- at the end of an index build, both full-text indexes written from one
   ordered scan of the text in one transaction, so each search segment is
   written once rather than flushed small and merged again; then the trigram
   index and the deferred secondary indexes, each from one sorted scan, and
   the query planner's statistics gathered from a sample of each index,
   so lookups by session are not mistaken for lookups by a column of few
-  values;
+  values; then the build file is installed as `index.db`
+  ([durability](#durability));
 - live inputs ahead of bulk work.
 
 The writer's transactions are sized by the bytes and rows they cover, not

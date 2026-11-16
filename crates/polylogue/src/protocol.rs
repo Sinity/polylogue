@@ -60,6 +60,7 @@ pub const FAILURE_CLASSES: &[(FailureKind, &[&str])] = &[
         &[
             "not_built",
             "not_yet_available",
+            "index_building",
             "primary_context_missing",
             "primary_context_pending",
             "primary_context_stale",

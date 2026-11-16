@@ -223,7 +223,7 @@ fn array_delivery_waits_for_the_previous_batchs_commit() {
                 .unwrap();
         });
         ready_rx.recv().unwrap();
-        let db = rusqlite::Connection::open(w.root.join("index.db")).unwrap();
+        let db = rusqlite::Connection::open(w.index_db()).unwrap();
         db.execute_batch("BEGIN IMMEDIATE").unwrap();
         go_tx.send(()).unwrap();
         item_rx.recv().unwrap();
@@ -337,7 +337,7 @@ fn pending_ordinary_live_input_commits_before_bulk_array_delivery() {
         plans.push(plan);
     }
     let live_id = plans[1].input.id.clone();
-    let db = rusqlite::Connection::open(w.root.join("index.db")).unwrap();
+    let db = rusqlite::Connection::open(w.index_db()).unwrap();
     db.execute_batch(
         "CREATE TABLE delivery_order(seq INTEGER PRIMARY KEY,id TEXT);
         CREATE TRIGGER record_delivery AFTER INSERT ON parse_state BEGIN

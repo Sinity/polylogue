@@ -866,7 +866,9 @@ fn user_write_served_between_derive_commits() {
     };
     let mut w = w;
     w.write_output("input-many", "claude-code", "/p/many", output, sessions);
-    // As after their rows changed: every session is due again.
+    // The first derive installs the built index; then, as after their rows
+    // changed, every session is due again.
+    w.writer.derive().unwrap();
     let index = rusqlite::Connection::open(w.archive.index_db()).unwrap();
     index
         .execute(
@@ -988,9 +990,12 @@ fn a_held_derivation_does_not_hold_parse_commits() {
     // The derive thread stops after computing its first wave, as a slow
     // derivation would, before the writer is sent anything.
     let barrier = sender.pause_derive_for_test();
-    let index = rusqlite::Connection::open(w.archive.index_db()).unwrap();
+    // The pass's first derive installs the index built so far; this test
+    // reads it once the pass is held.
+    let installed = w.archive.root.join("index.db");
+    let index = || rusqlite::Connection::open(&installed).unwrap();
     let title = |id: &str| -> Option<String> {
-        index
+        index()
             .query_row(
                 "SELECT derived_title FROM session WHERE id = ?1",
                 [format!("claude-code:{id}")],
@@ -1017,7 +1022,7 @@ fn a_held_derivation_does_not_hold_parse_commits() {
         }
         writing.join().unwrap();
         for n in 0..3 {
-            let rows: i64 = index
+            let rows: i64 = index()
                 .query_row(
                     "SELECT count(*) FROM message m JOIN session s ON s.pk = m.session_pk
                      WHERE s.id = ?1",
@@ -1045,9 +1050,12 @@ fn a_value_computed_from_rows_that_changed_is_not_stored() {
     w.write_underived("a", prose("a", 1, 1_000, "the first prompt"));
     let sender = w.writer.sender().unwrap();
     let barrier = sender.pause_derive_for_test();
-    let index = rusqlite::Connection::open(w.archive.index_db()).unwrap();
+    // The pass's first derive installs the index built so far; this test
+    // reads it once the pass has run.
+    let installed = w.archive.root.join("index.db");
     let state = || -> (Option<i64>, i64, i64, i64) {
-        index
+        rusqlite::Connection::open(&installed)
+            .unwrap()
             .query_row(
                 "SELECT (SELECT sp.last_at FROM session_span sp WHERE sp.session_pk = s.pk),
                         s.message_count,

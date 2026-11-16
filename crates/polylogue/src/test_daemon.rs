@@ -29,13 +29,19 @@ pub(crate) fn start_runtime(
     mode: service::ArchiveMode,
 ) -> std::io::Result<service::Runtime> {
     let deployment = crate::config::Config::for_test(&engine, root);
-    service::start(
+    let runtime = service::start(
         deployment,
         engine,
         mode,
         polylogue_engine::Lifetime::UntilStopped,
         Some(polylogue_testkit::stopped_attempt()),
-    )
+    )?;
+    // Reads answer `index_building` until the loop's first pass installs the
+    // index (docs/operations.md, Replacing an index from another schema).
+    while runtime.runs_loop() && runtime.daemon.archive.index_build().is_some() {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    Ok(runtime)
 }
 
 pub(crate) struct ReadObservation {

@@ -322,7 +322,12 @@ impl Handler for Status {
     fn run(_: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         Ok(match call.reader() {
             Ok(reader) => status::answer(call.daemon, &reader),
-            Err(failure) => failure.answer(),
+            Err(failure) => match call.daemon.archive.index_build() {
+                Some(build) if failure.code() == "index_building" => {
+                    status::building(call.daemon, build)
+                }
+                _ => failure.answer(),
+            },
         })
     }
 }

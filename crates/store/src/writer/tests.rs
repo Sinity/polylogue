@@ -131,6 +131,16 @@ fn test_archive() -> TestArchive {
     }
 }
 
+/// An archive whose first build has ended: its index is installed in WAL,
+/// where a reader keeps its snapshot while the writer commits. A build
+/// file has a rollback journal, where a held read blocks the writer
+/// (docs/architecture.md, Durability).
+fn installed_archive() -> TestArchive {
+    let w = test_archive();
+    w.writer.derive().unwrap();
+    w
+}
+
 fn sid(n: &str) -> SessionId {
     SessionId::parse(&format!("claude-code:{n}")).unwrap()
 }
@@ -1165,66 +1175,7 @@ mod text_projection;
 
 mod parse_positions;
 
-#[test]
-fn first_build_stays_in_wal_and_finishes_while_a_read_stays_open() {
-    let w = test_archive();
-    let reader_pool = ReadPool::open(&w.archive).unwrap();
-    let reader = reader_pool.reader().unwrap();
-    assert_eq!(
-        reader.query("PRAGMA main.journal_mode", &[]).unwrap()[0]["journal_mode"],
-        "wal"
-    );
-    assert_eq!(
-        reader
-            .query("SELECT value FROM meta WHERE key='building'", &[])
-            .unwrap()[0]["value"],
-        "1"
-    );
-    // This open read predates both the write and the durable build
-    // completion. Neither commit may require it to be dropped.
-    w.writer
-        .send(
-            w.commit_source(
-                batch(
-                    "first",
-                    Route::Live,
-                    0,
-                    vec![MessageRow {
-                        page_text: false,
-                        id_kind: polylogue_model::IdKind::Native,
-                        offset: 0,
-                        end: 100,
-                        message: text_message("m1", "a", Role::User, "synthetic first build", None),
-                    }],
-                    &["a"],
-                ),
-                &SOURCE_RECORD,
-            )
-            .unwrap(),
-        )
-        .unwrap();
-    w.writer.derive().unwrap();
-    let report = w.writer.flush().unwrap();
-    assert!(report.errors.is_empty(), "{:?}", report.errors);
-    let current = reader_pool.reader().unwrap();
-    assert_eq!(
-        current
-            .query("SELECT value FROM meta WHERE key='building'", &[])
-            .unwrap()[0]["value"],
-        "0"
-    );
-    assert_eq!(current.status().unwrap().messages, 1);
-    assert_eq!(
-        reader
-            .query("SELECT value FROM meta WHERE key='building'", &[])
-            .unwrap()[0]["value"],
-        "1"
-    );
-    assert_eq!(reader.status().unwrap().messages, 0);
-    drop(current);
-    drop(w.writer);
-    assert_eq!(reader.query("SELECT 42 AS n", &[]).unwrap()[0]["n"], 42);
-}
+mod private_build;
 
 mod authorship;
 
@@ -1410,8 +1361,8 @@ fn interrupted_secondary_index_finish_retries_ordinary_build() {
         1,
     );
     assert!(w.writer.derive().is_err());
+    assert!(w.archive.index_build().is_some());
     let index = crate::archive::open_read(&w.archive.index_db()).unwrap();
-    assert!(crate::schema::building(&index).unwrap());
     assert_eq!(
         index
             .query_row(
@@ -1422,8 +1373,10 @@ fn interrupted_secondary_index_finish_retries_ordinary_build() {
             .unwrap(),
         1
     );
+    drop(index);
     w.writer.derive().unwrap();
-    assert!(!crate::schema::building(&index).unwrap());
+    assert!(w.archive.index_build().is_none());
+    let index = crate::archive::open_read(&w.archive.index_db()).unwrap();
     assert_eq!(
         index
             .query_row(
@@ -1446,8 +1399,8 @@ fn a_completed_empty_index_does_not_begin_another_first_build() {
     drop(lock);
     let (archive, _lock) = crate::Archive::open_or_create(dir.path()).unwrap();
     let writer = Writer::start(&archive).unwrap();
+    assert!(archive.index_build().is_none());
     let index = crate::archive::open_read(&archive.index_db()).unwrap();
-    assert!(!crate::schema::building(&index).unwrap());
     assert!(crate::schema::same_schema(&index, crate::schema::INDEX_SCHEMA).unwrap());
     drop(writer);
 }
@@ -1645,9 +1598,7 @@ fn a_stop_during_deferred_indexes_keeps_committed_rows_for_restart() {
     crate::fault::release();
     assert!(matches!(run.join().unwrap(), Err(StoreError::WriterGone)));
     crate::fault::clear();
-    let index = crate::archive::open_read(&w.archive.index_db()).unwrap();
-    assert!(crate::schema::building(&index).unwrap());
-    drop(index);
+    assert!(w.archive.index_build().is_some());
     let TestArchive {
         writer,
         archive,
@@ -1658,8 +1609,8 @@ fn a_stop_during_deferred_indexes_keeps_committed_rows_for_restart() {
     let archive = archive.reopened();
     let writer = Writer::start(&archive).unwrap();
     writer.derive().unwrap();
+    assert!(archive.index_build().is_none());
     let index = crate::archive::open_read(&archive.index_db()).unwrap();
-    assert!(!crate::schema::building(&index).unwrap());
     assert_eq!(
         index
             .query_row(

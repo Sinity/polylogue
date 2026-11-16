@@ -52,7 +52,7 @@ fn message(id: &str, role: Role, text: &str) -> Message {
 
 #[test]
 fn identical_lower_priority_event_claims_leave_selected_events_and_items_untouched() {
-    let w = test_archive();
+    let w = installed_archive();
     let mut main = batch(
         "a-events",
         Route::Live,
