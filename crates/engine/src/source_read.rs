@@ -264,7 +264,7 @@ impl Engine {
                 self.writer
                     .byte_cursor(polylogue_store::primary::ByteCursorQuery {
                         generation: generation.clone(),
-                        tail_body: tail_body,
+                        tail_body,
                     })?
                     .filter(|cursor| {
                         cursor.range().end >= source_read.range.end
