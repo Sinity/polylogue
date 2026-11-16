@@ -25,6 +25,8 @@ pub struct Blobs {
     catalog: PathBuf,
     layout: BlobCatalog,
     connection: Mutex<Option<Connection>>,
+    #[cfg(feature = "fixture")]
+    bytes_read: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl std::fmt::Debug for Blobs {
@@ -43,6 +45,25 @@ impl Blobs {
             catalog,
             layout,
             connection: Mutex::new(None),
+            #[cfg(feature = "fixture")]
+            bytes_read: Default::default(),
+        }
+    }
+
+    /// Decoded segment bytes delivered by this catalog's readers in a fixture.
+    #[cfg(feature = "fixture")]
+    pub fn bytes_read(&self) -> u64 {
+        self.bytes_read.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn count_reads(&self, reader: hashed_blobs::BlobReader) -> super::BlobReader {
+        #[cfg(feature = "fixture")]
+        {
+            super::BlobReader::new(reader, self.bytes_read.clone())
+        }
+        #[cfg(not(feature = "fixture"))]
+        {
+            reader
         }
     }
 
@@ -76,9 +97,9 @@ impl Blobs {
             .ok_or_else(|| StoreError::NotFound(format!("blob {}", BlobHash(hash.0))))
     }
 
-    pub fn read(&self, hash: &hashed_blobs::Hash) -> Result<hashed_blobs::BlobReader> {
+    pub fn read(&self, hash: &hashed_blobs::Hash) -> Result<super::BlobReader> {
         let extent = self.extent(hash)?;
-        Ok(hashed_blobs::Reader::new(&self.root).open(&[extent], None)?)
+        Ok(self.count_reads(hashed_blobs::Reader::new(&self.root).open(&[extent], None)?))
     }
 
     pub fn read_range(&self, hash: &hashed_blobs::Hash, offset: u64, len: u64) -> Result<Vec<u8>> {
@@ -109,14 +130,20 @@ impl Blobs {
         hash: &hashed_blobs::Hash,
         expected: Option<u64>,
         check: impl FnMut() -> hashed_blobs::Result<()> + Send + 'static,
-    ) -> Result<hashed_blobs::BlobReader> {
+    ) -> Result<super::BlobReader> {
         let extent = self.extent(hash)?;
         if extent.kind != hashed_blobs::Kind::Plain
             || expected.is_some_and(|length| extent.decoded_len != length)
         {
             return Err(StoreError::BlobCorrupt(BlobHash(hash.0)));
         }
-        Ok(hashed_blobs::Reader::new(&self.root).open_checked(&[extent], None, check)?)
+        Ok(
+            self.count_reads(hashed_blobs::Reader::new(&self.root).open_checked(
+                &[extent],
+                None,
+                check,
+            )?),
+        )
     }
 
     pub fn verify_plain<E: From<StoreError>>(

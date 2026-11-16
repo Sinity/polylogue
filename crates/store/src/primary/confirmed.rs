@@ -906,10 +906,6 @@ fn next(index: &Connection) -> Result<Step> {
 
 /// Each bounded page is saved before its worker waits for overlapping key locks.
 pub(crate) fn stage_next(index: &mut Connection, events: &[Confirmed]) -> Result<Step> {
-    if index.pragma_query_value::<i64, _>(None, "temp_store", |row| row.get(0))? != 1 {
-        index.pragma_update(None, "temp_store", "file")?;
-        index.pragma_update(Some("temp"), "cache_size", -8192)?;
-    }
     stage(index, events)?;
     next(index)
 }

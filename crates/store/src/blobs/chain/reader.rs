@@ -33,7 +33,7 @@ impl<S: super::super::PlainBlobs> Read for ChainReader<S> {
 pub(super) struct Cursor {
     position: u64,
     end: u64,
-    current: Option<hashed_blobs::BlobReader>,
+    current: Option<super::super::BlobReader>,
     left: u64,
 }
 impl Cursor {

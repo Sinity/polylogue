@@ -253,7 +253,7 @@ fn stored_planning_skips_watched_history() {
         u32::MAX,
     );
     let replay = engine.run_pass();
-    let skipped = engine.inputs.is_empty() && !engine.loaded;
+    let skipped = engine.inputs.is_empty() && !engine.watched_loaded;
     engine.config.reads_sources = true;
     let restoration = engine.load();
     fault::clear();
@@ -267,7 +267,7 @@ fn stored_planning_skips_watched_history() {
             .contains("read.watched_inputs")
     );
     engine.load().unwrap();
-    assert!(engine.loaded);
+    assert!(engine.watched_loaded);
     assert_eq!(engine.inputs.len(), 1);
     assert_eq!(
         engine.inputs[&home.file("stored.jsonl")].parsed_upto,

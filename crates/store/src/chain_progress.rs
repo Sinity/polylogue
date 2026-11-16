@@ -118,7 +118,7 @@ fn input_sql(input: &str) -> [String; 2] {
 /// Installs the triggers on the writer's index connection (see the module
 /// documentation) and, when the rows may be behind the source, recomputes
 /// every chain. `standalone`: the source is written on another connection,
-/// so the rows are marked not kept until [`close`].
+/// so the rows are marked not kept until [`mark_current`].
 pub(crate) fn open(index: &Connection, standalone: bool) -> Result<()> {
     install_triggers(index, !standalone)?;
     let kept: bool = index
@@ -154,10 +154,13 @@ pub(crate) fn open(index: &Connection, standalone: bool) -> Result<()> {
     Ok(())
 }
 
-/// Marks the rows as reflecting every committed source row: called by a
-/// stopping standalone writer after it recomputed the recorded inputs.
-pub(crate) fn close(index: &Connection) -> Result<()> {
-    index.execute("UPDATE meta SET value = 'kept' WHERE key = ?1", [KEPT])?;
+/// Marks counts current after committed source changes or an empty cache reset.
+pub(crate) fn mark_current(index: &Connection) -> Result<()> {
+    index.execute(
+        "INSERT INTO meta(key,value) VALUES (?1,'kept')
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [KEPT],
+    )?;
     Ok(())
 }
 

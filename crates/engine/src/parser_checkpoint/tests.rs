@@ -456,14 +456,7 @@ fn restart_reopens_evicted_response_and_resolves_its_alias() {
             Ok(())
         })
         .unwrap();
-    let index = rusqlite::Connection::open(engine.archive.index_db()).unwrap();
-    index
-        .execute(
-            "UPDATE parse_state SET reading_version='earlier-reading'",
-            [],
-        )
-        .unwrap();
-    drop(index);
+    polylogue_store::fixture::older_reading(&engine.archive, "claude-code").unwrap();
     let pass = engine.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{pass:?}");
     let reader = engine.reads.reader().unwrap();

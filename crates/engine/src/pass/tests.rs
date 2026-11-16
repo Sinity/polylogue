@@ -1,4 +1,5 @@
 mod coverage;
+mod idle;
 mod no_sources;
 mod parent_check;
 mod returning;

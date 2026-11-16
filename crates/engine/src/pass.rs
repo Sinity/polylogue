@@ -68,6 +68,17 @@ impl Requests {
             .map_or_else(|| self.receiver.recv_timeout(timeout), Ok)
     }
 
+    fn recv(&mut self) -> Result<LoopMsg, RecvTimeoutError> {
+        self.pending.take().map_or_else(
+            || {
+                self.receiver
+                    .recv()
+                    .map_err(|_| RecvTimeoutError::Disconnected)
+            },
+            Ok,
+        )
+    }
+
     fn try_recv(&mut self) -> Result<LoopMsg, std::sync::mpsc::TryRecvError> {
         self.pending
             .take()
@@ -288,7 +299,8 @@ impl Engine {
             state.discard_confirmed();
         }
         self.read_scope = None;
-        self.loaded = false;
+        self.watched_loaded = false;
+        self.readings_pending = true;
         self.pass_open = true;
         self.identical_chains.clear();
         self.capture_checked = None;
@@ -311,7 +323,10 @@ impl Engine {
         }
         let result = (|| {
             let scope = self.cached_scope()?;
-            let result = self.read_turn(discover || !self.loaded, paths)?;
+            let result = self.read_turn(
+                discover || (self.config.reads_sources && !self.watched_loaded),
+                paths,
+            )?;
             // A completed reset can race the last SQL read. Its cached progress
             // cannot establish completion in the new scope.
             if let Err(error) = scope.check() {
@@ -374,6 +389,26 @@ impl Engine {
         let continuing = self.pass_open;
         let started = Instant::now();
         self.load()?;
+        if discover && !self.readings_pending {
+            use polylogue_model::freshness::{CompletenessDimension, CompletenessReason};
+            self.readings_pending = match self
+                .reads
+                .reader()?
+                .completeness(&crate::reading_contracts())?
+                .parsing
+            {
+                CompletenessDimension::Incomplete(reasons)
+                | CompletenessDimension::Unknown(reasons) => reasons.into_iter().any(|reason| {
+                    matches!(
+                        reason,
+                        CompletenessReason::MissingCheckpoint
+                            | CompletenessReason::ReadingVersionChanged
+                            | CompletenessReason::ParserBehind
+                    )
+                }),
+                CompletenessDimension::Complete | CompletenessDimension::NotApplicable => false,
+            };
+        }
         let collectors_due = self
             .collectors_at
             .is_none_or(|at| at.elapsed() >= Duration::from_secs(60));
@@ -450,6 +485,7 @@ impl Engine {
                 .any(|(p, st)| p.starts_with(path) && st.facts.is_some() && !p.exists())
         });
         if !discover
+            && !self.readings_pending
             && !continuing
             && paths.is_empty()
             && !changed
@@ -466,9 +502,10 @@ impl Engine {
         // after an index rebuild it is in place before any message that
         // names an asset is parsed. The import operation refreshes its new members.
         if !continuing {
+            self.shared_prefixes.get_mut().clear();
             self.refresh_import_assets(&mut pass)?;
         }
-        if discover {
+        if self.readings_pending {
             self.reparse_behind(None, RevisionChains::Newest, &mut pass)?;
         }
         if self.yielding() {
@@ -598,7 +635,7 @@ impl Engine {
             pass.seconds = started.elapsed().as_secs_f64();
             return Ok((pass, seen));
         }
-        if discover {
+        if self.readings_pending {
             // Every input's newest chain is read: a first build ends here, so
             // its read indexes exist while the older chains are read.
             if !pass.capture_pending && !self.captures.pending() {
@@ -627,6 +664,9 @@ impl Engine {
         pass.capture_pending |= self.captures.pending();
         if !pass.capture_pending {
             pass.sessions_derived += self.derive()?;
+            if pass.errors.is_empty() {
+                self.readings_pending = false;
+            }
         }
         self.pass_open = pass.capture_pending;
         pass.seconds = started.elapsed().as_secs_f64();
@@ -2218,11 +2258,12 @@ impl Engine {
                 }
                 continue;
             }
-            let mut msg = self
-                .requests
-                .as_mut()
-                .expect("running inbox")
-                .recv_timeout(self.config.live_every);
+            let requests = self.requests.as_mut().expect("running inbox");
+            let mut msg = if !self.config.reads_sources && !pending {
+                requests.recv()
+            } else {
+                requests.recv_timeout(self.config.live_every)
+            };
             let burst = Instant::now();
             loop {
                 match msg {
@@ -2234,7 +2275,7 @@ impl Engine {
                     }
                     Err(RecvTimeoutError::Timeout) => {}
                 }
-                if burst.elapsed() > COALESCE {
+                if !self.config.reads_sources || burst.elapsed() > COALESCE {
                     break;
                 }
                 // Pending captures continue after queued requests, without

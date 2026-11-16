@@ -132,7 +132,7 @@ enum Decoder {
             std::sync::Arc<polylogue_store::blobs::Blobs>,
         )>,
     ),
-    Plain(Box<hashed_blobs::BlobReader>),
+    Plain(Box<polylogue_store::blobs::BlobReader>),
     Chain(Box<polylogue_store::blobs::ChainReader>),
 }
 
