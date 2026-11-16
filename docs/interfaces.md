@@ -1,178 +1,280 @@
 # Interfaces
 
-Polylogue has one table of operations, and every surface is generated from it: the command line, the daemon's socket, HTTP and MCP. This page owns that table as Polylogue uses it, the command-line grammar and the rule that keeps the command set small, latency classes and Polylogue's budgets, the daemon's states as the command line sees them, warm state, and Polylogue's failure kinds and exit codes. [Completion](completion.md) owns completion and its catalog file; the [terminal interface](terminal.md) owns the picker, row addressing (`@N`, `@last`), footers and affordances, output and help.
+Polylogue has one table of operations, and every surface is generated from it: the command line, the daemon's socket, HTTP and MCP. This page owns that table, the line grammar (selections, verbs, chains and commands), each verb's words, the rule that keeps the set of words small, latency classes and Polylogue's budgets, the daemon's states as the command line sees them, warm state, and failure kinds and exit codes.
 
-The generic mechanics (the `Operation` trait, the failure-to-exit-and-HTTP table, request and answer envelopes, deadline classes, SSE framing) are the common [`command-surface`](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/command-surface/README.md) crate's. The query language is in [query.md](query.md); what a caller sends about itself and how its author is computed is in [assertions.md](assertions.md#authorship); writing out with `read --to` is in [reading.md](reading.md#writing-out); MCP as the agents' channel is in [agents.md](agents.md#mcp-server); the web is in [web.md](web.md).
+The [terminal interface](terminal.md) owns what a person sees: the orientation screen, the picker, row numbers, footers, refusals, output, `help` and `--explain`. [Completion](completion.md) owns completion and its catalog file. Selections and the query language are [query.md](query.md), references [references.md](references.md), reading [reading.md](reading.md), annotations and the write path [annotations.md](annotations.md), live sessions [session-control.md](session-control.md), `brief` [agent-context.md](agent-context.md), the three MCP tools [agents.md](agents.md#mcp-server) and the web [web.md](web.md). The generic mechanics (the `Operation` trait, the failure-to-exit-and-HTTP table, request and reply envelopes, deadline classes, SSE framing) are the common [`command-surface`](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/command-surface/README.md) crate's.
 
-## Command table
+## Principles
 
-- **One typed operation table** drives every surface. Each row declares the operation's arguments, latency class, failure kinds, one-sentence help, its reason for existing ([below](#discipline)) and one to four examples on the Morrow archive, and names the handler that answers it. The handler carries the request and answer types, so the row is declared once with its handler and an operation without one cannot be written. The CLI, socket, HTTP and MCP are generated from it; a new operation is a row and its handler, not code on each surface.
-- **One request format.** The socket, HTTP and MCP carry the shared request: the operation, its typed arguments, the request ID, the deadline and the options beside them. The hooks and the browser extension's host send the same requests, for rows people do not type (`delivery-event`, `mail-claim`, `permission`, `chat claim`, `chat report`, `chat decide`, `chat attachment`, `backfill claim`, `backfill report`, `conversations`, `stored-files`, `selection-note`); they are left out of help. `changes` delivers a finite batch of change events; `follow` keeps streaming until stopped.
-- **CLI values have one parser.** The shared `command-surface` argument declarations supply value kinds, required fields and choices for each typed operation, including local commands and streams. Its `parse_cli` constructs the request envelope, JSON output selection and calling-process options. Clap presents those same arguments, preserves command placement, help, shell completion and lexical errors, and owns OS-valued startup paths with configuration. Domain catalogs keep the choices of named measures, explain subjects and hosted harnesses. File preparation, stream framing and daemon peer negotiation remain product behavior. Local commands and calling-process options do not become daemon operations or request fields.
-- **Archive selection preserves path aliases.** An explicit archive path is made absolute without expanding its symlinks; canonical archive identity is resolved separately. CLI adapters and the Morrow tour preserve declared aliases so a short Unix-socket path stays usable.
-- **Ready calls are complete requests.** The CLI form of a row is its command words, with `--request JSON` for a complete argument object (not mixed with operation flags), `--request-id ID` and `--deadline MS|none`; `find` is the explicit query form. MCP groups the rows into five tools ([agents.md](agents.md#mcp-server)), and a call takes `{operation, arguments, request_id, deadline}`, `operation` being the row's command name. HTTP takes `{operation, arguments, request_id, deadline}` on the row's route; GET encodes `arguments` and `deadline` as JSON query values. Named context operations also take optional envelope `budget_tokens` (`--budget N`), as described in [Budgets](agent-context.md#budgets). MCP tool-family selection and envelope decoding use the same shared declaration parser as the Common MCP transport; the product proxy keeps authenticated grants, parent transport deadlines, typed row checks and rendering. Every surface checks the same typed arguments. On the read route, `Accept: text/html` renders the same typed page and its ready calls.
-- **HTTP GET has one argument parser for finite answers and feeds.** The shared declarations decode both plain query pairs and complete generated requests, keeping request identity, deadlines and argument JSON distinct. Duplicate scalar or envelope fields are refused. The `changes` feed resumes with its `since` argument, not a page cursor; feeds refuse token budgets and unsupported request options on CLI, socket and HTTP before production. `follow` keeps its socket exposure. A completed feed position is sent only with the final completion event.
-- **Finite transfers use the shared server-sent-event framing** on the socket and HTTP: a begin event, record events and a completion event from one read. A failure before HTTP headers uses the shared failure status; a later failure ends with an error event and no completion. A client writes a directory bundle into place, and `changes` advances its saved position, only after the completion event.
-- **Access belongs to the request.** The declared operation determines access from its typed arguments. MCP tool-family hints describe the family; the same operation and arguments have the same access on every surface.
-- **Answers are typed** and rendered from their types ([reading.md](reading.md)); each has one terminal printer and one JSON form, and no surface has features the others cannot reach. The handler keeps its declared result type through execution and deadline handling. JSON serialization belongs to the transport or local wire boundary; the daemon does not serialize an answer and decode it back to its declared type.
-- **The daemon is required.** The command line is a thin client: it never opens archive files, and the daemon is the only writer.
-- **No refusal depends on who the caller is.** No act is refused because the caller is an agent or has no terminal; the only terminal-dependent behaviours are the picker-based ones, and each names its non-interactive form ([Picker](terminal.md#picker)).
-- There is no REPL or terminal reader; the interactive elements in a terminal are completion, `@N`, `next`, the pager and the picker, and interactive reading is the web reader. View data is typed, so a terminal reader stays a thin addition.
+- **A selection says which rows, a verb says what to do, a view says how to show it.** A new need is met by the query language, a view or an option before a verb or command is added.
+- **One grammar on every surface.** The command line, MCP and HTTP carry the same selection, verbs and argument names; the web is a client of the same operations and shows the line for every view.
+- **Agents and the operator are equal callers.** Same verbs, same replies; only the recorded author differs ([authorship.md](authorship.md)).
+- **Pages never cut silently.** Every budgeted reply names what it left out and the line or call that continues.
+- **Plain names, fixed once, no aliases.** One word per thing on every surface ([vocabulary.md](vocabulary.md)). `plg` and `plog` are shell names the package installs, not aliases inside Polylogue.
+
+## Operation table
+
+- **One typed operation table** drives every surface. Each row declares the operation's words and options, latency class, failure kinds, one-sentence help, its reason for existing ([Discipline](#discipline)), its affordances (the next lines offered after it, [terminal.md](terminal.md#footers-and-next-lines)) and one to four examples on the Morrow archive, and names the handler that answers it. The handler carries the request and reply types, so the row is declared once with its handler and an operation without one cannot be written. A new operation is a row and its handler, not code on each surface.
+- **One request format.** The socket, HTTP and MCP carry the shared request: the operation, its typed arguments, the request ID, the deadline and the options beside them. The hooks and the browser extension's host send the same requests for rows nobody types; these sit under the hidden `internal` command (`internal hook`, `internal host`, `internal browser-host`, `internal complete`, `internal advisory`, `internal delivery-event`, `internal mail-claim`, `internal permission`, `internal chat claim|report|decide|attachment`, `internal import claim|report`, `internal conversations`, `internal stored-files`, `internal selection-note`) and never appear in help or completion.
+- **CLI values have one parser.** The shared `command-surface` argument declarations supply value kinds, required fields and choices for each operation. The line parser of this page builds the request envelope, the JSON output selection and the calling-process options from them. Domain catalogs keep the choices of named measures, help topics and hosted harnesses. File preparation, stream framing and daemon peer negotiation remain product behaviour. Local commands and calling-process options do not become daemon operations or request fields.
+- **Archive selection preserves path aliases.** An explicit archive path is made absolute without expanding its symlinks; the archive's identity is resolved separately, so a short Unix-socket path stays usable.
+- **Ready calls are complete requests.** A line printed as a next step runs as shown. MCP groups the rows into three tools nested by access ([agents.md](agents.md#mcp-server)); a call is `{operation, arguments, request_id?, deadline?, budget_tokens?, cursor?}` with `operation` defaulting to `rows`. HTTP takes the `rows` arguments on `POST /api/v1/rows` and each command on `/api/v1/<command>` ([web.md](web.md#routes)); GET encodes arguments and the deadline as query values. Every surface checks the same typed arguments; a read asked for `text/html` renders the same typed reply and its next calls.
+- **HTTP GET has one argument parser for finite replies and feeds.** The shared declarations decode both plain query pairs and complete generated requests, keeping request identity, deadlines and argument JSON distinct. Duplicate scalar or envelope fields are refused. `dev feed` resumes with its `--after` position, not a page cursor; feeds refuse token budgets and unsupported request options before production. A completed feed position is sent only with the final completion event.
+- **Finite transfers use the shared server-sent-event framing** on the socket and HTTP: a begin event, record events and a completion event from one read. A failure before HTTP headers uses the shared failure status; a later failure ends with an error event and no completion. A client writes a directory bundle into place, and `dev feed` advances its saved position, only after the completion event. `read --follow` streams with the same framing until stopped.
+- **Access belongs to the request.** A line's access is its highest step's, decided from the typed arguments: `set` without a value and `import` of paths are not acts. MCP tool hints describe the tool; the same operation and arguments have the same access on every surface.
+- **Replies are typed** and rendered from their types ([reading.md](reading.md)); each has one terminal printer and one JSON form, and no surface has features the others cannot reach. The handler keeps its declared reply type through execution and deadline handling. JSON serialization belongs to the transport or local wire boundary; the daemon does not serialize a reply and decode it back.
+- **The daemon is required.** The command line is a thin client: it never opens archive files, and the daemon is the only writer. Completion, `help`, grammar refusals and `--explain` of the grammar run in the CLI from its own tables and the catalog file, without the daemon.
+- **No refusal depends on who the caller is.** No act is refused because the caller is an agent or has no terminal; the only terminal-dependent behaviours are the picker and row numbers, and each refusal off a terminal names the line that works there ([terminal.md](terminal.md#the-picker)).
+- There is no REPL or terminal reader; the interactive elements in a terminal are completion, row numbers, the pager and the picker, and interactive reading is the web reader.
 
 ## Grammar
 
 ```
-polylogue                                  orientation (contents: operations.md#status)
-polylogue QUERY [VERB [args]]…             a query, then verbs on its rows; without a verb, the rows
-polylogue find QUERY [VERB …]              the same, with the first word read as a query whatever it is
-polylogue COMMAND [args]                   a command that is not about a query's rows
+polylogue                                       the orientation screen (terminal.md)
+polylogue COMMAND [ARGS] [OPTIONS]
+polylogue SELECTION [OPTIONS] [VERB [WORD] [OPTIONS]]…
+polylogue VERB [OPTIONS]                        only read, resume (the picker over their usual rows) and brief (this directory)
 ```
 
-Query first, then what to do with the rows; there is no `do` or `query` verb in front.
+The quotes hold which rows; the words after them say what to do.
 
-1. If the first argument is a command name, it is that command.
-2. Otherwise the first argument must carry a **query signal**: a field condition (`repo:x`), a unit name (`sessions …`), a reference (an ID shape, a provider URL, `@N`, `@last`, `last`, `latest`, `self`, a typed reference such as `query:running`), or a single argument holding whitespace or query punctuation (`polylogue 'rate limit'`). `find` forces the query reading.
-3. **An unsignalled first word is refused,** exit 2, within the local budget, with the `find` form and nothing else; command names are not guessed.
-   ```console
-   $ polylogue chrono
-   polylogue: "chrono" is not a command or a query
-   to search for the word: polylogue find chrono
-   ```
-   Suggestions for misspelled fields and stages inside a query are the query compiler's ([query.md](query.md#errors)).
-4. After the query, a verb is the first verb name followed only by that verb's own arguments and options. Several verbs may follow in order (`… assert tag x read`). An unquoted verb name inside an unquoted multi-word query is refused with the quoted form.
-5. A reference alone is a query for that one thing and drops the query defaults.
-6. A verb with no query acts on its default scope, declared per verb in the table (`pack` and `resume` on the current directory's work; everything else on all sessions). `last`, `latest` and the default scopes never include the calling session.
-7. Options are recognised anywhere on the line, before or after the query and verbs; `--` ends option parsing for a query that starts with `-`.
+- **The selection is exactly one shell argument**: a quoted query (`'repo:sinex since:7d'`, `'tool_calls where outcome:error | group by tool | count'`), a reference, a row number or range, a saved query name, a unit name, a single plain word, or `-` ([Selections](query.md#selections)). A query is never spread over several arguments.
+- **After the selection come verbs.** A verb is its name, then exactly its declared number of words ([Verb words](#verb-words)), each one shell argument, then its own options. The next argument that is neither an option nor owed to the current verb is the next verb. Because every verb's word count is fixed, a line parses left to right with one word of lookahead and no separator word.
+- **The one optional word:** `save` takes a name or nothing. The word after `save` is its name unless it is absent, starts with `-`, or is a verb name; saved names never equal a verb or command name ([saved-queries.md](saved-queries.md#saved-names)), so this is never ambiguous.
+- **No verb lists the rows.** A selection alone lists them.
+- **Options belong where they stand.** Options before the first verb belong to the listing (`--page-size`, `--fields`, `--why`, `--to`, `--cursor`); options after a verb belong to that verb; the line options (`--json`, `--deadline`, `--request-id`, `--dry-run`, `--explain`, `--all`) go anywhere, on commands too. An option a verb or command does not declare is refused (exit 2) with the ones it does declare. `--` ends option parsing for a selection that begins with `-` other than `-` itself.
+- **Free text is one argument.** `note`, `send`, `edit`, `answer` and `start` take their text as one shell argument, quoted when it has spaces, or `-` to read it from standard input. A line reads standard input at most once: a `-` selection and a `-` text in one line are refused.
 
-Names are fixed once, with no aliases. `plg` and `plog` are shell-level names the package installs, not command aliases.
+### The first word
+
+The CLI decides what the first argument is from its own tables and the catalog file, with no daemon round trip (local class). The first matching rule wins:
+
+1. **Nothing**: the orientation screen on a terminal, the `status` block otherwise ([terminal.md](terminal.md#the-orientation-screen)).
+2. **`-`**: references read from standard input, one per line.
+3. **A command name** (the twelve [commands](#commands) and `internal`): that command. `--help` and `-h` are `help`.
+4. **A verb name**: `read` and `resume` act on their usual rows through the picker, and `brief` gives the brief for this directory ([A verb with no selection](#a-verb-with-no-selection)); any other verb is refused with the forms that work, exit 2.
+5. **A saved query name**, your own first, then the shipped ones ([saved-queries.md](saved-queries.md#shipped-saved-queries)): `polylogue waiting` is `polylogue query:waiting`. A saved query with parameters is written `'query:NAME(key=value)'`.
+6. **A unit name** (`sessions`, `messages`, `tool_calls`, `annotations`, `results`, …): every row of that unit, with its defaults.
+7. **A reference shape**: a typed prefix (`session:`, `codex:`, `annotation:`, `query:`, `result:`, `run:`, `role:`, …), a pasted provider URL, a bare ID prefix of at least eight hexadecimal characters and dashes, a row number form (`@3`, `@2-5`, `@1,4`, `@all`), or a reserved word (`latest`, `self`, `here`) ([references.md](references.md#forms)).
+8. **Query text**: an argument holding whitespace, a field condition (`word:…`) or query punctuation (`|`, `"`, `(`, `)`, `~`, `*`, `,`).
+9. **Any other single word**: a search for that word in prose and tool input and output, ranked; the footer says `searched the word "chrono"`.
+
+Only the twelve command names, the thirteen verb names, the unit names and saved names are taken from plain-word search. A word that is also a command runs the command; searching for it needs inner quotes: `polylogue '"status"'`. Saving a name that an earlier rule would capture is refused with the reason, so a saved name is always reachable as a first word. Completion groups first-word candidates by rule and says which rule a typed word meets ([completion.md](completion.md#positions)); `--explain` names the rule ([terminal.md](terminal.md#explain)).
+
+### A verb with no selection
+
+| Line | Usual rows | On a terminal | Off a terminal |
+|---|---|---|---|
+| `polylogue read` | `recent` | the picker; Enter reads the chosen rows | refused, with the candidates and the lines `polylogue latest read` and `polylogue SESSION read` |
+| `polylogue read --follow` | `running` | the picker; Tab marks several; Enter follows them | refused the same way |
+| `polylogue resume` (also `resume --in HARNESS`) | `unfinished` (sessions here that ended open) | the picker over one row, each row with why it is open | refused the same way |
+| `polylogue brief` | — | the brief for this directory (`--cwd DIR` for another), no picker | the same |
+
+The picker never takes a row silently and never opens for a single match: one matching row runs directly. Writes and acts always need a selection.
+
+## Verb words
+
+Each verb takes a fixed number of words after it, then its options. A verb's words always complete, so a person learns them by pressing Tab.
+
+| Verb | Words after it | Options |
+|---|---|---|
+| `read` | 0 | `--view`, `--show`, `--hide`, `--from`, `--until`, `--first`, `--last`, `--around`, `--diff`, `--alternate`, `--beside`, `--blind`, `--seed`, `--physical`, `--neutral-names`, `--follow`, `--until-idle`, `--format`, `--to`, `--budget`, `--cursor` |
+| `pick` | 0 | — |
+| `brief` | 0 | `--cwd`, `--for`, `--budget`, `--to` |
+| `note` | 1: `TEXT` | `--as KIND`, `--key`, `--parts FILE\|-`, `--evidence`, `--replies-to`, `--supports`, `--challenges`, `--qualifies`, `--corrects`, `--derived-from`, `--blocks`, `--scope`, `--valid-until`, `--check`, `--expect` |
+| `tag` | 1: `NAME` or `NAME:VALUE` | — |
+| `edit` | 1: `TEXT` | `--key` |
+| `withdraw` | 0 | `--reason` |
+| `judge` | 1: `accept`, `reject`, `defer`, or the preferred row (a reference, a row number, or a blind label `A`, `B`, …) | `--on DIMENSION`, `--seed`, `--reason` |
+| `save` | 0 or 1: `NAME` | `--watch`, `--hold`, `--notify`, `--denominator` |
+| `send` | 1: `TEXT` | `--about`, `--attach` |
+| `answer` | 1: `allow`, `deny`, or quoted text | `--reason`, `--standing` |
+| `interrupt` | 0 | — |
+| `resume` | 0 | `--in HARNESS`, and with it `--at`, `--cwd`, `--stop-source` |
+
+Line options on every line: `--json`, `--deadline MS|none`, `--request-id ID`, `--dry-run`, `--explain`, `--all`. Listing options, before the first verb: `--page-size N`, `--fields a,b`, `--why`, `--to`, `--cursor`, `--budget`. The same concept has the same option name on every verb and command that has it ([Option names](#option-names)).
+
+## Chains
+
+- **What flows is the selection**: its query and its rows, resolved once at the read position of the first step. Every verb acts on those same rows in the same order; nothing a verb produces feeds the next verb, so a write cannot change which rows a later verb sees (`polylogue 'tag:later' withdraw read` reads the rows that were tagged). A line with one step streams; resolving once costs one pass over the keys only when a line has two or more steps.
+- **`pick` is the one verb that narrows** the rows, to those chosen in the picker. It needs a terminal; a line containing it is sent as two requests (resolve, then the remaining steps over the chosen references). `pick` as the last verb prints the chosen references, one per line.
+- **`save` takes the question as well as the rows**: the selection's query text and the rows this line resolved ([saved-queries.md](saved-queries.md#save)).
+- **A grouped or measured selection** (`| group by`, `| measure`, `| count`) has rows that are not archive things: only the listing, `read`, `brief` and `save` accept it; other verbs refuse before anything runs.
+- **One-row verbs** (`resume`, with or without `--in`) given several rows open the picker on a terminal and are refused `ambiguous` off it, with the candidates as ready lines. `brief` over several rows is the brief of those rows ([agent-context.md](agent-context.md#brief)), never a guess at one.
+- **Writes and acts on several rows need `--all`.** When the selection is a query (a quoted query, a saved name, a unit, a plain word) and it matches more than one row, a line with any write or act step refuses before its first step (`needs_all`): it prints the count, the first rows, and the same line with `--all` appended. Row numbers and ranges, references, `-`, kept results and rows chosen in `pick` are sets the user named and need no flag. There is no yes/no prompt: a line behaves the same on every surface and when run again from shell history.
+- **`send` to several sessions** reaches the running ones; ended ones are listed as skipped, each with the line that sends to it alone, because resuming starts a harness process and spends money ([session-control.md](session-control.md#send)).
+- **Steps run in order, each to completion.** A write commits before the next step starts, so a `read` after it shows it. Each write step is its own request and transaction; the line is not one transaction, because acts reach harnesses and browsers that cannot be rolled back.
+- **A failing step stops the line.** Earlier steps keep their effects; the reply lists every step (done, failed with its error, not run), prints the undo line of each committed write, and exits with the failed step's code.
+- **Output.** Rendering steps write to standard output in order; footers, notes and undo lines go to standard error.
+- **`read --follow` is the last step** of any line that has it.
+- **`--dry-run`** covers the whole line: the selection is resolved and counted, and each step reports what it would do (the annotations it would write and any refusal it would meet; each recipient and channel of an act; the command `resume` would run; the brief size and harness `resume --in` would start), writing and reaching nothing. `pick` still opens its picker under `--dry-run`, since choosing writes nothing. `--explain` reads a line back without running even the selection ([terminal.md](terminal.md#explain)).
+
+## Verbs
+
+Verbs act on the selected rows. Each row states why it exists.
+
+| Verb | Does | Why it is a verb | Defined in |
+|---|---|---|---|
+| *(none)* | list the rows | — | [query.md](query.md) |
+| `read` | show the rows' content; `--follow` keeps printing what their sessions do | rendering is not a query; every view, range and destination is an option of the one verb | [reading.md](reading.md), [session-control.md](session-control.md#following) |
+| `pick` | choose rows in the picker; the verbs after it act on the chosen ones | a person's choice cannot be written as a query | [terminal.md](terminal.md#the-picker) |
+| `brief` | packaged context: alone, for this directory; of a session, to take it over; of search words, what is already known; of other rows, what matters in them | it packages under a budget, which no view does | [agent-context.md](agent-context.md#brief) |
+| `note TEXT` | write text about each row, of a kind (`--as decision`, `finding`, `translation:pl`, …) | a write | [annotations.md](annotations.md#note) |
+| `tag NAME` | label each row (`NAME` or `NAME:VALUE`) | the most common write, with its own completion of tags in use | [annotations.md](annotations.md#tag) |
+| `edit TEXT` | write a new revision of each annotation | a write on annotations | [annotations.md](annotations.md#edit) |
+| `withdraw` | take each annotation back; nothing is deleted | a write on annotations | [annotations.md](annotations.md#withdraw) |
+| `judge VERDICT` | accept, reject or defer each annotation; or record which of several rows is better | a write on annotations or rows | [judging.md](judging.md) |
+| `save [NAME]` | name the question and keep this line's rows; `--watch` tells you of new rows | it acts on the question as well as the rows | [saved-queries.md](saved-queries.md#save) |
+| `send TEXT` | send text to each session, web chats included | an act that reaches a session | [session-control.md](session-control.md#send) |
+| `answer VALUE` | respond to what a session is waiting for: `allow`, `deny` or quoted text | an act | [session-control.md](session-control.md#answer) |
+| `interrupt` | stop a session's current turn | an act | [session-control.md](session-control.md#interrupt) |
+| `resume` | reopen a session where it ran; `--in HARNESS` continues its work in another harness | an act that starts a harness | [session-control.md](session-control.md#resume) |
+
+Listing is the selection alone; the running list, the waiting list, notices and the sessions that ended open are shipped saved queries; a day is a query with a time condition; reports are queries with `| measure`; writing out is `read --to`; citing is `read --format citation`; opening in the browser is `read --to browser`; attachment bytes are `attachment:… read --to FILE`; the stored records behind a row are `read --view raw`. Derived work is the daemon's, so there are no build, rebuild or repair commands ([architecture.md](architecture.md#principles)).
+
+## Commands
+
+Commands are not about selected rows.
+
+| Command | Form | Why it is a command |
+|---|---|---|
+| *(bare)* | `polylogue` | where things stand and what to type next ([terminal.md](terminal.md#the-orientation-screen)) |
+| `help` | `help [VERB\|TOPIC] [--all] [--to browser\|FILE] [--format html\|markdown]` | teaches the words; local and generated ([terminal.md](terminal.md#help)) |
+| `status` | `status [--line] [--verify [--manifest FILE]]` | health of the daemon and archive, not rows ([operations.md](operations.md#status)) |
+| `start` | `start TEXT [--in HARNESS\|WEBCHAT \| --role NAME] [--cwd DIR] [--attach FILE]… [--model M] [--effort E] [--project P]` | starts something that has no row yet ([session-control.md](session-control.md#start)) |
+| `web` | `web` | opens the workbench ([web.md](web.md)) |
+| `import` | `import PATH… [--origin NAME]` · `import PROVIDER [--since TIME] [--cancel]` | takes files or a provider, not rows ([capture.md](capture.md#import), [extension.md](extension.md#importing-a-provider)) |
+| `set` | `set [KEY [VALUE]]` | lists, shows or changes a setting ([operations.md](operations.md#configuration)) |
+| `embed` | `embed [--query 'QUERY'] [--yes]` | spending money is an explicit act ([search.md](search.md#semantic-ranking)) |
+| `install` | `install TARGET [--remove] [--dry-run] [--extension-id ID] [--program NAME]` | wires Polylogue into a harness, Chrome, a shell or Google Drive ([operations.md](operations.md#installing)) |
+| `demo` | `demo DIR` | builds the Morrow sample archive ([operations.md](operations.md#demo)) |
+| `daemon` | `daemon [--until-idle] [--no-sources]` | the background service ([operations.md](operations.md#the-daemon)) |
+| `mcp` | `mcp` | the MCP server over stdio ([agents.md](agents.md#mcp-server)) |
+| `dev` | `dev sql STATEMENT` · `dev schema infer\|unread\|diff …` · `dev feed --after POSITION` · `dev move-to-sinex [--dry-run]` | read-only SQL over the `v1_*` views ([query.md](query.md#read-only-sql)), parser maintenance ([archive.md](archive.md#schema-tools)), the change feed for programs ([operations.md](operations.md#the-change-feed)), the move into primary mode ([primary-mode.md](primary-mode.md#moving-to-sinex)) |
 
 ### Discipline
 
-A command or verb exists only when what it does cannot be expressed as a query plus an existing verb, or as a shipped saved query that completion offers. Each row states that reason, and `explain capabilities` prints it.
+A verb or command exists only when what it does cannot be said as a selection plus an existing verb, a view, an option, or a shipped saved query that completion offers. Each row states that reason, and `help --all` prints it.
 
-So listing is the bare query; the running list, notices and resume candidates are the shipped saved queries `query:running`, `query:notices` and `query:resume_candidates`; a day is a query with the day's time condition; reports are the `| measure` and `| agg` stages; writing out is `read --to`; citing is `read --format citation`; opening in the browser is `read --to browser`; attachment bytes are `block:<message>#<n> read --to FILE`; the stored input behind a row is `trace`. Derived work is the daemon's, so there are no build, rebuild or repair commands ([architecture.md](architecture.md#principles)).
+Each first-level word takes a word away from plain-word search, so a command earns the first level only when a person types it as an act of its own. Explaining a line is the line option `--explain`, because it is a way of running any line. Fetching a web chat's history is `import PROVIDER`, because both bring outside conversations into the archive and only the channel differs. The deep storage check is `status --verify`, the deep form of "is my archive healthy". Shell completion and the Google Drive sign-in are `install` targets, because each wires Polylogue into something once. SQL, parser maintenance, the change feed and the move into Sinex sit under `dev`, because they are not everyday acts. Context for a directory, a session or a search is one `brief`, because the selection's form already says which.
 
-### Verbs
+## Option names
 
-Verbs act on a query's rows.
+One name per concept, on every verb and command that has the concept.
 
-| Verb | Does | Defined in |
+| Concept | Name | Where |
 |---|---|---|
-| `read` | render rows; with `--to`, write them out | [reading.md](reading.md) |
-| `follow` | one line per new row or live-state change until interrupted | [reading.md](reading.md), [agents.md](agents.md#live-sessions) |
-| `trace` | the source chain of a reference back to its stored input, its bytes and its reading version | [reading.md](reading.md) |
-| `assert KIND [KEY] [VALUE]` | write one assertion of KIND on each row | [assertions.md](assertions.md) |
-| `revise`, `withdraw` | a new revision of each assertion row (refused on a stale base), or a withdrawal | [assertions.md](assertions.md#current-revisions) |
-| `judge` | on a terminal, one-key verdicts over the rows in the picker (`--blind` hides author, model and origin, shuffles, and records that on the judgment); off a terminal, exit 2 naming `judge accept\|reject\|defer` with explicit rows | [assertions.md](assertions.md#judgment) |
-| `keep` | store the result as `result:<id>` | [query.md](query.md#query-objects) |
-| `save NAME` | label the query's hash with a name | [query.md](query.md#query-objects) |
-| `watch` | write a watch rule over the query | [query.md](query.md#watches) |
-| `pack [NAME]` | build a pack under a budget and record a delivery | [agent-context.md#packs](agent-context.md#packs) |
-| `ping TEXT [--live]`, `answer approve\|deny [--standing]`, `interrupt`, `continue` | address a session, or act on a live one through its harness; `send` is `ping --live` | [session-control.md#live-session-control](session-control.md#live-session-control) |
-| `pick` | open the picker over the rows and print the chosen references, one per line | [below](terminal.md#picker) |
-| `compare DIMENSION` | a comparison of the matched references | [assertions.md](assertions.md#judgment) |
-| `variant` | write a variant of a reference | [assertions.md](assertions.md#variants) |
-| `add REF…`, `move POS`, `toc`, `checkout DIR`, `checkin DIR` | page operations | [pages.md](pages.md) |
-| `applies ENV` | whether a method's conditions hold in an environment | [assertions.md](assertions.md#memory) |
+| rows per page | `--page-size N` | the listing (`\| limit` is a transform) |
+| tokens per page | `--budget N\|none` | `read`, `brief`, the listing |
+| continue a page | `--cursor C` | every paged reply |
+| how long to wait | `--deadline MS\|none` | every line |
+| act on every row of a query | `--all` | lines with a write or act |
+| show what would happen | `--dry-run` | every line; `install`, `dev move-to-sinex` |
+| how a line is read | `--explain` | every line and command |
+| where the CLI writes | `--to stdout\|pager\|FILE\|DIR\|clipboard\|browser` | the listing, `read`, `brief`, `help` |
+| document encoding | `--format F` | `read`, `help` |
+| the reply as JSON | `--json` | everything |
+| keep printing as it happens | `--follow`, with `--until-idle` | `read` |
+| who will continue | `--for SESSION` | `brief` |
+| directory | `--cwd DIR` | `brief`, `start`, `resume --in` |
+| where a session runs | `--in HARNESS\|WEBCHAT` | `start`, `resume` |
+| the kind of a note | `--as KIND` | `note` |
+| the dimension of a comparison | `--on DIMENSION` | `judge` |
+| a reason | `--reason TEXT` | `withdraw`, `judge`, `answer` |
+| input structure | `--origin NAME` | `import` of files |
+| a feed position | `--after POSITION` | `dev feed` |
+| changed since (time) | `--since TIME` | `import` of a provider |
+| how long a watched row must match | `--hold D` | `save --watch` |
+| deep storage check | `--verify` | `status` |
+| time | `since:` and `until:` in the query | every query |
+| why rows matched or not | `--why` | the listing |
+| columns | `--fields a,b` | the listing |
+| another rendering | `--alternate KIND\|none` | `read` |
+| a relation to another record | `--replies-to`, `--supports`, `--challenges`, `--qualifies`, `--corrects`, `--derived-from`, `--blocks`, `--evidence`, `--scope` | `note` |
+| the session alone | `--physical` | `read` |
+| labels for excerpts | `--neutral-names` | `read` |
 
-### Commands
-
-Commands are not about a query's rows.
-
-| Command | Reason |
-|---|---|
-| `status [--line]` | health of the daemon and archive, not a query unit ([operations.md](operations.md#status)) |
-| `explain SUBJECT [--expression QUERY] [--unit UNIT]` | describes the language or how a query is read, without running it |
-| `import PATH…` | takes files, not rows ([capture.md](capture.md#import)) |
-| `setting [KEY [VALUE]]` | lists the settings catalog, reads one key or writes one key |
-| `sql 'SELECT …'` | read-only SQL through the daemon ([query.md](query.md#read-only-sql)) |
-| `changes --since POS` | a position-based feed for programs |
-| `next` | the following page of the last list here ([Addressing](terminal.md#addressing)) |
-| `web` | opens the workbench at a view that is not a reference |
-| `auth drive` | a credential flow, not rows |
-| `daemon [--until-idle] [--no-sources] [--json]`, `mcp`, `hook EVENT`, `hooks print\|status`, `install-agent HARNESS [--remove]`, `browser-host`, `completions SHELL`, `demo` | local process entry points and installers ([operations.md](operations.md#installing-into-harnesses)) |
-| `schema infer\|diff\|unread` | infer and unread inspect stored inputs through the daemon; diff compares explicit schema files locally ([archive.md](archive.md#format-drift)) |
-| `verify [--manifest FILE]` | the on-demand read-only check ([operations.md](operations.md#verification)) |
-| `sinex cutover` | the one mode transition ([primary-mode.md](primary-mode.md#cutover)) |
-
-### Available operations
-
-The operation grammar above defines the intended interface. The current
-binary's `--help`, per-command help and `explain capabilities --json`,
-together with generated MCP schemas, describe the operations it provides.
+`--since TIME` on `import PROVIDER` is the one option named like the query's `since:` field, and it means the same thing. `--json` is the typed reply itself; `--format json` is the bundle encoding of a reading ([reading.md](reading.md#formats-and-destinations)).
 
 ## Latency classes
 
-Each table row declares a latency class, and the class applies on every surface (CLI, MCP, HTTP, web). Budgets are end to end (process start to the last byte of the first screen, through the real binary and socket), with a warm daemon and a real-shaped archive under typical load, at p95. The deadline each request carries comes from its class, in the `command-surface` request envelope.
-
-An MCP `_meta.deadline_ms` absolute bound travels separately from the unchanged shared request as the transport's own `parent_deadline_ms`; the daemon intersects it with the operation lifetime. An HTTP `x-polylogue-deadline-ms` header bounds the whole request; a stream ends at the earlier of that bound and its operation's deadline, and without the header a `null` deadline has no limit. A request already past its bound starts no new write; a write the writer has accepted keeps its effects and acknowledgment.
+Each table row declares a latency class, and the class applies on every surface (CLI, MCP, HTTP, web). Budgets are end to end (process start to the last byte of the first screen, through the real binary and socket), with a warm daemon and a real-shaped archive under typical load, at p95. The deadline each request carries comes from its class, in the `command-surface` request envelope. What each class reads is computed before the keystroke ([Warm state](#warm-state)).
 
 | Class | Members | Budget (p95) | Deadline sent |
 |---|---|---|---|
-| **local** | `--help`, `--version`, `completions`, grammar-only completion, `explain` of the grammar, refusals of malformed or unsignalled input | ≤ 15 ms | none (no socket) |
-| **status** | bare `polylogue`, `status`, `status --line`, `pack` with nothing to include | ≤ 100 ms; `status --line` ≤ 30 ms, because it runs in harness status bars | 80 ms |
-| **completion** | Tab in any shell, MCP `completion/complete`, the web query box | ≤ 50 ms per keystroke, daemon up or down | none for values (catalog file); 30 ms for the count preview |
-| **read** | `REF read`, `@N read`, one-row references, indexed lists (`origin:`, `repo:`, `since:`, `tag:` …), `resume`, `pack takeover`, `next` | ≤ 100 ms to the first screen | 250 ms |
-| **search** | word and phrase search, `pack recall`, `similar:` with a stored vector | ≤ 250 ms first page | 2,000 ms |
-| **aggregate** | `group by`, `| measure`, `| agg`, facet counts, `explain QUERY` with clause counts | ≤ 400 ms | 400 ms |
+| **local** | `help`, `--help`, `--version`, grammar refusals, `--explain` of a line's grammar, `install SHELL --dry-run` | ≤ 15 ms | none (no socket) |
+| **completion** | Tab in any shell, MCP `completion/complete`, the web query box | ≤ 50 ms per keystroke, daemon up or down | none for values (catalog file); 30 ms for the count preview, omitted when late |
+| **picker** | first candidates, a keystroke, the preview | 50 ms, 16 ms, 100 ms | none for candidates (catalog file); 100 ms for the preview |
+| **status** | bare `polylogue`, `status`, `status --line` | ≤ 100 ms; `status --line` ≤ 30 ms, because it runs in status bars | 80 ms |
+| **read** | the first screen of a one-row read, the first page of an indexed listing (`origin:`, `repo:`, `since:`, `tag:`, a shipped saved query), a page turn, `resume` | ≤ 100 ms | 250 ms |
+| **write** | one annotation acknowledged as committed | ≤ 100 ms | none ([below](#writes-and-deadlines)) |
+| **search** | the first page of a word search, `similar:` with a stored vector | ≤ 250 ms | 2,000 ms |
+| **brief** | every form of `brief` | ≤ 300 ms warm, ≤ 1 s cold | 2,000 ms |
+| **aggregate** | `group by`, `\| measure`, `\| agg`, facet counts, the count `--dry-run` reports | ≤ 400 ms | 400 ms |
 
-Help answers in about 100 ms and queries in under a second. A missed budget is a defect in the code, not a reason to relax the number. Budgets are measured as paired benchmark runs ([testing.md](testing.md#benchmarks)); no test asserts elapsed time.
+A missed budget is a defect in the code, not a reason to relax the number. Budgets are measured as paired benchmark runs ([testing.md](testing.md#benchmarks)); no test asserts elapsed time.
 
-The read-class `advisory` operation has a stricter preparation cap of 20 ms, intersected with its caller’s bound on every surface. Hooks send a 20 ms request and emit nothing on failure; `--deadline none` does not lift this optional-advisory cap. The accepted request envelope and identity remain unchanged.
+An MCP `_meta.deadline_ms` absolute bound travels separately from the unchanged shared request as the transport's own `parent_deadline_ms`; the daemon intersects it with the operation lifetime. An HTTP `x-polylogue-deadline-ms` header bounds the whole request; a stream ends at the earlier of that bound and its operation's deadline, and without the header a `null` deadline has no limit. A request already past its bound starts no new write; a write the writer has accepted keeps its effects and acknowledgment.
 
-Pure writes, including imports, await their committed result without a read deadline. Mixed operations keep deadlines for their read preparation and end that phase when they hand the mutation to the writer: a preparation that has run out refuses the handoff, and a handed-over write answers its committed result however long the commit takes, never a timeout. Classification follows the accepted arguments, so reading a setting remains bounded while writing it keeps its result. The `x-polylogue-deadline-ms` header above still applies.
+The read-class `internal advisory` operation has a stricter preparation cap of 20 ms, intersected with its caller's bound on every surface. Hooks send a 20 ms request and emit nothing on failure; `--deadline none` does not lift this optional-advisory cap.
 
-**Deadlines are interactive defaults.** A read whose row declares no latency class, called with the default deadline, stops after 30 seconds (`DEFAULT_READ_TIMEOUT_MS`); `--deadline none` lifts it. The CLI's socket timeout is the deadline plus 50 ms, so a hung daemon never hangs a shell. Any caller lifts a deadline (`--deadline MS`, `--deadline none`; `deadline: null` over MCP and HTTP); deadline behaviour and cancellation are in [query.md](query.md#deadlines). A timed-out aggregate prints the narrower query the planner can serve and the same query with the deadline lifted:
+### Writes and deadlines
+
+Pure writes, including imports, await their committed result without a read deadline. Mixed operations keep deadlines for their read preparation and end that phase when they hand the mutation to the writer: a preparation that has run out refuses the handoff, and a handed-over write replies with its committed result however long the commit takes, never a timeout. Classification follows the accepted arguments, so showing a setting stays bounded while writing it keeps its result. In a chain each step has its own class and deadline.
+
+**Deadlines are interactive defaults.** A read whose row declares no latency class, called with the default deadline, stops after 30 seconds; `--deadline none` lifts it. The CLI's socket timeout is the deadline plus 50 ms, so a hung daemon never hangs a shell. Any caller lifts a deadline (`--deadline MS`, `--deadline none`; `deadline: null` over MCP and HTTP); cancellation is in [query.md](query.md#deadlines). A timed-out aggregate prints the narrower query the planner can serve and the same line with the deadline lifted:
 
 ```console
 $ polylogue 'tool_calls where outcome:error | group by tool | count'
-polylogue: timeout after 400 ms in stage "group by" (1.2 M rows scanned)
+polylogue: timeout after 400 ms in transform "group by" (1.2 M rows scanned)
 narrower:  polylogue 'tool_calls where outcome:error since:30d | group by tool | count'
 complete:  polylogue 'tool_calls where outcome:error | group by tool | count' --deadline none
 ```
 
-Over MCP the timeout answer carries both as `next` entries.
+Over MCP the timeout reply carries both as `next` calls.
 
 ### The daemon's states
 
 | Daemon | Command line |
 |---|---|
-| busy with a first build or re-parse | interactive answers keep their budgets on the reserved executor place and read connection; answers over data not yet indexed say `up_to_date: false` on stderr |
-| starting (lock held, socket not bound) | waits up to the class deadline, printing "polylogue: waiting for the daemon to finish opening the archive" once on stderr, then exit 7 if the deadline passes |
-| down | the local class and completion (from the catalog file) work; everything else exits 6 with one line naming the archive and `polylogue daemon`. Nothing starts a daemon implicitly |
+| busy with a first build or re-parse | interactive replies keep their budgets on the reserved executor place and read connection; replies over data not yet indexed say `up_to_date: false` on standard error |
+| starting (lock held, socket not bound) | waits up to the class deadline, printing "polylogue: waiting for the daemon to finish opening the archive" once on standard error, then exit 7 if the deadline passes |
+| down | the local class, completion and the picker's candidates (from the catalog file) work; everything else exits 6 with one line naming the archive and `polylogue daemon`. Nothing starts a daemon implicitly |
 | hung | the socket timeout ends the command, exit 7 |
 
-Because one daemon assembly answers every transport, the same question gives identical rows, totals and refusals through CLI `--json`, the socket, HTTP and MCP.
+Because one daemon assembly answers every transport, the same line gives identical rows, totals and refusals through CLI `--json`, the socket, HTTP and MCP.
 
 ## Warm state
 
-The daemon keeps derived state warm so the classes hold. Each item is keyed by what it depends on, so no answer from before a write is served after it; none is a second archive, and each is rebuilt from the archive after a restart (`status` says `warming` until they are built). An LRU may evict items; it never limits answers.
+The daemon keeps derived state warm so the classes hold. Each item is keyed by what it depends on, so no reply from before a write is served after it; none is a second archive, and each is rebuilt from the archive after a restart (`status` says `warming` until they are built). An LRU may evict items; it never limits replies.
 
 | Warm item | Serves | Keyed by | Refreshed |
 |---|---|---|---|
-| catalog (memory, and published as a file) | completion, short IDs, reference resolution, picker candidates without a query | archive write position | incrementally from each committed batch |
-| sorted session ID index with titles, last activity, origin, repository, first prompt | short IDs, prefixes, `latest`, the picker | write position | batch delta |
-| status snapshot | bare `polylogue`, `status` | write position and live-state change | after each batch and each hook event |
-| compiled plans | every query | normal form, definitions and options | on definition change |
-| first pages, next pages and counts | repeated lists, `next`, footers, `explain`, previews | question hash and read position | evicted on write |
+| catalog (memory, and published as a file) | completion, short IDs, reference resolution, picker candidates, `help`'s filled lines; it holds the verbs valid per unit, tag names with counts, saved and shipped query names with their one line, and settings | archive write position | incrementally from each committed batch, published within 2 s |
+| sorted session index with titles, last activity, origin, repository, first prompt, shortest unique prefixes | short IDs, prefixes, `latest`, the picker, fuzzy titles in completion | write position | batch delta |
+| status snapshot | bare `polylogue`, `status`, `status --line` | write position and live-state change | after each batch and each hook event |
+| compiled plans, the shipped saved queries' precompiled | every query | normal form, definitions and options | on definition change |
+| first pages, next pages and counts | repeated listings, page turns, footers, the count preview, `--dry-run` counts | question hash and read position | evicted on write |
 | saved-query names and kept-result shapes | compiling | write position | on user write |
+| session item index | the first screen of a one-row read, ranges, `--around` | session and write position | written with the rows |
 | loaded vectors (int8 in memory, f32 on disk) and stored query vectors | `similar:` | vector write counter | on vector write |
-| search vocabulary | fuzzy recall | write position | batch delta |
-| rendered summaries of recent sessions | picker preview | session, read position, width | evicted on write to that session |
+| search vocabulary | fuzzy matching in the brief of a search | write position | batch delta |
+| scope index and session summaries | `brief` | write position and live-state change | batch delta and each hook event |
+| rendered overviews of recent sessions | the picker preview | session, read position, width | evicted on write to that session |
 
 ## Exit codes
 
-The exit and HTTP table is the common `command-surface`'s, shared with Sinex; each failure kind maps to exactly one code. Polylogue's kinds:
+The exit and HTTP table is the common `command-surface`'s, shared with Sinex; each failure kind maps to exactly one code. A line exits with its failed step's code.
 
 | Code | Polylogue kinds |
 |---|---|
-| 0 | `ok` (rows, or a measure) |
+| 0 | `ok` (rows, a measure, a completed step list) |
 | 1 | `empty`: the read succeeded and matched nothing |
-| 2 | `invalid_query`, `unknown_field`, `bad_value`, `not_a_query`, `bad_request`, `ambiguous`, `stale_cursor`, `not_built` |
-| 3 | `refused`, with the operation's stated reason |
-| 4 | `not_found`, `conflict`, `io` |
-| 5 | `degraded`: an `incomplete` answer (rows printed, part of what was needed missing), an operation that stopped early, or a write pending in primary mode |
-| 6 | `not_running`: the daemon is down, or it answered in a shape this build does not read (`daemon_protocol_mismatch`: a daemon from another build; restart it) |
+| 2 | invalid input: `invalid_query`, `unknown_field`, `bad_value`, `bad_request`, `not_a_verb`, `too_many_words`, `ambiguous`, `needs_all` (a write or act over several query rows without `--all`), `row_numbers_off_terminal`, `stale_cursor`, `not_built` |
+| 3 | `refused`, with the operation's stated reason (an interrupt of a session Polylogue does not host, a blind judgment on a reference) |
+| 4 | `not_found`, `conflict` (a stale base, a late answer), `io` |
+| 5 | `degraded`: rows printed but part of what was needed missing, an operation that stopped early, or a write pending in primary mode |
+| 6 | `not_running`: the daemon is down, or it replied in a shape this build does not read (`daemon_protocol_mismatch`: a daemon from another build; restart it) |
 | 7 | `timeout`, `cancelled` |
 
-The daemon process also uses exit 1 for a failure or a held lock, 74 for a storage sync failure, and 78 when it refuses an archive whose stored format it does not read ([operations.md#the-daemon](operations.md#the-daemon)). Hook processes exit 0 on failure so that they do not block their harness. Clap uses exit 2 for argument errors and 0 for help and version output.
+With `--json` the reply has `outcome: "error"` and an `error` object (`kind`, `message`, `position`, `suggestion`, `candidates`, `retryable`) on standard output; over MCP the suggestion is a ready call in `next`. The daemon process also uses exit 1 for a failure or a held lock, 74 for a storage sync failure, and 78 when it refuses an archive whose stored format it does not read ([operations.md](operations.md#the-daemon)). Hook processes exit 0 on failure so that they never block their harness. Help and version output exit 0.
