@@ -1,5 +1,5 @@
 use super::*;
-use crate::read::VisitStart;
+use crate::read::MessagePosition;
 
 fn message(id: &str, session: &str) -> Message {
     text_message(id, session, Role::User, id, None)
@@ -16,7 +16,7 @@ fn records(
         .select_messages(&sid(session), parents)
         .unwrap()
         .visit_with_sources(
-            VisitStart {
+            MessagePosition {
                 message: start,
                 key: None,
             },

@@ -8,7 +8,7 @@ use polylogue_model::{
 };
 use polylogue_store::{
     Reader, Result, StoreError,
-    read::{MessageSource, VisitStart},
+    read::{MessagePosition, MessageSource},
 };
 use std::ops::ControlFlow;
 
@@ -29,7 +29,7 @@ pub fn session_bundle(reader: &Reader<'_>, id: &SessionId) -> Result<Vec<Record>
     selected.require_complete()?;
     let mut order = 0;
     selected.visit_with_sources(
-        VisitStart::default(),
+        MessagePosition::default(),
         |message, MessageSource { blocks, .. }| {
             records.push(Record::Message(Box::new(MessageRecord {
                 reference: format!("message:{}", message.id),

@@ -480,3 +480,124 @@ fn live_append_commits_before_waiting_chain_replacements() {
     assert_eq!(w.texts("chain-a"), ["first"]);
     assert_eq!(w.texts("chain-b"), ["first"]);
 }
+
+#[cfg(feature = "faults")]
+#[test]
+fn live_append_commits_while_an_oversized_chain_waits_for_its_reply() {
+    use polylogue_store::fault::{self, Action};
+
+    let w = ClaudeHome::new();
+    w.append(
+        "chain.jsonl",
+        &claude_user("old", "chain", &"x".repeat(4096)),
+    );
+    w.append("live.jsonl", &claude_user("first", "live", "first"));
+    let (mut engine, _lock) = engine(&w);
+    assert!(engine.run_pass().unwrap().errors.is_empty());
+    let path = w.file("chain.jsonl");
+    let state = &engine.inputs[&path];
+    let input = InputKey {
+        id: state.input_id.clone(),
+        format: "claude-code".into(),
+        route: polylogue_model::Route::Live,
+    };
+    let progress = engine
+        .reads
+        .reader()
+        .unwrap()
+        .input_progress(&input.id)
+        .unwrap()
+        .unwrap();
+    let budget = 1024;
+    assert!(progress.length > budget);
+    let plan = Plan::stored(
+        path,
+        state.origin,
+        input.clone(),
+        Change::Reparse {
+            chain: progress.chain,
+        },
+        state.facts,
+        progress.length,
+        0,
+        pool::Bytes::Unloaded {
+            chain: progress.chain,
+            length: progress.length,
+            decoded: true,
+        },
+        1024,
+        false,
+    );
+    let (done, finished) = channel();
+    let pool = pool::Pool::start(
+        2,
+        budget,
+        engine.writer.sender(),
+        Arc::clone(&engine.blobs),
+        engine.archive.clone(),
+        done,
+        pool::ChainSettings {
+            stopped_attempt: engine.stopped_attempt.clone(),
+            read_memory: engine.config.reader_memory_bytes,
+            yielding: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        },
+    );
+    fault::arm("pool.chain_reply", &input.id, Action::Hold, 0, 1);
+    assert!(pool.submit_chain(1, plan));
+    let until = Instant::now() + Duration::from_secs(10);
+    while !fault::held() && Instant::now() < until {
+        std::thread::yield_now();
+    }
+    let paused = fault::held();
+    let commits = engine.writer.completion_commits();
+    w.append("live.jsonl", &claude_user("later", "live", "live append"));
+    let mut live = engine
+        .live_plans(&HashSet::new(), &mut Pass::default())
+        .unwrap();
+    assert_eq!(live.len(), 1);
+    let mut live = live.pop().unwrap();
+    let id = live.input.id.clone();
+    let length = live.size;
+    let job = live.next_job(&engine.stopped_attempt);
+    assert!(job.end - job.start <= budget);
+    let room = pool.has_room(job.end - job.start);
+    let committed = if paused && room {
+        assert!(pool.submit(job));
+        loop {
+            if engine
+                .reads
+                .reader()
+                .unwrap()
+                .input_progress(&id)
+                .unwrap()
+                .is_some_and(|progress| progress.parsed_upto == length)
+            {
+                break true;
+            }
+            if commits.recv_timeout(Duration::from_secs(10)).is_err() {
+                break false;
+            }
+        }
+    } else {
+        false
+    };
+    fault::release();
+    drop(pool);
+    fault::clear();
+    for completed in finished {
+        match completed {
+            pool::Finished::Chain(done) => assert!(done.written.is_ok(), "{:?}", done.written),
+            pool::Finished::Range(done) => assert!(done.error.is_none(), "{:?}", done.error),
+        }
+    }
+    assert!(paused, "the chain reaches the paused reply");
+    assert!(
+        room,
+        "a staged chain waiting for its reply leaves room for a live range"
+    );
+    assert!(
+        committed,
+        "the live range commits before the chain reply resumes"
+    );
+    assert_eq!(w.texts("live"), ["first", "live append"]);
+}

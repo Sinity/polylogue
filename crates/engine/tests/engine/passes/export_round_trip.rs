@@ -455,10 +455,13 @@ fn copied_subset_survives_whole_parent_bundle_and_later_parent_import() {
         selection.require_complete().unwrap();
         let mut texts = Vec::new();
         selection
-            .visit(polylogue_store::read::VisitStart::default(), |message| {
-                texts.push(message.text());
-                std::ops::ControlFlow::Continue(())
-            })
+            .visit(
+                polylogue_store::read::MessagePosition::default(),
+                |message| {
+                    texts.push(message.text());
+                    std::ops::ControlFlow::Continue(())
+                },
+            )
             .unwrap();
         texts
     }
@@ -542,7 +545,7 @@ fn copied_file_subset_survives_export_with_parent() {
         selected.require_complete().unwrap();
         let mut texts = Vec::new();
         selected
-            .visit(polylogue_store::read::VisitStart::default(), |m| {
+            .visit(polylogue_store::read::MessagePosition::default(), |m| {
                 texts.push(m.text());
                 std::ops::ControlFlow::Continue(())
             })
@@ -569,7 +572,7 @@ fn later_copy_annotations_preserve_declared_parent_without_expanding_earlier_bun
             .unwrap();
         let mut texts = Vec::new();
         selected
-            .visit(polylogue_store::read::VisitStart::default(), |m| {
+            .visit(polylogue_store::read::MessagePosition::default(), |m| {
                 texts.push(m.text());
                 std::ops::ControlFlow::Continue(())
             })

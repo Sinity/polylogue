@@ -143,7 +143,7 @@ pub(crate) struct ChainSettings {
 
 pub(crate) struct Cancelled {
     pub ranges: usize,
-    pub chains: Vec<Plan>,
+    pub chains: Vec<(u64, Plan)>,
 }
 
 impl Task {
@@ -330,7 +330,7 @@ impl Pool {
         for task in tasks {
             match task {
                 Task::Range(_) => cancelled.ranges += 1,
-                Task::Chain { plan, .. } => cancelled.chains.push(*plan),
+                Task::Chain { id, plan } => cancelled.chains.push((id, *plan)),
             }
         }
         cancelled
@@ -464,7 +464,7 @@ fn work(
                 }
                 let mut bytes_read = 0;
                 let reading = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    run_chain(&mut plan, archive, store, chains, &mut bytes_read)
+                    run_chain(&mut plan, archive, store, chains, shared, &mut bytes_read)
                 }))
                 .unwrap_or_else(|_| {
                     Err(EngineError::Parse("the replacement parser panicked".into()))
@@ -505,13 +505,13 @@ fn work(
                         .map(Some)
                         .map_err(EngineError::from)
                 });
+                drop(charge);
                 let sent = acknowledge
                     .send(Pending::Chain {
                         id,
                         plan,
                         reply,
                         bytes_read,
-                        charge,
                     })
                     .is_ok();
                 shared.queue.locked().chains_running -= 1;
@@ -552,7 +552,6 @@ enum Pending {
         plan: Box<Plan>,
         reply: Result<Option<Receiver<polylogue_store::Result<u64>>>, EngineError>,
         bytes_read: u64,
-        charge: InFlight,
     },
 }
 
@@ -573,19 +572,20 @@ fn acknowledge_groups(pending: Receiver<Pending>, done: Sender<Finished>) {
                 plan,
                 reply,
                 bytes_read,
-                charge,
             } => {
-                let written = reply.and_then(|reply| {
-                    reply
-                        .map(|reply| {
-                            reply
-                                .recv()
-                                .map_err(|_| polylogue_store::StoreError::WriterGone)?
-                                .map_err(EngineError::from)
-                        })
-                        .transpose()
-                });
-                drop(charge);
+                let written = polylogue_store::fault::check("pool.chain_reply", &plan.input.id)
+                    .map_err(EngineError::from)
+                    .and(reply)
+                    .and_then(|reply| {
+                        reply
+                            .map(|reply| {
+                                reply
+                                    .recv()
+                                    .map_err(|_| polylogue_store::StoreError::WriterGone)?
+                                    .map_err(EngineError::from)
+                            })
+                            .transpose()
+                    });
                 if done
                     .send(Finished::Chain(Box::new(ChainDone {
                         id,
@@ -709,6 +709,7 @@ fn run_chain(
     archive: &Archive,
     blobs: &Arc<polylogue_store::blobs::Blobs>,
     settings: &ChainSettings,
+    shared: &Arc<Shared>,
     bytes_read: &mut u64,
 ) -> Result<Option<ChainReading>, EngineError> {
     let stop = archive.stop();
@@ -762,7 +763,27 @@ fn run_chain(
             polylogue_store::timing::time(polylogue_store::timing::Stage::Store, || {
                 reading.push(&mut step)
             })?;
-            keep_decoded(&mut reading, plan, decoded, files);
+            keep_decoded(
+                &mut reading,
+                shared,
+                PreparedBatch {
+                    batch: Batch {
+                        required_outcome: None,
+                        input: plan.input.clone(),
+                        change: plan.change.clone(),
+                        observation: None,
+                        continues: false,
+                        new_blob: None,
+                        blobs: decoded,
+                        length: plan.size,
+                        parse: Vec::new(),
+                        acquisition: None,
+                        basis: None,
+                        release: Default::default(),
+                    },
+                    files,
+                },
+            );
             Ok(cursor)
         });
         let read = match read {
@@ -825,40 +846,34 @@ fn run_chain(
                     reading.push(step)
                 })?;
             }
-            batch.batch.parse.clear();
-            if !batch.batch.blobs.is_empty() {
-                reading.decoded(batch);
-            }
+            batch.batch.parse = Vec::new();
+            keep_decoded(&mut reading, shared, batch);
             plan.apply(done, true);
         }
     }
     Ok(Some(reading))
 }
 
-fn keep_decoded(
-    reading: &mut ChainReading,
-    plan: &Plan,
-    blobs: Vec<polylogue_store::NewBlob>,
-    files: Vec<polylogue_store::staging::PreparedBytes>,
-) {
-    if !blobs.is_empty() {
-        reading.decoded(polylogue_store::staging::PreparedBatch {
-            batch: polylogue_store::Batch {
-                required_outcome: None,
-                input: plan.input.clone(),
-                change: plan.change.clone(),
-                observation: None,
-                continues: false,
-                new_blob: None,
-                blobs,
-                length: plan.size,
-                parse: Vec::new(),
-                acquisition: None,
-                basis: None,
-                release: Default::default(),
-            },
-            files,
-        });
+fn keep_decoded(reading: &mut ChainReading, shared: &Arc<Shared>, mut batch: PreparedBatch) {
+    if !batch.batch.blobs.is_empty() {
+        // Decoded payloads are files; only their batch and chunk descriptors stay in memory.
+        let bytes = (std::mem::size_of::<PreparedBatch>()
+            + batch.batch.input.id.capacity()
+            + batch.batch.input.format.capacity()
+            + batch.batch.blobs.capacity() * std::mem::size_of::<polylogue_store::NewBlob>()
+            + batch
+                .batch
+                .blobs
+                .iter()
+                .map(|blob| blob.chunks.capacity() * std::mem::size_of::<polylogue_store::Chunk>())
+                .sum::<usize>()
+            + batch.files.capacity()
+                * std::mem::size_of::<polylogue_store::staging::PreparedBytes>())
+            as u64;
+        shared.queue.locked().in_flight += bytes;
+        let shared = Arc::clone(shared);
+        batch.batch.release = InFlight::new(move || release(&shared, bytes));
+        reading.decoded(batch);
     }
 }
 

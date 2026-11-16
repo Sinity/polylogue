@@ -1732,7 +1732,7 @@ impl Engine {
         {
             return Err(std::io::Error::other("a replacement needs a stored chain").into());
         }
-        let mut active_chains = HashMap::<u64, (PathBuf, i64)>::new();
+        let mut active_chains = HashMap::<u64, PathBuf>::new();
         let result = (|| {
             let (done_tx, done_rx) = channel();
             let pool = Pool::start(
@@ -1782,46 +1782,14 @@ impl Engine {
                     chains.clear();
                     // No worker read these jobs. The next turn revalidates them;
                     // chunks already in hand keep their normal commit and ACK.
-                    let cancelled = pool.cancel_queued();
-                    outstanding -= cancelled.ranges + cancelled.chains.len();
-                    for plan in cancelled.chains {
-                        let Change::Reparse { chain } = plan.change else {
-                            unreachable!()
-                        };
-                        if let Some(id) =
-                            active_chains
-                                .iter()
-                                .find_map(|(&id, (path, queued_chain))| {
-                                    (path == &plan.path && *queued_chain == chain).then_some(id)
-                                })
-                        {
-                            active_chains.remove(&id);
-                        }
-                        self.finish_chain_path(&plan.path);
-                    }
+                    outstanding -= self.cancel_pool(&pool, &mut active_chains);
                 }
                 if !stopping && self.archive.stop().is_cancelled() {
                     // What workers are parsing commits; nothing else starts.
                     stopping = true;
                     waiting.clear();
                     chains.clear();
-                    let cancelled = pool.cancel_queued();
-                    outstanding -= cancelled.ranges + cancelled.chains.len();
-                    for plan in cancelled.chains {
-                        let Change::Reparse { chain } = plan.change else {
-                            unreachable!()
-                        };
-                        if let Some(id) =
-                            active_chains
-                                .iter()
-                                .find_map(|(&id, (path, queued_chain))| {
-                                    (path == &plan.path && *queued_chain == chain).then_some(id)
-                                })
-                        {
-                            active_chains.remove(&id);
-                        }
-                        self.finish_chain_path(&plan.path);
-                    }
+                    outstanding -= self.cancel_pool(&pool, &mut active_chains);
                 }
                 if !stopping && !yielding && checked.elapsed() >= every {
                     checked = Instant::now();
@@ -1946,16 +1914,13 @@ impl Engine {
                     }
                     let plan = chains.remove(index).expect("waiting chain");
                     let path = plan.path.clone();
-                    let Change::Reparse { chain } = plan.change else {
-                        unreachable!()
-                    };
                     let id = next_chain_id;
                     next_chain_id += 1;
                     if !pool.submit_chain(id, plan) {
                         break;
                     }
                     *self.reparsing.entry(path.clone()).or_default() += 1;
-                    active_chains.insert(id, (path, chain));
+                    active_chains.insert(id, path);
                     outstanding += 1;
                 }
                 if outstanding == 0 {
@@ -1972,7 +1937,7 @@ impl Engine {
                     pool::Finished::Chain(done) => {
                         active_chains.remove(&done.id);
                         pass.bytes_read += done.bytes_read;
-                        self.chain_committed(done.plan, done.written, pass);
+                        self.finish_chain(done.plan, done.written, pass);
                         continue;
                     }
                 };
@@ -2077,10 +2042,20 @@ impl Engine {
             }
             Ok(())
         })();
-        for (path, _) in active_chains.into_values() {
+        for path in active_chains.into_values() {
             self.finish_chain_path(&path);
         }
         result
+    }
+
+    fn cancel_pool(&mut self, pool: &Pool, active_chains: &mut HashMap<u64, PathBuf>) -> usize {
+        let cancelled = pool.cancel_queued();
+        let count = cancelled.ranges + cancelled.chains.len();
+        for (id, plan) in cancelled.chains {
+            active_chains.remove(&id);
+            self.finish_chain_path(&plan.path);
+        }
+        count
     }
 
     /// A rejected spool cursor cannot become progress. An existing committed
@@ -2154,7 +2129,7 @@ impl Engine {
         }))
     }
 
-    fn chain_committed(
+    fn finish_chain(
         &mut self,
         mut plan: Plan,
         written: Result<Option<u64>, EngineError>,

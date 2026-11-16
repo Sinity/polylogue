@@ -210,8 +210,11 @@ Building the archive overlaps every stage:
   context's changes, which the next range reads from the index. The same
   pool replaces stored chains' readings: one task parses a chain's ranges
   in order into a staged reading and hands it to the writer for one commit.
-  Its unparsed bytes count against the pool's memory budget until that
-  commit answers; a task larger than the budget runs alone. With more than
+  Its unparsed bytes count against the pool's memory budget until the
+  reading is handed to the writer; only batches carrying decoded blobs
+  retain their own charge until the writer consumes them. A task larger
+  than the budget parses alone, but its staged reading waiting for commit
+  leaves room for live ranges. With more than
   one worker, at most all but one parse replacement chains at once, leaving
   a worker for live ranges. A chain starts after any queued or running
   range plan of its path; readings of the same path may run together;
