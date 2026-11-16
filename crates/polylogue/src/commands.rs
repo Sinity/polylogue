@@ -33,20 +33,34 @@ pub enum Tool {
     Read,
     Context,
     Note,
-    Chat,
+    Write,
     Act,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 5] = [Tool::Read, Tool::Context, Tool::Note, Tool::Chat, Tool::Act];
+    pub const ALL: [Tool; 5] = [
+        Tool::Read,
+        Tool::Write,
+        Tool::Act,
+        Tool::Context,
+        Tool::Note,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
             Tool::Read => "polylogue_read",
             Tool::Context => "polylogue_context",
             Tool::Note => "polylogue_note",
-            Tool::Chat => "polylogue_chat",
+            Tool::Write => "polylogue_write",
             Tool::Act => "polylogue_act",
+        }
+    }
+
+    pub fn access(self) -> ToolAccess {
+        match self {
+            Self::Read | Self::Context => ToolAccess::Read,
+            Self::Write | Self::Note => ToolAccess::Write,
+            Self::Act => ToolAccess::Act,
         }
     }
 
@@ -55,7 +69,7 @@ impl Tool {
             Tool::Read => "Query and read the archive",
             Tool::Context => "Briefs, recall, takeovers and file advisories",
             Tool::Note => "Assertions, saved queries, watches, settings",
-            Tool::Chat => "Web chats via the browser extension",
+            Tool::Write => "Annotations and settings",
             Tool::Act => "Acts on live sessions: ping, answer, interrupt, start, hand-off",
         }
     }
@@ -64,12 +78,12 @@ impl Tool {
     /// start a new browser action each time, and acts reach a running
     /// harness or start one.
     pub fn idempotent(self) -> bool {
-        !matches!(self, Tool::Chat | Tool::Act)
+        !matches!(self, Tool::Act)
     }
 
     /// Its operations act outside the archive (a web chat, a harness).
     pub fn open_world(self) -> bool {
-        matches!(self, Tool::Chat | Tool::Act)
+        matches!(self, Tool::Act)
     }
 }
 
@@ -405,6 +419,8 @@ const WRITTEN: &[Command] = &[
         help: "A selection and the verbs that act on its rows, in order: the line every surface carries",
         run: Run::Daemon(streams::<line::Line>()),
         cli: Cli::Line,
+        tool: Some(Tool::Read),
+        http: true,
         writes: true,
         ..CLI
     },
@@ -612,7 +628,7 @@ const WRITTEN: &[Command] = &[
         calling_process: Some(calling_process::schema::<calling_process::ChatSend>),
         run: Run::Daemon(daemon::<browser::ChatSend>()),
         prepare: Some(attach_files),
-        tool: Some(Tool::Chat),
+        tool: Some(Tool::Act),
         http: true,
         writes: true,
         ..CLI
@@ -647,7 +663,7 @@ const WRITTEN: &[Command] = &[
         reason: "Start a backfill job the browser extension carries out",
         help: "Ask the browser extension to capture a web chat's older conversations: every one the archive lacks or holds an older copy of. One job runs per provider; starting again shows it",
         run: Run::Daemon(daemon::<browser::BackfillStart>()),
-        tool: Some(Tool::Chat),
+        tool: Some(Tool::Act),
         http: true,
         writes: true,
         ..CLI
@@ -666,7 +682,7 @@ const WRITTEN: &[Command] = &[
         reason: "Stop a backfill job the browser extension is running",
         help: "Stop a backfill job",
         run: Run::Daemon(daemon::<browser::BackfillCancel>()),
-        tool: Some(Tool::Chat),
+        tool: Some(Tool::Act),
         http: true,
         writes: true,
         ..CLI
@@ -977,7 +993,12 @@ pub(crate) fn specification<A: command_surface::JsonSchema>(
             .then(|| format!("/api/v1{}", command.http_path())),
         latency: command.latency,
         failures: command.failures.to_vec(),
-        access: if command.writes {
+        access: if command
+            .tool
+            .is_some_and(|tool| tool.access() == ToolAccess::Read)
+        {
+            command_surface::Access::Read
+        } else if command.writes {
             command_surface::Access::Write
         } else {
             command_surface::Access::Read
@@ -1044,6 +1065,9 @@ pub fn declarations() -> &'static std::sync::Arc<command_surface::OperationDecla
                         .expect("the line's steps are declared once");
                 }
             }
+            declarations
+                .set_tool_default("read", "rows")
+                .expect("rows belongs to the read tool");
             declarations.finish()
         });
     &DECLARATIONS
