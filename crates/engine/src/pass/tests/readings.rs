@@ -537,7 +537,7 @@ fn live_append_commits_while_an_oversized_chain_waits_for_its_reply() {
         engine.archive.clone(),
         done,
         pool::ChainSettings {
-            stopped_attempt: engine.stopped_attempt.clone(),
+            stopped_attempt: engine.stopped_attempt,
             read_memory: engine.config.reader_memory_bytes,
             yielding: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         },
