@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn session_id_splits_at_first_colon_and_keeps_colons_in_native() {
+fn session_id_splits_at_first_colon() {
     let id = SessionId::parse("chatgpt:a:b:c").unwrap();
     assert_eq!(id.origin().as_str(), "chatgpt");
     assert_eq!(id.native().as_str(), "a:b:c");
@@ -32,7 +32,7 @@ fn blob_hash_round_trips_hex() {
 }
 
 #[test]
-fn native_run_ids_preserve_one_uuid_spelling() {
+fn run_ids_keep_one_uuid_spelling() {
     let text = "019a2f20-1234-7000-8000-0123456789ab";
     let id = RunId::parse(text).unwrap();
     assert_eq!(id.as_str(), text);

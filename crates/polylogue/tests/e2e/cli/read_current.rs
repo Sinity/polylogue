@@ -78,7 +78,7 @@ fn words(page: &ReadPage) -> String {
 }
 
 #[test]
-fn typed_read_real_cli_pages_unicode_once_and_publishes_a_canonical_bundle() {
+fn typed_read_pages_unicode_once_and_writes_a_bundle() {
     let directory = tempfile::tempdir().unwrap().keep();
     eprintln!("typed read fixture: {}", directory.display());
     let home = directory.as_path().join("home");
@@ -164,10 +164,10 @@ fn typed_read_real_cli_pages_unicode_once_and_publishes_a_canonical_bundle() {
     };
     manifest.validate().unwrap();
     eprintln!(
-        "bundle snapshot: positions={:?}, caught_up={}, currency={:?}, incomplete={:?}, coverage={:?}",
+        "bundle snapshot: positions={:?}, caught_up={}, freshness={:?}, incomplete={:?}, coverage={:?}",
         manifest.read_at,
         manifest.freshness.up_to_date(),
-        manifest.freshness.owner,
+        manifest.freshness.sinex,
         manifest.incomplete,
         manifest.coverage
     );

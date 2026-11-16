@@ -64,7 +64,7 @@ pub enum ParseProgress {
     Done,
     /// The origin has no parser yet; the bytes are kept unparsed.
     NoParserYet,
-    /// Confirmed facts omit part of the source this reading needs.
+    /// Confirmed events omit part of the source this reading needs.
     Partial,
     /// The parser declined the `length` stored bytes, for the stated reason.
     /// The chain is read again once its stored length or reading version
@@ -76,7 +76,7 @@ pub enum ParseProgress {
 }
 
 impl ParseProgress {
-    /// The standing after an ordinary step over a chain of `length` stored bytes.
+    /// The standing after a normal step over a chain of `length` stored bytes.
     pub fn after(step: StepProgress, parsed_upto: u64, length: u64) -> Self {
         // A collection that stopped inside a record still being written waits
         // like a parse does, whether or not the origin has a parser.

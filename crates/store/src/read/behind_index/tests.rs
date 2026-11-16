@@ -77,7 +77,7 @@ fn behind_chains_preserve_revision_import_and_parser_choices() {
             .unwrap()
             .chains_behind_index(
                 &[],
-                crate::StoppedChains::Settled,
+                crate::StoppedChains::Finished,
                 crate::RevisionChains::All,
                 None
             )
@@ -165,7 +165,7 @@ fn history_work(revisions: usize) -> usize {
     let found = reader
         .chains_behind_index(
             &[],
-            crate::StoppedChains::Settled,
+            crate::StoppedChains::Finished,
             crate::RevisionChains::All,
             None,
         )
@@ -228,7 +228,7 @@ fn incomplete_metadata_readings_wait_until_the_stored_length_changes() {
         reader
             .chains_behind_index(
                 &[],
-                crate::StoppedChains::Settled,
+                crate::StoppedChains::Finished,
                 crate::RevisionChains::All,
                 None
             )
@@ -246,7 +246,7 @@ fn incomplete_metadata_readings_wait_until_the_stored_length_changes() {
         reader
             .chains_behind_index(
                 &[],
-                crate::StoppedChains::Settled,
+                crate::StoppedChains::Finished,
                 crate::RevisionChains::All,
                 None
             )
@@ -258,7 +258,7 @@ fn incomplete_metadata_readings_wait_until_the_stored_length_changes() {
     let behind = fresh
         .chains_behind_index(
             &[],
-            crate::StoppedChains::Settled,
+            crate::StoppedChains::Finished,
             crate::RevisionChains::All,
             None,
         )
@@ -276,14 +276,14 @@ fn incomplete_metadata_readings_wait_until_the_stored_length_changes() {
 }
 
 #[test]
-fn stopped_selection_uses_actual_attempt_even_after_a_full_length_refusal() {
+fn stopped_selection_uses_its_attempt_even_after_a_full_length_refusal() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let archive = Connection::open(fixture.archive.archive_db()).unwrap();
     archive.execute_batch("INSERT INTO input VALUES('failed','claude-code'),('refused','claude-code'); INSERT INTO revision VALUES('failed',1,'first',1,10,1),('refused',1,'first',1,10,1);").unwrap();
     let index = Connection::open(fixture.archive.index_db()).unwrap();
     let attempt = polylogue_model::batch::StoppedAttempt {
-        executable: polylogue_model::BlobHash::of(b"first actual program"),
+        executable: polylogue_model::BlobHash::of(b"first program"),
         parser_settings: None,
     };
     index.execute_batch("INSERT INTO input_ref(pk,id,format) VALUES(71,'failed','claude-code'),(72,'refused','claude-code'); INSERT INTO parse_state(input_pk,chain,reading_version,status,parsed_upto,at_length,reason) VALUES(71,1,'reading','failed',0,10,'original failure'),(72,1,'reading','refused',10,10,'original refusal');").unwrap();
@@ -320,7 +320,7 @@ fn stopped_selection_uses_actual_attempt_even_after_a_full_length_refusal() {
         .unwrap();
     assert!(select(attempt).is_empty());
     let next = polylogue_model::batch::StoppedAttempt {
-        executable: polylogue_model::BlobHash::of(b"next actual program"),
+        executable: polylogue_model::BlobHash::of(b"next program"),
         parser_settings: None,
     };
     assert_eq!(select(next).len(), 2);
@@ -351,7 +351,7 @@ fn selected_chains_keep_order_parser_upgrades_and_empty_selection() {
     let all = reader
         .chains_behind_index(
             &versions,
-            StoppedChains::Settled,
+            StoppedChains::Finished,
             crate::RevisionChains::All,
             None,
         )
@@ -372,7 +372,7 @@ fn selected_chains_keep_order_parser_upgrades_and_empty_selection() {
         reader
             .chains_behind_index(
                 &versions,
-                StoppedChains::Settled,
+                StoppedChains::Finished,
                 crate::RevisionChains::All,
                 Some(&selected)
             )
@@ -385,7 +385,7 @@ fn selected_chains_keep_order_parser_upgrades_and_empty_selection() {
         reader
             .chains_behind_index(
                 &versions,
-                StoppedChains::Settled,
+                StoppedChains::Finished,
                 crate::RevisionChains::All,
                 Some(&[])
             )
@@ -440,7 +440,7 @@ fn selected_history_work(unselected: usize) -> usize {
     let found = reader
         .chains_behind_index(
             &[],
-            StoppedChains::Settled,
+            StoppedChains::Finished,
             crate::RevisionChains::All,
             Some(&["selected".into()]),
         )
@@ -478,7 +478,7 @@ fn selected_chain_planning_does_not_scan_unselected_history() {
 mod selection;
 
 #[test]
-fn stored_parser_paths_keep_native_bytes_from_the_same_selected_observation() {
+fn parser_paths_keep_raw_bytes_of_one_observation() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let archive = Connection::open(fixture.archive.archive_db()).unwrap();
@@ -501,7 +501,7 @@ fn stored_parser_paths_keep_native_bytes_from_the_same_selected_observation() {
         let rows = reader
             .chains_behind_index(
                 &[],
-                crate::StoppedChains::Settled,
+                crate::StoppedChains::Finished,
                 RevisionChains::All,
                 selected.as_deref(),
             )

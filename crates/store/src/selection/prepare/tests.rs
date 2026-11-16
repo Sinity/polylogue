@@ -30,7 +30,7 @@ fn definition(id: &str, name: &str, text: &str, hash: QuestionId) -> AssertionFa
 
 #[test]
 
-fn accepting_preparation_uses_original_native_rows_and_scratch_definitions() {
+fn accepting_preparation_uses_original_rows() {
     let dir = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(dir.path()).unwrap();
     fixture
@@ -125,33 +125,33 @@ fn accepting_preparation_uses_original_native_rows_and_scratch_definitions() {
     let roundtrip = SelectionError::from(refused.into_store_error());
     assert_eq!(roundtrip.code(), "not_yet_available");
     assert_eq!(roundtrip.to_string(), message);
-    let mut native = Bindings {
+    let mut supplied = Bindings {
         origins: vec!["test".into()],
         ..Default::default()
     };
-    // Untrusted supplied dynamic definitions cannot replace either actual view.
+    // Untrusted supplied dynamic definitions cannot replace either stored view.
     let forged =
         polylogue_query::plan::prepare("sessions where repo:forged", &Bindings::default(), |_| {
             Ok(())
         })
         .unwrap();
-    native
+    supplied
         .add_saved("focus", &forged, "forged", "forged")
         .unwrap();
-    let actual =
-        prepare_query_plan_on(original, &tx, "query:focus", &native, None, None, None).unwrap();
+    let prepared =
+        prepare_query_plan_on(original, &tx, "query:focus", &supplied, None, None, None).unwrap();
     let loaded = named_definitions(original, &tx, "query:focus", &[], None, None)
         .unwrap()
         .saved;
     assert_eq!(loaded["focus"][0].hash, object.id);
     assert_eq!(loaded["focus"][0].denominator, Some(object.id));
-    assert_eq!(actual.definitions()[0].question_id, object.id);
-    let ordinary =
-        prepare_query_plan_on(original, original, "sessions", &native, None, None, None).unwrap();
+    assert_eq!(prepared.definitions()[0].question_id, object.id);
+    let plain =
+        prepare_query_plan_on(original, original, "sessions", &supplied, None, None, None).unwrap();
     let mut options = super::super::tests::options();
-    options.origins = native.origins;
+    options.origins = supplied.origins;
     assert_eq!(
-        ordinary.question_id(),
+        plain.question_id(),
         reader
             .prepare_query_plan("sessions", &options)
             .unwrap()
@@ -302,7 +302,7 @@ fn hash_prefix_resolves() {
     }
     // Shorter than 12 characters is not a hash, and no saved query has that name.
     assert!(prepare(&format!("query:{}", &full[..11])).is_err());
-    // A prefix no retained question starts with is unavailable.
+    // A prefix no saved question starts with is unavailable.
     let other = if full.starts_with('0') { "1" } else { "0" };
     assert_eq!(
         prepare(&format!("query:{other}{}", &full[1..12]))

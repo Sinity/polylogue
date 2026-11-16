@@ -46,7 +46,7 @@ pub enum Lineage {
 }
 
 /// The walk advances only when all recorded structural edges name one parent.
-/// Different anchors to that parent remain recorded alternatives, but do not
+/// Different branch points on that parent remain recorded alternatives, but do not
 /// change structural depth. No path is selected between different parents.
 fn walk(session: &str) -> String {
     format!(
@@ -68,7 +68,7 @@ fn walk(session: &str) -> String {
     )
 }
 
-fn projection(session: &str) -> String {
+fn root_sql(session: &str) -> String {
     format!(
         "{} SELECT CASE WHEN cycle=0 AND parents='[]' THEN id END AS root,
       CASE WHEN cycle=0 AND parents='[]' THEN depth END AS depth,
@@ -90,12 +90,12 @@ pub(crate) fn value_sql(session: &str, column: &str) -> String {
         "(CASE WHEN EXISTS(SELECT 1 FROM session_lineage v WHERE {valid})
       THEN (SELECT v.{column} FROM session_lineage v WHERE v.session_pk={session})
       ELSE (SELECT {column} FROM ({})) END)",
-        projection(session)
+        root_sql(session)
     )
 }
 
 pub(crate) fn compute(conn: &Connection, session: i64) -> Result<Option<SessionLineage>> {
-    let sql = projection("?1");
+    let sql = root_sql("?1");
     let row = conn
         .prepare_cached(&sql)?
         .query_row([session], |r| {
@@ -230,9 +230,9 @@ impl crate::read::Reader<'_> {
             None => compute(self.conn()?, pk),
         }
     }
-    /// Graph entry points for inspecting a session family. A proven root is
-    /// the only entry of a tree. Otherwise retain every parent frontier and
-    /// cycle witness; these are display positions, never asserted roots.
+    /// Graph entry points for inspecting a session family. A known root is
+    /// the only entry of a tree. Otherwise keep every known parent and
+    /// a session from each cycle; these are display positions, never asserted roots.
     pub fn lineage_starting_sessions(&self, seed: &SessionId) -> Result<Vec<SessionId>> {
         if let Some(root) = self.lineage_root(seed)?.and_then(|lineage| lineage.root) {
             return Ok(vec![root]);

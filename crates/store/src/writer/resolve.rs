@@ -1,5 +1,5 @@
-//! Worker-owned natural keys. A lease covers the batch until its commit result,
-//! so a following worker opens its snapshot after overlapping work has settled.
+//! Worker-owned natural keys. A key lock covers the batch until its commit result,
+//! so a following worker opens its snapshot after overlapping work has finished.
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Condvar;
@@ -74,7 +74,7 @@ impl ResolvedKeys {
     /// The row a natural key resolves to; a copy's session or message key
     /// resolves to the session's row.
     pub(crate) fn get(&self, kind: Kind, bytes: &[u8]) -> Result<RowKey> {
-        let key = canonical(&self.identities, Key::new(kind, bytes))?;
+        let key = resolved_key(&self.identities, Key::new(kind, bytes))?;
         self.stored(&key)
     }
     /// The row of exactly this key.
@@ -87,7 +87,7 @@ impl ResolvedKeys {
 }
 
 /// The key a copy's session, message or link key resolves to.
-pub(super) fn canonical(identities: &crate::session_alias::Identities, key: Key) -> Result<Key> {
+pub(super) fn resolved_key(identities: &crate::session_alias::Identities, key: Key) -> Result<Key> {
     let text = || std::str::from_utf8(&key.bytes).map_err(|e| StoreError::Invalid(e.to_string()));
     Ok(match key.kind {
         Kind::Session => {
@@ -131,7 +131,7 @@ pub(super) fn canonical(identities: &crate::session_alias::Identities, key: Key)
 struct Active {
     keys: BTreeSet<Key>,
     next: BTreeMap<Kind, i64>,
-    // IDs outlive their payload owners: an older snapshot can resolve a value
+    // IDs outlive the groups that wrote them: an older snapshot can resolve a value
     // after another group committed it and released its prepared bytes.
     values: BTreeMap<Key, (i64, std::sync::Weak<Reservation>)>,
 }
@@ -143,11 +143,11 @@ pub(crate) struct Resolver {
     #[cfg(test)]
     waiting: Mutex<Option<std::sync::mpsc::Sender<()>>>,
 }
-pub(super) struct Lease {
+pub(super) struct KeyLock {
     resolver: Arc<Resolver>,
     keys: BTreeSet<Key>,
 }
-impl Drop for Lease {
+impl Drop for KeyLock {
     fn drop(&mut self) {
         let mut active = self.resolver.active.lock().expect("resolver lock");
         for key in &self.keys {
@@ -160,7 +160,7 @@ impl Drop for Lease {
 
 impl Resolver {
     /// A confirmed scope change discards private natural-key reservations before
-    /// replay. The stream owner first drains prepared work and cancels readers.
+    /// replay. The stream follower first drains prepared work and cancels readers.
     pub(crate) fn discard_cached(&self) -> Result<()> {
         let mut active = self.active.lock().expect("resolver lock");
         if !active.keys.is_empty() {
@@ -224,7 +224,7 @@ impl Resolver {
         }))
     }
 
-    pub(super) fn lease(self: &Arc<Self>, keys: BTreeSet<Key>) -> Lease {
+    pub(super) fn lock_keys(self: &Arc<Self>, keys: BTreeSet<Key>) -> KeyLock {
         let mut active = self.active.lock().expect("resolver lock");
         while keys.iter().any(|key| active.keys.contains(key)) {
             #[cfg(test)]
@@ -234,7 +234,7 @@ impl Resolver {
             active = self.available.wait(active).expect("resolver lock");
         }
         active.keys.extend(keys.iter().cloned());
-        Lease {
+        KeyLock {
             resolver: Arc::clone(self),
             keys,
         }
@@ -340,10 +340,10 @@ pub(super) fn identities(
 
 /// Sessions these batches only name, as the session of an event: their row
 /// is created on first sight (a stub) or found, and nothing these batches
-/// write depends on the rest of it, so they need no lease. Session facts,
+/// write depends on the rest of it, so they need no key lock. Session facts,
 /// and what a reading replaces when it starts over, are kept per input
-/// chain, under that input's lease. A session a batch also states facts
-/// about, writes messages or links in, or updates is leased as before.
+/// chain, under that input's key lock. A session a batch also states facts
+/// about, writes messages or links in, or updates is locked as before.
 fn sessions_only_named(batches: &[&mut Batch]) -> BTreeSet<Key> {
     let session = |id: &polylogue_model::SessionId| Key::new(Kind::Session, id.to_string());
     let mut named = BTreeSet::new();
@@ -563,18 +563,18 @@ impl Resolver {
         }
         let mut keys = keys
             .into_iter()
-            .map(|key| canonical(&identities, key))
+            .map(|key| resolved_key(&identities, key))
             .collect::<Result<BTreeSet<_>>>()?;
         // A copy these batches join to its session: its rows and the rows
         // its messages move to.
-        for absorbed in identities.absorbed() {
-            keys.insert(Key::new(Kind::Session, absorbed.copy.as_bytes()));
-            keys.insert(Key::new(Kind::Session, absorbed.session.as_bytes()));
-            for (old, new) in &absorbed.messages {
+        for copy_move in identities.moved_copies() {
+            keys.insert(Key::new(Kind::Session, copy_move.copy.as_bytes()));
+            keys.insert(Key::new(Kind::Session, copy_move.session.as_bytes()));
+            for (old, new) in &copy_move.messages {
                 keys.insert(Key::new(Kind::Message, old.as_bytes()));
                 keys.insert(Key::new(Kind::Message, new.as_bytes()));
             }
-            for (old, new) in &absorbed.events {
+            for (old, new) in &copy_move.events {
                 keys.insert(Key::new(Kind::Event, old.as_bytes()));
                 keys.insert(Key::new(Kind::Event, new.as_bytes()));
             }
@@ -629,18 +629,18 @@ impl Resolver {
             let (keys, _) = self.gather(batches, &index, archive)?;
             drop(index);
             let named = sessions_only_named(batches);
-            let leased = keys
+            let locked = keys
                 .iter()
                 .filter(|key| !named.contains(key))
                 .cloned()
                 .collect();
-            let lease = self.lease(leased);
+            let key_lock = self.lock_keys(locked);
             let index = crate::archive::open_read(&self.archive.index_db())?;
             let snapshot = index.unchecked_transaction()?;
             let (fresh, chains) = self.gather(batches, &snapshot, archive)?;
             if fresh != keys {
                 drop(snapshot);
-                drop(lease);
+                drop(key_lock);
                 continue;
             }
             let pending: HashMap<_, _> = batches
@@ -661,7 +661,7 @@ impl Resolver {
             }
             let choices = membership::resolve(self, &snapshot, batches, &chains, &resolved)?;
             let resolved = Arc::new(resolved);
-            let lease = Arc::new(lease);
+            let key_lock = Arc::new(key_lock);
             for ((batch, chain), choices) in batches.iter_mut().zip(chains).zip(choices) {
                 for (step, choices) in batch.parse.iter_mut().zip(choices) {
                     step.resolution = Some(Resolution {
@@ -671,10 +671,10 @@ impl Resolver {
                     });
                 }
                 let old = std::mem::take(&mut batch.release);
-                let lease = Arc::clone(&lease);
+                let key_lock = Arc::clone(&key_lock);
                 batch.release = InFlight::new(move || {
                     drop(old);
-                    drop(lease);
+                    drop(key_lock);
                 });
             }
             return Ok(());

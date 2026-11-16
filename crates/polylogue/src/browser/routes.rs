@@ -1,5 +1,5 @@
 //! The routes the extension calls through its native messaging host. Each
-//! native request is served in process by this router; nothing listens on
+//! request is served in process by this router; nothing listens on
 //! a port. A refusal answers `{"error": code, "message": text}` with an
 //! HTTP status.
 

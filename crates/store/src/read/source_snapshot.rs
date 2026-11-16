@@ -3,15 +3,16 @@ use crate::Result;
 use crate::primary::{ConfirmedSource, SourceSelector, SourceStatus, SourceSubject};
 
 impl Reader<'_> {
-    /// Existing source authority in this read snapshot, before provider I/O.
+    /// The source boundary this read snapshot already has, before provider I/O.
     /// Missing full primary coverage remains unknown.
     pub fn source_boundary(&self) -> Result<Option<crate::primary::SourceBoundary>> {
         let conn = self.conn()?;
         crate::source::SourceBoundary::read(conn, conn, &self.pool.archive)
     }
 
-    /// The exact retained input head at the pre-acquisition cut. Missing
-    /// observation evidence cannot identify a native alias predecessor.
+    /// The stored input's latest revision at the position fixed before the capture
+    /// read. Without an observation it cannot identify the previous revision of
+    /// an alias path.
     pub fn source_subject_at(
         &self,
         boundary: &crate::primary::SourceBoundary,
@@ -22,8 +23,8 @@ impl Reader<'_> {
         crate::source::Source::subject_at(conn, input, through)
     }
 
-    /// Exact retained observation identity. In primary mode, absent cache rows
-    /// prove absence only after full owner scope coverage is certified.
+    /// Stored observation identity. In primary mode, absent cache rows show
+    /// absence only once the cache covers the whole Sinex scope.
     pub fn source_observation(
         &self,
         source: &SourceSelector,

@@ -151,7 +151,7 @@ impl Reader<'_> {
         asset_source(self.conn()?, self.conn()?, "source_", input)
     }
     /// Only unseen import metadata is decoded. Content and observations
-    /// remain separate: equal bytes can have several physical memberships.
+    /// remain separate: equal bytes can belong to several import members.
     pub fn unindexed_import_members(&self) -> Result<(Vec<ObservedMember>, Option<i64>)> {
         let conn = self.conn()?;
         let after: i64 = conn
@@ -232,8 +232,8 @@ impl Reader<'_> {
 }
 
 /// Visits import metadata inside the caller's source snapshot. Rowids are only
-/// a discovery cursor; replay selects each changed input from zero after source
-/// rematerialization, whose local rowids need not preserve their old order.
+/// a discovery cursor; replay selects each changed input from zero after the source
+/// rows are rebuilt, whose local rowids need not preserve their old order.
 pub(crate) fn visit_import_members(
     conn: &Connection,
     prefix: &str,
@@ -309,7 +309,7 @@ struct StoredMember {
     sidecar: Option<String>,
 }
 
-/// The same actual-member projection is used by import refresh and confirmed replay.
+/// The same member indexing is used by import refresh and confirmed replay.
 pub(crate) fn project_member(
     conn: &Connection,
     source: &ObservedMember,
@@ -464,7 +464,7 @@ pub(crate) fn install(
     crate::fault::check("assets.install", "")?;
     let catalog_prefix = match crate::source::Source::of(archive)? {
         crate::source::Source::Cache => "source_",
-        crate::source::Source::Ledger => "",
+        crate::source::Source::Standalone => "",
     };
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     while let Some(item) = staged.next_item()? {

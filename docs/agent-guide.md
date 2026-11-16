@@ -9,7 +9,7 @@ repository files and live checks for facts they answer directly.
 2. Use `brief` with an absolute `cwd` pointing to your working directory
    (`session` names the receiving session), `recall` for relevant past
    work, and `takeover` for another session. Each names what it included and
-   left out. Use the returned references to read the underlying evidence.
+   left out. Use the returned references to read the underlying records.
 3. Discover with `query`. For example, `sessions where repo:example since:7d`,
    `messages where "timeout"`, or `sessions where similar:"query compiler"`.
    CLI queries are quoted expressions:

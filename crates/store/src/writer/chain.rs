@@ -11,7 +11,7 @@ pub struct ChainReading {
     decoded: Vec<crate::staging::PreparedBatch>,
     resolved: Option<ResolvedChain>,
     release: InFlight,
-    /// In primary mode, its parsed facts are in the producer spool.
+    /// In primary mode, its parsed events are in the producer spool.
     spooled: bool,
 }
 
@@ -72,7 +72,7 @@ impl ChainReading {
         std::mem::take(&mut self.decoded)
     }
 
-    /// Complete source facts are read without resolving local cache keys first.
+    /// Complete parse steps are read without resolving local cache keys first.
     pub(crate) fn visit_source(
         &mut self,
         mut apply: impl FnMut(&ParseStep) -> Result<()>,
@@ -85,7 +85,7 @@ impl ChainReading {
         Ok(())
     }
 
-    /// Its parsed facts were prepared in the producer spool.
+    /// Its parsed events were prepared in the producer spool.
     pub(super) fn mark_spooled(&mut self) {
         self.spooled = true;
     }
@@ -159,13 +159,13 @@ fn prepare_readings(
         let index = crate::archive::open_read(&resolver.location().index_db())?;
         let (keys, _, _) = gather(resolver, readings, &index, archive, &pending)?;
         drop(index);
-        let lease = resolver.lease(keys.clone());
+        let key_lock = resolver.lock_keys(keys.clone());
         let index = crate::archive::open_read(&resolver.location().index_db())?;
         let snapshot = index.unchecked_transaction()?;
         let (fresh, history, recorded) = gather(resolver, readings, &snapshot, archive, &pending)?;
         if keys != fresh {
             drop(snapshot);
-            drop(lease);
+            drop(key_lock);
             continue;
         }
         let mut resolved = resolve::ResolvedKeys {
@@ -177,8 +177,8 @@ fn prepare_readings(
             resolved.rows.insert(key, row);
         }
         let keys = Arc::new(resolved);
-        let mut projection =
-            resolve::membership::Projection::new(resolver, &snapshot, &keys, Some(&history))?;
+        let mut membership_state =
+            resolve::membership::MembershipState::new(resolver, &snapshot, &keys, Some(&history))?;
         let mut prepared = Vec::new();
         for reading in readings.iter() {
             let input = keys
@@ -190,7 +190,7 @@ fn prepare_readings(
             let mut reader = BufReader::new(std::fs::File::open(&reading.reading.path)?);
             while let Some((mut step, _)) = read_step(&mut reader)? {
                 attachments::normalize_known(&mut step, &history.available)?;
-                let choices = projection.step(reading.input, reading.chain, &mut step)?;
+                let choices = membership_state.step(reading.input, reading.chain, &mut step)?;
                 let offset = output.stream_position()?;
                 write_step(&mut output, &step, Some(&choices))?;
                 output.flush()?;
@@ -207,17 +207,17 @@ fn prepare_readings(
             drop(output.into_inner().map_err(|error| error.into_error())?);
             prepared.push(path);
         }
-        drop(projection);
+        drop(membership_state);
         drop(snapshot);
-        let lease = Arc::new(lease);
+        let key_lock = Arc::new(key_lock);
         for (reading, path) in readings.iter_mut().zip(prepared) {
             reading.reading.path = path;
             reading.reading.resolved = Some(ResolvedChain {
                 keys: Arc::clone(&keys),
                 chain: reading.chain,
             });
-            let lease = Arc::clone(&lease);
-            reading.reading.release = InFlight::new(move || drop(lease));
+            let key_lock = Arc::clone(&key_lock);
+            reading.reading.release = InFlight::new(move || drop(key_lock));
         }
         return Ok(());
     }
@@ -265,7 +265,7 @@ fn gather(
                 history.documents.insert(prepared.hash.to_vec(), location);
             }
             let mut batch = Batch {
-                required_disposition: None,
+                required_outcome: None,
                 input: reading.input.clone(),
                 change: Change::Reparse {
                     chain: reading.chain,
@@ -554,7 +554,7 @@ impl Inner {
         if self.sinex.is_some() {
             if !reading.spooled {
                 return Err(StoreError::Invalid(
-                    "a primary replacement must spool its parsed facts first".into(),
+                    "a primary replacement must spool its parsed events first".into(),
                 ));
             }
             return self.replace_index(input, chain, length, reading);
@@ -576,7 +576,7 @@ impl Inner {
             }
         }
         reading.finish()?;
-        let mut ordinary = false;
+        let mut local_steps = false;
         let mut version = None;
         let mut complete = false;
         let mut diagnosed = false;
@@ -595,13 +595,13 @@ impl Inner {
                 polylogue_model::batch::StepProgress::Refused { .. }
                     | polylogue_model::batch::StepProgress::Failed { .. }
             );
-            ordinary |= step.delivery.is_none();
+            local_steps |= step.delivery.is_none();
             complete = step.progress.reached_end() && step.parsed_upto == length;
             Ok(())
         })?;
-        if ordinary && !complete {
+        if local_steps && !complete {
             return Err(StoreError::Invalid(
-                "an ordinary chain replacement must finish its stored source".into(),
+                "a chain replacement with non-export steps must finish its stored source".into(),
             ));
         }
         if diagnosed {
@@ -644,7 +644,7 @@ impl Inner {
         let counter = bump_counter(&tx)?;
         let changes = crate::change_summary::ChangeSummary::start(&tx)?;
         let mut batch = Batch {
-            required_disposition: None,
+            required_outcome: None,
             input,
             change: Change::Reparse { chain },
             observation: None,
@@ -673,7 +673,7 @@ impl Inner {
             }
             let replace_wire = first && step.delivery.is_none();
             first = false;
-            let receipt = crate::source::Source::reading_receipt(
+            let source_commit = crate::source::Source::reading_commit(
                 &tx,
                 &batch.input.id,
                 chain,
@@ -692,7 +692,7 @@ impl Inner {
                 &resolution,
                 counter,
                 self.first_build.as_deref(),
-                Some(&receipt),
+                Some(&source_commit),
                 &changes,
             )?;
         }

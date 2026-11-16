@@ -15,7 +15,7 @@ fn stopped_sender_does_not_start_another_network_operation() {
 }
 
 #[test]
-fn stopping_interrupts_an_operation_waiting_for_an_acknowledgement() {
+fn stopping_interrupts_an_operation_waiting_for_an_acknowledgment() {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

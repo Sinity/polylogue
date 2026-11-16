@@ -59,7 +59,7 @@ impl Kept {
                 .is_some_and(|schema| schema.unit.is_some())
         {
             return Err(invalid(
-                "kept grouped, summary and match outputs have no native row domain".into(),
+                "kept grouped, summary and match outputs have no row domain".into(),
             ));
         }
         Ok(())
@@ -82,7 +82,7 @@ impl Kept {
         {
             schema.unit = None;
         }
-        // Logical declarations retain no native period or pattern evidence.
+        // Logical declarations keep no source period or pattern.
         schema.main_time = None;
         schema.match_units = None;
         schema

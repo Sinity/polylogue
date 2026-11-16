@@ -163,8 +163,7 @@ impl Export {
                 let id = format!("~{hash}-{n}");
                 if *n > 0 {
                     warnings.push(
-                        "equal ID-less conversations have indistinguishable physical occurrences"
-                            .to_owned(),
+                        "equal ID-less conversations are indistinguishable in the file".to_owned(),
                     );
                 }
                 *n += 1;
@@ -192,9 +191,9 @@ impl Export {
         {
             session.offer_title(title, TitleSource::Generated);
         }
-        let (at, evidence) = crate::time::parts(time(conversation, &mut warnings));
+        let (at, accuracy) = crate::time::parts(time(conversation, &mut warnings));
         session
-            .set_time(at, evidence)
+            .set_time(at, accuracy)
             .expect("decoded source time is valid");
         sink.out.sessions.push(session);
         sink.records.record("conversation", &RecordOutcome::Used);
@@ -258,7 +257,7 @@ impl Export {
                     let n = occurrences.entry(hash.clone()).or_default();
                     let id = format!("{native}:~{}-{n}", &hash[..12]);
                     if *n > 0 {
-                        warnings.push("equal ID-less responses keep distinct occurrence IDs; physical correspondence is ambiguous".into());
+                        warnings.push("equal ID-less responses keep distinct occurrence IDs; which file record is which is ambiguous".into());
                     }
                     *n += 1;
                     id

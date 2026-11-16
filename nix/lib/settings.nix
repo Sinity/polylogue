@@ -141,7 +141,7 @@ in
         default = { };
         description = "Deployment values accepted by polylogue.toml.";
       };
-      sinex = optional sinexType "Sinex deployment. Omit for native standalone storage.";
+      sinex = optional sinexType "Sinex deployment. Omit for standalone storage.";
       signals = mkOption {
         type = signalsType;
         default = { };

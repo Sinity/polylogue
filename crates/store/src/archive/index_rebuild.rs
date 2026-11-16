@@ -3,7 +3,7 @@
 //! the new one. A standalone index is built privately and installed over the
 //! old one ([`super::index_build`]); the primary cache is renamed beside
 //! itself under its schema identity, rebuilt from the confirmed stream, and
-//! the renamed file removed once the rebuild reaches the stream's head.
+//! the renamed file removed once the rebuild reaches the stream's latest_position.
 //! `archive.db` is never handled here.
 
 use crate::{Result, StoreError};
@@ -37,7 +37,7 @@ pub struct IndexRebuild {
     /// Whether the build of the new index is still running.
     pub building: bool,
     /// Primary mode: the set-aside cache beside `index.db`, until the
-    /// rebuild reaches the stream's head.
+    /// rebuild reaches the stream's latest_position.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub set_aside: Option<String>,
 }
@@ -113,14 +113,14 @@ pub(crate) fn record(
     Ok(())
 }
 
-/// Whether the primary cache has finished its rebuild: its actual native
-/// head, admitted local parser progress for every stored chain, and no
-/// unresolved native facts.
+/// Whether the primary cache has finished its rebuild: it has applied Sinex's
+/// latest position, committed parser progress for every stored chain, and has no
+/// unresolved Sinex events.
 pub(crate) fn built(index: &Connection) -> Result<bool> {
-    let state = crate::primary::projection::replay_state(index)?;
+    let state = crate::primary::confirmed::replay_state(index)?;
     if !matches!(
-        (state.applied_position, state.head),
-        (Some(applied), Some(head)) if applied >= head
+        (state.applied_position, state.latest_position),
+        (Some(applied), Some(latest_position)) if applied >= latest_position
     ) {
         return Ok(false);
     }
@@ -135,7 +135,7 @@ pub(crate) fn built(index: &Connection) -> Result<bool> {
                      (p.status='waiting' AND p.at_length=c.length) OR
                      (p.status IN ('refused','failed') AND p.at_length=c.length AND p.stopped_attempt IS NOT NULL)))
                  OR (p.status='no_parser_yet' AND p.at_length=c.length)),0))
-         OR EXISTS(SELECT 1 FROM primary_refused r LEFT JOIN primary_fact f ON f.event=r.event
+         OR EXISTS(SELECT 1 FROM primary_refused r LEFT JOIN confirmed_event f ON f.event=r.event
                    WHERE f.event IS NULL OR f.state='live')",
         [], |row| row.get(0),
     )?;
@@ -149,7 +149,7 @@ pub(crate) fn remove_when_built(index: &Connection, path: &Path) -> Result<()> {
     let Some(dir) = path.parent() else {
         return Ok(());
     };
-    let retained = std::fs::read_dir(dir)?
+    let kept = std::fs::read_dir(dir)?
         .map(|entry| entry.map(|entry| entry.path()))
         .collect::<std::io::Result<Vec<_>>>()?
         .into_iter()
@@ -158,10 +158,10 @@ pub(crate) fn remove_when_built(index: &Connection, path: &Path) -> Result<()> {
                 .is_some_and(|name| name.to_string_lossy().starts_with(PREFIX))
         })
         .collect::<Vec<_>>();
-    if retained.is_empty() || !built(index)? {
+    if kept.is_empty() || !built(index)? {
         return Ok(());
     }
-    for path in retained {
+    for path in kept {
         match std::fs::remove_file(path) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}

@@ -1,4 +1,4 @@
-//! Parser continuation belongs to the exact admitted cursor, never a source guess.
+//! Parser continuation belongs to the committed cursor, never a source guess.
 use super::*;
 use polylogue_model::batch::ParserCheckpoint;
 

@@ -22,7 +22,7 @@ CREATE TABLE session (
   stub              INTEGER NOT NULL DEFAULT 0,  -- 1: created by a hook line naming a session that has no
                                             --   transcript yet, so its live state exists; cleared when its messages arrive
   title             TEXT,                   -- provider title only
-  title_source      TEXT,                   -- title provenance; precedence is owned by model TitleSource
+  title_source      TEXT,                   -- title source; precedence is owned by model TitleSource
   derived_title     TEXT,                   -- derived (title): first line of the first typed prompt; shown when
                                             --   title is NULL, never exported as recorded
   cwd_json          TEXT,                   -- every working directory in order (model Session.cwd); `cwd` is the last
@@ -56,11 +56,11 @@ CREATE TABLE session (
   derived_changed   INTEGER,                -- write counter of the derive transaction that last derived it
   live_reparse      INTEGER NOT NULL DEFAULT 0,
   live_changed      INTEGER,                -- write counter value of the last change to its live columns
-  -- Live facts: the fold of the session's live evidence (hook, process and
+  -- Live facts: computed from the session's live events (hook, process and
   -- registry lines), written in the transaction that stores each line; the
   -- live state is computed at read time from these and now (`pl_live`).
   live_facts TEXT,                          -- polylogue_model::live::LiveFacts as JSON
-  live_last_at INTEGER                      -- time of the latest folded evidence
+  live_last_at INTEGER                      -- time of the latest live event included
 ) STRICT;
 CREATE INDEX session_activity ON session(last_activity_at);   -- default order, since:
 CREATE INDEX session_started  ON session(started_at);         -- started between, until:
@@ -112,7 +112,7 @@ CREATE TABLE message (
   stop_reason       TEXT,
   duration_ms       INTEGER,
   words             INTEGER NOT NULL DEFAULT 0, -- words in its text blocks
-  UNIQUE (pk, session_pk)                   -- lets children state their owner once
+  UNIQUE (pk, session_pk)                   -- lets children state their session once
 ) STRICT;
 -- A first build drops the three unique indexes on natural keys and builds
 -- them once at its end; meanwhile the writer finds rows by key in memory.
@@ -148,7 +148,7 @@ CREATE TABLE message_source (
   at                INTEGER,                -- this reading's own source time (ms), from which order times are
                                             --   computed again when an earlier reading's time changes
   completion        TEXT NOT NULL CHECK (completion IN ('finished','unknown','in_progress')),
-  version_pk        INTEGER NOT NULL REFERENCES message_version(pk), -- canonical hash lives in the narrow version row
+  version_pk        INTEGER NOT NULL REFERENCES message_version(pk), -- the version hash lives in the narrow version row
   PRIMARY KEY (message_pk, input_pk, chain)
 ) STRICT;
 CREATE INDEX message_source_input ON message_source(input_pk, chain, source_start);   -- foreign-key check; the next record's start
@@ -221,7 +221,7 @@ CREATE TABLE block (
   other_type        TEXT,                   -- other: the provider's content type name; export `type`
   data              BLOB,                   -- tool_result: its structured data as zstd-compressed JSON, kept
                                             --   out of body, so a text read never reads or decodes it
-  ordinal           TEXT,                   -- original u64 source position; NULL means native dense idx
+  ordinal           TEXT,                   -- original u64 source position; NULL means the dense index the source implies
   FOREIGN KEY (message_pk, session_pk) REFERENCES message(pk, session_pk),
   UNIQUE (pk, session_pk)
 ) STRICT;
@@ -263,7 +263,7 @@ CREATE TABLE search_pending (
 ) STRICT, WITHOUT ROWID;
 
 -- One row per tool call, paired with its result inside the same session. The
--- one owner of every derived call fact.
+-- one place every derived call fact is kept.
 CREATE TABLE tool_call (
   pk                INTEGER PRIMARY KEY,
   session_pk        INTEGER NOT NULL,       -- kept for index speed; the composite keys make it agree with its blocks
@@ -316,7 +316,7 @@ CREATE TABLE link (
   how               TEXT,                   -- reference: briefing | ping | mention
   copies_prefix     INTEGER NOT NULL DEFAULT 0 CHECK(copies_prefix IN (0,1)),
   branch_point      TEXT,                   -- natural message id where the child branches off
-  spawning_call     TEXT,                   -- the spawning call's ID as the evidence names it (a tool-use ID)
+  spawning_call     TEXT,                   -- the spawning call's ID as the source record names it (a tool-use ID)
   evidence          TEXT NOT NULL,          -- which input field established the parent
   source_chain      INTEGER NOT NULL DEFAULT 0,
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk)  -- the input holding that field
@@ -326,21 +326,21 @@ CREATE INDEX link_child_id ON link(child_id);   -- parents by id; late children
 CREATE INDEX link_branch_point ON link(branch_point) WHERE branch_point IS NOT NULL;
 CREATE INDEX link_parent ON link(parent_id, kind);             -- children; late parents
 
--- Source-owned copied-prefix facts never create a relationship on their own.
+-- Copied-prefix facts an input states never create a relationship on their own.
 CREATE TABLE prefix_copy (
   input_pk INTEGER NOT NULL REFERENCES input_ref(pk),
   chain INTEGER NOT NULL,
   parent_id TEXT NOT NULL,
   child_id TEXT NOT NULL,
-  admitted INTEGER CHECK(admitted > 0),
+  committed INTEGER CHECK(committed > 0),
   explicit_members INTEGER NOT NULL CHECK(explicit_members IN (0,1)),
   PRIMARY KEY(input_pk,chain,parent_id,child_id)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX prefix_copy_edge ON prefix_copy(parent_id,child_id);
 CREATE INDEX prefix_copy_child ON prefix_copy(child_id,parent_id);
 
--- Exact copied occurrences retain their original reading and order through exports.
--- The owning input/chain controls retraction; source coordinates describe evidence.
+-- Copied occurrences keep their original reading and order through exports.
+-- The input/chain that states them controls retraction; source coordinates say where each was seen.
 CREATE TABLE prefix_member (
   input_pk INTEGER NOT NULL REFERENCES input_ref(pk),
   chain INTEGER NOT NULL,
@@ -352,7 +352,7 @@ CREATE TABLE prefix_member (
   source_version TEXT NOT NULL,
   sequence TEXT NOT NULL,
   position TEXT NOT NULL,
-  admitted INTEGER CHECK(admitted > 0),
+  committed INTEGER CHECK(committed > 0),
   PRIMARY KEY(input_pk,chain,parent_id,child_id,message_id,source_input,source_chain,source_version,sequence,position)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX prefix_member_child ON prefix_member(child_id,parent_id,message_id);
@@ -362,13 +362,13 @@ CREATE INDEX prefix_member_message ON prefix_member(message_id,parent_id);
 -- Every consumer sees one relation when recorded coordinates agree. Distinct
 -- known coordinates remain alternatives; partial markers still contribute
 -- evidence and copied-prefix observations. All correlated lookups use the
--- affected edge's link_statement index, so a session read does not fold the graph.
+-- affected edge's link_statement index, so a session read does not walk the whole graph.
 CREATE VIEW session_link_identity AS
 WITH statements AS NOT MATERIALIZED (
   SELECT l.pk,l.parent_id,l.child_id,l.child_pk,l.kind,l.how,l.copies_prefix,
     l.branch_point,l.spawning_call,l.source_chain,l.input_pk,
     (SELECT count(DISTINCT x.branch_point) FROM link x
-     WHERE x.parent_id=l.parent_id AND x.child_id=l.child_id AND x.kind=l.kind AND x.how IS l.how) AS anchors,
+     WHERE x.parent_id=l.parent_id AND x.child_id=l.child_id AND x.kind=l.kind AND x.how IS l.how) AS branch_points,
     (SELECT count(DISTINCT x.spawning_call) FROM link x
      WHERE x.parent_id=l.parent_id AND x.child_id=l.child_id AND x.kind=l.kind AND x.how IS l.how) AS calls
   FROM link l
@@ -377,7 +377,7 @@ SELECT s.pk,s.parent_id,s.child_id,s.child_pk,s.kind,s.how,
   ((SELECT max(x.copies_prefix) FROM link x
     WHERE x.parent_id=s.parent_id AND x.child_id=s.child_id AND x.kind=s.kind AND x.how IS s.how)
     OR EXISTS(SELECT 1 FROM prefix_copy p WHERE p.parent_id=s.parent_id AND p.child_id=s.child_id)) AS copies_prefix,
-  CASE WHEN s.anchors <= 1 THEN
+  CASE WHEN s.branch_points <= 1 THEN
     (SELECT min(x.branch_point) FROM link x
      WHERE x.parent_id=s.parent_id AND x.child_id=s.child_id AND x.kind=s.kind AND x.how IS s.how)
     ELSE s.branch_point END AS branch_point,
@@ -388,18 +388,18 @@ SELECT s.pk,s.parent_id,s.child_id,s.child_pk,s.kind,s.how,
   s.source_chain,s.input_pk
 FROM statements s
 WHERE
-  (s.anchors <= 1 AND s.calls <= 1 AND s.pk =
+  (s.branch_points <= 1 AND s.calls <= 1 AND s.pk =
     (SELECT min(x.pk) FROM link x
      WHERE x.parent_id=s.parent_id AND x.child_id=s.child_id AND x.kind=s.kind AND x.how IS s.how))
-  OR (s.anchors > 1 AND s.calls <= 1 AND s.branch_point IS NOT NULL AND s.pk =
+  OR (s.branch_points > 1 AND s.calls <= 1 AND s.branch_point IS NOT NULL AND s.pk =
     (SELECT min(x.pk) FROM link x
      WHERE x.parent_id=s.parent_id AND x.child_id=s.child_id AND x.kind=s.kind AND x.how IS s.how
        AND x.branch_point=s.branch_point))
-  OR (s.anchors <= 1 AND s.calls > 1 AND s.spawning_call IS NOT NULL AND s.pk =
+  OR (s.branch_points <= 1 AND s.calls > 1 AND s.spawning_call IS NOT NULL AND s.pk =
     (SELECT min(x.pk) FROM link x
      WHERE x.parent_id=s.parent_id AND x.child_id=s.child_id AND x.kind=s.kind AND x.how IS s.how
        AND x.spawning_call=s.spawning_call))
-  OR (s.anchors > 1 AND s.calls > 1 AND NOT EXISTS (
+  OR (s.branch_points > 1 AND s.calls > 1 AND NOT EXISTS (
     SELECT 1 FROM link x
     WHERE x.parent_id=s.parent_id AND x.child_id=s.child_id AND x.kind=s.kind AND x.how IS s.how
       AND (s.branch_point IS NULL OR x.branch_point=s.branch_point)
@@ -413,7 +413,7 @@ SELECT s.*,(SELECT min(x.evidence) FROM link x
   WHERE x.parent_id=s.parent_id AND x.child_id=s.child_id AND x.kind=s.kind AND x.how IS s.how) AS evidence
 FROM session_link_identity s;
 
--- Physical inherited history also exists in copied files with no provider
+-- Inherited history also exists in copied files with no provider
 -- relationship. It never creates a logical-session edge.
 CREATE VIEW session_prefix AS
 SELECT DISTINCT parent_id,child_id,branch_point,copies_prefix
@@ -432,7 +432,7 @@ CREATE TABLE event (
   id                TEXT NOT NULL,          -- unique: event_id. Computed by the parser from the raw record; an
                                             --   event that names no session is keyed by its input record instead
   session_pk        INTEGER REFERENCES session(pk),  -- NULL for an event about its input, not a session
-  seq               INTEGER NOT NULL,       -- display position (an anchored event takes its message's main reading's seq); not a key
+  seq               INTEGER NOT NULL,       -- display position (an event placed after a message takes its message's main reading's seq); not a key
   after_message_id  TEXT,
   seq_from_message  INTEGER NOT NULL DEFAULT 0,
   after_message_pk  INTEGER REFERENCES message(pk),  -- the message it follows; export `after_message`
@@ -442,14 +442,14 @@ CREATE TABLE event (
   source_chain      INTEGER,                -- revision chain of the byte range (as message.source_chain)
   source_start      INTEGER,
   source_end        INTEGER,
-  fields            BLOB NOT NULL,          -- canonical Event without its shared data payload
+  fields            BLOB NOT NULL,          -- the encoded Event without its shared data payload
   data              BLOB NOT NULL           -- normalized event payload, zstd-compressed JSON; export `data`
 ) STRICT;
 CREATE UNIQUE INDEX event_id ON event(id);
 CREATE INDEX event_session ON event(session_pk, seq);
 CREATE INDEX event_input   ON event(input_pk, source_chain, source_start);
 CREATE INDEX event_after_id ON event(after_message_id) WHERE after_message_id IS NOT NULL;
-CREATE INDEX event_unanchored ON event(session_pk, at) WHERE after_message_pk IS NULL;   -- events placed by time
+CREATE INDEX event_placed_by_time ON event(session_pk, at) WHERE after_message_pk IS NULL;   -- events placed by time
 CREATE INDEX event_kind    ON event(kind, at);
 
 
@@ -480,8 +480,8 @@ CREATE TABLE parse_state (
   used              INTEGER NOT NULL DEFAULT 0,  --   records = used + skipped + unreadable; an append adds
   skipped           INTEGER NOT NULL DEFAULT 0,  --   to the counts, a whole parse replaces them; written in the
   unreadable        INTEGER NOT NULL DEFAULT 0,  --   same transaction as the chain's last session
-  commit_seq INTEGER CHECK(commit_seq > 0), -- actual committed parse checkpoint, never a read position
-  checkpoint BLOB,                        -- versioned opaque parser state at this exact cursor
+  commit_seq INTEGER CHECK(commit_seq > 0), -- the committed parse checkpoint, never a read position
+  checkpoint BLOB,                        -- versioned opaque parser state at this cursor
   reason            TEXT,                   -- refused: the reason; failed: the error
   stopped_attempt BLOB CHECK(stopped_attempt IS NULL OR status IN ('refused','failed')),
   PRIMARY KEY (input_pk, chain),
@@ -515,7 +515,7 @@ CREATE TABLE removed_session (
 CREATE INDEX removed_session_changed ON removed_session(changed);
 
 -- Git correlation: commits and pull requests linked to sessions
--- by evidence in the session. Commit details come from stored git-lookup
+-- by what the session records. Commit details come from stored git-lookup
 -- inputs, never from reading a repository at derive time.
 CREATE TABLE commit_link (
   session_pk        INTEGER NOT NULL REFERENCES session(pk),
@@ -564,7 +564,7 @@ CREATE TABLE session_record (
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
   chain             INTEGER NOT NULL,
   facts             TEXT NOT NULL,
-  admitted INTEGER CHECK(admitted > 0),
+  committed INTEGER CHECK(committed > 0),
   PRIMARY KEY (session_pk, input_pk, chain)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX session_record_input ON session_record(input_pk);   -- foreign-key check
@@ -598,7 +598,7 @@ CREATE INDEX derive_state_session ON derive_state(session_pk);
 -- every session derivation runs; `repo_lookup` 1: a repository lookup at or
 -- above its working directory changed, so the derivations it dirties run
 -- (the repository); `rewritten` 1: a stored message of it was rewritten, so
--- the folds that cannot add a rewrite's share run (the links); all 0: only
+-- the derivations that cannot add a rewrite's share run (the links); all 0: only
 -- derivations whose version moved. `marked` counts the markings: the derive
 -- step stores what it computed only while the count is the one it read.
 CREATE TABLE derive_due (
@@ -652,10 +652,10 @@ CREATE INDEX session_span_ending ON session_span(ends_with);
 
 CREATE TABLE session_time (
   session_pk INTEGER NOT NULL REFERENCES session(pk) ON DELETE CASCADE,
-  lane TEXT NOT NULL CHECK(lane IN ('tool','model','human','unattributed')),
+  party TEXT NOT NULL CHECK(party IN ('tool','model','human','unattributed')),
   key TEXT NOT NULL,
   ms INTEGER NOT NULL CHECK(ms >= 0),
-  PRIMARY KEY(session_pk,lane,key)
+  PRIMARY KEY(session_pk,party,key)
 ) STRICT, WITHOUT ROWID;
 
 -- Text that is not a conversation (claude.ai documents, for example), with the
@@ -688,7 +688,7 @@ CREATE TABLE document_source (
   time BLOB NOT NULL DEFAULT X'5b6e756c6c2c7b227175616c697479223a22756e6b6e6f776e227d5d',
   version_hash BLOB NOT NULL REFERENCES document_version(version_hash),
   shown INTEGER NOT NULL DEFAULT 0,
-  admitted INTEGER CHECK(admitted > 0),
+  committed INTEGER CHECK(committed > 0),
   PRIMARY KEY(document_pk,input_pk,chain)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX document_source_input ON document_source(input_pk,chain);
@@ -841,10 +841,10 @@ CREATE TABLE message_version_body (
   version_pk INTEGER PRIMARY KEY REFERENCES message_version(pk) ON DELETE CASCADE,
   body BLOB NOT NULL
 ) STRICT;
-CREATE TABLE message_projection (
+CREATE TABLE message_block_selection (
   version_pk INTEGER PRIMARY KEY REFERENCES message_version(pk) ON DELETE CASCADE,
   layout BLOB NOT NULL, -- original u64 block count and aligned original ordinals
-  admitted INTEGER CHECK(admitted > 0) -- latest immutable admission contributing these facts
+  committed INTEGER CHECK(committed > 0) -- latest commit position contributing these rows
 ) STRICT, WITHOUT ROWID;
 CREATE TABLE message_version_text (
   version_pk INTEGER NOT NULL REFERENCES message_version(pk) ON DELETE CASCADE,
@@ -853,7 +853,7 @@ CREATE TABLE message_version_text (
   PRIMARY KEY(version_pk, idx)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX message_version_text_id ON message_version_text(text_id);
--- Document payloads retain their own hash-addressed format.
+-- Document payloads keep their own hash-addressed format.
 CREATE TABLE document_version (
   version_hash BLOB NOT NULL UNIQUE,
   body BLOB NOT NULL
@@ -885,8 +885,8 @@ CREATE TABLE event_source (
   after_message_id TEXT,
   at INTEGER,
   fields BLOB NOT NULL,
-  imported_provenance TEXT NOT NULL CHECK(json_valid(imported_provenance)),
-  admitted INTEGER CHECK(admitted > 0),
+  imported_sources TEXT NOT NULL CHECK(json_valid(imported_sources)),
+  committed INTEGER CHECK(committed > 0),
   PRIMARY KEY(event_pk, input_pk, chain)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX event_source_input ON event_source(input_pk, chain);
@@ -901,7 +901,7 @@ CREATE TABLE link_source (
   chain INTEGER NOT NULL,
   value_pk INTEGER NOT NULL REFERENCES link_value(pk),
   route TEXT NOT NULL CHECK (route IN ('live','capture','recorded','export','copy','page_text')),
-  admitted INTEGER CHECK(admitted > 0),
+  committed INTEGER CHECK(committed > 0),
   PRIMARY KEY(link_pk, input_pk, chain)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX link_source_input ON link_source(input_pk, chain);
@@ -925,7 +925,7 @@ CREATE INDEX document_version_blob_hash ON document_version_blob(blob_hash);
 
 CREATE INDEX message_source_session ON message_source(session_pk);
 CREATE INDEX event_source_session ON event_source(session_pk);
--- Recomputed comparison state for ordinary tool-database inputs.
+-- Recomputed comparison state for tool-database inputs.
 CREATE TABLE tool_row (
     input_pk INTEGER NOT NULL REFERENCES input_ref(pk) ON DELETE CASCADE,
     tbl TEXT NOT NULL,
@@ -939,16 +939,16 @@ CREATE TABLE tool_database (
     schema TEXT NOT NULL
 );
 
--- Closed intervals of a session's activity, wait or stall, folded from its
--- live evidence; an interval stays open (in the session's live facts) until
--- evidence closes it.
+-- Closed intervals of a session's activity, wait or stall, computed from
+-- its live events; an interval stays open (in the session's live facts) until
+-- a live event closes it.
 CREATE TABLE live_interval (
   session_pk INTEGER NOT NULL REFERENCES session(pk),
   aspect     TEXT NOT NULL,                 -- activity | waiting_on | stall
   value      TEXT NOT NULL,
   start_at   INTEGER NOT NULL,
   end_at     INTEGER NOT NULL,
-  closed_by  TEXT NOT NULL,                 -- the kind of the evidence that closed it
+  closed_by  TEXT NOT NULL,                 -- the kind of the live event that closed it
   PRIMARY KEY (session_pk, aspect, start_at)
 ) STRICT;
 CREATE INDEX live_interval_end ON live_interval(end_at);

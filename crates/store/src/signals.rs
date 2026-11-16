@@ -1,5 +1,6 @@
-//! Signal checkpoints and receipts share the authored source transaction. The
-//! evaluator and delivery worker own decisions; this module freezes their facts.
+//! Signal checkpoints and delivery receipts share the authored source
+//! transaction. The evaluator and delivery worker make the decisions; this
+//! module stores them unchanged.
 use crate::{Result, StoreError, source::Source};
 use polylogue_model::{
     authored::{AuthoredEffect, DeliveryRecord, ExecutionEligibility},
@@ -13,12 +14,12 @@ use std::collections::BTreeSet;
 pub(crate) fn checkpoint(
     conn: &Connection,
     source: Source,
-    owner: &str,
+    evaluator: &str,
 ) -> Result<Option<Checkpoint>> {
     let body: Option<Vec<u8>> = conn
         .query_row(
             &source.sql("SELECT body FROM @source.signal_state WHERE owner=?1"),
-            [owner],
+            [evaluator],
             |r| r.get(0),
         )
         .optional()?;
@@ -54,7 +55,7 @@ fn identity(value: &Metadata) -> Result<()> {
         || value.notice.outlets != Outlets::of(&value.delivery.decision)
     {
         return Err(StoreError::Invalid(
-            "signal outbox identity disagrees with its trigger".into(),
+            "pending delivery identity disagrees with its trigger".into(),
         ));
     }
     Ok(())
@@ -68,7 +69,7 @@ pub(crate) fn write(
     let source = Source::of(conn)?;
     if commit.checkpoint.owner != request.machine {
         return Err(StoreError::Invalid(
-            "signal checkpoint owner differs from accepting machine".into(),
+            "signal checkpoint evaluator differs from the accepting machine".into(),
         ));
     }
     let prior = checkpoint(conn, source, &commit.checkpoint.owner)?
@@ -78,27 +79,27 @@ pub(crate) fn write(
         return Err(StoreError::Conflict("signal checkpoint changed".into()));
     }
     let mut ids = BTreeSet::new();
-    for outbox in &commit.outbox {
-        identity(&outbox.metadata)?;
-        if outbox.record.sender != "signal" {
+    for pending in &commit.outbox {
+        identity(&pending.metadata)?;
+        if pending.record.sender != "signal" {
             return Err(StoreError::Invalid(
-                "signal delivery must retain its typed sender".into(),
+                "signal delivery must keep its typed sender".into(),
             ));
         }
-        let id = outbox.metadata.delivery.id().to_owned();
-        if !ids.insert(id.clone()) || outbox.metadata.execution != ExecutionEligibility::Live {
+        let id = pending.metadata.delivery.id().to_owned();
+        if !ids.insert(id.clone()) || pending.metadata.execution != ExecutionEligibility::Live {
             return Err(StoreError::Invalid(
-                "new signal outbox must have one live identity".into(),
+                "each new pending delivery must have one live identity".into(),
             ));
         }
-        let at = polylogue_model::Timestamp::from_unix_ms(outbox.metadata.delivery.at)
+        let at = polylogue_model::Timestamp::from_unix_ms(pending.metadata.delivery.at)
             .ok_or_else(|| StoreError::Invalid("signal time is out of range".into()))?;
         crate::primary::authored::store_delivery(
             conn,
             &DeliveryRecord {
                 id,
-                signal: Some(outbox.metadata.clone()),
-                prepared: outbox.record.clone(),
+                signal: Some(pending.metadata.clone()),
+                prepared: pending.record.clone(),
                 at,
                 events: Vec::new(),
             },
@@ -150,7 +151,7 @@ fn store_checkpoint(conn: &Connection, value: &Checkpoint, counter: i64) -> Resu
 }
 fn number(value: u64) -> Result<i64> {
     i64::try_from(value)
-        .map_err(|_| StoreError::Invalid("signal receipt order exceeds SQLite range".into()))
+        .map_err(|_| StoreError::Invalid("signal commit order exceeds SQLite range".into()))
 }
 fn insert_event(conn: &Connection, value: &EventRecord, counter: i64) -> Result<()> {
     if value.position == 0 || value.request.is_empty() {
@@ -223,7 +224,7 @@ pub(crate) fn copy(from: &Connection, to: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Validate imported frozen histories before any row is applied.
+/// Validate imported recorded histories before any row is applied.
 pub(crate) fn validate(prepared: &polylogue_model::authored::PreparedRequest) -> Result<()> {
     let effect = &prepared.effect;
     let mut identities = BTreeSet::new();
@@ -253,7 +254,7 @@ pub(crate) fn validate(prepared: &polylogue_model::authored::PreparedRequest) ->
             .iter()
             .find(|d| d.delivery.id == id)
             .and_then(|d| d.delivery.signal.as_ref())
-            .ok_or_else(|| StoreError::Invalid("signal event has no frozen delivery".into()))?;
+            .ok_or_else(|| StoreError::Invalid("signal event has no recorded delivery".into()))?;
         if let polylogue_model::signal::Event::HostDecision { delivery } = &event.event
             && delivery.fired.trigger != metadata.delivery.fired.trigger
         {
@@ -275,7 +276,7 @@ pub(crate) fn validate(prepared: &polylogue_model::authored::PreparedRequest) ->
         polylogue_model::user::UserWrite::SignalCommit(commit) => {
             if effect.signal_checkpoints.as_slice() != [commit.checkpoint.clone()] {
                 return Err(StoreError::Invalid(
-                    "signal checkpoint differs from frozen request".into(),
+                    "signal checkpoint differs from recorded request".into(),
                 ));
             }
             for (ordinal, event) in commit.events.iter().enumerate() {
@@ -285,18 +286,18 @@ pub(crate) fn validate(prepared: &polylogue_model::authored::PreparedRequest) ->
                         && &e.event == event
                 }) {
                     return Err(StoreError::Invalid(
-                        "signal receipt differs from frozen request".into(),
+                        "signal receipt differs from recorded request".into(),
                     ));
                 }
             }
-            for outbox in &commit.outbox {
+            for pending in &commit.outbox {
                 if !effect.deliveries.iter().any(|d| {
-                    d.delivery.id == outbox.metadata.delivery.id()
-                        && d.delivery.signal.as_ref() == Some(&outbox.metadata)
-                        && d.delivery.prepared == outbox.record
+                    d.delivery.id == pending.metadata.delivery.id()
+                        && d.delivery.signal.as_ref() == Some(&pending.metadata)
+                        && d.delivery.prepared == pending.record
                 }) {
                     return Err(StoreError::Invalid(
-                        "signal outbox differs from frozen request".into(),
+                        "pending delivery differs from recorded request".into(),
                     ));
                 }
             }

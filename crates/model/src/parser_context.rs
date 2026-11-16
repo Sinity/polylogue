@@ -92,7 +92,7 @@ impl Handle {
             Some(Error::Cancelled)
         )
     }
-    /// Any backend failure rejects the entire parse result before publication.
+    /// Any backend failure rejects the entire parse result before it is stored.
     pub fn check(&self) -> Result<(), String> {
         match &self.0.lock().expect("parser context lock").error {
             Some(error) => Err(error.to_string()),

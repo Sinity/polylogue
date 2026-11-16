@@ -122,7 +122,7 @@ fn explicit_local_artifacts_are_reusable_for_diff_without_archive_access() {
 }
 
 #[test]
-fn artifact_diff_reports_declared_type_changes_in_empty_native_tables() {
+fn artifact_diff_reports_type_changes_in_empty_tables() {
     let dir = tempfile::tempdir().unwrap();
     let before = dir.path().join("before.json");
     let after = dir.path().join("after.json");

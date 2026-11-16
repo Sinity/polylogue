@@ -1,4 +1,4 @@
-//! A native item-only rollout with orphan usage, delayed tool results and quota.
+//! A Codex item-only rollout with orphan usage, delayed tool results and quota.
 use serde_json::json;
 
 pub fn observations(thread: &str) -> String {

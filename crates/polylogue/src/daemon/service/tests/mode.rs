@@ -166,7 +166,7 @@ fn malformed_primary_configuration_does_not_reclassify_a_standalone_archive() {
     assert_eq!(w.count("SELECT count(*) AS n FROM message"), 1);
     assert!(
         Archive::open_or_create(&w.root).is_ok(),
-        "failed startup retained its lock"
+        "failed startup kept its lock"
     );
 }
 
@@ -186,7 +186,7 @@ fn missing_config_is_standalone() {
 }
 
 #[test]
-fn primary_outage_preserves_raw_custody_without_standalone_fallback_or_owner_day() {
+fn sinex_outage_keeps_raw_bytes_without_standalone_day() {
     for existing in [false, true] {
         let w = ClaudeHome::new();
         let store = w.dir.path().join("sinex-store");
@@ -268,7 +268,7 @@ fn pending_requests(runtime: &Runtime) -> Vec<polylogue_model::authored::Prepare
 }
 
 #[test]
-fn offline_settings_and_chat_preparation_keep_distinct_durable_receipts() {
+fn offline_setting_and_chat_writes_keep_own_results() {
     let home = ClaudeHome::new();
     let runtime = launch(primary(&home)).unwrap();
     let setting = primary_table_call(
@@ -284,12 +284,13 @@ fn offline_settings_and_chat_preparation_keep_distinct_durable_receipts() {
             .iter()
             .any(|note| note == crate::protocol::AWAITING_CONFIRMATION)
     );
-    let crate::protocol::setting::Answer::Receipt(receipt) = serde_json::from_value(value).unwrap()
+    let crate::protocol::setting::Answer::Outcome(write_result) =
+        serde_json::from_value(value).unwrap()
     else {
-        panic!("setting write must retain its user receipt")
+        panic!("setting write must keep its write result")
     };
-    assert!(receipt.pending);
-    assert!(!receipt.id.is_empty());
+    assert!(write_result.pending);
+    assert!(!write_result.id.is_empty());
     let pending_before_retry = pending_requests(&runtime);
     let repeated = primary_table_call(
         &runtime,
@@ -298,15 +299,15 @@ fn offline_settings_and_chat_preparation_keep_distinct_durable_receipts() {
         "enable-offline-chat",
     );
     let (value, _) = crate::test_answers::degraded(repeated);
-    let crate::protocol::setting::Answer::Receipt(repeat) = serde_json::from_value(value).unwrap()
+    let crate::protocol::setting::Answer::Outcome(repeat) = serde_json::from_value(value).unwrap()
     else {
-        panic!("repeat must retain its user receipt")
+        panic!("repeat must keep its write result")
     };
-    assert_eq!(repeat.id, receipt.id);
+    assert_eq!(repeat.id, write_result.id);
     assert!(repeat.pending && repeat.repeat);
     assert_eq!(pending_requests(&runtime), pending_before_retry);
 
-    let bytes = b"Synthetic attachment awaiting owner confirmation";
+    let bytes = b"Synthetic attachment awaiting Sinex confirmation";
     let args = serde_json::json!({"provider":"chatgpt","model":"example","text":"A synthetic draft","files":[{"name":"attachment.txt","media_type":"text/plain","bytes":bytes.to_vec()}]});
     let unconfirmed =
         primary_table_call(&runtime, "chat send", args.clone(), "pending-file-action");
@@ -327,7 +328,7 @@ fn offline_settings_and_chat_preparation_keep_distinct_durable_receipts() {
     let prepared = pending_before_retry
         .into_iter()
         .find(|prepared| {
-            prepared.outcome.id == receipt.id
+            prepared.outcome.id == write_result.id
                 && matches!(&prepared.request.write,
             polylogue_model::user::UserWrite::SetSetting { key, .. } if key == "browser.actions")
         })
@@ -342,14 +343,14 @@ fn offline_settings_and_chat_preparation_keep_distinct_durable_receipts() {
         writer
             .apply_confirmed(vec![
                 Confirmed {
-                    native: None,
+                    sinex_context: None,
                     position: 1,
                     output_index: 0,
                     event: "synthetic-confirmed-browser-policy".into(),
                     change: ConfirmedChange::Live(Box::new(Product::Request(prepared))),
                 },
                 Confirmed {
-                    native: None,
+                    sinex_context: None,
                     position: 1,
                     output_index: 0,
                     event: String::new(),
@@ -379,7 +380,7 @@ fn offline_settings_and_chat_preparation_keep_distinct_durable_receipts() {
     let crate::protocol::browser::ChatAnswer::Capture(capture) =
         serde_json::from_value(value).unwrap()
     else {
-        panic!("file custody is not a queued action")
+        panic!("a held file is not a queued action")
     };
     assert!(!capture.identity.is_empty());
     assert!(!pending_requests(&runtime).iter().any(|prepared| matches!(
@@ -391,7 +392,7 @@ fn offline_settings_and_chat_preparation_keep_distinct_durable_receipts() {
     let crate::protocol::browser::ChatAnswer::Capture(retry) =
         serde_json::from_value(value).unwrap()
     else {
-        panic!("retry must retain capture custody")
+        panic!("retry must keep the held capture")
     };
     assert_eq!(retry.identity, capture.identity);
 
@@ -404,15 +405,15 @@ fn offline_settings_and_chat_preparation_keep_distinct_durable_receipts() {
     assert_eq!(action.http_status(), Some(200), "{action:?}");
     let (value, _) = crate::test_answers::degraded(action);
     assert!(value.get("queued").is_none() && value.get("action").is_none());
-    let crate::protocol::browser::ChatAnswer::Receipt(receipt) =
+    let crate::protocol::browser::ChatAnswer::Outcome(write_result) =
         serde_json::from_value(value).unwrap()
     else {
-        panic!("authored custody must retain its user receipt")
+        panic!("a held authored write must keep its write result")
     };
-    assert!(receipt.pending);
+    assert!(write_result.pending);
     let prepared = pending_requests(&runtime);
-    let action=prepared.iter().find(|prepared|matches!(&prepared.request.write,polylogue_model::user::UserWrite::ChatEnqueue(action) if action.id==receipt.id)).expect("the exact authored action is durable in the outbox");
-    assert_eq!(action.outcome.id, receipt.id);
+    let action=prepared.iter().find(|prepared|matches!(&prepared.request.write,polylogue_model::user::UserWrite::ChatEnqueue(action) if action.id==write_result.id)).expect("the exact authored action is durable in the outbox");
+    assert_eq!(action.outcome.id, write_result.id);
     assert!(
         runtime
             .daemon

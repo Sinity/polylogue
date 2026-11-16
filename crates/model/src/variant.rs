@@ -1,5 +1,5 @@
-//! Renditions of exact source text. A variant is separate from assertions;
-//! its parts retain explicit alignment to the original children.
+//! Renditions of source text. A variant is separate from assertions; its
+//! parts keep explicit alignment to the original children.
 
 use crate::{Author, BlobHash, Timestamp};
 use serde::{Deserialize, Serialize};

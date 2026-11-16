@@ -33,7 +33,7 @@ impl Drop for PeerCleanup<'_> {
 fn cancelled_read(disconnect: bool, name: &str) {
     let mut daemon = test_daemon::start_with_workers("MCP cancellation", 4);
     // As in the deadline fixture, join the unrelated signal poller before
-    // blocking storage, so its background work cannot retain a reader here.
+    // blocking storage, so its background work cannot keep a reader here.
     daemon.pause_signals();
     let lock = std::fs::File::open(daemon.daemon.archive.archive_db()).unwrap();
     lock.lock().unwrap();
@@ -74,9 +74,9 @@ fn cancelled_read(disconnect: bool, name: &str) {
             std::thread::yield_now();
         }
         let started = limit.reader_acquired();
-        let acquisition_check = format!("{:?}", limit.check());
-        let acquisition_slots = daemon.daemon.reads.checked_out();
-        let mut acquisition_reply = Vec::new();
+        let checkout_check = format!("{:?}", limit.check());
+        let checkout_slots = daemon.daemon.reads.checked_out();
+        let mut checkout_reply = Vec::new();
         if !started {
             client
                 .set_read_timeout(Some(Duration::from_millis(1)))
@@ -85,19 +85,19 @@ fn cancelled_read(disconnect: bool, name: &str) {
                 line.clear();
                 match input.read_line(&mut line) {
                     Ok(0) => {
-                        acquisition_reply.push("MCP closed without an answer".into());
+                        checkout_reply.push("MCP closed without an answer".into());
                         break;
                     }
                     Ok(_) => {
                         let answered = serde_json::from_str::<Value>(&line)
                             .is_ok_and(|reply| reply["id"] == 2);
-                        acquisition_reply.push(line.clone());
+                        checkout_reply.push(line.clone());
                         if answered {
                             break;
                         }
                     }
                     Err(error) => {
-                        acquisition_reply.push(format!("MCP read: {error:?}"));
+                        checkout_reply.push(format!("MCP read: {error:?}"));
                         break;
                     }
                 }
@@ -118,11 +118,11 @@ fn cancelled_read(disconnect: bool, name: &str) {
         {
             std::thread::yield_now();
         }
-        let owner_slots = daemon.daemon.reads.checked_out_by(limit.owner);
-        let released = owner_slots == 0;
+        let request_slots = daemon.daemon.reads.checked_out_by(limit.owner);
+        let released = request_slots == 0;
         let cancelled = limit.cancellation.is_cancelled();
         let slots = daemon.daemon.reads.checked_out();
-        // Teardown must also finish when the regression retains its reader.
+        // Teardown must also finish when the regression keeps its reader.
         lock.unlock().unwrap();
         let _ = client.shutdown(Shutdown::Both);
         let _ = service.join().unwrap();
@@ -132,13 +132,13 @@ fn cancelled_read(disconnect: bool, name: &str) {
         );
         assert!(
             released,
-            "MCP {name} retained its reader after cancellation: cancelled={cancelled}, owner_slots={owner_slots}, pool_slots={slots}, limit={:?}",
+            "MCP {name} kept its reader after cancellation: cancelled={cancelled}, request_slots={request_slots}, pool_slots={slots}, limit={:?}",
             limit.limit
         );
         assert!(cancelled, "MCP {name} did not cancel its daemon read");
         assert!(
             started,
-            "MCP {name} never acquired its reader: request={params}, reply={acquisition_reply:?}, acquisition_check={acquisition_check}, pool_slots={acquisition_slots}, queued_cancellation={cancelled}, released_slots={owner_slots}, stop_error={stop_error:?}, limit={:?}",
+            "MCP {name} never acquired its reader: request={params}, reply={checkout_reply:?}, checkout_check={checkout_check}, pool_slots={checkout_slots}, queued_cancellation={cancelled}, released_slots={request_slots}, stop_error={stop_error:?}, limit={:?}",
             limit.limit
         );
     });
@@ -236,7 +236,7 @@ fn context_deadline(name: &str) {
         .unwrap();
     let mut input = BufReader::new(client.try_clone().unwrap());
     let archive = Archive::at(&daemon.daemon.archive.root);
-    let (answer, started, acquisition, owner_slots, pool_slots) = std::thread::scope(|scope| {
+    let (answer, started, checkout, request_slots, pool_slots) = std::thread::scope(|scope| {
         let _cleanup = PeerCleanup {
             socket: client.try_clone().unwrap(),
             lock: Some(&lock),
@@ -262,8 +262,8 @@ fn context_deadline(name: &str) {
             std::thread::yield_now();
         }
         let started = limit.reader_acquired();
-        let acquisition = format!(
-            "request={params}, check={:?}, remaining={:?}, owner_slots={}, pool_slots={}, limit={:?}",
+        let checkout = format!(
+            "request={params}, check={:?}, remaining={:?}, request_slots={}, pool_slots={}, limit={:?}",
             limit.check(),
             limit.remaining(),
             daemon.daemon.reads.checked_out_by(limit.owner),
@@ -280,21 +280,21 @@ fn context_deadline(name: &str) {
         {
             std::thread::yield_now();
         }
-        let owner_slots = daemon.daemon.reads.checked_out_by(limit.owner);
+        let request_slots = daemon.daemon.reads.checked_out_by(limit.owner);
         let pool_slots = daemon.daemon.reads.checked_out();
         // Release fixture holds before assertions so a failing regression also joins.
         lock.unlock().unwrap();
         let _ = client.shutdown(Shutdown::Both);
         let _ = service.join().unwrap();
-        (answer, started, acquisition, owner_slots, pool_slots)
+        (answer, started, checkout, request_slots, pool_slots)
     });
     assert!(
         started,
-        "MCP {name} never acquired its reader: {acquisition}, reply={answer:?}"
+        "MCP {name} never acquired its reader: {checkout}, reply={answer:?}"
     );
     assert!(
-        owner_slots == 0,
-        "MCP {name} retained its daemon reader after the deadline: owner_slots={owner_slots}, pool_slots={pool_slots}"
+        request_slots == 0,
+        "MCP {name} kept its daemon reader after the deadline: request_slots={request_slots}, pool_slots={pool_slots}"
     );
     let answer = answer.expect("MCP context did not answer its explicit deadline");
     let reply: Value = serde_json::from_str(&answer).unwrap();

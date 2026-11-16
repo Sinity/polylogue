@@ -104,7 +104,7 @@ pub fn note(note: &Note, roots: &BTreeMap<String, String>) -> Mapped<AssertionFa
     for (relation, other) in &note.relations {
         let role = role(relation)?;
         let target = reference(other, role, roots)?;
-        // A predecessor relation already states what the note is about.
+        // A relation in the older format already states what the note is about.
         if role.is_relation()
             && !links
                 .iter()
@@ -172,7 +172,7 @@ pub fn settings(rows: &[Setting], machines: &[Machine]) -> Vec<(String, Mapped<A
             let value = polylogue_model::settings::parse(
                 &row.key,
                 &row.value,
-                polylogue_model::settings::Owner::Standalone,
+                polylogue_model::settings::SettingMode::Standalone,
             )
             .map_err(|error| error.to_string())?;
             let target = polylogue_model::settings::target_machine(&row.key, explicit, &written_on)

@@ -1,4 +1,4 @@
-//! One read of a session produces its clocks, tool unions and time lanes.
+//! One read of a session produces its clocks, tool unions and time per party.
 //! An append reads only the messages after the last settled one
 //! ([`crate::measure::time::derive`]).
 use super::{Class, Derivation, Output, Version};

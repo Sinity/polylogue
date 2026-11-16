@@ -319,7 +319,7 @@ pub(crate) fn settings_file(
                             .collect::<Vec<_>>()
                             .join(", ")
                     )
-                } else if current.owner == "sinex" {
+                } else if current.supplier == "sinex" {
                     "owned by Sinex".into()
                 } else {
                     current

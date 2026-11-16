@@ -47,7 +47,7 @@ fn a_new_saved_query_name_is_one_query_name_can_say() {
 }
 
 #[test]
-fn authored_target_shapes_preserve_exact_judgments_and_page_membership() {
+fn authored_target_shapes_preserve_judgments_and_page_membership() {
     assert!(
         check(
             AssertionKind::Note,
@@ -155,7 +155,7 @@ fn authored_target_shapes_preserve_exact_judgments_and_page_membership() {
     );
 }
 #[test]
-fn relation_shapes_allow_query_evidence_but_hold_authored_revisions_exact() {
+fn relation_shapes_allow_query_evidence_but_pin_authored_revisions() {
     let links = [
         (LinkRole::About, "message:codex:m"),
         (LinkRole::DerivedFrom, "result:population"),
@@ -218,7 +218,7 @@ fn relation_shapes_allow_query_evidence_but_hold_authored_revisions_exact() {
     }
 }
 #[test]
-fn revision_and_withdrawal_policy_rejects_mixed_roots_without_resolving_targets() {
+fn revisions_and_withdrawals_refuse_mixed_roots() {
     assert!(
         check(
             AssertionKind::Claim,

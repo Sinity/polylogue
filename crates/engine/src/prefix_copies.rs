@@ -12,7 +12,7 @@
 //! the most of (the newest of equals), among the chains that can
 //! still be at that point: chains not read yet, and chains read no further
 //! than it. A chain identical to a newer one is copied once that chain is
-//! read, after the newest chains of the pass ([`crate::Engine::copy_same_bytes`]);
+//! read, after the newest chains of the pass ([`crate::Engine::copy_identical_readings`]);
 //! any other copy is taken as the newer chain's parse passes its stop.
 //!
 //! [docs/archive.md]: ../../../docs/archive.md
@@ -173,7 +173,7 @@ impl Shared<'_> {
 fn copies_from(engine: &Engine, plan: &Plan) -> Option<i64> {
     if engine.archive.is_primary()
         || plan.replace
-        || plan.raw.is_some()
+        || plan.byte_read.is_some()
         || plan.parser_deferred
         || !crate::has_reading(plan.origin)
         || plan.origin.is_row_dump(&plan.path)
@@ -309,8 +309,8 @@ impl Engine {
     /// Records each older chain whose stop the plan's parse has reached from
     /// the reading the plan's chain has now. The pool reports a range only
     /// after the writer committed it, and the plan's next range is queued
-    /// only after these copies, so each copy takes the reading exactly at the
-    /// plan's position. A copy that would not be exact is left out; that
+    /// only after these copies, so each copy takes the reading at the plan's
+    /// position. A copy that would differ is left out; that
     /// chain is parsed whole later in the pass.
     pub(crate) fn make_due_copies(
         &mut self,

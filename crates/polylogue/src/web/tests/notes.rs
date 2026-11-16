@@ -102,7 +102,7 @@ async fn command(f: &Fixture, operation: &str, id: &str, arguments: Value) -> Va
     assert_eq!(status, StatusCode::OK, "{answer:?}");
     answer
         .value()
-        .expect("successful canonical answer has its typed value")
+        .expect("successful answer has its typed value")
         .clone()
 }
 async fn query(f: &Fixture, text: &str) -> Value {
@@ -132,7 +132,7 @@ async fn revise(f: &Fixture, id: &str, root: &str, base: &str, value: Value) {
 }
 async fn stored(f: &Fixture, root: &str, revision: &str) -> Assertion {
     let reference = format!("assertion:{root}@{revision}");
-    // The original object-read oracle now checks the complete canonical stream.
+    // The original object-read oracle now checks the complete answer stream.
     // No deadline is lifted and no generated child is rewritten.
     let (status, bytes) = send_raw(
         f,
@@ -208,7 +208,7 @@ async fn stored(f: &Fixture, root: &str, revision: &str) -> Assertion {
     assert_eq!(
         found,
         vec![row.fact.clone()],
-        "HTTP must retain the complete exact fact, including links, original authorship and clock"
+        "HTTP must return the whole assertion, including links, original authorship and clock"
     );
     row
 }
@@ -240,7 +240,7 @@ fn about(row: &Assertion) -> Vec<String> {
 }
 
 #[test]
-fn operator_edits_and_judgments_of_agent_revisions_keep_exact_evidence() {
+fn operator_edits_and_judgments_keep_earlier_revisions() {
     run(async {
         let f = fixture();
         assert_one(&f, "own", note("first <script>")).await;
@@ -556,7 +556,7 @@ fn semantic_and_mixed_annotation_use_the_public_query_population() {
             let recorded = reader.user_request(&id).unwrap().unwrap();
             let polylogue_model::user::UserWrite::AssertQuery { resolved, .. } = recorded.write
             else {
-                panic!("canonical bulk intent must retain its frozen population")
+                panic!("bulk request must keep its recorded population")
             };
             assert_eq!(resolved.len(), selected.len());
             let actual = resolved
@@ -641,7 +641,7 @@ fn bulk_retry_uses_committed_targets_after_the_query_becomes_empty() {
 }
 
 #[test]
-fn assertion_projection_and_saved_query_edits_preserve_exact_metadata() {
+fn assertion_fields_and_saved_query_edits_keep_metadata() {
     run(async {
         let f = fixture();
         command(

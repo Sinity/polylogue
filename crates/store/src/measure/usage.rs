@@ -54,7 +54,7 @@ pub struct ModelUsage {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct UsageReport {
-    /// Physical records, with known response rows and independent observations apart.
+    /// Recorded usage records, with known response rows and independent observations apart.
     pub grain: &'static str,
     /// Time bounds select source record times, not API spend times.
     pub timed_by: &'static str,
@@ -357,7 +357,7 @@ pub(super) fn unknown_items(
 }
 
 pub(super) fn unknown_scope(reader: &Reader<'_>, selection: &Selection) -> Result<bool> {
-    // Missing boundary evidence is a property of the selected source selection;
+    // Unknown response boundaries are a property of the selected sources;
     // a later record-time window cannot turn it into known boundaries.
     let selection = Selection {
         since: None,
@@ -433,14 +433,14 @@ pub(super) fn recorded_with(
 }
 
 fn mark_unknown(tokens: &mut TokensByKind, money: &mut Money, unknown: bool) {
-    for lane in [
+    for token_kind in [
         &mut tokens.input,
         &mut tokens.cached_input,
         &mut tokens.cache_write,
         &mut tokens.output,
         &mut tokens.reasoning,
     ] {
-        lane.response_total_unknown = unknown;
+        token_kind.response_total_unknown = unknown;
     }
     money.response_total_unknown = unknown;
 }

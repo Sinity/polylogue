@@ -21,7 +21,7 @@ use std::thread::ThreadId;
 pub mod limit;
 pub mod scope;
 
-pub mod authored_evidence;
+pub mod authored_read;
 mod object;
 pub use object::ObjectRead;
 mod behind_index;
@@ -31,9 +31,9 @@ mod captured;
 mod cursor_generation;
 pub use cursor_generation::open_cursor;
 mod fragment;
-mod native_hook_fields;
+mod hook_fields;
 pub use fragment::{
-    FragmentAvailability, FragmentClaim, FragmentClaims, FragmentConflict, FragmentSelection,
+    FragmentAgreement, FragmentAvailability, FragmentConflict, FragmentSelection, StatedFragment,
 };
 mod parser_checkpoint;
 pub use parser_checkpoint::StoredParserCheckpoint;
@@ -59,13 +59,13 @@ use order::RecordOrder;
 
 pub use parents::{MessageSelection, ParentIssue, Parents, VisitStart};
 
-struct MessageEvidence {
+struct MessageArrival {
     order: Option<i64>,
     fact: Option<i64>,
     source: Option<(String, i64, i64)>,
 }
 
-impl MessageEvidence {
+impl MessageArrival {
     fn record(self, conn: &Connection) -> Result<(Option<u64>, u64)> {
         let order = order::checked(self.order.ok_or_else(|| {
             StoreError::Invalid("message snapshot ordinal was not selected".into())
@@ -77,14 +77,14 @@ impl MessageEvidence {
         if let Some(fact) = self.fact {
             return u64::try_from(fact)
                 .map(Some)
-                .map_err(|_| StoreError::Invalid("negative message admission".into()));
+                .map_err(|_| StoreError::Invalid("negative message commit".into()));
         }
         let Some((input, chain, end)) = self.source else {
             return Ok(None);
         };
         let end = u64::try_from(end)
             .map_err(|_| StoreError::Invalid("negative message source endpoint".into()))?;
-        crate::source::Source::admitted_through(conn, &input, chain, end)
+        crate::source::Source::committed_through(conn, &input, chain, end)
     }
 }
 
@@ -128,7 +128,7 @@ thread_local! {
 
 /// Runs `work` with access to the pool's reserved connection, for the
 /// interactive answers that must keep their budget while bulk reads hold
-/// every ordinary connection.
+/// every other connection.
 pub fn reserved_reads<T>(work: impl FnOnce() -> T) -> T {
     struct Restore(bool);
     impl Drop for Restore {
@@ -148,7 +148,7 @@ struct PoolState {
     live: usize,
     /// Checked-out and still-opening connections.
     in_use: usize,
-    owners: HashMap<ThreadId, usize>,
+    holders: HashMap<ThreadId, usize>,
     #[cfg(test)]
     waiters: usize,
 }
@@ -157,16 +157,16 @@ struct PoolState {
 /// attached as `a`. Acquire, use and drop it on the same thread. Returned to
 /// the pool when dropped. Holding a reader slot takes no read lock; the first
 /// database access starts the read on both databases and checks them.
-/// Assertion currency is stored (`revision_state`), so no read builds it.
+/// Current assertion revisions are stored (`revision_state`), so no read builds it.
 pub struct Reader<'a> {
     pool: &'a ReadPool,
     conn: Option<Connection>,
     index_identity: Option<IndexIdentity>,
     state: std::cell::Cell<ReadState>,
-    owner: ThreadId,
+    holder: ThreadId,
     limit: Option<limit::ReadLimit>,
     scope: scope::ReadScopeToken,
-    // ThreadId ownership detects self-exhaustion only if live readers stay
+    // Counting holders by ThreadId detects self-exhaustion only if live readers stay
     // on their checkout thread. The marker makes that invariant enforceable.
     thread_bound: std::marker::PhantomData<std::rc::Rc<()>>,
     vectors: std::cell::RefCell<Option<crate::vectors::Vectors>>,
@@ -190,7 +190,7 @@ type IndexIdentity = (PathBuf, u64, u64);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KnownInput {
     pub path: String,
-    /// None is historical missing identity evidence, never a UTF-8 fallback.
+    /// None means an older record has no path bytes; never a UTF-8 fallback.
     pub path_bytes: Option<Vec<u8>>,
     pub input_id: String,
     pub format: String,
@@ -328,7 +328,7 @@ impl ReadPool {
         })
     }
 
-    /// The connections ordinary reads may hold at once.
+    /// The connections reads may hold at once, besides the reserved one.
     #[cfg(any(test, feature = "fixture"))]
     pub fn max_readers(&self) -> usize {
         self.max_readers
@@ -336,16 +336,16 @@ impl ReadPool {
 
     #[cfg(any(test, feature = "fixture"))]
     pub fn checked_out(&self) -> usize {
-        self.state.lock().unwrap().owners.values().sum()
+        self.state.lock().unwrap().holders.values().sum()
     }
 
     #[cfg(any(test, feature = "fixture"))]
-    pub fn checked_out_by(&self, owner: ThreadId) -> usize {
+    pub fn checked_out_by(&self, thread: ThreadId) -> usize {
         self.state
             .lock()
             .unwrap()
-            .owners
-            .get(&owner)
+            .holders
+            .get(&thread)
             .copied()
             .unwrap_or(0)
     }
@@ -409,7 +409,7 @@ impl ReadPool {
         Ok(conn)
     }
 
-    /// Pins the admission scope without acquiring a SQL reader.
+    /// Pins the commit scope without acquiring a SQL reader.
     pub fn scope_token(&self) -> Result<scope::ReadScopeToken> {
         self.archive.read_scope.token()
     }
@@ -429,7 +429,7 @@ impl ReadPool {
         if let Some(limit) = &limit {
             limit.bind_scope(scope.clone())?;
         }
-        let owner = std::thread::current().id();
+        let holder = std::thread::current().id();
         let capacity = self.max_readers + usize::from(RESERVED.with(std::cell::Cell::get));
         // The process's stop and a cancelled request wake a waiting checkout;
         // the deadline bounds the wait. Nothing polls.
@@ -455,7 +455,7 @@ impl ReadPool {
                 }
                 if state.in_use < capacity {
                     state.in_use += 1;
-                    *state.owners.entry(owner).or_default() += 1;
+                    *state.holders.entry(holder).or_default() += 1;
                     match state.idle.pop() {
                         Some(conn) => break Some(conn),
                         None => {
@@ -464,7 +464,7 @@ impl ReadPool {
                         }
                     }
                 }
-                if state.owners.contains_key(&owner) {
+                if state.holders.contains_key(&holder) {
                     return Err(StoreError::ReadPoolNested);
                 }
                 #[cfg(test)]
@@ -494,7 +494,7 @@ impl ReadPool {
             conn: None,
             index_identity: None,
             state: std::cell::Cell::new(ReadState::Deferred),
-            owner,
+            holder,
             limit,
             scope,
             thread_bound: std::marker::PhantomData,
@@ -595,10 +595,10 @@ impl Drop for Reader<'_> {
             .state
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if let Some(held) = state.owners.get_mut(&self.owner) {
+        if let Some(held) = state.holders.get_mut(&self.holder) {
             *held -= 1;
             if *held == 0 {
-                state.owners.remove(&self.owner);
+                state.holders.remove(&self.holder);
             }
         }
         state.in_use -= 1;
@@ -687,13 +687,13 @@ impl Reader<'_> {
         Ok(u64::try_from(current).unwrap_or(0))
     }
 
-    /// As-of assertion reads need the currency of the records written before
-    /// `cutoff`, computed once per cutoff in this read transaction. Present
-    /// currency is stored and needs no preparation.
+    /// As-of assertion reads need the current revisions among the records written
+    /// before `cutoff`, computed once per cutoff in this read transaction. Present
+    /// current revisions are stored and needs no preparation.
     pub(crate) fn prepare_assertion_history(&self, cutoff: i64) -> Result<()> {
         let conn = self.conn()?;
         if !self.assertion_history_ready.borrow().contains(&cutoff) {
-            crate::assertions::currency::prepare_history(conn, cutoff)?;
+            crate::assertions::current_revisions::prepare_history(conn, cutoff)?;
             self.check()?;
             self.assertion_history_ready.borrow_mut().insert(cutoff);
         }
@@ -765,7 +765,7 @@ impl Reader<'_> {
             ReadState::IndexReplaced => return Err(StoreError::ReadIndexReplaced),
             ReadState::Deferred => {
                 // An unused slot holds no read and no lock. Start the read on
-                // both databases and check them at the first actual access.
+                // both databases and check them at the first database access.
                 if self.pool.state.lock().map_err(|_| pool_poisoned())?.closed {
                     return Err(StoreError::ReadPoolClosed);
                 }
@@ -836,11 +836,11 @@ impl Reader<'_> {
     }
 
     pub fn confirmed_position(&self) -> Result<i64> {
-        crate::primary::projection::position(self.conn()?)
+        crate::primary::confirmed::position(self.conn()?)
     }
 
     pub fn confirmed_checkpoint(&self) -> Result<Option<i64>> {
-        crate::primary::projection::checkpoint(self.conn()?)
+        crate::primary::confirmed::checkpoint(self.conn()?)
     }
 
     /// How many confirmed events Polylogue could not read, and the reason
@@ -848,10 +848,10 @@ impl Reader<'_> {
     pub fn confirmed_refusals(&self) -> Result<(u64, Option<String>)> {
         let conn = self.conn()?;
         let count: i64 =
-            conn.query_row("SELECT count(*) FROM primary_refused r LEFT JOIN primary_fact f ON f.event=r.event WHERE f.event IS NULL OR f.state='live'", [], |row| row.get(0))?;
+            conn.query_row("SELECT count(*) FROM primary_refused r LEFT JOIN confirmed_event f ON f.event=r.event WHERE f.event IS NULL OR f.state='live'", [], |row| row.get(0))?;
         let latest = conn
             .query_row(
-                "SELECT r.kind,r.position,r.reason FROM primary_refused r LEFT JOIN primary_fact f ON f.event=r.event WHERE f.event IS NULL OR f.state='live' ORDER BY r.position DESC LIMIT 1",
+                "SELECT r.kind,r.position,r.reason FROM primary_refused r LEFT JOIN confirmed_event f ON f.event=r.event WHERE f.event IS NULL OR f.state='live' ORDER BY r.position DESC LIMIT 1",
                 [],
                 |row| {
                     Ok(format!(
@@ -866,27 +866,27 @@ impl Reader<'_> {
         Ok((u64::try_from(count).unwrap_or_default(), latest))
     }
 
-    /// Original authenticated owner association, independent of native-origin
-    /// eligibility. Absent historical metadata stays unknown.
-    pub fn native_fact_context(
+    /// The context Sinex recorded for the event, whether or not its source
+    /// contributes now. Missing older metadata stays unknown.
+    pub fn sinex_event_context(
         &self,
         event: &str,
-    ) -> Result<Option<crate::primary::NativeFactContext>> {
+    ) -> Result<Option<crate::primary::SinexEventContext>> {
         if !self.pool.archive.is_primary() {
             return Ok(None);
         }
-        crate::primary::projection::native_context(self.conn()?, event)
+        crate::primary::confirmed::sinex_context(self.conn()?, event)
     }
 
     pub fn confirmed_replay_state(&self) -> Result<crate::primary::ReplayState> {
-        crate::primary::projection::replay_state(self.conn()?)
+        crate::primary::confirmed::replay_state(self.conn()?)
     }
 
     pub fn confirmed_scope(&self) -> Result<Option<String>> {
         crate::primary::scope::current(self.conn()?)
     }
 
-    /// Sinex owns this durable grant identity; standalone reads have no grant scope.
+    /// Sinex decides this grant identity; standalone reads have no grant scope.
     pub fn query_scope_fingerprint(&self) -> Result<Option<String>> {
         let scope = crate::primary::scope::current(self.conn()?)?;
         self.conn()?;
@@ -1003,13 +1003,13 @@ impl Reader<'_> {
         Ok(out)
     }
 
-    /// The selected canonical reading and its original block positions in this snapshot.
-    pub fn message_with_projection(
+    /// The shown reading and its original block positions in this snapshot.
+    pub fn message_with_block_selection(
         &self,
         id: &MessageId,
     ) -> Result<Option<(Message, MessageProjection)>> {
         let conn = self.conn()?;
-        let id = crate::parser_context::canonical_message(conn, id)?;
+        let id = crate::parser_context::resolved_message(conn, id)?;
         let hash = conn.query_row(
             "SELECT (SELECT version_hash FROM message_version WHERE pk=s.version_pk) FROM message m LEFT JOIN message_source s ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain
              WHERE m.id=?1",
@@ -1018,27 +1018,27 @@ impl Reader<'_> {
         match hash {
             Some(Some(hash)) => crate::versions::read_message(conn, &hash),
             Some(None) => Err(StoreError::Invalid(
-                "the message has no canonical source reading".into(),
+                "the message has no source reading".into(),
             )),
             None => Ok(None),
         }
     }
 
-    /// Immutable admission of the selected canonical facts, including all
-    /// contributing sparse readings. Native readings use their actual source
-    /// extent admission; unavailable legacy proof stays unknown.
-    pub fn message_admission(&self, id: &MessageId) -> Result<Option<u64>> {
+    /// Commit of the shown stored rows, including all contributing sparse
+    /// readings. A reading of a source file uses its source extent commit; an
+    /// older record without one stays unknown.
+    pub fn message_commit(&self, id: &MessageId) -> Result<Option<u64>> {
         let conn = self.conn()?;
-        let id = crate::parser_context::canonical_message(conn, id)?;
-        let admission = conn
+        let id = crate::parser_context::resolved_message(conn, id)?;
+        let commit = conn
             .query_row(
-                "SELECT p.admitted,i.id,s.chain,s.source_end FROM message m
+                "SELECT p.committed,i.id,s.chain,s.source_end FROM message m
              JOIN message_source s ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain
              JOIN input_ref i ON i.pk=s.input_pk
-             LEFT JOIN message_projection p ON p.version_pk=s.version_pk WHERE m.id=?1",
+             LEFT JOIN message_block_selection p ON p.version_pk=s.version_pk WHERE m.id=?1",
                 [id.to_string()],
                 |row| {
-                    Ok(MessageEvidence {
+                    Ok(MessageArrival {
                         order: None,
                         fact: row.get(0)?,
                         source: Some((row.get(1)?, row.get(2)?, row.get(3)?)),
@@ -1046,8 +1046,8 @@ impl Reader<'_> {
                 },
             )
             .optional()?;
-        match admission {
-            Some(admission) => admission.resolve(conn),
+        match commit {
+            Some(commit) => commit.resolve(conn),
             None => Ok(None),
         }
     }
@@ -1066,7 +1066,7 @@ impl Reader<'_> {
         selected.visit(&mut visit)
     }
 
-    pub fn visit_messages_with_projection(
+    pub fn visit_messages_with_block_selection(
         &self,
         id: &SessionId,
         with_parents: bool,
@@ -1074,7 +1074,7 @@ impl Reader<'_> {
     ) -> Result<()> {
         let selected = self.select_messages(id, with_parents)?;
         selected.require_complete()?;
-        selected.visit_with_projection(&mut visit)
+        selected.visit_with_block_selection(&mut visit)
     }
 
     /// The keys of the messages a session shows with its parents, each once.
@@ -1098,9 +1098,9 @@ impl Reader<'_> {
     fn own_keys(&self, session_pk: i64) -> Result<Vec<(i64, String, i64)>> {
         Ok(self
             .conn()?
-            .prepare_cached(&format!("WITH canonical_order AS ({})
-                SELECT m.pk,m.id,c.record_order FROM canonical_order c JOIN message m ON m.pk=c.pk ORDER BY c.record_order",
-                order::canonical_rows("?1")))?
+            .prepare_cached(&format!("WITH record_ranks AS ({})
+                SELECT m.pk,m.id,c.record_order FROM record_ranks c JOIN message m ON m.pk=c.pk ORDER BY c.record_order",
+                order::session_record_rows("?1")))?
             .query_map([session_pk], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
             .collect::<rusqlite::Result<_>>()?)
     }
@@ -1145,18 +1145,18 @@ impl Reader<'_> {
             i64,
             Message,
             Option<MessageProjection>,
-            MessageEvidence,
+            MessageArrival,
         ) -> std::ops::ControlFlow<()>,
     ) -> Result<std::ops::ControlFlow<()>> {
         const COLUMNS: &str = "m.pk, m.id, m.role, m.prompt_kind, m.model, m.at_time, m.parent_id,
             m.input_tokens, m.cache_read_tokens, m.cache_write_tokens, m.output_tokens,
             m.reasoning_tokens, m.service_tier, m.stop_reason, m.duration_ms, m.attrs_json,
-            m.cache_write_1h_tokens, m.speed, (SELECT version_hash FROM message_version WHERE pk=shown.version_pk), projection.layout,
-            CASE WHEN projection.layout IS NULL THEN
+            m.cache_write_1h_tokens, m.speed, (SELECT version_hash FROM message_version WHERE pk=shown.version_pk), block_selection.layout,
+            CASE WHEN block_selection.layout IS NULL THEN
                 (SELECT count(*) FROM block WHERE message_pk=m.pk) ELSE 0 END,
-            projection.admitted, source_input.id, shown.chain, shown.source_end";
+            block_selection.committed, source_input.id, shown.chain, shown.source_end";
         const SOURCE: &str = "FROM message m LEFT JOIN message_source shown ON shown.message_pk=m.pk AND shown.input_pk=m.input_pk AND shown.chain=m.source_chain
-            LEFT JOIN message_projection projection ON projection.version_pk=shown.version_pk
+            LEFT JOIN message_block_selection block_selection ON block_selection.version_pk=shown.version_pk
             LEFT JOIN input_ref source_input ON source_input.pk=shown.input_pk";
         const ORDER: &str = "ORDER BY m.session_order, m.id";
         let start: Option<(String, String)> = match from {
@@ -1181,9 +1181,12 @@ impl Reader<'_> {
             RecordOrder::Skip => (String::new(), "", "NULL".to_owned()),
             RecordOrder::Known(value) => (String::new(), "", value.to_string()),
             RecordOrder::OwnSession => (
-                format!("WITH canonical_order AS ({}) ", order::canonical_rows("?1")),
-                " JOIN canonical_order ON canonical_order.pk=m.pk",
-                "canonical_order.record_order".to_owned(),
+                format!(
+                    "WITH record_ranks AS ({}) ",
+                    order::session_record_rows("?1")
+                ),
+                " JOIN record_ranks ON record_ranks.pk=m.pk",
+                "record_ranks.record_order".to_owned(),
             ),
         };
         let mut stmt = match &start {
@@ -1254,8 +1257,8 @@ impl Reader<'_> {
                 (w1h, speed),
                 hash,
                 layout,
-                legacy_blocks,
-                admitted,
+                stored_block_count,
+                committed,
                 source_input,
                 source_chain,
                 source_end,
@@ -1337,15 +1340,15 @@ impl Reader<'_> {
                     .map_err(|_| invalid("an unparseable production record"))?
                     .unwrap_or_default(),
             };
-            let projection = hash
+            let block_selection = hash
                 .map(|hash| {
-                    let mut projection = crate::versions::message_projection(
+                    let mut block_selection = crate::versions::message_block_selection(
                         &hash,
                         layout.as_deref(),
                         if visible {
                             message.blocks.len()
                         } else {
-                            usize::try_from(legacy_blocks).map_err(|_| {
+                            usize::try_from(stored_block_count).map_err(|_| {
                                 StoreError::Invalid(
                                     "a message has an invalid stored block count".into(),
                                 )
@@ -1353,22 +1356,22 @@ impl Reader<'_> {
                         },
                     )?;
                     if visible {
-                        projection.validate(message.blocks.len())?;
+                        block_selection.validate(message.blocks.len())?;
                     } else {
-                        projection.block_ordinals.clear();
+                        block_selection.block_ordinals.clear();
                     }
-                    Ok::<_, StoreError>(projection)
+                    Ok::<_, StoreError>(block_selection)
                 })
                 .transpose()?;
-            let admission = MessageEvidence {
+            let commit = MessageArrival {
                 order: record_order,
-                fact: admitted,
+                fact: committed,
                 source: source_input
                     .zip(source_chain)
                     .zip(source_end)
                     .map(|((input, chain), end)| (input, chain, end)),
             };
-            if visit(pk, message, projection, admission).is_break() {
+            if visit(pk, message, block_selection, commit).is_break() {
                 return Ok(std::ops::ControlFlow::Break(()));
             }
         }
@@ -1521,7 +1524,7 @@ impl Reader<'_> {
     }
 
     /// A current full hash may span several stored new blobs. Compute
-    /// it once for an explicitly requested exact delivery, streaming the bytes.
+    /// it once for an explicitly requested delivery, streaming the bytes.
     pub fn attachment_hash(
         &self,
         asset: &crate::assets::AssetMatch,
@@ -1584,7 +1587,7 @@ impl Reader<'_> {
         path: Option<&[u8]>,
         include_imported: bool,
     ) -> Result<Vec<KnownInput>> {
-        // Imported eligibility is per input, not per observation. A point
+        // Whether an imported input counts is decided per input, not per observation. A point
         // lookup only visits inputs at its path; startup builds the set once.
         let (location, imported) = if path.is_some() {
             (
@@ -1736,7 +1739,7 @@ impl Reader<'_> {
 mod tests;
 
 impl Reader<'_> {
-    /// Execute against one owner-supplied calendar, restoring any enclosing
+    /// Execute against one caller-supplied calendar, restoring any enclosing
     /// query's calendar even when the callback unwinds.
     pub fn with_clock<T>(&self, clock: &query_language::time::Clock, f: impl FnOnce() -> T) -> T {
         self.calendar.with_clock(clock, f)

@@ -24,7 +24,7 @@ pub(super) fn with_source(records: &[Value], check: impl FnOnce(&crate::Fixture,
     assert_eq!(std::fs::read_to_string(source).unwrap(), original);
 }
 
-pub(super) fn native(id: &str, role: &str, content: Value) -> Value {
+pub(super) fn source_record(id: &str, role: &str, content: Value) -> Value {
     json!({"type":role,"uuid":id,"sessionId":"stored","timestamp":"2026-03-01T10:00:00Z","message":{"role":role,"content":content}})
 }
 pub(super) fn page(fixture: &crate::Fixture, options: &[&str]) -> ReadPage {
@@ -85,15 +85,15 @@ pub(super) fn bundle(
 }
 
 #[test]
-fn credential_shaped_fragments_remain_exact_and_in_message_order() {
+fn credential_shaped_fragments_stay_unchanged_and_in_order() {
     let expected = [
         "prefix -----BEGIN PRIVATE KEY-----private-one",
         "private-two-----END PRIVATE KEY----- visible λ🙂",
     ];
     with_source(
         &[
-            native("u1", "user", json!(expected[0])),
-            native("a1", "assistant", json!(expected[1])),
+            source_record("u1", "user", json!(expected[0])),
+            source_record("a1", "assistant", json!(expected[1])),
         ],
         |fixture, _| {
             let shown = page(fixture, &[]);
@@ -111,17 +111,17 @@ fn credential_shaped_fragments_remain_exact_and_in_message_order() {
 }
 
 #[test]
-fn tool_aliases_preserve_exact_input_values_and_result_bytes() {
+fn tool_aliases_preserve_input_values_and_result_bytes() {
     let input = json!({"command":"private-command-tail-----END PRIVATE KEY----- visible command","notes":"independent notes","number":0,"enabled":false,"empty":"","nil":null});
     let output = "-----BEGIN PRIVATE KEY-----private-result λ🙂";
     with_source(
         &[
-            native(
+            source_record(
                 "a1",
                 "assistant",
                 json!([{"type":"tool_use","id":"c1","name":"Bash","input":input}]),
             ),
-            native(
+            source_record(
                 "u1",
                 "user",
                 json!([{"type":"tool_result","tool_use_id":"c1","content":output}]),
@@ -206,7 +206,7 @@ fn tool_aliases_preserve_exact_input_values_and_result_bytes() {
 fn dialogue_filters_tool_output_without_rewriting_the_remaining_source() {
     let visible = "private-hidden-tail-----END PRIVATE KEY----- visible";
     with_source(
-        &[native(
+        &[source_record(
             "u1",
             "user",
             json!([{"type":"tool_result","tool_use_id":"missing","content":"-----BEGIN PRIVATE KEY-----private-hidden"},{"type":"text","text":visible}]),
@@ -226,28 +226,31 @@ fn dialogue_filters_tool_output_without_rewriting_the_remaining_source() {
 #[test]
 fn title_derivation_preserves_credential_shaped_source_text() {
     let title = "--token=synthetic-title-value visible title";
-    with_source(&[native("u1", "user", json!(title))], |fixture, _| {
-        let shown = page(fixture, &[]);
-        assert_eq!(
-            shown.document.header.title.value().map(String::as_str),
-            Some(title)
-        );
-        assert_eq!(texts(&shown), [title]);
-    });
+    with_source(
+        &[source_record("u1", "user", json!(title))],
+        |fixture, _| {
+            let shown = page(fixture, &[]);
+            assert_eq!(
+                shown.document.header.title.value().map(String::as_str),
+                Some(title)
+            );
+            assert_eq!(texts(&shown), [title]);
+        },
+    );
 }
 
 #[test]
-fn indexed_tool_result_pages_reconstruct_the_exact_pair_once() {
+fn indexed_tool_result_pages_reconstruct_the_pair_once() {
     let output = "λ🙂 exact remote result\n".repeat(1500);
     let input = json!({"command":"synthetic command","enabled":false});
     with_source(
         &[
-            native(
+            source_record(
                 "a1",
                 "assistant",
                 json!([{"type":"tool_use","id":"c1","name":"Bash","input":input}]),
             ),
-            native(
+            source_record(
                 "u1",
                 "user",
                 json!([{"type":"tool_result","tool_use_id":"c1","content":output}]),
@@ -305,22 +308,22 @@ fn indexed_tool_result_pages_reconstruct_the_exact_pair_once() {
             assert_eq!(calls[0].output.as_deref(), Some(output.as_str()));
             assert!(
                 !cursors.is_empty(),
-                "large paired output must exercise actual fragments"
+                "large paired output must produce fragments"
             );
         },
     );
 }
 
 #[test]
-fn collapsed_tool_pairs_keep_the_selected_native_input_target() {
+fn collapsed_tool_pairs_keep_selected_input_target() {
     with_source(
         &[
-            native(
+            source_record(
                 "a1",
                 "assistant",
-                json!([{"type":"tool_use","id":"c1","name":"synthetic_unknown_tool","input":{"opaque_native_argument":"native-value"}}]),
+                json!([{"type":"tool_use","id":"c1","name":"synthetic_unknown_tool","input":{"opaque_tool_argument":"native-value"}}]),
             ),
-            native(
+            source_record(
                 "u1",
                 "user",
                 json!([{"type":"tool_result","tool_use_id":"c1","content":"native result"}]),

@@ -42,7 +42,7 @@ fn collect(engine: &Engine, plan: &Plan) -> Vec<ParseStep> {
 }
 
 #[test]
-fn semantic_delivery_order_keeps_nonmonotone_physical_item_ranges() {
+fn delivery_order_keeps_nonmonotone_physical_item_ranges() {
     let home = ClaudeHome::new();
     let raw = source();
     let (engine, _lock, plan) = plan(&home, &raw);
@@ -199,7 +199,7 @@ fn assert_refusal(step: &ParseStep) {
 }
 
 #[test]
-fn malformed_scan_publishes_one_unreadable_refusal_without_a_checkpoint() {
+fn malformed_scan_refuses_once_without_a_checkpoint() {
     for suffix in [",", ",]", "] false"] {
         let home = ClaudeHome::new();
         let raw =
@@ -258,17 +258,17 @@ fn malformed_scan_publishes_one_unreadable_refusal_without_a_checkpoint() {
             (progress, stored)
         };
         assert_eq!(progress.length, raw.len() as u64);
-        let mut retained = Vec::new();
-        std::io::Read::read_to_end(&mut stored.reader(Arc::clone(&engine.blobs)), &mut retained)
+        let mut kept = Vec::new();
+        std::io::Read::read_to_end(&mut stored.reader(Arc::clone(&engine.blobs)), &mut kept)
             .unwrap();
-        assert_eq!(retained, raw.as_bytes());
-        let custody = [
+        assert_eq!(kept, raw.as_bytes());
+        let archived_counts = [
             home.count("SELECT count(*) AS n FROM a.revision"),
             home.count("SELECT count(*) AS n FROM a.blob"),
             home.count("SELECT sum(length) AS n FROM a.extent"),
         ];
-        // A replacement is planned from the archive's actual immutable chain,
-        // independently of the original import plan's acquisition disposition.
+        // A replacement is planned from the archive's immutable chain,
+        // independently of the original import plan's capture outcome.
         let replacement = Plan::stored(
             plan.path,
             plan.origin,
@@ -296,7 +296,7 @@ fn malformed_scan_publishes_one_unreadable_refusal_without_a_checkpoint() {
                 home.count("SELECT count(*) AS n FROM a.blob"),
                 home.count("SELECT sum(length) AS n FROM a.extent"),
             ],
-            custody
+            archived_counts
         );
         assert_eq!(home.count("SELECT parsed_upto AS n FROM parse_state"), 0);
         assert_eq!(
@@ -335,7 +335,7 @@ impl ExportParser for ShortSuccess {
         let mut byte = [0];
         std::io::Read::read_exact(reader, &mut byte)
             .map_err(|error| export::ScanError::Input(serde_json::Error::io(error)))?;
-        // A successful callback and staged item cannot certify the unscanned suffix.
+        // A successful callback and staged item cannot vouch for the unscanned suffix.
         sink.push(0..1, Vec::new(), None, b"{}")
             .map_err(export::ScanError::Callback)?;
         Ok(export::ScanStats {
@@ -396,7 +396,7 @@ fn changed_executable_extends_the_committed_export_prefix_without_recounting() {
     let raw = source();
     fs::write(&path, &raw).unwrap();
     let old_message = polylogue_model::MessageId::parse("chatgpt:old-message").unwrap();
-    let old_admission = {
+    let old_commit = {
         let (mut engine, _lock) = engine(&home, 16);
         fault::clear();
         fault::arm("parse", &path.to_string_lossy(), Action::Fail, 1, 1);
@@ -416,7 +416,7 @@ fn changed_executable_extends_the_committed_export_prefix_without_recounting() {
             .reads
             .reader()
             .unwrap()
-            .message_admission(&old_message)
+            .message_commit(&old_message)
             .unwrap()
             .unwrap()
     };
@@ -450,9 +450,9 @@ fn changed_executable_extends_the_committed_export_prefix_without_recounting() {
             .reads
             .reader()
             .unwrap()
-            .message_admission(&old_message)
+            .message_commit(&old_message)
             .unwrap(),
-        Some(old_admission)
+        Some(old_commit)
     );
     assert!(engine.run_pass().unwrap().errors.is_empty());
     assert_eq!(home.count("SELECT sum(records) AS n FROM parse_state"), 4);

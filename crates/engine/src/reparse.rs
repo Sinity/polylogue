@@ -299,8 +299,8 @@ impl Engine {
         result
     }
 
-    /// A rejected private cursor cannot become progress. An existing admitted
-    /// stop at this exact cursor can retain its error and bind the actual retry.
+    /// A rejected spool cursor cannot become progress. An existing committed
+    /// stop at this same cursor can keep its error and bind the retry.
     fn record_retried_stop(&mut self, plan: &mut Plan, pass: &mut Pass) -> Result<(), EngineError> {
         let Change::Reparse { chain } = plan.change else {
             return Ok(());
@@ -339,8 +339,8 @@ impl Engine {
         Ok(())
     }
 
-    /// Durable preparation does not advance a cached parser cursor. Both
-    /// pooled stored parsing and replacement readings await this exact fact.
+    /// Saving a prepared write does not advance a cached parser cursor. Both
+    /// pooled stored parsing and replacement readings wait for confirmation.
     pub(crate) fn confirmed_reading(&self, plan: &Plan) -> Result<bool, EngineError> {
         let Change::Reparse { chain } = plan.change else {
             return Err(polylogue_store::StoreError::Invalid(
@@ -556,8 +556,7 @@ fn prepare(
                     }
                     if done.continuation_missing {
                         return Err(EngineError::Parse(done.error.unwrap_or_else(|| {
-                            "native parser continuation is unavailable at the admitted cursor"
-                                .into()
+                            "parser continuation is unavailable at the committed cursor".into()
                         })));
                     }
                     if let Some(error) = &done.error {
@@ -597,7 +596,7 @@ fn keep_decoded(
     if !blobs.is_empty() {
         reading.decoded(polylogue_store::staging::PreparedBatch {
             batch: polylogue_store::Batch {
-                required_disposition: None,
+                required_outcome: None,
                 input: plan.input.clone(),
                 change: plan.change.clone(),
                 observation: None,

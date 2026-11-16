@@ -28,7 +28,7 @@ fn commit(origin: &str, messages: Vec<Message>) -> TestArchive {
 }
 
 #[test]
-fn an_explicit_harness_marker_keeps_native_roles_and_harness_authorship_in_queries() {
+fn harness_marker_keeps_source_roles_and_authorship() {
     for origin in ["claude-code", "openai-chat"] {
         let roles = [Role::Assistant, Role::User, Role::System];
         let messages = roles
@@ -78,7 +78,7 @@ fn an_explicit_harness_marker_keeps_native_roles_and_harness_authorship_in_queri
 }
 
 #[test]
-fn ordinary_role_defaults_do_not_use_model_names_or_other_prompt_kinds_as_harness_markers() {
+fn role_defaults_do_not_use_model_names_or_other_prompt_kinds_as_harness_markers() {
     let cases = [
         (Role::Assistant, None, None, "model"),
         (Role::Assistant, Some(PromptKind::Prose), None, "model"),

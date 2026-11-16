@@ -83,7 +83,7 @@ impl Records {
         }
     }
 
-    /// Native database table names are schema identifiers. Row scalar bodies
+    /// Source database table names are schema identifiers. Row scalar bodies
     /// remain absent from these derived observations.
     pub fn unknown_table(&mut self, kind: &str, table: &str, row: &Json) {
         static ROW: Fields = Fields::new(
@@ -97,11 +97,11 @@ impl Records {
     }
 
     /// The row body has its own table-column scope. Framing leaves are observed
-    /// separately so a new envelope field cannot disappear behind that walk.
-    pub fn unknown_table_row_envelope(&mut self, table: &str, record: &Json) {
+    /// separately so a new header field cannot disappear behind that walk.
+    pub fn unknown_table_row_header(&mut self, table: &str, record: &Json) {
         use crate::fields::{ExpectedType as T, Rule};
-        static ENVELOPE: Fields = Fields::new(
-            "row_envelope",
+        static ROW_HEADER: Fields = Fields::new(
+            "row_header",
             &[
                 ("t", Rule::Read(T::String)),
                 ("k", Rule::Read(T::Any)),
@@ -110,9 +110,9 @@ impl Records {
             ],
         );
         self.account(
-            "row envelope",
+            "row header",
             &crate::fields::header(record, &["r"]),
-            &ENVELOPE,
+            &ROW_HEADER,
             Some(table),
             false,
         );
@@ -174,7 +174,7 @@ impl Records {
     pub(crate) fn field_checks(&self) -> u64 {
         self.field_checks
     }
-    /// A complete retained event is evidenced by the emitted row. A record
+    /// A complete kept event is shown by the emitted row. A record
     /// without that row needs its own declaration or its leaves remain unused.
     pub(crate) fn remaining_fields(
         &mut self,
@@ -184,7 +184,7 @@ impl Records {
         payload_kept: bool,
     ) {
         use crate::fields::{ExpectedType as T, Rule};
-        static RETAINED: Fields = Fields::new(
+        static KEPT: Fields = Fields::new(
             "event",
             &[
                 ("", Rule::Kept("complete event payload")),
@@ -199,7 +199,7 @@ impl Records {
             &[
                 ("type", Rule::Read(T::String)),
                 ("timestamp", Rule::Read(T::StringOrNumber)),
-                ("payload", Rule::Kept("complete native event payload")),
+                ("payload", Rule::Kept("complete event payload as written")),
             ],
         );
         static UNREAD: Fields = Fields::new("unread", &[]);
@@ -207,7 +207,7 @@ impl Records {
             kind,
             value,
             if root_kept {
-                &RETAINED
+                &KEPT
             } else if payload_kept {
                 &PAYLOAD
             } else {

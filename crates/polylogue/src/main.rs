@@ -18,7 +18,7 @@ mod explain;
 mod hook;
 mod hosting;
 mod live_acts;
-mod live_evidence;
+mod live_events;
 mod mailbox;
 mod manual;
 mod mcp;
@@ -216,7 +216,7 @@ fn attempt_from_executable(
     digest.update_reader(file)?;
     Ok(polylogue_model::batch::StoppedAttempt {
         executable: polylogue_model::BlobHash(*digest.finalize().as_bytes()),
-        // Native parser selection currently has no configurable parser settings.
+        // Parser selection currently has no configurable parser settings.
         parser_settings: None,
     })
 }

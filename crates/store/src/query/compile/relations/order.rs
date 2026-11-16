@@ -1,4 +1,4 @@
-//! Order relations retain native evidence and full-scope positions across stages.
+//! Order relations keep source times and full-scope positions across stages.
 use super::*;
 
 struct PairOrder {
@@ -30,7 +30,7 @@ impl Compiler<'_> {
         let index = self.slot();
         let chosen = self.slot();
         let unknown = self.slot();
-        let truth = self.slot();
+        let matched = self.slot();
         let inner_name = self.slot();
         let outer_name = self.slot();
         let ctes = if pair.ctes.is_empty() {
@@ -38,7 +38,7 @@ impl Compiler<'_> {
         } else {
             format!("{}, ", pair.ctes.join(", "))
         };
-        let witness_order = match pick {
+        let matching_row_order = match pick {
             MatchChoice::Nearest => format!(
                 "{}, {}, {}",
                 pair.coarse,
@@ -76,8 +76,8 @@ impl Compiler<'_> {
                                     inner.field_on(compiler, "id", at, "i").or_else(|_| {
                                         let columns = identity_columns(&inner);
                                         let identity = if matches!(
-                                            inner.program.row_basis,
-                                            RowBasis::Native { .. }
+                                            inner.program.row_kind,
+                                            RowKind::UnitRows { .. }
                                         ) && columns.len() == 1
                                         {
                                             format!("i.{}", column_sql(&columns[0]))
@@ -102,11 +102,11 @@ impl Compiler<'_> {
                 terms.join(", ")
             }
         };
-        let mut projections = vec!["r.*".into()];
+        let mut select_list = vec!["r.*".into()];
         self.project_match(
             outer,
             &inner,
-            &mut projections,
+            &mut select_list,
             within.map(|_| {
                 (
                     pair.distance.as_str(),
@@ -118,18 +118,18 @@ impl Compiler<'_> {
                 )
             }),
         );
-        projections.push(format!(
+        select_list.push(format!(
             "CASE WHEN i.{} IS NOT NULL THEN 1 WHEN r.{} THEN NULL ELSE 0 END AS {}",
             column_sql(&index),
             column_sql(&unknown),
-            column_sql(&truth)
+            column_sql(&matched)
         ));
         let inner_input = self.input(&mut inner);
         let outer_input = self.input(outer);
         let sql = format!(
             "WITH {ctes}{inner_name} AS MATERIALIZED (SELECT i.*, row_number() OVER (ORDER BY {}) AS {} FROM {inner_input} i), \
              {outer_name} AS MATERIALIZED (SELECT r.*, \
-             (SELECT i.{} FROM {inner_name} i WHERE ({}) ORDER BY {witness_order} LIMIT 1) AS {}, \
+             (SELECT i.{} FROM {inner_name} i WHERE ({}) ORDER BY {matching_row_order} LIMIT 1) AS {}, \
              (({}) OR EXISTS (SELECT 1 FROM {inner_name} i WHERE ({}) IS NULL)) AS {} FROM {outer_input} r) \
              SELECT {} FROM {outer_name} r LEFT JOIN {inner_name} i ON i.{} = r.{} ORDER BY {}",
             qualified_order(&inner.program.order, "i"),
@@ -140,7 +140,7 @@ impl Compiler<'_> {
             pair.outer_unknown,
             pair.predicate,
             column_sql(&unknown),
-            projections.join(", "),
+            select_list.join(", "),
             column_sql(&index),
             column_sql(&chosen),
             qualified_order(&outer.program.order, "r")
@@ -148,7 +148,7 @@ impl Compiler<'_> {
         self.set_rows(outer, sql);
         outer.program.derived_mut().count = None;
         outer.program.derived_mut().members = None;
-        Ok(format!("r.{}", column_sql(&truth)))
+        Ok(format!("r.{}", column_sql(&matched)))
     }
 
     pub(super) fn rel_join_pair(
@@ -186,11 +186,11 @@ impl Compiler<'_> {
                 }
             }
         };
-        let mut projections = vec!["r.*".into()];
+        let mut select_list = vec!["r.*".into()];
         self.project_match(
             outer,
             &inner,
-            &mut projections,
+            &mut select_list,
             matches!(
                 on,
                 JoinOn::Order {
@@ -216,19 +216,19 @@ impl Compiler<'_> {
         let mut identity = identity_columns(outer);
         for key in identity_columns(&inner) {
             let slot = self.slot();
-            projections.push(format!("i.{} AS {}", column_sql(&key), column_sql(&slot)));
+            select_list.push(format!("i.{} AS {}", column_sql(&key), column_sql(&slot)));
             identity.push(slot);
         }
         if matches!(on, JoinOn::Order { .. }) {
             for value in [&pair.coarse, &pair.distance_key] {
                 let slot = self.slot();
-                projections.push(format!("{value} AS {}", column_sql(&slot)));
+                select_list.push(format!("{value} AS {}", column_sql(&slot)));
                 outer.program.order.push(OrderKey::ascending(&slot));
             }
         }
         for key in identity_columns(&inner) {
             let slot = self.slot();
-            projections.push(format!("i.{} AS {}", column_sql(&key), column_sql(&slot)));
+            select_list.push(format!("i.{} AS {}", column_sql(&key), column_sql(&slot)));
             outer.program.order.push(OrderKey::ascending(&slot));
         }
         let ctes = if pair.ctes.is_empty() {
@@ -240,12 +240,12 @@ impl Compiler<'_> {
         let outer_input = self.input(outer);
         let sql = format!(
             "{ctes}SELECT {} FROM {outer_input} r JOIN {inner_input} i ON ({}) ORDER BY {}",
-            projections.join(", "),
+            select_list.join(", "),
             pair.predicate,
             relation_order(&outer.program.order)
         );
         self.set_rows(outer, sql);
-        outer.program.row_basis = RowBasis::Distinct { columns: identity };
+        outer.program.row_kind = RowKind::Distinct { columns: identity };
         outer.program.derived_mut().count = None;
         outer.program.derived_mut().members = None;
         Ok(())
@@ -255,7 +255,7 @@ impl Compiler<'_> {
         &mut self,
         outer: &mut Relation,
         inner: &Relation,
-        projections: &mut Vec<String>,
+        select_list: &mut Vec<String>,
         distance: Option<(&str, ColKind)>,
     ) {
         outer
@@ -272,7 +272,7 @@ impl Compiler<'_> {
             .retain(|name| !name.starts_with("match."));
         for column in &inner.program.columns {
             let slot = self.slot();
-            projections.push(format!(
+            select_list.push(format!(
                 "i.{} AS {}",
                 column_sql(inner.program.column_slot(&column.name)),
                 column_sql(&slot)
@@ -294,12 +294,12 @@ impl Compiler<'_> {
             .retain(|source| !source.prefix.starts_with("match."));
         for source in &inner.sources {
             let slot = self.slot();
-            projections.push(format!(
+            select_list.push(format!(
                 "i.{} AS {}",
                 column_sql(&source.key),
                 column_sql(&slot)
             ));
-            outer.sources.push(NativeSource {
+            outer.sources.push(RowSource {
                 prefix: format!("match.{}", source.prefix),
                 unit: source.unit,
                 key: slot,
@@ -307,7 +307,7 @@ impl Compiler<'_> {
         }
         if let Some((distance, kind)) = distance {
             let slot = self.slot();
-            projections.push(format!("{distance} AS {}", column_sql(&slot)));
+            select_list.push(format!("{distance} AS {}", column_sql(&slot)));
             let name = "match.distance".to_owned();
             outer.program.columns.retain(|prior| prior.name != name);
             outer.program.columns.push(Column {
@@ -359,7 +359,7 @@ impl Compiler<'_> {
         }
         if outer.sources.is_empty() || inner.sources.is_empty() {
             return Err(QueryError::Unavailable {
-                what: "native time evidence was not retained for this relation".into(),
+                what: "source time accuracy was not kept for this relation".into(),
             });
         }
         let (left, left_storage) = self.order_time(outer, "r");
@@ -368,7 +368,7 @@ impl Compiler<'_> {
             Some(Distance::Time { duration }) => {
                 let text = duration
                     .text()
-                    .ok_or_else(|| order_invalid("order window requires an exact duration", at))?;
+                    .ok_or_else(|| order_invalid("order window requires a fixed duration", at))?;
                 let nanos = text
                     .strip_suffix("ns")
                     .and_then(|n| n.parse::<u128>().ok())
@@ -376,7 +376,7 @@ impl Compiler<'_> {
                         query_language::time::duration(text)
                             .and_then(|v| v.as_nanos().try_into().ok())
                     })
-                    .ok_or_else(|| order_invalid("order window requires an exact duration", at))?;
+                    .ok_or_else(|| order_invalid("order window requires a fixed duration", at))?;
                 self.bind(Param::Text(nanos.to_string()))
             }
             _ => "NULL".into(),
@@ -392,7 +392,7 @@ impl Compiler<'_> {
             }
             TimePoint::MatchWhen | TimePoint::MatchStart | TimePoint::MatchEnd => {
                 return Err(not_built(
-                    "matched span endpoints require a source with a declared actual span; Polylogue rows expose occurrence evidence",
+                    "matched span endpoints require a source with a declared span; Polylogue rows record occurrence times only",
                 ));
             }
         };
@@ -432,7 +432,7 @@ impl Compiler<'_> {
         let Some(field) = polylogue_query::units::spec(source.unit).main_time else {
             return ("NULL".into(), "tuple");
         };
-        let Some(time) = fields::native_time(source.unit, field, &context.a) else {
+        let Some(time) = fields::stored_time(source.unit, field, &context.a) else {
             return ("NULL".into(), "tuple");
         };
         let key = context.a.expand(units::spec(source.unit).key);
@@ -462,7 +462,7 @@ impl Compiler<'_> {
             .find(|source| source.prefix.is_empty())
         else {
             return Err(QueryError::Unavailable {
-                what: "native full-scope step positions were not retained for this relation".into(),
+                what: "full-scope step positions were not kept for this relation".into(),
             });
         };
         if scope.is_some_and(|name| name != "session_tool_calls") {
@@ -470,7 +470,7 @@ impl Compiler<'_> {
         }
         let a = self.fresh();
         let spec = units::spec(source.unit);
-        let (terms, admission) = match source.unit {
+        let (terms, included) = match source.unit {
             Unit::ToolCalls => (
                 format!("{}.session_order, {}.id, {}.idx", a.m, a.m, a.cb),
                 format!(
@@ -479,19 +479,19 @@ impl Compiler<'_> {
                     fields::counts_as_action(&a.t)
                 ),
             ),
-            _ => return Err(order_invalid("unit has no native step order", at)),
+            _ => return Err(order_invalid("unit has no step order of its own", at)),
         };
         let session = child_session_column(source.unit, &a);
         let key = a.expand(spec.key);
         let rows = format!(
-            "SELECT {key} AS native_key, {session} AS parent, row_number() OVER (PARTITION BY {session} ORDER BY {terms}) AS position FROM {} WHERE {admission}",
+            "SELECT {key} AS timeline_key, {session} AS parent, row_number() OVER (PARTITION BY {session} ORDER BY {terms}) AS position FROM {} WHERE {included}",
             base_from(source.unit, &a)
         );
         if ctes.is_empty() {
             ctes.push(format!("{timeline} AS MATERIALIZED ({rows})"));
         }
         let selected = format!(
-            "FROM {timeline} timeline WHERE timeline.native_key = {alias}.{}",
+            "FROM {timeline} timeline WHERE timeline.timeline_key = {alias}.{}",
             column_sql(&source.key)
         );
         Ok((
@@ -508,10 +508,10 @@ fn order_invalid(message: &str, position: usize) -> QueryError {
     }
 }
 fn identity_columns(relation: &Relation) -> Vec<String> {
-    match &relation.program.row_basis {
-        RowBasis::Native { columns, .. }
-        | RowBasis::Group { columns }
-        | RowBasis::Distinct { columns }
+    match &relation.program.row_kind {
+        RowKind::UnitRows { columns, .. }
+        | RowKind::Group { columns }
+        | RowKind::Distinct { columns }
             if !columns.is_empty() =>
         {
             columns.clone()

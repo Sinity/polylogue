@@ -6,7 +6,7 @@ fn fragment(start: u64, text: &str) -> TextFragment {
     TextFragment {
         source_version: TextSourceVersion::ContentHash {
             record: container.clone(),
-            hash: BlobHash::of(b"canonical source identity"),
+            hash: BlobHash::of(b"source identity"),
         },
         coverage: TextCoverage {
             start,
@@ -34,7 +34,7 @@ fn fragment(start: u64, text: &str) -> TextFragment {
 }
 
 #[test]
-fn text_fragment_overlap_union_is_commutative_idempotent_and_keeps_gaps_unknown() {
+fn overlap_union_is_commutative_and_keeps_gaps() {
     let left = fragment(0, "A😀");
     let right = fragment(1, "😀B");
     assert_eq!(left.validate_overlap(&right).unwrap(), Some(()));
@@ -56,7 +56,7 @@ fn text_fragment_overlap_union_is_commutative_idempotent_and_keeps_gaps_unknown(
 }
 
 #[test]
-fn text_fragment_rejects_conflicting_overlap_and_known_totals_without_selecting_a_version() {
+fn conflicting_overlaps_and_totals_are_refused() {
     assert_eq!(
         fragment(0, "A😀").validate_overlap(&fragment(1, "xxxxB")),
         Err(TextFragmentError::Conflict)
@@ -92,7 +92,7 @@ fn text_fragment_never_verifies_a_source_hash_from_selected_bytes() {
     );
     let mut different = value.source_version.clone();
     if let TextSourceVersion::ContentHash { hash, .. } = &mut different {
-        *hash = BlobHash::of(b"different canonical value");
+        *hash = BlobHash::of(b"different value");
     }
     assert!(matches!(
         value.check_source(&different),
@@ -101,8 +101,7 @@ fn text_fragment_never_verifies_a_source_hash_from_selected_bytes() {
 }
 
 #[test]
-fn text_fragment_complete_source_checks_selected_bytes_and_original_utf16_coordinates_streamingly()
-{
+fn complete_source_check_streams_bytes_and_utf16_offsets() {
     let mut value = fragment(1, "😀");
     value.coverage.total_bytes = Some(6);
     value.provenance.spans[0].reference = Reference::Span {
@@ -122,7 +121,7 @@ fn text_fragment_complete_source_checks_selected_bytes_and_original_utf16_coordi
         start: 1,
         end: 2,
     };
-    // A snippet cannot attest its unavailable original prefix or surrogate boundary.
+    // A snippet cannot vouch for its unavailable original prefix or surrogate boundary.
     assert!(value.validate().is_ok());
     let mut check = value.check_source(&value.source_version).unwrap();
     check.push("A").unwrap();
@@ -130,7 +129,7 @@ fn text_fragment_complete_source_checks_selected_bytes_and_original_utf16_coordi
 }
 
 #[test]
-fn text_fragment_absolute_boundary_stays_unattested_until_complete_source_exists() {
+fn fragment_refuses_a_boundary_inside_a_character() {
     let value = fragment(2, "X");
     assert!(value.validate().is_ok());
     let mut check = value.check_source(&value.source_version).unwrap();
@@ -145,7 +144,7 @@ fn text_fragment_absolute_boundary_stays_unattested_until_complete_source_exists
 }
 
 #[test]
-fn text_fragment_empty_selection_and_large_coordinates_do_not_invent_outside_bytes() {
+fn empty_or_large_selections_invent_no_bytes() {
     let value = fragment(3, "");
     let mut check = value.check_source(&value.source_version).unwrap();
     check.push("abc").unwrap();
@@ -185,7 +184,7 @@ fn text_fragment_separator_coverage_uses_the_existing_document_recipe() {
 }
 
 #[test]
-fn text_fragment_partial_selection_cannot_carry_the_full_unselected_body_or_headers() {
+fn partial_selection_carries_no_unselected_body() {
     let mut value = fragment(7, "KEEP");
     value.text = "SECRET KEEP SECRET".into();
     value.coverage.start = 0;
@@ -230,7 +229,7 @@ fn text_fragment_exact_revision_never_resolves_a_current_root() {
 }
 
 #[test]
-fn portable_fragment_envelope_keeps_versioned_identity_and_sender_commit() {
+fn portable_fragment_keeps_versioned_identity() {
     let selected = fragment(1, "😀");
     let record = crate::bundle::Record::TextFragment(Box::new(TextFragmentRecord {
         reference: selected.reference().to_string(),
@@ -246,14 +245,14 @@ fn portable_fragment_envelope_keeps_versioned_identity_and_sender_commit() {
         serde_json::from_value::<crate::bundle::Record>(wire).unwrap(),
         record
     );
-    let mut claims = selected.clone();
-    claims.coverage.total_bytes = Some(8);
-    claims.provenance.spans.clear();
-    assert_eq!(claims.content_key(), selected.content_key());
+    let mut with_total = selected.clone();
+    with_total.coverage.total_bytes = Some(8);
+    with_total.provenance.spans.clear();
+    assert_eq!(with_total.content_key(), selected.content_key());
     let mut different_version = selected.clone();
     different_version.source_version = TextSourceVersion::ContentHash {
         record: selected.container.clone(),
-        hash: BlobHash::of(b"another complete canonical source"),
+        hash: BlobHash::of(b"another complete source"),
     };
     assert_ne!(different_version.content_key(), selected.content_key());
     let conflict = fragment(1, "xxxx");

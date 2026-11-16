@@ -277,7 +277,7 @@ fn saved_relation_errors_reach_the_query_error_path() {
             }
         }
     }
-    // Native diagnostic details remain available before any definition is saved.
+    // Diagnostic details stay available before any definition is saved.
     for (text, kind, message) in [
         (
             "sessions where invented_field:true",

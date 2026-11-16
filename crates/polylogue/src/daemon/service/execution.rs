@@ -1,4 +1,4 @@
-//! Durable Begin and immutable Outcome for one accepted execution, both
+//! The begin record and the fixed outcome of one accepted execution, both
 //! committed before the execution's answer returns.
 use super::Failure;
 use polylogue_model::{
@@ -8,7 +8,7 @@ use polylogue_model::{
 };
 use polylogue_store::WriterSender;
 
-/// The observed result of this invocation, without changing its frozen inputs.
+/// The observed result of this invocation, without changing its recorded inputs.
 pub(super) struct Completed<T> {
     pub value: T,
     pub count: Option<u64>,
@@ -49,8 +49,8 @@ pub(super) fn record<T>(
     };
     // The answer cites `run:<id>`, so its outcome is committed before the
     // answer returns: a caller that reads the run next sees how it ended.
-    let committed = writer.finish_query_run(outcome).and_then(|receipt| {
-        receipt
+    let committed = writer.finish_query_run(outcome).and_then(|committed| {
+        committed
             .recv()
             .map_err(|_| polylogue_store::StoreError::WriterGone)?
     });

@@ -2,7 +2,7 @@ use super::*;
 use crate::parse::run;
 
 #[test]
-fn unknown_tables_headers_and_rows_produce_only_scalar_free_wire_facts() {
+fn row_dump_wire_shapes_hold_no_scalar_values() {
     let bytes = b"{\"db\":\"tool.db\",\"at_ms\":1,\"schema\":{\"empty_table\":\"CREATE TABLE distinctive_sql_secret(x TEXT)\",\"facts\":\"CREATE TABLE facts(x)\"}}\n{\"t\":\"facts\",\"k\":1,\"r\":{\"body\":\"distinctive_row_secret\",\"n\":7},\"h\":\"hash\"}\n{\"t\":\"facts\",\"k\":1,\"gone\":true}\n";
     let step = run(&RowDump, &mut NoState::default(), bytes, 0).unwrap();
     assert_eq!(step.consumed, bytes.len() as u64);
@@ -57,7 +57,7 @@ fn malformed_row_records_are_counted_with_fixed_reasons() {
 }
 
 #[test]
-fn envelope_and_declared_column_metadata_are_counted_without_repeating_row_leaves() {
+fn row_header_and_column_metadata_are_counted_once() {
     let bytes = br#"{"schema":{"empty_table":"CREATE TABLE empty_table(x TEXT)"},"table_metadata":{"empty_table":{"columns":[{"cid":0,"name":"distinctive_column_name","declared_type":"distinctive_type_name","not_null":false,"primary_key":0,"hidden":1,"future":{"leaf":true}}],"without_rowid":false}}}
 {"t":"facts","k":1,"h":"distinctive_hash","r":{"body":"distinctive_body"},"future":{"leaf":true}}
 "#;
@@ -68,11 +68,11 @@ fn envelope_and_declared_column_metadata_are_counted_without_repeating_row_leave
         &step.counts.wire_shapes[&serde_json::to_string(&(kind, table, path)).unwrap()]
     };
     assert_eq!(observed("row", "facts", "/body").unused_count, 1);
-    let envelope = observed("row_envelope", "facts", "/future/leaf");
-    assert_eq!(envelope.types["boolean"], 1);
-    assert_eq!(envelope.unused_count, 1);
-    assert_eq!(observed("row_envelope", "facts", "/k").unused_count, 0);
-    assert_eq!(observed("row_envelope", "facts", "").unknown_table_count, 0);
+    let header = observed("row_header", "facts", "/future/leaf");
+    assert_eq!(header.types["boolean"], 1);
+    assert_eq!(header.unused_count, 1);
+    assert_eq!(observed("row_header", "facts", "/k").unused_count, 0);
+    assert_eq!(observed("row_header", "facts", "").unknown_table_count, 0);
     assert_eq!(observed("row", "facts", "").unknown_table_count, 1);
     assert!(
         observed("table_metadata", "empty_table", "/columns/[]/name")

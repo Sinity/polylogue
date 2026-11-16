@@ -2,7 +2,7 @@ use super::*;
 use serde_json::json;
 
 #[test]
-fn native_codex_independent_usage_and_rate_only_quota_reach_mcp() {
+fn codex_usage_and_rate_only_quota_reach_mcp() {
     let daemon = test_daemon::start("synthetic human prompt");
     let thread = "019a0000-0000-7000-8000-000000000001";
     let sessions = daemon.home.join(".codex/sessions/2026/10/23");

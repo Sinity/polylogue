@@ -5,7 +5,7 @@
 //! Every event is appended as one line to the hook spool file of the calling
 //! harness process, with `O_APPEND` and synced to disk before the hook
 //! returns, naming the harness's origin and session and the harness
-//! process's identity (pid, start time and boot), which the live fold uses
+//! process's identity (pid, start time and boot), which the live-state update uses
 //! as the session's root process; the daemon reads those files like any
 //! other growing file. Some events also ask the daemon for context:
 //!
@@ -19,7 +19,7 @@
 //! Claude Code, Codex and Gemini CLI take context as `hookSpecificOutput.additionalContext`,
 //! Hermes as `{"context": ...}`. Other events are only recorded. Hooks fail
 //! open: a timeout emits an unreferenced failure notice and the harness
-//! carries on. The original preparation is acknowledged only with positive proof.
+//! carries on. The original preparation is acknowledged only once it is confirmed.
 
 use crate::briefing::{Ask, StartSource};
 use crate::config::Startup;
@@ -114,7 +114,7 @@ pub fn append_to_spool(
     harness: Harness,
     event: &str,
     payload: &Value,
-    native: &Value,
+    observed: &Value,
     startup: &Startup,
 ) -> std::io::Result<String> {
     append_record(
@@ -122,7 +122,7 @@ pub fn append_to_spool(
         harness,
         event,
         payload,
-        native,
+        observed,
         session_of(harness, payload, startup),
         startup,
     )
@@ -133,13 +133,13 @@ fn append_record(
     harness: Harness,
     event: &str,
     payload: &Value,
-    native: &Value,
+    observed: &Value,
     session: Option<SessionId>,
     startup: &Startup,
 ) -> std::io::Result<String> {
     use std::os::unix::fs::OpenOptionsExt;
     std::fs::create_dir_all(dir)?;
-    let caller = crate::protocol::caller::evidence();
+    let caller = crate::protocol::caller::details();
     let process = caller
         .harness_pid
         .filter(|_| {
@@ -163,12 +163,12 @@ fn append_record(
         "at_ns": ns.to_string(),
         "event": event,
         "harness_pid": process,
-        "harness_start": crate::live_evidence::identity(process).map(|i| i.start),
+        "harness_start": crate::live_events::identity(process).map(|i| i.start),
         "provider": harness.origin(),
         "payload": payload,
     });
-    if let Some(native) = native.as_object() {
-        for (key, value) in native {
+    if let Some(observed) = observed.as_object() {
+        for (key, value) in observed {
             line[key] = value.clone();
         }
     }
@@ -191,14 +191,14 @@ fn append_record(
     Ok(event_id)
 }
 
-/// A receipt records a successful native output, separate from transcript attribution.
+/// Records each context output the harness took, separate from transcript attribution.
 struct EmissionRecorder<'a> {
     dir: &'a Path,
     harness: Harness,
     event: &'a str,
     invocation: Option<&'a str>,
     session: Option<SessionId>,
-    native: &'a Value,
+    observed: &'a Value,
     startup: &'a Startup,
 }
 impl EmissionRecorder<'_> {
@@ -229,7 +229,7 @@ impl EmissionRecorder<'_> {
                         self.harness,
                         "HookContextEmitted",
                         &payload,
-                        self.native,
+                        self.observed,
                         Some(session.clone()),
                         self.startup,
                     )
@@ -447,7 +447,7 @@ fn context(startup: &Startup, ask: Ask, budget_tokens: Option<u32>) -> Option<(S
     }
     if timed_out {
         // No prepared bytes were emitted. Only the daemon's existing queue
-        // may confirm preparation; absent proof leaves acceptance unresolved.
+        // may confirm preparation; without it, acceptance stays unresolved.
         let _ = ask_daemon(
             startup,
             "delivery-event",
@@ -642,15 +642,15 @@ pub fn run(harness: Harness, event: &str, startup: &Startup) -> ExitCode {
     let mut input = String::new();
     let _ = std::io::stdin().read_to_string(&mut input);
     let payload: Value = serde_json::from_str(&input).unwrap_or(Value::Null);
-    let native = native::snapshot(
+    let observed = environment::snapshot(
         event,
         &payload,
-        &native::Environment::observe(&startup.config.identity.host, &startup.hook),
+        &environment::Environment::observe(&startup.config.identity.host, &startup.hook),
     );
     let spool = startup
         .engine
         .spool_dir(polylogue_sources::hook_spool::ORIGIN);
-    let invocation = match append_to_spool(&spool, harness, event, &payload, &native, startup) {
+    let invocation = match append_to_spool(&spool, harness, event, &payload, &observed, startup) {
         Ok(invocation) => Some(invocation),
         Err(error) => {
             eprintln!(
@@ -676,7 +676,7 @@ pub fn run(harness: Harness, event: &str, startup: &Startup) -> ExitCode {
         event,
         invocation: invocation.as_deref(),
         session: session.clone(),
-        native: &native,
+        observed: &observed,
         startup,
     };
     // Pings and notices waiting in the mailbox: one `stat`, and a claim
@@ -793,7 +793,7 @@ pub fn permission_output(data: &Value) -> Option<Value> {
     }))
 }
 
-mod native;
+mod environment;
 mod settings;
 pub use settings::{CONFIRMED_FROM, HarnessVersion, install, probe_version, settings_path};
 

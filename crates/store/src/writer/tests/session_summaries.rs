@@ -21,7 +21,7 @@ fn apply(tx: &Transaction<'_>, mut b: Batch) {
         b.parse[0].resolution.as_ref().unwrap(),
         1,
         None,
-        Some(&fixture_receipt()),
+        Some(&fixture_commit()),
         &changes,
     )
     .unwrap();
@@ -125,7 +125,7 @@ fn fresh_message_counts_update_each_session_once_per_transaction() {
             b.parse[0].resolution.as_ref().unwrap(),
             1,
             None,
-            Some(&fixture_receipt()),
+            Some(&fixture_commit()),
             &changes,
         )
         .unwrap();
@@ -151,7 +151,7 @@ fn fresh_message_counts_update_each_session_once_per_transaction() {
 }
 
 #[test]
-fn count_contributions_keep_script_changes_late_results_and_rollback_exact() {
+fn count_contributions_keep_script_changes_late_results_and_rollback() {
     use polylogue_model::{ErrorReason, ToolAction, ToolOutcome};
     let mut c = connection();
     let mut code = text_message("code", "s", Role::Assistant, "", None);
@@ -267,7 +267,7 @@ fn count_contributions_keep_script_changes_late_results_and_rollback_exact() {
 }
 
 #[test]
-fn reopened_missing_count_baseline_is_folded_without_blessing_a_stale_version() {
+fn missing_count_baseline_is_recomputed_on_reopen() {
     let d = tempfile::tempdir().unwrap();
     let path = d.path().join("index.db");
     {
@@ -337,7 +337,7 @@ fn fresh_installed_counts_are_invalidated_by_same_transaction_visibility_or_sess
             b.parse[0].resolution.as_ref().unwrap(),
             1,
             None,
-            Some(&fixture_receipt()),
+            Some(&fixture_commit()),
             &changes,
         )
         .unwrap();
@@ -374,7 +374,7 @@ fn fresh_installed_counts_are_invalidated_by_same_transaction_visibility_or_sess
 }
 
 #[test]
-fn compaction_moves_and_removal_keep_both_sessions_exact_across_rollback() {
+fn compaction_moves_and_removal_keep_both_sessions_across_rollback() {
     let mut c = connection();
     let mut b = batch("events", Route::Live, 0, vec![], &["s", "to"]);
     b.parse[0].output.events.push(Event {
@@ -455,7 +455,7 @@ fn compaction_moves_and_removal_keep_both_sessions_exact_across_rollback() {
 }
 
 #[test]
-fn fresh_contributions_match_the_full_fold_for_every_recorded_author() {
+fn fresh_contributions_match_the_full_recompute() {
     let mut c = connection();
     let tx = c.transaction().unwrap();
     let mut messages = Vec::new();

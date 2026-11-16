@@ -1,4 +1,4 @@
-//! Read-derived actions retain their admission generation through the queue.
+//! Read-derived actions keep the read scope they were accepted under through the queue.
 use crate::{Archive, ReadScopeToken, Result, StoreError};
 
 pub(super) fn require_current(archive: &Archive, selected: Option<&ReadScopeToken>) -> Result<()> {

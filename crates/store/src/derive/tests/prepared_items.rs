@@ -13,7 +13,7 @@ fn duplicate_write(
     let items = if duplicate.is_none() {
         vec![(
             message,
-            crate::items::prepare_retained_message(conn, message).unwrap(),
+            crate::items::prepare_stored_message(conn, message).unwrap(),
         )]
     } else {
         Vec::new()
@@ -37,7 +37,7 @@ fn hidden() -> (WriterArchive, Connection, i64, i64) {
     let mut world = WriterArchive::new();
     world.write(
         "session",
-        prose("session", 1, 1000, "retained original content"),
+        prose("session", 1, 1000, "stored original content"),
     );
     let conn = crate::archive::open_write(&world.archive.index_db(), crate::archive::cache::SETUP)
         .unwrap();

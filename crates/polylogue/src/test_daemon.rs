@@ -47,7 +47,7 @@ pub(crate) fn start_runtime(
 pub(crate) struct ReadObservation {
     pub limit: polylogue_store::read::limit::ReadLimit,
     pub owner: std::thread::ThreadId,
-    /// Checkout evidence survives release before the observing thread runs.
+    /// The checkout record survives release before the observing thread runs.
     pub acquired: Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -72,7 +72,7 @@ pub struct TestDaemon {
     pub daemon: Arc<Daemon>,
     server: server::Server,
     runtime: service::Runtime,
-    // Removed only after both owners have joined their workers.
+    // Removed only after both holders have joined their workers.
     pub _dir: tempfile::TempDir,
 }
 

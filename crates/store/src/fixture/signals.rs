@@ -1,4 +1,4 @@
-//! A signal outbox in the shape the host policy hands off, for tests of what
+//! A pending signal delivery (`Outbox`) in the shape the host policy hands off, for tests of what
 //! stores, recovers and delivers it.
 use polylogue_model::{
     authored::ExecutionEligibility,

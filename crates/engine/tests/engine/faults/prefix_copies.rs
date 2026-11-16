@@ -1,4 +1,4 @@
-use super::same_bytes::{capture_log, dump, unnamed};
+use super::identical_chains::{capture_log, dump, unnamed};
 use super::*;
 use polylogue_testkit::{ClaudeHome, claude_user as user, delete_index};
 

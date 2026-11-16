@@ -133,7 +133,7 @@ fn on_demand_values_remain_open_and_source_schemas_stay_scoped() {
     );
 }
 #[test]
-fn session_prefix_title_and_native_reference_completion_share_rich_candidates() {
+fn title_and_reference_completions_share_candidates() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("catalog");
     populated(&path);
@@ -186,7 +186,7 @@ fn obsolete_and_corrupt_catalogs_leave_grammar_without_writing() {
     assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
 }
 #[test]
-fn real_writer_deltas_publish_source_values_and_native_first_prompt() {
+fn writer_deltas_send_source_values_and_first_prompt() {
     use polylogue_store::fixture::writer::{WriterArchive, prose};
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("catalog");
@@ -370,10 +370,10 @@ fn saved_and_kept_names_are_runnable_source_suggestions_at_the_first_word() {
             query_language::ast::Source::Result { reference, part: ResultPart::Rows, .. }
                 if reference == "result:kept-id")
         })
-        .expect("the kept name suggests its runnable canonical result source");
-    let canonical = query_language::format::format_query(&query, &catalog).unwrap();
+        .expect("the kept name suggests its runnable stored result source");
+    let formatted = query_language::format::format_query(&query, &catalog).unwrap();
     assert_eq!(
-        query_language::parse::parse(&canonical, &catalog)
+        query_language::parse::parse(&formatted, &catalog)
             .unwrap()
             .source,
         query.source
@@ -465,12 +465,12 @@ fn observation_literals_roundtrip_and_terminal_controls_never_enter_candidates()
             .all(|candidate| !candidate.value.chars().any(char::is_control))
     );
     let candidates = complete_file(&path, "synthetic", "claude-code:", 12);
-    let native = candidates
+    let native_id = candidates
         .iter()
         .find(|candidate| candidate.value == "a")
         .unwrap();
-    assert_eq!(native.replace.start, 12);
-    assert_eq!(native.replace.end, 12);
+    assert_eq!(native_id.replace.start, 12);
+    assert_eq!(native_id.replace.end, 12);
     assert!(
         candidates
             .iter()
@@ -587,16 +587,16 @@ fn published_saved_qualifiers_drive_offline_matches_fields_and_closed_values() {
             .iter()
             .any(|text| text.ends_with("repo"))
     );
-    let native = "sessions where exists tool_calls() | matches | where step.out";
+    let text = "sessions where exists tool_calls() | matches | where step.out";
     assert!(
-        grammar(native, native.len())
+        grammar(text, text.len())
             .iter()
             .any(|candidate| candidate.value == "step.outcome")
     );
 }
 
 #[test]
-fn frozen_plan_metadata_survives_cache_serialization_without_rebinding_names() {
+fn saved_plan_metadata_survives_cache_serialization() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("catalog");
     let mut bindings = polylogue_query::Bindings::default();
@@ -631,18 +631,18 @@ fn frozen_plan_metadata_survives_cache_serialization_without_rebinding_names() {
         writer.put_catalog(&base_catalog())?;
         writer.put_saved(&Saved {
             relation_scope: Some(replay.relation_scope().unwrap()),
-            family: "retained-family".into(),
-            revision: "retained-revision".into(),
-            name: "retained".into(),
+            family: "kept-family".into(),
+            revision: "kept-revision".into(),
+            name: "kept".into(),
             text: "query:no-longer-available-name".into(),
             parameters: vec![],
-            help: "Retained definition".into(),
+            help: "Kept definition".into(),
             schema: Some(replay.output_schema().unwrap()),
         })
     })
     .unwrap();
     assert!(
-        rendered(&path, "query:retained | matches | where step.out")
+        rendered(&path, "query:kept | matches | where step.out")
             .iter()
             .any(|text| text.ends_with("outcome"))
     );

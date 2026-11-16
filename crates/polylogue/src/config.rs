@@ -482,7 +482,7 @@ fn deployment_file(
 impl Startup {
     pub fn load(process: &ProcessInputs, overrides: Overrides) -> Result<Self, Error> {
         let identity = process.identity.clone().map(Ok).unwrap_or_else(|| {
-            let fact = |path: &str| -> Result<String, Error> {
+            let read_line = |path: &str| -> Result<String, Error> {
                 let value = std::fs::read_to_string(path).map_err(|source| Error::File {
                     path: path.into(),
                     source,
@@ -493,8 +493,8 @@ impl Startup {
                 Ok(value.trim().into())
             };
             Ok(Identity {
-                machine: fact("/etc/machine-id")?,
-                host: fact("/proc/sys/kernel/hostname")?,
+                machine: read_line("/etc/machine-id")?,
+                host: read_line("/proc/sys/kernel/hostname")?,
             })
         })?;
         let cwd = process

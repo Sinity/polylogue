@@ -76,8 +76,8 @@ fn row_session(row: &Json, field: &str) -> Option<polylogue_model::SessionId> {
     str_field(row, field).and_then(session_id)
 }
 
-static ROW_ENVELOPE: crate::fields::Fields = crate::fields::Fields::new(
-    "row_envelope",
+static ROW_HEADER: crate::fields::Fields = crate::fields::Fields::new(
+    "row_header",
     &[
         (
             "t",
@@ -93,9 +93,7 @@ static ROW_ENVELOPE: crate::fields::Fields = crate::fields::Fields::new(
         ),
         (
             "h",
-            crate::fields::Rule::Excluded(
-                "capture row hash is not consumed by native row decoding",
-            ),
+            crate::fields::Rule::Excluded("capture row hash is not consumed by row decoding"),
         ),
     ],
 );
@@ -169,7 +167,7 @@ static EVENT_FIELDS: crate::fields::Fields = crate::fields::Fields::new(
     "thread_event",
     &[(
         "",
-        crate::fields::Rule::Kept("complete native row in the event data"),
+        crate::fields::Rule::Kept("complete captured row in the event data"),
     )],
 );
 
@@ -208,7 +206,7 @@ impl Parser for Database {
             );
         }
         let row = v.get("r").unwrap_or(&Json::Null);
-        records.fields(table, &crate::fields::header(v, &["r"]), &ROW_ENVELOPE);
+        records.fields(table, &crate::fields::header(v, &["r"]), &ROW_HEADER);
         match table {
             "threads" => {
                 records.fields("threads", row, &THREAD_FIELDS);
@@ -251,7 +249,7 @@ impl Parser for Database {
                     .and_then(time::epoch_millis)
                     .or_else(|| row.get("created_at").and_then(time::epoch_seconds))
                 {
-                    s.offer_start(at.timestamp(), at.evidence())
+                    s.offer_start(at.timestamp(), at.accuracy())
                         .expect("decoded source time is valid");
                 }
                 out.sessions.push(s);

@@ -39,14 +39,12 @@ pub(crate) fn validate_integrity(object: &QueryObject) -> Result<()> {
         if let Some(prior) = definitions.insert(definition.question.to_string(), definition)
             && prior != definition
         {
-            return Err(invalid(
-                "one query definition has conflicting frozen bodies",
-            ));
+            return Err(invalid("one query definition has conflicting saved bodies"));
         }
     }
     for dependency in &object.dependencies {
         if !definitions.contains_key(&dependency.to_string()) {
-            return Err(invalid("a query dependency has no frozen definition"));
+            return Err(invalid("a query dependency has no saved definition"));
         }
     }
     for edge in &object.edges {
@@ -54,7 +52,7 @@ pub(crate) fn validate_integrity(object: &QueryObject) -> Result<()> {
             QueryEdge::Saved { query } | QueryEdge::Combine { query } | QueryEdge::In { query }
                 if !object.dependencies.contains(query) =>
             {
-                return Err(invalid("a composition edge has no frozen query dependency"));
+                return Err(invalid("a composition edge has no saved query dependency"));
             }
             QueryEdge::Result { result } if result.is_empty() => {
                 return Err(invalid(
@@ -67,7 +65,7 @@ pub(crate) fn validate_integrity(object: &QueryObject) -> Result<()> {
     Ok(())
 }
 
-/// Frozen result schemas must agree with the same canonical metadata readers bind.
+/// Saved result schemas must agree with the column metadata readers bind.
 pub(crate) fn validate_result_bindings(
     conn: &Connection,
     source: Source,
@@ -105,23 +103,23 @@ pub(crate) fn validate_result_bindings(
         kept,
         ..Default::default()
     };
-    let actual = bindings.catalog();
+    let catalog = bindings.catalog();
     for output in result_outputs {
         let query_language::catalog::OutputSource::Result { reference, .. } = &output.source else {
             unreachable!()
         };
-        let Some(canonical) = actual
+        let Some(bound) = catalog
             .source_outputs
             .iter()
             .find(|candidate| candidate.source == output.source)
         else {
             return Err(StoreError::NotFound(format!(
-                "canonical result schema {reference}"
+                "stored result schema {reference}"
             )));
         };
-        if canonical.schema != output.schema {
+        if bound.schema != output.schema {
             return Err(invalid(format!(
-                "saved result schema {reference} differs from its canonical column metadata"
+                "saved result schema {reference} differs from its bound column metadata"
             )));
         }
     }
@@ -141,7 +139,7 @@ pub(crate) fn validate_run(run: &QueryRun) -> Result<()> {
         RunBinding::Original { execution } => validate_execution(run, execution),
         RunBinding::OriginalObject { execution } => {
             if run.question.is_some() {
-                return Err(invalid("an object read has no semantic query question"));
+                return Err(invalid("an object read has no query question"));
             }
             execution
                 .validate()
@@ -165,7 +163,7 @@ fn validate_execution(run: &QueryRun, execution: &ExecutionBinding) -> Result<()
             .context
             .read_positions
             .get(key)
-            .is_some_and(|actual| actual != &expected)
+            .is_some_and(|recorded| recorded != &expected)
         {
             return Err(invalid(
                 "a query run's replay context contradicts its read position",
@@ -186,7 +184,7 @@ fn validate_execution(run: &QueryRun, execution: &ExecutionBinding) -> Result<()
 }
 
 pub(crate) fn equivalent(left: &QueryObject, right: &QueryObject) -> bool {
-    // Alias labels and source spans do not create a second semantic question.
+    // Alias labels and source spans do not create a second question.
     left.id == right.id
         && left.normal_form == right.normal_form
         && left.parameters == right.parameters
@@ -254,7 +252,7 @@ pub(crate) fn known_run_outcome(conn: &Connection, outcome: &QueryRunOutcome) ->
 fn check_outcome_integrity(value: &QueryRunOutcome, action: &str, intent: &str) -> Result<()> {
     if value.binding_hash.to_string() != action || value.run_hash.to_string() != intent {
         return Err(invalid(
-            "retained run outcome failed its action or invocation integrity check",
+            "stored run outcome failed its action or invocation integrity check",
         ));
     }
     Ok(())
@@ -272,12 +270,12 @@ fn first_run(conn: &Connection, source: Source, question: &str) -> Result<()> {
     Ok(())
 }
 
-/// The caller's ordinary source transaction owns the complete question and edges.
+/// The caller's source transaction holds the whole question and its edges.
 pub(crate) fn apply_object(conn: &Connection, object: &QueryObject, counter: i64) -> Result<()> {
     validate_integrity(object)?;
     if counter <= 0 {
         return Err(StoreError::Invalid(
-            "query admission position must be positive".into(),
+            "query commit position must be positive".into(),
         ));
     }
     let source = Source::of(conn)?;
@@ -485,7 +483,7 @@ pub(crate) fn lookup_run(
                 || value.record_hash()?.to_string() != intent
             {
                 return Err(invalid(
-                    "retained run beginning failed its action or invocation integrity check",
+                    "stored run beginning failed its action or invocation integrity check",
                 ));
             }
             Ok(value)
@@ -515,7 +513,7 @@ pub(crate) fn lookup_run(
 }
 
 /// One lookup over the index and this host's spooled writes serves readers and
-/// accepting original/scratch preparation. The caller retains its scope guard.
+/// accepting original/scratch preparation. The caller keeps its scope guard.
 pub(crate) fn query_object_on(
     conn: &Connection,
     source: Source,
@@ -536,7 +534,7 @@ pub(crate) fn query_object_on(
         validate_integrity(&object)?;
         if object.id.to_string() != stored {
             return Err(invalid(
-                "retained query body disagrees with its stored identity",
+                "saved query body disagrees with its stored identity",
             ));
         }
         found.insert(object.id.to_string(), object);
@@ -572,7 +570,7 @@ pub(crate) fn query_object_on(
 }
 
 impl Reader<'_> {
-    /// A pending primary body is already durable, but is not a Sinex admission.
+    /// A pending primary body is already saved, but Sinex has not accepted it.
     pub fn query_object(
         &self,
         key: &str,
@@ -610,7 +608,7 @@ impl Reader<'_> {
             })
             .transpose()?;
         if let Some(pending) = pending {
-            // Ordinary reads hand over a completed run group. Retained-object
+            // Plain reads hand over a completed run group. Saved-object
             // executions acknowledge Begin first and finish in a later group.
             for name in [format!("query-run:{id}"), format!("query-run-outcome:{id}")] {
                 pending.visit_named_products(

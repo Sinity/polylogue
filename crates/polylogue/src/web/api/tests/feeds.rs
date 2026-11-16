@@ -48,7 +48,7 @@ fn lines(bytes: &[u8]) -> Vec<Value> {
 }
 
 #[test]
-fn http_get_feeds_execute_generated_canonical_calls_and_continue_the_same_position() {
+fn http_feeds_run_generated_calls_and_keep_their_position() {
     let daemon = crate::test_daemon::start("HTTP GET feed binding");
     let declarations = crate::commands::declarations();
     let mut completed = None;
@@ -61,7 +61,7 @@ fn http_get_feeds_execute_generated_canonical_calls_and_continue_the_same_positi
             let request = command_surface::Request {
                 operation: "changes".into(),
                 arguments: json!({"since":null}),
-                request_id: "HTTP feed exact identity".into(),
+                request_id: "HTTP feed identity".into(),
                 deadline,
                 budget_tokens: Default::default(),
                 cursor: None,

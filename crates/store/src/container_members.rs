@@ -1,4 +1,4 @@
-//! Exact membership in retained container bytes.
+//! Membership in stored container bytes: member names and positions.
 use crate::{Batch, InContainer, Result, StoreError};
 use rusqlite::Connection;
 pub(crate) fn container_of(batch: &Batch) -> Option<&InContainer> {

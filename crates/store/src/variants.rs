@@ -1,5 +1,5 @@
-//! Canonical rendition rows, revision currency and typed reads. Confirmation
-//! applies exact prepared records through the same codec as standalone writes.
+//! Rendition rows, current revisions and typed reads. Confirmation applies
+//! prepared records unchanged through the same codec as standalone writes.
 mod imports;
 mod rows;
 pub use imports::declare_imports;
@@ -204,7 +204,7 @@ pub fn copy(from: &Connection, to: &Connection) -> Result<()> {
 
 impl Reader<'_> {
     /// This indexed metadata check avoids streaming an unrelated source's text
-    /// merely to discover that it has no rendition facts.
+    /// merely to discover that it has no rendition rows.
     pub fn has_variant_source(&self, source_reference: &str) -> Result<bool> {
         let conn = self.conn()?;
         let source = Source::reading(conn)?;

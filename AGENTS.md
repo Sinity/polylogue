@@ -107,7 +107,7 @@ local overrides and build graphs. Enter with `nix develop`. Use
 `cargo xtask check --changed` while editing,
 `cargo xtask test -p <crate> --lib -E 'test(<name>)'` for library unit tests,
 and `cargo xtask check` for the required hosted check. All test selections share
-the canonical workspace feature graph. Package filters select execution; native
+the workspace feature graph. Package filters select execution; Cargo
 target flags such as `--lib` or `--bin NAME` bound compilation.
 
 **What a test checks.** A test exercises behaviour a caller can observe
@@ -133,11 +133,11 @@ configuration.
 ## How work is done here
 
 **Design first.** Before writing code, read the page in `docs/` that owns the
-area, the pages it links, the current code of the area, and the
-predecessor's implementation and tests for what you are building (Polylogue's
-earlier Python implementation is in this repository's Git history). Write the
-whole change from the design: complete features, built on the architecture's
-abstractions, with the predecessor's behaviour and test cases ported.
+area, the pages it links, the current code of the area, and the earlier
+Python Polylogue's implementation and tests for what you are building (it is
+in this repository's Git history). Write the whole change from the design:
+complete features, built on the architecture's abstractions, with the earlier
+Python Polylogue's behaviour and test cases ported.
 
 **Edit in bulk; type-check as you go.** Change whole modules, crates and call
 sites in one pass. Run `cargo xtask check --changed` (formatting, boundaries,
@@ -147,7 +147,7 @@ coherent.
 
 **Review your own work before verifying it.** Read the whole diff once
 against the task, the owning page, `docs/architecture.md` and the
-predecessor's behaviour, and list everything wrong in that one pass: a
+earlier Python Polylogue's behaviour, and list everything wrong in that one pass: a
 requirement not met, a mechanism duplicated, a predecessor left in place, a
 caller not converted, a limit that refuses valid input, a test that cannot
 fail, a name that does not say what the thing is, a case the design covers
@@ -210,8 +210,8 @@ inputs stay where their sources keep them and an old archive is set aside, not
 deleted. No stored format or archive is deployed in a sense that needs
 compatibility or migration; target one current format. Original input bytes
 and paid outputs such as embedding vectors are preserved; a one-time
-operation on an archive is written, run, and leaves a result, not durable
-code. When an operator
+operation on an archive is written, run, and leaves a result, not code that
+stays. When an operator
 question is open, take the conservative option, keep
 working on the rest, and put the question in the report and on the Bead.
 
@@ -227,7 +227,7 @@ locate the operator's words in his session history.
 **Invariants instead of repair.** Code does not produce broken state, so
 there is nothing to repair. There are no repair, reconcile, reindex or
 verify-and-fix commands and no scheduled checks. A crash leaves only states
-the ordinary open path treats as normal: an uncommitted segment tail, a
+the open path treats as normal: an uncommitted segment tail, a
 derived store behind its saved position, a source position behind its
 committed rows. When something is found broken, fix the code that produced
 it; often the cause is code that no longer exists and no new invariant is
@@ -249,15 +249,15 @@ shoudl be no compatiblity and things coudl break" (2026-09-28,
 **Full features, built on a whole architecture.** Build the complete feature
 the design describes, on abstractions that make the next features cheap,
 rather than a bare-bones version to be replaced later. Polylogue is meant to
-do more than its predecessor did, without the predecessor's machinery. "Why
+do more than the earlier Python Polylogue did, without its machinery. "Why
 build some sort of bare-bones features which will need to be replaced by
 actual full-fledged ones anyway?" (2026-10-27,
 `cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:3c3dd59f-4560-4fee-95d4-5c43b6c94ca5`).
 When an area you are changing works but its design is wrong, redesign it as
 part of the task; an area you are not changing gets a Bead.
 
-**Use the predecessor's knowledge, not its mechanisms.** The Python
-predecessor had a working core under layers of repair and bookkeeping. Port
+**Use the earlier Python Polylogue's knowledge, not its mechanisms.** It
+had a working core under layers of repair and bookkeeping. Port
 its format knowledge, parsers' cases, capabilities and planned work; leave
 its repair passes, census and debt ledgers, revision authority and audit
 tiers behind. "Don't make the opposite mistake of mindlessly porting things
@@ -266,8 +266,8 @@ all these terrible mechanisms, corrections on top of corrections to broken
 code" (2026-10-27,
 `cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:3f159a64-8c63-4851-850b-0db265a6998f`).
 
-**Small codebase, plain names.** Bulk is the main enemy: the predecessors
-grew past half a million lines each through kludges on kludges. Prefer one
+**Small codebase, plain names.** Bulk is the main enemy: the earlier
+Python Polylogue and the earlier Sinex grew past half a million lines each through kludges on kludges. Prefer one
 deep abstraction to several shallow ones, clean internal and external
 interfaces, and no repeated logic. A name says what the thing is in ordinary
 words, everywhere: types, functions, local variables, SQL, JSON keys, CLI
@@ -292,13 +292,13 @@ deadline lifted. "Such arbitrary limits are themselves straight-up bugs."
 (2026-09-27,
 `cc:62be45f2-6c40-49ce-a88e-bc566948628c:4cc20d7c-9e62-4b7a-9550-7dd97f9d48e9`).
 
-**Tests that are better than the predecessor's.** Every specified behaviour
+**Tests that are better than the earlier Python Polylogue's.** Every specified behaviour
 in the pages in `docs/` has a test
 that fails when the production path breaks. The valuable kinds: independent
 oracles (goldens written from format knowledge, never re-blessed from parser
 output), tests over the Morrow archive, crash tests at real durability
 boundaries, and property tests at serialization boundaries. Port the
-predecessor's cases as cases (inputs and expected outcomes), then fill the
+earlier Python Polylogue's cases as cases (inputs and expected outcomes), then fill the
 gaps both suites had. A test that restates a helper, asserts a mock's value,
 checks what the type system already prevents, or matches SQL substrings where
 rows could be compared adds cost without coverage. A test asserts behaviour

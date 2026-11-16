@@ -2,7 +2,7 @@ use super::*;
 use polylogue_store::fault::{self, Action};
 
 #[test]
-fn an_interrupted_import_retains_exact_committed_bytes_across_restart() {
+fn interrupted_import_keeps_committed_bytes_across_restart() {
     for point in ["segment.after_sync", "segment.after_commit"] {
         fault::clear();
         let home = ClaudeHome::new();

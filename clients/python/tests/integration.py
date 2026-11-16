@@ -42,7 +42,7 @@ class ClientTests(unittest.TestCase):
     def checked(self, call):
         answer = call().json()
         # Compare the complete output of this very execution, including its
-        # own captured clock, durable Run identity and observed archive position.
+        # own captured clock, saved Run identity and observed archive position.
         self.assertEqual(answer, json.loads(self.capture.read_bytes()))
         self.assertEqual(json.loads(self.arguments.read_text())[:2], ["--archive", str(self.archive_alias.absolute())])
         return answer
@@ -50,10 +50,10 @@ class ClientTests(unittest.TestCase):
     def test_declared_archive_alias_is_preserved_for_calls_and_feeds(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            actual = root / ("long-archive-target-" * 8)
-            actual.mkdir()
+            target = root / ("long-archive-target-" * 8)
+            target.mkdir()
             alias = root / "short"
-            alias.symlink_to(actual, target_is_directory=True)
+            alias.symlink_to(target, target_is_directory=True)
             client = Client(alias, executable=EXECUTABLE)
             declared = str(alias.absolute())
             self.assertNotEqual(declared, str(alias.resolve()))

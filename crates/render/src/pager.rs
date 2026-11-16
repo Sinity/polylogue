@@ -73,20 +73,20 @@ impl PageBuilder {
             previous_input: None,
         })
     }
-    /// Input starts with the exact anchor item, even when character zero
+    /// Input starts with the starting item itself, even when character zero
     /// excludes it, then proceeds through earlier items in metadata order.
     pub fn new_before(
         header: ReadHeader,
         budget: PageBudget,
-        anchor: ItemPlace,
+        page_start: ItemPlace,
         framing: ReadFraming,
     ) -> Result<Self, PageError> {
-        let mut page = Self::new(header, budget, Some(anchor), framing)?;
-        page.before = Some(anchor);
+        let mut page = Self::new(header, budget, Some(page_start), framing)?;
+        page.before = Some(page_start);
         Ok(page)
     }
     /// Coordinates come from the same prepared metadata view as resume seeks.
-    /// No native identifier is copied into either the frame or its position.
+    /// No native ID is copied into either the frame or its position.
     pub fn push_at(
         &mut self,
         selection: SelectionLocator,
@@ -220,17 +220,16 @@ impl PageBuilder {
         {
             return Err(PageError::InvalidPosition);
         }
-        if self
-            .start
-            .is_some_and(|anchor| anchor.selection != selection || anchor.item != ordinal)
-        {
+        if self.start.is_some_and(|page_start| {
+            page_start.selection != selection || page_start.item != ordinal
+        }) {
             return Err(PageError::InvalidPosition);
         }
         let encoded = crate::encode::json_bytes(&item).map_err(serialization)?;
         let item_hash = BlobHash::of(&encoded);
         if self
             .start
-            .is_some_and(|anchor| anchor.item_hash != item_hash)
+            .is_some_and(|page_start| page_start.item_hash != item_hash)
         {
             return Err(PageError::ItemChanged);
         }
@@ -238,8 +237,8 @@ impl PageBuilder {
             .expect("JSON is UTF-8")
             .chars()
             .count();
-        let until = self.start.map_or(Ok(total), |anchor| {
-            usize::try_from(anchor.character).map_err(|_| PageError::InvalidPosition)
+        let until = self.start.map_or(Ok(total), |page_start| {
+            usize::try_from(page_start.character).map_err(|_| PageError::InvalidPosition)
         })?;
         if until > total {
             return Err(PageError::InvalidPosition);

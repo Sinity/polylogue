@@ -19,7 +19,7 @@ fn record() -> MessageRecord {
             "namespace":{"input":"message-source","chain":2,"import_id":"original-import"},
             "exported_from":{"input":"current-message-source","chain":4,"import_id":"current-import"},
             "prior_exports":[{"input":"supplied-prior-source","chain":1,"import_id":"supplied-prior-import"}],"block":1,"attachment":0,"source_id":"opaque:source:id","candidates":[{
-            "hash":BlobHash::of(b"actual candidate"),"size":16,"sources":[{
+            "hash":BlobHash::of(b"candidate bytes"),"size":16,"sources":[{
                 "namespace":{"input":"original-message-source","chain":7,"import_id":"historical-import"},
                 "input":"historical-input","chain":3,"source_version":"historical-version",
                 "members":["assets/original"],"names":["supplied name"],"media_types":["application/octet-stream"],"declared_sizes":[9]
@@ -29,7 +29,7 @@ fn record() -> MessageRecord {
 }
 
 #[test]
-fn attachment_claims_preserve_message_identity_and_original_sparse_positions() {
+fn stated_attachments_keep_message_and_sparse_positions() {
     let original = record();
     let message_hash = original.message.content_hash().unwrap();
     assert!(original.validate().is_ok());
@@ -58,7 +58,7 @@ fn attachment_claims_preserve_message_identity_and_original_sparse_positions() {
 }
 
 #[test]
-fn binding_slots_refuse_other_versions_blocks_indexes_ids_and_blob_overrides() {
+fn binding_slots_refuse_every_mismatched_coordinate() {
     for invalid in [
         "version",
         "block",
@@ -139,7 +139,7 @@ fn binding_slots_refuse_other_versions_blocks_indexes_ids_and_blob_overrides() {
 }
 
 #[test]
-fn unknown_and_conflicting_candidates_keep_every_claim_without_a_local_availability_flag() {
+fn conflicting_candidates_keep_every_stated_source() {
     let mut value = record();
     let mut other = value.bindings[0].candidates[0].clone();
     other.sources[0].input = "another-historical-input".into();
@@ -162,7 +162,7 @@ fn unknown_and_conflicting_candidates_keep_every_claim_without_a_local_availabil
 }
 
 #[test]
-fn tool_result_binding_uses_its_attachment_index_inside_the_original_block() {
+fn tool_result_binding_indexes_inside_its_block() {
     let mut value = record();
     let Block::File(original) = value.message.blocks[1].clone() else {
         unreachable!()
@@ -186,7 +186,7 @@ fn tool_result_binding_uses_its_attachment_index_inside_the_original_block() {
 }
 
 #[test]
-fn qualified_namespaces_preserve_conflicting_claims_for_one_source_slot() {
+fn namespaces_keep_conflicting_bindings_for_one_slot() {
     let original = record();
     let hash = original.message.content_hash().unwrap();
     for difference in ["import", "input", "chain"] {
@@ -220,7 +220,7 @@ fn qualified_namespaces_preserve_conflicting_claims_for_one_source_slot() {
 }
 
 #[test]
-fn unknown_candidates_keep_their_required_namespace_and_unknown_original_sources() {
+fn unknown_candidates_keep_namespace_and_unknown_sources() {
     let mut value = record();
     let namespace = value.bindings[0].namespace.clone();
     value.bindings[0].candidates[0].sources[0].namespace = None;
@@ -259,13 +259,13 @@ fn unknown_candidates_keep_their_required_namespace_and_unknown_original_sources
 }
 
 #[test]
-fn complete_claim_identity_preserves_conflicts_and_supplied_export_contexts() {
+fn binding_identity_keeps_conflicts_and_export_contexts() {
     let original = record();
     for difference in ["bytes", "export", "prior"] {
         let mut value = original.clone();
         let mut another = value.bindings[0].clone();
         match difference {
-            "bytes" => another.candidates[0].hash = BlobHash::of(b"conflicting claim"),
+            "bytes" => another.candidates[0].hash = BlobHash::of(b"conflicting bytes"),
             "export" => another.exported_from.import_id = "another-current-import".into(),
             "prior" => another.prior_exports[0].import_id = "another-supplied-prior".into(),
             _ => unreachable!(),

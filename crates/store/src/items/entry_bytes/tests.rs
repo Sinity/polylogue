@@ -87,14 +87,14 @@ fn a_block_takes_its_message_facts_from_the_header_and_its_call_id_from_the_row(
     let stored = encode(&call(), Some(&header)).unwrap();
     let decoded_header = decode(
         &encode(&header, None).unwrap(),
-        Owner::Message(message_id()),
+        EntryOf::Message(message_id()),
         None,
     )
     .unwrap();
     assert_eq!(decoded_header, header);
     let decoded = decode(
         &stored,
-        Owner::Header(&decoded_header),
+        EntryOf::Header(&decoded_header),
         Some("toolu_1".into()),
     )
     .unwrap();
@@ -151,7 +151,7 @@ fn an_event_entry_round_trips_with_its_typed_facts() {
     event.cleared = vec!["call-a".into(), "call-b".into()];
     let stored = encode(&event, None).unwrap();
     assert_eq!(
-        decode(&stored, Owner::Event("claude-code:event-1".into()), None).unwrap(),
+        decode(&stored, EntryOf::Event("claude-code:event-1".into()), None).unwrap(),
         event
     );
 }
@@ -160,9 +160,9 @@ fn an_event_entry_round_trips_with_its_typed_facts() {
 fn trailing_or_missing_bytes_are_refused() {
     let mut stored = encode(&call(), Some(&header())).unwrap();
     stored.push(0);
-    assert!(decode(&stored, Owner::Header(&header()), None).is_err());
+    assert!(decode(&stored, EntryOf::Header(&header()), None).is_err());
     stored.truncate(stored.len() - 3);
-    assert!(decode(&stored, Owner::Header(&header()), None).is_err());
+    assert!(decode(&stored, EntryOf::Header(&header()), None).is_err());
 }
 
 fn kinds() -> impl Strategy<Value = EntryKind> {
@@ -237,14 +237,14 @@ proptest! {
         let (header, blocks) = entries.split_first().unwrap();
         let decoded_header = decode(
             &encode(header, None).unwrap(),
-            Owner::Message(message_id()),
+            EntryOf::Message(message_id()),
             header.call_id.clone(),
         )
         .unwrap();
         prop_assert_eq!(&decoded_header, header);
         for block in blocks {
             let stored = encode(block, Some(header)).unwrap();
-            let decoded = decode(&stored, Owner::Header(&decoded_header), block.call_id.clone())
+            let decoded = decode(&stored, EntryOf::Header(&decoded_header), block.call_id.clone())
                 .unwrap();
             prop_assert_eq!(&decoded, block);
         }

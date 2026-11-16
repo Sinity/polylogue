@@ -13,7 +13,7 @@ use sinex_protocol::{
     FetchMaterialReply,
 };
 use std::time::Duration;
-mod projection;
+mod snapshot;
 
 /// Fetches of withheld events in flight; results keep delivery order.
 const FETCH_CONCURRENCY: usize = 16;
@@ -43,7 +43,7 @@ pub(crate) fn readable(
                 position,
                 event: event.into(),
                 output_index: 0,
-                native: None,
+                sinex_context: None,
                 change: ConfirmedChange::Refused {
                     kind,
                     reason: error.to_string(),
@@ -65,7 +65,7 @@ fn confirmed_event(event: &sinex_protocol::ConfirmedEvent) -> Result<Confirmed> 
         Some(&event.kind_definition_hash),
         decode_event(event),
     )?;
-    fact.native = Some(native_context(event));
+    fact.sinex_context = Some(sinex_context(event));
     Ok(fact)
 }
 
@@ -82,31 +82,30 @@ fn decode_event(event: &sinex_protocol::ConfirmedEvent) -> Result<Confirmed> {
         position: event.commit_seq,
         event: event.id.to_string(),
         output_index: event.output_index,
-        native: Some(native_context(event)),
+        sinex_context: Some(sinex_context(event)),
         change: ConfirmedChange::Live(Box::new(product)),
     })
 }
 
-fn native_context(event: &sinex_protocol::ConfirmedEvent) -> local::NativeFactContext {
-    local::NativeFactContext {
-        kind: local::NativeKind {
+fn sinex_context(event: &sinex_protocol::ConfirmedEvent) -> local::SinexEventContext {
+    local::SinexEventContext {
+        kind: local::SinexKind {
             name: event.event_type.clone(),
             version: event.kind_version,
         },
         kind_definition_hash: event.kind_definition_hash.clone(),
         record_hash: Some(event.record_hash.clone()),
-        location: event
-            .location
-            .as_ref()
-            .map(|location| polylogue_model::native::NativeLocation {
+        location: event.location.as_ref().map(|location| {
+            polylogue_model::sinex_event::SinexLocation {
                 material: location.material.to_string(),
                 anchor: location.anchor,
-            }),
-        projection: local::ProjectionIdentity {
+            }
+        }),
+        payload_identity: local::PayloadIdentity {
             payload_hash: event.projection.payload_hash.clone(),
         },
         origin: local::ConfirmedOrigin {
-            source: event.source_ref.as_ref().map(|source| local::NativeSource {
+            source: event.source_ref.as_ref().map(|source| local::SinexSource {
                 name: source.name.clone(),
                 version: source.version,
             }),
@@ -268,19 +267,19 @@ impl Client {
     async fn page(&mut self, state: &ReplayState, cache: &str) -> Result<Vec<Confirmed>> {
         let after = state.applied_position.unwrap_or(0);
         // The durable consumer is provisioned once per connection; later pages
-        // only ask for the head and scope. Provisioning again would restart a
-        // consumer whose acknowledgements are not at a completed position.
+        // only ask for the latest position and scope. Provisioning again would restart a
+        // consumer whose acknowledgments are not at a completed position.
         let provisioned = self.consumer.is_some() && self.consumer_cache.as_deref() == Some(cache);
         let reply: ConfirmedConsumerReply = self
             .request(
                 self.subjects.confirmed_consumer(&self.producer),
                 ConfirmedConsumer {
                     after,
-                    completion: state.completed_delivery.as_ref().map(|receipt| {
+                    completion: state.completed_delivery.as_ref().map(|marker| {
                         sinex_protocol::DeliveredCompletion {
-                            stream_instance: receipt.stream_instance.clone(),
-                            stream_sequence: receipt.stream_sequence,
-                            fingerprint: receipt.fingerprint.clone(),
+                            stream_instance: marker.stream_instance.clone(),
+                            stream_sequence: marker.stream_sequence,
+                            fingerprint: marker.fingerprint.clone(),
                         }
                     }),
                     // Until its first completion marker, the index names
@@ -334,28 +333,26 @@ impl Client {
                 "the confirmed consumer reply has no stream, consumer or scope".into(),
             ));
         }
-        if state.projection.is_some() {
+        if state.snapshot_progress.is_some() {
             self.consumer = None;
             self.consumer_cache = None;
             self.consumer_instance = None;
-            return Ok(vec![control_fact(ReplayControl::Reset { scope })]);
+            return Ok(vec![control_event(ReplayControl::Reset { scope })]);
         }
         if let Ok(mut health) = self.health.lock() {
-            health.owner_position = Some(position);
+            health.sinex_position = Some(position);
             health.position_observed = Some(std::time::Instant::now());
-            health.owner_scope = Some(scope.clone());
+            health.sinex_scope = Some(scope.clone());
         }
         if state.scope.as_deref() != Some(scope.as_str()) {
             self.consumer = None;
             self.consumer_cache = None;
-            return Ok(vec![control_fact(ReplayControl::Reset { scope })]);
+            return Ok(vec![control_event(ReplayControl::Reset { scope })]);
         }
         if !provisioned {
             let instance = stream_instance
                 .filter(|instance| !instance.is_empty())
-                .ok_or_else(|| {
-                    Error::Invalid("confirmed stream incarnation is unavailable".into())
-                })?;
+                .ok_or_else(|| Error::Invalid("confirmed stream instance is unavailable".into()))?;
             self.consumer = Some(
                 jetstream::new(self.client.clone())
                     .get_consumer_from_stream(consumer, stream)
@@ -368,7 +365,7 @@ impl Client {
         let instance = self
             .consumer_instance
             .clone()
-            .expect("a provisioned consumer has its stream incarnation");
+            .expect("a provisioned consumer has its stream instance");
         let mut messages = self
             .consumer
             .as_ref()
@@ -393,11 +390,11 @@ impl Client {
             }
             let sequence = info.stream_sequence;
             self.pending.push(message.clone());
-            last = Some(local::NativeDeliveryCursor {
+            last = Some(local::StreamCursor {
                 stream_instance: instance.clone(),
                 stream_sequence: sequence,
             });
-            let receipt = local::CompletedDelivery {
+            let marker = local::CompletedDelivery {
                 stream_instance: instance.clone(),
                 stream_sequence: sequence,
                 fingerprint: sinex_protocol::DeliveredCompletion::fingerprint(
@@ -409,12 +406,12 @@ impl Client {
             };
             changes.push((
                 serde_json::from_slice::<sinex_protocol::Confirmed>(&message.payload)?,
-                receipt,
+                marker,
             ));
         }
-        let mut page = vec![control_fact(ReplayControl::Head { position })];
+        let mut page = vec![control_event(ReplayControl::LatestPosition { position })];
         let reader = &*self;
-        let mut reads = stream::iter(changes.into_iter().map(|(change, receipt)| async move {
+        let mut reads = stream::iter(changes.into_iter().map(|(change, marker)| async move {
             let mut fact = reader.read_change(change, after).await?;
             if let Some(Confirmed {
                 change: ConfirmedChange::Control(control),
@@ -422,7 +419,7 @@ impl Client {
             }) = &mut fact
                 && let ReplayControl::Completion { delivery, .. } = control.as_mut()
             {
-                *delivery = Some(receipt);
+                *delivery = Some(marker);
             }
             Ok::<_, Error>(fact)
         }))
@@ -432,7 +429,7 @@ impl Client {
         }
         drop(reads);
         if let Some(delivery) = last {
-            page.push(control_fact(ReplayControl::Delivered { delivery }));
+            page.push(control_event(ReplayControl::Delivered { delivery }));
         }
         Ok(page)
     }
@@ -471,7 +468,7 @@ impl Client {
                         position: commit_seq,
                         event: event.to_string(),
                         output_index: 0,
-                        native: None,
+                        sinex_context: None,
                         change: ConfirmedChange::Tombstoned,
                     },
                     Err(error) => readable(
@@ -490,14 +487,14 @@ impl Client {
                 position: change.archived_seq,
                 event: change.event.to_string(),
                 output_index: 0,
-                native: None,
+                sinex_context: None,
                 change: ConfirmedChange::Archived,
             },
             sinex_protocol::Confirmed::Restored(change) => Confirmed {
                 position: change.restored_seq,
                 event: change.event.to_string(),
                 output_index: 0,
-                native: None,
+                sinex_context: None,
                 change: ConfirmedChange::Restored,
             },
             sinex_protocol::Confirmed::Tombstoned {
@@ -507,7 +504,7 @@ impl Client {
                     .ok_or_else(|| Error::Invalid("a tombstone has no position".into()))?,
                 event: event.to_string(),
                 output_index: 0,
-                native: None,
+                sinex_context: None,
                 change: ConfirmedChange::Tombstoned,
             },
             sinex_protocol::Confirmed::Gap { reason } => {
@@ -515,7 +512,7 @@ impl Client {
             }
             sinex_protocol::Confirmed::PositionComplete { commit_seq } => {
                 if commit_seq >= after {
-                    return Ok(Some(control_fact(ReplayControl::Completion {
+                    return Ok(Some(control_event(ReplayControl::Completion {
                         position: commit_seq,
                         delivery: None,
                     })));
@@ -532,7 +529,7 @@ impl Client {
         applied: &dyn Fn(&str) -> Result<bool>,
     ) -> Result<()> {
         // A confirmed delivery may remove original producer bytes. Freeze must
-        // cover that confirmed removal until its immutable queue cut is acquired.
+        // cover that confirmed removal until its immutable queue position is acquired.
         let _publication = self.publication.enter().await;
         for message in &self.pending {
             let info = message
@@ -544,7 +541,7 @@ impl Client {
             });
             if !committed {
                 return Err(Error::Invalid(
-                    "native delivery has not been durably staged".into(),
+                    "confirmed delivery has not been staged in the index".into(),
                 ));
             }
             message
@@ -573,29 +570,29 @@ impl Client {
 }
 
 /// An acknowledgment without an admitted-event position needs a completed prefix
-/// whose owner head was observed after the durable acknowledgment. The owner
-/// reads that head from its committed counter, not from the delivery broker.
+/// whose latest Sinex position was observed after the acknowledgment. Sinex
+/// reads that position from its committed counter, not from the delivery broker.
 fn confirmed_removal_state(state: &ReplayState, health: &crate::status::Health) -> ReplayState {
     let mut confirmed_removal = state.clone();
-    let fresh_head = health.owner_scope.as_ref() == state.scope.as_ref()
-        && health.owner_position == state.head
+    let fresh_position = health.sinex_scope.as_ref() == state.scope.as_ref()
+        && health.sinex_position == state.latest_position
         && health.position_observed.is_some_and(|observed| {
             health
                 .last_ack
                 .is_none_or(|acknowledged| observed >= acknowledged)
         });
-    if !fresh_head {
-        confirmed_removal.head = None;
+    if !fresh_position {
+        confirmed_removal.latest_position = None;
     }
     confirmed_removal
 }
 
-fn control_fact(control: ReplayControl) -> Confirmed {
+fn control_event(control: ReplayControl) -> Confirmed {
     Confirmed {
         position: 0,
         event: String::new(),
         output_index: 0,
-        native: None,
+        sinex_context: None,
         change: ConfirmedChange::Control(Box::new(control)),
     }
 }

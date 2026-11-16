@@ -78,7 +78,7 @@ pub(super) fn append(path: &Path, bytes: &[u8]) -> io::Result<bool> {
 }
 
 /// A tail can contain only common framing, so equality of all existing bytes
-/// is the evidence available. Compare before writing and append only a suffix.
+/// is the only check available. Compare before writing and append only a suffix.
 fn complete_tail(file: &mut File, start: u64, parts: &[&[u8]]) -> io::Result<()> {
     let length = file
         .metadata()?

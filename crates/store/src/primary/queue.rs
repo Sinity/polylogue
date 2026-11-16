@@ -1,5 +1,5 @@
-//! The primary producer's durable queue. Encoded payload files are immutable;
-//! this database owns scheduling, acknowledgements and membership.
+//! The producer spool's queue. Encoded payload files never change; this
+//! database holds scheduling, acknowledgments and membership.
 use crate::{Result, StoreError, archive};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -68,7 +68,7 @@ pub struct Operation {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
-    Acquisition,
+    CaptureGroupHeader,
     Material,
     Request,
     Events,
@@ -81,7 +81,7 @@ pub enum Kind {
 impl Kind {
     fn name(self) -> &'static str {
         match self {
-            Self::Acquisition => "acquisition",
+            Self::CaptureGroupHeader => "acquisition",
             Self::Material => "material",
             Self::Request => "request",
             Self::Events => "events",
@@ -139,10 +139,10 @@ pub enum Lookup<'a> {
     Name(&'a super::NamedProductSelector),
     GroupHash(&'a str),
     Members(&'a str),
-    Acquisition(&'a str),
+    CaptureGroupHeader(&'a str),
     Source { source: &'a [u8], raw: bool },
     Unattributed,
-    RawGeneration(&'a [u8]),
+    ObservedSourceKey(&'a [u8]),
     RawChildren(&'a str),
     RawRoots(&'a [u8]),
 }
@@ -158,7 +158,7 @@ pub struct Queue {
     newest_next: std::cell::Cell<bool>,
 }
 
-/// A read transaction fixes the database at the producer backup cut. Copying
+/// A read transaction fixes the database at the producer backup position. Copying
 /// it later does not hold the producer's queue mutex or stop preparation.
 pub struct Snapshot {
     connection: Connection,
@@ -172,9 +172,7 @@ impl Snapshot {
         use rusqlite::backup::{Backup, StepResult};
         let check = || {
             if cancelled.load(std::sync::atomic::Ordering::Acquire) {
-                Err(StoreError::Invalid(
-                    "producer backup acquisition cancelled".into(),
-                ))
+                Err(StoreError::Invalid("producer backup cancelled".into()))
             } else {
                 Ok(())
             }
@@ -375,7 +373,7 @@ impl Queue {
         })
     }
 
-    /// Files have reached durable storage before this queue publication.
+    /// The files are synced to disk before the operation enters the queue.
     pub fn prepare(
         &self,
         operation: &Operation,
@@ -395,16 +393,16 @@ impl Queue {
         refresh_ready(&transaction, &operation.identity)?;
         transaction.commit()?;
         self.get(&operation.identity)?
-            .ok_or_else(|| StoreError::Invalid("published queue operation disappeared".into()))
+            .ok_or_else(|| StoreError::Invalid("queued operation disappeared".into()))
     }
 
-    /// Publish a staged acquisition as one commit. The adapter has synced and
+    /// Adds a staged capture group to the queue in one commit. The adapter has synced and
     /// moved its immutable directory before this call. Copy queue metadata
     /// directly, without decoding every member or performing one sync per row.
-    pub fn publish_acquisition(&self, staged: &Queue, header: &Operation) -> Result<()> {
-        if header.kind != Kind::Acquisition {
+    pub fn publish_capture_group(&self, staged: &Queue, header: &Operation) -> Result<()> {
+        if header.kind != Kind::CaptureGroupHeader {
             return Err(StoreError::Invalid(
-                "acquisition publication needs its header".into(),
+                "a capture group needs its header".into(),
             ));
         }
         self.connection.execute(
@@ -488,7 +486,7 @@ impl Queue {
         Ok(self.connection.query_row(&format!("SELECT {COLUMNS} FROM operation WHERE identity=(SELECT confirmed_group FROM operation WHERE identity=?1)"), [identity], entry).optional()?)
     }
 
-    pub fn acquisition_ordinal(&self, identity: &str) -> Result<Option<u64>> {
+    pub fn member_ordinal(&self, identity: &str) -> Result<Option<u64>> {
         Ok(self
             .connection
             .query_row(
@@ -500,7 +498,7 @@ impl Queue {
             .flatten())
     }
 
-    pub fn acquisition_after(
+    pub fn capture_group_members_after(
         &self,
         identity: &str,
         after: Option<u64>,
@@ -547,7 +545,7 @@ impl Queue {
     }
 
     /// Select by the confirmed position, not by the number of unrelated
-    /// pending operations. An unpositioned acknowledgement is a candidate
+    /// pending operations. An acknowledgment without a position is considered
     /// for a source group only when the confirmed stream caught up. Ungrouped
     /// metadata acknowledgments need no event position.
     pub fn confirmed_after(
@@ -657,7 +655,7 @@ impl Queue {
             }
             Lookup::GroupHash(hash) => ("group_hash=?1", vec![text(hash)]),
             Lookup::Members(identity) => ("confirmed_group=?1", vec![text(identity)]),
-            Lookup::Acquisition(identity) => ("acquisition=?1", vec![text(identity)]),
+            Lookup::CaptureGroupHeader(identity) => ("acquisition=?1", vec![text(identity)]),
             Lookup::Source { source, raw } => (
                 "source=?1 AND (?2=0 OR raw=1) AND unresolved=0",
                 vec![blob(source), Value::Integer(i64::from(raw))],
@@ -666,7 +664,7 @@ impl Queue {
                 "input IS NOT NULL AND source IS NULL AND unresolved=0",
                 vec![],
             ),
-            Lookup::RawGeneration(generation) => ("raw_generation=?1", vec![blob(generation)]),
+            Lookup::ObservedSourceKey(generation) => ("raw_generation=?1", vec![blob(generation)]),
             Lookup::RawChildren(previous) => ("raw_predecessor=?1", vec![text(previous)]),
             Lookup::RawRoots(generation) => {
                 ("raw_generation=?1 AND raw_root=1", vec![blob(generation)])
@@ -681,7 +679,7 @@ impl Queue {
         parameters.push(number(after.unwrap_or(0))?);
         parameters.push(number(through.unwrap_or(i64::MAX as u64))?);
         parameters.push(Value::Integer(i64::try_from(limit).unwrap_or(i64::MAX)));
-        let publishable = if exclude_refused {
+        let sendable = if exclude_refused {
             " AND phase NOT IN ('refused','conflicted') AND NOT EXISTS(SELECT 1 FROM operation AS parent WHERE parent.identity=operation.confirmed_group AND parent.phase IN ('refused','conflicted'))"
         } else {
             ""
@@ -691,7 +689,7 @@ impl Queue {
             Order::NewestFirst => "DESC",
         };
         let sql = format!(
-            "SELECT {COLUMNS} FROM operation WHERE {condition}{publishable} AND ordering>?{} AND ordering<=?{} ORDER BY ordering {direction} LIMIT ?{}",
+            "SELECT {COLUMNS} FROM operation WHERE {condition}{sendable} AND ordering>?{} AND ordering<=?{} ORDER BY ordering {direction} LIMIT ?{}",
             base + 1,
             base + 2,
             base + 3
@@ -703,7 +701,8 @@ impl Queue {
     }
 
     /// Interleave current capture with the oldest ready backlog. Dependencies
-    /// determine eligibility; a refused operation never blocks another source.
+    /// decide which operations are ready; a refused operation never blocks
+    /// another source.
     pub fn ready(&self, in_flight: &[String], limit: usize) -> Result<Vec<Entry>> {
         let mut excluded = in_flight.to_vec();
         let mut result = Vec::new();
@@ -735,25 +734,25 @@ impl Queue {
         Ok(result)
     }
 
-    /// Persist the already validated complete acknowledgement once. Original
-    /// encoded acknowledgement bytes stay with the immutable operation files.
+    /// Saves the validated, complete acknowledgment once. The encoded
+    /// acknowledgment bytes stay with the operation files.
     pub fn acknowledge(
         &self,
         identity: &str,
         phase: &Phase,
         admitted: &[String],
-        acknowledgement_bytes: u64,
+        acknowledgment_bytes: u64,
     ) -> Result<()> {
         if phase.is_pending() {
             return Err(StoreError::Invalid(
-                "acknowledgement has no finished outcome".into(),
+                "acknowledgment has no finished outcome".into(),
             ));
         }
         let transaction = self.connection.unchecked_transaction()?;
-        let changed = transaction.execute("UPDATE operation SET phase=?1,offered=?2,position=?3,admitted=?4,stored_bytes=stored_bytes+?5,ready=0 WHERE identity=?6 AND phase='pending'", params![phase.name(), match phase { Phase::Conflicted { offered } => Some(offered.as_str()), _ => None }, phase.commit_seq(), serde_json::to_string(admitted)?, acknowledgement_bytes, identity])?;
+        let changed = transaction.execute("UPDATE operation SET phase=?1,offered=?2,position=?3,admitted=?4,stored_bytes=stored_bytes+?5,ready=0 WHERE identity=?6 AND phase='pending'", params![phase.name(), match phase { Phase::Conflicted { offered } => Some(offered.as_str()), _ => None }, phase.commit_seq(), serde_json::to_string(admitted)?, acknowledgment_bytes, identity])?;
         if changed != 1 {
             return Err(StoreError::Invalid(
-                "acknowledgement has no pending operation".into(),
+                "acknowledgment has no pending operation".into(),
             ));
         }
         let mut dependents = {

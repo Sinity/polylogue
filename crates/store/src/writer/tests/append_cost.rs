@@ -2,7 +2,7 @@
 //! appended, never with how long the session already is.
 use crate::fixture::writer::{WriterArchive, prose};
 
-/// Counts every row inserted, updated or deleted in index.db's ordinary
+/// Counts every row inserted, updated or deleted in index.db's regular
 /// tables from here on, through triggers on each table.
 fn count_index_writes(w: &WriterArchive) {
     let conn = rusqlite::Connection::open(w.archive.index_db()).unwrap();

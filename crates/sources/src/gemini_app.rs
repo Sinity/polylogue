@@ -108,7 +108,7 @@ impl ExportParser for GeminiApp {
         if state.record_first_session(&native, &sid)?.is_none() {
             let mut s = Session::new(sid.clone(), SessionKind::Main);
             if let Some(at) = e.at {
-                s.offer_start(at.timestamp(), at.evidence())
+                s.offer_start(at.timestamp(), at.accuracy())
                     .expect("decoded source time is valid");
             }
             sink.out.sessions.push(s);
@@ -387,7 +387,7 @@ fn decode_entities(s: &str) -> String {
 
 /// `Jul 27, 2026, 10:59:30 PM CEST` (a narrow no-break space before the
 /// meridiem). An unknown zone abbreviation leaves the time unknown.
-// Recognize the native date slot independently of resolving its timezone or
+// Recognize the date slot as written independently of resolving its timezone or
 // civil date, so an unreadable clock keeps its original text and response.
 fn activity_time_text(text: &str) -> bool {
     let words: Vec<_> = text.split_whitespace().collect();
@@ -445,7 +445,7 @@ fn parse_time(s: &str) -> Option<crate::time::SourceTime> {
         _ => return None,
     }
     // Ambiguous abbreviations need source timezone settings; the host zone
-    // cannot disambiguate them. Keep their raw activity time without an instant.
+    // cannot disambiguate them. Keep their activity time as written, without an instant.
     let offset_h = match it.next()? {
         "UTC" | "GMT" => 0,
         "CET" | "WEST" => 1,

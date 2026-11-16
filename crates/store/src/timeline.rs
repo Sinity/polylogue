@@ -426,7 +426,7 @@ pub fn calendar(reader: &Reader<'_>, clock: &Clock, date: jiff::civil::Date) -> 
     ))
 }
 
-/// Known physical response subtotals in a calendar month. Independent usage
+/// Known per-response subtotals in a calendar month. Independent usage
 /// observations remain separate in the usage report, as they do by model.
 pub fn costs_by_day(
     reader: &Reader<'_>,

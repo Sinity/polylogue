@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 pub enum Support {
     /// Parsed into sessions and messages.
     Parsed,
-    /// Collected as raw bytes or committed row dumps, with parse state
+    /// Collected as original bytes or committed row dumps, with parse state
     /// `no_parser_yet` until the origin has a parser.
     NoParser,
     /// Bytes kept with no records in them: the images, audio and HTML an
@@ -165,20 +165,20 @@ pub struct Collector {
     pub setting: Option<&'static str>,
     /// Run outside the loop thread when requests can wait on another process.
     pub background: bool,
-    /// Settles retained inputs against archive acceptance before fetching more.
+    /// Advances past inputs the archive has accepted before fetching more.
     /// The callback verifies bytes, not parser completion or provider presence.
-    pub settle: Option<SettleCollector>,
+    pub advance: Option<AdvanceCollector>,
     /// Writes new inputs into the spool and returns the errors for the pass.
     /// Background collectors check the stop flag between files.
     pub sync: fn(&CollectorPaths<'_>, &std::sync::atomic::AtomicBool) -> Vec<String>,
 }
 
-/// Whether the exact complete input bytes have reached the archive. In primary
-/// mode this means confirmed application, not merely durable producer preparation.
+/// Whether the complete input bytes have reached the archive. In primary
+/// mode this means Sinex confirmed them, not only that the producer prepared them.
 pub type CollectorAcceptance<'a> =
     dyn Fn(&Path, polylogue_model::BlobHash, u64) -> Result<bool, String> + 'a;
 
-pub type SettleCollector = fn(&CollectorPaths<'_>, &CollectorAcceptance<'_>) -> Result<(), String>;
+pub type AdvanceCollector = fn(&CollectorPaths<'_>, &CollectorAcceptance<'_>) -> Result<(), String>;
 
 /// Configured directories a collector reads from and writes to.
 pub struct CollectorPaths<'a> {
@@ -1100,8 +1100,8 @@ pub fn by_extension_name(name: &str) -> Option<&'static OriginSpec> {
     })
 }
 
-/// Conversation URL declarations shared by ordinary query and read preparation.
-/// Captured path segments are provider IDs, retaining their original spelling.
+/// Conversation URL declarations shared by query and read preparation.
+/// Captured path segments are provider IDs, keeping their original spelling.
 pub fn conversation_catalog() -> std::sync::Arc<references::Catalog> {
     use references::{Catalog, Kind, Product, ProductCatalog, UrlPattern};
     use std::sync::{Arc, LazyLock};

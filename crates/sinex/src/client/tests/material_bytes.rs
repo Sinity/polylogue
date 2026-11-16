@@ -37,7 +37,7 @@ fn delivery(remote: bool) {
         .build()
         .unwrap();
     runtime.block_on(async {
-        let mut owner = ProducerOwner::start(&server, "MATERIAL_INGRESS").await;
+        let mut fake_sinex = FakeSinex::start(&server, "MATERIAL_INGRESS").await;
         let spool = Arc::new(Mutex::new(
             crate::spool::Spool::open(root.path(), "polylogue").unwrap(),
         ));
@@ -74,13 +74,13 @@ fn delivery(remote: bool) {
                 Default::default(),
                 false
             ),
-            owner.welcome(),
+            fake_sinex.welcome(),
         );
         let client = client.unwrap();
         let receive = async {
             let mut frames = 0;
             loop {
-                let message = owner.ingress.next().await.unwrap();
+                let message = fake_sinex.ingress.next().await.unwrap();
                 let received: Ingress = serde_json::from_slice(&message.payload).unwrap();
                 frames += 1;
                 let mut acknowledgment = crate::tests::no_event_acknowledgment(&received);
@@ -151,22 +151,22 @@ fn delivery(remote: bool) {
                             counts: Default::default(),
                             commit_seq: None,
                         };
-                        owner.acknowledge(acknowledgment).await;
+                        fake_sinex.acknowledge(acknowledgment).await;
                         assert_eq!(frames == 1, !remote);
                         break;
                     }
                     other => panic!("unexpected frame: {other:?}"),
                 }
-                owner.acknowledge(acknowledgment).await;
+                fake_sinex.acknowledge(acknowledgment).await;
             }
         };
-        let (result, ()) = tokio::join!(client.publish_prepared(prepared), receive);
+        let (result, ()) = tokio::join!(client.send_prepared(prepared), receive);
         assert_eq!(result.unwrap().refusal(), None);
     });
 }
 
 #[test]
-fn local_material_is_one_frame_and_keeps_the_frozen_inode() {
+fn local_material_is_one_frame_and_keeps_its_inode() {
     delivery(false);
 }
 #[test]
@@ -184,14 +184,14 @@ fn fetch_material_returns_bytes_and_ranges_without_a_shared_store() {
         .build()
         .unwrap();
     runtime.block_on(async {
-        let mut owner = ProducerOwner::start(&server, "FETCH_ONLY").await;
+        let mut fake_sinex = FakeSinex::start(&server, "FETCH_ONLY").await;
         let subjects = Subjects::new("auth");
-        let mut fetches = owner
+        let mut fetches = fake_sinex
             .client
             .subscribe(subjects.fetch_material("polylogue"))
             .await
             .unwrap();
-        owner.client.flush().await.unwrap();
+        fake_sinex.client.flush().await.unwrap();
         let spool = Arc::new(Mutex::new(
             crate::spool::Spool::open(root.path(), "polylogue").unwrap(),
         ));
@@ -205,7 +205,7 @@ fn fetch_material_returns_bytes_and_ranges_without_a_shared_store() {
                 Default::default(),
                 false
             ),
-            owner.welcome(),
+            fake_sinex.welcome(),
         );
         let client = client.unwrap();
         let metadata = material(b"0123456789");
@@ -223,7 +223,7 @@ fn fetch_material_returns_bytes_and_ranges_without_a_shared_store() {
                     request
                 );
                 sinex_transport::replies::publish_json(
-                    &owner.client,
+                    &fake_sinex.client,
                     message.reply.unwrap().to_string(),
                     FetchMaterialReply::Material {
                         material: Box::new(metadata.clone()),
@@ -274,11 +274,11 @@ fn non_loopback_plaintext_nats_is_refused_before_producer_hello() {
                 .unwrap();
         plain.flush().await.unwrap();
         drop(plain);
-        let mut owner = ProducerOwner::start(&server, "TLS_INGRESS").await;
+        let mut fake_sinex = FakeSinex::start(&server, "TLS_INGRESS").await;
         // Without the TLS requirement this responder completes the same
         // production connect immediately, making the refusal assertion fail.
         let welcome = tokio::spawn(async move {
-            owner.welcome().await;
+            fake_sinex.welcome().await;
         });
         let spool = Arc::new(Mutex::new(
             crate::spool::Spool::open(root.path(), "polylogue").unwrap(),

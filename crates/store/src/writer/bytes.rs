@@ -28,7 +28,7 @@ pub(super) fn write_bytes(
     Ok((chain, Some(rows)))
 }
 
-// A chain only grows. Seek the latest revision first so ordinary replay of
+// A chain only grows. Seek the latest revision first so replay of
 // a long append history does not revisit that history for every parsed chunk.
 // Older chains keep their original existence check, including sparse inputs.
 pub(super) fn stored_reading_chain(conn: &Connection, batch: &Batch) -> Result<i64> {
@@ -121,20 +121,22 @@ fn input_rows_at(
         if b.continues
             || b.new_blob.is_some()
             || b.blobs.iter().any(|blob| {
-                !b.acquisition.as_ref().is_some_and(|receipt| {
-                    receipt.hash == blob.hash && receipt.range.length().ok() == Some(blob.size)
+                !b.acquisition.as_ref().is_some_and(|capture_read| {
+                    capture_read.hash == blob.hash
+                        && capture_read.range.length().ok() == Some(blob.size)
                 })
             })
             || !b.parse.is_empty()
             || b.observation.is_none()
         {
             return Err(StoreError::Invalid(
-                "a recorded revision observation cannot create logical source extents or parsed facts".into(),
+                "a recorded revision observation cannot create source extents or parsed rows"
+                    .into(),
             ));
         }
         let source = crate::source::Source::of(tx)?;
-        let exact:bool=tx.query_row(&source.sql("SELECT EXISTS(SELECT 1 FROM @source.revision WHERE input=?1 AND number=?2 AND chain=?3 AND length=?4)"),params![b.input.id,number,chain,b.length as i64],|row|row.get(0))?;
-        if !exact {
+        let stored:bool=tx.query_row(&source.sql("SELECT EXISTS(SELECT 1 FROM @source.revision WHERE input=?1 AND number=?2 AND chain=?3 AND length=?4)"),params![b.input.id,number,chain,b.length as i64],|row|row.get(0))?;
+        if !stored {
             return Err(StoreError::Invalid(
                 "observed revision point is not stored".into(),
             ));
@@ -218,8 +220,8 @@ fn input_rows_at(
 }
 
 /// Where new bytes sit in their chain from `offset` on: one extent per blob
-/// that holds them. The physical blob is committed even for an empty
-/// acquisition; logical extents describe covered source bytes, so empty
+/// that holds them. The blob is committed even for an empty capture read;
+/// extents describe covered source bytes, so empty
 /// bytes have none.
 pub(super) fn extents(new_blob: &NewBlob, chain: i64, offset: u64) -> Vec<Extent> {
     let mut offset = offset as i64;

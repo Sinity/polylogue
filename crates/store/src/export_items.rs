@@ -15,7 +15,7 @@ pub struct ExportItems {
     cursor: Option<(Vec<u8>, i64)>,
     order: Order,
     scan_group: Option<(i64, u64)>,
-    retained: bool,
+    kept: bool,
 }
 
 /// Closed scan orders over the same staged payload bytes.
@@ -50,7 +50,7 @@ impl ExportItems {
         Self::open(Connection::open("")?, tempfile::tempfile()?, false)
     }
 
-    /// Retained scratch uses the same single compressed payload and ordering
+    /// Kept scratch uses the same single compressed payload and ordering
     /// database. Opening it again resumes the staged records, never the cursor.
     pub fn in_directory(directory: &Path) -> Result<Self> {
         fs::create_dir_all(directory)?;
@@ -64,8 +64,8 @@ impl ExportItems {
         Self::open(db, payload, true)
     }
 
-    fn open(db: Connection, payload: File, retained: bool) -> Result<Self> {
-        db.execute_batch(if retained {
+    fn open(db: Connection, payload: File, kept: bool) -> Result<Self> {
+        db.execute_batch(if kept {
             "PRAGMA synchronous=FULL;"
         } else {
             "PRAGMA synchronous=OFF;"
@@ -76,7 +76,7 @@ impl ExportItems {
                 start INTEGER NOT NULL, end INTEGER NOT NULL, compressed_start INTEGER NOT NULL, compressed_end INTEGER NOT NULL);
             CREATE INDEX IF NOT EXISTS item_order ON item(sort,ordinal);
             CREATE INDEX IF NOT EXISTS item_alternate_order ON item(alternate_sort,ordinal);
-            CREATE TABLE IF NOT EXISTS owner(message TEXT PRIMARY KEY,session TEXT NOT NULL) WITHOUT ROWID;
+            CREATE TABLE IF NOT EXISTS message_first_session(message TEXT PRIMARY KEY,session TEXT NOT NULL) WITHOUT ROWID;
             CREATE TABLE IF NOT EXISTS previous(session TEXT PRIMARY KEY,message TEXT NOT NULL) WITHOUT ROWID; BEGIN;")?;
         let ordinal = db.query_row("SELECT COALESCE(MAX(ordinal)+1,0) FROM item", [], |r| {
             r.get(0)
@@ -88,12 +88,12 @@ impl ExportItems {
             cursor: None,
             order: Order::Primary,
             scan_group: None,
-            retained,
+            kept,
         })
     }
 
-    /// Commit ordering only after its referenced compressed bytes are durable.
-    /// This is also used before retaining a failed client's working directory.
+    /// Commit ordering only after its referenced compressed bytes are on disk.
+    /// This is also used before keeping a failed client's working directory.
     pub fn checkpoint(&mut self) -> Result<()> {
         if self.scan_group.is_some() {
             return Err(StoreError::Invalid(
@@ -107,7 +107,7 @@ impl ExportItems {
 
     pub fn close(mut self) -> Result<()> {
         self.checkpoint()?;
-        self.retained = false;
+        self.kept = false;
         Ok(())
     }
 
@@ -286,20 +286,24 @@ impl ExportItems {
         Ok(())
     }
 
-    pub fn claim_owner(&mut self, message: &str, session: &SessionId) -> Result<Option<SessionId>> {
+    pub fn claim_session(
+        &mut self,
+        message: &str,
+        session: &SessionId,
+    ) -> Result<Option<SessionId>> {
         let inserted = self.db.execute(
-            "INSERT OR IGNORE INTO owner VALUES (?1,?2)",
+            "INSERT OR IGNORE INTO message_first_session VALUES (?1,?2)",
             params![message, session.to_string()],
         )?;
         if inserted == 1 {
             return Ok(None);
         }
-        let owner: String = self.db.query_row(
-            "SELECT session FROM owner WHERE message=?1",
+        let message_first_session: String = self.db.query_row(
+            "SELECT session FROM message_first_session WHERE message=?1",
             [message],
             |r| r.get(0),
         )?;
-        SessionId::parse(&owner)
+        SessionId::parse(&message_first_session)
             .map(Some)
             .map_err(|e| StoreError::Invalid(e.to_string()))
     }
@@ -324,7 +328,7 @@ impl ExportItems {
 
 impl Drop for ExportItems {
     fn drop(&mut self) {
-        if self.retained {
+        if self.kept {
             if self.scan_group.is_some() {
                 let _ = self.rollback_scan();
             }

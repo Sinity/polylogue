@@ -34,15 +34,15 @@ pub struct Options {
     pub provider_catalog: Option<std::sync::Arc<references::Catalog>>,
 }
 
-/// One canonical saved-query assertion and its retained executable body.
+/// One saved-query assertion and its saved executable body.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SavedQuery {
     pub text: String,
-    /// Exact assertion revision supplying this name.
+    /// The assertion revision supplying this name.
     pub revision: String,
-    /// Canonical assertion family identity.
+    /// The assertion family's root identity.
     pub root: String,
-    /// The semantic identity declared by the current assertion.
+    /// The question identity the current assertion declares.
     pub hash: query_language::identity::QuestionId,
     pub denominator: Option<query_language::identity::QuestionId>,
     /// Every current head when the owning family forks, across all names.
@@ -53,11 +53,11 @@ pub struct SavedQuery {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum SavedQueryBody {
-    Frozen {
+    Available {
         syntax: String,
         #[serde(
             skip_serializing_if = "Option::is_none",
-            serialize_with = "serialize_retained_object"
+            serialize_with = "serialize_saved_object"
         )]
         object: Option<std::sync::Arc<polylogue_model::query_objects::QueryObject>>,
     },
@@ -65,7 +65,7 @@ pub enum SavedQueryBody {
         reason: String,
     },
 }
-fn serialize_retained_object<S: serde::Serializer>(
+fn serialize_saved_object<S: serde::Serializer>(
     object: &Option<std::sync::Arc<polylogue_model::query_objects::QueryObject>>,
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
@@ -74,7 +74,7 @@ fn serialize_retained_object<S: serde::Serializer>(
 impl SavedQuery {
     pub fn executable_text(&self) -> Result<&str, QueryError> {
         match &self.body {
-            SavedQueryBody::Frozen { syntax, .. } => Ok(syntax),
+            SavedQueryBody::Available { syntax, .. } => Ok(syntax),
             SavedQueryBody::Unavailable { reason } => Err(QueryError::Unavailable {
                 what: reason.clone(),
             }),
@@ -140,7 +140,7 @@ pub enum ColKind {
     Bool,
 }
 
-/// The entity named by a scalar column, proven by its owning field.
+/// The entity named by a scalar column, as its owning field declares it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ColumnReference {
@@ -231,8 +231,8 @@ pub struct Bindings {
     pub kept: std::collections::BTreeMap<String, Kept>,
 }
 impl Bindings {
-    /// Add an acknowledged semantic object under a saved assertion's name.
-    /// Executable text comes from its frozen AST, never current dependency names.
+    /// Add an accepted query object under a saved assertion's name.
+    /// Executable text comes from its saved AST, never current dependency names.
     pub fn add_saved(
         &mut self,
         name: &str,
@@ -241,11 +241,11 @@ impl Bindings {
         root: &str,
     ) -> Result<(), QueryError> {
         let object = plan.query_object()?;
-        let frozen = crate::plan::saved_query_bindings(&object)?;
-        let mut definition = frozen[&object.id.to_string()][0].clone();
+        let saved = crate::plan::saved_query_bindings(&object)?;
+        let mut definition = saved[&object.id.to_string()][0].clone();
         definition.revision = revision.into();
         definition.root = root.into();
-        for (id, nodes) in frozen {
+        for (id, nodes) in saved {
             self.saved.entry(id).or_insert(nodes);
         }
         self.saved.entry(name.into()).or_default().push(definition);

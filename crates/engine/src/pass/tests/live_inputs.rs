@@ -48,12 +48,12 @@ fn new_files_and_database_records_run_while_another_parser_waits() {
     let db = home.home.join(".codex/state_5.sqlite");
     std::fs::create_dir_all(db.parent().unwrap()).unwrap();
     let source = rusqlite::Connection::open(&db).unwrap();
-    let native = "00000000-0000-4000-8000-000000000042";
+    let native_id = "00000000-0000-4000-8000-000000000042";
     source
         .execute_batch("CREATE TABLE threads(id TEXT PRIMARY KEY,name TEXT);")
         .unwrap();
     source
-        .execute("INSERT INTO threads VALUES(?1,'before')", [native])
+        .execute("INSERT INTO threads VALUES(?1,'before')", [native_id])
         .unwrap();
     let (mut engine, _lock) = open_engine(&home);
     assert!(engine.run_pass().unwrap().errors.is_empty());
@@ -79,7 +79,7 @@ fn new_files_and_database_records_run_while_another_parser_waits() {
                     route: polylogue_model::Route::Live,
                 },
                 observation: engine.observation(&db, None),
-                acquisition: engine.acquisition_context(
+                source_read: engine.source_read_context(
                     &db,
                     "codex-database",
                     polylogue_store::primary::AcquisitionRoute::NativeCapture,
@@ -152,7 +152,7 @@ fn new_files_and_database_records_run_while_another_parser_waits() {
     )
     .unwrap();
     let expected = blake3::hash(
-        serde_json::json!({"id":native,"name":"after"})
+        serde_json::json!({"id":native_id,"name":"after"})
             .to_string()
             .as_bytes(),
     )

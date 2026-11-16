@@ -196,7 +196,7 @@ fn sparse_source_blocks_keep_original_addresses_and_never_hash_as_complete_text(
             }],
             ..Default::default()
         };
-        output.message_projections.insert(
+        output.block_selections.insert(
             0,
             MessageProjection {
                 source_version: original.content_hash().unwrap(),
@@ -326,7 +326,7 @@ fn document_spans_share_original_body_offsets_without_loading_structured_results
 }
 
 #[test]
-fn preparation_hashes_native_text_from_original_and_authored_text_from_private_overlay() {
+fn preparation_hashes_source_text_and_overlay_text() {
     use polylogue_model::{
         Author,
         assertion::{AssertionFact, AssertionKind, AssertionLink, LinkRole},
@@ -337,7 +337,7 @@ fn preparation_hashes_native_text_from_original_and_authored_text_from_private_o
         vec![source(
             "m1",
             vec![Block::Text {
-                text: "original native text".into(),
+                text: "original source text".into(),
             }],
         )],
     );
@@ -351,7 +351,7 @@ fn preparation_hashes_native_text_from_original_and_authored_text_from_private_o
         root: "pending".into(),
         kind: AssertionKind::Note,
         key: None,
-        value: Some(serde_json::json!("pending exact authored text")),
+        value: Some(serde_json::json!("pending authored text")),
         author: Author::Unattributed,
         via: polylogue_model::authorship::Channel::Import,
         machine: "synthetic-host".into(),
@@ -365,18 +365,16 @@ fn preparation_hashes_native_text_from_original_and_authored_text_from_private_o
         }],
     };
     crate::assertions::apply(&scratch, &[fact], 0).unwrap();
-    let native = r("message:claude-code:s-m1");
+    let source_message = r("message:claude-code:s-m1");
     let authored = r("assertion:pending@pending");
     let original = reader.conn().unwrap();
     assert_eq!(
-        hash(original, &scratch, &native).unwrap(),
-        reader.reference_hash(&native).unwrap()
+        hash(original, &scratch, &source_message).unwrap(),
+        reader.reference_hash(&source_message).unwrap()
     );
     assert_eq!(
         hash(original, &scratch, &authored).unwrap(),
-        Some(BlobHash(
-            *blake3::hash(b"pending exact authored text").as_bytes()
-        ))
+        Some(BlobHash(*blake3::hash(b"pending authored text").as_bytes()))
     );
     assert_eq!(
         hash(original, &scratch, &r("assertion:pending")).unwrap(),
@@ -402,7 +400,7 @@ fn preparation_hashes_native_text_from_original_and_authored_text_from_private_o
     );
     assert!(
         scratch.prepare("SELECT 1 FROM message").is_err(),
-        "native tables are absent from the authored overlay"
+        "source tables are absent from the authored overlay"
     );
 }
 
@@ -428,15 +426,15 @@ fn structured_assertions_remain_readable_with_unavailable_text_and_not_applicabl
     let pool = crate::ReadPool::open(&archive.archive).unwrap();
     {
         let reader = pool.reader().unwrap();
-        let exact = RevisionReference {
+        let pinned = RevisionReference {
             root: "structured".into(),
             revision: Some("structured".into()),
         };
-        let record = reader.assertion(&exact).unwrap().unwrap();
+        let record = reader.assertion(&pinned).unwrap().unwrap();
         assert!(
             matches!(record.fact.validate().unwrap(),values::Value::Setting(value) if value.fields.value==polylogue_model::settings::Value::Boolean(true))
         );
-        let reference = Reference::Assertion(exact);
+        let reference = Reference::Assertion(pinned);
         assert!(matches!(
             reader.reference_hash(&reference),
             Err(StoreError::ReferenceUnavailable { .. })

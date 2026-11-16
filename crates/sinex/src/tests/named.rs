@@ -115,7 +115,7 @@ pub(crate) fn phases() -> Vec<(String, Product)> {
     ]
 }
 
-fn retained(sinex: &Sinex, selector: NamedProductSelector) -> Vec<Product> {
+fn kept(sinex: &Sinex, selector: NamedProductSelector) -> Vec<Product> {
     let mut found = vec![];
     sinex
         .visit_named_products(&selector, &mut |product| {
@@ -127,7 +127,7 @@ fn retained(sinex: &Sinex, selector: NamedProductSelector) -> Vec<Product> {
 }
 
 #[test]
-fn named_query_phases_survive_restart_and_publication_until_confirmed_application() {
+fn named_query_phases_survive_restart_until_applied() {
     let root = tempfile::tempdir().unwrap();
     let expected = phases();
     let sinex = client(root.path());
@@ -180,13 +180,13 @@ fn named_query_phases_survive_restart_and_publication_until_confirmed_applicatio
     let sinex = client(root.path());
     let prefix = format!("query:{}", &expected[0].0[6..18]);
     assert_eq!(
-        retained(&sinex, NamedProductSelector::Prefix(prefix)),
+        kept(&sinex, NamedProductSelector::Prefix(prefix)),
         vec![expected[0].1.clone()]
     );
-    assert!(retained(&sinex, NamedProductSelector::Exact("query:missing".into())).is_empty());
+    assert!(kept(&sinex, NamedProductSelector::Exact("query:missing".into())).is_empty());
     for (ordinal, (name, product)) in expected.iter().enumerate() {
         assert_eq!(
-            retained(&sinex, NamedProductSelector::Exact(name.clone())),
+            kept(&sinex, NamedProductSelector::Exact(name.clone())),
             vec![product.clone()]
         );
         let observation = format!("{name}:observation");
@@ -200,10 +200,10 @@ fn named_query_phases_survive_restart_and_publication_until_confirmed_applicatio
                 .unwrap();
             bytes
         };
-        let physical_root = root.path().join(format!("acknowledgment-{ordinal}"));
-        std::fs::create_dir_all(&physical_root).unwrap();
-        let physical = extent(&physical_root, &bytes);
-        sinex.queue().unwrap().acknowledge(serde_json::from_value(json!({"number":ordinal+1,"frame":observation,"material":crate::material_id("polylogue-test",&observation),"material_extents":[physical.encode()],"admitted":[],"content_hash":null,"result":"admitted","counts":crate::tests::zero_counts(),"commit_seq":null})).unwrap()).unwrap();
+        let extent_root = root.path().join(format!("acknowledgment-{ordinal}"));
+        std::fs::create_dir_all(&extent_root).unwrap();
+        let stored = extent(&extent_root, &bytes);
+        sinex.queue().unwrap().acknowledge(serde_json::from_value(json!({"number":ordinal+1,"frame":observation,"material":crate::material_id("polylogue-test",&observation),"material_extents":[stored.encode()],"admitted":[],"content_hash":null,"result":"admitted","counts":crate::tests::zero_counts(),"commit_seq":null})).unwrap()).unwrap();
     }
     sinex.drain_observations().unwrap();
     for (ordinal, (name, _)) in expected.iter().enumerate() {
@@ -221,7 +221,7 @@ fn named_query_phases_survive_restart_and_publication_until_confirmed_applicatio
     let sinex = client(root.path());
     for (name, product) in &expected {
         assert_eq!(
-            retained(&sinex, NamedProductSelector::Exact(name.clone())),
+            kept(&sinex, NamedProductSelector::Exact(name.clone())),
             vec![product.clone()]
         );
     }
@@ -234,7 +234,7 @@ fn named_query_phases_survive_restart_and_publication_until_confirmed_applicatio
         )
         .unwrap();
     for (name, _) in expected {
-        assert!(retained(&sinex, NamedProductSelector::Exact(name)).is_empty());
+        assert!(kept(&sinex, NamedProductSelector::Exact(name)).is_empty());
     }
 }
 
@@ -252,12 +252,12 @@ fn source_material_identity_preserves_distinct_receiving_producers() {
 }
 
 #[test]
-fn an_attachment_binding_is_an_ordinary_named_product() {
+fn attachment_binding_is_a_named_product() {
     let root = tempfile::tempdir().unwrap();
     let sinex = client(root.path());
     let write = ProductWrite {
         product: Product::AttachmentBinding {
-            record: Box::new(super::custody_rebuild::witness()),
+            record: Box::new(super::binding_rebuild::binding_record()),
         },
         location: None,
         parents: vec![],
@@ -265,9 +265,9 @@ fn an_attachment_binding_is_an_ordinary_named_product() {
         output_index: 0,
     };
     let prepared = sinex
-        .prepare_named_products("ordinary-name", std::slice::from_ref(&write))
+        .prepare_named_products("plain-name", std::slice::from_ref(&write))
         .unwrap();
-    assert_eq!(prepared.identity, "ordinary-name");
+    assert_eq!(prepared.identity, "plain-name");
     assert!(prepared.pending);
     assert_eq!(sinex.status().unwrap().prepared_materials, 1);
 }

@@ -293,7 +293,7 @@ pub struct BackfillReport {
     pub detail: Option<String>,
 }
 
-/// An extension chat claim lease, in milliseconds.
+/// How long an extension's chat claim lasts, in milliseconds.
 pub const CHAT_CLAIM_MS: i64 = 180_000;
 /// One thing that happened to a chat action.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -375,7 +375,7 @@ impl ChatAction {
             ChatStatus::Queued
         };
         let mut claim: Option<(&str, i64)> = None;
-        // A later display phase or lease renewal cannot undo a possible send.
+        // A later display phase or claim renewal cannot undo a possible send.
         let mut sending_by = None;
         for e in &self.events {
             match e.kind.as_str() {
@@ -420,7 +420,8 @@ impl ChatAction {
         self.state().status(now)
     }
 
-    /// The original sending owner may confirm a fact, without renewing its lease.
+    /// The instance that started sending may still confirm the outcome, without
+    /// renewing its claim.
     pub fn unconfirmed_submitter(&self, now: i64) -> Option<&str> {
         let state = self.state();
         (state.status(now).0 == ChatStatus::OutcomeUnknown)
@@ -448,7 +449,7 @@ impl<'a> ChatState<'a> {
     }
 }
 
-/// An extension backfill claim lease, in milliseconds.
+/// How long an extension's backfill claim lasts, in milliseconds.
 pub const BACKFILL_CLAIM_MS: i64 = 180_000;
 /// One thing that happened to a backfill job.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

@@ -49,7 +49,7 @@ impl Fixture {
                 Arc::new(self.archive.blobs().unwrap()),
             )
             .unwrap();
-        stored.pop().expect("one actual capture").unwrap();
+        stored.pop().expect("one capture").unwrap();
         assert!(self.writer.flush().unwrap().errors.is_empty());
     }
     fn message(
@@ -105,7 +105,7 @@ impl Fixture {
         }
     }
     /// A received member as an explicit import stores it: with the
-    /// acquisition receipt that names its source and its whole byte range.
+    /// capture-read record that names its source and its whole byte range.
     fn member(&self, input: &str, namespace: &str, bytes: &[u8]) {
         let mut batch = raw(
             input,
@@ -172,7 +172,7 @@ fn stage(staged: &mut ExportItems, row: &AssetRow) {
 }
 fn raw(input: &str, namespace: Option<&str>, member: &str, change: Change, length: usize) -> Batch {
     Batch {
-        required_disposition: None,
+        required_outcome: None,
         input: InputKey {
             id: input.into(),
             format: "export-file".into(),
@@ -219,13 +219,13 @@ fn source<'a>(sources: &'a [ObservedMember], input: &str) -> &'a ObservedMember 
     sources
         .iter()
         .find(|source| source.input == input)
-        .expect("actual captured member")
+        .expect("captured member")
 }
 
 #[test]
-fn claims_without_received_bytes_never_borrow_a_later_same_hash_member() {
+fn bindings_without_bytes_never_borrow_a_later_member() {
     let fixture = Fixture::new();
-    let bytes = b"actual member bytes";
+    let bytes = b"member bytes";
     let record = record(bytes);
     let context = fixture.message(
         "message-input",
@@ -234,9 +234,9 @@ fn claims_without_received_bytes_never_borrow_a_later_same_hash_member() {
         &record,
     );
     fixture.refresh();
-    let fact = AttachmentBindingRecord::new(context, &record, 0, Vec::new()).unwrap();
-    let selection = fact.selection();
-    fixture.install(fact.clone()).unwrap();
+    let binding = AttachmentBindingRecord::new(context, &record, 0, Vec::new()).unwrap();
+    let selection = binding.selection();
+    fixture.install(binding.clone()).unwrap();
     assert_eq!(
         fixture
             .reads
@@ -307,7 +307,7 @@ fn validated_multi_extent_member_pins_survive_a_later_input_rewrite() {
     assert!(fixture.writer.flush().unwrap().errors.is_empty());
     let sources = fixture.refresh();
     let reader = fixture.reads.reader().unwrap();
-    let witness = reader
+    let checked_member = reader
         .validate_attachment_member(
             source(&sources, "received-member"),
             BlobHash::of(bytes),
@@ -322,12 +322,13 @@ fn validated_multi_extent_member_pins_survive_a_later_input_rewrite() {
             .blob
             .is_none()
     );
-    let fact =
-        AttachmentBindingRecord::new(context, &record, 0, vec![witness.for_candidate(0)]).unwrap();
+    let binding =
+        AttachmentBindingRecord::new(context, &record, 0, vec![checked_member.for_candidate(0)])
+            .unwrap();
     let restored: AttachmentBindingRecord =
-        serde_json::from_slice(&serde_json::to_vec(&fact).unwrap()).unwrap();
-    assert_eq!(restored, fact);
-    let selection = fact.selection();
+        serde_json::from_slice(&serde_json::to_vec(&binding).unwrap()).unwrap();
+    assert_eq!(restored, binding);
+    let selection = binding.selection();
     drop(reader);
     fixture.install(restored).unwrap();
     fixture.capture(
@@ -343,7 +344,7 @@ fn validated_multi_extent_member_pins_survive_a_later_input_rewrite() {
     fixture.refresh();
     let reader = fixture.reads.reader().unwrap();
     let AttachmentPin::Available(pin) = reader.pin_attachment(&selection).unwrap() else {
-        panic!("retained exact member lost its binding")
+        panic!("kept member lost its binding")
     };
     assert_eq!(pin.identity().chain, 1);
     assert_eq!(pin.read_range(2..13).unwrap(), bytes[2..13]);
@@ -362,7 +363,7 @@ fn validated_multi_extent_member_pins_survive_a_later_input_rewrite() {
 #[test]
 fn same_message_hash_in_other_source_and_namespace_cannot_authorize_a_binding() {
     let fixture = Fixture::new();
-    let bytes = b"same actual bytes";
+    let bytes = b"same bytes";
     let record = record(bytes);
     let first = fixture.message(
         "message-a",
@@ -379,7 +380,7 @@ fn same_message_hash_in_other_source_and_namespace_cannot_authorize_a_binding() 
     fixture.member("member-b", "scope-b", bytes);
     let sources = fixture.refresh();
     let reader = fixture.reads.reader().unwrap();
-    let witness = reader
+    let checked_member = reader
         .validate_attachment_member(
             source(&sources, "member-b"),
             BlobHash::of(bytes),
@@ -391,13 +392,14 @@ fn same_message_hash_in_other_source_and_namespace_cannot_authorize_a_binding() 
             first.clone(),
             &record,
             0,
-            vec![witness.clone().for_candidate(0)]
+            vec![checked_member.clone().for_candidate(0)]
         )
         .is_err()
     );
     let unknown = AttachmentBindingRecord::new(first, &record, 0, Vec::new()).unwrap();
     let known =
-        AttachmentBindingRecord::new(second, &record, 0, vec![witness.for_candidate(0)]).unwrap();
+        AttachmentBindingRecord::new(second, &record, 0, vec![checked_member.for_candidate(0)])
+            .unwrap();
     let (first, second) = (unknown.selection(), known.selection());
     drop(reader);
     fixture.install(unknown).unwrap();
@@ -420,7 +422,7 @@ fn same_message_hash_in_other_source_and_namespace_cannot_authorize_a_binding() 
 }
 
 #[test]
-fn wrong_observation_namespace_hash_and_size_cannot_mint_an_ingress_witness() {
+fn wrong_namespace_hash_or_size_gets_no_byte_match() {
     let fixture = Fixture::new();
     let bytes = b"verified body";
     fixture.member("member-a", "scope-a", bytes);
@@ -458,8 +460,7 @@ fn wrong_observation_namespace_hash_and_size_cannot_mint_an_ingress_witness() {
 }
 
 #[test]
-fn a_frozen_witness_does_not_recertify_an_unrelated_member_and_restores_only_its_exact_association()
-{
+fn byte_match_binds_only_the_member_it_checked() {
     let fixture = Fixture::new();
     let bytes = b"same bytes";
     let record = record(bytes);
@@ -473,14 +474,15 @@ fn a_frozen_witness_does_not_recertify_an_unrelated_member_and_restores_only_its
     let sources = fixture.refresh();
     let observed = source(&sources, "member-a").clone();
     let reader = fixture.reads.reader().unwrap();
-    let witness = reader
+    let checked_member = reader
         .validate_attachment_member(&observed, BlobHash::of(bytes), bytes.len() as u64)
         .unwrap();
-    let fact =
-        AttachmentBindingRecord::new(context, &record, 0, vec![witness.for_candidate(0)]).unwrap();
-    let selection = fact.selection();
+    let binding =
+        AttachmentBindingRecord::new(context, &record, 0, vec![checked_member.for_candidate(0)])
+            .unwrap();
+    let selection = binding.selection();
     drop(reader);
-    fixture.install(fact.clone()).unwrap();
+    fixture.install(binding.clone()).unwrap();
     let index =
         crate::archive::open_write(&fixture.archive.index_db(), crate::archive::cache::SETUP)
             .unwrap();
@@ -521,7 +523,7 @@ fn a_frozen_witness_does_not_recertify_an_unrelated_member_and_restores_only_its
         },
     );
     fixture.writer.import_assets(staged).unwrap();
-    fixture.install(fact).unwrap();
+    fixture.install(binding).unwrap();
     let reader = fixture.reads.reader().unwrap();
     assert_eq!(
         reader
@@ -546,22 +548,22 @@ fn zero_length_received_bytes_are_known_and_conflicting_candidates_stay_ambiguou
     fixture.member("empty-member", "scope-a", b"");
     let sources = fixture.refresh();
     let reader = fixture.reads.reader().unwrap();
-    let witness = reader
+    let checked_member = reader
         .validate_attachment_member(source(&sources, "empty-member"), BlobHash::of(b""), 0)
         .unwrap();
-    let fact = AttachmentBindingRecord::new(
+    let binding = AttachmentBindingRecord::new(
         context.clone(),
         &record,
         0,
-        vec![witness.clone().for_candidate(0)],
+        vec![checked_member.clone().for_candidate(0)],
     )
     .unwrap();
-    let selection = fact.selection();
+    let selection = binding.selection();
     drop(reader);
-    fixture.install(fact).unwrap();
+    fixture.install(binding).unwrap();
     let reader = fixture.reads.reader().unwrap();
     let AttachmentPin::Available(pin) = reader.pin_attachment(&selection).unwrap() else {
-        panic!("actual empty member became unknown")
+        panic!("empty member became unknown")
     };
     assert!(pin.read_range(0..0).unwrap().is_empty());
     assert_eq!(pin.content_hash().unwrap(), BlobHash::of(b""));
@@ -577,10 +579,11 @@ fn zero_length_received_bytes_are_known_and_conflicting_candidates_stay_ambiguou
         &record,
     );
     fixture.refresh();
-    let fact =
-        AttachmentBindingRecord::new(other, &record, 0, vec![witness.for_candidate(0)]).unwrap();
-    let selection = fact.selection();
-    fixture.install(fact).unwrap();
+    let binding =
+        AttachmentBindingRecord::new(other, &record, 0, vec![checked_member.for_candidate(0)])
+            .unwrap();
+    let selection = binding.selection();
+    fixture.install(binding).unwrap();
     let reader = fixture.reads.reader().unwrap();
     let resolution = reader.attachment_binding(&selection).unwrap().unwrap();
     assert_eq!(resolution.state, AttachmentState::Ambiguous);
@@ -596,7 +599,7 @@ fn zero_length_received_bytes_are_known_and_conflicting_candidates_stay_ambiguou
 }
 
 #[test]
-fn different_opaque_source_ids_can_bind_one_actual_member_without_overwriting_member_identity() {
+fn different_opaque_source_ids_can_bind_one_member_without_overwriting_member_identity() {
     let fixture = Fixture::new();
     let bytes = b"one received object";
     let mut record = record(bytes);
@@ -623,7 +626,7 @@ fn different_opaque_source_ids_can_bind_one_actual_member_without_overwriting_me
     fixture.member("member-a", "scope-a", bytes);
     let sources = fixture.refresh();
     let reader = fixture.reads.reader().unwrap();
-    let witness = reader
+    let checked_member = reader
         .validate_attachment_member(
             source(&sources, "member-a"),
             BlobHash::of(bytes),
@@ -638,7 +641,7 @@ fn different_opaque_source_ids_can_bind_one_actual_member_without_overwriting_me
                     context.clone(),
                     &record,
                     slot,
-                    vec![witness.clone().for_candidate(0)],
+                    vec![checked_member.clone().for_candidate(0)],
                 )
                 .unwrap(),
             )
@@ -673,7 +676,7 @@ fn different_opaque_source_ids_can_bind_one_actual_member_without_overwriting_me
 }
 
 #[test]
-fn one_selected_source_with_two_import_namespaces_remains_ambiguous_even_for_equal_claim_hashes() {
+fn two_import_namespaces_stay_ambiguous_for_one_source() {
     let fixture = Fixture::new();
     let record = record(b"not received");
     let first = fixture.message(
@@ -735,9 +738,9 @@ fn a_slot_with_unknown_candidates_stays_explicitly_unknown() {
         &record,
     );
     fixture.refresh();
-    let fact = AttachmentBindingRecord::new(context, &record, 0, Vec::new()).unwrap();
-    let selection = fact.selection();
-    fixture.install(fact).unwrap();
+    let binding = AttachmentBindingRecord::new(context, &record, 0, Vec::new()).unwrap();
+    let selection = binding.selection();
+    fixture.install(binding).unwrap();
     let reader = fixture.reads.reader().unwrap();
     assert_eq!(
         reader
@@ -754,9 +757,9 @@ fn a_slot_with_unknown_candidates_stays_explicitly_unknown() {
 }
 
 #[test]
-fn exact_member_classification_fills_unknown_fields_and_refuses_conflicting_known_facts() {
+fn member_classification_fills_unknowns_and_refuses_conflicts() {
     let fixture = Fixture::new();
-    fixture.member("member-a", "scope-a", b"actual bytes");
+    fixture.member("member-a", "scope-a", b"member-a bytes");
     let members = fixture.refresh();
     let observed = source(&members, "member-a");
     for (source_id, sidecar) in [
@@ -815,7 +818,7 @@ fn exact_member_classification_fills_unknown_fields_and_refuses_conflicting_know
 }
 
 #[test]
-fn distinct_declared_namespaces_and_full_claims_survive_one_receiving_context() {
+fn declared_namespaces_survive_one_receiving_context() {
     let fixture = Fixture::new();
     let bytes = b"received bound bytes";
     let mut record = record(bytes);
@@ -838,7 +841,7 @@ fn distinct_declared_namespaces_and_full_claims_survive_one_receiving_context() 
     );
     fixture.member("member-input", "receiving-scope", bytes);
     let observed = fixture.refresh();
-    let witness = fixture
+    let checked_member = fixture
         .reads
         .reader()
         .unwrap()
@@ -848,17 +851,18 @@ fn distinct_declared_namespaces_and_full_claims_survive_one_receiving_context() 
             bytes.len() as u64,
         )
         .unwrap();
-    let mut facts = Vec::new();
+    let mut bindings_made = Vec::new();
     for slot in 0..record.bindings.len() {
         let members = if slot == record.bindings.len() - 1 {
             Vec::new()
         } else {
-            vec![witness.clone().for_candidate(0)]
+            vec![checked_member.clone().for_candidate(0)]
         };
-        let fact = AttachmentBindingRecord::new(context.clone(), &record, slot, members).unwrap();
-        fixture.install(fact.clone()).unwrap();
-        fixture.install(fact.clone()).unwrap();
-        facts.push(fact);
+        let binding =
+            AttachmentBindingRecord::new(context.clone(), &record, slot, members).unwrap();
+        fixture.install(binding.clone()).unwrap();
+        fixture.install(binding.clone()).unwrap();
+        bindings_made.push(binding);
     }
     let reader = fixture.reads.reader().unwrap();
     let contexts = reader
@@ -866,9 +870,9 @@ fn distinct_declared_namespaces_and_full_claims_survive_one_receiving_context() 
         .unwrap();
     assert_eq!(contexts.namespace_count, 5);
     assert_eq!(contexts.state, AttachmentState::Ambiguous);
-    for (slot, fact) in facts.iter().enumerate() {
+    for (slot, binding) in bindings_made.iter().enumerate() {
         let resolution = reader
-            .attachment_binding(&fact.selection())
+            .attachment_binding(&binding.selection())
             .unwrap()
             .unwrap();
         assert_eq!(resolution.claim, record.bindings[slot]);
@@ -884,22 +888,22 @@ fn distinct_declared_namespaces_and_full_claims_survive_one_receiving_context() 
         );
         assert_eq!(
             resolution.state,
-            if slot == facts.len() - 1 {
+            if slot == bindings_made.len() - 1 {
                 AttachmentState::Unavailable
             } else {
                 AttachmentState::Available
             }
         );
     }
-    let mut altered = facts[0].selection();
+    let mut altered = bindings_made[0].selection();
     altered.claim.namespace.chain += 1;
     assert!(reader.attachment_binding(&altered).unwrap().is_none());
 }
 
 #[test]
-fn unknown_declared_namespaces_remain_distinct_and_never_borrow_foreign_membership() {
+fn unknown_declared_namespaces_remain_distinct_and_never_borrow_other_membership() {
     let fixture = Fixture::new();
-    let bytes = b"foreign bytes";
+    let bytes = b"other-scope bytes";
     let mut record = record(bytes);
     record.bindings[0].candidates.clear();
     let mut another = record.bindings[0].clone();
@@ -911,22 +915,22 @@ fn unknown_declared_namespaces_remain_distinct_and_never_borrow_foreign_membersh
         polylogue_model::Route::Live,
         &record,
     );
-    fixture.member("foreign-member", "original-scope", bytes);
+    fixture.member("other-scope-member", "original-scope", bytes);
     let observed = fixture.refresh();
-    let witness = fixture
+    let checked_member = fixture
         .reads
         .reader()
         .unwrap()
         .validate_attachment_member(
-            source(&observed, "foreign-member"),
+            source(&observed, "other-scope-member"),
             BlobHash::of(bytes),
             bytes.len() as u64,
         )
         .unwrap();
     for slot in 0..record.bindings.len() {
-        let fact =
+        let binding =
             AttachmentBindingRecord::new(context.clone(), &record, slot, Vec::new()).unwrap();
-        fixture.install(fact).unwrap();
+        fixture.install(binding).unwrap();
     }
     let reader = fixture.reads.reader().unwrap();
     let contexts = reader
@@ -949,14 +953,15 @@ fn unknown_declared_namespaces_remain_distinct_and_never_borrow_foreign_membersh
         sources: Vec::new(),
     }];
     assert!(
-        AttachmentBindingRecord::new(context, &known, 0, vec![witness.for_candidate(0)]).is_err()
+        AttachmentBindingRecord::new(context, &known, 0, vec![checked_member.for_candidate(0)])
+            .is_err()
     );
 }
 
 #[test]
-fn retained_nonshown_claims_export_exactly_without_granting_their_members_to_the_shown_source() {
+fn hidden_bindings_export_without_granting_members() {
     let fixture = Fixture::new();
-    let bytes = b"retained namespace bytes";
+    let bytes = b"kept namespace bytes";
     let record = record(bytes);
     let first = fixture.message(
         "message-a",
@@ -972,7 +977,7 @@ fn retained_nonshown_claims_export_exactly_without_granting_their_members_to_the
     );
     fixture.member("member-b", "scope-b", bytes);
     let observed = fixture.refresh();
-    let witness = fixture
+    let checked_member = fixture
         .reads
         .reader()
         .unwrap()
@@ -983,12 +988,13 @@ fn retained_nonshown_claims_export_exactly_without_granting_their_members_to_the
         )
         .unwrap();
     let unavailable = AttachmentBindingRecord::new(first, &record, 0, Vec::new()).unwrap();
-    let retained =
-        AttachmentBindingRecord::new(second, &record, 0, vec![witness.for_candidate(0)]).unwrap();
-    assert_eq!(unavailable.claim(), retained.claim());
-    for fact in [&unavailable, &retained] {
-        fixture.install(fact.clone()).unwrap();
-        fixture.install(fact.clone()).unwrap();
+    let kept =
+        AttachmentBindingRecord::new(second, &record, 0, vec![checked_member.for_candidate(0)])
+            .unwrap();
+    assert_eq!(unavailable.claim(), kept.claim());
+    for binding in [&unavailable, &kept] {
+        fixture.install(binding.clone()).unwrap();
+        fixture.install(binding.clone()).unwrap();
     }
     let reader = fixture.reads.reader().unwrap();
     let shown = reader
@@ -998,23 +1004,23 @@ fn retained_nonshown_claims_export_exactly_without_granting_their_members_to_the
     assert_eq!(shown.state, AttachmentState::Unavailable);
     assert_eq!(shown.contexts[0].selection.context.input, "message-a");
     assert!(shown.contexts[0].members.is_empty());
-    let expected = vec![unavailable, retained];
-    let claims = reader
-        .attachment_binding_claims(&record.message.id, record.source_version)
+    let expected = vec![unavailable, kept];
+    let stated = reader
+        .stated_attachment_bindings(&record.message.id, record.source_version)
         .unwrap();
-    assert_eq!(claims, expected);
-    assert_ne!(claims[0].context(), claims[1].context());
-    assert_eq!(claims[0].claim(), claims[1].claim());
-    assert_eq!(claims[1].members().len(), 1);
+    assert_eq!(stated, expected);
+    assert_ne!(stated[0].context(), stated[1].context());
+    assert_eq!(stated[0].claim(), stated[1].claim());
+    assert_eq!(stated[1].members().len(), 1);
     assert_eq!(
         reader
-            .attachment_binding_claims(&record.message.id, record.source_version)
+            .stated_attachment_bindings(&record.message.id, record.source_version)
             .unwrap(),
         expected
     );
     assert!(
         reader
-            .attachment_binding_claims(&record.message.id, BlobHash::of(b"another source version"))
+            .stated_attachment_bindings(&record.message.id, BlobHash::of(b"another source version"))
             .unwrap()
             .is_empty()
     );

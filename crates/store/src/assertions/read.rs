@@ -1,4 +1,4 @@
-//! Typed reads of assertions over the stored currency index. Direct
+//! Typed reads of assertions over the stored current-revision index. Direct
 //! association is exact; container membership belongs to the query backend.
 use super::*;
 use crate::Reader;
@@ -12,7 +12,7 @@ impl Reader<'_> {
         if reference.revision.is_some() {
             return Ok(Some(reference.clone()));
         }
-        let Some(state) = self.assertion_family_currency(reference)? else {
+        let Some(state) = self.assertion_family_state(reference)? else {
             return Ok(None);
         };
         if state.heads.len() > 1 {
@@ -42,7 +42,7 @@ impl Reader<'_> {
         Ok(row)
     }
 
-    /// Eligibility metadata without materializing an assertion's value.
+    /// Whether an assertion is unexpired, without loading its value.
     /// A missing revision is not an unexpired assertion.
     pub fn assertion_is_unexpired(
         &self,
@@ -60,7 +60,7 @@ impl Reader<'_> {
     }
 
     /// Streams current exact assertion references with a link in `roles`, including
-    /// every conflicting head, without materializing bodies. False currency
+    /// every conflicting head, without loading bodies. A revision that is not current
     /// never becomes a chosen winner.
     pub fn visit_assertion_references_linked(
         &self,
@@ -85,7 +85,7 @@ impl Reader<'_> {
                 revision: Some(id.clone()),
             };
             if self
-                .assertion_revision_currency(&revision)?
+                .assertion_revision_state(&revision)?
                 .is_some_and(|state| state.current)
                 && visit(revision)?.is_break()
             {

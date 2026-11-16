@@ -1,6 +1,6 @@
 [package]
 name = "polylogue-render"
-description = "Canonical read layout and streaming text, Markdown, HTML and JSON encoders"
+description = "Read layout and streaming text, Markdown, HTML and JSON encoders"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

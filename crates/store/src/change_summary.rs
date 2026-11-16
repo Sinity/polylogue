@@ -30,8 +30,8 @@ struct Before {
 
 struct MessageChange {
     before: Option<Before>,
-    /// The successful fresh insert already owns these facts. Tool outcomes
-    /// are read after pairing; ordinary bodies need no contribution readback.
+    /// The fresh insert already holds these values. Tool outcomes are read
+    /// after pairing; other bodies need no reading back.
     installed: Option<Installed>,
 }
 
@@ -231,7 +231,7 @@ impl ChangeSummary {
     }
 
     /// Advance once per transaction only when its visible relations or their
-    /// stored order changed. Exact re-reading of the same facts is a no-op.
+    /// stored order changed. Reading the same values again is a no-op.
     pub(crate) fn finish_links(&self, conn: &Connection) -> Result<()> {
         for (child, before) in &self.changed.borrow().link_children {
             if *before != crate::lineage::relation_identity(conn, child)? {

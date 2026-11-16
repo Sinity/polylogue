@@ -264,7 +264,7 @@ static CHUNK_FIELDS: Fields = Fields::new(
         ("grounding", Rule::Kept("search grounding sources")),
         (
             "branchParent",
-            Rule::Kept("native branch marker in message attributes"),
+            Rule::Kept("AI Studio branch marker in message attributes"),
         ),
         ("branchParent.promptId", Rule::Read(T::String)),
         (
@@ -437,7 +437,7 @@ impl ExportParser for AiStudio {
                 {
                     let mut session = Session::new(sid.clone(), SessionKind::Main);
                     session
-                        .offer_start(at.timestamp(), at.evidence())
+                        .offer_start(at.timestamp(), at.accuracy())
                         .expect("decoded source time is valid");
                     sink.out.sessions.push(session);
                     self.state.started = true;
@@ -511,12 +511,12 @@ impl AiStudio {
         chunk: &Json,
         sink: &mut Sink<'_>,
     ) -> Result<(Message, IdKind), RecordOutcome> {
-        let native_role = chunk_role(chunk);
-        if native_role != Some("model") {
+        let source_role = chunk_role(chunk);
+        if source_role != Some("model") {
             self.state.pending_call = None;
             self.state.ambiguous_calls = false;
         }
-        let role = match native_role {
+        let role = match source_role {
             Some("user") => Role::User,
             Some("model") => Role::Assistant,
             Some(other) => return Err(RecordOutcome::unreadable(format!("unknown role {other}"))),
@@ -623,9 +623,9 @@ impl AiStudio {
             message.attrs.remove(field);
         }
         message.parent = self.state.previous.clone();
-        let (at, evidence) = crate::time::parts(chunk.get("createTime").and_then(time_of));
+        let (at, accuracy) = crate::time::parts(chunk.get("createTime").and_then(time_of));
         message
-            .set_time(at, evidence)
+            .set_time(at, accuracy)
             .expect("decoded source time is valid");
         if role == Role::Assistant {
             message.model = self.state.model.clone();
@@ -930,7 +930,7 @@ impl ExportParser for Listing {
             .map(crate::time::SourceTime::file_mtime)
         {
             session
-                .offer_start(at.timestamp(), at.evidence())
+                .offer_start(at.timestamp(), at.accuracy())
                 .expect("decoded source time is valid");
         }
         sink.out.sessions.push(session);

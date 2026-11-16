@@ -25,7 +25,7 @@ fn assert_document_import(response: command_surface::Answer<serde_json::Value>) 
 }
 
 #[test]
-fn native_documents_search_and_read_through_one_typed_http_operation() {
+fn documents_search_and_read_in_one_http_operation() {
     use polylogue_model::read::ReadPage;
     let r = reader();
     let literal = "AKIAIOSFODNN7EXAMPLE";
@@ -101,7 +101,7 @@ fn native_documents_search_and_read_through_one_typed_http_operation() {
 }
 
 #[test]
-fn search_links_follow_reference_columns_in_native_and_grouped_rows() {
+fn links_follow_references_in_unit_and_grouped_rows() {
     let r = reader();
     let note = crate::test_daemon::Call::new(
         "assert",
@@ -175,7 +175,7 @@ fn search_links_follow_reference_columns_in_native_and_grouped_rows() {
 }
 
 #[test]
-fn document_previous_pages_restore_exact_unicode_body_fragments() {
+fn document_previous_pages_restore_unicode_body_fragments() {
     let r = reader();
     let source = r.w._dir.path().join("paged-documents");
     std::fs::create_dir_all(source.join("projects")).unwrap();

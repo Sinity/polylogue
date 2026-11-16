@@ -303,7 +303,7 @@ fn every_row_lands_or_is_refused_with_its_reason() {
         assert_eq!(count.found, n, "{table}: {count:?}");
         assert_eq!(
             count.found,
-            count.stored + count.present + count.refused + count.kept + count.folded,
+            count.stored + count.present + count.refused + count.kept + count.merged,
             "{table}: {count:?}"
         );
     }
@@ -676,13 +676,13 @@ fn one_file_held_under_two_linked_paths_imports_as_one_input_with_both_observati
     std::fs::create_dir_all(&real_dir).unwrap();
     let linked_dir = base.join("agent");
     std::os::unix::fs::symlink(&real_dir, &linked_dir).unwrap();
-    let twins = fixture::linked_twins(&older_dir.path().join("older"), &real_dir, &linked_dir);
+    let copies = fixture::linked_copies(&older_dir.path().join("older"), &real_dir, &linked_dir);
     let (mut engine, _lock) = crate::import::tests::engine(&home, 64);
     let report = engine
         .import_with_options(
             &[],
             &ImportOptions {
-                from_archive: Some(twins.root.clone()),
+                from_archive: Some(copies.root.clone()),
                 ..Default::default()
             },
         )
@@ -691,19 +691,19 @@ fn one_file_held_under_two_linked_paths_imports_as_one_input_with_both_observati
         .unwrap();
 
     assert_eq!(
-        report.folded_inputs,
-        vec![FoldedInput {
-            input: twins.linked.clone(),
-            into: twins.real.clone(),
+        report.merged_inputs,
+        vec![MergedInput {
+            input: copies.linked.clone(),
+            into: copies.real.clone(),
         }]
     );
     let inputs = &report.classes["input"];
-    assert_eq!((inputs.found, inputs.stored, inputs.folded), (2, 1, 1));
+    assert_eq!((inputs.found, inputs.stored, inputs.merged), (2, 1, 1));
     assert_eq!(report.classes["observation"].stored, 2);
     for (class, count) in &report.classes {
         assert_eq!(
             count.found,
-            count.stored + count.present + count.refused + count.kept + count.folded,
+            count.stored + count.present + count.refused + count.kept + count.merged,
             "{class}: {count:?}"
         );
     }
@@ -714,40 +714,44 @@ fn one_file_held_under_two_linked_paths_imports_as_one_input_with_both_observati
         .into_iter()
         .filter(|row| row[0] != rows_input)
         .collect();
-    assert_eq!(held, vec![vec![twins.real.clone()]]);
+    assert_eq!(held, vec![vec![copies.real.clone()]]);
     // Both looks at the file, each with the path it was made at.
     assert_eq!(
         rows(
             &target,
             &format!(
                 "SELECT id, input, path FROM observation WHERE input = '{}' ORDER BY seen_at",
-                twins.real
+                copies.real
             )
         ),
         vec![
-            vec!["r1".to_owned(), twins.real.clone(), twins.real_path.clone()],
+            vec![
+                "r1".to_owned(),
+                copies.real.clone(),
+                copies.real_path.clone()
+            ],
             vec![
                 "l1".to_owned(),
-                twins.real.clone(),
-                twins.linked_path.clone()
+                copies.real.clone(),
+                copies.linked_path.clone()
             ],
         ]
     );
     // The bytes are the older archive's, stored once.
-    let source = read_only(&twins.root.join("archive.db"));
+    let source = read_only(&copies.root.join("archive.db"));
     assert_eq!(
         rows(
             &target,
             &format!(
                 "SELECT chain, offset, length, blob, blob_offset FROM extent WHERE input = '{}'",
-                twins.real
+                copies.real
             )
         ),
         rows(
             &source,
             &format!(
                 "SELECT chain, offset, length, blob, blob_offset FROM extent WHERE input = '{}'",
-                twins.linked
+                copies.linked
             )
         ),
     );
@@ -757,7 +761,7 @@ fn one_file_held_under_two_linked_paths_imports_as_one_input_with_both_observati
         .import_with_options(
             &[],
             &ImportOptions {
-                from_archive: Some(twins.root.clone()),
+                from_archive: Some(copies.root.clone()),
                 ..Default::default()
             },
         )

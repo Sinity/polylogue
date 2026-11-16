@@ -149,7 +149,7 @@ pub fn context_failure(problem: polylogue_sinex::ContextFailure) -> Failure {
     );
     failure.hint = problem
         .last_known_identity
-        .map(|identity| format!("last observed owner settings: {identity}"));
+        .map(|identity| format!("last observed Sinex settings: {identity}"));
     failure
 }
 
@@ -218,7 +218,7 @@ pub fn store_failure(error: &polylogue_store::StoreError) -> Failure {
     }
 }
 
-/// Human-facing diagnostics include the missing parts beside ordinary notes.
+/// Human-facing diagnostics include the missing parts beside the other notes.
 pub fn notes<T>(answer: &Answer<T>) -> impl Iterator<Item = &String> {
     answer.envelope.notes.iter().chain(
         match &answer.outcome {
@@ -287,7 +287,7 @@ pub fn written<T>(value: T, pending: bool) -> Answer<T> {
 pub const AWAITING_CONFIRMATION: &str = "accepted locally; awaiting Sinex confirmation";
 
 /// A read over an index that is not current keeps its value and says why.
-pub fn read<T>(value: T, freshness: &polylogue_model::currency::ReadFreshness) -> Answer<T> {
+pub fn read<T>(value: T, freshness: &polylogue_model::freshness::ReadFreshness) -> Answer<T> {
     if freshness.up_to_date() {
         Answer::ok(value)
     } else {

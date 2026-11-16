@@ -21,8 +21,8 @@ pub(super) fn blocks(step: &Json) -> (Vec<Block>, Vec<&'static str>) {
     if let Some(calls) = step.get("tool_calls") {
         if let Some(calls) = calls.as_array() {
             for call in calls {
-                let id = native(call, "tool_call_id");
-                let tool = native(call, "function_name");
+                let id = nonempty_str(call, "tool_call_id");
+                let tool = nonempty_str(call, "function_name");
                 let args = call.get("arguments").filter(|v| v.is_object());
                 if let (Some(id), Some(tool), Some(args)) = (id, tool, args) {
                     out.push(Block::ToolCall {
@@ -75,7 +75,7 @@ pub(super) fn blocks(step: &Json) -> (Vec<Block>, Vec<&'static str>) {
                 // provider-specific extra data cannot establish an outcome.
                 out.push(Block::ToolResult {
                     reported_duration_ms: None,
-                    call_id: native(result, "source_call_id").map(str::to_owned),
+                    call_id: nonempty_str(result, "source_call_id").map(str::to_owned),
                     outcome: ToolOutcome::Unknown {
                         reason: UnknownReason::StatusFieldUnreadable,
                     },
@@ -95,7 +95,7 @@ pub(super) fn blocks(step: &Json) -> (Vec<Block>, Vec<&'static str>) {
     (out, limits)
 }
 
-fn native<'a>(value: &'a Json, field: &str) -> Option<&'a str> {
+fn nonempty_str<'a>(value: &'a Json, field: &str) -> Option<&'a str> {
     value
         .get(field)
         .and_then(Json::as_str)
@@ -114,7 +114,7 @@ fn content(value: &Json, blocks: &mut Vec<Block>, limits: &mut Vec<&'static str>
             } else if let Some(image) = image(part) {
                 blocks.push(Block::Image(image));
             } else {
-                limits.push("unrecognized ATIF content part; native reference kept without inferred model direction");
+                limits.push("unrecognized ATIF content part; source reference kept without inferred model direction");
                 blocks.push(Block::Other {
                     type_name: "atif_content_part".into(),
                     data: part.clone(),
@@ -135,8 +135,8 @@ fn image(value: &Json) -> Option<Attachment> {
         return None;
     }
     let source = value.get("source")?;
-    let path = native(source, "path")?;
-    let media = native(source, "media_type")?;
+    let path = nonempty_str(source, "path")?;
+    let media = nonempty_str(source, "media_type")?;
     Some(Attachment {
         name: Some(path.into()),
         source_id: Some(path.into()),

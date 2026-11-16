@@ -60,7 +60,7 @@ fn a_failed_startup_read_keeps_discovery_work_for_the_next_turn() {
     let home = ClaudeHome::new();
     home.append(
         "after-read-error.jsonl",
-        &claude_user("u1", "resumed", "retained discovery"),
+        &claude_user("u1", "resumed", "kept discovery"),
     );
     let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
     engine.config.live_every = Duration::from_millis(1);
@@ -81,7 +81,7 @@ fn a_failed_startup_read_keeps_discovery_work_for_the_next_turn() {
         "{summary:?}"
     );
     assert!(!summary.work.capture_pending, "{summary:?}");
-    assert_eq!(home.texts("resumed"), ["retained discovery"]);
+    assert_eq!(home.texts("resumed"), ["kept discovery"]);
 }
 
 fn stopped_reading(engine: &Engine, path: &Path) -> polylogue_store::read::StoredParserCheckpoint {
@@ -102,8 +102,8 @@ fn stopped_reading(engine: &Engine, path: &Path) -> polylogue_store::read::Store
 fn a_recorded_failure_stays_stopped_across_restart_until_the_executable_changes() {
     let home = ClaudeHome::new();
     let name = "dependency-stop.jsonl";
-    let first = claude_user("one", "dependency-stop", "first retained body");
-    let second = claude_user("two", "dependency-stop", "second retained body");
+    let first = claude_user("one", "dependency-stop", "first stored body");
+    let second = claude_user("two", "dependency-stop", "second stored body");
     home.append(name, &first);
     let (mut engine, lock) = crate::import::tests::engine(&home, first.len() as u64);
     let seeded = engine.run_pass().unwrap();
@@ -115,8 +115,8 @@ fn a_recorded_failure_stays_stopped_across_restart_until_the_executable_changes(
         "the successful prefix owns a real continuation"
     );
     home.append(name, &second);
-    // This stop must cover the complete append. If custody later adds even
-    // one byte, changed stored length legitimately makes the next attempt eligible.
+    // This stop must cover the complete append. If the spool later adds even
+    // one byte, the changed stored length makes the next attempt run again.
     engine.config.chunk = second.len() as u64;
     fault::arm("parse", "dependency-stop", Action::Fail, 0, u32::MAX);
     let failed = engine.run_pass().unwrap();
@@ -141,7 +141,7 @@ fn a_recorded_failure_stays_stopped_across_restart_until_the_executable_changes(
     assert_eq!(
         stopped.progress.at_length(),
         Some(stored_length),
-        "the stopped attempt must already name all retained bytes before an unchanged restart"
+        "the stopped attempt must already name all stored bytes before an unchanged restart"
     );
     assert_eq!(stopped.parsed_upto, prefix.parsed_upto);
     assert_eq!(
@@ -177,7 +177,7 @@ fn a_recorded_failure_stays_stopped_across_restart_until_the_executable_changes(
     assert_eq!(completed.stopped_attempt, None);
     assert_eq!(
         home.texts("dependency-stop"),
-        ["first retained body", "second retained body"]
+        ["first stored body", "second stored body"]
     );
     assert_eq!(
         home.count("SELECT count(*) AS n FROM a.revision"),
@@ -219,7 +219,7 @@ fn an_unrecorded_failure_gets_one_real_attempt_then_stops_across_restart() {
     engine
         .writer
         .send(polylogue_store::Batch {
-            required_disposition: None,
+            required_outcome: None,
             input: InputKey {
                 id: state.input_id.clone(),
                 format: state.origin.name.into(),
@@ -264,15 +264,15 @@ fn an_unrecorded_failure_gets_one_real_attempt_then_stops_across_restart() {
     assert_eq!(recorded.stopped_attempt, Some(attempt));
     assert_eq!(
         recorded.progress, unrecorded.progress,
-        "the admitted error remains intact"
+        "the committed error remains intact"
     );
     assert_eq!(recorded.parsed_upto, unrecorded.parsed_upto);
     assert_eq!(recorded.checkpoint, unrecorded.checkpoint);
     drop(engine);
     let mut engine = Engine::new(config, archive, attempt).unwrap();
-    let settled = engine.run_pass().unwrap();
-    assert!(settled.errors.is_empty(), "{settled:?}");
-    assert_eq!(settled.bytes_read, 0, "{settled:?}");
+    let finished = engine.run_pass().unwrap();
+    assert!(finished.errors.is_empty(), "{finished:?}");
+    assert_eq!(finished.bytes_read, 0, "{finished:?}");
     assert_eq!(standing(&engine).0, "failed");
     // Reading-version change also invalidates the stop, even with the same binary.
     polylogue_store::fixture::older_reading(&engine.archive, "claude-code").unwrap();

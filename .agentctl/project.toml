@@ -26,7 +26,7 @@ cache = "none"
 unit_properties = ["MemoryHigh=8G"]
 
 [operations.compile]
-description = "Type-check selected packages and targets; pass native Cargo check arguments"
+description = "Type-check selected packages and targets; pass further Cargo check arguments"
 exec = ["nix", "develop", "--command", "cargo", "check", "--locked"]
 arguments = "required"
 pool = "compile"
@@ -57,7 +57,7 @@ cache = "none"
 unit_properties = ["MemoryHigh=8G"]
 
 [operations.focused]
-description = "Run selected tests on the canonical workspace feature graph; native target flags bound compilation"
+description = "Run selected tests on the workspace feature graph; Cargo target flags bound compilation"
 exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "--quiet", "-p", "xtask", "--", "test"]
 arguments = "required"
 pool = "compile"
@@ -178,7 +178,7 @@ admission = { memory_mib = 10240 }
 unit_properties = ["CPUWeight=20", "IOWeight=20", "MemoryHigh=10G", "MemoryMax=14G", "MemorySwapMax=2G"]
 
 [operations.import_preserved]
-description = "Import preserved sources with an explicit prebuilt command and retained reports"
+description = "Import preserved sources with an explicit prebuilt command and kept reports"
 exec = ["env", "-u", "VOYAGE_API_KEY", "ionice", "-c", "3", "nice", "-n", "19"]
 arguments = "required"
 pool = "measure"

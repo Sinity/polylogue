@@ -1,5 +1,5 @@
 //! Local rows in primary mode come from parsing confirmed original bytes. The
-//! parsed facts of each step are prepared in the producer spool before the
+//! parsed events of each step are prepared in the producer spool before the
 //! rows of the same parse commit; nothing here waits for Sinex to acknowledge
 //! them or for them to come back on the confirmed stream.
 use super::*;
@@ -30,7 +30,7 @@ impl WriterSender {
         }
     }
 
-    /// Prepares the parsed facts of every step of a batch in the spool.
+    /// Prepares the parsed events of every step of a batch in the spool.
     pub(in crate::writer) fn spool_primary_batch(&self, batch: &mut Batch) -> Result<()> {
         if batch.parse.is_empty() {
             return Ok(());
@@ -81,8 +81,8 @@ impl WriterSender {
     }
 
     /// Prepares a complete re-parse of one chain for Sinex. When Sinex holds
-    /// parsed facts of an earlier reading version, a producer replay replaces
-    /// them; otherwise the steps are sent as ordinary parsed frames.
+    /// parsed events of an earlier reading version, a producer replay replaces
+    /// them; otherwise the steps are sent as parsed frames.
     pub(in crate::writer) fn spool_primary_reading(
         &self,
         input: &InputKey,
@@ -97,7 +97,7 @@ impl WriterSender {
         let mut complete = false;
         let mut diagnosed = false;
         let mut partial = false;
-        let mut frontier = 0;
+        let mut parsed_through = 0;
         source.visit_source(|step| {
             step.counts.check()?;
             if step.start > step.parsed_upto || step.parsed_upto > length {
@@ -114,7 +114,7 @@ impl WriterSender {
                 ));
             }
             version.get_or_insert_with(|| step.reading_version.clone());
-            frontier = frontier.max(step.parsed_upto);
+            parsed_through = parsed_through.max(step.parsed_upto);
             complete = step.progress.reached_end() && step.parsed_upto == length;
             partial = matches!(step.progress, polylogue_model::batch::StepProgress::AtEnd)
                 && step.parsed_upto < length;
@@ -152,12 +152,12 @@ impl WriterSender {
         self.wait_primary_blobs(&blobs)?;
         let root = {
             let index = self.open_current(&token)?;
-            let exact: bool = index.query_row(
+            let known: bool = index.query_row(
                 "SELECT EXISTS(SELECT 1 FROM source_input WHERE id=?1 AND format=?2)",
                 params![input.id, input.format],
                 |row| row.get(0),
             )?;
-            if !exact {
+            if !known {
                 return Err(StoreError::Invalid("reading input identity differs".into()));
             }
             crate::staging::require_range(&index, "source_", &input.id, chain, 0..length)?;
@@ -169,9 +169,9 @@ impl WriterSender {
             chain,
             &key.reading_version,
         )?;
-        if let Some(required) = previous.filter(|required| *required > frontier) {
+        if let Some(required) = previous.filter(|required| *required > parsed_through) {
             return Err(StoreError::Invalid(format!(
-                "the replacement parsed through {frontier}, but Sinex's earlier facts need source bytes through {required}",
+                "the replacement parsed through {parsed_through}, but Sinex's earlier events need source bytes through {required}",
             )));
         }
         if previous.is_none() {
@@ -188,7 +188,7 @@ impl WriterSender {
                     release: Default::default(),
                     acquisition: None,
                     basis: None,
-                    required_disposition: None,
+                    required_outcome: None,
                 };
                 self.spool_primary_batch(&mut batch)
             })?;

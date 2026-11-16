@@ -1,6 +1,6 @@
 //! The browser capture log: each capture is a frame whose length and digest
 //! let readers skip earlier captures without decoding them. A frame holds
-//! the exact submitted JSON bytes.
+//! the submitted JSON bytes unchanged.
 
 pub const MAGIC: &[u8] = b"POLYLOGUE-CAPTURES/1\n";
 pub const HEADER_LEN: usize = 86;

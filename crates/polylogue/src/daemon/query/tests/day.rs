@@ -1,4 +1,4 @@
-//! The logical day is supplied by the operation owner.
+//! The logical day comes from the operation context.
 use super::*;
 #[test]
 fn executions_keep_their_explicit_day_in_the_resolved_context() {

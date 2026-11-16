@@ -171,7 +171,7 @@ fn a_note_applies_to_every_row_of_a_query() {
         .unwrap()
         .unwrap();
     let UserWrite::AssertQuery { resolved, .. } = stored.write else {
-        panic!("the actual query and selection must remain in the frozen request");
+        panic!("the query and selection must stay in the recorded request");
     };
     assert_eq!(resolved.len(), 1);
     assert_eq!(
@@ -195,9 +195,9 @@ fn a_note_applies_to_every_row_of_a_query() {
     );
 }
 
-/// Frozen history keeps the original authors of the claim and its judgment.
+/// Recorded history keeps the original authors of the note and its judgment.
 #[test]
-fn frozen_history_preserves_the_note_and_judgment_authors() {
+fn recorded_history_keeps_note_and_judgment_authors() {
     let d = test_daemon::start("first prompt");
     let session = Reference::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap());
     let agent = ok_as(

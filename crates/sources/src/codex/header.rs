@@ -2,7 +2,7 @@
 use polylogue_model::Json;
 use std::io::BufRead;
 
-/// Reads the first nonempty record. Only a native rollout header establishes
+/// Reads the first nonempty record. Only a rollout header establishes
 /// identity; file names and conversation text do not.
 pub fn rollout_id(mut reader: impl BufRead) -> std::io::Result<Option<String>> {
     let mut line = Vec::new();

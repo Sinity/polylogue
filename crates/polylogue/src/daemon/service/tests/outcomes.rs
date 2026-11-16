@@ -5,7 +5,7 @@
 use super::*;
 use crate::daemon::query::{Outcome, QueryAnswer};
 use crate::test_answers;
-use polylogue_model::currency::{IndexCurrency, ReadCompleteness, ReadFreshness};
+use polylogue_model::freshness::{IndexFreshness, ReadCompleteness, ReadFreshness};
 
 fn query(outcome: Outcome, notes: &[&str]) -> QueryAnswer {
     QueryAnswer {
@@ -27,7 +27,7 @@ fn query(outcome: Outcome, notes: &[&str]) -> QueryAnswer {
             notes: vec![],
             incomplete: vec![],
             resolved: crate::protocol::query::Resolved {
-                context: synthetic_context().provenance(),
+                context: synthetic_context().run_context(),
                 times: vec![],
             },
             definitions: vec![],
@@ -60,13 +60,13 @@ fn synthetic_context() -> crate::operation::Context {
 fn current() -> ReadFreshness {
     ReadFreshness {
         local: ReadCompleteness::empty(),
-        owner: IndexCurrency::Standalone,
+        sinex: IndexFreshness::Standalone,
     }
 }
 fn behind() -> ReadFreshness {
     ReadFreshness {
         local: ReadCompleteness::empty(),
-        owner: IndexCurrency::primary(Some(5), Some(8), Some(0.5), Some(true), None),
+        sinex: IndexFreshness::primary(Some(5), Some(8), Some(0.5), Some(true), None),
     }
 }
 
@@ -145,7 +145,7 @@ fn an_import_with_pending_user_state_is_degraded_with_its_note() {
 
 #[test]
 fn answer_reports_pending_search_text_and_parse_lag() {
-    use polylogue_model::currency::{CompletenessDimension, CompletenessReason};
+    use polylogue_model::freshness::{CompletenessDimension, CompletenessReason};
     let mut freshness = current();
     freshness.local.search =
         CompletenessDimension::Incomplete(vec![CompletenessReason::SearchPending]);

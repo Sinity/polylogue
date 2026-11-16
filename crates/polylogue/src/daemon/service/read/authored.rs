@@ -3,14 +3,14 @@ use super::super::Failure;
 use polylogue_model::{
     Reference,
     bundle::Record,
-    read::{AuthoredCoverage, AuthoredSelection, ProjectionEvidence},
+    read::{AuthoredCoverage, AuthoredSelection, LayoutFacts},
 };
 use polylogue_store::{
     Reader,
-    read::authored_evidence::{AuthoredReadEvidence, AuthoredReadIssue},
+    read::authored_read::{AuthoredRead, AuthoredReadIssue},
 };
 
-type Visit<'a> = dyn FnMut(Record, ProjectionEvidence) -> Result<bool, Failure> + 'a;
+type Visit<'a> = dyn FnMut(Record, LayoutFacts) -> Result<bool, Failure> + 'a;
 
 pub(super) fn reference(
     reader: &Reader<'_>,
@@ -18,9 +18,9 @@ pub(super) fn reference(
     visit: &mut Visit<'_>,
 ) -> Result<bool, Failure> {
     match reader.authored_record(reference)? {
-        Some(AuthoredReadEvidence::Local { selected, record }) => visit(
+        Some(AuthoredRead::Local { selected, record }) => visit(
             Record::Authored(record),
-            ProjectionEvidence {
+            LayoutFacts {
                 authored: Some(AuthoredSelection {
                     selected,
                     coverage: AuthoredCoverage::WholeRequest,
@@ -28,14 +28,12 @@ pub(super) fn reference(
                 ..Default::default()
             },
         ),
-        Some(AuthoredReadEvidence::Incomplete {
+        Some(AuthoredRead::Incomplete {
             issue: AuthoredReadIssue::MissingAssociation | AuthoredReadIssue::UnresolvedRevision,
         }) if matches!(reference, Reference::Assertion(_)) => {
             direct_assertion(reader, reference, visit)
         }
-        Some(AuthoredReadEvidence::Incomplete { issue }) => {
-            Err(Failure::new("not_yet_available", issue))
-        }
+        Some(AuthoredRead::Incomplete { issue }) => Err(Failure::new("not_yet_available", issue)),
         None => Err(Failure::new(
             "not_found",
             format!("no authored record for {reference}"),
@@ -58,5 +56,5 @@ fn direct_assertion(
         reference: format!("assertion:{}@{}", row.fact.root, row.fact.id),
         assertion: row.fact,
     }));
-    visit(record, ProjectionEvidence::default())
+    visit(record, LayoutFacts::default())
 }

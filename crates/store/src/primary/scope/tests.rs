@@ -1,5 +1,5 @@
 use super::*;
-use crate::primary::{Confirmed, ConfirmedChange, Product, projection};
+use crate::primary::{Confirmed, ConfirmedChange, Product, confirmed};
 
 fn cache(archive: &Archive) -> Connection {
     let index = Connection::open(archive.index_db()).unwrap();
@@ -11,7 +11,7 @@ fn cache(archive: &Archive) -> Connection {
 
 fn input(position: i64, id: &str) -> Confirmed {
     Confirmed {
-        native: None,
+        sinex_context: None,
         position,
         event: format!("event-{id}"),
         output_index: 0,
@@ -28,9 +28,9 @@ fn input(position: i64, id: &str) -> Confirmed {
         })),
     }
 }
-fn barrier(position: i64) -> Confirmed {
+fn completion_marker(position: i64) -> Confirmed {
     Confirmed {
-        native: None,
+        sinex_context: None,
         position,
         event: String::new(),
         output_index: 0,
@@ -42,7 +42,7 @@ fn barrier(position: i64) -> Confirmed {
 }
 
 #[test]
-fn narrowing_and_widening_reset_cached_payloads_and_require_a_new_barrier() {
+fn scope_change_waits_for_a_new_completion_marker() {
     let root = tempfile::tempdir().unwrap();
     let archive = Archive::on_sinex(root.path(), &root.path().join("sinex"));
     let mut index = cache(&archive);
@@ -59,11 +59,15 @@ fn narrowing_and_widening_reset_cached_payloads_and_require_a_new_barrier() {
         b"private authored and captured intent",
     )
     .unwrap();
-    projection::apply(
+    confirmed::apply(
         &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
-        &[input(1, "private"), barrier(1), input(2, "uncommitted")],
+        &[
+            input(1, "private"),
+            completion_marker(1),
+            input(2, "uncommitted"),
+        ],
     )
     .unwrap();
     index
@@ -81,9 +85,9 @@ fn narrowing_and_widening_reset_cached_payloads_and_require_a_new_barrier() {
     let token = archive.read_scope.token().unwrap();
     assert!(reset(&mut index, &archive, &resolver, "narrow", false).unwrap());
     assert!(matches!(token.check(), Err(StoreError::ScopeChanged)));
-    assert_eq!(projection::checkpoint(&index).unwrap(), None);
+    assert_eq!(confirmed::checkpoint(&index).unwrap(), None);
     for table in [
-        "primary_fact",
+        "confirmed_event",
         "primary_pending",
         "source_input",
         "source_material",
@@ -120,24 +124,24 @@ fn narrowing_and_widening_reset_cached_payloads_and_require_a_new_barrier() {
         before
     );
     assert!(!reset(&mut index, &archive, &resolver, "narrow", false).unwrap());
-    projection::apply(
+    confirmed::apply(
         &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
-        &[barrier(0)],
+        &[completion_marker(0)],
     )
     .unwrap();
-    assert_eq!(projection::checkpoint(&index).unwrap(), Some(0));
+    assert_eq!(confirmed::checkpoint(&index).unwrap(), Some(0));
     drop(index);
     let mut index = Connection::open(archive.index_db()).unwrap();
     assert_eq!(current(&index).unwrap().as_deref(), Some("narrow"));
     assert!(reset(&mut index, &archive, &resolver, "wide", false).unwrap());
-    assert_eq!(projection::checkpoint(&index).unwrap(), None);
-    projection::apply(
+    assert_eq!(confirmed::checkpoint(&index).unwrap(), None);
+    confirmed::apply(
         &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
-        &[input(1, "private"), barrier(1)],
+        &[input(1, "private"), completion_marker(1)],
     )
     .unwrap();
     assert_eq!(
@@ -163,11 +167,11 @@ fn a_failed_scope_transaction_keeps_readers_blocked_until_retry_commits() {
     let archive = Archive::on_sinex(root.path(), &root.path().join("sinex"));
     let mut index = cache(&archive);
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
-    projection::apply(
+    confirmed::apply(
         &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
-        &[input(1, "private"), barrier(1)],
+        &[input(1, "private"), completion_marker(1)],
     )
     .unwrap();
     index.execute_batch("CREATE TRIGGER stop_reset BEFORE DELETE ON source_input BEGIN SELECT raise(ABORT,'stop'); END").unwrap();
@@ -177,7 +181,7 @@ fn a_failed_scope_transaction_keeps_readers_blocked_until_retry_commits() {
         Err(StoreError::ScopeChanged)
     ));
     assert_eq!(current(&index).unwrap(), None);
-    assert_eq!(projection::checkpoint(&index).unwrap(), Some(1));
+    assert_eq!(confirmed::checkpoint(&index).unwrap(), Some(1));
     drop(index);
     // A new process has no in-memory cancellation state. Its fresh connection
     // must still refuse the cached payloads after the failed clear.
@@ -194,20 +198,20 @@ fn a_failed_scope_transaction_keeps_readers_blocked_until_retry_commits() {
     index.execute_batch("DROP TRIGGER stop_reset").unwrap();
     assert!(reset(&mut index, &reopened, &resolver, "changed", false).unwrap());
     assert!(pool.reader().unwrap().query("SELECT 1", &[]).is_ok());
-    assert_eq!(projection::checkpoint(&index).unwrap(), None);
+    assert_eq!(confirmed::checkpoint(&index).unwrap(), None);
 }
 
 #[test]
-fn failure_to_persist_owner_control_blocks_current_reads_without_claiming_durability() {
+fn unsaved_sinex_control_blocks_current_reads() {
     let root = tempfile::tempdir().unwrap();
     let archive = Archive::on_sinex(root.path(), &root.path().join("sinex"));
     let mut index = cache(&archive);
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
-    projection::apply(
+    confirmed::apply(
         &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
-        &[input(1, "private"), barrier(1)],
+        &[input(1, "private"), completion_marker(1)],
     )
     .unwrap();
     index.execute_batch("CREATE TRIGGER stop_control BEFORE INSERT ON meta WHEN new.key='confirmed_scope_pending' BEGIN SELECT raise(ABORT,'stop'); END").unwrap();
@@ -218,7 +222,7 @@ fn failure_to_persist_owner_control_blocks_current_reads_without_claiming_durabi
     ));
     assert!(require_readable(&index).is_ok());
     assert_eq!(current(&index).unwrap(), None);
-    assert_eq!(projection::checkpoint(&index).unwrap(), Some(1));
+    assert_eq!(confirmed::checkpoint(&index).unwrap(), Some(1));
     index.execute_batch("DROP TRIGGER stop_control").unwrap();
     assert!(reset(&mut index, &archive, &resolver, "changed", false).unwrap());
     assert!(archive.read_scope.token().is_ok());
@@ -234,11 +238,11 @@ fn cache_clear_cannot_commit_until_registered_outputs_are_invalidated() {
     let archive = Archive::on_sinex(root.path(), &root.path().join("sinex"));
     let mut index = cache(&archive);
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
-    projection::apply(
+    confirmed::apply(
         &crate::text_rows::TextIds::new(&index, false).unwrap(),
         &mut index,
         &resolver,
-        &[input(1, "private"), barrier(1)],
+        &[input(1, "private"), completion_marker(1)],
     )
     .unwrap();
     let pointer = root.path().join("catalog-current");
@@ -261,7 +265,7 @@ fn cache_clear_cannot_commit_until_registered_outputs_are_invalidated() {
     .unwrap();
     fail.store(true, Ordering::SeqCst);
     assert!(reset(&mut index, &archive, &resolver, "new", false).is_err());
-    assert_eq!(projection::checkpoint(&index).unwrap(), Some(1));
+    assert_eq!(confirmed::checkpoint(&index).unwrap(), Some(1));
     assert!(matches!(
         require_readable(&index),
         Err(StoreError::ScopeChanged)
@@ -271,12 +275,12 @@ fn cache_clear_cannot_commit_until_registered_outputs_are_invalidated() {
     assert_eq!(std::fs::read(&pointer).unwrap(), b"unavailable");
     assert!(matches!(
         old.with_current(|| {
-            std::fs::write(&pointer, b"stale publisher")?;
+            std::fs::write(&pointer, b"stale writer")?;
             Ok(())
         }),
         Err(StoreError::ScopeChanged)
     ));
-    // A newly started CLI reads the canonical pointer, not the retired cache.
+    // A newly started CLI reads the current pointer, not the replaced cache.
     assert_eq!(std::fs::read(&pointer).unwrap(), b"unavailable");
-    assert_eq!(projection::checkpoint(&index).unwrap(), None);
+    assert_eq!(confirmed::checkpoint(&index).unwrap(), None);
 }

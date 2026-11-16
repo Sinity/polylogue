@@ -3,20 +3,20 @@ use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::os::unix::ffi::OsStrExt;
 
-/// A pre-acquisition cut of source authority. It is not an index write counter.
-/// Primary cuts use the scoped, atomically applied confirmed-stream prefix.
-/// A reported stream head or a staged page cannot construct one.
+/// A fixed position taken before the sources are read. It is not an index write counter.
+/// Primary fixed positions use the scoped, atomically applied confirmed-stream prefix.
+/// A reported latest stream position or a staged page cannot construct one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SourceBoundary {
     generation: String,
     scope_root: [u8; 32],
-    authority: Authority,
+    authority: BoundaryKind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-enum Authority {
+enum BoundaryKind {
     Standalone { through: u64 },
     Primary { through: u64, scope: String },
 }
@@ -27,16 +27,16 @@ impl SourceBoundary {
         source: &Connection,
         archive: &Archive,
     ) -> Result<Option<Self>> {
-        let authority = if archive.is_primary() {
+        let kind = if archive.is_primary() {
             let Some((through, scope)) = primary_position(index)? else {
                 return Ok(None);
             };
-            Authority::Primary { through, scope }
+            BoundaryKind::Primary { through, scope }
         } else {
             let Some(through) = source_position(source)? else {
                 return Ok(None);
             };
-            Authority::Standalone { through }
+            BoundaryKind::Standalone { through }
         };
         let generation = index.query_row(
             "SELECT value FROM main.meta WHERE key='generation'",
@@ -46,7 +46,7 @@ impl SourceBoundary {
         Ok(Some(Self {
             generation,
             scope_root: scope_root(archive),
-            authority,
+            authority: kind,
         }))
     }
 
@@ -60,10 +60,10 @@ impl SourceBoundary {
             return Err(StoreError::ScopeChanged);
         }
         match &self.authority {
-            Authority::Standalone { through } if !archive.is_primary() => Ok(*through),
-            Authority::Primary { through, scope } if archive.is_primary() => {
-                // Later unknown inputs affect current head claims, not this
-                // already completed historical cut. Lifecycle changes rotate generation.
+            BoundaryKind::Standalone { through } if !archive.is_primary() => Ok(*through),
+            BoundaryKind::Primary { through, scope } if archive.is_primary() => {
+                // Later unknown inputs affect the latest position, not this
+                // fixed position, which is already complete. Lifecycle changes rotate generation.
                 match applied_prefix(index)? {
                     Some((applied, current_scope))
                         if applied >= *through && &current_scope == scope =>
@@ -81,7 +81,7 @@ impl SourceBoundary {
 fn primary_position(index: &Connection) -> Result<Option<(u64, String)>> {
     crate::primary::scope::require_readable(index)?;
     let unreadable: bool = index.query_row(
-        "SELECT EXISTS(SELECT 1 FROM primary_refused r LEFT JOIN primary_fact f ON f.event=r.event WHERE r.unreadable_input=1 AND (f.event IS NULL OR (f.state='live' AND f.product IS NULL)))",
+        "SELECT EXISTS(SELECT 1 FROM primary_refused r LEFT JOIN confirmed_event f ON f.event=r.event WHERE r.unreadable_input=1 AND (f.event IS NULL OR (f.state='live' AND f.product IS NULL)))",
         [], |row| row.get(0),
     )?;
     if unreadable {
@@ -92,7 +92,7 @@ fn primary_position(index: &Connection) -> Result<Option<(u64, String)>> {
 
 fn applied_prefix(index: &Connection) -> Result<Option<(u64, String)>> {
     crate::primary::scope::require_readable(index)?;
-    let state = crate::primary::projection::replay_state(index)?;
+    let state = crate::primary::confirmed::replay_state(index)?;
     let Some(position) = state.applied_position else {
         return Ok(None);
     };
@@ -101,7 +101,7 @@ fn applied_prefix(index: &Connection) -> Result<Option<(u64, String)>> {
     };
     let through = u64::try_from(position)
         .map_err(|_| StoreError::Invalid("confirmed source position cannot be negative".into()))?;
-    if crate::primary::projection::checkpoint(index)? != Some(position)
+    if crate::primary::confirmed::checkpoint(index)? != Some(position)
         || crate::primary::scope::current(index)?.as_deref() != Some(scope.as_str())
         || source_position(index)? != Some(through)
     {
@@ -121,7 +121,7 @@ fn source_position(conn: &Connection) -> Result<Option<u64>> {
         .optional()?;
     if let Some(position) = position {
         return position.parse::<u64>().map(Some).map_err(|_| {
-            StoreError::Invalid("source admission fence is not a nonnegative integer".into())
+            StoreError::Invalid("source commit position is not a nonnegative integer".into())
         });
     }
     let empty: bool = conn.query_row(

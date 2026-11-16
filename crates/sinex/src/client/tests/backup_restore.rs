@@ -1,4 +1,4 @@
-//! The consumer-specific half of native backup custody, against an actual daemon.
+//! The consumer half of a Sinex backup and restore, against a real daemon.
 use super::super::*;
 use crate::{Mode, Sinex};
 use polylogue_model::BlobHash;
@@ -8,17 +8,17 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
-#[path = "../../../tests/support/native.rs"]
-mod native;
+#[path = "../../../tests/support/real_sinex.rs"]
+mod real_sinex;
 
-fn config(native: &native::Native) -> Config {
+fn config(real_sinex: &real_sinex::RealSinex) -> Config {
     Config {
         mode: Mode::Primary,
-        nats: native.nats.url().into(),
+        nats: real_sinex.nats.url().into(),
         password_file: None,
         subject_root: "rebuild".into(),
         producer: "polylogue".into(),
-        store: native.store.clone(),
+        store: real_sinex.store.clone(),
         upload_root: None,
     }
 }
@@ -28,7 +28,7 @@ fn wait_until(mut predicate: impl FnMut() -> bool) {
     while !predicate() {
         assert!(
             started.elapsed() < Duration::from_secs(90),
-            "native primary fixture did not settle"
+            "Sinex primary fixture did not finish"
         );
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -41,9 +41,9 @@ fn connect(config: &Config) -> Arc<Sinex> {
             Ok(connected) => return Arc::new(connected),
             Err(error @ Error::Unreachable(_)) => assert!(
                 started.elapsed() < Duration::from_secs(90),
-                "native producer did not become reachable: {error}"
+                "Sinex producer did not become reachable: {error}"
             ),
-            Err(error) => panic!("native producer connection failed: {error}"),
+            Err(error) => panic!("Sinex producer connection failed: {error}"),
         }
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -71,9 +71,10 @@ fn encoding(
     )
 }
 
-/// Material ACK, dependent canonical group, actual confirmed-cache application,
-/// then ordinary consumer confirmed removal. No test manufactures an acknowledgment or position.
-fn publish_and_project(sinex: &Arc<Sinex>, cache: &Path, items: &[(&str, &[u8])]) {
+/// Material acknowledgment, the dependent confirmed group, its application to the
+/// confirmed cache, then the consumer's confirmed removal. No test manufactures an
+/// acknowledgment or position.
+fn send_and_apply(sinex: &Arc<Sinex>, cache: &Path, items: &[(&str, &[u8])]) {
     sinex.send_pending();
     wait_until(|| {
         items.iter().all(|(identity, _)| {
@@ -130,12 +131,12 @@ fn publish_and_project(sinex: &Arc<Sinex>, cache: &Path, items: &[(&str, &[u8])]
         let pool = match ReadPool::open(&archive) {
             Ok(pool) => pool,
             Err(polylogue_store::StoreError::ScopeChanged) => return false,
-            Err(error) => panic!("open native primary cache: {error}"),
+            Err(error) => panic!("open Sinex primary cache: {error}"),
         };
         let reader = match pool.reader() {
             Ok(reader) => reader,
             Err(polylogue_store::StoreError::ScopeChanged) => return false,
-            Err(error) => panic!("read native primary cache: {error}"),
+            Err(error) => panic!("read Sinex primary cache: {error}"),
         };
         items.iter().all(|(identity, bytes)| {
             if sinex.spool.lock().unwrap().get(identity).unwrap().is_some() {
@@ -144,7 +145,7 @@ fn publish_and_project(sinex: &Arc<Sinex>, cache: &Path, items: &[(&str, &[u8])]
             let blobs = match reader.blob_reader() {
                 Ok(blobs) => blobs,
                 Err(polylogue_store::StoreError::ScopeChanged) => return false,
-                Err(error) => panic!("open native primary blob reader: {error}"),
+                Err(error) => panic!("open Sinex primary blob reader: {error}"),
             };
             let mut body = match blobs.read(&hashed_blobs::Hash(BlobHash::of(bytes).0)) {
                 Ok(body) => body,
@@ -152,7 +153,7 @@ fn publish_and_project(sinex: &Arc<Sinex>, cache: &Path, items: &[(&str, &[u8])]
                     polylogue_store::StoreError::NotFound(_)
                     | polylogue_store::StoreError::ScopeChanged,
                 ) => return false,
-                Err(error) => panic!("read confirmed native primary bytes: {error}"),
+                Err(error) => panic!("read confirmed Sinex primary bytes: {error}"),
             };
             let mut found = Vec::new();
             body.read_to_end(&mut found).unwrap();
@@ -163,30 +164,30 @@ fn publish_and_project(sinex: &Arc<Sinex>, cache: &Path, items: &[(&str, &[u8])]
     drop(lock);
 }
 
-fn frame_count(native: &native::Native, identity: &str) -> i64 {
-    native.sql(&format!("SELECT count(*) FROM core.ingress_frames WHERE producer='polylogue' AND frame='{}' AND refusal IS NULL",identity.replace('\'',"''"))).trim().parse().unwrap()
+fn frame_count(real_sinex: &real_sinex::RealSinex, identity: &str) -> i64 {
+    real_sinex.sql(&format!("SELECT count(*) FROM core.ingress_frames WHERE producer='polylogue' AND frame='{}' AND refusal IS NULL",identity.replace('\'',"''"))).trim().parse().unwrap()
 }
 
 #[test]
 #[ignore = "needs matching public Sinex daemon plus pg_restore; set SINEXD"]
 fn paired_backup_restores_polylogue_pending_frames_after_live_confirmed_removal() {
     let root = tempfile::tempdir().unwrap();
-    let mut running = native::Native::start(
-        &root.path().join("native"),
+    let mut running = real_sinex::RealSinex::start(
+        &root.path().join("real_sinex"),
         vec![serde_json::to_value(crate::kinds::source_declaration()).unwrap()],
     );
     let initial = connect(&config(&running));
     let baseline = b"synthetic baseline bytes";
     let baseline_id = prepare(&initial, baseline);
-    publish_and_project(
+    send_and_apply(
         &initial,
         &root.path().join("baseline-index"),
         &[(&baseline_id, baseline)],
     );
     drop(initial);
 
-    // Pausing the native callback before its queue lock lets the ordinary SDK
-    // prepare new bytes while publication is paused.
+    // Pausing the Sinex callback before its queue lock lets the SDK prepare
+    // new bytes while Sinex's backup publication gate is closed.
     let mut sinex = Arc::new(super::synchronous(
         &config(&running),
         &Authentication::Anonymous,
@@ -226,7 +227,7 @@ fn paired_backup_restores_polylogue_pending_frames_after_live_confirmed_removal(
     let socket = running.socket.clone();
     let output = artifact.clone();
     let backup = std::thread::spawn(move || {
-        native::request(
+        real_sinex::request(
             &socket,
             "operator",
             serde_json::json!({
@@ -235,16 +236,16 @@ fn paired_backup_restores_polylogue_pending_frames_after_live_confirmed_removal(
         )
     });
     wait_capture.recv_timeout(Duration::from_secs(90)).unwrap();
-    let during = b"synthetic acquisition while publication is frozen";
+    let during = b"synthetic capture while the publication gate is closed";
     let during_id = prepare(&sinex, during);
     let during_encoding = encoding(&sinex, &during_id);
-    // Exercise the normal sender while native backup holds its publication
-    // gate. Its independent connection leaves confirmed reads available, and
-    // capture above completed before acquisition was released.
+    // Exercise the normal sender while Sinex backup holds its publication
+    // gate. Its separate connection leaves confirmed reads available, and the
+    // capture above finished before the backup callback resumed.
     Arc::get_mut(&mut sinex).unwrap().start_sender().unwrap();
     assert!(
         sinex.client.try_lock().is_ok(),
-        "publication does not own the confirmed-reader lock"
+        "sending does not hold the confirmed-reader lock"
     );
     sinex.reachable().unwrap();
     assert_eq!(frame_count(&running, &before_id), 0);
@@ -276,7 +277,7 @@ fn paired_backup_restores_polylogue_pending_frames_after_live_confirmed_removal(
         assert_eq!(bytes.len() as u64, file.bytes);
         assert_eq!(blake3::hash(&bytes).to_hex().as_str(), file.blake3);
     }
-    publish_and_project(
+    send_and_apply(
         &sinex,
         &root.path().join("live-index"),
         &[(&before_id, before), (&during_id, during)],
@@ -289,7 +290,7 @@ fn paired_backup_restores_polylogue_pending_frames_after_live_confirmed_removal(
     let restored_store = root.path().join("restored-store");
     running.restore(&artifact, &restored_store);
     // The core backup excludes both untransmitted frames, although the later live core
-    // admitted and removed them. Only the acquired producer artifact can retry.
+    // admitted and removed them. Only the producer snapshot in the backup can resend them.
     assert_eq!(frame_count(&running, &baseline_id), 1);
     assert_eq!(frame_count(&running, &before_id), 0);
     assert_eq!(frame_count(&running, &during_id), 0);
@@ -297,7 +298,7 @@ fn paired_backup_restores_polylogue_pending_frames_after_live_confirmed_removal(
     let restored = connect(&config(&running));
     assert_eq!(encoding(&restored, &before_id), before_encoding);
     assert_eq!(encoding(&restored, &during_id), during_encoding);
-    publish_and_project(
+    send_and_apply(
         &restored,
         &root.path().join("restored-index"),
         &[(&before_id, before), (&during_id, during)],
@@ -315,6 +316,6 @@ fn paired_backup_restores_polylogue_pending_frames_after_live_confirmed_removal(
     body.read_to_end(&mut found).unwrap();
     assert_eq!(
         found, baseline,
-        "fresh confirmed stream also rebuilt the pre-cut baseline"
+        "fresh confirmed stream also rebuilt the pre-backup baseline"
     );
 }

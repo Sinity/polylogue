@@ -1,4 +1,4 @@
-// One request lane per provider. Durable bytes remain exclusively in the outbox.
+// One request lane per provider. Stored bytes stay only in the outbox.
 export class ProviderDeferred extends Error {
   constructor(until, reason = "the daily backfill budget is spent; continuing tomorrow") {
     super(reason);
@@ -43,7 +43,7 @@ export class ProviderScheduler {
     } });
   }
 
-  // Content scripts request this permit immediately before each actual HTTP
+  // Content scripts request this permit immediately before each HTTP
   // fetch, including auth and download-link requests within one operation.
   async authorize(provider, owner = null) {
     const state = this.providers.get(provider);

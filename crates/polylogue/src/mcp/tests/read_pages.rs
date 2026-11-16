@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 type ItemKey = (SelectionLocator, u64, BlobHash);
 
-// The public encoder owns the exact item JSON, including inert control escaping.
+// The public encoder owns the item JSON, including inert control escaping.
 fn item_json(header: &polylogue_model::read::ReadHeader, item: &ReadItem) -> String {
     let mut prefix = Vec::new();
     {
@@ -109,7 +109,7 @@ impl Items {
                 self.completed.insert(key);
             }
         }
-        assert!(self.bytes > before, "a page must advance the actual layout");
+        assert!(self.bytes > before, "a page must advance the layout");
     }
     pub(super) fn text(&self) -> String {
         self.values
@@ -134,12 +134,12 @@ pub(super) fn body(page: &ReadPage) -> String {
     items.text()
 }
 
-struct ItemUniverse {
+struct AllItems {
     items: Vec<ReadItem>,
     encoded: BTreeMap<BlobHash, (String, Vec<usize>)>,
     bytes: usize,
 }
-impl ItemUniverse {
+impl AllItems {
     fn from_root(daemon: &test_daemon::TestDaemon, next: &ReadyCall) -> Self {
         let call = crate::commands::declarations()
             .mcp_call(&next.request)
@@ -196,7 +196,7 @@ impl ItemUniverse {
         })
         .unwrap();
         assert!(completed);
-        let header = header.expect("actual stream header");
+        let header = header.expect("stream header");
         let mut encoded = BTreeMap::new();
         let mut bytes = 0;
         for item in &items {
@@ -233,11 +233,11 @@ impl ItemUniverse {
                 let (source, boundaries) = self
                     .encoded
                     .get(&position.item_hash)
-                    .expect("fragment belongs to actual streamed source");
+                    .expect("fragment belongs to streamed source");
                 assert_eq!(
                     *total,
                     (boundaries.len() - 1) as u64,
-                    "actual encoded source total"
+                    "encoded source total"
                 );
                 let from = usize::try_from(position.character).unwrap();
                 let until = usize::try_from(*until).unwrap();
@@ -245,21 +245,21 @@ impl ItemUniverse {
                 assert_eq!(
                     text,
                     &source[boundaries[from]..boundaries[until]],
-                    "exact independently streamed fragment bytes"
+                    "independently streamed fragment bytes"
                 );
             } else {
                 let text = item_json(&page.document.header, item);
                 let (source, _) = self
                     .encoded
                     .get(&BlobHash::of(text.as_bytes()))
-                    .expect("complete item belongs to actual streamed source");
+                    .expect("complete item belongs to streamed source");
                 assert_eq!(&text, source);
             }
         }
     }
 }
 
-/// Acts as a client: execute the actual bounded continuation, then join encoded
+/// Acts as a client: execute the bounded continuation, then join encoded
 /// fragments by their typed coordinate and item digest before decoding content.
 pub(super) fn collect(
     daemon: &test_daemon::TestDaemon,
@@ -268,12 +268,12 @@ pub(super) fn collect(
     max_wire_bytes: Option<usize>,
     expected_deadline: command_surface::Deadline,
 ) -> (Items, usize) {
-    let universe = page
+    let all_items = page
         .document
         .footer
         .next
         .as_ref()
-        .map(|next| ItemUniverse::from_root(daemon, next));
+        .map(|next| AllItems::from_root(daemon, next));
     let archive = Archive::at(&daemon.daemon.archive.root);
     let query = page.snapshot.query.clone();
     let format = page.format;
@@ -292,7 +292,7 @@ pub(super) fn collect(
         );
         assert!(
             page.records.is_empty(),
-            "bounded layout must not duplicate canonical records"
+            "bounded layout must not duplicate source records"
         );
         let wire = serde_json::to_vec(&page).unwrap();
         let footer_wire = serde_json::to_string(&page.document.footer).unwrap();
@@ -328,18 +328,18 @@ pub(super) fn collect(
         if let Some(cap) = max_wire_bytes {
             assert!(wire.len() < cap);
         }
-        if let Some(universe) = &universe {
-            universe.check(&page);
+        if let Some(all_items) = &all_items {
+            all_items.check(&page);
         }
         items.push(&page);
         pages += 1;
-        if let Some(universe) = &universe {
+        if let Some(all_items) = &all_items {
             assert!(
-                items.bytes <= universe.bytes,
-                "strict byte progress cannot exceed the actual finite source"
+                items.bytes <= all_items.bytes,
+                "strict byte progress cannot exceed the finite source"
             );
             assert!(
-                pages <= universe.bytes,
+                pages <= all_items.bytes,
                 "each page delivers at least one source byte"
             );
         }
@@ -403,14 +403,14 @@ pub(super) fn collect(
         page = execute_ready(&archive, &ready).unwrap();
     }
     items.finish();
-    if let Some(universe) = &universe {
+    if let Some(all_items) = &all_items {
         assert_eq!(
-            items.bytes, universe.bytes,
-            "every actual source byte delivered exactly once"
+            items.bytes, all_items.bytes,
+            "every source byte delivered exactly once"
         );
         assert_eq!(
-            items.values, universe.items,
-            "complete streamed item universe in source order"
+            items.values, all_items.items,
+            "complete streamed items in source order"
         );
     }
     eprintln!(
@@ -421,7 +421,7 @@ pub(super) fn collect(
 }
 
 /// Whole-byte reconstruction uses the documented lifted deadline at the root.
-/// Children retain that accepted choice; the client never edits their deadlines.
+/// Children keep that accepted choice; the client never edits their deadlines.
 pub(super) fn structured_read_without_deadline(
     archive: &Archive,
     arguments: Value,
@@ -519,7 +519,7 @@ fn budgeted_mcp_output_contains_one_bounded_layout_and_no_duplicate_source_recor
     let page = output;
     assert!(page.document.footer.next.is_some());
     // A bounded page may finish at a header or inside encoded item JSON.
-    // The client follows the actual continuation until the complete body decodes.
+    // The client follows the continuation until the complete body decodes.
     let (items, pages) = collect(
         &daemon,
         page,

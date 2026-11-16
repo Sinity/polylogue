@@ -100,7 +100,7 @@ fn generated_ready_cli_call_reaches_the_socket_with_its_identity_and_deadline() 
                 {
                     std::thread::yield_now()
                 }
-                Err(error) => panic!("CLI did not reach the canonical socket: {error}"),
+                Err(error) => panic!("CLI did not reach the daemon socket: {error}"),
             }
         };
         stream
@@ -427,7 +427,7 @@ fn literal_read_envelope_is_not_expanded_with_cli_defaults() {
         peer.join().unwrap();
         assert!(
             !destination.exists(),
-            "a refused export must not publish its destination"
+            "a refused export must not create its destination"
         );
     }
 }
@@ -625,7 +625,7 @@ fn rows_document(
         notes: vec![],
         incomplete: vec![],
         resolved: crate::protocol::query::Resolved {
-            context: context.provenance(),
+            context: context.run_context(),
             times: vec![],
         },
         definitions: vec![],
@@ -767,7 +767,7 @@ fn local_and_stream_cli_use_their_declared_argument_types() {
 }
 
 #[test]
-fn cli_domain_choices_keep_their_existing_operation_authority() {
+fn cli_domain_choices_keep_their_existing_operation() {
     for subject in crate::explain::SUBJECTS {
         assert!(parse(&["polylogue", "explain", subject]).is_ok());
     }

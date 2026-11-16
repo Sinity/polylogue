@@ -30,9 +30,9 @@ fn read_exact_checked(reader: &mut impl Read, bytes: &mut [u8]) -> io::Result<()
     Ok(())
 }
 
-/// Native byte proof uses one opened file and verifies the sampled generation
+/// A source byte check uses one opened file and verifies the sampled file facts
 /// across the read. Replacing the path or changing that file defers the sample.
-pub(crate) fn read_native_range(
+pub(crate) fn read_source_range(
     path: &Path,
     start: u64,
     end: u64,
@@ -40,10 +40,10 @@ pub(crate) fn read_native_range(
 ) -> io::Result<(Vec<u8>, polylogue_store::primary::FileSnapshot)> {
     let mut file = File::open(path)?;
     let metadata = file.metadata()?;
-    let observed = crate::acquisition::file_snapshot(&metadata)?;
+    let observed = crate::source_read::file_snapshot(&metadata)?;
     let before = polylogue_store::FileFacts::of(&metadata);
     if expected.is_some_and(|facts| facts != before) {
-        return Err(io::Error::other("native source changed before reading"));
+        return Err(io::Error::other("source file changed before reading"));
     }
     file.seek(SeekFrom::Start(start))?;
     let mut bytes = vec![0; (end - start) as usize];
@@ -51,7 +51,7 @@ pub(crate) fn read_native_range(
     if polylogue_store::FileFacts::of(&file.metadata()?) != before
         || polylogue_store::FileFacts::of(&std::fs::metadata(path)?) != before
     {
-        return Err(io::Error::other("native source changed during reading"));
+        return Err(io::Error::other("source file changed during reading"));
     }
     Ok((bytes, observed))
 }

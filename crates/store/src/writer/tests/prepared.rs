@@ -136,7 +136,7 @@ fn new_messages_do_not_read_a_previous_source() {
 }
 
 #[test]
-fn prepared_and_fallback_bodies_keep_exact_messages_and_events() {
+fn prepared_and_fallback_bodies_keep_messages_and_events() {
     for mode in ["unprepared", "prepared", "repeated"] {
         let w = test_archive();
         let mut message = text_message(
@@ -457,19 +457,19 @@ fn new_versions_do_not_resolve_hashes_again_for_each_child() {
             0,
             "new version's returned key must serve its source, layout and block references"
         );
-        // Positive control proves the authorizer counts a natural-key resolution.
+        // The case the check must catch: the authorizer counts a natural-key resolution.
         let hash = message.content_hash().unwrap();
         crate::versions::message_key(&tx, &hash.0).unwrap();
         assert!(reads.load(Ordering::Relaxed) > 0);
         tx.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
             .unwrap();
-        let (stored, projection) = crate::versions::read_message(&tx, &hash.0)
+        let (stored, block_selection) = crate::versions::read_message(&tx, &hash.0)
             .unwrap()
             .unwrap();
         assert_eq!(stored, message);
-        assert_eq!(projection.source_version, hash);
+        assert_eq!(block_selection.source_version, hash);
         assert_eq!(
-            projection.block_ordinals,
+            block_selection.block_ordinals,
             (0..blocks as u64).collect::<Vec<_>>()
         );
         assert_eq!(

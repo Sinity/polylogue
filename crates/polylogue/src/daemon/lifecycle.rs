@@ -1,4 +1,4 @@
-//! OS signals and service supervision around the ordinary daemon runtime.
+//! OS signals and service supervision around the daemon runtime.
 use super::{server::Server, service::Runtime};
 use crate::config::{EnvSnapshot, Error};
 #[cfg(target_os = "linux")]
@@ -22,7 +22,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-/// Publishes termination even while unwinding; joins retain the actual result.
+/// Reports termination even while unwinding; joins keep the result.
 /// A finite completion snapshot explicitly marks its expected return.
 pub(crate) struct WorkerExit {
     events: tokio::sync::watch::Sender<Option<&'static str>>,
@@ -83,7 +83,7 @@ impl Inputs {
                     .map_err(|_| Error::Invalid("WATCHDOG_USEC must be an unsigned integer".into()))
             })
             .transpose()?;
-        let owner = env
+        let watchdog_owner = env
             .text("WATCHDOG_PID")?
             .map(|value| {
                 value
@@ -93,7 +93,7 @@ impl Inputs {
             .transpose()?;
         let watchdog = watchdog
             .filter(|value| *value > 0)
-            .filter(|_| owner.is_none_or(|owner| owner == pid));
+            .filter(|_| watchdog_owner.is_none_or(|owner| owner == pid));
         if watchdog.is_some() && notify.is_none() {
             return Err(Error::Invalid(
                 "WATCHDOG_USEC requires NOTIFY_SOCKET".into(),
@@ -329,7 +329,7 @@ async fn supervise(
             started = &mut receive => match started { Ok(started) => break started, Err(_) => return Ok(()) },
         }
     };
-    let stop = match app.socket.take_quiescing() {
+    let stop = match app.socket.take_listener_stopped() {
         Err(error) => Stop::Failed(error),
         Ok(mut listener_ended) => {
             if let Some(signal) = first_signal {
@@ -492,7 +492,7 @@ fn drain(mut app: Started) -> io::Result<()> {
     );
     app.runtime.stop_accepting();
     eprintln!(
-        "polylogue: shutdown admission stopped at {:?}",
+        "polylogue: shutdown stopped accepting requests at {:?}",
         started.elapsed()
     );
     let mut failure = app.socket.shutdown().err();

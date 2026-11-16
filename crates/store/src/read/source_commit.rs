@@ -1,4 +1,4 @@
-//! Source admission is owned by the selected source store, independently of
+//! A source's commit position comes from the selected source store, independently of
 //! the read snapshot and the message's display order.
 use super::Reader;
 use crate::Result;
@@ -13,6 +13,6 @@ impl Reader<'_> {
         let Some(through) = through else {
             return Ok(None);
         };
-        crate::source::Source::admitted_through(self.conn()?, input, chain, through)
+        crate::source::Source::committed_through(self.conn()?, input, chain, through)
     }
 }

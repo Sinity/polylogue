@@ -411,7 +411,7 @@ impl<'a> Compiler<'a> {
 
 fn match_columns() -> Vec<Column> {
     // These reference values already carry their natural prefixes. Their
-    // shared declarations retain the targets; raw-ID wire hints stay absent.
+    // shared declarations keep the targets; raw-ID wire hints stay absent.
     vec![
         Column {
             name: "parent".into(),
@@ -450,14 +450,14 @@ fn row_reference(scope: &RowContext) -> Result<String, QueryError> {
     })
 }
 
-/// Matches retain the entering relation's visible values under `parent.`.
+/// Matches keep the entering relation's visible values under `parent.`.
 /// Reuse those values and metadata, including projected aliases, rather than
-/// reading native fields with the same names from a different row scope.
+/// reading unit fields with the same names from a different row scope.
 pub(super) fn project_match_parent(result: &mut Program, parent: &Program) {
-    let mut projection = vec!["matched.*".to_owned()];
+    let mut select_list = vec!["matched.*".to_owned()];
     for column in &parent.columns {
         let name = format!("parent.{}", column.name);
-        projection.push(format!(
+        select_list.push(format!(
             "parent_values.{} AS {}",
             column_sql(parent.column_slot(&column.name)),
             column_sql(&name)
@@ -472,7 +472,7 @@ pub(super) fn project_match_parent(result: &mut Program, parent: &Program) {
     let mut order = Vec::new();
     for (index, key) in parent.order.iter().enumerate() {
         let column = format!("_match_parent_order{index}");
-        projection.push(format!(
+        select_list.push(format!(
             "parent_values.{} AS {}",
             column_sql(&key.column),
             column_sql(&column)
@@ -486,7 +486,7 @@ pub(super) fn project_match_parent(result: &mut Program, parent: &Program) {
     result.order = order;
     result.derived_mut().rows = format!(
         "SELECT {} FROM ({}) matched JOIN ({}) parent_values ON parent_values._pk = matched._match_parent_pk ORDER BY {}",
-        projection.join(", "),
+        select_list.join(", "),
         result.rows(),
         parent.rows(),
         order_by(&result.order)

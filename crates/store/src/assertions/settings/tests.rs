@@ -75,7 +75,7 @@ fn withdraw(id: &str, target: &str, at: Option<i64>) -> AssertionFact {
 #[test]
 fn setting_history_follows_withdrawal_and_restoration_by_writer_clock() {
     let conn = db();
-    // Receipt order and the unrelated undated setting never date or choose
+    // Commit order and the unrelated undated setting never date or choose
     // this family's effective value. Restoration follows the graph.
     let facts = [
         withdraw("restore", "assertion:withdraw", Some(4)),

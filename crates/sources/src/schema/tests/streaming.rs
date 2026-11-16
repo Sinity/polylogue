@@ -13,7 +13,7 @@ impl io::Read for Chunks<'_> {
 }
 
 #[test]
-fn optional_fields_and_dynamic_names_keep_bounded_state_and_exact_presence() {
+fn optional_fields_and_dynamic_names_keep_bounded_state_and_presence() {
     let mut observer = Observer::default();
     for mask in 0..4096u32 {
         let fields = (0..12)

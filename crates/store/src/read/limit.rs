@@ -43,7 +43,7 @@ impl ReadLimit {
         Self::with_deadline(Instant::now().checked_add(duration), cancellation)
     }
 
-    /// Bind an already admitted absolute deadline without renewing its budget.
+    /// Bind an already accepted absolute deadline without renewing its budget.
     pub fn at(deadline: Instant, cancellation: Cancellation) -> Self {
         Self::with_deadline(Some(deadline), cancellation)
     }

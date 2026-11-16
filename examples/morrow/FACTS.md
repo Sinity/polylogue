@@ -109,7 +109,7 @@ record (the failing `cargo test`: 3m 43s).
 
 ## When #4's live file was collected
 
-For the evidence-cutoff examples, tests feed #4's file
+For the `seen_by:` examples, tests feed #4's file
 to the daemon in three stages, as a live session grows:
 
 | Collected at (local, Oct 03) | The file then ends with | Becomes |
@@ -118,8 +118,8 @@ to the daemon in three stages, as a live session grows:
 | 14:45:00 | the compaction summary record at 14:40:41 | a second piece; `first_seen` 14:45 for the messages added |
 | 15:12:00 | the last record, "Thanks, done for today." at 15:10:00 | a third piece; the whole file |
 
-So `evidence_until:2026-10-03T14:30` shows #4 with 3 own messages, and
-`evidence_until:2026-10-03T15:00` shows it with the compaction and 6 own messages
+So `seen_by:2026-10-03T14:30` shows #4 with 3 own messages, and
+`seen_by:2026-10-03T15:00` shows it with the compaction and 6 own messages
 (the boundary is an event; its summary is one harness message, as in
 [sessions.md](../../docs/sessions.md#compaction-boundaries)).
 
@@ -151,7 +151,7 @@ counters; at the example prices these observations price to 0.216 and 0.117
 USD. These are recorded known subsets, not complete session or request costs:
 item-only rollouts cannot establish response membership or all API attempts.
 Observation record times also do not establish spend times. The observations
-remain evidence independently of message attachment (`spec/sources/codex.md`).
+remain records independently of message attachment (`spec/sources/codex.md`).
 
 Archive total from sessions with known cost: **5.86 USD** (exact 5.8626;
 rounded to cents only for display); 4 sessions have unknown total cost
@@ -211,7 +211,7 @@ agent IDs establish copied history; they supply no continuation or resume
 marker and create no provider link. L4 has no spawning-call marker either;
 its file location alone establishes no spawn.
 
-The delivery row below addresses #4 from #2, evidence for a separate
+The delivery row below addresses #4 from #2, the source of a separate
 `reference` relationship with `how: briefing`.
 
 Things the examples rely on:
@@ -293,9 +293,9 @@ One agent's rubric pass over the Morrow sessions, in its own home
 tests and the story and judging boards load "Morrow plus the annotation set"
 (`spec/user-data.md`, checked claims and annotation passes).
 
-This annotation set records predecessor tool and reference spellings as input
+This annotation set records Python Polylogue tool and reference spellings as input
 history. Imports preserve them as declared metadata. Current commands author
-assertions, and runtime lookups use canonical `assertion:` references rather
+assertions, and runtime lookups use full `assertion:` references rather
 than interpreting historical `note:` strings as aliases.
 
 **The rubric** `note:0199f400-0000-7000-8000-000000000400`, revision 1,

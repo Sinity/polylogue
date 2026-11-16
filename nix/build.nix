@@ -78,7 +78,7 @@ let
       '';
   checks = {
     settings = import ./checks/settings.nix { inherit pkgs; };
-    # Retain the existing package check name.
+    # Keep the existing package check name.
     inherit polylogue;
     fmt = craneLib.cargoFmt {
       inherit (common) src pname version;
@@ -103,7 +103,7 @@ let
       // {
         cargoExtraArgs = "--locked --workspace --exclude polylogue-sinex --features polylogue-engine/faults,polylogue-store/faults";
         # Shell completion stays offline; the remaining real-process tests need
-        # an OS identity. Native checks retain every e2e; the VM covers transports.
+        # an OS identity. Checks outside Nix keep every e2e; the VM covers transports.
         cargoNextestExtraArgs = "-E 'not (package(polylogue) and binary(e2e) and not test(/^completion::/))'";
         nativeBuildInputs = common.nativeBuildInputs ++ [
           pkgs.git

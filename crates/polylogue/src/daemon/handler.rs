@@ -37,7 +37,7 @@ pub(crate) struct Call<'a> {
 }
 
 impl Call<'_> {
-    /// The evaluation context (clock, logical day, owner) of this request.
+    /// The evaluation context (clock, logical day, Sinex context) of this request.
     pub fn context(&self) -> Result<Arc<Context>, Failure> {
         self.daemon
             .resolve_operation_context(self.invocation.clone())
@@ -338,7 +338,7 @@ impl Registration {
 }
 
 impl FeedRegistration {
-    /// Check the canonical envelope and the feed's own typed arguments before
+    /// Check the shared request envelope and the feed's own typed arguments before
     /// opening a stream. Feed positions live in those arguments, not page
     /// cursors. Feeds emit their own event format and do not prepare context
     /// under a token budget or refresh the archive.
@@ -809,7 +809,7 @@ impl Drop for TableContext {
 
 /// Ends required reads before an acknowledged mutation or after the primary
 /// answer is prepared. An already expired read refuses this boundary; optional
-/// aggregates retain their original limit without replacing completed rows.
+/// aggregates keep their original limit without replacing completed rows.
 pub(crate) fn finish_read_phase(stage: &'static str) -> Result<(), Failure> {
     ReadLimit::finish_scope(stage).map_err(Failure::from)?;
     TABLE_CONTEXT.with(|current| match current.borrow().as_ref() {

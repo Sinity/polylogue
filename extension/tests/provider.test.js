@@ -48,7 +48,7 @@ it("runs an explicit action ahead of queued backfill once the active request set
   expect(order).toEqual(["active", "action", "background"]);
 });
 
-it("restores the actual HTTP budget after a worker restart", async () => {
+it("restores the HTTP budget after a worker restart", async () => {
   const storage = fakeChrome().storage.local;
   const options = { storage, dailyBudget: 1, now: () => 0 };
   const first = new ProviderScheduler(options);

@@ -49,7 +49,7 @@ fn selected_prefix_is_portable_without_reading_or_hashing_unknown_suffix() {
                 hash: expected_version
             }
         );
-        assert!(selected.admitted().is_some());
+        assert!(selected.committed().is_some());
         let mut text = String::new();
         assert!(
             selected
@@ -193,7 +193,7 @@ fn sparse_known_prefix_preserves_version_and_never_bridges_unknown_blocks() {
         }],
         ..Default::default()
     };
-    output.message_projections.insert(
+    output.block_selections.insert(
         0,
         MessageProjection {
             source_version: original.content_hash().unwrap(),
@@ -243,7 +243,7 @@ fn sparse_known_prefix_preserves_version_and_never_bridges_unknown_blocks() {
 }
 
 #[test]
-fn replay_uses_native_field_seek_without_hydrating_a_poisoned_earlier_body() {
+fn replay_seeks_by_field_past_a_bad_earlier_body() {
     let mut archive = WriterArchive::new();
     archive.write(
         "s",
@@ -380,7 +380,7 @@ fn a_recorded_separator_can_resume_without_decoding_either_unselected_body() {
 }
 
 #[test]
-fn document_replay_seeks_the_canonical_document_block_ordinal() {
+fn document_replay_seeks_the_source_block_ordinal() {
     use polylogue_model::{Document, DocumentId, DocumentPurpose, DocumentRow, Output};
     let mut archive = WriterArchive::new();
     let mut document = Document::new(

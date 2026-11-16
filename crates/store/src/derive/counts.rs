@@ -1,6 +1,6 @@
 //! Counts over the same shown path the query language reads. The transaction's
 //! change summary applies changed contributions once per session. [`compute`]
-//! is the independent full fold, also run when the derivation version moves.
+//! is the independent full recompute, also run when the derivation version moves.
 use super::{Class, Derivation, Output, Version};
 use crate::Result;
 use crate::session_sql::{counts_as_action, own_messages};
@@ -9,7 +9,7 @@ use serde::Serialize;
 
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "counts",
-    class: Class::Fold,
+    class: Class::PerChange,
     products: &[polylogue_model::derived::SESSION_COUNTS],
     version: Version::Rules(1),
     after: &["duplicates", "active_path", "tool_calls"],

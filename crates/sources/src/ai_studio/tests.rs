@@ -395,7 +395,7 @@ fn repeated_prompt_parents_make_one_fork_and_conflicting_parents_remain_explicit
 }
 
 #[test]
-fn native_chunk_clock_is_intrinsic_and_drive_file_clock_is_file_mtime() {
+fn chunk_clock_is_its_own_and_drive_clock_is_mtime() {
     use polylogue_model::{Precision, TimeQuality};
     let step = parse(
         "clock",

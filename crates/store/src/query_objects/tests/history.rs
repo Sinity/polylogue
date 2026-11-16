@@ -13,16 +13,16 @@ fn completed_history_returns_before_the_writer_and_commits_as_one_record() {
     );
     let completed = outcome(&expected, 3);
     let sender = archive.writer.sender().unwrap();
-    let barrier = sender.pause_user_dispatch_for_test(
+    let pause = sender.pause_user_dispatch_for_test(
         expected.id.as_str(),
-        crate::writer::DispatchPhase::BeforeAdmission,
+        crate::writer::DispatchPhase::BeforeParentCheck,
     );
     sender
         .reserve_history()
         .unwrap()
         .record(object.clone(), expected.clone(), completed.clone())
         .unwrap();
-    barrier.wait().unwrap();
+    pause.wait().unwrap();
     let reader = pool.reader().unwrap();
     assert!(
         reader
@@ -38,7 +38,7 @@ fn completed_history_returns_before_the_writer_and_commits_as_one_record() {
             .is_none()
     );
     drop(reader);
-    barrier.release();
+    pause.release();
     assert!(archive.writer.flush_rows().unwrap().errors.is_empty());
     let reader = pool.reader().unwrap();
     assert_eq!(

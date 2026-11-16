@@ -37,7 +37,7 @@ fn item_commit_uses_prepared_content_without_reading_payloads() {
         b.parse[0].resolution.as_ref().unwrap(),
         1,
         None,
-        Some(&fixture_receipt()),
+        Some(&fixture_commit()),
         &changes,
     )
     .unwrap();

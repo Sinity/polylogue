@@ -18,7 +18,7 @@ tests read an archive built by the real parsers and writer.
 
 Run `polylogue demo tour ./morrow-tour` from an installed binary or this
 checkout's build. The directory must be new. It holds the synthetic home,
-archive and `transcript.md`; ordinary commands provide every displayed
+archive and `transcript.md`; everyday commands provide every displayed
 answer. The public CLI test checks the search matches, two tool failures,
 two children of #2, four unknown session costs and the note/context workflow.
 Preparation and first-query times are separate measurements.

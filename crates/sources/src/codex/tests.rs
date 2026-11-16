@@ -520,7 +520,7 @@ fn rollouts_from_2025_have_a_header_and_bare_items() {
 #[test]
 fn every_record_is_accounted_for() {
     let mut records = turn();
-    records.push(json!({"type": "brand_new_envelope", "payload": {"x": 1}}));
+    records.push(json!({"type": "brand_new_record_type", "payload": {"x": 1}}));
     records.push(json!([1, 2]));
     let mut parser_state = ParserState::default();
     let step = run(&rollout(), &mut parser_state, &jsonl(&records), 0).unwrap();
@@ -528,7 +528,7 @@ fn every_record_is_accounted_for() {
     assert_eq!(
         step.counts
             .skipped
-            .get("brand_new_envelope: unrecognized record type"),
+            .get("brand_new_record_type: unrecognized record type"),
         Some(&1)
     );
 }
@@ -637,7 +637,7 @@ fn absent_quota_facts_remain_absent_and_extreme_resets_do_not_overflow() {
 
 mod reports;
 
-fn native_background_start() -> Vec<Json> {
+fn background_start_records() -> Vec<Json> {
     vec![
         meta(json!({})),
         env(
@@ -654,7 +654,7 @@ fn native_background_start() -> Vec<Json> {
 }
 
 #[test]
-fn native_background_poll_preserves_event_precision_and_missing_clock() {
+fn background_poll_keeps_precision_and_missing_clock() {
     use polylogue_model::{Precision, TimeEvidence, Timestamp};
     for (clock, precision) in [
         (Some("2026-03-01T10:00:05Z"), Some(Precision::Second)),
@@ -664,7 +664,7 @@ fn native_background_poll_preserves_event_precision_and_missing_clock() {
         ),
         (None, None),
     ] {
-        let mut records = native_background_start();
+        let mut records = background_start_records();
         records.push(env(4,"response_item",json!({"type":"function_call","name":"write_stdin","arguments":"{\"session_id\":4242,\"chars\":\"\"}","call_id":"call_b"})));
         let mut done = env(
             5,
@@ -690,13 +690,13 @@ fn native_background_poll_preserves_event_precision_and_missing_clock() {
 }
 
 #[test]
-fn native_background_modern_and_legacy_completion_keep_their_clock_evidence() {
+fn background_completion_keeps_its_time_accuracy() {
     use polylogue_model::{Precision, TimeEvidence};
     for payload in [
         json!({"type":"item_completed","item":{"type":"CommandExecution","id":"call_a","status":"completed","exit_code":0}}),
         json!({"type":"exec_command_end","call_id":"call_a","exit_code":0}),
     ] {
-        let mut records = native_background_start();
+        let mut records = background_start_records();
         let mut done = env(4, "event_msg", payload);
         done["timestamp"] = json!("2026-03-01T10:00:04.123456789Z");
         records.push(done);
@@ -729,7 +729,7 @@ fn resumed_rollout_records_the_provider_session_relation() {
 }
 
 #[test]
-fn copied_history_anchor_survives_split_appends_without_claiming_other_parents() {
+fn copied_history_branch_point_survives_split_appends() {
     let fork = "fork-source";
     let records = [
         meta(json!({"thread_source":"subagent","parent_thread_id":PARENT,
@@ -771,15 +771,15 @@ fn copied_history_anchor_survives_split_appends_without_claiming_other_parents()
             .iter()
             .chain(&second.output.links)
             .collect();
-        let anchored: Vec<_> = links.iter().filter(|link| link.at.is_some()).collect();
-        assert_eq!(anchored.len(), 1, "cut {cut}");
-        assert_eq!(anchored[0].kind, LinkKind::Fork);
-        assert_eq!(anchored[0].parent.native().as_str(), fork);
+        let with_branch_point: Vec<_> = links.iter().filter(|link| link.at.is_some()).collect();
+        assert_eq!(with_branch_point.len(), 1, "cut {cut}");
+        assert_eq!(with_branch_point[0].kind, LinkKind::Fork);
+        assert_eq!(with_branch_point[0].parent.native().as_str(), fork);
         assert_eq!(
-            anchored[0].at.as_ref().unwrap().native().as_str(),
+            with_branch_point[0].at.as_ref().unwrap().native().as_str(),
             "copied-last"
         );
-        assert!(anchored[0].copies_prefix);
+        assert!(with_branch_point[0].copies_prefix);
         assert!(
             links
                 .iter()

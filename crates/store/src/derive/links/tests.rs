@@ -173,7 +173,7 @@ fn command_only_links_do_not_read_tool_result_bodies() {
 }
 
 #[test]
-fn compound_artifact_commands_keep_text_and_packed_result_provenance() {
+fn compound_commands_keep_text_and_result_source() {
     for output_in_body in [false, true] {
         let mut w = WriterArchive::new();
         let output = "[work 1a2b3c4] store: improve work reads\nhttps://github.com/Sinity/polylogue/pull/6300\n";
@@ -249,7 +249,7 @@ fn stored_and_derived(w: &WriterArchive) -> (Vec<serde_json::Value>, Vec<serde_j
 }
 
 #[test]
-fn links_fold_after_append_equals_full_recompute() {
+fn links_after_append_equal_full_recompute() {
     let mut w = WriterArchive::new();
     let mut seen = Vec::new();
     let mut check = |w: &WriterArchive, stage: &str| {
@@ -305,7 +305,7 @@ fn links_fold_after_append_equals_full_recompute() {
     );
     check(&w, "another session");
     // The same commit and pull request reported again by calls timed before
-    // the ones already stored: the earlier calls' evidence is kept.
+    // the ones already stored: the earlier calls stay the recorded ones.
     w.write(
         "t",
         bash(

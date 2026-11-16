@@ -96,7 +96,7 @@ fn period_totals_models_days_and_paged_responses_are_one_population() {
 }
 
 #[test]
-fn owner_day_binds_timeline_continuation_and_leap_days_remain_real() {
+fn request_day_binds_continuation_and_keeps_leap_days() {
     let temp = tempfile::tempdir().unwrap();
     let f = setup(temp.path());
     let pool = f.reads().unwrap();
@@ -280,13 +280,14 @@ fn fixture_context(start: &str, now: i64) -> Arc<Context> {
 }
 
 #[test]
-fn calendar_continuations_authenticate_the_owner_clock_and_bind_the_complete_day() {
+fn calendar_continuation_checks_the_request_clock_and_day() {
     let temp = tempfile::tempdir().unwrap();
     let fixture = setup(temp.path());
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
-    let mut owner = fixture_context("04:00:00", 0);
-    Arc::make_mut(&mut owner).clock.now = "2024-03-30T12:00:00.123456789Z".parse().unwrap();
+    let mut request_context = fixture_context("04:00:00", 0);
+    Arc::make_mut(&mut request_context).clock.now =
+        "2024-03-30T12:00:00.123456789Z".parse().unwrap();
     fn request(cursor: Option<&str>) -> Timeline<'_> {
         Timeline {
             date: Some("2024-03-30"),
@@ -296,7 +297,7 @@ fn calendar_continuations_authenticate_the_owner_clock_and_bind_the_complete_day
             page_size: Some(1),
         }
     }
-    let first = timeline(&reader, request(None), &owner).unwrap();
+    let first = timeline(&reader, request(None), &request_context).unwrap();
     let cursor = first["activity"]["next"].as_str().unwrap();
     let later = fixture_context(
         "04:00:00",
@@ -326,9 +327,9 @@ fn calendar_continuations_authenticate_the_owner_clock_and_bind_the_complete_day
         next["context"]["clock"]["now"],
         "2024-03-30T12:00:00.123456789Z"
     );
-    let mut changed = owner.clone();
+    let mut changed = request_context.clone();
     Arc::make_mut(&mut changed).clock.day = query_language::time::DaySetting::new(
-        owner.clock.day.zone().clone(),
+        request_context.clock.day.zone().clone(),
         "04:00:00.000000001".parse().unwrap(),
     )
     .unwrap();
@@ -344,7 +345,7 @@ fn calendar_continuations_authenticate_the_owner_clock_and_bind_the_complete_day
         "2024-03-30",
         false,
         false,
-        owner.clock.day,
+        request_context.clock.day,
         reader.change_position().unwrap().generation
     ]);
     let old_binding = blake3::hash(old_binding.to_string().as_bytes())
@@ -355,38 +356,43 @@ fn calendar_continuations_authenticate_the_owner_clock_and_bind_the_complete_day
     use base64::Engine as _;
     let unsealed = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .encode(serde_json::to_vec(&unsealed).unwrap());
-    assert!(timeline(&reader, request(Some(&unsealed)), &owner).is_err());
+    assert!(timeline(&reader, request(Some(&unsealed)), &request_context).is_err());
     let mut damaged = cursor.as_bytes().to_vec();
     let last = damaged.last_mut().unwrap();
     *last = if *last == b'0' { b'1' } else { b'0' };
     let damaged = String::from_utf8(damaged).unwrap();
     assert!(
-        timeline(&reader, request(Some(&damaged)), &owner)
+        timeline(&reader, request(Some(&damaged)), &request_context)
             .unwrap_err()
             .message
             .contains("seal")
     );
     assert!(
-        cost(&reader, options(Some("2024-03-30"), Some(cursor)), &owner)
-            .unwrap_err()
-            .message
-            .contains("question")
+        cost(
+            &reader,
+            options(Some("2024-03-30"), Some(cursor)),
+            &request_context
+        )
+        .unwrap_err()
+        .message
+        .contains("question")
     );
 }
 
 #[test]
-fn signed_calendar_cursor_requires_current_owner_binding_before_clock_replay() {
+fn signed_cursor_needs_current_context_before_clock_replay() {
     let temp = tempfile::tempdir().unwrap();
     let fixture = setup(temp.path());
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
-    let owner = fixture_context("04:00:00", 0);
-    let semantic = json!(["timeline", Some("2024-03-30"), false, false]);
+    let request_context = fixture_context("04:00:00", 0);
+    let question_parts = json!(["timeline", Some("2024-03-30"), false, false]);
     let binding = json!(["timeline"]);
-    let mut page = paging(&reader, &owner, None, &semantic, &binding).unwrap();
-    page.context
-        .versions
-        .insert("operation_context".into(), "obsolete-owner-revision".into());
+    let mut page = paging(&reader, &request_context, None, &question_parts, &binding).unwrap();
+    page.context.versions.insert(
+        "operation_context".into(),
+        "obsolete-settings-revision".into(),
+    );
     let after = json!({"at":0,"kind":"message","id":"synthetic"});
     let cursor = page
         .seal
@@ -398,8 +404,14 @@ fn signed_calendar_cursor_requires_current_owner_binding_before_clock_replay() {
             },
         })
         .unwrap();
-    let failure = match paging(&reader, &owner, Some(cursor.as_str()), &semantic, &binding) {
-        Ok(_) => panic!("a correctly sealed obsolete owner binding must be stale"),
+    let failure = match paging(
+        &reader,
+        &request_context,
+        Some(cursor.as_str()),
+        &question_parts,
+        &binding,
+    ) {
+        Ok(_) => panic!("a correctly sealed obsolete context binding must be stale"),
         Err(error) => error,
     };
     assert_eq!(failure.code(), "stale_cursor");

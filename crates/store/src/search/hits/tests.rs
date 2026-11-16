@@ -23,7 +23,7 @@ fn scope_drives(reader: &Reader<'_>, fts: &str, wanted: &str) -> bool {
 }
 
 #[test]
-fn scoped_snippets_read_the_eligible_blocks_once() {
+fn scoped_snippets_read_the_in_scope_blocks_once() {
     let mut work = Vec::new();
     for count in [64, 256] {
         let dir = tempfile::tempdir().unwrap();
@@ -127,7 +127,7 @@ fn scoped_snippets_read_the_eligible_blocks_once() {
 }
 
 #[test]
-fn shared_text_reference_fanout_and_actually_rare_text_choose_different_plans() {
+fn shared_text_reference_fanout_and_rare_text_choose_different_plans() {
     let dir = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(dir.path()).unwrap();
     let root = fixture

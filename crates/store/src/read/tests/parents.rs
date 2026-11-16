@@ -26,7 +26,7 @@ fn session(f: &mut Fixture, name: &str, texts: &[&str]) {
     }
 }
 
-fn fork(f: &mut Fixture, parent: &str, child: &str, anchor: Option<&str>) {
+fn fork(f: &mut Fixture, parent: &str, child: &str, branch_point: Option<&str>) {
     let parent = format!("claude-code:{parent}");
     let child = format!("claude-code:{child}");
     f.link(&parent, &child, "fork", None).unwrap();
@@ -34,7 +34,7 @@ fn fork(f: &mut Fixture, parent: &str, child: &str, anchor: Option<&str>) {
         .unwrap()
         .execute(
             "UPDATE link SET branch_point=?3 WHERE parent_id=?1 AND child_id=?2",
-            params![parent, child, anchor],
+            params![parent, child, branch_point],
         )
         .unwrap();
 }
@@ -143,7 +143,7 @@ fn a_1030_session_chain_has_no_depth_or_call_stack_cutoff() {
 }
 
 #[test]
-fn an_anchor_in_the_parents_inherited_prefix_excludes_its_own_tail() {
+fn branch_point_in_inherited_prefix_excludes_its_tail() {
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
     session(&mut f, "a", &["grandparent first", "grandparent later"]);
@@ -161,20 +161,20 @@ fn an_anchor_in_the_parents_inherited_prefix_excludes_its_own_tail() {
 }
 
 #[test]
-fn unknown_or_absent_fork_anchors_never_substitute_the_full_parent() {
-    for anchor in [None, Some("claude-code:absent")] {
+fn unknown_branch_points_never_substitute_the_full_parent() {
+    for branch_point in [None, Some("claude-code:absent")] {
         let dir = tempfile::tempdir().unwrap();
         let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
         session(&mut f, "a", &["unproven parent content"]);
         session(&mut f, "b", &["available child"]);
-        fork(&mut f, "a", "b", anchor);
+        fork(&mut f, "a", "b", branch_point);
         let pool = f.reads().unwrap();
         let r = pool.reader().unwrap();
         let id = SessionId::parse("claude-code:b").unwrap();
         let selected = r.select_messages(&id, true).unwrap();
         assert!(!selected.parents().complete);
         assert!(
-            matches!(&selected.parents().issues[..], [ParentIssue::MissingAnchor { anchor: got, .. }] if got.as_deref() == anchor)
+            matches!(&selected.parents().issues[..], [ParentIssue::MissingBranchPoint { branch_point: got, .. }] if got.as_deref() == branch_point)
         );
         assert_eq!(texts(&selected), ["available child"]);
         assert!(matches!(
@@ -190,7 +190,7 @@ fn unknown_or_absent_fork_anchors_never_substitute_the_full_parent() {
 }
 
 #[test]
-fn missing_parents_and_session_cycles_report_their_actual_boundary() {
+fn missing_parents_and_session_cycles_report_their_boundary() {
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
     session(&mut f, "a", &["a"]);
@@ -354,7 +354,7 @@ fn previous_indices_include_hidden_messages_in_own_and_parent_selections() {
 }
 
 #[test]
-fn incompatible_recorded_forks_report_both_exact_references_without_choosing_a_prefix() {
+fn incompatible_recorded_forks_report_both_references_without_choosing_a_prefix() {
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
     session(&mut f, "a", &["left parent"]);
@@ -369,18 +369,22 @@ fn incompatible_recorded_forks_report_both_exact_references_without_choosing_a_p
         .unwrap();
     assert!(!selected.parents().complete);
     assert!(
-        matches!(&selected.parents().issues[..], [ParentIssue::ConflictingParents { child, first, first_anchor, second, second_anchor }]
-        if child.to_string() == "claude-code:child" && first.to_string() == "claude-code:a" && first_anchor == "claude-code:a-0" && second.to_string() == "claude-code:b" && second_anchor == "claude-code:b-0")
+        matches!(&selected.parents().issues[..], [ParentIssue::ConflictingParents { child, first, first_branch_point, second, second_branch_point }]
+        if child.to_string() == "claude-code:child" && first.to_string() == "claude-code:a" && first_branch_point == "claude-code:a-0" && second.to_string() == "claude-code:b" && second_branch_point == "claude-code:b-0")
     );
     assert_eq!(texts(&selected), ["own child"]);
 }
 
 #[test]
-fn continuation_and_resume_use_the_recorded_anchor_without_claiming_physical_copies() {
+fn continuation_and_resume_use_the_recorded_branch_point() {
     for kind in ["continuation", "resume"] {
         let dir = tempfile::tempdir().unwrap();
         let mut fixture = Fixture::new(dir.path()).unwrap();
-        session(&mut fixture, "p", &["first", "anchor", "uncopied tail"]);
+        session(
+            &mut fixture,
+            "p",
+            &["first", "branch_point", "uncopied tail"],
+        );
         session(&mut fixture, "c", &["own"]);
         fixture
             .link("claude-code:p", "claude-code:c", kind, None)
@@ -400,7 +404,7 @@ fn continuation_and_resume_use_the_recorded_anchor_without_claiming_physical_cop
                 .select_messages(&crate::fixture::writer::sid("c"), true)
                 .unwrap();
             selected.require_complete().unwrap();
-            assert_eq!(texts(&selected), ["first", "anchor", "own"]);
+            assert_eq!(texts(&selected), ["first", "branch_point", "own"]);
         }
         conn.execute(
             "UPDATE link SET branch_point=NULL WHERE child_id='claude-code:c'",
@@ -413,7 +417,10 @@ fn continuation_and_resume_use_the_recorded_anchor_without_claiming_physical_cop
             .unwrap();
         assert!(matches!(
             selected.parents().issues.as_slice(),
-            [ParentIssue::MissingAnchor { anchor: None, .. }]
+            [ParentIssue::MissingBranchPoint {
+                branch_point: None,
+                ..
+            }]
         ));
         assert_eq!(texts(&selected), ["own"]);
     }

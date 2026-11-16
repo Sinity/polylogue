@@ -9,7 +9,7 @@ fn conn() -> Connection {
         .unwrap();
     conn
 }
-fn native(at: &str, quality: TimeQuality, until: Option<&str>) -> Vec<u8> {
+fn stored_time(at: &str, quality: TimeQuality, until: Option<&str>) -> Vec<u8> {
     let at = Timestamp::parse_rfc3339(at).unwrap();
     crate::encoding::time_bytes(
         Some(at),
@@ -43,7 +43,7 @@ fn attribute(conn: &Connection, bytes: &[u8], name: &str) -> Option<String> {
     .unwrap()
 }
 fn before(conn: &Connection, bytes: &[u8], at: &str) -> Option<bool> {
-    let predicate = NativePredicate::Compare {
+    let predicate = TimePredicate::Compare {
         condition: query_language::time::TimeCondition::Before {
             at: at.parse().unwrap(),
         },
@@ -60,14 +60,14 @@ fn before(conn: &Connection, bytes: &[u8], at: &str) -> Option<bool> {
 #[test]
 fn latest_activity_keeps_the_possible_maximum_of_whole_periods() {
     let conn = conn();
-    let coarse = native(
+    let coarse = stored_time(
         "1970-01-01T00:00:00Z",
         TimeQuality::Intrinsic,
         Some("1970-01-01T00:00:10Z"),
     );
-    let point = native("1970-01-01T00:00:05Z", TimeQuality::Intrinsic, None);
+    let point = stored_time("1970-01-01T00:00:05Z", TimeQuality::Intrinsic, None);
     let bytes = last(&conn, &[coarse.clone(), point.clone()]);
-    let value = evidence(Some(&bytes), "latest").unwrap();
+    let value = source_time(Some(&bytes), "latest").unwrap();
     assert_eq!(value.at.unwrap().to_string(), "1970-01-01T00:00:05Z");
     assert_eq!(value.until.unwrap().to_string(), "1970-01-01T00:00:10Z");
     assert_eq!(
@@ -83,19 +83,19 @@ fn latest_activity_keeps_the_possible_maximum_of_whole_periods() {
 #[test]
 fn latest_activity_does_not_invent_a_single_source_quality() {
     let conn = conn();
-    let captured = native(
+    let captured = stored_time(
         "1970-01-01T00:00:00Z",
         TimeQuality::Captured,
         Some("1970-01-01T00:00:10Z"),
     );
-    let intrinsic = native("1970-01-01T00:00:05Z", TimeQuality::Intrinsic, None);
+    let intrinsic = stored_time("1970-01-01T00:00:05Z", TimeQuality::Intrinsic, None);
     let mixed = last(&conn, &[captured, intrinsic.clone()]);
     assert_eq!(attribute(&conn, &mixed, "quality"), None);
     assert_eq!(
         attribute(&conn, &mixed, "precision").as_deref(),
         Some("bounded")
     );
-    let older = native("1970-01-01T00:00:01Z", TimeQuality::Captured, None);
+    let older = stored_time("1970-01-01T00:00:01Z", TimeQuality::Captured, None);
     let precise = last(&conn, &[older, intrinsic]);
     assert_eq!(
         attribute(&conn, &precise, "quality").as_deref(),
@@ -115,11 +115,11 @@ fn latest_activity_cannot_resolve_a_source_calendar_period_in_the_reader_zone() 
         TimeEvidence::intrinsic(Precision::Day),
     )
     .unwrap();
-    let point = native("1970-01-01T00:00:05Z", TimeQuality::Intrinsic, None);
+    let point = stored_time("1970-01-01T00:00:05Z", TimeQuality::Intrinsic, None);
     let bytes = last(&conn, &[unresolved, point]);
     assert_eq!(attribute(&conn, &bytes, "precision"), None);
     assert_eq!(before(&conn, &bytes, "1970-01-02T00:00:00Z"), None);
-    let known = serde_json::to_string(&NativePredicate::Known).unwrap();
+    let known = serde_json::to_string(&TimePredicate::Known).unwrap();
     assert!(
         conn.query_row(
             "SELECT pl_time_test(?1,'latest',?2)",
@@ -155,15 +155,15 @@ fn distance(conn: &Connection, a: &[u8], b: &[u8], point: &str) -> f64 {
 }
 
 #[test]
-fn temporal_order_uses_whole_half_open_periods_and_the_outer_anchor() {
+fn temporal_order_uses_half_open_periods_and_outer_start() {
     let conn = conn();
-    let day = native(
+    let day = stored_time(
         "1970-01-01T00:00:00Z",
         TimeQuality::Intrinsic,
         Some("1970-01-01T00:00:10Z"),
     );
-    let point = native("1970-01-01T00:00:05Z", TimeQuality::Intrinsic, None);
-    let late = native("1970-01-01T00:00:15Z", TimeQuality::Intrinsic, None);
+    let point = stored_time("1970-01-01T00:00:05Z", TimeQuality::Intrinsic, None);
+    let late = stored_time("1970-01-01T00:00:15Z", TimeQuality::Intrinsic, None);
     assert_eq!(
         relates(&conn, &day, &point, "before", None, "when"),
         Some(false)
@@ -192,7 +192,7 @@ fn temporal_order_uses_whole_half_open_periods_and_the_outer_anchor() {
     assert_eq!(distance(&conn, &day, &late, "start"), 15.0);
     assert_eq!(distance(&conn, &day, &late, "end"), 5.0);
     assert_eq!(distance(&conn, &late, &day, "end"), -15.0);
-    let start = native("1970-01-01T00:00:00Z", TimeQuality::Intrinsic, None);
+    let start = stored_time("1970-01-01T00:00:00Z", TimeQuality::Intrinsic, None);
     assert_eq!(
         relates(&conn, &day, &start, "containing", None, "when"),
         Some(true)
@@ -210,7 +210,7 @@ fn temporal_order_uses_whole_half_open_periods_and_the_outer_anchor() {
         Some(false)
     );
     // The span's end is excluded from membership.
-    let end = native("1970-01-01T00:00:10Z", TimeQuality::Intrinsic, None);
+    let end = stored_time("1970-01-01T00:00:10Z", TimeQuality::Intrinsic, None);
     assert_eq!(
         relates(&conn, &day, &end, "containing", None, "when"),
         Some(false)
@@ -224,12 +224,12 @@ fn temporal_order_uses_whole_half_open_periods_and_the_outer_anchor() {
 #[test]
 fn temporal_order_preserves_nanoseconds_at_large_absolute_timestamps() {
     let conn = conn();
-    let first = native(
+    let first = stored_time(
         "9999-12-30T00:00:00.000000001Z",
         TimeQuality::Operator,
         None,
     );
-    let next = native(
+    let next = stored_time(
         "9999-12-30T00:00:00.000000002Z",
         TimeQuality::Operator,
         None,
@@ -250,7 +250,7 @@ fn temporal_order_preserves_nanoseconds_at_large_absolute_timestamps() {
 fn temporal_order_keeps_unknown_separate_from_a_known_nonmatch() {
     let conn = conn();
     let unknown = crate::encoding::time_bytes(None, TimeEvidence::UNKNOWN).unwrap();
-    let point = native("1970-01-01T00:00:05Z", TimeQuality::Intrinsic, None);
+    let point = stored_time("1970-01-01T00:00:05Z", TimeQuality::Intrinsic, None);
     assert_eq!(
         relates(&conn, &unknown, &point, "before", None, "when"),
         None
@@ -270,7 +270,7 @@ fn temporal_order_keeps_unknown_separate_from_a_known_nonmatch() {
 }
 
 #[test]
-fn session_last_activity_field_reads_real_message_evidence() {
+fn session_last_activity_reads_real_message_times() {
     use crate::fixture::{Fixture, MessageFacts, SessionFacts};
     use crate::query::fields::{self, Aliases};
     use crate::query::units::Unit;
@@ -313,7 +313,7 @@ fn session_last_activity_field_reads_real_message_evidence() {
         "UPDATE message SET at_time=?2 WHERE pk=?1",
         params![
             coarse,
-            native(
+            stored_time(
                 "1970-01-01T00:00:00Z",
                 TimeQuality::Intrinsic,
                 Some("1970-01-01T00:00:10Z")
@@ -321,7 +321,7 @@ fn session_last_activity_field_reads_real_message_evidence() {
         ],
     )
     .unwrap();
-    let field = fields::native_time(Unit::Sessions, "last_active", &Aliases::plain()).unwrap();
+    let field = fields::stored_time(Unit::Sessions, "last_active", &Aliases::plain()).unwrap();
     let sql = format!(
         "SELECT pl_time_attribute({}, '{}', 'precision'), pl_time_order({}, '{}', ?1, 'tuple', 'before', NULL, 'when') FROM session s WHERE s.id='claude-code:clock'",
         field.bytes,
@@ -329,7 +329,7 @@ fn session_last_activity_field_reads_real_message_evidence() {
         field.bytes,
         field.storage.code()
     );
-    let later = native("1970-01-01T00:00:08Z", TimeQuality::Intrinsic, None);
+    let later = stored_time("1970-01-01T00:00:08Z", TimeQuality::Intrinsic, None);
     let (precision, before): (Option<String>, Option<bool>) = conn
         .query_row(&sql, [later], |r| Ok((r.get(0)?, r.get(1)?)))
         .unwrap();
@@ -344,13 +344,13 @@ fn session_last_activity_field_reads_real_message_evidence() {
 #[test]
 fn nearest_distance_keys_preserve_nanoseconds_across_large_distances() {
     let conn = conn();
-    let origin = native("1970-01-01T00:00:00Z", TimeQuality::Intrinsic, None);
-    let first = native(
+    let origin = stored_time("1970-01-01T00:00:00Z", TimeQuality::Intrinsic, None);
+    let first = stored_time(
         "9999-12-30T00:00:00.000000001Z",
         TimeQuality::Intrinsic,
         None,
     );
-    let second = native(
+    let second = stored_time(
         "9999-12-30T00:00:00.000000002Z",
         TimeQuality::Intrinsic,
         None,
@@ -383,10 +383,10 @@ fn nearest_distance_keys_preserve_nanoseconds_across_large_distances() {
 }
 
 #[test]
-fn matched_occurrence_preserves_uncertainty_without_inventing_state_endpoints() {
+fn matched_occurrence_keeps_unknown_bounds_without_inventing_endpoints() {
     let conn = conn();
-    let outer = native("1970-01-01T00:00:05Z", TimeQuality::Intrinsic, None);
-    let inner = native(
+    let outer = stored_time("1970-01-01T00:00:05Z", TimeQuality::Intrinsic, None);
+    let inner = stored_time(
         "1970-01-01T00:00:00Z",
         TimeQuality::Intrinsic,
         Some("1970-01-01T00:00:10Z"),

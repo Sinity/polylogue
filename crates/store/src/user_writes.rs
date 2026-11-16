@@ -14,7 +14,8 @@ use polylogue_model::user::{UserOutcome, UserRequest, UserWrite};
 
 /// Product catalog captured by trusted acceptance, outside the serialized
 /// request and its retry identity. Saved/kept bindings come from the snapshot.
-/// Authored-origin and execution eligibility remain separate from this catalog.
+/// Who authored a request and whether its actions may run on this host stay
+/// separate from this catalog.
 #[derive(Debug, Clone)]
 pub struct PreparationContext {
     bindings: polylogue_query::Bindings,
@@ -37,10 +38,10 @@ pub(crate) struct Preparation<'a> {
     pub context: Option<&'a PreparationContext>,
     pub pending: Option<&'a dyn crate::primary::Sinex>,
     pub provisional: Option<&'a mut crate::selection::ProvisionalQueries>,
-    pub owner: Option<polylogue_model::settings::Owner>,
+    pub mode: Option<polylogue_model::settings::SettingMode>,
 }
 impl<'a> Preparation<'a> {
-    pub(crate) fn native(
+    pub(crate) fn plain(
         context: Option<&'a PreparationContext>,
         pending: Option<&'a dyn crate::primary::Sinex>,
     ) -> Self {
@@ -48,20 +49,20 @@ impl<'a> Preparation<'a> {
             context,
             pending,
             provisional: None,
-            owner: None,
+            mode: None,
         }
     }
     pub(crate) fn preflight(
         context: Option<&'a PreparationContext>,
         pending: Option<&'a dyn crate::primary::Sinex>,
-        owner: polylogue_model::settings::Owner,
+        mode: polylogue_model::settings::SettingMode,
         provisional: &'a mut crate::selection::ProvisionalQueries,
     ) -> Self {
         Self {
             context,
             pending,
             provisional: Some(provisional),
-            owner: Some(owner),
+            mode: Some(mode),
         }
     }
 }
@@ -75,7 +76,7 @@ pub fn new_request_id() -> String {
 /// archive's write counter for this transaction.
 #[cfg(test)]
 pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<UserOutcome> {
-    apply_resolving(tx, tx, r, seq, Preparation::native(None, None))
+    apply_resolving(tx, tx, r, seq, Preparation::plain(None, None))
 }
 
 pub(crate) fn apply_resolving(
@@ -108,7 +109,7 @@ pub(crate) fn apply_resolving(
 }
 
 /// These deliveries already carry their complete body. They need no authored
-/// snapshot, target selection or post-write readback to freeze their effect.
+/// snapshot, target selection or post-write readback to fix their effect.
 pub(crate) fn prepare_delivery(
     r: &UserRequest,
 ) -> Option<polylogue_model::authored::PreparedRequest> {
@@ -120,7 +121,7 @@ pub(crate) fn prepare_delivery(
         _ => return None,
     };
     // Delivery rows and their receipts have always stored Unix milliseconds;
-    // the original request retains its full timestamp and retry identity.
+    // the original request keeps its full timestamp and retry identity.
     let at = polylogue_model::Timestamp::from_unix_ms(r.at.unix_ms())
         .expect("a stored millisecond timestamp remains representable");
     let events = if matches!(r.write, UserWrite::DeliveredAdvice(_)) {
@@ -190,11 +191,11 @@ pub(crate) fn apply_using(
         ],
     )?;
     let at = r.at.unix_ms();
-    let owner = preparation.owner.unwrap_or({
+    let mode = preparation.mode.unwrap_or({
         if matches!(source, crate::source::Source::Cache) {
-            polylogue_model::settings::Owner::Primary
+            polylogue_model::settings::SettingMode::Primary
         } else {
-            polylogue_model::settings::Owner::Standalone
+            polylogue_model::settings::SettingMode::Standalone
         }
     });
     let hash = |reference: &polylogue_model::Reference| match reference {
@@ -225,7 +226,7 @@ pub(crate) fn apply_using(
         counter: seq,
         hash: &hash,
         quote: &quote,
-        owner,
+        mode,
     };
     let outcome = match &r.write {
         UserWrite::Assert { assertions } => {
@@ -308,7 +309,7 @@ pub(crate) fn apply_using(
                     "{name:?} cannot follow `query:`; use letters, digits, `_`, `-` and `.`"
                 )));
             }
-            let value = resolve_saved(crate::assertions::SavedInput::Native {
+            let value = resolve_saved(crate::assertions::SavedInput::Text {
                 text,
                 denominator: denominator.as_deref(),
             })?;
@@ -455,7 +456,7 @@ pub(crate) fn apply_using(
             value,
             machine,
         } => {
-            let value = polylogue_model::settings::parse(key, value, owner)
+            let value = polylogue_model::settings::parse(key, value, mode)
                 .map_err(|error| StoreError::Invalid(error.to_string()))?;
             let statement = polylogue_model::assertion::NewAssertion {
                 kind: polylogue_model::assertion::AssertionKind::Setting,

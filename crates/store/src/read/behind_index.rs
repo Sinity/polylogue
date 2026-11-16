@@ -12,7 +12,7 @@ pub struct BehindChain {
     pub source: StoredSource,
     pub progress: ChainProgress,
     pub reading_changed: bool,
-    /// Native facts from a previous interpretation remain even without a local index.
+    /// Rows parsed by a previous reading remain even without a local index.
     pub previous_reading: bool,
     pub stopped_attempt: Option<polylogue_model::batch::StoppedAttempt>,
     pub stopped_at_length: bool,
@@ -23,17 +23,17 @@ pub struct StoredSource {
     pub format: String,
     /// The path the parser reads the bytes as, never a file to open.
     pub path: Option<String>,
-    /// Exact native spelling of the same observation, when recorded.
+    /// The path's raw bytes from the same observation, when recorded.
     /// This is a parser hint, never permission to reopen a source file.
     pub path_bytes: Option<Vec<u8>>,
 }
 
 /// Whether chains whose refusal or failure is recorded at their stored length
-/// count as behind. A recorded attempt stays settled until its actual program
-/// or parser settings change; missing historical identity remains unrecorded.
+/// count as behind. A recorded attempt stays finished until its program or
+/// parser settings change; an older record without that identity stays unrecorded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoppedChains {
-    Settled,
+    Finished,
     ForAttempt(polylogue_model::batch::StoppedAttempt),
 }
 
@@ -99,7 +99,7 @@ fn planning_sql(selected: bool, chains: RevisionChains) -> String {
     // would evaluate it again for each progress predicate and result column.
     let chain_rows = match chains {
         RevisionChains::All => "SELECT input,chain,max(length) AS length FROM revisions GROUP BY input,chain",
-        // Retained histories may resume an earlier chain with a shorter revision.
+        // Kept histories may resume an earlier chain with a shorter revision.
         // Its planned length remains the maximum, not the latest revision length.
         RevisionChains::Newest => "SELECT s.input,l.chain,
             (SELECT max(r.length) FROM revisions r WHERE r.input=s.input AND r.chain=l.chain) AS length
@@ -121,7 +121,7 @@ fn planning_sql(selected: bool, chains: RevisionChains) -> String {
 }
 
 impl Reader<'_> {
-    /// Every chain whose index is behind its stored bytes. Waiting at the exact
+    /// Every chain whose index is behind its stored bytes. Waiting at the
     /// recorded source length is current for that reading version; a refusal
     /// or failure recorded there is too, unless `stopped` asks for it again.
     /// `selected=None` visits all inputs; an empty selection visits none.

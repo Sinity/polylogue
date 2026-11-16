@@ -109,7 +109,7 @@ fn appends_cost_only_their_bytes_and_a_partial_line_waits() {
 }
 
 #[test]
-fn after_a_restart_only_the_changed_input_resumes_its_durable_checkpoint() {
+fn after_restart_only_the_changed_input_resumes() {
     let w = ClaudeHome::new();
     let first = user("u1", "s1", "one");
     w.append("s1.jsonl", &first);
@@ -131,7 +131,7 @@ fn after_a_restart_only_the_changed_input_resumes_its_durable_checkpoint() {
             .parser_checkpoint(&known.input_id, chain, &version)
             .unwrap()
             .unwrap();
-        assert!(stored.checkpoint.is_some(), "the continuation is durable");
+        assert!(stored.checkpoint.is_some(), "the continuation is saved");
         (known.input_id, chain, stored)
     };
     let (before_changed, before_unchanged) = {
@@ -152,11 +152,11 @@ fn after_a_restart_only_the_changed_input_resumes_its_durable_checkpoint() {
     assert_eq!(checkpoint(&e, &w.file("s1.jsonl")), before_changed);
     assert_eq!(checkpoint(&e, &w.file("s2.jsonl")), before_unchanged);
     let old_message = polylogue_model::MessageId::parse("claude-code:u1").unwrap();
-    let original_admission = w
+    let original_commit = w
         .reads()
         .reader()
         .unwrap()
-        .message_admission(&old_message)
+        .message_commit(&old_message)
         .unwrap()
         .unwrap();
     let line = user("u2", "s1", "two");
@@ -181,9 +181,9 @@ fn after_a_restart_only_the_changed_input_resumes_its_durable_checkpoint() {
         w.reads()
             .reader()
             .unwrap()
-            .message_admission(&old_message)
+            .message_commit(&old_message)
             .unwrap(),
-        Some(original_admission)
+        Some(original_commit)
     );
     assert_eq!(w.texts("s1"), ["one", "two"]);
     assert_eq!(w.texts("s2"), ["other"]);

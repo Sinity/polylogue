@@ -5,7 +5,7 @@
 //! (`$XDG_STATE_HOME/polylogue/token.json`, Google's authorized-user format).
 //!
 //! Each prompt has one immutable pending revision. Its bytes are published at
-//! `<fileId>.json` until the engine acknowledges exact archive storage. Only
+//! `<fileId>.json` until the engine acknowledges that the archive stored them. Only
 //! then does `.revisions.json` advance and another revision replace that path.
 //! Hidden pending bodies survive restart; their cleanup leaves the watched
 //! prompt in place. `files.json` holds the folder listing.
@@ -200,7 +200,7 @@ impl Drive {
             };
             let url = format!("{rev_url}/{}", next.id);
             let bytes = get(&url, &[("alt", "media")])?;
-            let revision = self.retain_revision(
+            let revision = self.keep_revision(
                 id,
                 Some(Accepted {
                     revision: next.id.clone(),
@@ -258,14 +258,14 @@ impl Drive {
                 Err(invalid("unsupported Drive revision state version").into())
             }
             RevisionState::Downloaded(downloaded) => {
-                // The predecessor cursor acknowledged downloads, not storage.
-                // Retain its last body before assigning the new meaning.
+                // The Python Polylogue cursor acknowledged downloads, not storage.
+                // Keep its last body before assigning the new meaning.
                 for (id, _) in downloaded {
                     match std::fs::read(self.prompt_path(&id)?) {
                         Ok(bytes) => {
                             // Its cursor and body were separate writes, so their
                             // revision pairing cannot be assumed after a crash.
-                            self.retain_revision(&id, None, &bytes)?;
+                            self.keep_revision(&id, None, &bytes)?;
                         }
                         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                         Err(error) => return Err(error.into()),
@@ -278,7 +278,7 @@ impl Drive {
         }
     }
 
-    fn retain_revision(
+    fn keep_revision(
         &self,
         id: &str,
         revision: Option<Accepted>,
@@ -401,9 +401,9 @@ impl Drive {
         Ok(self.spool.join(format!("{id}.json")))
     }
 
-    /// Advances only after the archive accepts the exact pending bytes. The
-    /// watched path remains present when private pending resources are retired.
-    pub fn settle(
+    /// Advances only after the archive accepts the pending bytes. The
+    /// watched path remains present when private pending resources are removed.
+    pub fn advance(
         &self,
         accepted: &crate::origin::CollectorAcceptance<'_>,
     ) -> Result<(), DriveError> {
@@ -559,13 +559,13 @@ fn write_if_changed(path: &Path, bytes: &[u8]) -> Result<(), DriveError> {
 /// authorized in `state_dir`, and the origin's spool.
 pub const COLLECTOR: crate::origin::Collector = crate::origin::Collector {
     background: false,
-    settle: Some(|paths, accepted| {
+    advance: Some(|paths, accepted| {
         Drive {
             endpoints: Endpoints::default(),
             token_path: paths.state_dir.join("token.json"),
             spool: paths.spool.to_path_buf(),
         }
-        .settle(accepted)
+        .advance(accepted)
         .map_err(|e| e.to_string())
     }),
     setting: Some(SETTING),

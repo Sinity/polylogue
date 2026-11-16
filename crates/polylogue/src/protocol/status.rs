@@ -30,7 +30,7 @@ pub struct Answer {
     pub running: Running,
     pub warm: Warm,
     pub mode: Mode,
-    pub freshness: polylogue_model::currency::ReadFreshness,
+    pub freshness: polylogue_model::freshness::ReadFreshness,
     #[cfg(feature = "sinex")]
     pub primary: Option<Primary>,
 }

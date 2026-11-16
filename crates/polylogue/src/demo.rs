@@ -1,4 +1,4 @@
-//! A guided tour through ordinary commands over a separate Morrow archive.
+//! A guided tour through everyday commands over a separate Morrow archive.
 
 mod files;
 

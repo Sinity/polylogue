@@ -8,7 +8,7 @@ use std::sync::Arc;
 fn append(archive: &Archive, writer: &Writer, input: &str, bytes: &[u8]) -> Result<StoredInput> {
     let (new_blob, file) = archive.prepare_blob(bytes)?;
     let batch = Batch {
-        required_disposition: None,
+        required_outcome: None,
         input: InputKey {
             id: input.into(),
             format: "test-bytes".into(),

@@ -12,14 +12,14 @@ fn manifest() -> Manifest {
             index: 2,
             archive: 3,
         },
-        freshness: crate::currency::ReadFreshness {
-            local: crate::currency::ReadCompleteness {
-                search: crate::currency::CompletenessDimension::Incomplete(vec![
-                    crate::currency::CompletenessReason::SearchPending,
+        freshness: crate::freshness::ReadFreshness {
+            local: crate::freshness::ReadCompleteness {
+                search: crate::freshness::CompletenessDimension::Incomplete(vec![
+                    crate::freshness::CompletenessReason::SearchPending,
                 ]),
-                ..crate::currency::ReadCompleteness::empty()
+                ..crate::freshness::ReadCompleteness::empty()
             },
-            owner: crate::currency::IndexCurrency::Standalone,
+            sinex: crate::freshness::IndexFreshness::Standalone,
         },
         counts: Counts::default(),
         flags: Flags {
@@ -83,8 +83,8 @@ fn inventory_names_are_relative_and_cannot_escape_or_alias_members() {
 }
 
 #[test]
-fn event_identity_keeps_every_claim_and_validates_exact_reference_and_time() {
-    let claim = |input: &str| SourceClaim {
+fn event_identity_keeps_every_stated_source() {
+    let stated = |input: &str| SourceClaim {
         input: input.into(),
         source: "codex".into(),
         source_chain: 1,
@@ -93,10 +93,10 @@ fn event_identity_keeps_every_claim_and_validates_exact_reference_and_time() {
     };
     let mut identity = ImportedEventIdentity {
         id: "event-id".into(),
-        sources: vec![claim("b"), claim("a"), claim("b")],
+        sources: vec![stated("b"), stated("a"), stated("b")],
     };
     identity.canonicalize();
-    assert_eq!(identity.sources, vec![claim("a"), claim("b")]);
+    assert_eq!(identity.sources, vec![stated("a"), stated("b")]);
     let event: Event = serde_json::from_value(
         serde_json::json!({ "kind": "quota_report", "data": {"remaining": 7} }),
     )
@@ -146,7 +146,7 @@ fn message_record() -> MessageRecord {
 }
 
 #[test]
-fn sparse_message_round_trip_keeps_original_block_refs_and_source_identity() {
+fn sparse_message_round_trip_keeps_block_positions() {
     let full = message_record();
     let mut partial = full.clone();
     partial.message.blocks.remove(0);
@@ -169,42 +169,49 @@ fn compatible_sparse_observations_union_without_downgrading_full_content() {
     let mut second = full.clone();
     second.message.blocks.remove(0);
     second.block_ordinals.remove(0);
-    let (message, projection) = first
-        .projection()
-        .merge(&first.message, &second.projection(), &second.message)
+    let (message, block_selection) = first
+        .block_selection()
+        .merge(&first.message, &second.block_selection(), &second.message)
         .unwrap()
         .unwrap();
     assert_eq!(message, full.message);
-    assert_eq!(projection, full.projection());
+    assert_eq!(block_selection, full.block_selection());
     let merged = full
-        .projection()
-        .merge(&full.message, &first.projection(), &first.message)
+        .block_selection()
+        .merge(&full.message, &first.block_selection(), &first.message)
         .unwrap()
         .unwrap();
-    assert_eq!(merged, (full.message.clone(), full.projection()));
-    let repeated = projection
-        .merge(&message, &projection, &message)
+    assert_eq!(merged, (full.message.clone(), full.block_selection()));
+    let repeated = block_selection
+        .merge(&message, &block_selection, &message)
         .unwrap()
         .unwrap();
-    assert_eq!(repeated, (message, projection));
+    assert_eq!(repeated, (message, block_selection));
 }
 
 #[test]
-fn overlapping_conflicting_content_is_not_equal_or_an_implicit_new_version() {
+fn conflicting_overlap_is_neither_equal_nor_a_new_version() {
     let full = message_record();
     let mut conflict = full.clone();
     conflict.message.blocks[0] = crate::Block::Text {
         text: "different".into(),
     };
     assert_eq!(
-        full.projection()
-            .merge(&full.message, &conflict.projection(), &conflict.message),
-        Err(BundleError::ProjectionConflict)
+        full.block_selection().merge(
+            &full.message,
+            &conflict.block_selection(),
+            &conflict.message
+        ),
+        Err(BundleError::BlockSelectionConflict)
     );
     conflict.source_version = conflict.message.content_hash().unwrap();
     assert_eq!(
-        full.projection()
-            .merge(&full.message, &conflict.projection(), &conflict.message)
+        full.block_selection()
+            .merge(
+                &full.message,
+                &conflict.block_selection(),
+                &conflict.message
+            )
             .unwrap(),
         None
     );
@@ -215,7 +222,7 @@ fn overlapping_conflicting_content_is_not_equal_or_an_implicit_new_version() {
 
 #[test]
 fn current_bundle_refuses_unknown_outer_record_fields() {
-    let malformed = include_str!("tests/extra-envelope-field.json");
+    let malformed = include_str!("tests/extra-wrapper-field.json");
     let mut valid: serde_json::Value = serde_json::from_str(malformed).unwrap();
     valid.as_object_mut().unwrap().remove("future");
     assert!(serde_json::from_value::<Record>(valid).is_ok());
@@ -223,7 +230,7 @@ fn current_bundle_refuses_unknown_outer_record_fields() {
 }
 
 #[test]
-fn presentation_transfer_cannot_carry_an_omitted_canonical_body() {
+fn presentation_transfer_cannot_carry_an_omitted_body() {
     use crate::read::ReadRecord;
     let record: ReadRecord = serde_json::from_str(r#"{"kind":"presentation","parts":[]}"#).unwrap();
     assert!(record.record().is_none());
@@ -244,9 +251,9 @@ fn presentation_transfer_cannot_carry_an_omitted_canonical_body() {
 }
 
 #[test]
-fn canonical_transfer_retains_its_typed_record_after_round_trip() {
+fn original_transfer_keeps_its_typed_record() {
     use crate::read::ReadRecord;
-    let transfer = ReadRecord::Canonical {
+    let transfer = ReadRecord::Original {
         record: Box::new(Record::Message(Box::new(message_record()))),
         parts: vec![],
     };
@@ -257,15 +264,15 @@ fn canonical_transfer_retains_its_typed_record_after_round_trip() {
 }
 
 #[test]
-fn injected_field_evidence_keeps_message_identity_and_imports_as_declarations() {
+fn hook_injection_keeps_message_and_imports_as_declared() {
     let mut record = message_record();
     let hash = record.message.content_hash().unwrap();
-    let evidence = crate::injection::InjectionEvidence {
+    let injection = crate::injection::InjectionEvidence {
         message: record.message.id.clone(),
         source_version: record.source_version,
         block: 1,
         observed: Some(crate::injection::NativeHookField {
-            input: "native-input".into(),
+            input: "synthetic-input".into(),
             chain: 1,
             start: 3,
             end: 30,
@@ -273,32 +280,32 @@ fn injected_field_evidence_keeps_message_identity_and_imports_as_declarations() 
         }),
         declared: Vec::new(),
     };
-    record.injections.push(evidence.clone());
+    record.injections.push(injection.clone());
     record.validate().unwrap();
     assert_eq!(record.message.content_hash().unwrap(), hash);
     let decoded: MessageRecord =
         serde_json::from_slice(&serde_json::to_vec(&record).unwrap()).unwrap();
     assert_eq!(decoded, record);
-    let declared = evidence.clone().into_declared();
+    let declared = injection.clone().into_declared();
     assert_eq!(declared.observed, None);
-    assert_eq!(declared.declared, vec![evidence.observed.clone().unwrap()]);
+    assert_eq!(declared.declared, vec![injection.observed.clone().unwrap()]);
     assert_eq!(declared.clone().into_declared(), declared);
     for case in 0..5 {
         let mut invalid = record.clone();
-        let evidence = &mut invalid.injections[0];
+        let injection = &mut invalid.injections[0];
         match case {
-            0 => evidence.message = crate::MessageId::parse("codex:other").unwrap(),
-            1 => evidence.source_version = crate::BlobHash([7; 32]),
-            2 => evidence.block = 2,
-            3 => evidence.observed.as_mut().unwrap().pointer = "/bad~2escape".into(),
-            _ => evidence.observed.as_mut().unwrap().end = 3,
+            0 => injection.message = crate::MessageId::parse("codex:other").unwrap(),
+            1 => injection.source_version = crate::BlobHash([7; 32]),
+            2 => injection.block = 2,
+            3 => injection.observed.as_mut().unwrap().pointer = "/bad~2escape".into(),
+            _ => injection.observed.as_mut().unwrap().end = 3,
         }
         assert!(invalid.validate().is_err(), "case {case}");
     }
 }
 
 #[test]
-fn declared_blob_records_require_actual_blob_transfer() {
+fn declared_blob_records_require_blob_transfer() {
     let mut value: Manifest = serde_json::from_str(
         r#"{
         "format":"polylogue-bundle","version":3,
@@ -309,7 +316,7 @@ fn declared_blob_records_require_actual_blob_transfer() {
                   "authored":0,"assertions":0,"text_fragments":0,"variants":0,"variant_parts":0,"blobs":1},
         "flags":{"format":"jsonl","with_blobs":false,
                  "read":{"view":"transcript","inherited":false,"assertions":false}},
-        "enabled_variants":[],"author":"script:fixture","freshness":{"local":{"parsing":{"state":"complete"},"derivation":{"state":"complete"},"search":{"state":"complete"},"projection":{"state":"not_applicable"},"kept_chains":0,"raw_only_chains":0},"owner":{"mode":"standalone"}}
+        "enabled_variants":[],"author":"script:fixture","freshness":{"local":{"parsing":{"state":"complete"},"derivation":{"state":"complete"},"search":{"state":"complete"},"confirmed_stream":{"state":"not_applicable"},"kept_chains":0,"raw_only_chains":0},"sinex":{"mode":"standalone"}}
     }"#,
     )
     .unwrap();
@@ -323,7 +330,7 @@ fn declared_blob_records_require_actual_blob_transfer() {
 }
 
 #[test]
-fn an_assertion_record_carries_its_fact_without_an_invented_request() {
+fn assertion_record_carries_no_invented_request() {
     use crate::assertion::{
         AssertionFact, AssertionKind, AssertionLink, AssertionRecord, LinkRole,
     };

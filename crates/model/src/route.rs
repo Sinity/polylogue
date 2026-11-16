@@ -95,7 +95,7 @@ pub enum FieldGroup {
     /// The route that supplies them is the message's main route: its
     /// version is the stored reading.
     Content,
-    /// The provider time and its evidence.
+    /// The provider time and its accuracy.
     Time,
     Model,
     /// Token usage, the reported cost and the reported duration.

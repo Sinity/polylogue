@@ -19,7 +19,7 @@ impl shared_signals::Calendar for Calendar {
 }
 
 #[test]
-fn signal_state_is_an_ordinary_authored_request_held_in_the_spool() {
+fn signal_state_is_an_authored_request_held_in_the_spool() {
     let root = tempfile::tempdir().unwrap();
     let sinex = client(root.path());
     let checkpoint = Checkpoint {

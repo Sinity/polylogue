@@ -28,7 +28,7 @@ fn assertion_revision_patch_distinguishes_inherit_clear_and_replace() {
 }
 
 #[test]
-fn canonical_setting_target_is_not_inferred_from_predecessor_fields() {
+fn setting_target_ignores_python_polylogue_fields() {
     let mut fact: AssertionFact=serde_json::from_value(serde_json::json!({
         "id":"setting","root":"setting","kind":"setting","key":"signal.quiet_hours",
         "value":{"machine":null,"value":{"type":"quiet_hours","value":null},"predecessor":{"machine":"declared-host"}},
@@ -70,7 +70,7 @@ fn withdrawal_identity_has_no_text_binding() {
 }
 
 #[test]
-fn assertion_text_uses_declared_prose_fields_and_preserves_recorded_empty_strings() {
+fn assertion_text_keeps_declared_fields_and_empty_strings() {
     let cases = [
         (
             AssertionKind::Role,
@@ -132,7 +132,7 @@ fn assertion_text_uses_declared_prose_fields_and_preserves_recorded_empty_string
 }
 
 #[test]
-fn a_stored_fact_without_author_channel_or_machine_does_not_decode() {
+fn stored_assertion_needs_author_channel_and_machine() {
     let complete = serde_json::json!({
         "id":"exact","root":"exact","kind":"note","key":null,"value":"text",
         "author":"operator","via":"cli","machine":"host","created_at":"2026-01-01T00:00:00Z",

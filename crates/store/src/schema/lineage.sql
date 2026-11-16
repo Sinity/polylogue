@@ -1,4 +1,4 @@
--- Structural products share the canonical relation projection with all readers.
+-- Structural products share the one lineage view with all readers.
 CREATE TABLE session_lineage (
   session_pk INTEGER PRIMARY KEY REFERENCES session(pk) ON DELETE CASCADE,
   root TEXT,

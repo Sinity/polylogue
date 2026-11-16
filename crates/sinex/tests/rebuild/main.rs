@@ -19,18 +19,18 @@ use std::time::{Duration, Instant};
 
 // This shared fixture exposes restore phases exercised by the unit-level backup test.
 #[allow(dead_code)]
-#[path = "../support/native.rs"]
-mod native;
+#[path = "../support/real_sinex.rs"]
+mod real_sinex;
 mod source7;
 
 struct Running {
     config: Config,
     socket: PathBuf,
-    native: native::Native,
+    real_sinex: real_sinex::RealSinex,
 }
 
 impl Running {
-    fn evidence(&self, sinex: &Sinex, archive: &Archive) -> String {
+    fn diagnostics(&self, sinex: &Sinex, archive: &Archive) -> String {
         let local = ReadPool::open(archive).and_then(|pool| {
             let reader = pool.reader()?;
             reader.query(
@@ -52,7 +52,7 @@ impl Running {
                 .map(|capture| match capture.captured {
                     polylogue_store::primary::Capture::Input(input) => {
                         let current = (|| -> polylogue_store::Result<serde_json::Value> {
-                            let source = input.basis.as_ref().map(|basis| basis.source.clone()).or_else(|| {
+                            let source = input.basis.as_ref().map(|base| base.source.clone()).or_else(|| {
                                 let observation = input.rows.observation.as_ref()?;
                                 Some(polylogue_store::primary::SourceSelector {
                                     origin: input.rows.format.clone(), machine: observation.machine.clone(),
@@ -64,7 +64,7 @@ impl Running {
                             let reader = pool.reader()?;
                             let boundary = reader.source_boundary()?;
                             let (status, confirmed) = reader.source_observation(&source)?;
-                            let subject = boundary.as_ref().map(|cut| reader.source_subject_at(cut, &input.rows.input)).transpose()?.flatten();
+                            let subject = boundary.as_ref().map(|position| reader.source_subject_at(position, &input.rows.input)).transpose()?.flatten();
                             Ok(serde_json::json!({
                                 "status":status,"boundary":boundary,"subject":subject,
                                 "confirmed_input":confirmed.as_ref().map(|value| &value.input),
@@ -107,36 +107,36 @@ impl Running {
         });
         let refused = ReadPool::open(archive).and_then(|pool| {
             pool.reader()?.query(
-                "SELECT r.event,r.kind,r.reason,r.unreadable_input,f.state,f.product IS NULL AS unreadable FROM primary_refused r LEFT JOIN primary_fact f ON f.event=r.event ORDER BY r.event", &[],
+                "SELECT r.event,r.kind,r.reason,r.unreadable_input,f.state,f.product IS NULL AS unreadable FROM primary_refused r LEFT JOIN confirmed_event f ON f.event=r.event ORDER BY r.event", &[],
             )
         });
         format!(
-            "producer: {:?}; local source heads: {sources:?}; staged positions: {staged:?}; local refused facts: {refused:?}; local replay: {local:?}; pending capture metadata: {pending:?}; first native refusals: {}; latest native receipts: {}; native event counts: {}",
+            "producer: {:?}; local sources: {sources:?}; staged positions: {staged:?}; local refused events: {refused:?}; local replay: {local:?}; pending capture metadata: {pending:?}; first Sinex refusals: {}; latest Sinex acknowledgments: {}; Sinex event counts: {}",
             sinex.status(),
-            self.native.sql("SELECT frame,refusal FROM core.ingress_frames WHERE producer='polylogue' AND refusal IS NOT NULL ORDER BY number LIMIT 8"),
-            self.native.sql("SELECT number,frame,commit_seq,admitted,outcome,refusal FROM core.ingress_frames WHERE producer='polylogue' ORDER BY number DESC LIMIT 8"),
-            self.native.sql("SELECT event_type,kind_version,source,source_version,source_fingerprint,count(*) FROM core.events WHERE producer_family='polylogue' GROUP BY event_type,kind_version,source,source_version,source_fingerprint ORDER BY event_type,kind_version"),
+            self.real_sinex.sql("SELECT frame,refusal FROM core.ingress_frames WHERE producer='polylogue' AND refusal IS NOT NULL ORDER BY number LIMIT 8"),
+            self.real_sinex.sql("SELECT number,frame,commit_seq,admitted,outcome,refusal FROM core.ingress_frames WHERE producer='polylogue' ORDER BY number DESC LIMIT 8"),
+            self.real_sinex.sql("SELECT event_type,kind_version,source,source_version,source_fingerprint,count(*) FROM core.events WHERE producer_family='polylogue' GROUP BY event_type,kind_version,source,source_version,source_fingerprint ORDER BY event_type,kind_version"),
         )
     }
 }
 
 fn sinex(dir: &Path) -> Running {
-    let native = native::Native::start(
+    let real_sinex = real_sinex::RealSinex::start(
         dir,
         vec![serde_json::to_value(polylogue_sinex::kinds::source_declaration()).unwrap()],
     );
     Running {
         config: Config {
             mode: Mode::Primary,
-            nats: native.nats.url().into(),
+            nats: real_sinex.nats.url().into(),
             password_file: None,
             subject_root: "rebuild".into(),
             producer: "polylogue".into(),
-            store: native.store.clone(),
+            store: real_sinex.store.clone(),
             upload_root: None,
         },
-        socket: native.socket.clone(),
-        native,
+        socket: real_sinex.socket.clone(),
+        real_sinex,
     }
 }
 
@@ -180,9 +180,9 @@ fn confirm_capture(
     loop {
         assert!(
             started.elapsed() < Duration::from_secs(120),
-            "native capture/replay did not reach confirmed application: last pass {last_pass}; {}; {}",
+            "Sinex capture/replay did not reach confirmed application: last pass {last_pass}; {}; {}",
             failure(),
-            running.evidence(sinex, archive)
+            running.diagnostics(sinex, archive)
         );
         let result =
             (|| -> Result<(bool, polylogue_engine::Pass), polylogue_engine::EngineError> {
@@ -191,7 +191,7 @@ fn confirm_capture(
                 assert!(
                     pass.errors.is_empty(),
                     "{pass:?}; {}",
-                    running.evidence(sinex, archive)
+                    running.diagnostics(sinex, archive)
                 );
                 let done = complete(&pass)?;
                 scope.check()?;
@@ -210,13 +210,13 @@ fn confirm_capture(
                 true
             }
             Err(error) => panic!(
-                "native capture/replay failed: {error}; {}",
-                running.evidence(sinex, archive)
+                "Sinex capture/replay failed: {error}; {}",
+                running.diagnostics(sinex, archive)
             ),
         };
         let remaining = Duration::from_secs(120).saturating_sub(started.elapsed());
-        // Repeat-only ACKs need no new native or SQLite commit. Match the
-        // ordinary engine loop's retry interval; a failed reset also needs
+        // Repeat-only ACKs need no new Sinex or SQLite commit. Match the
+        // engine loop's retry interval; a failed reset also needs
         // its existing readiness tick while reads are fenced.
         let every = if interrupted {
             engine.config.live_every.min(Duration::from_millis(200))
@@ -228,9 +228,9 @@ fn confirm_capture(
             Ok(_) => {}
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             Err(error) => panic!(
-                "native capture/replay wait: {error}; last pass {last_pass}; {}; {}",
+                "Sinex capture/replay wait: {error}; last pass {last_pass}; {}; {}",
                 failure(),
-                running.evidence(sinex, archive)
+                running.diagnostics(sinex, archive)
             ),
         }
     }
@@ -257,12 +257,12 @@ fn build_on_sinex(example: &Morrow, home: &Path, sinex: &Arc<Sinex>, running: &R
         (&archive, sinex, running),
         |pass| {
             let applied = ReadPool::open(&archive)?.reader()?.confirmed_checkpoint()?;
-            let head = sinex.status().unwrap().owner_position;
-            Ok(!pass.capture_pending && head.is_some() && applied == head)
+            let latest = sinex.status().unwrap().sinex_position;
+            Ok(!pass.capture_pending && latest.is_some() && applied == latest)
         },
         String::new,
     );
-    let acquisitions = running.native.sql("SELECT frame,material_id FROM core.ingress_frames WHERE producer='polylogue' AND frame LIKE 'acquisition:%' ORDER BY frame");
+    let capture_frames = running.real_sinex.sql("SELECT frame,material_id FROM core.ingress_frames WHERE producer='polylogue' AND frame LIKE 'acquisition:%' ORDER BY frame");
     let repeated = confirm_capture(
         &mut engine,
         &commits,
@@ -274,12 +274,12 @@ fn build_on_sinex(example: &Morrow, home: &Path, sinex: &Arc<Sinex>, running: &R
     assert!(
         repeated.errors.is_empty() && !repeated.capture_pending,
         "an unchanged capture must already be confirmed: {repeated:?}; {}",
-        running.evidence(sinex, &archive)
+        running.diagnostics(sinex, &archive)
     );
     assert_eq!(
-        running.native.sql("SELECT frame,material_id FROM core.ingress_frames WHERE producer='polylogue' AND frame LIKE 'acquisition:%' ORDER BY frame"),
-        acquisitions,
-        "an unchanged capture keeps its original acquisition and material identities"
+        running.real_sinex.sql("SELECT frame,material_id FROM core.ingress_frames WHERE producer='polylogue' AND frame LIKE 'acquisition:%' ORDER BY frame"),
+        capture_frames,
+        "an unchanged capture keeps its original capture group and material identities"
     );
 }
 
@@ -394,7 +394,7 @@ fn answer_difference(
 
 /// Rows a Sinex query answers, asked over its API socket as a reader.
 fn sinex_rows(socket: &Path, query: &str) -> usize {
-    let value = native::request(
+    let value = real_sinex::request(
         socket,
         "read",
         serde_json::json!({ "method": "query", "query": query, "page": 1000 }),
@@ -405,9 +405,9 @@ fn sinex_rows(socket: &Path, query: &str) -> usize {
         .len()
 }
 
-/// Admit captured evidence through the public producer transport. Every event
-/// cites its exact record in the original synthetic JSONL material.
-fn captured_evidence(
+/// Sends captured events through the public producer transport for Sinex to
+/// admit. Every event cites its record in the original synthetic JSONL material.
+fn send_captured_events(
     running: &Running,
     frame: &str,
     rows: &[(sinex_model::KindRef, serde_json::Value)],
@@ -418,13 +418,16 @@ fn captured_evidence(
     let events = rows
         .iter()
         .map(|(kind, payload)| {
-            let anchor = bytes.len() as u64;
+            let offset = bytes.len() as u64;
             serde_json::to_writer(&mut bytes, payload).unwrap();
             bytes.push(b'\n');
             sinex_protocol::ProducerEvent {
                 kind: kind.clone(),
                 payload: payload.clone(),
-                location: Some(sinex_model::RecordLocation { material, anchor }),
+                location: Some(sinex_model::RecordLocation {
+                    material,
+                    anchor: offset,
+                }),
                 output_index: 0,
                 parents: vec![],
                 reading_order: None,
@@ -473,7 +476,7 @@ fn captured_evidence(
         failures: vec![],
     };
     tokio::runtime::Runtime::new().unwrap().block_on(async {
-        let client = async_nats::connect(running.native.nats.url())
+        let client = async_nats::connect(running.real_sinex.nats.url())
             .await
             .unwrap();
         let subjects = sinex_protocol::Subjects::new("rebuild");
@@ -491,7 +494,7 @@ fn captured_evidence(
         .await
         .unwrap();
         for frame in [&raw, &interpreted] {
-            let receipt = sinex_transport::producer::submit_frame(
+            let acknowledgment = sinex_transport::producer::submit_frame(
                 &client,
                 &subjects,
                 "evidence",
@@ -501,13 +504,13 @@ fn captured_evidence(
             )
             .await
             .unwrap();
-            assert_eq!(receipt.refusal(), None, "{receipt:?}");
+            assert_eq!(acknowledgment.refusal(), None, "{acknowledgment:?}");
         }
     });
 }
 
-fn native_rows(running: &Running, query: &str) -> Vec<serde_json::Value> {
-    let answer = native::request(
+fn sinex_query_rows(running: &Running, query: &str) -> Vec<serde_json::Value> {
+    let answer = real_sinex::request(
         &running.socket,
         "read",
         serde_json::json!({"method":"query","query":query}),
@@ -516,7 +519,7 @@ fn native_rows(running: &Running, query: &str) -> Vec<serde_json::Value> {
     answer["result"]["rows"].as_array().unwrap().clone()
 }
 
-fn exact_crossdomain_evidence(running: &Running) {
+fn check_cross_domain_links(running: &Running) {
     use serde_json::json;
     use sinex_model::EventPayload;
     use sinex_model::event_types::{machine::FileChanged, session::TerminalReport, work::WorkAct};
@@ -532,7 +535,7 @@ fn exact_crossdomain_evidence(running: &Running) {
         json!({"received_at":at,"change":"written","path":"/home/op/project/draft.txt",
         "path_hex":null,"to":null,"is_dir":false,"note":null})
     };
-    captured_evidence(
+    send_captured_events(
         running,
         "external-originals",
         &[
@@ -548,7 +551,7 @@ fn exact_crossdomain_evidence(running: &Running) {
             (FileChanged::declaration().kind, file()),
         ],
     );
-    let tools = native_rows(
+    let tools = sinex_query_rows(
         running,
         "events where event_type = polylogue.tool_call | fields id, key, source, event_type, material, offset, output, payload",
     );
@@ -563,13 +566,13 @@ fn exact_crossdomain_evidence(running: &Running) {
         .unwrap();
     assert_eq!(chosen["payload"]["session"], other["payload"]["session"]);
     assert_eq!(chosen["payload"]["message"], other["payload"]["message"]);
-    let mut external = native_rows(
+    let mut external = sinex_query_rows(
         running,
         "events where event_type = terminal.reported OR event_type = file.changed | fields id, key, source, event_type, material, offset, output, payload",
     );
     external.sort_by_key(|row| row["offset"].as_u64().unwrap());
     assert_eq!(external.len(), 4);
-    let evidence = |row: &serde_json::Value| {
+    let reference = |row: &serde_json::Value| {
         let record = row["key"].as_str().map(str::to_owned).unwrap_or_else(|| {
             format!(
                 "{}:{}:{}",
@@ -581,20 +584,20 @@ fn exact_crossdomain_evidence(running: &Running) {
         json!({"event":row["id"],"record":serde_json::to_string(&(&row["source"],&row["event_type"],record)).unwrap(),
             "event_type":row["event_type"],"source":row["source"]})
     };
-    // The association itself is explicitly captured. Ordinary terminal/file
+    // The association itself is explicitly captured. Plain terminal and file
     // watchers supply no causal edge from a provider's tool-call identity.
     let acts: Vec<_> = external.iter().enumerate().map(|(index, row)| {
         let tool = if index < 2 { chosen } else { other };
         (WorkAct::declaration().kind, json!({
             "act":format!("explicit-{index}"),"session":"claude-code:original-session",
-            "episode":null,"objective":null,"label":null,"label_source":evidence(tool),
+            "episode":null,"objective":null,"label":null,"label_source":reference(tool),
             "machine":"fixture-host","at":at,"at_evidence":{"quality":"captured","precision":"instant","until":null},
-            "ended_at":null,"evidence":evidence(row),"agency":"delegated",
+            "ended_at":null,"evidence":reference(row),"agency":"delegated",
             "action":"inspect","path":"/home/op/project/draft.txt"
         }))
     }).collect();
-    captured_evidence(running, "explicit-associations", &acts);
-    let linked = native_rows(
+    send_captured_events(running, "explicit-associations", &acts);
+    let linked = sinex_query_rows(
         running,
         "events where event_type = polylogue.tool_call AND payload.call_id = call-read-draft | fields text(id) as event_id, payload.call_id as call_id | join (events where event_type = work.act) on event_id = payload.label_source.event | fields call_id, match.payload.evidence.event as evidence | join (events where event_type = terminal.reported OR event_type = file.changed | fields id, text(id) as event_id, event_type) on evidence = event_id | fields call_id, evidence, match.id as id, match.event_type as event_type",
     );
@@ -643,9 +646,9 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
     home.append("original-session.jsonl", &original);
     let standalone = ClaudeHome::new();
     standalone.append("original-session.jsonl", &original);
-    let (mut ordinary, lock) = standalone.engine(1 << 20);
-    assert!(ordinary.run_pass().unwrap().errors.is_empty());
-    drop(ordinary);
+    let (mut standalone_engine, lock) = standalone.engine(1 << 20);
+    assert!(standalone_engine.run_pass().unwrap().errors.is_empty());
+    drop(standalone_engine);
     drop(lock);
     let session = SessionId::parse("claude-code:original-session").unwrap();
     let mut expected_messages = standalone
@@ -737,7 +740,7 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
     let initial = source_revision(&initial);
     assert_eq!(initial["number"], 1);
     assert_eq!(initial["chain"], 1);
-    exact_crossdomain_evidence(&running);
+    check_cross_domain_links(&running);
     let tails = [
         claude_user("user-2", "original-session", "The draft is available."),
         claude_assistant("assistant-2", "original-session", "Inspection finished."),
@@ -745,9 +748,9 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
     for tail in &tails {
         home.append("original-session.jsonl", tail);
         standalone.append("original-session.jsonl", tail);
-        let (mut ordinary, lock) = standalone.engine(1 << 20);
-        assert!(ordinary.run_pass().unwrap().errors.is_empty());
-        drop(ordinary);
+        let (mut standalone_engine, lock) = standalone.engine(1 << 20);
+        assert!(standalone_engine.run_pass().unwrap().errors.is_empty());
+        drop(standalone_engine);
         drop(lock);
         expected_messages = standalone
             .reads()
@@ -797,11 +800,11 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
     // JSON record citations exclude their newline delimiter.
     let end = original.len() as u64 - 1;
     assert_eq!(citation["end"].as_u64(), Some(end));
-    let admissions = reader.query(
-        "SELECT max(f.admitted) AS fact FROM primary_fact f JOIN input_ref i ON i.id=f.input JOIN message m ON m.input_pk=i.pk AND m.source_chain=f.chain WHERE m.id='claude-code:assistant-1' AND f.state='live' AND f.reference='message:' || m.id || ':' || m.source_start",
+    let fact_commits = reader.query(
+        "SELECT max(f.committed) AS fact FROM confirmed_event f JOIN input_ref i ON i.id=f.input JOIN message m ON m.input_pk=i.pk AND m.source_chain=f.chain WHERE m.id='claude-code:assistant-1' AND f.state='live' AND f.reference='message:' || m.id || ':' || m.source_start",
         &[],
     ).unwrap();
-    let fact = admissions[0]["fact"].as_u64().unwrap();
+    let fact = fact_commits[0]["fact"].as_u64().unwrap();
     let raw = reader
         .source_commit(
             citation["input"].as_str().unwrap(),
@@ -813,9 +816,7 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
     assert!(fact > raw);
     assert_eq!(
         reader
-            .message_admission(
-                &polylogue_model::MessageId::parse("claude-code:assistant-1").unwrap()
-            )
+            .message_commit(&polylogue_model::MessageId::parse("claude-code:assistant-1").unwrap())
             .unwrap(),
         Some(fact)
     );
@@ -840,8 +841,8 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
         ),
         1
     );
-    let native_tool_ids = || {
-        native_rows(
+    let sinex_tool_ids = || {
+        sinex_query_rows(
             &running,
             "events where event_type = polylogue.tool_call | fields id",
         )
@@ -849,11 +850,11 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
         .map(|row| row["id"].as_str().unwrap().to_owned())
         .collect::<std::collections::BTreeSet<_>>()
     };
-    let original_tool_ids = native_tool_ids();
+    let original_tool_ids = sinex_tool_ids();
     let before = reader.session_export(&session).unwrap().unwrap();
     drop(reader);
     drop(pool);
-    // Every removed path belongs to this fixture; the native originals remain.
+    // Every removed path belongs to this fixture; the original files remain.
     fs::remove_file(home.file("original-session.jsonl")).unwrap();
     fs::remove_dir_all(&home.root).unwrap();
     let empty = home.dir.path().join("empty-home");
@@ -867,9 +868,9 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
         .unwrap()
         .unwrap();
     assert_eq!(after, before);
-    assert_eq!(native_tool_ids(), original_tool_ids);
+    assert_eq!(sinex_tool_ids(), original_tool_ids);
 
-    let selected = native::request(
+    let selected = real_sinex::request(
         &running.socket,
         "read",
         serde_json::json!({
@@ -884,7 +885,7 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
         .unwrap();
     let id = selected["id"].as_str().unwrap();
     let target = format!("sinex:ev/{id}");
-    let archived = native::request(
+    let archived = real_sinex::request(
         &running.socket,
         "agent",
         serde_json::json!({"method":"archive", "target":target}),
@@ -905,7 +906,7 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
             .unwrap(),
         remaining
     );
-    let restored = native::request(
+    let restored = real_sinex::request(
         &running.socket,
         "agent",
         serde_json::json!({"method":"restore", "target":target}),
@@ -934,9 +935,9 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
     );
     fs::write(home.file("original-session.jsonl"), &rewritten).unwrap();
     fs::write(standalone.file("original-session.jsonl"), &rewritten).unwrap();
-    let (mut ordinary, lock) = standalone.engine(1 << 20);
-    assert!(ordinary.run_pass().unwrap().errors.is_empty());
-    drop(ordinary);
+    let (mut standalone_engine, lock) = standalone.engine(1 << 20);
+    assert!(standalone_engine.run_pass().unwrap().errors.is_empty());
+    drop(standalone_engine);
     drop(lock);
     expected_messages = standalone
         .reads()
@@ -993,7 +994,7 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
         assert!(
             imported.pass.errors.is_empty() && imported.refused.is_empty(),
             "{imported:?}; {}",
-            running.evidence(&sinex, &archive)
+            running.diagnostics(&sinex, &archive)
         );
         let imported_at = Instant::now();
         confirm_capture(
@@ -1005,20 +1006,20 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
                 let applied = ReadPool::open(&archive)?.reader()?.confirmed_checkpoint()?;
                 let status = sinex.status().unwrap();
                 let actual = read_answers(&archive)?.0;
-                // Session presence retains the declared-source discovery barrier.
-                // Once all work is confirmed, semantics are an assertion, not a wait.
+                // Waiting for the expected sessions keeps the declared-source discovery wait.
+                // Once all work is confirmed, the answers are asserted, not awaited.
                 if !pass.capture_pending
                     && expected.keys().all(|id| actual.contains_key(id))
                     && status.prepared_materials == 0
                     && status.prepared_writes == 0
-                    && status.owner_position.is_some()
-                    && applied == status.owner_position
+                    && status.sinex_position.is_some()
+                    && applied == status.sinex_position
                 {
                     assert!(
                         actual == expected,
                         "confirmed imported answers differ; before import: {before_import}; current: {}; {}",
                         answer_difference(&expected, &actual),
-                        running.evidence(&sinex, &archive)
+                        running.diagnostics(&sinex, &archive)
                     );
                     return Ok(true);
                 }

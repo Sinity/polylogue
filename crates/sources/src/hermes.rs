@@ -380,7 +380,7 @@ impl ExportParser for Database {
         })?;
         if self.profile.is_none() {
             self.refusal.get_or_insert(
-                "Hermes row dump names no native profile; original rows stay unbound".into(),
+                "Hermes row dump names no profile; original rows stay unbound".into(),
             );
         }
         self.order_messages();
@@ -506,10 +506,10 @@ impl ExportParser for Database {
                 }
                 session.git_branch = text(row, "git_branch");
                 session.repo = text(row, "git_remote");
-                let (at, evidence) =
+                let (at, accuracy) =
                     crate::time::parts(row.get("started_at").and_then(crate::time::epoch_seconds));
                 session
-                    .set_time(at, evidence)
+                    .set_time(at, accuracy)
                     .expect("decoded source time is valid");
                 sink.out.sessions.push(session);
                 sink.out.events.push({
@@ -591,7 +591,7 @@ impl ExportParser for Database {
                 {
                     // A live fork/spawn parent can have advanced since the child
                     // began. Its present leaf is not a supplied branch point.
-                    let anchor = self
+                    let branch_point = self
                         .sessions
                         .get(&parent)
                         .filter(|_| kind == LinkKind::Continuation)
@@ -606,7 +606,7 @@ impl ExportParser for Database {
                         how: None,
                         parent: parent_id,
                         child: id.clone(),
-                        at: anchor,
+                        at: branch_point,
                         call_id: None,
                         evidence: "Hermes parent_session_id/model_config/end_reason".into(),
                     });

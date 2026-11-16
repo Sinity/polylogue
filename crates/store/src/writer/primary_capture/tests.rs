@@ -5,7 +5,7 @@ use crate::primary::Sinex as _;
 fn source(id: &str, bytes: &[u8]) -> PreparedBatch {
     PreparedBatch {
         batch: Batch {
-            required_disposition: None,
+            required_outcome: None,
             input: InputKey {
                 id: id.into(),
                 format: "codex".into(),
@@ -57,7 +57,7 @@ fn capture_intent_survives_observer_retry_and_preserves_source_order() {
 }
 
 #[test]
-fn raw_capture_identity_is_independent_of_reading_and_tracks_new_source_ranges() {
+fn capture_identity_ignores_reading_and_tracks_source_ranges() {
     let mut group = vec![source("session", b"source")];
     let mut step = ParseStep::new(Default::default(), Default::default(), 0..6, true);
     step.reading_version = "codex:1".into();
@@ -76,7 +76,7 @@ struct OfflineProducer {
 }
 
 #[test]
-fn projection_start_replaces_an_equal_scope_and_preserves_original_and_paid_stores() {
+fn snapshot_start_replaces_equal_scope_and_keeps_stores() {
     use crate::primary::{AppliedSnapshot, Confirmed, ConfirmedChange, ReplayControl};
     let directory = tempfile::tempdir().unwrap();
     let producer_root = directory.path().join("producer");
@@ -104,7 +104,7 @@ fn projection_start_replaces_an_equal_scope_and_preserves_original_and_paid_stor
         position: 0,
         event: String::new(),
         output_index: 0,
-        native: None,
+        sinex_context: None,
         change: ConfirmedChange::Control(Box::new(control)),
     };
     writer
@@ -124,7 +124,7 @@ fn projection_start_replaces_an_equal_scope_and_preserves_original_and_paid_stor
     };
     assert_eq!(read_state().applied_position, Some(4));
     writer
-        .apply_confirmed(vec![control(ReplayControl::ProjectionStart {
+        .apply_confirmed(vec![control(ReplayControl::SnapshotStart {
             scope: "scope".into(),
             origin: 10,
             stream_instance: "new-stream".into(),
@@ -133,22 +133,25 @@ fn projection_start_replaces_an_equal_scope_and_preserves_original_and_paid_stor
         .unwrap();
     let state = read_state();
     assert_eq!(state.applied_position, None);
-    assert_eq!(state.projection.as_ref().unwrap().origin, 10);
-    assert_eq!(state.projection.unwrap().stream_instance, "new-stream");
+    assert_eq!(state.snapshot_progress.as_ref().unwrap().origin, 10);
+    assert_eq!(
+        state.snapshot_progress.unwrap().stream_instance,
+        "new-stream"
+    );
     writer
         .apply_confirmed(vec![
             Confirmed {
                 position: 11,
-                event: "pending-projection-fact".into(),
+                event: "pending-snapshot-event".into(),
                 output_index: 0,
-                native: None,
+                sinex_context: None,
                 change: ConfirmedChange::Refused {
                     kind: "synthetic".into(),
-                    reason: "retained pending fact".into(),
+                    reason: "kept pending event".into(),
                     unreadable_input: true,
                 },
             },
-            control(ReplayControl::ProjectionPage {
+            control(ReplayControl::SnapshotPage {
                 position: 12,
                 cursor: "unfinished".into(),
             }),
@@ -159,7 +162,7 @@ fn projection_start_replaces_an_equal_scope_and_preserves_original_and_paid_stor
         Connection::open(archive.index_db())
             .unwrap()
             .query_row(
-                "SELECT product FROM primary_pending WHERE event='pending-projection-fact'",
+                "SELECT product FROM primary_pending WHERE event='pending-snapshot-event'",
                 [],
                 |row| row.get::<_, Vec<u8>>(0),
             )
@@ -176,15 +179,15 @@ fn projection_start_replaces_an_equal_scope_and_preserves_original_and_paid_stor
     assert_eq!(read_state(), staged);
     assert_eq!(pending_bytes(), bytes);
     let error = writer
-        .apply_confirmed(vec![control(ReplayControl::ProjectionStart {
+        .apply_confirmed(vec![control(ReplayControl::SnapshotStart {
             scope: "scope".into(),
             origin: 10,
             stream_instance: "new-stream".into(),
-            reason: Some("owner snapshot invalidated".into()),
+            reason: Some("Sinex snapshot invalidated".into()),
         })])
         .unwrap_err();
-    assert!(error.to_string().contains("owner snapshot invalidated"));
-    assert_eq!(read_state().projection.unwrap().cursor, None);
+    assert!(error.to_string().contains("Sinex snapshot invalidated"));
+    assert_eq!(read_state().snapshot_progress.unwrap().cursor, None);
     assert_eq!(read_state().applied_position, None);
     assert_eq!(
         std::fs::read(producer_root.join("pending")).unwrap(),
@@ -202,14 +205,14 @@ fn projection_start_replaces_an_equal_scope_and_preserves_original_and_paid_stor
         last: None,
     };
     writer
-        .apply_confirmed(vec![control(ReplayControl::ProjectionComplete {
+        .apply_confirmed(vec![control(ReplayControl::SnapshotComplete {
             snapshot: snapshot.clone(),
         })])
         .unwrap();
     let state = read_state();
     assert_eq!(state.applied_position, Some(12));
     assert_eq!(state.snapshot, Some(snapshot));
-    assert_eq!(state.projection, None);
+    assert_eq!(state.snapshot_progress, None);
 }
 
 impl OfflineProducer {
@@ -221,17 +224,17 @@ impl OfflineProducer {
     }
 }
 impl crate::primary::Sinex for OfflineProducer {
-    fn raw_acquisition_cursor(
+    fn byte_cursor(
         &self,
-        _: &crate::primary::RawAcquisitionQuery,
-    ) -> Result<Option<crate::primary::RawAcquisitionCursor>> {
+        _: &crate::primary::ByteCursorQuery,
+    ) -> Result<Option<crate::primary::ByteCursor>> {
         Ok(None)
     }
     fn prepare_input_group(
         &self,
         plan: &crate::primary::CapturePlan,
         members: &mut crate::primary::CaptureMembers<'_>,
-    ) -> Result<crate::primary::CaptureReceipt> {
+    ) -> Result<crate::primary::CaptureResult> {
         plan.validate()?;
         if plan.count != 1 {
             return Err(StoreError::Invalid(
@@ -263,17 +266,15 @@ impl crate::primary::Sinex for OfflineProducer {
                 "missing synthetic capture member".into(),
             ));
         }
-        if plan.required_disposition
-            == Some(crate::primary::CaptureDisposition::UnresolvedBasisConflict)
-        {
-            return Ok(crate::primary::CaptureReceipt::UnresolvedBasisConflict {
-                custody: crate::primary::RawCustodyReceipt {
+        if plan.required_outcome == Some(crate::primary::CaptureOutcome::UnresolvedBasisConflict) {
+            return Ok(crate::primary::CaptureResult::UnresolvedBasisConflict {
+                spooled: crate::primary::SpooledGroup {
                     identity: "offline-capture".into(),
                     count: plan.count,
                 },
             });
         }
-        Ok(crate::primary::CaptureReceipt::Accepted {
+        Ok(crate::primary::CaptureResult::Accepted {
             write: crate::primary::PreparedWrite {
                 identity: "offline-capture".into(),
                 pending: true,
@@ -305,7 +306,7 @@ impl crate::primary::Sinex for OfflineProducer {
         let selector = full
             .basis
             .as_ref()
-            .map(|basis| basis.source.clone())
+            .map(|base| base.source.clone())
             .or_else(|| {
                 full.rows.observation.as_ref().and_then(|o| {
                     o.path_bytes.as_ref().map(|bytes| SourceSelector {
@@ -324,7 +325,7 @@ impl crate::primary::Sinex for OfflineProducer {
                 ..Default::default()
             });
         }
-        let head = PendingCapture {
+        let latest = PendingCapture {
             identity: "offline-capture".into(),
             captured: Capture::Input(Box::new(full.clone())),
             material: None,
@@ -334,9 +335,9 @@ impl crate::primary::Sinex for OfflineProducer {
             status: full
                 .basis
                 .as_ref()
-                .map_or(SourceStatus::MissingEvidence, |basis| basis.status),
-            raw: full.raw_range.map(|_| head.clone()),
-            head: Some(head),
+                .map_or(SourceStatus::MissingEvidence, |base| base.status),
+            raw: full.raw_range.map(|_| latest.clone()),
+            head: Some(latest),
         })
     }
     fn prepare_input(
@@ -381,7 +382,7 @@ impl crate::primary::Sinex for OfflineProducer {
             _ => false,
         });
         Ok(crate::primary::PendingGroupPage {
-            disposition: Some(crate::primary::CaptureDisposition::Prepared),
+            outcome: Some(crate::primary::CaptureOutcome::Prepared),
             headers,
             next: None,
         })
@@ -443,7 +444,7 @@ impl crate::primary::Sinex for OfflineProducer {
         self.prepare_products(writes)
     }
     /// Spooled products are kept, so a test can read what was sent. Like the
-    /// real producer's spool, a write becomes visible whole: a publication
+    /// real producer's spool, a write becomes visible whole: a sending
     /// pass may rewrite the file while the test reads it.
     fn prepare_parsed(
         &self,
@@ -511,7 +512,7 @@ impl crate::primary::Sinex for OfflineProducer {
 }
 
 #[test]
-fn offline_writer_retains_original_source_before_releasing_preparation() {
+fn offline_writer_keeps_original_source_before_release() {
     let directory = tempfile::tempdir().unwrap();
     let cache = directory.path().join("cache");
     let byte_root = directory.path().join("bytes");
@@ -582,7 +583,7 @@ fn offline_writer_retains_original_source_before_releasing_preparation() {
         assert!(snapshot.basis.boundary.is_none());
         writer
             .apply_confirmed(vec![crate::primary::Confirmed {
-                native: None,
+                sinex_context: None,
                 position: 0,
                 output_index: 0,
                 event: String::new(),
@@ -607,7 +608,7 @@ fn offline_writer_retains_original_source_before_releasing_preparation() {
         );
         assert!(after_checkpoint.basis.boundary.is_none());
         let Capture::Input(hydrated) = writer.capture("offline-capture".into()).unwrap() else {
-            panic!("the pending source must hydrate its original input facts");
+            panic!("the pending source must restore its original input rows");
         };
         assert_eq!(hydrated.hash, BlobHash::of(bytes));
         assert_eq!(hydrated.length, bytes.len() as u64);
@@ -622,7 +623,7 @@ fn offline_writer_retains_original_source_before_releasing_preparation() {
         assert!(!archive.root.join("archive.db").exists());
     }
     // Reopening recovers the original bytes without the provider file or
-    // the parser preparation. The ordinary parser reconstructs their model.
+    // the parser preparation. The parser rebuilds their model.
     let (archive, _lock) = Archive::open_primary(&cache, &byte_root).unwrap();
     let reopened = OfflineProducer {
         root: producer_root.clone(),
@@ -685,11 +686,11 @@ fn import_retry_intent_excludes_its_generated_operation_id() {
 fn serialized_binding() -> crate::assets::bindings::AttachmentBindingRecord {
     let message_version = BlobHash::of(b"source message identity");
     let member_hash = BlobHash::of(b"claimed member bytes");
-    // A serialized witness is opaque custody, not receiver admission evidence.
+    // A serialized byte match is stored as given; it is not the receiver's own check.
     let record: crate::assets::bindings::AttachmentBindingRecord = serde_json::from_value(serde_json::json!({
         "context":{"message":"codex:bound-message","source_version":message_version,"input":"receiving-input","chain":1,"import_id":"receiving-namespace"},
         "claim":{"source_version":message_version,"namespace":{"input":"original-input","chain":2,"import_id":"original-namespace"},"exported_from":{"input":"export-input","chain":3,"import_id":"export-namespace"},"block":0,"attachment":0,"source_id":"claimed-attachment","candidates":[{"hash":member_hash,"size":20,"sources":[]}]},
-        "members":[{"candidate":0,"witness":{"version":1,"member":{"import_id":"receiving-namespace","input":"receiving-member","member":"blobs/member","chain":1,"source_version":"frozen-source-version","hash":member_hash,"size":20},"observation":"original-receiving-observation"}}]
+        "members":[{"candidate":0,"witness":{"version":1,"member":{"import_id":"receiving-namespace","input":"receiving-member","member":"blobs/member","chain":1,"source_version":"saved-source-version","hash":member_hash,"size":20},"observation":"original-receiving-observation"}}]
     })).unwrap();
     record
 }
@@ -742,14 +743,14 @@ fn an_imported_attachment_binding_is_sent_to_sinex_and_reaches_the_index_only_fr
     writer
         .apply_confirmed(vec![
             crate::primary::Confirmed {
-                native: None,
+                sinex_context: None,
                 position: 1,
                 output_index: 0,
                 event: "binding-event".into(),
                 change: crate::primary::ConfirmedChange::Live(Box::new(sent[0].product.clone())),
             },
             crate::primary::Confirmed {
-                native: None,
+                sinex_context: None,
                 position: 0,
                 output_index: 0,
                 event: String::new(),
@@ -791,7 +792,7 @@ fn an_idle_primary_writer_records_a_failed_stream_read() {
 }
 
 #[test]
-fn frozen_unknown_empty_capture_publishes_only_after_scoped_stream_completion() {
+fn unknown_empty_capture_is_sent_after_stream_completion() {
     use crate::primary::{Confirmed, ConfirmedChange, ReplayControl, SourceSelector, SourceStatus};
     let directory = tempfile::tempdir().unwrap();
     let producer_root = directory.path().join("producer");
@@ -826,7 +827,7 @@ fn frozen_unknown_empty_capture_publishes_only_after_scoped_stream_completion() 
         position: 0,
         event: String::new(),
         output_index: 0,
-        native: None,
+        sinex_context: None,
         change: ConfirmedChange::Control(Box::new(control)),
     };
     writer
@@ -834,15 +835,15 @@ fn frozen_unknown_empty_capture_publishes_only_after_scoped_stream_completion() 
             scope: "scope".into(),
         })])
         .unwrap();
-    std::fs::write(producer_root.join("ready"), b"confirmed native anchor").unwrap();
+    std::fs::write(producer_root.join("ready"), b"confirmed record offset").unwrap();
     writer.synchronize_primary().unwrap();
     assert!(
         !producer_root.join("products.json").exists(),
-        "raw custody and an anchor do not prove absent source coordinates"
+        "spooled bytes and a record offset do not show absent source coordinates"
     );
     writer
         .apply_confirmed(vec![
-            control(ReplayControl::Head { position: 1 }),
+            control(ReplayControl::LatestPosition { position: 1 }),
             control(ReplayControl::Completion {
                 position: 0,
                 delivery: None,
@@ -872,9 +873,9 @@ fn frozen_unknown_empty_capture_publishes_only_after_scoped_stream_completion() 
         .enumerate()
         .map(|(index, write)| Confirmed {
             position: 2,
-            event: format!("published-{index}"),
+            event: format!("sent-{index}"),
             output_index: index as u64,
-            native: None,
+            sinex_context: None,
             change: ConfirmedChange::Live(Box::new(write.product)),
         })
         .chain(std::iter::once(control(ReplayControl::Completion {
@@ -902,9 +903,9 @@ fn frozen_unknown_empty_capture_publishes_only_after_scoped_stream_completion() 
                 position: 3,
                 event: "unreadable-input".into(),
                 output_index: 0,
-                native: None,
+                sinex_context: None,
                 change: ConfirmedChange::Refused {
-                    kind: "opaque-owner-input".into(),
+                    kind: "unknown-sinex-input".into(),
                     reason: "unavailable".into(),
                     unreadable_input: true,
                 },
@@ -929,11 +930,11 @@ fn frozen_unknown_empty_capture_publishes_only_after_scoped_stream_completion() 
 }
 
 #[test]
-fn original_source_basis_survives_normal_progress_and_retains_real_conflicts() {
+fn original_source_base_survives_progress_and_keeps_conflicts() {
     use crate::primary::{Confirmed, ConfirmedChange, ReplayControl, SourceSelector};
     for scenario in [
         "unknown-to-ready",
-        "later-head",
+        "later-observation",
         "changed-scope",
         "copied-alias",
         "forged-alias",
@@ -958,7 +959,7 @@ fn original_source_basis_survives_normal_progress_and_retains_real_conflicts() {
             position: 0,
             event: String::new(),
             output_index: 0,
-            native: None,
+            sinex_context: None,
             change: ConfirmedChange::Control(Box::new(control)),
         };
         let unknown = writer.source_snapshot(selector.clone()).unwrap().basis;
@@ -978,7 +979,7 @@ fn original_source_basis_survives_normal_progress_and_retains_real_conflicts() {
         } else {
             writer.source_snapshot(selector.clone()).unwrap().basis
         };
-        if scenario == "later-head" {
+        if scenario == "later-observation" {
             let observation = serde_json::from_value(serde_json::json!({"id":"own-confirmation","machine":"machine","host":"host","path":"/home/op/offline","path_bytes":selector.path_bytes.clone(),"class":"seen","polylogue_version":"test","seen_at":1})).unwrap();
             writer
                 .apply_confirmed(vec![
@@ -986,7 +987,7 @@ fn original_source_basis_survives_normal_progress_and_retains_real_conflicts() {
                         position: 1,
                         event: "own-input".into(),
                         output_index: 0,
-                        native: None,
+                        sinex_context: None,
                         change: ConfirmedChange::Live(Box::new(Product::Input {
                             rows: Box::new(InputRows {
                                 acquisition: None,
@@ -1019,14 +1020,14 @@ fn original_source_basis_survives_normal_progress_and_retains_real_conflicts() {
                 .unwrap();
         }
         if matches!(scenario, "copied-alias" | "forged-alias") {
-            let observation = serde_json::from_value(serde_json::json!({"id":"alias-head","machine":"machine","host":"host","path":"/home/op/original","path_bytes":b"/home/op/original".to_vec(),"class":"seen","polylogue_version":"test","seen_at":1})).unwrap();
+            let observation = serde_json::from_value(serde_json::json!({"id":"alias-observation","machine":"machine","host":"host","path":"/home/op/original","path_bytes":b"/home/op/original".to_vec(),"class":"seen","polylogue_version":"test","seen_at":1})).unwrap();
             writer
                 .apply_confirmed(vec![
                     Confirmed {
                         position: 1,
                         event: "alias-input".into(),
                         output_index: 0,
-                        native: None,
+                        sinex_context: None,
                         change: ConfirmedChange::Live(Box::new(Product::Input {
                             rows: Box::new(InputRows {
                                 acquisition: None,
@@ -1049,14 +1050,14 @@ fn original_source_basis_survives_normal_progress_and_retains_real_conflicts() {
             sampled.resolved = Some(crate::primary::SourceSubject {
                 input: "alias-target".into(),
                 observation: if scenario == "copied-alias" {
-                    "alias-head"
+                    "alias-observation"
                 } else {
-                    "missing-head"
+                    "missing-observation"
                 }
                 .into(),
             });
         }
-        let bytes = b"retained source bytes";
+        let bytes = b"stored source bytes";
         let mut capture = source("offline", bytes);
         capture.batch.basis = Some(sampled.clone());
         if sampled.resolved.is_some() {
@@ -1096,18 +1097,18 @@ fn original_source_basis_survives_normal_progress_and_retains_real_conflicts() {
             Default::default(),
         )
         .unwrap();
-        let mut retained = vec![];
+        let mut kept = vec![];
         prepared
             .reader(None, Default::default())
             .unwrap()
-            .read_to_end(&mut retained)
+            .read_to_end(&mut kept)
             .unwrap();
-        assert_eq!(retained, bytes);
+        assert_eq!(kept, bytes);
     }
 }
 
 #[test]
-fn stored_readings_use_their_exact_confirmed_chain_instead_of_a_database_path_head() {
+fn stored_readings_use_confirmed_chain_not_latest_path_state() {
     use crate::primary::{Confirmed, ConfirmedChange, ReplayControl};
     let directory = tempfile::tempdir().unwrap();
     let producer_root = directory.path().join("producer");
@@ -1124,7 +1125,7 @@ fn stored_readings_use_their_exact_confirmed_chain_instead_of_a_database_path_he
         position: 0,
         output_index: 0,
         event: String::new(),
-        native: None,
+        sinex_context: None,
         change: ConfirmedChange::Control(Box::new(control)),
     };
     writer
@@ -1156,7 +1157,7 @@ fn stored_readings_use_their_exact_confirmed_chain_instead_of_a_database_path_he
                     position,
                     output_index: 0,
                     event: format!("input-{id}"),
-                    native: None,
+                    sinex_context: None,
                     change: ConfirmedChange::Live(Box::new(Product::Input {
                         rows: Box::new(InputRows {
                             acquisition: None,
@@ -1220,7 +1221,7 @@ fn stored_readings_use_their_exact_confirmed_chain_instead_of_a_database_path_he
         );
         assert!(
             !producer_root.join("capture.json").exists(),
-            "stored parsing must not prepare another acquisition"
+            "stored parsing must not prepare another capture read"
         );
         assert_eq!(
             crate::ReadPool::open(&archive)
@@ -1240,7 +1241,7 @@ fn stored_readings_use_their_exact_confirmed_chain_instead_of_a_database_path_he
     assert_eq!(
         writes.len(),
         1,
-        "one retained parse-progress product: {writes:?}"
+        "one kept parse-progress product: {writes:?}"
     );
     assert!(
         writes
@@ -1306,7 +1307,7 @@ fn stored_readings_use_their_exact_confirmed_chain_instead_of_a_database_path_he
         .unwrap();
     assert!(
         matches!(&mixed[0], Err(StoreError::PrimaryPending { .. })),
-        "mixed source acquisition: {mixed:?}"
+        "mixed capture group: {mixed:?}"
     );
     assert!(
         matches!(&mixed[1], Ok(stored) if stored.input == "first-session" && stored.chain == 1),
@@ -1330,7 +1331,7 @@ fn a_failed_scope_reset_reports_its_original_error_before_reply_without_a_commit
     let commits = writer.sender().unwrap().completion_commits();
     let reset = |scope: &str| {
         vec![Confirmed {
-            native: None,
+            sinex_context: None,
             position: 0,
             output_index: 0,
             event: String::new(),
@@ -1381,7 +1382,7 @@ fn a_failed_scope_reset_reports_its_original_error_before_reply_without_a_commit
 }
 
 #[test]
-fn a_lifecycle_wait_leaves_its_lease_holding_queued_worker_free_to_finish() {
+fn lifecycle_wait_lets_a_key_lock_holder_finish() {
     use crate::primary::{Confirmed, ConfirmedChange, Product, ReplayControl};
     use std::time::Duration;
     let directory = tempfile::tempdir().unwrap();
@@ -1394,7 +1395,7 @@ fn a_lifecycle_wait_leaves_its_lease_holding_queued_worker_free_to_finish() {
         position: 0,
         event: String::new(),
         output_index: 0,
-        native: None,
+        sinex_context: None,
         change: ConfirmedChange::Control(Box::new(ReplayControl::Completion {
             position,
             delivery: None,
@@ -1403,7 +1404,7 @@ fn a_lifecycle_wait_leaves_its_lease_holding_queued_worker_free_to_finish() {
     {
         let mut index = crate::archive::open_write(&archive.index_db(), 1).unwrap();
         let resolver = resolve::Resolver::new(&archive, &index, None).unwrap();
-        crate::primary::projection::apply(
+        crate::primary::confirmed::apply(
             &crate::text_rows::TextIds::new(&index, false).unwrap(),
             &mut index,
             &resolver,
@@ -1412,7 +1413,7 @@ fn a_lifecycle_wait_leaves_its_lease_holding_queued_worker_free_to_finish() {
                     position: 1,
                     event: "input-event".into(),
                     output_index: 0,
-                    native: None,
+                    sinex_context: None,
                     change: ConfirmedChange::Live(Box::new(Product::Input {
                         rows: Box::new(crate::input_rows::InputRows {
                             acquisition: None,
@@ -1439,20 +1440,20 @@ fn a_lifecycle_wait_leaves_its_lease_holding_queued_worker_free_to_finish() {
     )
     .unwrap();
     let queue = writer.tx.as_ref().unwrap().clone();
-    let mut ordinary = source("queued-input", b"").batch;
-    ordinary.change = Change::Reparse { chain: 1 };
-    ordinary.observation = None;
-    ordinary.new_blob = None;
+    let mut reparse_batch = source("queued-input", b"").batch;
+    reparse_batch.change = Change::Reparse { chain: 1 };
+    reparse_batch.observation = None;
+    reparse_batch.new_blob = None;
     let mut step = ParseStep::new(Default::default(), Default::default(), 0..0, true);
     step.reading_version = "codex=1".into();
     step.source_prefix_missing = true;
-    ordinary.parse.push(step);
-    prepare_source_retractions(&queue.resolver, std::slice::from_mut(&mut ordinary)).unwrap();
-    // Keep only a failure-cleanup handle: normal release is still owned by
-    // the actual queued batch, after the writer accepts or rejects it.
-    let held = Arc::new(Mutex::new(Some(std::mem::take(&mut ordinary.release))));
+    reparse_batch.parse.push(step);
+    prepare_source_retractions(&queue.resolver, std::slice::from_mut(&mut reparse_batch)).unwrap();
+    // Keep only a failure-cleanup handle: the queued batch still owns normal
+    // release, after the writer accepts or rejects it.
+    let held = Arc::new(Mutex::new(Some(std::mem::take(&mut reparse_batch.release))));
     let release = Arc::clone(&held);
-    ordinary.release = InFlight::new(move || {
+    reparse_batch.release = InFlight::new(move || {
         release.lock().unwrap().take();
     });
     let (waiting, observed) = std::sync::mpsc::channel();
@@ -1465,7 +1466,7 @@ fn a_lifecycle_wait_leaves_its_lease_holding_queued_worker_free_to_finish() {
                 position: 2,
                 event: "input-event".into(),
                 output_index: 0,
-                native: None,
+                sinex_context: None,
                 change: ConfirmedChange::Archived,
             },
             control(2),
@@ -1476,16 +1477,16 @@ fn a_lifecycle_wait_leaves_its_lease_holding_queued_worker_free_to_finish() {
     if waiting.is_err() {
         held.lock().unwrap().take();
     }
-    waiting.expect("lifecycle preparation did not reach the existing worker lease");
+    waiting.expect("lifecycle preparation did not reach the existing worker key lock");
     let index = crate::archive::open_read(&archive.index_db()).unwrap();
     assert_eq!(
-        crate::primary::projection::checkpoint(&index).unwrap(),
+        crate::primary::confirmed::checkpoint(&index).unwrap(),
         Some(1)
     );
     assert_eq!(
         index
             .query_row(
-                "SELECT state FROM primary_fact WHERE event='input-event'",
+                "SELECT state FROM confirmed_event WHERE event='input-event'",
                 [],
                 |row| row.get::<_, String>(0)
             )
@@ -1504,7 +1505,7 @@ fn a_lifecycle_wait_leaves_its_lease_holding_queued_worker_free_to_finish() {
     );
     // The confirmation is already waiting. Its overlapping worker queues
     // afterwards and must be rejected without being blocked behind that wait.
-    queue.send(Msg::Batch(Box::new(ordinary))).unwrap();
+    queue.send(Msg::Batch(Box::new(reparse_batch))).unwrap();
     let result = complete.recv_timeout(Duration::from_secs(5));
     held.lock().unwrap().take();
     follower.join().unwrap();
@@ -1525,13 +1526,13 @@ fn a_lifecycle_wait_leaves_its_lease_holding_queued_worker_free_to_finish() {
         "{report:?}"
     );
     assert_eq!(
-        crate::primary::projection::checkpoint(&index).unwrap(),
+        crate::primary::confirmed::checkpoint(&index).unwrap(),
         Some(2)
     );
     assert_eq!(
         index
             .query_row(
-                "SELECT state FROM primary_fact WHERE event='input-event'",
+                "SELECT state FROM confirmed_event WHERE event='input-event'",
                 [],
                 |row| row.get::<_, String>(0)
             )

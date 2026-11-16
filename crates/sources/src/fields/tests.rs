@@ -33,7 +33,7 @@ fn unused_leaf_counted_below_declared_containers_and_unknown_arrays() {
 }
 
 #[test]
-fn retained_attributes_copy_wire_values_without_covering_unknown_siblings() {
+fn kept_attributes_copy_wire_values_not_unknown_siblings() {
     static FIELDS: Fields = Fields::new(
         "record",
         &[("message.meta", Rule::Kept("provider metadata"))],
@@ -169,7 +169,7 @@ fn declared_open_values_and_dynamic_members_differ_from_new_kept_object_fields()
 }
 
 #[test]
-fn new_kind_is_counted_without_retaining_its_scalar_value() {
+fn new_kind_is_counted_without_keeping_its_scalar_value() {
     static FIELDS: Fields = Fields::new("test_record", &[("type", Rule::Read(T::String))]).shape(
         &[],
         &[KnownKinds {

@@ -1,4 +1,4 @@
-//! Asset metadata stays local; attachment bindings are facts sent to Sinex in
+//! Asset metadata stays local; attachment bindings are events sent to Sinex in
 //! primary mode and reach the index through the confirmed stream.
 use super::*;
 use crate::assets::AssetRow;

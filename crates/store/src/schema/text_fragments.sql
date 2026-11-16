@@ -1,4 +1,4 @@
--- Foreign text observations do not require a canonical container row.
+-- A text fragment does not need its container's row to exist.
 CREATE TABLE text_fragment (
   hash BLOB PRIMARY KEY CHECK(length(hash)=32),
   container TEXT NOT NULL,
@@ -15,7 +15,7 @@ CREATE TABLE text_fragment_source (
   chain INTEGER NOT NULL CHECK(chain>0),
   start INTEGER NOT NULL CHECK(start>=0),
   end INTEGER NOT NULL CHECK(end>=start),
-  admitted INTEGER CHECK(admitted>0),
+  committed INTEGER CHECK(committed>0),
   PRIMARY KEY(hash,input_pk,chain,start,end)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX text_fragment_reading ON text_fragment_source(input_pk,chain,hash);

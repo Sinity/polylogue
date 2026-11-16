@@ -39,7 +39,7 @@ fn read_failure_preserves_successful_prefix_bytes_and_counts() {
 
 #[test]
 fn interrupted_reads_retry_but_do_not_become_eof() {
-    // One interrupted operation followed by a finite ordinary reader.
+    // One interrupted operation followed by a finite reader.
     let reader = std::io::Read::chain(InterruptedOnce(false), std::io::Cursor::new(UNKNOWN));
     let scanned = scan_reader(&parser(), reader);
     assert!(matches!(scanned.outcome, Outcome::Complete));

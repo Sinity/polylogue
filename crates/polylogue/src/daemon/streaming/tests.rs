@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn a_stream_write_after_a_scope_change_is_refused_even_before_a_reader_binds_the_limit() {
-    let daemon = crate::test_daemon::start("native stream activation fence");
+    let daemon = crate::test_daemon::start("stream activation fence");
     let scope = daemon.daemon.reads.scope_token().unwrap();
     let limit = polylogue_store::read::limit::ReadLimit::without_deadline(Default::default());
     assert!(limit.check().is_ok());
@@ -70,7 +70,7 @@ fn shutdown_cancels_a_stream_read_and_keeps_its_producers_writes_admissible() {
     stopped
         .recv_timeout(std::time::Duration::from_secs(5))
         .unwrap();
-    // A write its producer already handed over is still admitted.
+    // A write its producer already handed over is still accepted.
     assert!(
         crate::operation::ParentLifetime::capture(None, parent)
             .check()

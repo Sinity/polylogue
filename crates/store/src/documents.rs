@@ -26,7 +26,7 @@ pub(crate) fn write(
     source: &Source<'_>,
     row: &DocumentRow,
     prepared: &PreparedDocument,
-    admitted: Option<i64>,
+    committed: Option<i64>,
 ) -> Result<()> {
     if prepared.id != row.document.id || prepared.blocks.len() != row.document.blocks.len() {
         return Err(StoreError::Invalid(
@@ -64,7 +64,7 @@ pub(crate) fn write(
             tx.last_insert_rowid()
         }
     };
-    set_source(tx, pk, source, row, time, prepared, admitted)?;
+    set_source(tx, pk, source, row, time, prepared, committed)?;
     Ok(())
 }
 
@@ -127,13 +127,13 @@ fn set_source(
     row: &DocumentRow,
     time: Option<i64>,
     prepared: &PreparedDocument,
-    admitted: Option<i64>,
+    committed: Option<i64>,
 ) -> Result<()> {
-    tx.execute("INSERT INTO document_source(document_pk,input_pk,chain,source_start,source_end,route,source_time,version_hash,shown,time,admitted)
+    tx.execute("INSERT INTO document_source(document_pk,input_pk,chain,source_start,source_end,route,source_time,version_hash,shown,time,committed)
         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
         ON CONFLICT(document_pk,input_pk,chain) DO UPDATE SET source_start=excluded.source_start,source_end=excluded.source_end,
-            route=excluded.route,source_time=excluded.source_time,version_hash=excluded.version_hash,shown=excluded.shown,time=excluded.time,admitted=excluded.admitted",
-        params![pk,source.input_pk,source.chain,row.offset as i64,row.end as i64,source.route.as_str(),time,&prepared.hash[..],false,prepared.time,admitted])?;
+            route=excluded.route,source_time=excluded.source_time,version_hash=excluded.version_hash,shown=excluded.shown,time=excluded.time,committed=excluded.committed",
+        params![pk,source.input_pk,source.chain,row.offset as i64,row.end as i64,source.route.as_str(),time,&prepared.hash[..],false,prepared.time,committed])?;
     Ok(())
 }
 
@@ -263,7 +263,7 @@ impl DocumentRead<'_, '_> {
         self.visit_blocks_until(None, visit)
     }
 
-    /// Original source ordinals are retained while a caller stops after one
+    /// Original source ordinals are kept while a caller stops after one
     /// block or resumes without decoding earlier bodies.
     pub fn visit_blocks_from(
         &self,
@@ -416,7 +416,7 @@ pub struct DocumentSource {
     pub locations: Vec<Json>,
 }
 
-/// A borrowed view used by the original native walker during preparation.
+/// A borrowed view used by the source text walker during preparation.
 /// DocumentRead and this view share the same indexed block codec.
 pub(crate) struct TextRead<'a> {
     conn: &'a rusqlite::Connection,

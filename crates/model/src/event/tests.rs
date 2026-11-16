@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn unknown_event_time_has_unknown_evidence_and_unbound_facts_have_no_session() {
+fn unknown_event_time_has_unknown_accuracy() {
     let old = r#"{"session":"hermes:native","kind":"observation","data":{"n":7}}"#;
     let event: Event = serde_json::from_str(old).unwrap();
     assert_eq!(event.time_evidence(), crate::TimeEvidence::UNKNOWN);

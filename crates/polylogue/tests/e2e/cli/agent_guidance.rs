@@ -156,7 +156,7 @@ fn gemini_start_and_prompt_events_request_context_through_respond() {
     }
 }
 
-/// Native harness output is its own protocol, not a command Answer.
+/// Hook output follows the harness's own protocol, not a command Answer.
 fn gemini_hook_output(output: &Output) -> Value {
     assert!(output.status.success(), "{output:?}");
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();

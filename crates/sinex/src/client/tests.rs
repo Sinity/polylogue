@@ -23,8 +23,8 @@ fn config(server: &devkit::nats::Server, store: &Path, password_file: Option<&Pa
     }
 }
 
-// Low-level transport controls use one connection and explicit draining. Native
-// sender tests exercise the independently running worker.
+// Low-level transport controls use one connection and explicit draining. Other
+// sender tests exercise the separately running worker.
 pub(super) fn synchronous(config: &Config, authentication: &Authentication) -> Sinex {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
@@ -48,14 +48,14 @@ pub(super) fn synchronous(config: &Config, authentication: &Authentication) -> S
 }
 
 #[test]
-fn authenticated_private_reply_and_complete_registration_acknowledgment_establish_family() {
+fn registration_acknowledgment_establishes_family() {
     let server = server();
     let root = tempfile::tempdir().unwrap();
     let file = root.path().join("password");
     std::fs::write(&file, format!("{PASSWORD}\n")).unwrap();
     let url = server.url().to_string();
     let (ready, wait) = std::sync::mpsc::channel();
-    let owner = std::thread::spawn(move || {
+    let fake_sinex = std::thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -85,7 +85,7 @@ fn authenticated_private_reply_and_complete_registration_acknowledgment_establis
             let request=contexts.next().await.unwrap();
             let _query:sinex_protocol::PublicContextRequest=serde_json::from_slice(&request.payload).unwrap();
             assert!(request.reply.as_ref().unwrap().starts_with("_INBOX.polylogue."));
-            let context:sinex_protocol::PublicContext=serde_json::from_value(serde_json::json!({"state":"available","settings_identity":"owner-settings","owner_revision":7,"day":{"zone":"Europe/Warsaw","start":"04:00:00"},"quiet_hours":{"from":1320,"to":420},"interrupt_budget":{"per_hour":3,"used":1,"remaining":2,"window_ms":3600000},"observed_at":"2026-01-01T00:00:00Z"})).unwrap();
+            let context:sinex_protocol::PublicContext=serde_json::from_value(serde_json::json!({"state":"available","settings_identity":"sinex-settings","owner_revision":7,"day":{"zone":"Europe/Warsaw","start":"04:00:00"},"quiet_hours":{"from":1320,"to":420},"interrupt_budget":{"per_hour":3,"used":1,"remaining":2,"window_ms":3600000},"observed_at":"2026-01-01T00:00:00Z"})).unwrap();
             sinex_transport::replies::publish_json(&client,request.reply.unwrap().to_string(),context,Duration::from_secs(5)).await.unwrap();
             // Exercise real transmission/recorded-acknowledgment lookup for two
             // accepted frames which have no admitted-event position.
@@ -139,7 +139,7 @@ fn authenticated_private_reply_and_complete_registration_acknowledgment_establis
                 content_hash: Some(hash),
                 result: sinex_protocol::FrameResult::Refused {
                     kind: sinex_model::FrameRefusal::Content,
-                    reason: "exact owner declaration refusal".into(),
+                    reason: "exact Sinex declaration refusal".into(),
                 },
             };
             {
@@ -156,7 +156,7 @@ fn authenticated_private_reply_and_complete_registration_acknowledgment_establis
             for _ in 0..2 {
                 assert!(matches!(client.send(frame.clone()).await,
                     Err(Error::Refused { name, reason })
-                    if name == frame.frame() && reason == "exact owner declaration refusal"));
+                    if name == frame.frame() && reason == "exact Sinex declaration refusal"));
             }
 
             let conflict = sinex_protocol::Ingress::RegisterKinds {
@@ -178,15 +178,15 @@ fn authenticated_private_reply_and_complete_registration_acknowledgment_establis
             }
             assert!(matches!(client.send(conflict).await,
                 Err(Error::Refused { reason, .. })
-                if reason == "the original operation is not publishable"));
+                if reason == "the original operation is not sendable"));
             Ok(())
         })
         .unwrap();
     let context = sinex
         .context(|zone| jiff::tz::TimeZone::get(zone).map_err(|error| error.to_string()))
         .unwrap();
-    assert_eq!(context.settings_identity, "owner-settings");
-    assert_eq!(context.owner_revision, 7);
+    assert_eq!(context.settings_identity, "sinex-settings");
+    assert_eq!(context.settings_revision, 7);
     assert_eq!(context.day.zone_name(), "Europe/Warsaw");
     assert_eq!(context.interrupt_budget.remaining, 2);
     assert!(
@@ -223,17 +223,17 @@ fn authenticated_private_reply_and_complete_registration_acknowledgment_establis
     let state = primary::ReplayState {
         applied_position: Some(42),
         scope: Some("old-scope".into()),
-        head: None,
+        latest_position: None,
         staged_delivery: None,
         completed_delivery: None,
         snapshot: None,
-        projection: None,
+        snapshot_progress: None,
     };
     // A committed local frame can fail before reaching ingress. Its retry
-    // error belongs to publication, while confirmed reads remain available.
+    // error belongs to sending, while confirmed reads remain available.
     let pending = sinex_protocol::Ingress::Events {
         source: None,
-        frame: "recoverable-publication".into(),
+        frame: "recoverable-send".into(),
         events: Vec::new(),
         failures: Vec::new(),
     };
@@ -254,32 +254,29 @@ fn authenticated_private_reply_and_complete_registration_acknowledgment_establis
     corrupt_frame[0] ^= 1;
     std::fs::write(&frame_path, corrupt_frame).unwrap();
     let _ = sinex.drain_pending();
-    let publication_error = sinex.status().unwrap().error.unwrap();
-    assert!(
-        publication_error.starts_with("publication:"),
-        "{publication_error}"
-    );
+    let send_error = sinex.status().unwrap().error.unwrap();
+    assert!(send_error.starts_with("send:"), "{send_error}");
     let control = primary::Sinex::confirmed(&sinex, &state, "cache-test").unwrap();
     assert_eq!(
         sinex.status().unwrap().error.as_deref(),
-        Some(publication_error.as_str()),
-        "a successful confirmed read cannot clear a failed publication"
+        Some(send_error.as_str()),
+        "a successful confirmed read cannot clear a failed send"
     );
     assert!(
         matches!(control.as_slice(),[primary::Confirmed{change:ConfirmedChange::Control(control),..}]
         if matches!(control.as_ref(),ReplayControl::Reset{scope} if scope=="test-scope"))
     );
-    let currency = sinex.currency(Some(42), Some("old-scope".into())).unwrap();
-    assert_eq!(currency.scope(), Some("old-scope"));
-    assert!(currency.degraded());
+    let freshness = sinex.freshness(Some(42), Some("old-scope".into())).unwrap();
+    assert_eq!(freshness.scope(), Some("old-scope"));
+    assert!(freshness.degraded());
     let state = primary::ReplayState {
         applied_position: None,
         scope: Some("test-scope".into()),
-        head: None,
+        latest_position: None,
         staged_delivery: None,
         completed_delivery: None,
         snapshot: None,
-        projection: None,
+        snapshot_progress: None,
     };
     let refused = primary::Sinex::confirmed(&sinex, &state, "cache-test").unwrap_err();
     assert!(
@@ -288,10 +285,10 @@ fn authenticated_private_reply_and_complete_registration_acknowledgment_establis
     );
     let both = sinex.status().unwrap().error.unwrap();
     assert!(
-        both.contains(&publication_error) && both.contains("synthetic refusal"),
+        both.contains(&send_error) && both.contains("synthetic refusal"),
         "{both}"
     );
-    // Restore the original encoded frame and install its exact owner acknowledgment.
+    // Restore the original encoded frame and install its exact Sinex acknowledgment.
     // The corresponding retry succeeds without changing bytes or identity.
     std::fs::write(&frame_path, original_frame).unwrap();
     let mut acknowledgment = crate::tests::no_event_acknowledgment(&pending);
@@ -301,9 +298,9 @@ fn authenticated_private_reply_and_complete_registration_acknowledgment_establis
     let read_error = sinex.status().unwrap().error.unwrap();
     assert!(
         read_error.contains("synthetic refusal"),
-        "a successful publication retry must preserve the independent read error: {read_error}"
+        "a successful send retry must preserve the independent read error: {read_error}"
     );
-    assert!(!read_error.contains(&publication_error));
+    assert!(!read_error.contains(&send_error));
     sinex
         .read_client(async |client| {
             client
@@ -315,11 +312,11 @@ fn authenticated_private_reply_and_complete_registration_acknowledgment_establis
         .unwrap();
     assert!(sinex.status().unwrap().error.is_none());
     drop(sinex);
-    owner.join().unwrap();
+    fake_sinex.join().unwrap();
 }
 
 #[test]
-fn missing_and_wrong_passwords_are_refused_before_publication() {
+fn bad_passwords_are_refused_before_sending() {
     let server = server();
     let root = tempfile::tempdir().unwrap();
     assert!(matches!(
@@ -343,7 +340,7 @@ fn missing_and_wrong_passwords_are_refused_before_publication() {
 }
 
 #[test]
-fn unavailable_authentication_is_named_and_offline_capture_remains_openable() {
+fn unavailable_authentication_still_opens_capture() {
     let server = server();
     let root = tempfile::tempdir().unwrap();
     let file = root.path().join("absent");
@@ -377,7 +374,7 @@ fn authentication_and_host_are_explicit_and_password_debug_is_redacted() {
 }
 
 #[test]
-fn an_unreadable_event_is_refused_at_its_position_but_a_lost_connection_stops_the_page() {
+fn unreadable_event_refused_but_lost_connection_stops() {
     use polylogue_store::primary::ConfirmedChange;
     let refused = crate::client::confirmed::readable(
         9,
@@ -461,7 +458,7 @@ mod backup_restore;
 mod material_bytes;
 
 #[test]
-fn reordered_duplicate_acknowledgments_keep_concurrent_frames_independent_after_refusal() {
+fn duplicate_acknowledgments_keep_frames_independent() {
     use futures_util::StreamExt;
     use std::sync::{Arc, Mutex};
     let server = server();
@@ -480,7 +477,7 @@ fn reordered_duplicate_acknowledgments_keep_concurrent_frames_independent_after_
         let mut ingress = daemon.subscribe("auth.ingress.polylogue").await.unwrap();
         let mut recorded = daemon.subscribe("auth.recorded.polylogue").await.unwrap();
         daemon.flush().await.unwrap();
-        let owner = tokio::spawn(async move {
+        let fake_sinex = tokio::spawn(async move {
             let request = hello.next().await.unwrap();
             sinex_transport::replies::publish_json(&daemon, request.reply.unwrap().to_string(), ProducerWelcome::Welcome { family: Some("polylogue".into()), canonical_publisher: true }, Duration::from_secs(5)).await.unwrap();
             let mut acknowledgments = Vec::new();
@@ -521,7 +518,7 @@ fn reordered_duplicate_acknowledgments_keep_concurrent_frames_independent_after_
         let mut client = super::Client::connect_shared(&config, &Authentication::Password(PASSWORD.into()), spool.clone(), Default::default(), Default::default(), false).await.unwrap();
         let result = tokio::time::timeout(Duration::from_secs(10), client.retry_prepared()).await.expect("all independent frames complete without waiting for an earlier refusal");
         assert!(matches!(result, Err(Error::Refused { name, reason }) if name == "concurrent-0" && reason == "synthetic refusal"));
-        let acknowledgments = owner.await.unwrap();
+        let acknowledgments = fake_sinex.await.unwrap();
         assert_eq!(acknowledgments.len(), 5);
         for acknowledgment in acknowledgments {
             assert_eq!(spool.lock().unwrap().acknowledgment(&acknowledgment.frame).unwrap(), Some(acknowledgment));
@@ -531,7 +528,7 @@ fn reordered_duplicate_acknowledgments_keep_concurrent_frames_independent_after_
 }
 
 #[test]
-fn dropping_sender_waiting_for_acknowledgment_preserves_the_original_frame() {
+fn dropped_waiting_sender_keeps_the_original_frame() {
     use futures_util::StreamExt;
     let server = server();
     let root = tempfile::tempdir().unwrap();
@@ -540,7 +537,7 @@ fn dropping_sender_waiting_for_acknowledgment_preserves_the_original_frame() {
     let (ready, waiting) = std::sync::mpsc::channel();
     let (published, wait_published) = std::sync::mpsc::channel();
     let (stop, stopped) = tokio::sync::oneshot::channel();
-    let owner = std::thread::spawn(move || {
+    let fake_sinex = std::thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -653,7 +650,7 @@ fn dropping_sender_waiting_for_acknowledgment_preserves_the_original_frame() {
             .is_none()
     );
     stop.send(()).unwrap();
-    owner.join().unwrap();
+    fake_sinex.join().unwrap();
 }
 
 #[test]
@@ -672,13 +669,13 @@ fn frame_storage_failure_keeps_its_retryable_type() {
     ));
 }
 
-struct ProducerOwner {
+struct FakeSinex {
     client: async_nats::Client,
     hello: async_nats::Subscriber,
     ingress: async_nats::Subscriber,
     recorded: async_nats::Subscriber,
 }
-impl ProducerOwner {
+impl FakeSinex {
     async fn start(server: &devkit::nats::Server, name: &str) -> Self {
         let client = async_nats::ConnectOptions::with_user_and_password(
             "daemon".into(),
@@ -777,14 +774,14 @@ fn eventually(mut predicate: impl FnMut() -> bool) {
     while !predicate() {
         assert!(
             std::time::Instant::now() < deadline,
-            "producer did not report the expected durable acknowledgment"
+            "producer did not report the expected saved acknowledgment"
         );
         std::thread::sleep(Duration::from_millis(10));
     }
 }
 
 #[test]
-fn current_frame_reaches_durable_acknowledgment_with_5000_original_frames_waiting() {
+fn current_frame_is_acknowledged_with_5000_frames_waiting() {
     use futures_util::StreamExt;
     let server = server();
     let root = tempfile::tempdir().unwrap();
@@ -813,16 +810,16 @@ fn current_frame_reaches_durable_acknowledgment_with_5000_original_frames_waitin
         .enable_all()
         .build()
         .unwrap();
-    let mut owner = runtime.block_on(ProducerOwner::start(&server, "BACKLOG_INGRESS"));
+    let mut fake_sinex = runtime.block_on(FakeSinex::start(&server, "BACKLOG_INGRESS"));
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let serving = std::thread::spawn(move || {
         runtime.block_on(async move {
-            owner.welcome().await;
-            owner.register().await;
+            fake_sinex.welcome().await;
+            fake_sinex.register().await;
             let mut current = None;
             let mut oldest = None;
             for _ in 0..4 {
-                let message = owner.ingress.next().await.unwrap();
+                let message = fake_sinex.ingress.next().await.unwrap();
                 let frame: sinex_protocol::Ingress =
                     serde_json::from_slice(&message.payload).unwrap();
                 match frame.frame() {
@@ -839,12 +836,12 @@ fn current_frame_reaches_durable_acknowledgment_with_5000_original_frames_waitin
                 kind: sinex_model::FrameRefusal::Content,
                 reason: "synthetic old-frame refusal".into(),
             };
-            owner.acknowledge(refusal).await;
+            fake_sinex.acknowledge(refusal).await;
             let mut acknowledgment = crate::tests::no_event_acknowledgment(
                 &current.expect("current independent work gets a transmission slot"),
             );
             acknowledgment.number = 3;
-            owner.acknowledge(acknowledgment.clone()).await;
+            fake_sinex.acknowledge(acknowledgment.clone()).await;
             stopped.await.unwrap();
             acknowledgment
         })
@@ -898,7 +895,7 @@ fn current_frame_reaches_durable_acknowledgment_with_5000_original_frames_waitin
 }
 
 #[test]
-fn refused_attachment_retains_its_request_while_independent_completions_progress() {
+fn refused_attachment_keeps_request_as_others_complete() {
     use polylogue_model::{
         BlobHash,
         authored::{AuthoredEffect, ChatChange, ExecutionEligibility, PreparedRequest},
@@ -909,11 +906,11 @@ fn refused_attachment_retains_its_request_while_independent_completions_progress
     let root = tempfile::tempdir().unwrap();
     let config = config(&server, root.path(), None);
     let sinex = synchronous(&config, &Authentication::Password(PASSWORD.into()));
-    let mut owner = sinex
+    let mut fake_sinex = sinex
         .runtime
-        .block_on(ProducerOwner::start(&server, "REFUSED_DEPENDENCY"));
+        .block_on(FakeSinex::start(&server, "REFUSED_DEPENDENCY"));
     let welcome = sinex.runtime.spawn(async move {
-        owner.welcome().await;
+        fake_sinex.welcome().await;
     });
     let client = sinex
         .runtime
@@ -983,11 +980,11 @@ fn refused_attachment_retains_its_request_while_independent_completions_progress
         };
         sinex.prepare_request(&request).unwrap();
         let identity = format!("request:{id}");
-        let physical = crate::tests::extent(
+        let stored = crate::tests::extent(
             &root.path().join(id),
             &serde_json::to_vec(&request).unwrap(),
         );
-        sinex.queue().unwrap().acknowledge(serde_json::from_value(serde_json::json!({ "number":number, "frame":identity, "material":crate::material_id("polylogue", &identity), "material_extents":[physical.encode()], "admitted":[], "content_hash":null, "result":"admitted", "counts":crate::tests::zero_counts(), "commit_seq":number })).unwrap()).unwrap();
+        sinex.queue().unwrap().acknowledge(serde_json::from_value(serde_json::json!({ "number":number, "frame":identity, "material":crate::material_id("polylogue", &identity), "material_extents":[stored.encode()], "admitted":[], "content_hash":null, "result":"admitted", "counts":crate::tests::zero_counts(), "commit_seq":number })).unwrap()).unwrap();
     }
     let (_, product) = crate::tests::named::phases().remove(0);
     sinex
@@ -1009,8 +1006,8 @@ fn refused_attachment_retains_its_request_while_independent_completions_progress
         &mut body,
     )
     .unwrap();
-    let physical = crate::tests::extent(&root.path().join("observation"), &body);
-    sinex.queue().unwrap().acknowledge(serde_json::from_value(serde_json::json!({ "number":4, "frame":observation, "material":crate::material_id("polylogue", observation), "material_extents":[physical.encode()], "admitted":[], "content_hash":null, "result":"admitted", "counts":crate::tests::zero_counts(), "commit_seq":4 })).unwrap()).unwrap();
+    let stored = crate::tests::extent(&root.path().join("observation"), &body);
+    sinex.queue().unwrap().acknowledge(serde_json::from_value(serde_json::json!({ "number":4, "frame":observation, "material":crate::material_id("polylogue", observation), "material_extents":[stored.encode()], "admitted":[], "content_hash":null, "result":"admitted", "counts":crate::tests::zero_counts(), "commit_seq":4 })).unwrap()).unwrap();
     let result = sinex.drain_pending();
     assert!(
         matches!(&result, Err(Error::Refused { reason, .. }) if reason == "synthetic attachment refusal"),

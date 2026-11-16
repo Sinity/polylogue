@@ -30,7 +30,7 @@ fn message(tx: &Transaction<'_>, pk: i64, session: i64) {
 }
 
 #[test]
-fn many_tool_calls_remove_exact_search_entries_and_keep_another_session() {
+fn many_tool_calls_remove_search_entries_and_keep_another_session() {
     let mut db = database();
     let tx = db.transaction().unwrap();
     message(&tx, 1, 1);

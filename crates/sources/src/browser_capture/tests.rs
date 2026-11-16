@@ -300,7 +300,7 @@ fn a_gemini_capture_and_a_gemini_app_export_of_one_conversation_are_one_session(
 }
 
 #[test]
-fn observation_clock_never_fills_missing_native_turn_or_session_time() {
+fn observed_clock_never_fills_missing_source_times() {
     use polylogue_model::{Precision, TimeQuality};
     let bytes = capture(
         Json::Null,

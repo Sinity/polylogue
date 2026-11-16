@@ -9,13 +9,13 @@ CREATE TABLE wire_reading (
   PRIMARY KEY (input_pk, chain, reading_version)
 ) STRICT, WITHOUT ROWID;
 CREATE UNIQUE INDEX wire_reading_current ON wire_reading(input_pk,chain) WHERE active=1;
--- The receipts a reading's shapes cite, each stored once and cited by number.
-CREATE TABLE wire_receipt (
+-- The occurrences a reading's shapes cite, each stored once and cited by number.
+CREATE TABLE wire_occurrence (
   input_pk INTEGER NOT NULL,
   chain INTEGER NOT NULL,
   reading_version TEXT NOT NULL,
   number INTEGER NOT NULL CHECK (number > 0),
-  receipt TEXT NOT NULL CHECK (json_valid(receipt)),
+  occurrence TEXT NOT NULL CHECK (json_valid(occurrence)),
   PRIMARY KEY (input_pk,chain,reading_version,number),
   FOREIGN KEY (input_pk,chain,reading_version)
     REFERENCES wire_reading(input_pk,chain,reading_version)
@@ -32,8 +32,8 @@ CREATE TABLE wire_declaration (
   known_kinds TEXT NOT NULL CHECK (json_valid(known_kinds)),
   PRIMARY KEY (format,reading_version,record_kind,path,table_key)
 ) STRICT, WITHOUT ROWID;
--- One path of a reading: its counts and the receipts (numbers in
--- wire_receipt) where it was first and last seen.
+-- One path of a reading: its counts and the occurrences (numbers in
+-- wire_occurrence) where it was first and last seen.
 CREATE TABLE wire_shape (
   input_pk INTEGER NOT NULL,
   chain INTEGER NOT NULL,
@@ -48,9 +48,9 @@ CREATE TABLE wire_shape (
   last INTEGER NOT NULL,
   PRIMARY KEY (input_pk,chain,reading_version,record_kind,path,table_key),
   FOREIGN KEY (input_pk,chain,reading_version,first)
-    REFERENCES wire_receipt(input_pk,chain,reading_version,number),
+    REFERENCES wire_occurrence(input_pk,chain,reading_version,number),
   FOREIGN KEY (input_pk,chain,reading_version,last)
-    REFERENCES wire_receipt(input_pk,chain,reading_version,number)
+    REFERENCES wire_occurrence(input_pk,chain,reading_version,number)
 ) STRICT, WITHOUT ROWID;
 -- How often a path held each JSON type in a reading.
 CREATE TABLE wire_type (
@@ -68,7 +68,7 @@ CREATE TABLE wire_type (
   FOREIGN KEY (input_pk,chain,reading_version,record_kind,path,table_key)
     REFERENCES wire_shape(input_pk,chain,reading_version,record_kind,path,table_key),
   FOREIGN KEY (input_pk,chain,reading_version,first)
-    REFERENCES wire_receipt(input_pk,chain,reading_version,number),
+    REFERENCES wire_occurrence(input_pk,chain,reading_version,number),
   FOREIGN KEY (input_pk,chain,reading_version,last)
-    REFERENCES wire_receipt(input_pk,chain,reading_version,number)
+    REFERENCES wire_occurrence(input_pk,chain,reading_version,number)
 ) STRICT, WITHOUT ROWID;

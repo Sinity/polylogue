@@ -37,7 +37,7 @@ fn message_session_lookup_never_hydrates_the_endpoint_body() {
         reader.message_session(&id).unwrap(),
         Some(SessionId::parse("codex:opaque:session").unwrap())
     );
-    assert!(reader.message_with_projection(&id).is_err());
+    assert!(reader.message_with_block_selection(&id).is_err());
     assert_eq!(
         reader
             .message_session(&MessageId::parse("codex:absent").unwrap())
@@ -47,7 +47,7 @@ fn message_session_lookup_never_hydrates_the_endpoint_body() {
 }
 
 #[test]
-fn message_ordinal_seek_is_metadata_only_and_uses_canonical_physical_order() {
+fn message_ordinal_seek_uses_stored_physical_order() {
     let directory = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(&directory.path().join("archive")).unwrap();
     let session = fixture

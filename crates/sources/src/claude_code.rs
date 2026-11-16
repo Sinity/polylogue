@@ -168,7 +168,7 @@ pub struct ParserState {
     open: Option<Response>,
     /// Recently closed responses that a late continuation may reopen.
     recent: VecDeque<Response>,
-    /// Exact link statements already sent.
+    /// Link statements already sent.
     links: BTreeSet<String>,
     #[serde(default)]
     prefix_copies: BTreeSet<(SessionId, SessionId)>,
@@ -307,7 +307,7 @@ impl ClaudeCode {
     }
 
     /// The session's facts entry, created on first sight, with the
-    /// record's envelope facts offered to it. Also sends the link that
+    /// record's wrapper fields offered to it. Also sends the link that
     /// explains why a record belongs to a session other than the file's
     /// own.
     fn session<'c>(
@@ -379,7 +379,7 @@ impl ClaudeCode {
             s.tool_version = Some(version.to_owned());
         }
         if let Some(at) = v.get("timestamp").and_then(time::rfc3339) {
-            s.offer_start(at.timestamp(), at.evidence())
+            s.offer_start(at.timestamp(), at.accuracy())
                 .expect("decoded source time is valid");
         }
         if let Some(mode) = str_field(v, "sessionKind") {
@@ -569,12 +569,12 @@ impl ClaudeCode {
             // The summary records supplied feedback, including when the
             // hook prevented continuation. It is not a delivery receipt.
             close(parser_state, out);
-            // This sidecar cites native fields, not an authored claim in the
-            // message. Admission determines whether they were observed locally
-            // or merely declared by an import; neither changes the message hash.
+            // This sidecar cites fields as the harness wrote them, not a value
+            // stated in the message. The commit decides whether they were observed
+            // locally or only declared by an import; neither changes the message hash.
             let injected_context = !context_blocks.is_empty();
             if injected_context {
-                out.native_hook_fields.insert(
+                out.hook_fields.insert(
                     out.messages.len(),
                     context_blocks
                         .into_iter()
@@ -892,7 +892,7 @@ impl ClaudeCode {
         self.event(parser_state, record, v, kind, out)
     }
 
-    /// Native authorship markers win. Unmarked prose in an unknown
+    /// Authorship markers the harness wrote win. Unmarked prose in an unknown
     /// compaction carrier does not establish who originally wrote it.
     fn prompt_kind(&self, v: &Json, content: &Json) -> Option<PromptKind> {
         if v.get("isCompactSummary").and_then(Json::as_bool) == Some(true) {
@@ -900,12 +900,12 @@ impl ClaudeCode {
         }
         let kind = blocks::prompt_kind(v, content);
         let human = v.pointer("/origin/kind").and_then(Json::as_str) == Some("human");
-        let owner = self.record_session(v).kind;
-        if kind == PromptKind::Prose && owner == SessionKind::Compaction && !human {
+        let session_kind = self.record_session(v).kind;
+        if kind == PromptKind::Prose && session_kind == SessionKind::Compaction && !human {
             return None;
         }
         if kind == PromptKind::Prose
-            && owner == SessionKind::Subagent
+            && session_kind == SessionKind::Subagent
             && !human
             && str_field(v, "parentUuid").is_none()
         {
@@ -1273,10 +1273,10 @@ fn usage(u: &Json) -> Usage {
 }
 
 /// Polylogue labels typed diagnostics for readers; the error and reason
-/// strings stay unchanged. The complete native summary remains in its event.
+/// strings stay unchanged. The complete summary as the harness wrote it remains in its event.
 struct HookText {
     blocks: Vec<Block>,
-    /// Original projected block ordinal and original native array position.
+    /// Original block ordinal and the position in the record's own array.
     context_blocks: Vec<(u64, usize)>,
     invalid: Option<&'static str>,
 }
@@ -1452,11 +1452,11 @@ impl Parser for ClaudeCode {
             && !parser_state.compaction_ownership_reported
         {
             let session = self.own_session(parser_state);
-            let (at, evidence) = crate::time::parts(v.get("timestamp").and_then(time::rfc3339));
+            let (at, accuracy) = crate::time::parts(v.get("timestamp").and_then(time::rfc3339));
             out.events.push(Event {
                 session, kind: "compaction_ownership_unknown".into(),
-                at, at_quality: evidence.quality, at_precision: evidence.precision,
-                at_until: evidence.until, after: None, range: Some(range(record)),
+                at, at_quality: accuracy.quality, at_precision: accuracy.precision,
+                at_until: accuracy.until, after: None, range: Some(range(record)),
                 data: serde_json::json!({"reason":"compactor identity and root carrier do not establish which work session owns the replay"}),
             });
             parser_state.compaction_ownership_reported = true;
@@ -1728,17 +1728,17 @@ impl Parser for ClaudeCode {
         // A response reopened within one step was sent more than once; keep
         // the last, which is the longest. Rows go out in file order.
         let mut seen = BTreeSet::new();
-        let mut claims = std::mem::take(&mut out.native_hook_fields);
+        let mut stated = std::mem::take(&mut out.hook_fields);
         let mut kept = Vec::with_capacity(out.messages.len());
         for (index, row) in out.messages.drain(..).enumerate().rev() {
             if seen.insert((row.message.id.clone(), row.offset)) {
-                kept.push((row, claims.remove(&index)));
+                kept.push((row, stated.remove(&index)));
             }
         }
         kept.sort_by_key(|(row, _)| row.offset);
-        for (index, (_, claims)) in kept.iter_mut().enumerate() {
-            if let Some(claims) = claims.take() {
-                out.native_hook_fields.insert(index, claims);
+        for (index, (_, stated)) in kept.iter_mut().enumerate() {
+            if let Some(fields) = stated.take() {
+                out.hook_fields.insert(index, fields);
             }
         }
         out.messages = kept.into_iter().map(|(row, _)| row).collect();

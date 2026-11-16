@@ -20,7 +20,7 @@ fn parent_deadline_surrounds_the_unchanged_request() {
 }
 
 #[test]
-fn a_shared_envelope_needs_no_client_supplied_identity_evidence() {
+fn bare_request_needs_no_caller_details() {
     let request = command_surface::Request {
         operation: "status".into(),
         arguments: serde_json::json!({}),

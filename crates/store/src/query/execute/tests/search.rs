@@ -63,7 +63,7 @@ fn archive(unrelated: usize, cycle: bool) -> (tempfile::TempDir, Fixture) {
                 id: "own-hit",
                 role: "assistant",
                 written_by: "model",
-                text: Some("a longer ordinary report with one needle"),
+                text: Some("a longer plain report with one needle"),
                 ..Default::default()
             },
         )
@@ -110,7 +110,7 @@ fn archive(unrelated: usize, cycle: bool) -> (tempfile::TempDir, Fixture) {
     )
     .unwrap();
     if cycle {
-        // Search reachability is bounded even when retained source links cycle.
+        // Search reachability is bounded even when stored source links cycle.
         // This test reads query rows, independently of transcript layout indexes.
         conn.execute("INSERT INTO link(parent_id,child_id,child_pk,kind,how,evidence,input_pk)
           VALUES('test:deep','test:leaf',?1,'spawn',NULL,'fixture',(SELECT pk FROM input_ref LIMIT 1))", [sessions["leaf"]]).unwrap();
@@ -206,7 +206,7 @@ fn rare_word_steps_stay_flat_as_unrelated_history_grows_with_or_without_statisti
             large_steps <= small_steps + small_steps / 10,
             "statistics={analyze}: {small_steps} steps over100 unrelated sessions, {large_steps} over2000"
         );
-        // The oracle retains the original per-row traversal, so it also proves
+        // The oracle keeps the original per-row traversal, so it also proves
         // that this cost control discriminates against the replaced query.
         assert!(
             old_large > old_small * 8,
@@ -279,7 +279,7 @@ fn session_text_search_remains_readable_with_first_build_indexes_deferred() {
             .unwrap();
     }
     drop(write);
-    // The same independent membership/rank oracle remains exact while a
+    // The same independent membership/rank oracle still holds while a
     // first build has deferred its natural-key and secondary read indexes.
     read(&fixture, false);
 }
@@ -287,13 +287,13 @@ fn session_text_search_remains_readable_with_first_build_indexes_deferred() {
 fn many_hits(blocks: usize, output: bool) -> (tempfile::TempDir, Fixture) {
     let dir = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(dir.path()).unwrap();
-    let mut owners = Vec::new();
+    let mut sessions = Vec::new();
     for (id, kind, last) in [
         ("old", "main", 1000),
         ("new", "main", 2000),
         ("leaf", "subagent", 1000),
     ] {
-        owners.push(
+        sessions.push(
             fixture
                 .session(SessionFacts {
                     id: &format!("test:{id}"),
@@ -307,22 +307,22 @@ fn many_hits(blocks: usize, output: bool) -> (tempfile::TempDir, Fixture) {
     fixture
         .link("test:old", "test:leaf", "spawn", None)
         .unwrap();
-    // A retained cycle must not change the owner best-score fold.
+    // A kept cycle must not change the best-score choice per session.
     fixture
         .link("test:leaf", "test:old", "spawn", None)
         .unwrap();
     for n in 0..=blocks {
-        let owner = if n == blocks {
-            owners[1]
+        let session = if n == blocks {
+            sessions[1]
         } else if n % 2 == 0 {
-            owners[0]
+            sessions[0]
         } else {
-            owners[2]
+            sessions[2]
         };
         let text = format!("needle token{n:06}");
         let pk = fixture
             .message(
-                owner,
+                session,
                 MessageFacts {
                     id: &format!("test:hit-{n:06}"),
                     role: "assistant",
@@ -336,7 +336,7 @@ fn many_hits(blocks: usize, output: bool) -> (tempfile::TempDir, Fixture) {
         if output {
             fixture
                 .tool_call(
-                    owner,
+                    session,
                     pk,
                     crate::fixture::CallFacts {
                         tool: "Bash",
@@ -370,7 +370,7 @@ fn pages(reader: &Reader<'_>, program: &Program) -> Vec<Value> {
         });
         rows.extend(page.rows);
         if !page.more {
-            // The final cursor also has no weaker duplicate owner left behind it.
+            // The final cursor also has no weaker duplicate session left behind it.
             assert!(
                 reader
                     .query_page(program, after.as_deref())
@@ -384,11 +384,11 @@ fn pages(reader: &Reader<'_>, program: &Program) -> Vec<Value> {
     rows
 }
 
-fn shared_body_outside_scope(fixture: &mut Fixture, message: &str, owners: usize) {
+fn shared_body_outside_scope(fixture: &mut Fixture, message: &str, count: usize) {
     fixture
         .many_sessions(ManySessions {
             prefix: "/synthetic/outside-search-scope",
-            sessions: owners,
+            sessions: count,
             messages: 1,
             answered: 0,
             last: 1000,
@@ -400,8 +400,8 @@ fn shared_body_outside_scope(fixture: &mut Fixture, message: &str, owners: usize
             "INSERT INTO block(message_pk,session_pk,idx,kind,text_id,body) \
          SELECT m.pk,m.session_pk,0,source.kind,source.text_id,source.body \
          FROM message m JOIN session s ON s.pk=m.session_pk \
-         CROSS JOIN block source JOIN message owner ON owner.pk=source.message_pk \
-         WHERE s.id LIKE 'test:many-%' AND owner.id=?1 \
+         CROSS JOIN block source JOIN message source_message ON source_message.pk=source.message_pk \
+         WHERE s.id LIKE 'test:many-%' AND source_message.id=?1 \
          AND source.kind IN ('text','tool_result')",
             [message],
         )
@@ -410,7 +410,7 @@ fn shared_body_outside_scope(fixture: &mut Fixture, message: &str, owners: usize
 
 fn search_message(
     fixture: &mut Fixture,
-    owner: i64,
+    session: i64,
     id: &str,
     at: Option<i64>,
     text: &str,
@@ -418,7 +418,7 @@ fn search_message(
 ) {
     let message = fixture
         .message(
-            owner,
+            session,
             MessageFacts {
                 id,
                 at,
@@ -432,7 +432,7 @@ fn search_message(
     if output {
         fixture
             .tool_call(
-                owner,
+                session,
                 message,
                 crate::fixture::CallFacts {
                     tool: "Bash",
@@ -453,7 +453,7 @@ fn recency_scope_and_index_agree_across_batches_shared_children_and_unknown_time
     for output in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         let mut fixture = Fixture::new(dir.path()).unwrap();
-        let mut owners = std::collections::BTreeMap::new();
+        let mut sessions = std::collections::BTreeMap::new();
         for (id, kind, last) in [
             ("a", "main", Some(5000)),
             ("b", "main", Some(4000)),
@@ -464,7 +464,7 @@ fn recency_scope_and_index_agree_across_batches_shared_children_and_unknown_time
             ("g", "main", None),
             ("child", "subagent", Some(1000)),
         ] {
-            owners.insert(
+            sessions.insert(
                 id,
                 fixture
                     .session(SessionFacts {
@@ -481,11 +481,11 @@ fn recency_scope_and_index_agree_across_batches_shared_children_and_unknown_time
                 .link(&format!("test:{parent}"), "test:child", "spawn", None)
                 .unwrap();
         }
-        // Retained cycles do not change best-source membership or batches.
+        // Kept cycles do not change best-source membership or batches.
         fixture.link("test:child", "test:a", "spawn", None).unwrap();
         search_message(
             &mut fixture,
-            owners["child"],
+            sessions["child"],
             "shared-hit",
             Some(1000),
             "needle",
@@ -493,7 +493,7 @@ fn recency_scope_and_index_agree_across_batches_shared_children_and_unknown_time
         );
         search_message(
             &mut fixture,
-            owners["b"],
+            sessions["b"],
             "miss-b",
             Some(4000),
             "other",
@@ -501,7 +501,7 @@ fn recency_scope_and_index_agree_across_batches_shared_children_and_unknown_time
         );
         search_message(
             &mut fixture,
-            owners["c"],
+            sessions["c"],
             "miss-c",
             Some(3000),
             "other",
@@ -509,7 +509,7 @@ fn recency_scope_and_index_agree_across_batches_shared_children_and_unknown_time
         );
         search_message(
             &mut fixture,
-            owners["f"],
+            sessions["f"],
             "own-f",
             Some(500),
             "needle own",
@@ -517,7 +517,7 @@ fn recency_scope_and_index_agree_across_batches_shared_children_and_unknown_time
         );
         search_message(
             &mut fixture,
-            owners["g"],
+            sessions["g"],
             "own-g",
             None,
             "needle own",
@@ -621,7 +621,7 @@ fn recency_scope_and_index_agree_across_batches_shared_children_and_unknown_time
 }
 
 #[test]
-fn a_recent_page_does_not_expand_older_matching_owners() {
+fn recent_page_skips_older_matching_sessions() {
     use crate::query::compile::Statements;
     let mut work = Vec::new();
     for outside in [512, 4096] {
@@ -631,7 +631,7 @@ fn a_recent_page_does_not_expand_older_matching_owners() {
             ("newest", 5000, "needle"),
             ("runner-up", 4000, "needle second"),
         ] {
-            let owner = fixture
+            let session = fixture
                 .session(SessionFacts {
                     id: &format!("test:{id}"),
                     kind: "main",
@@ -641,7 +641,7 @@ fn a_recent_page_does_not_expand_older_matching_owners() {
                 .unwrap();
             search_message(
                 &mut fixture,
-                owner,
+                session,
                 &format!("test:{id}-message"),
                 Some(at),
                 text,
@@ -740,7 +740,7 @@ fn scope_and_index_plans_agree_on_rows_sources_counts_and_continuations() {
                     crate::query::compile::Statements::Keyed(rows) => {
                         rows.search.as_ref().unwrap().scope.as_ref().unwrap().mode
                     }
-                    _ => panic!("native scope search"),
+                    _ => panic!("scoped search has keyed rows"),
                 };
                 let mut scoped = program.clone();
                 scoped.params[mode - 1] = crate::query::compile::Param::Int(1);
@@ -784,9 +784,9 @@ fn scope_and_index_plans_agree_on_rows_sources_counts_and_continuations() {
 #[test]
 fn a_narrow_search_scope_does_not_expand_shared_bodies_outside_it() {
     let mut work = Vec::new();
-    for owners in [512, 4096] {
+    for outside in [512, 4096] {
         let (_dir, mut fixture) = many_hits(32, false);
-        shared_body_outside_scope(&mut fixture, "test:hit-000032", owners);
+        shared_body_outside_scope(&mut fixture, "test:hit-000032", outside);
         let program = crate::query::compile("id:test:new needle", &options_for_search()).unwrap();
         let mut unlimited = program.clone();
         if let crate::query::compile::Statements::Keyed(rows) = &mut unlimited.statements {
@@ -808,7 +808,7 @@ fn a_narrow_search_scope_does_not_expand_shared_bodies_outside_it() {
             });
             assert_eq!(result(&rows), result(&old));
             assert_eq!(rows[0]["id"], "test:new");
-            work.push((owners, analyzed, steps, old_steps));
+            work.push((outside, analyzed, steps, old_steps));
         }
     }
     for analyzed in [false, true] {
@@ -832,7 +832,7 @@ fn a_narrow_search_scope_does_not_expand_shared_bodies_outside_it() {
 }
 
 #[test]
-fn ranked_pages_read_score_ties_and_do_not_repeat_many_hit_owners() {
+fn ranked_pages_do_not_repeat_many_hit_sessions() {
     for output in [false, true] {
         let (_dir, fixture) = many_hits(384, output);
         for statistics in [false, true] {
@@ -887,20 +887,20 @@ fn many_hit_page_and_continuation_work_grows_with_input_not_its_square() {
         work.push(steps);
     }
     // A fourfold input grows the prefix fold roughly by N log N. The old
-    // per-candidate owner reconstruction exceeded this bound already at256.
+    // per-candidate session reconstruction exceeded this bound already at256.
     assert!(work[1] < work[0] * 7, "128→512 blocks: {work:?}");
 }
 
 #[test]
-fn first_ranked_page_does_not_expand_worse_shared_body_owners() {
+fn first_ranked_page_skips_worse_shared_body_sessions() {
     let mut work = Vec::new();
-    for owners in [64, 512] {
+    for outside in [64, 512] {
         let dir = tempfile::tempdir().unwrap();
         let mut fixture = Fixture::new(dir.path()).unwrap();
         let sessions = fixture
             .many_sessions(ManySessions {
                 prefix: "/home/op/shared-body",
-                sessions: owners,
+                sessions: outside,
                 messages: 1,
                 answered: 0,
                 last: 1000,
@@ -950,7 +950,7 @@ fn first_ranked_page_does_not_expand_worse_shared_body_owners() {
         let mut unlimited = program.clone();
         match &mut unlimited.statements {
             crate::query::compile::Statements::Keyed(rows) => rows.search = None,
-            _ => panic!("native search has keyed rows"),
+            _ => panic!("search has keyed rows"),
         }
         for statistics in [false, true] {
             if statistics {
@@ -1028,7 +1028,7 @@ fn relevance_ties_use_the_chosen_message_and_snippets_keep_its_source() {
             ..Default::default()
         })
         .unwrap();
-    for (owner, id, text, at, author, prompt) in [
+    for (session, id, text, at, author, prompt) in [
         (
             active,
             "test:old-hit",
@@ -1064,7 +1064,7 @@ fn relevance_ties_use_the_chosen_message_and_snippets_keep_its_source() {
     ] {
         fixture
             .message(
-                owner,
+                session,
                 MessageFacts {
                     id,
                     role: if author == "model" {
@@ -1143,7 +1143,7 @@ fn relevance_ties_use_the_chosen_message_and_snippets_keep_its_source() {
 }
 
 #[test]
-fn snippet_reuse_does_not_rescan_many_hit_owners() {
+fn snippet_reuse_does_not_rescan_many_hit_sessions() {
     use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
     let mut work = Vec::new();
     for blocks in [128, 512] {
@@ -1194,14 +1194,14 @@ fn snippet_reuse_does_not_rescan_many_hit_owners() {
 }
 
 #[test]
-fn ranking_uses_one_physical_score_and_preserves_the_public_rank_field() {
+fn ranking_reuses_one_score_for_the_rank_field() {
     let (_dir, fixture) = many_hits(32, false);
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
     let program = crate::query::compile("needle", &options_for_search()).unwrap();
     let keys = match &program.statements {
         crate::query::compile::Statements::Keyed(rows) => &rows.keys,
-        _ => panic!("ranked native keys"),
+        _ => panic!("ranked keyed rows"),
     };
     for row in reader
         .query(keys, &crate::selection::values(&program.params))
@@ -1216,7 +1216,7 @@ fn ranking_uses_one_physical_score_and_preserves_the_public_rank_field() {
                 .filter(|value| *value == score)
                 .count(),
             1,
-            "the score is one physical value, reused by ordering and presentation: {row}"
+            "the score is one stored value, reused by ordering and presentation: {row}"
         );
     }
     let expected = reader.query_rows(&program).unwrap();
@@ -1235,7 +1235,7 @@ fn ranking_uses_one_physical_score_and_preserves_the_public_rank_field() {
 }
 
 #[test]
-fn a_recency_sort_keeps_a_source_order_witness_condition() {
+fn recency_sort_keeps_a_source_order_condition() {
     let (_dir, fixture) = many_hits(32, false);
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();

@@ -164,7 +164,7 @@ fn a_boot_generation_change_fences_publishers_in_both_archive_modes() {
 }
 
 #[test]
-fn the_transport_fixture_uses_the_native_transition_and_keeps_source_rows() {
+fn transport_fixture_keeps_source_rows() {
     use std::sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -174,7 +174,7 @@ fn the_transport_fixture_uses_the_native_transition_and_keeps_source_rows() {
     let source = super::super::open_write(&archive.archive_db(), cache::SETUP).unwrap();
     crate::input_rows::InputRows {
         acquisition: None,
-        input: "retained-source".into(),
+        input: "kept-source".into(),
         format: "synthetic".into(),
         revision: None,
         extents: Vec::new(),
@@ -209,7 +209,7 @@ fn the_transport_fixture_uses_the_native_transition_and_keeps_source_rows() {
         source
             .query_row("SELECT id FROM input", [], |row| row.get::<_, String>(0))
             .unwrap(),
-        "retained-source"
+        "kept-source"
     );
     assert!(
         archive

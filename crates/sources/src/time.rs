@@ -1,5 +1,5 @@
-//! Decode each source's declared timestamp encoding together with its evidence.
-//! Units and precision come from the native representation, never the clock.
+//! Decode each source's declared timestamp encoding together with its accuracy.
+//! Units and precision come from the representation the source wrote, never the clock.
 
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 2;
@@ -7,12 +7,12 @@ pub const VERSION: u32 = 2;
 use polylogue_model::{Json, Precision, TimeEvidence, TimeEvidenceError, TimeQuality, Timestamp};
 use serde::{Deserialize, Serialize};
 
-/// A decoded native time remains paired with its evidence through parser state.
+/// A decoded source time remains paired with its accuracy through parser state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "TimeWire", into = "TimeWire")]
 pub struct SourceTime {
     at: Timestamp,
-    evidence: TimeEvidence,
+    accuracy: TimeEvidence,
 }
 #[derive(Serialize, Deserialize)]
 struct TimeWire {
@@ -29,26 +29,26 @@ impl From<SourceTime> for TimeWire {
     fn from(value: SourceTime) -> Self {
         Self {
             at: value.at,
-            evidence: value.evidence,
+            evidence: value.accuracy,
         }
     }
 }
 impl SourceTime {
-    pub fn new(at: Timestamp, evidence: TimeEvidence) -> Result<Self, TimeEvidenceError> {
-        evidence.validate(Some(at))?;
-        Ok(Self { at, evidence })
+    pub fn new(at: Timestamp, accuracy: TimeEvidence) -> Result<Self, TimeEvidenceError> {
+        accuracy.validate(Some(at))?;
+        Ok(Self { at, accuracy })
     }
     pub fn timestamp(self) -> Timestamp {
         self.at
     }
-    pub fn evidence(self) -> TimeEvidence {
-        self.evidence
+    pub fn accuracy(self) -> TimeEvidence {
+        self.accuracy
     }
     /// A source-declared interval end, never a guessed rounding boundary.
     pub fn with_until(mut self, until: Timestamp) -> Option<Self> {
-        self.evidence.precision = Some(Precision::Bounded);
-        self.evidence.until = Some(until);
-        Self::new(self.at, self.evidence).ok()
+        self.accuracy.precision = Some(Precision::Bounded);
+        self.accuracy.until = Some(until);
+        Self::new(self.at, self.accuracy).ok()
     }
     pub fn unix_ms(self) -> i64 {
         self.at.unix_ms()
@@ -58,12 +58,12 @@ impl SourceTime {
     }
     /// Only call for a field explicitly defined as a capture observation.
     pub fn captured(mut self) -> Self {
-        self.evidence.quality = TimeQuality::Captured;
+        self.accuracy.quality = TimeQuality::Captured;
         self
     }
     /// Only call for a field explicitly defined as source file metadata time.
     pub fn file_mtime(mut self) -> Self {
-        self.evidence.quality = TimeQuality::FileMtime;
+        self.accuracy.quality = TimeQuality::FileMtime;
         self
     }
 }
@@ -75,13 +75,13 @@ impl std::fmt::Display for SourceTime {
 
 pub fn parts(time: Option<SourceTime>) -> (Option<Timestamp>, TimeEvidence) {
     time.map_or((None, TimeEvidence::UNKNOWN), |time| {
-        (Some(time.at), time.evidence)
+        (Some(time.at), time.accuracy)
     })
 }
 fn intrinsic(at: Timestamp, precision: Precision) -> SourceTime {
     SourceTime {
         at,
-        evidence: TimeEvidence::intrinsic(precision),
+        accuracy: TimeEvidence::intrinsic(precision),
     }
 }
 
@@ -113,7 +113,7 @@ pub fn rfc3339(value: &Json) -> Option<SourceTime> {
 }
 
 /// Integer epoch seconds state whole-second precision; a fractional encoding
-/// states a subsecond instant. Decimal arithmetic retains native nanoseconds.
+/// states a subsecond instant. Decimal arithmetic keeps the nanoseconds as written.
 pub fn epoch_seconds(value: &Json) -> Option<SourceTime> {
     let number = value.as_number()?;
     let text = number.to_string();
@@ -134,7 +134,7 @@ pub fn epoch_millis(value: &Json) -> Option<SourceTime> {
     ))
 }
 
-/// Native integer nanoseconds, including OTLP's decimal string representation.
+/// Integer nanoseconds as written, including OTLP's decimal string representation.
 pub fn epoch_nanos(value: &Json) -> Option<SourceTime> {
     let text = match value {
         Json::Number(number) => number.to_string(),

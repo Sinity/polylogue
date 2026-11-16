@@ -17,7 +17,7 @@ pub const RULES: crate::origin::ExportAssets = crate::origin::ExportAssets {
 };
 
 /// IDs are anchored at a member basename or rendition separator. An arbitrary
-/// embedded ID or an original filename is not identity evidence.
+/// embedded ID or an original filename does not identify a member.
 pub fn member_id(member: &str) -> Option<&str> {
     if member
         .split('/')

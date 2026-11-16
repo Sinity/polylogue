@@ -33,7 +33,7 @@ const BRANCH_POINT: u32 = 1 << 12;
 const AT: u32 = 1 << 13;
 
 /// Whose entry a stored row holds, from the row and its unit.
-pub(super) enum Owner<'a> {
+pub(super) enum EntryOf<'a> {
     /// A message's first entry: its row names the message.
     Message(MessageId),
     /// An event's entry: its row names the event.
@@ -213,10 +213,10 @@ pub(crate) fn encode(entry: &IndexEntry, header: Option<&IndexEntry>) -> Result<
     Ok(out)
 }
 
-/// The entry stored as `bytes` in a row of `owner`, with the row's call ID.
+/// The entry stored as `bytes` in a row of `entry_of`, with the row's call ID.
 pub(super) fn decode(
     bytes: &[u8],
-    owner: Owner<'_>,
+    entry_of: EntryOf<'_>,
     call_id: Option<String>,
 ) -> Result<IndexEntry> {
     let mut input = Input { bytes, at: 0 };
@@ -224,8 +224,8 @@ pub(super) fn decode(
     let has = |bit: u32| flags & bit != 0;
     let kind_byte = input.byte()?;
     let kind = kind_of(kind_byte & 0x0F)?;
-    let (key_owner, written_by, prompt_kind, active_path, branch_point, at) = match owner {
-        Owner::Header(header) => {
+    let (key_message, written_by, prompt_kind, active_path, branch_point, at) = match entry_of {
+        EntryOf::Header(header) => {
             let Some(message) = header.key.message() else {
                 return Err(malformed());
             };
@@ -238,7 +238,7 @@ pub(super) fn decode(
                 header.at,
             )
         }
-        Owner::Message(_) | Owner::Event(_) => {
+        EntryOf::Message(_) | EntryOf::Event(_) => {
             let written_by = author_of(kind_byte >> 4)?;
             let prompt_kind = if has(PROMPT_KIND) {
                 Some(prompt_of(input.byte()?)?)
@@ -251,8 +251,8 @@ pub(super) fn decode(
             } else {
                 None
             };
-            let message = match &owner {
-                Owner::Message(message) => Some(message.clone()),
+            let message = match &entry_of {
+                EntryOf::Message(message) => Some(message.clone()),
                 _ => None,
             };
             (
@@ -270,8 +270,8 @@ pub(super) fn decode(
     } else {
         None
     };
-    let key = match (owner, key_owner) {
-        (Owner::Event(event), _) => {
+    let key = match (entry_of, key_message) {
+        (EntryOf::Event(event), _) => {
             if block.is_some() {
                 return Err(malformed());
             }

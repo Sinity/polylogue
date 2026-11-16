@@ -110,7 +110,7 @@ fn stopped_attempts_hash_executable_bytes_instead_of_paths_or_build_labels() {
 /// consumer produces; a key nothing reads does not belong in the catalog.
 #[test]
 fn every_catalog_key_changes_an_output() {
-    use polylogue_model::settings::{CATALOG, Current, Owner, Snapshot, Value, current};
+    use polylogue_model::settings::{CATALOG, Current, SettingMode, Snapshot, Value, current};
     let snapshot = |overrides: &[(&str, &str)]| {
         let mut keys: Vec<&str> = CATALOG
             .iter()
@@ -132,11 +132,11 @@ fn every_catalog_key_changes_an_output() {
                 key: key.into(),
                 kind: declaration.kind,
                 default: declaration.default.map(|text| {
-                    polylogue_model::settings::parse(key, text, Owner::Standalone).unwrap()
+                    polylogue_model::settings::parse(key, text, SettingMode::Standalone).unwrap()
                 }),
                 scope: declaration.scope,
-                owner: "polylogue".into(),
-                value: current(key, stored, Owner::Standalone).unwrap(),
+                supplier: "polylogue".into(),
+                value: current(key, stored, SettingMode::Standalone).unwrap(),
                 authored: None,
                 conflicts: vec![],
             }

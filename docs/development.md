@@ -28,10 +28,10 @@ builds set `POLYLOGUE_REVISION` at compile time, and `--version` shows it.
 
 Extension packaging reads the committed registration in `extension/manifest.json` and the explicit runtime inputs in `extension/scripts/package.mjs`. `npm --prefix extension run build -- --out DIR` writes Chrome ZIP and Firefox XPI archives plus `build-manifest.json`; it never rewrites source versions. `--version VERSION` changes only the artifact version, stripping development suffixes while rejecting malformed browser versions. The existing Firefox background declaration and Gecko identity are preserved. Artifact checks do not qualify execution in a real browser.
 
-To change the source release version, run `npm --prefix extension version VERSION --no-git-tag-version`, update the committed manifest version to its browser version, then review the package, lock and manifest together. `npm --prefix extension run check` runs lint, manifest validation and the JS suite, including real zip/Python archive generation, exact released members and source-byte preservation. The required hosted check runs it too. The declared AgentCTL `extension` operation runs these npm commands without a Rust test build. `nix build .#polylogue-extension` checks packaging from read-only Nix source and provides the unpacked Chrome files. The declared `extension_package` operation builds that output and the Nix-format check only.
+To change the source release version, run `npm --prefix extension version VERSION --no-git-tag-version`, update the committed manifest version to its browser version, then review the package, lock and manifest together. `npm --prefix extension run check` runs lint, manifest validation and the JS suite, including real zip/Python archive generation, the released members and source-byte preservation. The required hosted check runs it too. The declared AgentCTL `extension` operation runs these npm commands without a Rust test build. `nix build .#polylogue-extension` checks packaging from read-only Nix source and provides the unpacked Chrome files. The declared `extension_package` operation builds that output and the Nix-format check only.
 
-An explicit `-p PACKAGE` selects tests to execute while retaining the canonical
-workspace feature graph. Native target flags limit what builds: use
+An explicit `-p PACKAGE` selects tests to execute while keeping the
+workspace feature graph. Cargo target flags limit what builds: use
 `--lib` for library unit tests, `--test NAME` for an integration target, or
 `--bin NAME` for a binary's unit tests. Without a target flag, targets marked
 `test = true` are selected, including opted-in examples. Package, exclusion,
@@ -42,18 +42,18 @@ All test selections use the primary workspace feature list in
 `xtask/src/main.rs`, including test-only dependencies. A package filter changes
 execution rather than resolving a separate dependency feature union. Named
 `--bin` and `--test` targets build only matching targets; `--lib` builds the
-workspace's library test targets. Without a native target flag, all test
-targets are built. The required check and warm command retain that full graph;
+workspace's library test targets. Without a target flag, all test
+targets are built. The required check and warm command keep that full graph;
 Clippy covers all targets both with and without the Sinex client. For an
 intentional isolated dependency investigation, invoke Cargo directly with its
-native package and feature flags; that creates a separate compilation graph.
+own package and feature flags; that creates a separate compilation graph.
 
 Shared dependency features are declared once in the root manifest's
 `[workspace.dependencies]`; workspace crates add no further features, except
 test-only dev-dependencies. Focused runs, checks and warm-up use that same
 graph so they can reuse compiler units.
 
-The package uses a Crane dependency build with the package's exact feature
+The package uses a Crane dependency build with the package's own feature
 and package selection and without test compilation. Clippy and nextest share
 a separate workspace dependency build. The `polylogue-dependencies` package
 exposes the production compiler artifacts for the package cache.
@@ -68,7 +68,7 @@ exchange in a guest with private XDG and archive paths. Formatting, crate
 boundaries, extension packaging, deployment-file rendering and Nix formatting
 are flake checks too. The `modules` check evaluates both deployment modules,
 and the `services` VM starts the Home Manager user service and reaches its
-daemon through every installed alias and MCP. Its ordinary account home lets
+daemon through every installed alias and MCP. Its regular account home lets
 Home Manager activate; literal spaces, dollar signs and percent signs in the
 archive and XDG data, state and cache paths are checked against the running
 daemon's arguments and environment. Module evaluation separately checks those
@@ -90,7 +90,7 @@ settings such as build-output placement, job counts and compiler wrappers.
 Cargo's output directory is `target/` unless `CARGO_TARGET_DIR` is set.
 
 Declared AgentCTL operations clear an ambient `CARGO_TARGET_DIR` before entering
-the actual workspace's shell. The shell selects that checkout's isolated host
+the target workspace's shell. The shell selects that checkout's isolated host
 target when `sinnix-cargo-target` is available, with dependency artifacts seeded
 by the host helper. For an explicit target experiment, pass
 `exec -- env CARGO_TARGET_DIR=... cargo ...`; this assignment runs after shell
@@ -103,10 +103,10 @@ committing a lock file, as the shared
 describes.
 
 For an early type-check of one package, `cargo check --locked -p
-polylogue-sinex --tests` checks its native target without compiling a test
+polylogue-sinex --tests` checks its library target without compiling a test
 executable. The declared AgentCTL `compile` operation accepts those Cargo check
 arguments in the same one-slot compile queue. `fast` and the required hosted
-checks retain their complete feature matrices.
+checks keep their complete feature matrices.
 
 The `polylogue` package is binary-only: its daemon, CLI, MCP and web unit tests
 live in `--bin polylogue`. For example, run its reference-query tests with
@@ -114,8 +114,8 @@ live in `--bin polylogue`. For example, run its reference-query tests with
 
 A host may queue these commands through its own job runner. AgentCTL routes
 `fast` and `focused` through the same one-slot `compile` queue. Selected tests
-therefore wait for source checks rather than long runtime proofs, and their
-builds do not overlap a metadata check. Full checks and Nix checks retain
+therefore wait for source checks rather than long runtime checks, and their
+builds do not overlap a metadata check. Full checks and Nix checks keep
 their `bulk` queue. The `package` operation runs all locked Nix checks;
 `nix build` builds the package alone.
 
@@ -126,15 +126,15 @@ its runtime closure and production compiler artifacts to `sinity.cachix.org`.
 The next source-only package build reuses those compiler artifacts. Sinnix deploys a revision only
 after fetching that package, so its switches never compile Polylogue. To
 deploy a revision master does not contain, such as a deployment branch's head,
-qualify that exact tree with `gh workflow run check -f rev=<full-commit-sha>`,
+qualify that tree with `gh workflow run check -f rev=<full-commit-sha>`,
 then publish it with `gh workflow run package -f rev=<full-commit-sha>`. The manual
 check records and asserts its checked commit and runs the full check. Pull requests
 continue to check their merge with the default branch. Manual checks may reuse
 master's build cache but never replace it or its recorded source commit. Master pushes
 also restore that cache and date source files against its recorded commit, so
 Cargo rebuilds changed units while the full test suite still runs. Only master
-pushes save the target directory, labeled with the exact checked source commit. The package
-log records the actual fetched flake source path, revision and NAR hash before building.
+pushes save the target directory, labeled with the checked source commit. The package
+log records the fetched flake source path, revision and NAR hash before building.
 
 ## Deployment modules
 
@@ -165,7 +165,7 @@ Primary mode refuses a local `settings.day`.
 Activation restarts a service when the package changes; a configuration-only
 change takes effect at the next service restart. The units use notify
 readiness, a watchdog, the exit code for a refused schema, and CPU and I/O
-weights below ordinary interactive work, with no memory cap.
+weights below interactive work, with no memory cap.
 
 Designed and not built yet: the hooks, MCP registration and browser extension
 host that the Home Manager module installs into harnesses

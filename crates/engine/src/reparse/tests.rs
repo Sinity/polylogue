@@ -106,7 +106,7 @@ fn chains_parse_together_and_continue_while_the_writer_is_blocked() {
         .unwrap()
         .chains_behind_index(
             &[("claude-code".into(), "before".into())],
-            polylogue_store::StoppedChains::Settled,
+            polylogue_store::StoppedChains::Finished,
             polylogue_store::RevisionChains::All,
             None,
         )
@@ -167,7 +167,7 @@ fn chains_parse_together_and_continue_while_the_writer_is_blocked() {
         assert_eq!(STARTED.load(Ordering::SeqCst), 3);
         assert_eq!(
             pass.messages_written, 0,
-            "the same canonical rows are unchanged"
+            "the same stored rows are unchanged"
         );
     });
     *PARSED.lock().unwrap() = None;
@@ -258,7 +258,7 @@ fn a_committed_live_path_can_append_while_another_chain_is_still_parsing() {
         .unwrap()
         .chains_behind_index(
             &[("claude-code".into(), "before".into())],
-            polylogue_store::StoppedChains::Settled,
+            polylogue_store::StoppedChains::Finished,
             polylogue_store::RevisionChains::All,
             None,
         )

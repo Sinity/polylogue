@@ -39,7 +39,7 @@ fn export_over_a_corrupt_stored_link_kind_is_a_store_failure() {
 }
 
 // The original query is the independent result and negative work control.
-const ALL_PREFIXES: &str = r#"SELECT DISTINCT p.child_id,ir.id,s.chain,ps.reading_version,s.seq,s.record_position,p.parent_id FROM message m JOIN session owner ON owner.pk=m.session_pk JOIN session_prefix p ON p.parent_id=owner.id AND p.copies_prefix=1 AND p.branch_point IS NULL JOIN message_source s ON s.message_pk=m.pk JOIN input_ref ir ON ir.pk=s.input_pk JOIN parse_state ps ON ps.input_pk=s.input_pk AND ps.chain=s.chain WHERE m.id=?1 AND m.duplicate_of IS NULL AND EXISTS(SELECT 1 FROM prefix_copy x WHERE x.input_pk=s.input_pk AND x.chain=s.chain AND x.child_id=p.child_id AND x.parent_id=p.parent_id AND x.explicit_members=0) AND NOT EXISTS(SELECT 1 FROM prefix_copy x WHERE x.input_pk=s.input_pk AND x.chain=s.chain AND x.child_id=p.child_id AND x.parent_id=p.parent_id AND x.explicit_members=1)"#;
+const ALL_PREFIXES: &str = r#"SELECT DISTINCT p.child_id,ir.id,s.chain,ps.reading_version,s.seq,s.record_position,p.parent_id FROM message m JOIN session parent ON parent.pk=m.session_pk JOIN session_prefix p ON p.parent_id=parent.id AND p.copies_prefix=1 AND p.branch_point IS NULL JOIN message_source s ON s.message_pk=m.pk JOIN input_ref ir ON ir.pk=s.input_pk JOIN parse_state ps ON ps.input_pk=s.input_pk AND ps.chain=s.chain WHERE m.id=?1 AND m.duplicate_of IS NULL AND EXISTS(SELECT 1 FROM prefix_copy x WHERE x.input_pk=s.input_pk AND x.chain=s.chain AND x.child_id=p.child_id AND x.parent_id=p.parent_id AND x.explicit_members=0) AND NOT EXISTS(SELECT 1 FROM prefix_copy x WHERE x.input_pk=s.input_pk AND x.chain=s.chain AND x.child_id=p.child_id AND x.parent_id=p.parent_id AND x.explicit_members=1)"#;
 
 fn copied_archive() -> (
     crate::fixture::writer::WriterArchive,
@@ -50,7 +50,7 @@ fn copied_archive() -> (
     let mut archive = WriterArchive::new();
     let first = message(
         "first",
-        "owner",
+        "parent",
         Role::User,
         1,
         vec![Block::Text {
@@ -59,14 +59,14 @@ fn copied_archive() -> (
     );
     let last = message(
         "later",
-        "owner",
+        "parent",
         Role::Assistant,
         2,
         vec![Block::Text {
             text: "Synthetic later reply".into(),
         }],
     );
-    archive.write("owner", vec![first.clone(), last]);
+    archive.write("parent", vec![first.clone(), last]);
     archive.write("copy", vec![first.clone()]);
     (archive, first.id)
 }
@@ -96,7 +96,7 @@ fn old_copies(
 }
 
 #[test]
-fn copied_message_evidence_keeps_explicit_sources_and_anchored_prefix_boundaries() {
+fn copied_messages_keep_sources_and_branch_points() {
     use crate::fixture::writer::{message, sid};
     use polylogue_model::{Block, Link, LinkKind, PrefixSource, Role, bundle::CopiedFor};
     let (mut archive, id) = copied_archive();
@@ -104,17 +104,17 @@ fn copied_message_evidence_keeps_explicit_sources_and_anchored_prefix_boundaries
         kind: LinkKind::Fork,
         copies_prefix: true,
         how: None,
-        parent: sid("owner"),
-        child: sid("anchored"),
+        parent: sid("parent"),
+        child: sid("branched"),
         at: Some(id.clone()),
         call_id: None,
         evidence: "synthetic branch".into(),
     });
     archive.write(
-        "anchored",
+        "branched",
         vec![message(
             "first",
-            "owner",
+            "parent",
             Role::User,
             1,
             vec![Block::Text {
@@ -131,16 +131,16 @@ fn copied_message_evidence_keeps_explicit_sources_and_anchored_prefix_boundaries
         assert_eq!(
             copies.len(),
             1,
-            "the anchored fork is not inferred as an unbounded copy"
+            "the branched fork is not inferred as an unbounded copy"
         );
-        assert_eq!(copies[0].parent, sid("owner"));
+        assert_eq!(copies[0].parent, sid("parent"));
         assert_eq!(copies[0].child, sid("copy"));
         assert_eq!(copies[0].source.input, "input-copy");
         assert_eq!(copies[0].source.reading_version, "synthetic=1");
     }
     index
         .execute(
-            "UPDATE message SET duplicate_of='claude-code:owner-later' WHERE id=?1",
+            "UPDATE message SET duplicate_of='claude-code:parent-later' WHERE id=?1",
             [id.to_string()],
         )
         .unwrap();
@@ -165,7 +165,7 @@ fn copied_message_evidence_keeps_explicit_sources_and_anchored_prefix_boundaries
         SELECT input_pk,chain,parent_id,child_id,?1,'original-copy',17,'synthetic=2','18446744073709551615','42' FROM prefix_copy WHERE child_id=?2",
         rusqlite::params![id.to_string(),sid("copy").to_string()]).unwrap();
     let expected = CopiedFor {
-        parent: sid("owner"),
+        parent: sid("parent"),
         child: sid("copy"),
         source: PrefixSource {
             input: "original-copy".into(),
@@ -183,13 +183,13 @@ fn copied_message_evidence_keeps_explicit_sources_and_anchored_prefix_boundaries
         );
         assert!(
             reader
-                .copied_for(&polylogue_model::MessageId::parse("claude-code:owner-later").unwrap())
+                .copied_for(&polylogue_model::MessageId::parse("claude-code:parent-later").unwrap())
                 .unwrap()
                 .is_empty()
         );
     }
-    // Explicit retained evidence is independent of whether its message still
-    // has a selected row. Do not canonicalize an absent/duplicate owner into it.
+    // Explicit stored membership is independent of whether its message still
+    // has a selected row. Do not map an absent or duplicate session onto it.
     let absent = polylogue_model::MessageId::parse("claude-code:absent").unwrap();
     index
         .execute(
@@ -203,7 +203,7 @@ fn copied_message_evidence_keeps_explicit_sources_and_anchored_prefix_boundaries
 }
 
 #[test]
-fn copied_message_evidence_does_not_walk_unrelated_prefix_edges() {
+fn copied_messages_skip_unrelated_prefix_edges() {
     use std::sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -256,7 +256,7 @@ fn copied_message_evidence_does_not_walk_unrelated_prefix_edges() {
     assert_eq!(actual, expected);
     assert!(
         after <= before + 500,
-        "selected copy evidence grew from {before} to {after} VM steps"
+        "selected copy membership grew from {before} to {after} VM steps"
     );
     assert!(
         old_after > old_before + 100_000,

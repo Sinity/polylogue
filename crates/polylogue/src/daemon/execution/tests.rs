@@ -21,7 +21,7 @@ fn policy(call: &test_daemon::Call) -> Policy {
 pub(crate) const SLOW: &str = "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2000000000) SELECT count(*) FROM n";
 
 #[test]
-fn background_readers_keep_their_ordinary_busy_wait() {
+fn background_readers_keep_their_busy_wait() {
     let daemon = test_daemon::start("background reader");
     assert!(ReadLimit::current().is_none());
     let reader = daemon.daemon.reads.reader().unwrap();
@@ -178,7 +178,7 @@ fn other_read_requests_use_their_operation_name_in_refusals() {
 }
 
 #[test]
-fn context_receipts_do_not_disable_the_read_phase_deadline() {
+fn context_writes_keep_the_read_phase_deadline() {
     let daemon = test_daemon::start("synthetic context deadline");
     let request =
         crate::test_daemon::Call::new("takeover", serde_json::json!({"session": "claude-code:s1"}))
@@ -218,12 +218,12 @@ fn an_authored_write_commits_with_an_expired_cancelled_read_budget() {
 }
 
 #[test]
-fn continued_read_is_a_page_with_an_ordinary_read_deadline() {
+fn continued_read_is_a_page_with_a_read_deadline() {
     let request = crate::test_daemon::Call::new(
         "read",
         serde_json::json!({"target": "session:claude-code:s1", "format": "json"}),
     )
-    .cursor(Some("opaque-awaiting-owner-validation"));
+    .cursor(Some("opaque-awaiting-daemon-validation"));
     let policy = policy(&request);
     assert!(policy.read_only && !policy.streaming && policy.default_deadline);
 }

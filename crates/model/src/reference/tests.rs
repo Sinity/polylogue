@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn exact_question_identity_excludes_names_prefixes_and_parameterized_queries() {
+fn question_identity_is_only_a_full_query_hash() {
     let hash = crate::BlobHash([0xab; 32]);
     assert_eq!(
         Reference::parse(&format!("query:{hash}"))
@@ -93,7 +93,7 @@ fn malformed_references_are_typed_errors() {
 }
 
 #[test]
-fn containers_preserve_exact_identity_without_guessing_message_sessions() {
+fn containers_preserve_identity_without_guessing_message_sessions() {
     let parse = |text| Reference::parse(text).unwrap();
     let mut reference = parse("span:block:codex:message#9#u16=0-2");
     for expected in ["block:codex:message#9", "message:codex:message"] {
@@ -116,7 +116,7 @@ fn containers_preserve_exact_identity_without_guessing_message_sessions() {
 }
 
 #[test]
-fn run_references_are_explicit_native_identities() {
+fn run_references_name_one_run_id() {
     let id = RunId::parse("019a2f20-1234-7000-8000-0123456789ab").unwrap();
     let reference = Reference::parse(&format!("run:{id}")).unwrap();
     assert_eq!(reference, Reference::Run(id));
@@ -163,7 +163,7 @@ fn authored_link_reference_forms_preserve_their_opaque_source_names() {
 }
 
 #[test]
-fn exact_accepted_request_reference_preserves_the_existing_opaque_identity() {
+fn accepted_request_reference_preserves_the_existing_opaque_identity() {
     for id in [
         "accepted-request",
         "a:b@revision#part..suffix",

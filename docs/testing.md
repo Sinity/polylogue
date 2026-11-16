@@ -24,7 +24,7 @@ A golden is the expected parse of an input, written by hand from knowledge of th
 
 - A module's unit tests are in `name/tests.rs` (more files in `name/tests/`), declared last with `#[cfg(test)] mod tests;`.
 - Integration tests share one binary per crate, with areas as modules so the dependency graph links once. The engine's `tests/engine/main.rs` contains `passes`, `properties` and `faults`; the application's `tests/e2e/main.rs` contains CLI, browser-host, onboarding, deadline and completion cases. Each area's other files stay beside its module; the sources use `tests/formats/main.rs`.
-- Examples with unit tests set `test = true` in their Cargo manifest. Native test commands select runnable test targets by default; examples without tests are compiled by Clippy.
+- Examples with unit tests set `test = true` in their Cargo manifest. Test commands select runnable test targets by default; examples without tests are compiled by Clippy.
 - Helpers that need a crate's private items stay in that crate behind its test feature. CLI and MCP behaviour is tested through the public commands.
 
 **Waiting, never timing.** No test asserts elapsed time. A test of a deadline makes the peer stay silent until the client gives up, so only the deadline can end the wait; other tests wait for an event (a reply, a file, a closed connection). A test that waits for the daemon to read a change waits until `status` shows it up to date. nextest's slow timeout ends a hung test.
@@ -33,14 +33,14 @@ A golden is the expected parse of an input, written by hand from knowledge of th
 
 A test sits in the module of the area that owns its behaviour. The query language's shared tests live in common's [query-language](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/query-language/README.md) and run against Polylogue's catalog; the signal evaluator's conformance cases are in common's [signals](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/signals/README.md) and run against Polylogue's occurrence keys.
 
-These properties are required for every input; named tests identify existing coverage. A verification result states which cases actually ran:
+These properties are required for every input; named tests identify existing coverage. A verification result states which cases ran:
 
 - Appending to an input in steps gives the same rows as reading it whole (`append_equivalence`).
 - The order in which inputs arrive does not change the result (`order_independence`, `session_facts_do_not_depend_on_arrival_order`).
-- A crash at every point between append, sync, commit and truncate leaves only a state the ordinary open path resumes, with no repair step (`crash_leaves_only_a_tail_at_each_product_commit_boundary`).
+- A crash at every point between append, sync, commit and truncate leaves only a state the open path resumes, with no repair step (`crash_leaves_only_a_tail_at_each_product_commit_boundary`).
 - Rebuilding the index from stored bytes gives the same answers (`a_deliberate_index_rebuild_keeps_authored_rows_and_vectors`; in primary mode `the_morrow_example_rebuilt_from_sinex_gives_the_same_answers`).
 - An export imported into a fresh archive gives the same sessions, IDs and user state (`an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_state`, `read_to_bundle_import_round_trip_preserves_structured_values_and_unknown_tool_fields`).
-- The current revision of an authored record is a pure function of its revision links (`currency`, `assertion_revision_currency`).
+- The current revision of an authored record is a pure function of its revision links (`current_revisions`, `assertion_revision_state`).
 - Budgeted pages concatenate to the whole read (`fused_pages_concatenate_to_the_whole_answer`).
 - Archived text renders inert in every format (`archived_html_and_dangerous_urls_stay_inert`, `archive_quotes_escape_roles_and_controls_without_changing_source`).
 - Writes between pages neither repeat nor skip rows, and a rebuild retires the cursor (`writes_between_pages_neither_refuse_nor_repeat_rows`).
@@ -60,14 +60,14 @@ One end-to-end harness: the real `polylogue` binary runs as a daemon over a temp
 `sinexd` at the revision Polylogue pins). Morrow converged in primary mode
 must answer as standalone does, and again after rebuilding from the confirmed
 stream; backup and restore must preserve the same observations
-([primary-mode.md](primary-mode.md)). A result proves these laws only when
+([primary-mode.md](primary-mode.md)). A result shows these laws hold only when
 those real-stack cases ran. Test selection and service preparation belong to
 [development](development.md); generated command help describes the available
 runner options.
 
 ## Fuzzing
 
-Fuzzing runs as tests. (ruling 2026-03-12, cc-queued:065c511c-e336-4e59-825b-eeefc71cdaae@2026-03-12T00:31:10). Each fuzz target's corpus is replayed, bounded, by the ordinary test run; longer runs are a test profile over the same harness, and a host may queue them through its own job runner.
+Fuzzing runs as tests. (ruling 2026-03-12, cc-queued:065c511c-e336-4e59-825b-eeefc71cdaae@2026-03-12T00:31:10). Each fuzz target's corpus is replayed, bounded, by the default test run; longer runs are a test profile over the same harness, and a host may queue them through its own job runner.
 
 ## Benchmarks
 
@@ -83,7 +83,7 @@ What is measured: the first build per stage; incremental updates; interactive re
 
 **Reads.** The read benchmark generates one 16 MiB session and eight small ones with the testkit builders, checks that a complete read holds every message once in order, that windows at the first, middle and last positions match it, and that repeated windows render the same bytes, then reports daemon start, the first request after each restart and later requests (median and p95), page counts and daemon memory.
 
-The target is a whole suite under 10 minutes, measured per stage (compile, setup, run). Recorded CI results give the actual duration.
+The target is a whole suite under 10 minutes, measured per stage (compile, setup, run). Recorded CI results give the measured duration.
 
 ## Row dictionary
 

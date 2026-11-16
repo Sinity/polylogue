@@ -1,4 +1,4 @@
-//! Exact accepted object reads share durable Begin/Outcome and output codecs.
+//! Accepted object reads share the stored begin and outcome records and the output codecs.
 use super::ReadRequest;
 use super::*;
 use polylogue_model::{Reference, RunId, query_objects::*};
@@ -34,7 +34,7 @@ fn execute<T>(
         Option<PageBudget>,
         RunId,
         ReadFooter,
-        &ProjectionEvidence,
+        &LayoutFacts,
     ) -> Result<T, Failure>,
 ) -> Result<T, Failure> {
     let ReadRequest {
@@ -96,9 +96,10 @@ fn execute<T>(
             execution: Box::new(binding),
         },
     };
-    let writer = d.writes.as_ref().ok_or_else(|| {
-        Failure::new("not_yet_available", "read execution custody is unavailable")
-    })?;
+    let writer = d
+        .writes
+        .as_ref()
+        .ok_or_else(|| Failure::new("not_yet_available", "the read's run record is unavailable"))?;
     reader.check()?;
     scope.check()?;
     super::super::execution::record(
@@ -132,7 +133,7 @@ fn execute<T>(
                 figures: vec![],
                 zone: Some(operation.clock.day.zone_name().to_owned()),
             };
-            let evidence = ProjectionEvidence {
+            let facts = LayoutFacts {
                 authored: if matches!(&reference, Reference::Request(_)) {
                     Some(AuthoredSelection {
                         selected: reference,
@@ -147,13 +148,13 @@ fn execute<T>(
             let projected = output::project(
                 records::SelectedRecord::from(record),
                 options,
-                &evidence,
+                &facts,
                 false,
                 &mut footer,
             )?;
             let projected = projected.unwrap_or(ReadRecord::Presentation { parts: vec![] });
             let value = run(
-                projected, snapshot, header, format, budget, id, footer, &evidence,
+                projected, snapshot, header, format, budget, id, footer, &facts,
             )?;
             reader.check()?;
             scope.check()?;
@@ -184,7 +185,7 @@ pub(super) fn page(
         request,
         operation,
         reference,
-        |record, snapshot, header, format, budget, id, footer, evidence| {
+        |record, snapshot, header, format, budget, id, footer, facts| {
             let mut budget = budget.ok_or_else(|| {
                 Failure::new("bad_request", "streaming reads require stream delivery")
             })?;
@@ -217,15 +218,15 @@ pub(super) fn page(
                     "an object reading has no message attachments",
                 ))
             };
-            let layout = evidence::Layout {
+            let layout = layout_facts::Layout {
                 options,
-                evidence,
+                facts,
                 selected: &selected,
                 ready_attachment: &ready_attachment,
                 backwards: false,
-                anchor: None,
+                page_start: None,
             };
-            evidence::visit_parts(reader, &record, &layout, |item, ordinal| {
+            layout_facts::visit_parts(reader, &record, &layout, |item, ordinal| {
                 Ok(pager.push_at(at, ordinal, item).map_err(page_error)? != Push::Full)
             })?;
             let more = pager.position().is_some();
@@ -233,7 +234,7 @@ pub(super) fn page(
             if more {
                 return Err(Failure::new(
                     "bad_request",
-                    "this object exceeds the page budget; use streaming delivery for the complete retained record",
+                    "this object exceeds the page budget; use streaming delivery for the complete stored record",
                 ));
             }
             reader.check()?;

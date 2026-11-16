@@ -196,8 +196,8 @@ impl Compiler<'_> {
                 position: 0,
             });
         }
-        let native = Unit::all().find(|unit| unit.name() == kept.unit);
-        let unit = native.unwrap_or(Unit::Sessions);
+        let named_unit = Unit::all().find(|unit| unit.name() == kept.unit);
+        let unit = named_unit.unwrap_or(Unit::Sessions);
         let shape = if matched {
             Shape::Matches
         } else {
@@ -230,8 +230,8 @@ impl Compiler<'_> {
                 time_text_columns.insert(column.name.clone());
             }
         }
-        let row_basis = if !matched && kept.native_identity && shape == Shape::Rows {
-            if let Some(unit) = native {
+        let row_kind = if !matched && kept.native_identity && shape == Shape::Rows {
+            if let Some(unit) = named_unit {
                 let mut identity = vec![];
                 let count = units::spec(unit).identity.len();
                 for index in 0..count {
@@ -239,23 +239,23 @@ impl Compiler<'_> {
                     select.push(format!("pl_kept_identity(k.rows_json -> ('$.identities[' || j.key || ']'), {index}, {count}) AS {slot}"));
                     identity.push(slot);
                 }
-                RowBasis::Native {
+                RowKind::UnitRows {
                     unit,
                     columns: identity,
                 }
             } else {
-                RowBasis::Distinct {
+                RowKind::Distinct {
                     columns: vec!["_kept_source".into(), "_pk".into()],
                 }
             }
         } else {
-            RowBasis::Distinct {
+            RowKind::Distinct {
                 columns: vec!["_kept_source".into(), "_pk".into()],
             }
         };
         let program = Program {
             query: self.text.into(),
-            row_basis,
+            row_kind,
             unit,
             shape,
             statements: Statements::Derived(DerivedRows {
@@ -269,7 +269,7 @@ impl Compiler<'_> {
             params: std::mem::take(&mut self.params),
             columns: columns.clone(),
             column_slots: slots,
-            native_sources: Some(vec![]),
+            row_sources: Some(vec![]),
             time_text_columns,
             ranked: false,
             snippet_terms: vec![],

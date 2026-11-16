@@ -37,13 +37,13 @@ pub fn sid(n: &str) -> SessionId {
 
 pub fn message(id: &str, session: &str, role: Role, at: i64, blocks: Vec<Block>) -> Message {
     let at = Timestamp::from_unix_ms(at);
-    let evidence = at.map_or(polylogue_model::TimeEvidence::UNKNOWN, |_| {
+    let accuracy = at.map_or(polylogue_model::TimeEvidence::UNKNOWN, |_| {
         polylogue_model::TimeEvidence::intrinsic(polylogue_model::Precision::Instant)
     });
     Message {
-        at_quality: evidence.quality,
-        at_precision: evidence.precision,
-        at_until: evidence.until,
+        at_quality: accuracy.quality,
+        at_precision: accuracy.precision,
+        at_until: accuracy.until,
         id: MessageId::parse(&format!("claude-code:{session}-{id}")).unwrap(),
         session: sid(session),
         parent: None,
@@ -173,16 +173,16 @@ impl WriterArchive {
         self.write_from(&input, s, messages);
     }
 
-    /// Observe message revisions from a source that repeats snapshots. Ordinary
-    /// append records keep their first same-ID occurrence; this uses the native
+    /// Observe message revisions from a source that repeats snapshots. Plain
+    /// append records keep their first same-ID occurrence; this uses the source
     /// parser contract that later snapshot observations replace earlier ones.
     pub fn write_snapshot(&mut self, session: &str, messages: Vec<Message>) {
         self.write_snapshot_at(session, 0, messages);
     }
 
     /// An incremental snapshot observation with the producer's declared full
-    /// message position. Source bytes still append at their actual raw offsets;
-    /// `from` is native message order, not a replacement byte range.
+    /// message position. Source bytes still append at their byte offsets;
+    /// `from` is the source's message order, not a replacement byte range.
     pub fn write_snapshot_at(&mut self, session: &str, from: u64, messages: Vec<Message>) {
         let session = Session::new(sid(session), SessionKind::Main);
         let input = format!("input-{}", session.id.native().as_str());
@@ -235,8 +235,8 @@ impl WriterArchive {
             })
             .collect();
         let records = rows.len() as u64;
-        // This fixture writes one native session file. Rows naming another
-        // session are physical copies, independent of any provider relation.
+        // This fixture writes one harness session file. Rows naming another
+        // session are copies of its messages, independent of any provider relation.
         let prefix_copies = rows
             .iter()
             .filter(|row| row.message.session != s.id)
@@ -365,7 +365,7 @@ pub fn step(
         counts.add("record", &RecordOutcome::Used);
     }
     Batch {
-        required_disposition: None,
+        required_outcome: None,
         input: InputKey {
             id: input.to_owned(),
             format: format.into(),

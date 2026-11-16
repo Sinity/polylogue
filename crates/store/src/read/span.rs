@@ -14,14 +14,14 @@ use polylogue_model::{
 use rusqlite::{OptionalExtension, params};
 use std::ops::ControlFlow;
 
-/// Retains the exact Reader snapshot that resolved both coordinate bounds.
+/// Keeps the Reader snapshot that resolved both coordinate bounds.
 /// The version identifies the original value; selected bytes cannot verify it.
 pub struct SpanSource<'reader, 'pool> {
     reader: &'reader Reader<'pool>,
     container: Reference,
     version: TextSourceVersion,
     coverage: TextCoverage,
-    admitted: Option<u64>,
+    committed: Option<u64>,
     seek: NativeSpanSeek,
 }
 impl SpanSource<'_, '_> {
@@ -34,15 +34,15 @@ impl SpanSource<'_, '_> {
     pub fn coverage(&self) -> TextCoverage {
         self.coverage
     }
-    pub fn admitted(&self) -> Option<u64> {
-        self.admitted
+    pub fn committed(&self) -> Option<u64> {
+        self.committed
     }
 
     pub fn seek(&self) -> NativeSpanSeek {
         self.seek
     }
 
-    /// Seeks directly to the bound native piece, never decoding earlier bodies.
+    /// Seeks directly to the bound source-text piece, never decoding earlier bodies.
     pub fn visit_text(
         &self,
         mut visit: impl FnMut(&str) -> Result<ControlFlow<()>>,
@@ -55,7 +55,7 @@ impl SpanSource<'_, '_> {
         let mut ended = false;
         let mut cancelled = false;
         let mut selected = 0u64;
-        self.reader.native_text_while(
+        self.reader.source_text_while(
             &self.container,
             false,
             Some(&self.seek.start),
@@ -115,7 +115,7 @@ impl<'pool> Reader<'pool> {
                 "span source requires a Span reference".into(),
             ));
         };
-        let Some((version, admitted)) = self.span_identity(container)? else {
+        let Some((version, committed)) = self.span_identity(container)? else {
             return Ok(None);
         };
         let mut bounds = SpanBounds::new(*unit, *start, *end)
@@ -124,7 +124,7 @@ impl<'pool> Reader<'pool> {
         let mut stopped = false;
         let mut start_position = None;
         let mut end_position = None;
-        let found = self.native_text_while(container, false, None, &mut |piece, text| {
+        let found = self.source_text_while(container, false, None, &mut |piece, text| {
             bounds
                 .push(text)
                 .map_err(|error| StoreError::Invalid(error.to_string()))?;
@@ -182,13 +182,13 @@ impl<'pool> Reader<'pool> {
                 end: range.end,
                 total_bytes: (!stopped).then_some(bytes),
             },
-            admitted,
+            committed,
             seek,
         }))
     }
     /// Replays coordinates restored from the existing authenticated Run. The
     /// caller must validate that Run's selection/scope binding before passing
-    /// metadata here; a plain DTO is not proof of its global byte mapping.
+    /// metadata here; a plain DTO does not vouch for its global byte mapping.
     pub fn resume_span_source<'reader>(
         &'reader self,
         origin: &TextSpanOrigin,
@@ -211,7 +211,7 @@ impl<'pool> Reader<'pool> {
         };
         seek.validate(container, &coverage)
             .map_err(|error| StoreError::Invalid(error.to_string()))?;
-        let Some((current, admitted)) = self.span_identity(container)? else {
+        let Some((current, committed)) = self.span_identity(container)? else {
             return Err(stale(&origin.reference));
         };
         if current != *version {
@@ -232,7 +232,7 @@ impl<'pool> Reader<'pool> {
             container: container.as_ref().clone(),
             version: version.clone(),
             coverage,
-            admitted,
+            committed,
             seek,
         })
     }
@@ -261,17 +261,43 @@ impl<'pool> Reader<'pool> {
     ) -> Result<Option<(TextSourceVersion, Option<u64>)>> {
         match container {
             Reference::Message(id) | Reference::Block { message: id, .. } => {
-                let pk: Option<i64> = self.conn()?.query_row("SELECT pk FROM message WHERE id=?1", [id.to_string()], |row| row.get(0)).optional()?;
+                let pk: Option<i64> = self
+                    .conn()?
+                    .query_row(
+                        "SELECT pk FROM message WHERE id=?1",
+                        [id.to_string()],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
                 let Some(pk) = pk else { return Ok(None) };
-                let projection = self.source_message_projection(pk, container)?;
-                Ok(Some((TextSourceVersion::ContentHash { record: Reference::Message(id.clone()), hash: projection.source_version }, self.message_admission(id)?)))
+                let block_selection = self.source_block_selection(pk, container)?;
+                Ok(Some((
+                    TextSourceVersion::ContentHash {
+                        record: Reference::Message(id.clone()),
+                        hash: block_selection.source_version,
+                    },
+                    self.message_commit(id)?,
+                )))
             }
             Reference::Document(id) => {
-                let Some(document) = self.select_document(id)? else { return Ok(None) };
-                let hash = BlobHash::parse(&document.version()).map_err(|error| StoreError::Invalid(error.to_string()))?;
-                Ok(Some((TextSourceVersion::ContentHash { record: container.clone(), hash }, self.document_commit(id)?)))
+                let Some(document) = self.select_document(id)? else {
+                    return Ok(None);
+                };
+                let hash = BlobHash::parse(&document.version())
+                    .map_err(|error| StoreError::Invalid(error.to_string()))?;
+                Ok(Some((
+                    TextSourceVersion::ContentHash {
+                        record: container.clone(),
+                        hash,
+                    },
+                    self.document_commit(id)?,
+                )))
             }
-            _ => Err(StoreError::ReferenceUnavailable { reference: container.to_string(), reason: "portable span source needs an exact available native source version and receipt authority".into() }),
+            _ => Err(StoreError::ReferenceUnavailable {
+                reference: container.to_string(),
+                reason: "portable span source needs an available source version and its commit"
+                    .into(),
+            }),
         }
     }
 }

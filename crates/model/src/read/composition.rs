@@ -142,7 +142,10 @@ pub fn context_at<'a>(
                 .as_array()
                 .is_some_and(Vec::is_empty)
         {
-            reasons.push("native replacement context is retained in the boundary event but is not fully reconstructed".into());
+            reasons.push(
+                "replacement context is kept in the boundary event but is not fully reconstructed"
+                    .into(),
+            );
         }
     }
     let mut members = Vec::new();

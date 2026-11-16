@@ -18,7 +18,7 @@ fn replacement_keeps_open_readers_on_the_previous_complete_file() {
 }
 
 #[test]
-fn default_permissions_are_private_and_failed_replacements_remove_the_temporary_file() {
+fn replacement_is_private_and_cleans_up_on_failure() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("token");
     write_atomic(&path, b"token", None).unwrap();

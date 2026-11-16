@@ -1,5 +1,5 @@
 //! Reconstructible keyed continuation. Speculative values live in one owned
-//! scratch database; admitted mappings share the parser checkpoint transaction.
+//! scratch database; committed mappings share the parser checkpoint transaction.
 use crate::{Archive, Result, StoreError};
 use polylogue_model::parser_context::{Context, Delta, Entry, Key, Reference, Value};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -30,15 +30,15 @@ struct Attempt {
     source: String,
     source_chain: Option<i64>,
     version: String,
-    /// Fixed cutoff of the admitted snapshot selected when this attempt opened.
+    /// Fixed cutoff of the committed snapshot selected when this attempt opened.
     lookup_through: u64,
     /// Cursor through which this private attempt has emitted staged deltas.
     base: u64,
     replay_chain: Option<i64>,
 }
 impl Overlay {
-    /// Select only the exact admitted continuation. No public-index row is
-    /// evidence for a pending producer reading.
+    /// Select only the committed continuation. No public-index row stands
+    /// for a pending producer reading.
     pub fn open(
         archive: &Archive,
         input: &str,
@@ -50,7 +50,7 @@ impl Overlay {
         let source_chain = chain;
         let sql_base = sql_cursor(base)?;
         // A fresh attempt gets every value from its private replay. It never
-        // consults admitted rows, so it must not hold a read snapshot that
+        // consults committed rows, so it must not hold a read snapshot that
         // prevents the writer from restarting its WAL between transactions.
         let index = if base == 0 {
             None
@@ -60,7 +60,7 @@ impl Overlay {
             // A build file has a rollback journal, where a read held across
             // the parse would block every writer commit
             // (`crate::archive::index_build`). There each lookup reads on its
-            // own: the chain's admitted context changes only by this
+            // own: the chain's committed context changes only by this
             // attempt's own slices, whose values the scratch view already
             // holds, so the lookups see what the snapshot would.
             if archive.is_primary() || !archive.index_build.building() {
@@ -86,7 +86,7 @@ impl Overlay {
             if !complete {
                 replay_chain = Some(chain.ok_or_else(|| {
                     StoreError::Invalid(
-                        "keyed parser continuation has no admitted reading at the selected cursor"
+                        "keyed parser continuation has no committed reading at the selected cursor"
                             .into(),
                     )
                 })?);
@@ -114,7 +114,7 @@ impl Overlay {
     pub fn replay_chain(&self) -> Option<i64> {
         self.0.lock().expect("parser context lock").replay_chain
     }
-    /// Reuse only the private continuation belonging to this exact attempt.
+    /// Reuse only the private continuation belonging to this attempt.
     pub fn check_source(
         &self,
         input: &str,
@@ -137,8 +137,8 @@ impl Overlay {
         }
         Ok(())
     }
-    /// Seal this slice's changes while retaining prior private values for lookup.
-    /// Advancing this scratch view never advances the admitted checkpoint.
+    /// Seal this slice's changes while keeping earlier private values for lookup.
+    /// Advancing this scratch view never advances the committed checkpoint.
     pub fn checkpoint_delta(&self, through: u64) -> Result<Delta> {
         let mut attempt = self
             .0
@@ -236,7 +236,7 @@ impl Overlay {
             return Ok(None);
         };
         let index = attempt.index.as_ref().ok_or_else(|| {
-            StoreError::Invalid("admitted parser context has no read snapshot".into())
+            StoreError::Invalid("committed parser context has no read snapshot".into())
         })?;
         match key {
             Key::Alias { namespace, uuid } => {
@@ -321,7 +321,7 @@ pub(crate) fn apply(
         || delta.through != step.parsed_upto
     {
         return Err(StoreError::Invalid(
-            "parser context differs from its exact reading cursor".into(),
+            "parser context differs from its reading cursor".into(),
         ));
     }
     let through = sql_cursor(delta.through)?;
@@ -375,7 +375,7 @@ pub(crate) fn apply(
                 ));
             }
             // Registration already validated and wrote this exact payload in
-            // this transaction. Old or mismatched references retain the full
+            // this transaction. Old or mismatched references keep the full
             // stored-message integrity and identity checks below.
             if response_key(entry).is_some() {
                 continue;
@@ -442,9 +442,9 @@ pub(crate) fn apply(
     Ok(true)
 }
 
-/// Native record aliases survive corrected response grouping. Authored targets
-/// keep their original reference; only lookup follows the retained source fact.
-pub(crate) fn canonical_message_sql(
+/// Record aliases from the source survive corrected response grouping. Authored
+/// targets keep their original reference; only lookup follows the stored alias.
+pub(crate) fn resolved_message_sql(
     id: &polylogue_model::MessageId,
     bind: &mut dyn FnMut(String) -> String,
 ) -> String {
@@ -457,7 +457,7 @@ pub(crate) fn canonical_message_sql(
         "CASE WHEN EXISTS(SELECT 1 FROM message direct JOIN message_source ds ON ds.message_pk=direct.pk WHERE direct.id={original}) THEN {original} ELSE pl_source_alias((SELECT json_group_array(DISTINCT pc.target) FROM parser_context_alias pc JOIN parser_context_state cs ON cs.input_pk=pc.input_pk AND cs.chain=pc.chain JOIN parse_state ps ON ps.input_pk=cs.input_pk AND ps.chain=cs.chain AND ps.reading_version=cs.reading_version WHERE pc.uuid={uuid}),{original}) END"
     )
 }
-pub(crate) fn canonical_message(
+pub(crate) fn resolved_message(
     conn: &Connection,
     id: &polylogue_model::MessageId,
 ) -> Result<polylogue_model::MessageId> {
@@ -465,7 +465,7 @@ pub(crate) fn canonical_message(
         return Ok(id.clone());
     }
     let mut params = Vec::new();
-    let expression = canonical_message_sql(id, &mut |value| {
+    let expression = resolved_message_sql(id, &mut |value| {
         params.push(value);
         format!("?{}", params.len())
     });

@@ -1,4 +1,4 @@
-//! Pending source heads come from durable producer queue metadata.
+//! A source's latest pending operations come from the producer spool's metadata.
 use super::*;
 use polylogue_store::primary::{
     SourceSelector,
@@ -6,13 +6,13 @@ use polylogue_store::primary::{
 };
 
 #[derive(Default)]
-pub(crate) struct Heads {
-    pub head: Option<Prepared>,
+pub(crate) struct LatestPending {
+    pub latest: Option<Prepared>,
     pub raw: Option<Prepared>,
     pub unattributed: bool,
 }
 
-pub(super) fn get(spool: &Spool, source: &SourceSelector) -> Result<Heads> {
+pub(super) fn get(spool: &Spool, source: &SourceSelector) -> Result<LatestPending> {
     let source = serde_json::to_vec(source)?;
     let latest = |raw| -> Result<Option<Prepared>> {
         spool
@@ -32,8 +32,8 @@ pub(super) fn get(spool: &Spool, source: &SourceSelector) -> Result<Heads> {
             .map(|entry| spool.prepared(entry))
             .transpose()
     };
-    Ok(Heads {
-        head: latest(false)?,
+    Ok(LatestPending {
+        latest: latest(false)?,
         raw: latest(true)?,
         unattributed: !spool
             .queue

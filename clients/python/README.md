@@ -23,9 +23,9 @@ except Refused as error:
 ```
 
 `polylogue.models.Answer` is frozen, including its nested maps and lists.
-`answer.json()` returns an independent ordinary JSON value. All fields, nulls,
-integer precision and complete refusals survive. Ordinary calls retain the whole
-shared `outcome`/`value` envelope. Empty and degraded answers retain their payloads;
+`answer.json()` returns an independent plain JSON value. All fields, nulls,
+integer precision and complete refusals survive. Regular calls keep the whole
+shared `outcome`/`value` envelope. Empty and degraded answers keep their payloads;
 refusals expose the complete error answer. Query cursors belong to query pages.
 Read continuations use `client.follow_read(request)` for generated `read` and
 `attachment` actions, including previous pages. It preserves the original
@@ -37,7 +37,7 @@ Use `client.read(identity, page_tokens=600)` to choose the number of tokens tran
 `polylogue --json`. It covers the other declared operations. A write is sent
 once. For retries, give the same `--request-id` and identical arguments; the
 client never invents a second write after a lost answer. An explicit archive is
-passed as the CLI's `--archive` argument for ordinary calls and change feeds.
+passed as the CLI's `--archive` argument for regular calls and change feeds.
 Relative paths are made absolute when `Client` is constructed; declared path
 aliases are preserved, including short aliases used for Unix sockets.
 

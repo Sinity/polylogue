@@ -27,7 +27,7 @@ impl Stored {
     fn store(&self, input: &str, from: u64, body: &[u8]) {
         let (blob, file) = self.archive.prepare_blob(body).unwrap();
         let batch = Batch {
-            required_disposition: None,
+            required_outcome: None,
             input: InputKey {
                 id: input.into(),
                 format: "test-bytes".into(),

@@ -3,7 +3,7 @@
 //! `history.jsonl` and the thread-name index `session_index.jsonl`, where
 //! `<codex>` is `$CODEX_HOME`, by default `~/.codex`.
 //!
-//! A rollout is one thread. Each line is an envelope
+//! A rollout is one thread. Each line is an outer record
 //! `{timestamp, type, payload}`; files from mid-2025 write the items bare
 //! after a header line. Items arrive complete, so a parser never holds a
 //! whole turn: each response item is one addressable contribution. Rollouts
@@ -182,15 +182,15 @@ struct Call {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ParserState {
     session: Option<Session>,
-    /// The thread a subagent's copied history came from, and the envelope
+    /// The thread a subagent's copied history came from, and the outer record
     /// ordinal where the subagent's own records begin.
     copied_from: Option<String>,
     copied_until: Option<u64>,
     #[serde(default)]
     prefix_copies: BTreeSet<(SessionId, SessionId)>,
-    /// The explicit relation whose later context can supply its branch anchor.
+    /// The explicit relation whose later context can supply its branch point.
     #[serde(default)]
-    anchored_relation: Option<Link>,
+    branch_relation: Option<Link>,
     #[serde(default)]
     copied_history_complete: bool,
     /// The last copied item, where the child branched.
@@ -235,7 +235,7 @@ struct Prompt {
     from_event: bool,
 }
 
-/// One record, unwrapped from its envelope.
+/// One record, unwrapped from its outer record.
 struct Rec<'a> {
     /// `session_meta`, `response_item`, `event_msg`, `turn_context`, ...
     ty: &'a str,
@@ -262,7 +262,7 @@ fn unwrap(v: &Json) -> Rec<'_> {
         return Rec {
             ty: str_field(v, "type").unwrap_or("?"),
             payload,
-            // Some writers put the time on the item, not the envelope.
+            // Some writers put the time on the item, not the outer record.
             at: at.or_else(|| payload.get("timestamp").and_then(time::rfc3339)),
             ordinal,
         };
@@ -356,7 +356,7 @@ impl Rollout {
             s.kind = SessionKind::Subagent;
         }
         if let Some(at) = p.get("timestamp").and_then(time::rfc3339) {
-            s.offer_start(at.timestamp(), at.evidence())
+            s.offer_start(at.timestamp(), at.accuracy())
                 .expect("decoded source time is valid");
         }
         if let Some(cwd) = str_field(p, "cwd") {
@@ -423,7 +423,7 @@ impl Rollout {
             } else {
                 (LinkKind::Fork, "forked_from_id")
             };
-            parser_state.anchored_relation = Some(Link {
+            parser_state.branch_relation = Some(Link {
                 kind,
                 copies_prefix: false,
                 how: None,
@@ -447,7 +447,7 @@ impl Rollout {
                 } else {
                     (LinkKind::Spawn, "parent_thread_id")
                 };
-                parser_state.anchored_relation = Some(Link {
+                parser_state.branch_relation = Some(Link {
                     kind,
                     copies_prefix: true,
                     how: None,
@@ -491,7 +491,7 @@ impl Rollout {
         RecordOutcome::Used
     }
 
-    fn unanchored_event(
+    fn event_by_time(
         &self,
         parser_state: &mut ParserState,
         data: &Json,
@@ -813,7 +813,7 @@ impl Rollout {
                 result_at: at.map(crate::time::SourceTime::timestamp),
                 result_at_evidence: at.map_or(
                     polylogue_model::TimeEvidence::UNKNOWN,
-                    crate::time::SourceTime::evidence,
+                    crate::time::SourceTime::accuracy,
                 ),
                 reported_duration_ms: None,
                 session: session.clone(),
@@ -883,7 +883,7 @@ impl Rollout {
                             result_at: at.map(crate::time::SourceTime::timestamp),
                             result_at_evidence: at.map_or(
                                 polylogue_model::TimeEvidence::UNKNOWN,
-                                crate::time::SourceTime::evidence,
+                                crate::time::SourceTime::accuracy,
                             ),
                             reported_duration_ms: done.duration_ms,
                             session,
@@ -974,9 +974,9 @@ impl Rollout {
         let sub = str_field(p, "type").unwrap_or("?");
         match sub {
             "token_count" => {
-                // Keep the native observation as reported, including malformed,
+                // Keep the observation as reported, including malformed,
                 // rate-only and context-size reports. Its time is emission time.
-                self.unanchored_event(parser_state, p, "token_count", at, out);
+                self.event_by_time(parser_state, p, "token_count", at, out);
                 let Some(session) = self.own(parser_state) else {
                     return RecordOutcome::unreadable(
                         "no thread ID in the file name or its header",
@@ -993,7 +993,7 @@ impl Rollout {
                         parser_state.tier.clone(),
                     )
                 {
-                    self.unanchored_event(
+                    self.event_by_time(
                         parser_state,
                         &serde_json::to_value(reading).expect("usage reading"),
                         polylogue_model::reports::USAGE_REPORT,
@@ -1010,7 +1010,7 @@ impl Rollout {
                             reading,
                             measured_at: None,
                         };
-                        self.unanchored_event(
+                        self.event_by_time(
                             parser_state,
                             &serde_json::to_value(reading).expect("quota reading"),
                             polylogue_model::reports::QUOTA_REPORT,
@@ -1044,7 +1044,7 @@ impl Rollout {
                             result_at: at.map(crate::time::SourceTime::timestamp),
                             result_at_evidence: at.map_or(
                                 polylogue_model::TimeEvidence::UNKNOWN,
-                                crate::time::SourceTime::evidence,
+                                crate::time::SourceTime::accuracy,
                             ),
                             reported_duration_ms: done.duration_ms,
                             session,
@@ -1214,12 +1214,12 @@ impl Parser for Rollout {
         {
             if let Some(info) = p.get("info").filter(|info| !info.is_null()) {
                 // Advance the observed counters without charging an unknown
-                // original owner as usage of the child.
+                // original session as usage of the child.
                 parser_state
                     .usage
                     .read(info, usage::identity(p), None, None);
             }
-            return self.unanchored_event(parser_state, p, "copied_token_count", rec.at, out);
+            return self.event_by_time(parser_state, p, "copied_token_count", rec.at, out);
         }
         if Self::copied(parser_state, rec.ordinal)
             && rec.ty != "response_item"
@@ -1229,7 +1229,7 @@ impl Parser for Rollout {
         }
         let prev = parser_state.prompt.take();
         if rec.ty == "response_item" && str_field(p, "type") == Some("token_count") {
-            return self.unanchored_event(parser_state, p, "token_count_item", rec.at, out);
+            return self.event_by_time(parser_state, p, "token_count_item", rec.at, out);
         }
         let same = |text: &str, from_event: bool| {
             prev.as_ref()
@@ -1311,13 +1311,13 @@ impl Parser for Rollout {
                 self.event(parser_state, p, "turn_context", rec.at, out)
             }
             "token_usage_record" => {
-                self.unanchored_event(parser_state, p, "token_usage_record", rec.at, out)
+                self.event_by_time(parser_state, p, "token_usage_record", rec.at, out)
             }
             "compacted" => {
                 records.fields("compacted", p, &fields::COMPACTED);
                 // A fork starts from its parent's history: the last
                 // identified item is where it branched. Keep that history
-                // as native evidence, without creating authored messages.
+                // as source data, without creating authored messages.
                 if parser_state.last.is_none()
                     && let Some(history) = p.get("replacement_history").and_then(Json::as_array)
                     && let Some(at) = history.iter().rev().find_map(|i| str_field(i, "id"))
@@ -1367,12 +1367,12 @@ impl Parser for Rollout {
             Self::unknown_boundaries(session, out);
             parser_state.scope_recorded = true;
         }
-        // A partial copied prefix cannot establish its final anchor. Once
+        // A partial copied prefix cannot establish its final branch point. Once
         // complete, emit the statement even if its header was in an earlier append.
         if (parser_state.copied_until.is_none() || parser_state.copied_history_complete)
             && let (Some(at), Some(mut relation)) = (
                 parser_state.branch_point.clone(),
-                parser_state.anchored_relation.clone(),
+                parser_state.branch_relation.clone(),
             )
             && relation.parent != relation.child
         {

@@ -53,7 +53,7 @@ impl SnippetTerms {
         }
     }
 
-    /// The words and phrases searching `index`, for marking the cut text.
+    /// The words and phrases searching `index`, for marking the excerpt.
     pub fn words<'t>(&'t self, index: SnippetIndex, out: &mut Vec<&'t str>) {
         match self {
             SnippetTerms::Word { text, index: own } if *own == index => out.push(text),

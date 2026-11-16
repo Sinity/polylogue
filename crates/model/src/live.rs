@@ -1,14 +1,14 @@
-//! Live state: what a session is doing now, folded from evidence.
+//! Live state: what a session is doing now, computed from live events.
 //!
 //! Every live fact comes from stored inputs: hook lines (route `hook`),
 //! the daemon's process watcher (route `process`), harness registries
 //! (route `registry`) and commits seen in a session's worktree (route
-//! `git`). [`fold`] applies one piece of evidence to a
-//! session's [`LiveFacts`] and returns the intervals it closed; folding the
-//! stored evidence of a session in (time, line) order always gives the same
+//! `git`). [`apply_live_event`] applies one event to a session's
+//! [`LiveFacts`] and returns the intervals it closed; applying the stored
+//! events of a session in (time, line) order always gives the same
 //! facts and the same intervals, so a rebuild reproduces every past state.
 //! [`view`] turns facts and `now` into the state shown, with the instant at
-//! which it would change with no new evidence. Nothing here reads a clock,
+//! which it would change with no new event. Nothing here reads a clock,
 //! prose or shell-command text.
 
 use crate::Json;
@@ -20,15 +20,15 @@ pub mod channel;
 #[cfg(test)]
 mod tests;
 
-/// With no process evidence for a session, its hook evidence shows its
+/// With no process events for a session, its hook events show its
 /// activity for this long; afterwards the session is `stale`. A transcript
-/// that grew this recently with no other evidence makes a session
+/// that grew this recently with no other event makes a session
 /// `unknown`.
 pub const LIVE_WINDOW_MS: i64 = 15 * 60 * 1000;
 /// A tool call open this long is a `long_call` stall.
 pub const LONG_CALL_MS: i64 = 30 * 60 * 1000;
-/// The live table holds sessions with a live root process or evidence in
-/// the last day: a `stale` session whose latest evidence is this old is
+/// The live table holds sessions with a live root process or an event in
+/// the last day: a `stale` session whose latest event is this old is
 /// `ended`, so stale sessions age out rather than accumulate.
 pub const STALE_FOR_MS: i64 = 24 * 60 * 60 * 1000;
 
@@ -148,7 +148,7 @@ pub struct ProcessIdentity {
 }
 
 impl ProcessIdentity {
-    /// The identity an evidence line carries in `boot_id`, `pid_key` and
+    /// The identity an event line carries in `boot_id`, `pid_key` and
     /// `start_key`; `None` when any part is missing.
     fn from_line(data: &Json, pid_key: &str, start_key: &str) -> Option<Self> {
         Some(Self {
@@ -215,7 +215,7 @@ impl HarnessStatus {
     }
 }
 
-/// Everything known about one session's liveness, from its evidence alone.
+/// Everything known about one session's liveness, from its events alone.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LiveFacts {
     /// The harness process the session runs in.
@@ -241,15 +241,15 @@ pub struct LiveFacts {
     /// The permission request the session waits on, as the hook saw it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_request: Option<PendingRequest>,
-    /// A stall the evidence states (rate limit, API error).
+    /// A stall the events state (rate limit, API error).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stall: Option<Since<Stall>>,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub open_subagents: u32,
     /// Files changed through structured edit tools and not yet committed.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-    pub footprint: BTreeSet<String>,
-    /// The live task, from explicit task evidence only.
+    pub edited_files: BTreeSet<String>,
+    /// The live task, from explicit task events only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
     /// The harness's in-progress todo item, as text; never a task.
@@ -258,7 +258,7 @@ pub struct LiveFacts {
     /// The terminal identity the latest hook line carried.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal: Option<Json>,
-    /// The time of the latest evidence.
+    /// The time of the latest event.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_at: Option<i64>,
     /// The intervals open now, one per aspect at most.
@@ -270,7 +270,7 @@ fn is_zero(n: &u32) -> bool {
     *n == 0
 }
 
-/// An interval that evidence has opened and not yet closed.
+/// An interval that an event has opened and not yet closed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpenInterval {
     pub aspect: Aspect,
@@ -278,7 +278,7 @@ pub struct OpenInterval {
     pub start: i64,
 }
 
-/// A closed interval of one aspect: it depends only on evidence, never on
+/// A closed interval of one aspect: it depends only on events, never on
 /// the clock.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LiveInterval {
@@ -286,19 +286,19 @@ pub struct LiveInterval {
     pub value: String,
     pub start: i64,
     pub end: i64,
-    /// The kind of the evidence that closed it.
+    /// The kind of the event that closed it.
     pub closed_by: String,
 }
 
-/// The routes live evidence arrives by; an event's kind starts with its
+/// The routes live events arrive by; an event's kind starts with its
 /// route's prefix.
 pub const HOOK_PREFIX: &str = "hook_";
 pub const PROCESS_PREFIX: &str = "process_";
 pub const REGISTRY_PREFIX: &str = "registry_";
 pub const GIT_PREFIX: &str = "git_";
 
-/// Whether an event of this kind is live evidence.
-pub fn is_evidence(kind: &str) -> bool {
+/// Whether an event of this kind is live events.
+pub fn is_live_event(kind: &str) -> bool {
     kind.starts_with(HOOK_PREFIX)
         || kind.starts_with(PROCESS_PREFIX)
         || kind.starts_with(REGISTRY_PREFIX)
@@ -431,7 +431,7 @@ impl LiveFacts {
     }
 
     /// Takes the process a hook or registry line names as the root. A new
-    /// process for the same session (a native resume) replaces the root
+    /// process for the same session (a resume by the harness) replaces the root
     /// and its exit; a line naming no process leaves the root as it was.
     fn adopt_root(&mut self, identity: Option<ProcessIdentity>) {
         if let Some(identity) = identity
@@ -492,7 +492,7 @@ impl LiveFacts {
                 self.resume_work(at);
                 self.open_call = None;
                 if event != "post_tool_use_failure" {
-                    self.footprint.extend(edited_paths(data));
+                    self.edited_files.extend(edited_paths(data));
                 }
             }
             "permission_request" => {
@@ -538,7 +538,7 @@ impl LiveFacts {
                 self.open_call = None;
                 self.pending_request = None;
                 self.open_subagents = 0;
-                self.footprint.clear();
+                self.edited_files.clear();
             }
             "task_claimed" => {
                 self.task = data.get("task").and_then(Json::as_str).map(str::to_owned);
@@ -556,7 +556,7 @@ impl LiveFacts {
             && self.root.as_ref() == Some(&identity)
             && self.root_gone_at.is_none()
         {
-            // A root gone mid-turn is stale, not ended: its footprint stays
+            // A root gone mid-turn is stale, not ended: its edited files stays
             // until a commit takes the files or the session ends.
             self.root_gone_at = Some(at);
             self.open_call = None;
@@ -564,7 +564,7 @@ impl LiveFacts {
     }
 
     /// A commit in the session's worktree, with the files it contains:
-    /// those leave the footprint, since they are no longer uncommitted.
+    /// those leave the edited files, since they are no longer uncommitted.
     fn apply_git(&mut self, event: &str, data: &Json) {
         if event != "commit" {
             return;
@@ -576,7 +576,7 @@ impl LiveFacts {
             .flatten()
             .filter_map(Json::as_str)
         {
-            self.footprint.remove(path);
+            self.edited_files.remove(path);
         }
     }
 
@@ -584,7 +584,7 @@ impl LiveFacts {
         let identity = ProcessIdentity::from_line(data, "pid", "start");
         if event.starts_with("hosted_") {
             // Polylogue's own host started the harness process, so its
-            // lines name the root with certainty.
+            // lines name the root for certain.
             self.adopt_root(identity);
         } else if !self.same_root(identity.as_ref()) {
             // A registry reader names the process that owns the pid when it
@@ -599,7 +599,7 @@ impl LiveFacts {
             self.open_call = None;
             self.pending_request = None;
             self.open_subagents = 0;
-            self.footprint.clear();
+            self.edited_files.clear();
             return;
         }
         if let Some(word) = data.get("status").and_then(Json::as_str) {
@@ -633,7 +633,7 @@ impl LiveFacts {
     }
 
     /// Closes and opens intervals so the open set matches what is shown now.
-    fn settle_intervals(&mut self, at: i64, closed_by: &str) -> Vec<LiveInterval> {
+    fn update_intervals(&mut self, at: i64, closed_by: &str) -> Vec<LiveInterval> {
         let shown = self.shown();
         let wanted: [(Aspect, Option<&'static str>); 3] = [
             (Aspect::Activity, shown.map(|(a, _)| a.as_str())),
@@ -657,7 +657,7 @@ impl LiveFacts {
             }
             if let Some(i) = open {
                 let o = self.open_intervals.remove(i);
-                // Evidence at one instant that passes through a value
+                // Events at one instant that pass through a value
                 // measures no time and leaves no interval.
                 if o.start == at {
                     continue_open(&mut self.open_intervals, aspect, value, at);
@@ -684,10 +684,15 @@ impl LiveFacts {
     }
 }
 
-/// Applies one piece of evidence (an event of `kind` at `at` with `data`)
-/// and returns the intervals it closed. Evidence of other kinds changes
+/// Applies one event of `kind` at `at` with `data` and returns the
+/// intervals it closed. Events of other kinds change
 /// nothing.
-pub fn fold(facts: &mut LiveFacts, kind: &str, at: i64, data: &Json) -> Vec<LiveInterval> {
+pub fn apply_live_event(
+    facts: &mut LiveFacts,
+    kind: &str,
+    at: i64,
+    data: &Json,
+) -> Vec<LiveInterval> {
     if let Some(event) = kind.strip_prefix(HOOK_PREFIX) {
         if event == "context_emitted" {
             return Vec::new();
@@ -703,17 +708,17 @@ pub fn fold(facts: &mut LiveFacts, kind: &str, at: i64, data: &Json) -> Vec<Live
         return Vec::new();
     }
     facts.last_at = Some(facts.last_at.map_or(at, |last| last.max(at)));
-    facts.settle_intervals(at, kind)
+    facts.update_intervals(at, kind)
 }
 
 /// The live state at an instant and what is shown with it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LiveView {
     pub state: LiveState,
-    /// When the state began, as far as the evidence says.
+    /// When the state began, as far as the events say.
     pub since: Option<i64>,
     /// The next instant at which the state or the stall changes with no
-    /// new evidence; `None` when only new evidence can change them.
+    /// new event; `None` when only a new event can change them.
     pub until: Option<i64>,
     pub waiting_on: Option<WaitingOn>,
     pub stall: Option<Stall>,
@@ -725,7 +730,7 @@ pub struct LiveView {
 /// The view of `facts` at `now`. `grew_at` is when the session's
 /// transcript last grew, which alone can make a session `unknown`. Total:
 /// every input gives a view, and between `until` instants with no new
-/// evidence the view is constant. Evidence dated after `now` counts as at
+/// event the view is constant. An event dated after `now` counts as at
 /// `now`.
 pub fn view(facts: Option<&LiveFacts>, grew_at: Option<i64>, now: i64) -> LiveView {
     let ended = |since| LiveView {
@@ -763,11 +768,11 @@ pub fn view(facts: Option<&LiveFacts>, grew_at: Option<i64>, now: i64) -> LiveVi
         };
     }
     let last = facts.last_at.unwrap_or(i64::MIN).min(now);
-    // A stale session is ended once its latest evidence is a day old.
+    // A stale session is ended once its latest event is a day old.
     let aged_out = last.saturating_add(STALE_FOR_MS);
     let stale = |since: i64| {
         if now >= aged_out {
-            // No evidence says when it ended; its latest evidence is when
+            // No event says when it ended; its latest event is when
             // it was last known to run.
             LiveView {
                 process_alive,
@@ -796,7 +801,7 @@ pub fn view(facts: Option<&LiveFacts>, grew_at: Option<i64>, now: i64) -> LiveVi
         }
         return stale(gone);
     }
-    // Without process evidence, hook evidence holds only for the window.
+    // Without process events, hook events hold only for the window.
     let window_end = facts.root.is_none().then(|| last + LIVE_WINDOW_MS + 1);
     if let Some(end) = window_end.filter(|end| now >= *end) {
         return stale(end);

@@ -23,7 +23,7 @@ fn message_record(id: &str, order: u64) -> MessageRecord {
             source_version,
             block: 0,
             observed: Some(NativeHookField {
-                input: "foreign-input".into(),
+                input: "other-input".into(),
                 chain: 7,
                 start: 10,
                 end: 40,
@@ -62,7 +62,7 @@ fn fragment_record() -> TextFragmentRecord {
                 end: 8,
             }],
             sources: vec![SourceClaim {
-                input: "foreign-input".into(),
+                input: "other-input".into(),
                 source: "codex".into(),
                 source_chain: 7,
                 source_start: Some(10),
@@ -79,7 +79,7 @@ fn fragment_record() -> TextFragmentRecord {
 }
 
 #[test]
-fn bundle_import_keeps_hook_claims_declared_and_offsets_their_message_keys() {
+fn bundle_import_keeps_stated_hook_fields_declared() {
     let records = [message_record("first", 21), message_record("second", 22)];
     let mut bytes = Vec::new();
     for record in &records {
@@ -93,21 +93,21 @@ fn bundle_import_keeps_hook_claims_declared_and_offsets_their_message_keys() {
     for (index, record) in records.iter().enumerate() {
         assert_eq!(step.output.messages[index].message, record.message);
         assert_eq!(
-            step.output.message_projections[&index].source_version,
+            step.output.block_selections[&index].source_version,
             record.source_version
         );
         assert_eq!(step.output.message_order[&index], record.order);
-        let [claim] = &step.output.declared_injections[&index][..] else {
-            panic!("one claim")
+        let [declared] = &step.output.declared_injections[&index][..] else {
+            panic!("one declared injection")
         };
-        assert_eq!(*claim, record.injections[0].clone().into_declared());
-        assert!(claim.observed.is_none());
+        assert_eq!(*declared, record.injections[0].clone().into_declared());
+        assert!(declared.observed.is_none());
     }
-    assert!(step.output.native_hook_fields.is_empty());
+    assert!(step.output.hook_fields.is_empty());
 }
 
 #[test]
-fn imported_text_fragment_keeps_foreign_claims_and_exact_receiving_record_range() {
+fn imported_text_fragment_keeps_stated_sources() {
     let record = fragment_record();
     record.validate().unwrap();
     let bytes = serde_json::to_vec(&Record::TextFragment(Box::new(record.clone()))).unwrap();
@@ -126,7 +126,7 @@ fn imported_text_fragment_keeps_foreign_claims_and_exact_receiving_record_range(
     assert_eq!(row.record, record);
     assert!(step.output.messages.is_empty());
     assert!(step.output.documents.is_empty());
-    assert!(step.output.native_hook_fields.is_empty());
+    assert!(step.output.hook_fields.is_empty());
 }
 
 #[test]

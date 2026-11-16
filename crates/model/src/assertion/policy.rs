@@ -1,5 +1,5 @@
-//! Structural authored policy shared by commands, markup and the predecessor import.
-//! Existence, currency, text evidence and configured rubric checks belong to
+//! Structural authored policy shared by commands, markup and the Python Polylogue import.
+//! Existence, current revisions, quoted text and configured rubric checks belong to
 //! the accepting store snapshot; this module never resolves a reference.
 use super::{About, AssertionKind, KeyShape, LinkRole, NewAssertion};
 use crate::{Reference, RevisionReference};

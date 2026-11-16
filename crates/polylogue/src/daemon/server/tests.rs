@@ -48,7 +48,7 @@ fn acknowledged_socket_write_survives_runtime_shutdown() {
     let request = command_surface::Request {
         operation: "setting".into(),
         arguments: serde_json::json!({"key":"browser.actions","value":"on"}),
-        request_id: "durable-socket-setting".into(),
+        request_id: "saved-socket-setting".into(),
         deadline: command_surface::Deadline::None,
         budget_tokens: Default::default(),
         cursor: None,
@@ -131,7 +131,7 @@ fn application_shutdown_joins_socket_clients_while_all_reader_slots_remain_held(
 }
 
 #[test]
-fn listener_quiescence_is_observable_before_joining_clients() {
+fn listener_stop_is_visible_before_clients_join() {
     let dir = tempfile::tempdir().unwrap();
     let mut config = crate::test_daemon::engine_config(std::path::PathBuf::from("/synthetic/home"));
     config.home = dir.path().to_owned();
@@ -159,10 +159,10 @@ fn listener_quiescence_is_observable_before_joining_clients() {
         .unwrap()
     )
     .unwrap();
-    let quiescing = server.take_quiescing().unwrap();
+    let listener_stopped = server.take_listener_stopped().unwrap();
     runtime.stop_accepting();
     server.request_stop();
-    quiescing.blocking_recv().unwrap();
+    listener_stopped.blocking_recv().unwrap();
     server.shutdown().unwrap();
     assert!(matches!(
         daemon.reads.reader(),
@@ -246,7 +246,7 @@ fn shutdown_cancels_a_started_socket_read_before_joining_its_transport() {
 #[test]
 fn shutdown_cancels_reads_without_revoking_a_handed_over_write() {
     use polylogue_store::writer::DispatchPhase;
-    for phase in [DispatchPhase::BeforeAdmission, DispatchPhase::Owned] {
+    for phase in [DispatchPhase::BeforeParentCheck, DispatchPhase::Owned] {
         let dir = tempfile::tempdir().unwrap();
         let mut config = crate::test_daemon::engine_config(dir.path().to_owned());
         config.tool_dirs.clear();
@@ -273,7 +273,7 @@ fn shutdown_cancels_reads_without_revoking_a_handed_over_write() {
         writeln!(reading, "{}", serde_json::to_string(&request).unwrap()).unwrap();
         let read = reads.recv_timeout(Duration::from_secs(5)).unwrap();
         crate::test_daemon::TestDaemon::wait_for_sql(&read);
-        let barrier = runtime
+        let pause = runtime
             .daemon
             .writes
             .as_ref()
@@ -299,10 +299,10 @@ fn shutdown_cancels_reads_without_revoking_a_handed_over_write() {
             parent_deadline_ms: Some(service::now_ms() + 60_000),
         };
         writeln!(writing, "{}", serde_json::to_string(&outgoing).unwrap()).unwrap();
-        barrier.wait().unwrap();
+        pause.wait().unwrap();
         runtime.stop_accepting();
         assert!(read.cancellation.is_cancelled());
-        barrier.release();
+        pause.release();
         let mut response = String::new();
         BufReader::new(writing).read_line(&mut response).unwrap();
         let answer: command_surface::Answer<serde_json::Value> =
@@ -389,9 +389,9 @@ fn a_client_can_close_its_write_half_and_still_receive_the_answer() {
 }
 
 /// A client already queued behind running work must be refused before the
-/// transport owner waits for it. The running owner still finishes normally.
+/// transport waits for it. The running request still finishes normally.
 #[test]
-fn admission_stop_releases_queued_socket_requests_before_running_work_finishes() {
+fn stopping_new_requests_releases_queued_socket_requests() {
     let directory = tempfile::tempdir().unwrap();
     let mut config = crate::test_daemon::engine_config(directory.path().join("home"));
     config.workers = 1;
@@ -446,7 +446,7 @@ fn admission_stop_releases_queued_socket_requests_before_running_work_finishes()
     assert_eq!(
         done.try_recv(),
         Err(std::sync::mpsc::TryRecvError::Empty),
-        "admission stop must not revoke the running owner"
+        "refusing new requests must not cancel the running one"
     );
     release.send(()).unwrap();
     done.recv_timeout(Duration::from_secs(2)).unwrap();
@@ -486,7 +486,7 @@ fn complete_queued_requests_receive_shutting_down_before_socket_drain() {
     writeln!(
         stream,
         "{}",
-        serde_json::to_string(&request("admitted-peer")).unwrap()
+        serde_json::to_string(&request("accepted-peer")).unwrap()
     )
     .unwrap();
     let mut line = String::new();
@@ -520,7 +520,7 @@ fn complete_queued_requests_receive_shutting_down_before_socket_drain() {
 }
 
 #[test]
-fn a_scope_reset_during_json_serialization_publishes_only_the_safe_failure() {
+fn scope_reset_during_json_serialization_sends_only_the_failure() {
     struct ResetWhileSerializing<'a>(&'a Archive);
     impl serde::Serialize for ResetWhileSerializing<'_> {
         fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -533,7 +533,7 @@ fn a_scope_reset_during_json_serialization_publishes_only_the_safe_failure() {
             )
         }
     }
-    let daemon = crate::test_daemon::start("native JSON publication fence");
+    let daemon = crate::test_daemon::start("JSON answer fence");
     let scope = daemon.daemon.reads.scope_token().unwrap();
     let (mut output, input) = UnixStream::pair().unwrap();
     input
@@ -556,7 +556,7 @@ fn a_scope_reset_during_json_serialization_publishes_only_the_safe_failure() {
         ..
     } = answer
     else {
-        panic!("old scope must not publish a value");
+        panic!("old scope must not send a value");
     };
     assert_eq!(error.code.as_deref(), Some("scope_changed"));
 }

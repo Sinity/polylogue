@@ -5,7 +5,7 @@
 //! completion, brief) and one background place for idle-priority work
 //! (schema inference, verification, imports). Queued work starts in the
 //! order of its deadline, so a short interactive request is not served after
-//! a long read admitted earlier; work without a deadline ranks as if it had
+//! a long read accepted earlier; work without a deadline ranks as if it had
 //! the default read deadline, so it still starts in its turn.
 //!
 //! Threads are not places. Work that must wait for something outside the
@@ -95,7 +95,7 @@ impl PartialOrd for Queued {
 }
 impl Ord for Queued {
     /// The heap pops its greatest entry: the earliest rank, then the first
-    /// admitted.
+    /// accepted.
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         (other.rank, other.sequence).cmp(&(self.rank, self.sequence))
     }
@@ -260,7 +260,7 @@ impl Executor {
 }
 
 impl Drop for Executor {
-    /// The last owner may be a job on one of the executor's threads, so
+    /// The last holder may be a job on one of the executor's threads, so
     /// dropping refuses work without waiting for it.
     fn drop(&mut self) {
         self.refuse();

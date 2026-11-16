@@ -156,7 +156,7 @@ static OTHER_BLOCK_FIELDS: Fields = Fields::new(
     "other_block",
     &[(
         "",
-        Rule::Kept("the normalized block is retained whole as Other data"),
+        Rule::Kept("the normalized block is kept whole as Other data"),
     )],
 );
 
@@ -224,7 +224,7 @@ impl DocumentParser for Capture {
         let raw = capture
             .get("raw_provider_payload")
             .filter(|r| r.as_object().is_some_and(|o| !o.is_empty()));
-        let native_dispatch = match (origin, raw) {
+        let provider_format = match (origin, raw) {
             ("chatgpt", Some(raw)) => raw.get("mapping").is_some(),
             ("claude-ai", Some(raw)) => raw.get("chat_messages").is_some(),
             ("grok", Some(raw)) => raw.get("responses").is_some(),
@@ -233,7 +233,7 @@ impl DocumentParser for Capture {
         };
         let header = crate::fields::header(
             &capture,
-            if native_dispatch {
+            if provider_format {
                 &["session", "raw_provider_payload"]
             } else {
                 &["session"]
@@ -243,7 +243,7 @@ impl DocumentParser for Capture {
         if let Some(session) = capture.get("session") {
             let header = crate::fields::header(
                 session,
-                if native_dispatch {
+                if provider_format {
                     &["attachments"]
                 } else {
                     &["turns", "attachments"]
@@ -252,7 +252,7 @@ impl DocumentParser for Capture {
             sink.records.fields(
                 "session",
                 &header,
-                if native_dispatch {
+                if provider_format {
                     &NATIVE_SESSION_FIELDS
                 } else {
                     &TURN_SESSION_FIELDS
@@ -357,7 +357,7 @@ fn turns(origin: &str, session: &Json, sink: &mut Sink<'_>) {
     }
     if let Some(at) = session.get("created_at").and_then(time_of) {
         facts
-            .offer_start(at.timestamp(), at.evidence())
+            .offer_start(at.timestamp(), at.accuracy())
             .expect("decoded source time is valid");
     }
     sink.out.sessions.push(facts);

@@ -1,6 +1,6 @@
 //! Parsing for every origin. Each origin is one declaration ([`OriginSpec`])
 //! and one parser over bytes and carried state. Parsers do not open files or
-//! databases; export deduplication calls the supplied first-message-owner lookup,
+//! databases; export deduplication calls the supplied first-session lookup,
 //! backed by operation-scoped storage in the engine. The framework frames
 //! records, accounts for every one of them,
 //! reads timestamps and checks that every wire field is read or excluded

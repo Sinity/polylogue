@@ -8,7 +8,7 @@ fn message_count(count: i64) -> Result<usize> {
 
 impl MessageSelection<'_, '_> {
     /// Seek this selection's metadata order without hydrating skipped bodies.
-    /// Physical selections share the canonical order used by message bundles.
+    /// Physical selections share the session order used by message bundles.
     pub fn locate_ordinal(&self, ordinal: u64) -> Result<Option<VisitStart>> {
         self.reader.check()?;
         let Ok(message) = usize::try_from(ordinal) else {
@@ -28,7 +28,7 @@ impl MessageSelection<'_, '_> {
         };
         let sql = format!(
             "WITH ordered AS ({}) SELECT pk FROM ordered WHERE record_order=?2",
-            super::super::order::canonical_rows("?1")
+            super::super::order::session_record_rows("?1")
         );
         let key = self
             .reader
@@ -60,7 +60,7 @@ impl MessageSelection<'_, '_> {
     }
 
     pub fn message_key(&self, id: &polylogue_model::MessageId) -> Result<Option<i64>> {
-        let id = crate::parser_context::canonical_message(self.reader.conn()?, id)?.to_string();
+        let id = crate::parser_context::resolved_message(self.reader.conn()?, id)?.to_string();
         if let Some(keys) = &self.with_parents {
             return Ok(keys
                 .iter()
@@ -107,9 +107,9 @@ impl MessageSelection<'_, '_> {
             return Ok(None);
         };
         let count = conn.query_row(
-            "SELECT count(*) FROM message m JOIN message anchor ON anchor.pk=?2
+            "SELECT count(*) FROM message m JOIN message target ON target.pk=?2
             WHERE m.session_pk=?1 AND m.duplicate_of IS NULL
-            AND (m.session_order,m.id) < (anchor.session_order,anchor.id)",
+            AND (m.session_order,m.id) < (target.session_order,target.id)",
             params![pk, key],
             |r| r.get::<_, i64>(0),
         )?;

@@ -297,7 +297,7 @@ pub struct ApiError {
 
 impl Message {
     /// BLAKE3 of the source value's canonical JSON, the message version
-    /// identity used by storage. Projection never redefines it. Stored
+    /// identity used by storage. Block selection never redefines it. Stored
     /// versions are checked against it on read, so its bytes carry no tag.
     pub fn content_hash(&self) -> Result<crate::BlobHash, serde_json::Error> {
         canonical_json::canonical_json(self)
@@ -316,13 +316,13 @@ impl Message {
     pub fn set_time(
         &mut self,
         at: Option<Timestamp>,
-        evidence: crate::TimeEvidence,
+        accuracy: crate::TimeEvidence,
     ) -> Result<(), crate::TimeEvidenceError> {
-        evidence.validate(at)?;
+        accuracy.validate(at)?;
         self.at = at;
-        self.at_quality = evidence.quality;
-        self.at_precision = evidence.precision;
-        self.at_until = evidence.until;
+        self.at_quality = accuracy.quality;
+        self.at_precision = accuracy.precision;
+        self.at_until = accuracy.until;
         Ok(())
     }
 

@@ -5,7 +5,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 static WAITING: Collector = Collector {
     setting: None,
     background: true,
-    settle: None,
+    advance: None,
     sync: |paths, _stop| {
         let mut socket = UnixStream::connect(paths.spool).unwrap();
         let mut reply = [0];
@@ -45,7 +45,7 @@ fn a_waiting_collector_runs_off_the_loop_thread_and_does_not_start_twice() {
 static STOPPING: Collector = Collector {
     setting: None,
     background: true,
-    settle: None,
+    advance: None,
     sync: |paths, stop| {
         let mut socket = UnixStream::connect(paths.spool).unwrap();
         while !stop.load(Ordering::Relaxed) {
@@ -86,7 +86,7 @@ static ARCHIVE_ACCEPTANCE: Collector = Collector {
     setting: None,
     background: false,
     sync: |_, _| Vec::new(),
-    settle: Some(|paths, accepted| {
+    advance: Some(|paths, accepted| {
         let requested =
             std::fs::read(paths.state_dir.join("expected.json")).map_err(|e| e.to_string())?;
         if accepted(
@@ -102,7 +102,7 @@ static ARCHIVE_ACCEPTANCE: Collector = Collector {
 };
 
 #[test]
-fn collector_acceptance_requires_the_complete_exact_archived_body() {
+fn collector_acceptance_requires_the_complete_archived_body() {
     let home = polylogue_testkit::ClaudeHome::new();
     let (mut engine, _lock) = crate::import::tests::engine(&home, 64 << 10);
     let spool = engine.config.state_dir().join("drive/ai-studio");
@@ -114,11 +114,11 @@ fn collector_acceptance_requires_the_complete_exact_archived_body() {
     };
     let path = spool.join("1AbC.json");
     let small = br#"{"runSettings":{},"chunkedPrompt":{"chunks":[]}}"#;
-    let complete = br#"{"runSettings":{},"chunkedPrompt":{"chunks":[{"role":"user","text":"full retained bytes"}]}}"#;
+    let complete = br#"{"runSettings":{},"chunkedPrompt":{"chunks":[{"role":"user","text":"full stored bytes"}]}}"#;
     std::fs::write(paths.state_dir.join("expected.json"), complete).unwrap();
     assert!(
         engine
-            .settle_collector("ai-studio", &ARCHIVE_ACCEPTANCE, &paths)
+            .advance_collector("ai-studio", &ARCHIVE_ACCEPTANCE, &paths)
             .is_err()
     );
     std::fs::write(&path, small).unwrap();
@@ -126,23 +126,23 @@ fn collector_acceptance_requires_the_complete_exact_archived_body() {
     assert!(pass.errors.is_empty(), "{pass:?}");
     assert!(
         engine
-            .settle_collector("ai-studio", &ARCHIVE_ACCEPTANCE, &paths)
+            .advance_collector("ai-studio", &ARCHIVE_ACCEPTANCE, &paths)
             .is_err()
     );
     std::fs::write(&path, complete).unwrap();
     assert!(
         engine
-            .settle_collector("ai-studio", &ARCHIVE_ACCEPTANCE, &paths)
+            .advance_collector("ai-studio", &ARCHIVE_ACCEPTANCE, &paths)
             .is_err()
     );
     let pass = engine.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{pass:?}");
     engine
-        .settle_collector("ai-studio", &ARCHIVE_ACCEPTANCE, &paths)
+        .advance_collector("ai-studio", &ARCHIVE_ACCEPTANCE, &paths)
         .unwrap();
     assert!(
         engine
-            .settle_collector("codex", &ARCHIVE_ACCEPTANCE, &paths)
+            .advance_collector("codex", &ARCHIVE_ACCEPTANCE, &paths)
             .is_err()
     );
     let mut wrong = complete.to_vec();
@@ -151,14 +151,14 @@ fn collector_acceptance_requires_the_complete_exact_archived_body() {
     std::fs::write(paths.state_dir.join("expected.json"), &wrong).unwrap();
     assert!(
         engine
-            .settle_collector("ai-studio", &ARCHIVE_ACCEPTANCE, &paths)
+            .advance_collector("ai-studio", &ARCHIVE_ACCEPTANCE, &paths)
             .is_err()
     );
-    // Missing local publication needs republishing; it is never an acceptance.
+    // A missing local file must be written again; it is never an acceptance.
     std::fs::remove_file(&path).unwrap();
     assert!(
         engine
-            .settle_collector("ai-studio", &ARCHIVE_ACCEPTANCE, &paths)
+            .advance_collector("ai-studio", &ARCHIVE_ACCEPTANCE, &paths)
             .is_err()
     );
 }

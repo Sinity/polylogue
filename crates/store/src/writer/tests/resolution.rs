@@ -1,5 +1,5 @@
 use super::*;
-mod native_time;
+mod stored_time;
 mod time_companions;
 use std::sync::{Arc, Barrier, mpsc::channel};
 
@@ -212,7 +212,7 @@ fn disjoint_workers_share_text_identity_without_waiting_for_a_commit() {
 
 #[cfg(feature = "faults")]
 #[test]
-fn refused_commit_releases_reservations_for_an_ordinary_retry() {
+fn refused_commit_releases_reservations_for_a_retry() {
     let w = test_archive();
     let sender = w.writer.sender().unwrap();
     let blobs = Arc::new(w.archive.blobs().unwrap());
@@ -511,7 +511,7 @@ fn original_readings_use_confirmed_blob_sizes_without_a_local_source_database() 
         step.resolution.as_ref().unwrap(),
         1,
         None,
-        Some(&fixture_receipt()),
+        Some(&fixture_commit()),
         &crate::change_summary::ChangeSummary::start(&tx).unwrap(),
     )
     .unwrap();
@@ -750,7 +750,7 @@ fn apply_source_batches(index: &mut Connection, batches: &[Batch]) -> Result<()>
                 step.resolution.as_ref().unwrap(),
                 1,
                 None,
-                Some(&fixture_receipt()),
+                Some(&fixture_commit()),
                 &changes,
             )?;
         }
@@ -760,7 +760,7 @@ fn apply_source_batches(index: &mut Connection, batches: &[Batch]) -> Result<()>
 }
 
 #[test]
-fn ordinary_batches_resolve_overlapping_source_chains_once() {
+fn batches_resolve_overlapping_source_chains_once() {
     let dir = tempfile::tempdir().unwrap();
     let archive = Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
     let mut index = crate::archive::open_write(&archive.index_db(), 1).unwrap();
@@ -862,7 +862,7 @@ fn a_refused_source_group_keeps_all_rows_and_positions_uncommitted() {
 }
 
 #[test]
-fn native_source_retraction_reselects_remaining_claims_and_rolls_back_atomically() {
+fn source_retraction_reselects_remaining_sources() {
     let directory = tempfile::tempdir().unwrap();
     let archive = Archive::on_sinex(directory.path(), &directory.path().join("bytes"));
     let mut index = crate::archive::open_write(&archive.index_db(), 1).unwrap();
@@ -1003,7 +1003,7 @@ fn commit_event_bytes(w: &TestArchive, mut input: Batch, bytes: &[u8]) -> Batch 
 }
 
 #[test]
-fn imported_events_preserve_identity_claims_and_canonical_fields_across_hops() {
+fn imported_events_keep_stated_sources_across_hops() {
     let first = test_archive();
     let mut input = batch("original", Route::Live, 0, Vec::new(), &[]);
     let event = Event {
@@ -1019,16 +1019,16 @@ fn imported_events_preserve_identity_claims_and_canonical_fields_across_hops() {
     };
     input.parse[0].output.events.push(event.clone());
     input.parse[0].counts = counts(1);
-    let mut native = serde_json::to_vec(&event).unwrap();
-    assert!(native.len() <= 1000);
-    native.resize(1000, b' ');
-    commit_event_bytes(&first, input, &native);
+    let mut encoded = serde_json::to_vec(&event).unwrap();
+    assert!(encoded.len() <= 1000);
+    encoded.resize(1000, b' ');
+    commit_event_bytes(&first, input, &encoded);
     let conn = crate::archive::open_read(&first.archive.index_db()).unwrap();
     let id: String = conn
         .query_row("SELECT id FROM event", [], |row| row.get(0))
         .unwrap();
     let source = crate::archive::open_read(&first.archive.archive_db()).unwrap();
-    let admitted: i64 = source
+    let committed: i64 = source
         .query_row(
             "SELECT commit_seq FROM extent WHERE input='original' AND offset=0",
             [],
@@ -1044,8 +1044,8 @@ fn imported_events_preserve_identity_claims_and_canonical_fields_across_hops() {
     let reader = reads.reader().unwrap();
     let exported = reader.event_record(&id).unwrap().unwrap();
     assert_eq!(exported.event, event);
-    assert_eq!(exported.commit, admitted as u64);
-    assert!(reader.change_position().unwrap().index > admitted);
+    assert_eq!(exported.commit, committed as u64);
+    assert!(reader.change_position().unwrap().index > committed);
     drop(reader);
     let wire = serde_json::to_vec(&exported).unwrap();
     let imported: polylogue_model::bundle::InputEventRecord =
@@ -1177,27 +1177,27 @@ fn imported_events_preserve_identity_claims_and_canonical_fields_across_hops() {
 }
 
 #[test]
-fn canonical_source_times_keep_nanoseconds_and_evidence_independently_of_query_caches() {
+fn source_times_keep_nanoseconds_and_accuracy() {
     use polylogue_model::{
         Document, DocumentId, DocumentPurpose, DocumentRow, Precision, TimeEvidence, TimeQuality,
     };
     let w = test_archive();
     let at = Timestamp::parse_rfc3339("2026-01-02T03:04:05.123456789Z");
-    let evidence = TimeEvidence {
+    let accuracy = TimeEvidence {
         quality: TimeQuality::Operator,
         precision: Some(Precision::Bounded),
         until: Timestamp::parse_rfc3339("2026-01-02T03:04:05.123456999Z"),
     };
     let mut message = text_message("precise", "s", Role::User, "precise source time", None);
-    message.set_time(at, evidence).unwrap();
+    message.set_time(at, accuracy).unwrap();
     let mut document = Document::new(
         DocumentId::parse("claude-code:precise-document").unwrap(),
         DocumentPurpose::Context,
     );
     document.blocks = vec![Block::Text {
-        text: "later canonical document".into(),
+        text: "later stored document".into(),
     }];
-    document.set_time(at, evidence).unwrap();
+    document.set_time(at, accuracy).unwrap();
     let mut input = batch(
         "precise-source",
         Route::Live,
@@ -1206,12 +1206,11 @@ fn canonical_source_times_keep_nanoseconds_and_evidence_independently_of_query_c
         &["s"],
     );
     input.parse[0].output.sessions[0]
-        .set_time(at, evidence)
+        .set_time(at, accuracy)
         .unwrap();
     input.parse[0].output.sessions[0].git_commit = Some("synthetic-revision".into());
     input.parse[0].output.sessions[0].model_provider = Some("synthetic-provider".into());
-    input.parse[0].output.sessions[0].instructions =
-        Some("Exact native session instructions".into());
+    input.parse[0].output.sessions[0].instructions = Some("Stated session instructions".into());
     let session = input.parse[0].output.sessions[0].clone();
     input.parse[0].output.documents.push(DocumentRow {
         offset: 2,
@@ -1229,7 +1228,7 @@ fn canonical_source_times_keep_nanoseconds_and_evidence_independently_of_query_c
         range: Some((4, 5)),
         data: serde_json::json!({"exact":true}),
     };
-    event.set_time(at, evidence).unwrap();
+    event.set_time(at, accuracy).unwrap();
     input.parse[0].output.events.push(event.clone());
     let bytes = serde_json::to_vec(&input.parse[0].output).unwrap();
     let mut replay = commit_event_bytes(&w, input, &bytes);
@@ -1252,7 +1251,7 @@ fn canonical_source_times_keep_nanoseconds_and_evidence_independently_of_query_c
     }
     let mut earlier = document.clone();
     earlier.blocks = vec![Block::Text {
-        text: "earlier canonical document".into(),
+        text: "earlier stored document".into(),
     }];
     earlier
         .set_time(
@@ -1285,7 +1284,7 @@ fn canonical_source_times_keep_nanoseconds_and_evidence_independently_of_query_c
 }
 
 #[test]
-fn a_remaining_native_event_keeps_its_original_identity_after_subset_projection() {
+fn remaining_event_keeps_its_identity_after_subset() {
     let w = test_archive();
     let event = Event {
         session: None,
@@ -1337,7 +1336,7 @@ fn a_remaining_native_event_keeps_its_original_identity_after_subset_projection(
 }
 
 #[test]
-fn checkpoint_admission_stamps_survive_duplicate_resets_and_rollback() {
+fn checkpoint_commit_positions_survive_resets_and_rollback() {
     let w = test_archive();
     let mut conn = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
     let first = batch("checkpoint", Route::Live, 0, Vec::new(), &[]);
@@ -1568,7 +1567,7 @@ fn link_evidence_merges_across_sources_independently_of_the_source_winner() {
                         .unwrap(),
                     2
                 );
-                // Replacing one actual reading retracts only that contributor.
+                // Replacing one reading retracts only that contributor.
                 // The remaining parent's evidence and call must become visible.
                 replacement.change = Change::Reparse {
                     chain: child_chain.unwrap(),
@@ -1600,7 +1599,7 @@ fn link_evidence_merges_across_sources_independently_of_the_source_winner() {
 /// Files that only name a session, as Claude Code's side files do (an event
 /// on the session their path names), share its row without waiting for one
 /// another's commit: the session's facts are each input's own, kept under
-/// that input's lease. Two such inputs queue while the index is locked, and
+/// that input's key lock. Two such inputs queue while the index is locked, and
 /// after it commits there is one session with both events.
 #[test]
 fn inputs_that_only_name_a_session_share_it_without_waiting_for_a_commit() {
@@ -1768,7 +1767,7 @@ fn copied_prefix_observations_enrich_only_an_explicit_relation_and_retract() {
 }
 
 #[test]
-fn contradictory_anchors_survive_one_source_and_unrelated_edges_do_not_expand_the_lookup() {
+fn contradictory_branch_points_survive_one_source() {
     let w = test_archive();
     let mut reading = batch(
         "fork-file",
@@ -1978,7 +1977,7 @@ fn explicit_copied_members_preserve_large_coordinates_and_retract_without_expand
 }
 
 #[test]
-fn late_compaction_header_and_known_source_retraction_reselect_exact_native_claims() {
+fn late_compaction_header_reselects_remaining_sources() {
     let w = test_archive();
     let mut original = text_message(
         "shared-native",
@@ -2004,7 +2003,7 @@ fn late_compaction_header_and_known_source_retraction_reselect_exact_native_clai
         .unwrap()
         .reader()
         .unwrap()
-        .message_admission(&original.id)
+        .message_commit(&original.id)
         .unwrap()
         .unwrap();
     let mut annotation = batch(
@@ -2034,10 +2033,7 @@ fn late_compaction_header_and_known_source_retraction_reselect_exact_native_clai
     {
         let pool = ReadPool::open(&w.archive).unwrap();
         let reader = pool.reader().unwrap();
-        assert_eq!(
-            reader.message_admission(&original.id).unwrap(),
-            Some(before)
-        );
+        assert_eq!(reader.message_commit(&original.id).unwrap(), Some(before));
         assert!(
             reader
                 .session_commit(&sid("declared-copy"))
@@ -2070,7 +2066,7 @@ fn late_compaction_header_and_known_source_retraction_reselect_exact_native_clai
         reads
             .reader()
             .unwrap()
-            .message_with_projection(&original.id)
+            .message_with_block_selection(&original.id)
             .unwrap()
             .unwrap()
             .0
@@ -2092,7 +2088,7 @@ fn late_compaction_header_and_known_source_retraction_reselect_exact_native_clai
         let reader = reads.reader().unwrap();
         assert_eq!(
             reader
-                .message_with_projection(&original.id)
+                .message_with_block_selection(&original.id)
                 .unwrap()
                 .unwrap()
                 .0
@@ -2120,7 +2116,7 @@ fn late_compaction_header_and_known_source_retraction_reselect_exact_native_clai
     let fallback = reads
         .reader()
         .unwrap()
-        .message_with_projection(&original.id)
+        .message_with_block_selection(&original.id)
         .unwrap()
         .unwrap()
         .0;

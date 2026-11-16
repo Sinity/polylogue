@@ -17,7 +17,7 @@ fn open_refuses_mode_mismatch_before_creating_files() {
     }
     for primary in [false, true] {
         let dir = tempfile::tempdir().unwrap();
-        let store = dir.path().join("owner");
+        let store = dir.path().join("sinex");
         let root = dir.path().join("archive");
         let (archive, lock) = if primary {
             Archive::open_primary(&root, &store).unwrap()
@@ -58,7 +58,7 @@ fn open_refuses_mode_mismatch_before_creating_files() {
 fn primary_mode_identity_survives_reset_and_index_recreation() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("archive");
-    let store = dir.path().join("owner");
+    let store = dir.path().join("sinex");
     let (archive, lock) = Archive::open_primary(&root, &store).unwrap();
     let identity = fs::read(root.join("meta.json")).unwrap();
     archive.advance_generation_for_test().unwrap();

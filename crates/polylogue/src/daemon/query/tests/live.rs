@@ -40,12 +40,12 @@ fn hooks(w: &mut WriterArchive, lines: &[(&str, &str, i64, Json)]) {
         .iter()
         .map(|(s, kind, min, data)| (*s, format!("hook_{kind}"), *min, data.clone()))
         .collect();
-    evidence(w, &lines);
+    append_live_lines(w, &lines);
 }
 
-/// Stores live evidence lines `(session, full kind, minutes after T0,
+/// Stores live event lines `(session, full kind, minutes after T0,
 /// data)` as one step of the hook spool.
-fn evidence<K: AsRef<str>>(w: &mut WriterArchive, lines: &[(&str, K, i64, Json)]) {
+fn append_live_lines<K: AsRef<str>>(w: &mut WriterArchive, lines: &[(&str, K, i64, Json)]) {
     let start = w.offset();
     let events: Vec<Event> = lines
         .iter()
@@ -111,10 +111,10 @@ fn st(s: &str, state: &str, until: Option<i64>) -> (String, String, Option<i64>)
 }
 
 #[test]
-fn live_state_is_a_function_of_stored_facts_and_the_time() {
-    // Live state on hook evidence alone (no process lines). Without
-    // process evidence, hook evidence holds for the live window and the
-    // session is stale afterwards, until a day after its latest evidence
+fn live_state_follows_stored_lines_and_the_time() {
+    // Live state on hook events alone (no process lines). Without
+    // process lines, hook events hold for the live window and the
+    // session is stale afterwards, until a day after its latest event
     // (live-sessions design §3.3: the live table holds "sessions with a
     // live root or activity in the last 24 h").
     let mut w = WriterArchive::new();
@@ -166,7 +166,7 @@ fn live_state_is_a_function_of_stored_facts_and_the_time() {
     // A line applied late (older than the stored one) changes nothing.
     hooks(&mut w, &[("v2", "pre_tool_use", 58, json!({}))]);
     assert_eq!(states(&w, 64)[1], st("v2", "ended", None));
-    // A day after their latest evidence, stale sessions have ended.
+    // A day after their latest event, stale sessions have ended.
     assert_eq!(
         states(&w, 26 * 60),
         vec![
@@ -207,7 +207,7 @@ fn a_wait_ends_with_the_next_event_and_an_idle_notice_is_not_a_wait() {
 
 #[test]
 fn live_state_is_total_for_sessions_without_hooks() {
-    // Historical sessions with no hook or process evidence have
+    // Historical sessions with no hook or process lines have
     // ended; one whose transcript grew within the window is `unknown`, and
     // ended once the window has passed (live-sessions design §8: "Time-only
     // inference survives only as the `unknown` row").
@@ -286,7 +286,7 @@ fn peers_are_symmetric() {
                 ..SessionFacts::default()
             })
             .unwrap();
-        // f's evidence is two days old: it has ended.
+        // f's latest line is two days old: it has ended.
         let at = if id == "f" { T0 - 48 * 60 * MIN } else { T0 };
         f.live(pk, event, at, waiting, repo).unwrap();
     }
@@ -393,7 +393,7 @@ fn the_change_feed_continues_from_its_cursor() {
 mod change_generation;
 
 #[test]
-fn stored_facts_equal_the_fold_of_stored_lines_with_ties_and_late_lines() {
+fn stored_facts_equal_applying_the_stored_lines() {
     let lines = [
         ("f", "user_prompt_submit", 1, json!({})),
         ("f", "permission_request", 2, json!({})),
@@ -413,13 +413,13 @@ fn stored_facts_equal_the_fold_of_stored_lines_with_ties_and_late_lines() {
         hooks(&mut w, std::slice::from_ref(line));
     }
     w.writer.derive().unwrap();
-    // The expected rows: the fold over the lines in (time, offset) order.
+    // The expected rows: the lines applied in (time, offset) order.
     let mut ordered: Vec<_> = lines.iter().enumerate().collect();
     ordered.sort_by_key(|(i, (_, _, min, _))| (*min, *i));
     let mut facts = polylogue_model::live::LiveFacts::default();
     let mut closed = Vec::new();
     for (_, (_, kind, min, data)) in ordered {
-        closed.extend(polylogue_model::live::fold(
+        closed.extend(polylogue_model::live::apply_live_event(
             &mut facts,
             &format!("hook_{kind}"),
             T0 + min * MIN,
@@ -448,7 +448,7 @@ fn stored_facts_equal_the_fold_of_stored_lines_with_ties_and_late_lines() {
 fn a_session_end_closes_its_process_rows() {
     let identity = |pid: u32, role: &str| json!({"pid": pid, "start": 7, "boot_id": "boot-a", "role": role, "comm": "x"});
     let mut w = WriterArchive::new();
-    evidence(
+    append_live_lines(
         &mut w,
         &[
             (

@@ -1,4 +1,4 @@
-//! The identity of one parsed fact, and which facts Sinex already holds.
+//! The identity of one parsed event, and which events Sinex already holds.
 use super::*;
 use crate::Result;
 use rusqlite::{Connection, params};
@@ -144,23 +144,23 @@ impl SourceRecord {
 
 fn known(index: &Connection, reading: &Reading, record: &SourceRecord) -> Result<bool> {
     Ok(index.query_row(
-        "SELECT EXISTS(SELECT 1 FROM primary_fact WHERE input=?1 AND chain=?2 AND reading_version=?3 AND reference=?4 AND value_hash=?5)",
+        "SELECT EXISTS(SELECT 1 FROM confirmed_event WHERE input=?1 AND chain=?2 AND reading_version=?3 AND reference=?4 AND value_hash=?5)",
         params![reading.input.id,reading.chain,reading.reading_version,record.reference,record.value_hash.0.as_slice()], |row| row.get(0),
     )?)
 }
 
 fn uncovered(index: &Connection, reading: &Reading, record: &SourceRecord) -> Result<bool> {
     Ok(!index.query_row(
-        "SELECT EXISTS(SELECT 1 FROM primary_fact WHERE kind='reading_progress' AND input=?1 AND chain=?2 AND reading_version=?3 AND step_start<=?4 AND step_end>=?5)",
+        "SELECT EXISTS(SELECT 1 FROM confirmed_event WHERE kind='reading_progress' AND input=?1 AND chain=?2 AND reading_version=?3 AND step_start<=?4 AND step_end>=?5)",
         params![reading.input.id,reading.chain,reading.reading_version,record.start,record.end], |row| row.get::<_,bool>(0),
     )?)
 }
 
-/// Whether a parsed fact still has to be sent to Sinex: no confirmed Sinex
+/// Whether a parsed event still has to be sent to Sinex: no confirmed Sinex
 /// event of this reading has its identity and value, and no reading-progress
-/// event of this reading covers its range. A covered fact that is absent was
+/// event of this reading covers its range. A covered event that is absent was
 /// archived or erased in Sinex, so rebuilding the local index neither sends
-/// confirmed facts again nor brings back removed ones.
+/// confirmed events again nor brings back removed ones.
 pub(crate) fn needs_sending(
     index: &Connection,
     reading: &Reading,
@@ -169,9 +169,9 @@ pub(crate) fn needs_sending(
     Ok(!known(index, reading, record)? && uncovered(index, reading, record)?)
 }
 
-/// Sinex's earlier parsed facts for a chain must fit inside a replacement's
-/// parsed prefix. An opaque older fact keeps its whole material as its bound;
-/// a parser diagnostic claims no values from that tail.
+/// Sinex's earlier parsed events for a chain must fit inside a replacement's
+/// parsed prefix. An older event without a step range keeps its whole material
+/// as its bound; a parser diagnostic states no values from that tail.
 pub(crate) fn previous_reading_bound(
     index: &Connection,
     input: &str,
@@ -179,8 +179,8 @@ pub(crate) fn previous_reading_bound(
     version: &str,
 ) -> Result<Option<u64>> {
     let mut query = index.prepare_cached(
-        "SELECT f.native_kind,f.reading_version,f.step_end,s.offset,s.length,s.blob_offset
-         FROM source_material s JOIN primary_fact f ON f.material=s.id
+        "SELECT f.sinex_kind,f.reading_version,f.step_end,s.offset,s.length,s.blob_offset
+         FROM source_material s JOIN confirmed_event f ON f.material=s.id
          WHERE s.input=?1 AND s.chain=?2 AND f.state='live'",
     )?;
     let mut rows = query.query(params![input, chain])?;
@@ -212,7 +212,7 @@ pub(crate) fn previous_reading_bound(
         }
         let invalid = || {
             crate::StoreError::Invalid(
-                "an earlier parsed fact has an unmapped material source range".into(),
+                "an earlier parsed event has an unmapped material source range".into(),
             )
         };
         let bound = if family == Some("parse_progress") {
@@ -227,8 +227,9 @@ pub(crate) fn previous_reading_bound(
                 return Err(invalid());
             }
             // The mapped slice may omit the material's prefix and tail. Its
-            // logical origin is offset - blob_offset; opaque facts still need
-            // the full material's end, including any unmapped tail.
+            // start in the source is offset - blob_offset; events without a
+            // step range still need the full material's end, including any
+            // unmapped tail.
             offset
                 .checked_sub(blob_offset)
                 .and_then(|start| start.checked_add(length))

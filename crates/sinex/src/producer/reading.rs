@@ -1,4 +1,4 @@
-//! A parser upgrade replaces Sinex's copy of one chain's parsed facts with a
+//! A parser upgrade replaces Sinex's copy of one chain's parsed events with a
 //! producer replay of the chain's original materials.
 use super::*;
 
@@ -72,15 +72,13 @@ impl Sinex {
                 let mut selections = client.replay_scope(&query).await?;
                 if selections.len() != 1 || selections[0].root != root_id {
                     return Err(Error::Invalid(
-                        "replacement scope does not identify one complete raw chain".into(),
+                        "replacement scope does not identify one complete chain".into(),
                     ));
                 }
                 let selection = selections.remove(0);
                 let source = crate::source_reference();
                 if selection.materials.is_empty() {
-                    return Err(Error::Invalid(
-                        "reading has no material source evidence".into(),
-                    ));
+                    return Err(Error::Invalid("reading names no source material".into()));
                 }
                 for material in &selection.materials {
                     let original = client.fetch_material(material.id).await?.source;
@@ -108,7 +106,7 @@ impl Sinex {
                 crate::products::require_reading(&write.product, key)?;
                 if write.location.is_none() {
                     return Err(polylogue_store::StoreError::Invalid(
-                        "a parsed fact needs its original source anchor".into(),
+                        "a parsed event needs its original record offset".into(),
                     ));
                 }
                 serde_json::to_writer(

@@ -130,7 +130,7 @@ fn unknown_and_equal_times_keep_stable_order_and_conversation_links() {
 }
 
 #[test]
-fn source_local_zone_is_retained_and_ambiguous_zone_is_unknown() {
+fn source_local_zone_is_kept_and_ambiguous_zone_unknown() {
     use polylogue_model::{Precision, TimeQuality};
     let html = format!(
         "<html><body>{}{}</body></html>",

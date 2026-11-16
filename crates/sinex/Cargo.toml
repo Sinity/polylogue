@@ -1,6 +1,6 @@
 [package]
 name = "polylogue-sinex"
-description = "Polylogue on Sinex: durable capture, canonical facts and a confirmed read index"
+description = "Polylogue on Sinex: spooled capture, Sinex events and a confirmed read index"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

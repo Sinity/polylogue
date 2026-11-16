@@ -73,7 +73,7 @@ fn unknown_database_table_has_explicit_schema_identity_without_row_values() {
 }
 
 #[test]
-fn consumed_native_thread_fields_are_declared_and_future_leaves_stay_visible() {
+fn read_thread_fields_are_declared_and_new_ones_shown() {
     let step = run(&Database, &mut NoState::default(), br#"{"t":"threads","k":["s"],"h":"00","r":{"id":"s","name":"Clock","cwd":"/work/project","thread_source":"user","created_at_ms":1700000000000,"future":{"flag":true}}}
 "#, 0).unwrap();
     assert_eq!(step.counts.unread_fields.len(), 3);

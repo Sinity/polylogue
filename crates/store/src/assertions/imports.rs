@@ -1,4 +1,4 @@
-//! Physical import ingress is separate from an assertion's immutable authorship.
+//! How an import arrived is kept separate from an assertion's immutable authorship.
 use super::*;
 use polylogue_model::authored::ImportAttribution;
 

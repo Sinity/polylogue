@@ -48,7 +48,7 @@ fn authed(b: axum::http::request::Builder) -> axum::http::request::Builder {
     b.header(header::COOKIE, format!("polylogue_abc123def456={TOKEN}"))
 }
 
-fn setting_envelope(id: &str) -> String {
+fn setting_request(id: &str) -> String {
     serde_json::to_string(&command_surface::Request {
         operation: "setting".into(),
         arguments: serde_json::json!({"key":"reading.variants", "value":"[]"}),
@@ -113,7 +113,7 @@ fn rt() -> tokio::runtime::Runtime {
 fn access_rules() {
     let r = reader();
     rt().block_on(async {
-        // DNS rebinding: a foreign Host is refused before anything else.
+        // DNS rebinding: another Host is refused before anything else.
         let req = Http::get("/")
             .header(header::HOST, "evil.example:8765")
             .body(Body::empty())
@@ -150,11 +150,11 @@ fn access_rules() {
         // A write from another origin is refused even with the cookie.
         let req = authed(post("/api/v1/setting"))
             .header(header::ORIGIN, "https://evil.example")
-            .body(Body::from(setting_envelope("access-setting")))
+            .body(Body::from(setting_request("access-setting")))
             .unwrap();
         assert_eq!(send(&r, req).await.0, StatusCode::FORBIDDEN);
         let req = own_origin(authed(post("/api/v1/setting")))
-            .body(Body::from(setting_envelope("access-setting")))
+            .body(Body::from(setting_request("access-setting")))
             .unwrap();
         assert_eq!(send(&r, req).await.0, StatusCode::OK);
 
@@ -397,7 +397,7 @@ fn an_unavailable_browser_permission_is_not_reported_as_disabled() {
 }
 
 #[test]
-fn a_chat_send_answer_preserves_exact_draft_credentials_as_data() {
+fn chat_send_answer_preserves_draft_credentials_as_data() {
     let r = reader();
     r.w.set("browser.actions", "on");
     let text = format!("Keep this draft {}", "AKIAIOSFODNN7EXAMPLE");
@@ -725,7 +725,7 @@ fn session_parent_links_are_scoped_and_missing_parent_stays_incomplete() {
             ItemKind::Card {card} => match card.as_ref() { Card::LinkEdge {from,to,relation,how,..} => Some((from.as_str(),to.as_str(),relation.as_str(),how.as_deref())), _=>None }, _=>None,
         }).collect();
         assert_eq!(edges,[("session:claude-code:s1","session:claude-code:child","fork",None)]);
-        // Native marker and anchor are canonical Link facts, not invented HTML text.
+        // The source's fork marker and branch point are stored link facts, not invented HTML text.
         let path=read_url("session:claude-code:child",&[("view","links"),("delivery","stream")]);
         let (status,_,body)=send(&r,authed(get(&path)).body(Body::empty()).unwrap()).await;
         assert_eq!(status,StatusCode::OK,"{body}");
@@ -734,7 +734,7 @@ fn session_parent_links_are_scoped_and_missing_parent_stays_incomplete() {
         assert_eq!(frames.last().unwrap().event,"complete");
         let links:Vec<_>=frames.iter().filter(|frame|frame.event=="record").filter_map(|frame| {
             match serde_json::from_str::<ReadRecord>(&frame.data).unwrap() {
-                ReadRecord::Canonical {record,..} => match *record {polylogue_model::bundle::Record::Link(row)=>Some(row.link),_=>None}, _=>None,
+                ReadRecord::Original {record,..} => match *record {polylogue_model::bundle::Record::Link(row)=>Some(row.link),_=>None}, _=>None,
             }
         }).collect();
         assert_eq!(links.len(),1);
@@ -775,7 +775,7 @@ fn cost_is_served_through_the_owned_loopback_http_listener() {
 }
 
 #[test]
-fn priced_native_usage_and_drilldown_keep_the_selected_session_population() {
+fn priced_usage_and_drilldown_keep_selected_sessions() {
     use std::io::Write;
     let r = reader();
     let assistant = |session: &str, input: u64| {
@@ -1005,23 +1005,23 @@ fn setting_http_keeps_typed_write_repeat_and_current_results() {
     rt().block_on(async {
         let invoke = || {
             authed(own_origin(post("/api/v1/setting")))
-                .body(Body::from(setting_envelope("http-setting-receipt")))
+                .body(Body::from(setting_request("http-setting-write-result")))
                 .unwrap()
         };
         let (status, _, first) = send(&reader, invoke()).await;
         assert_eq!(status, StatusCode::OK, "{first}");
-        let crate::protocol::setting::Answer::Receipt(first) =
+        let crate::protocol::setting::Answer::Outcome(first) =
             serde_json::from_str(&first).unwrap()
         else {
-            panic!("write must return a receipt")
+            panic!("write must return a write result")
         };
         assert!(!first.pending);
         let (status, _, repeat) = send(&reader, invoke()).await;
         assert_eq!(status, StatusCode::OK, "{repeat}");
-        let crate::protocol::setting::Answer::Receipt(repeat) =
+        let crate::protocol::setting::Answer::Outcome(repeat) =
             serde_json::from_str(&repeat).unwrap()
         else {
-            panic!("repeat must return a receipt")
+            panic!("repeat must return a write result")
         };
         assert_eq!(repeat.id, first.id);
         assert!(repeat.repeat);

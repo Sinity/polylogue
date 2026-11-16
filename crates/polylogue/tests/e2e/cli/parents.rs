@@ -31,10 +31,10 @@ fn exported(name: &str, text: &str, parent: Option<(&str, Option<&str>)>) -> Vec
             message,
         })),
     ];
-    if let Some((parent, anchor)) = parent {
+    if let Some((parent, branch_point)) = parent {
         let link: polylogue_model::Link = serde_json::from_value(json!({
             "kind":"fork","parent":format!("claude-code:{parent}"),"child":id,
-            "at":anchor.map(|s|format!("claude-code:{s}")),"evidence":"synthetic fork marker"
+            "at":branch_point.map(|s|format!("claude-code:{s}")),"evidence":"synthetic fork marker"
         }))
         .unwrap();
         records.push(Record::Link(bundle::LinkRecord {
@@ -59,9 +59,9 @@ fn write_bundle(path: &Path, sessions: Vec<Vec<Record>>) -> Vec<u8> {
             index: 1,
             archive: 1,
         },
-        freshness: polylogue_model::currency::ReadFreshness {
-            local: polylogue_model::currency::ReadCompleteness::empty(),
-            owner: polylogue_model::currency::IndexCurrency::Standalone,
+        freshness: polylogue_model::freshness::ReadFreshness {
+            local: polylogue_model::freshness::ReadCompleteness::empty(),
+            sinex: polylogue_model::freshness::IndexFreshness::Standalone,
         },
         counts: bundle::Counts {
             sessions: records
@@ -210,7 +210,7 @@ fn sid(name: &str) -> polylogue_model::SessionId {
 }
 
 #[test]
-fn ordinary_cli_reads_deep_parents_and_reports_incomplete_parent_prefixes() {
+fn cli_reads_deep_parents_and_reports_incomplete_parent_prefixes() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
     std::fs::create_dir_all(&home).unwrap();
@@ -221,11 +221,11 @@ fn ordinary_cli_reads_deep_parents_and_reports_incomplete_parent_prefixes() {
     let mut sessions = Vec::new();
     for i in 0usize..1030 {
         let parent = format!("s{}", i.saturating_sub(1));
-        let anchor = format!("{parent}-message");
+        let branch_point = format!("{parent}-message");
         sessions.push(exported(
             &format!("s{i}"),
             &format!("message {i} λ🙂"),
-            (i > 0).then_some((parent.as_str(), Some(anchor.as_str()))),
+            (i > 0).then_some((parent.as_str(), Some(branch_point.as_str()))),
         ));
     }
     sessions.push(exported(
@@ -239,12 +239,12 @@ fn ordinary_cli_reads_deep_parents_and_reports_incomplete_parent_prefixes() {
         Some(("prefix-parent", Some("s0-message"))),
     ));
     sessions.push(exported(
-        "missing-anchor",
+        "missing-branch-point",
         "available λ🙂 --token=synthetic-parents-secret",
         Some(("s0", Some("absent-message"))),
     ));
     sessions.push(exported(
-        "absent-anchor",
+        "absent-branch-point",
         "available child",
         Some(("s0", None)),
     ));
@@ -304,20 +304,20 @@ fn ordinary_cli_reads_deep_parents_and_reports_incomplete_parent_prefixes() {
     assert_eq!(texts(&prefix), ["message 0 λ🙂", "selected child"]);
     for (name, issue, count) in [
         (
-            "missing-anchor",
-            ParentIssue::MissingAnchor {
-                child: sid("missing-anchor"),
+            "missing-branch-point",
+            ParentIssue::MissingBranchPoint {
+                child: sid("missing-branch-point"),
                 parent: sid("s0"),
-                anchor: Some("claude-code:absent-message".into()),
+                branch_point: Some("claude-code:absent-message".into()),
             },
             1,
         ),
         (
-            "absent-anchor",
-            ParentIssue::MissingAnchor {
-                child: sid("absent-anchor"),
+            "absent-branch-point",
+            ParentIssue::MissingBranchPoint {
+                child: sid("absent-branch-point"),
                 parent: sid("s0"),
-                anchor: None,
+                branch_point: None,
             },
             1,
         ),
@@ -357,19 +357,31 @@ fn ordinary_cli_reads_deep_parents_and_reports_incomplete_parent_prefixes() {
             "only the available proven messages may appear"
         );
     }
-    let own = read(&env, "claude-code:missing-anchor", false, "json", "10000");
+    let own = read(
+        &env,
+        "claude-code:missing-branch-point",
+        false,
+        "json",
+        "10000",
+    );
     assert_eq!(lineage(&own), &ValueState::NotApplicable);
     assert!(issues(&own).is_empty());
-    assert_eq!(messages(&own), ["claude-code:missing-anchor-message"]);
+    assert_eq!(messages(&own), ["claude-code:missing-branch-point-message"]);
     for format in ["terminal", "markdown", "html"] {
-        let reading = read(&env, "claude-code:missing-anchor", true, format, "10000");
+        let reading = read(
+            &env,
+            "claude-code:missing-branch-point",
+            true,
+            format,
+            "10000",
+        );
         assert_eq!(lineage(&reading), &ValueState::known(false));
         assert_eq!(
             issues(&reading),
-            [ParentIssue::MissingAnchor {
-                child: sid("missing-anchor"),
+            [ParentIssue::MissingBranchPoint {
+                child: sid("missing-branch-point"),
                 parent: sid("s0"),
-                anchor: Some("claude-code:absent-message".into())
+                branch_point: Some("claude-code:absent-message".into())
             }]
         );
         assert_eq!(
@@ -378,11 +390,11 @@ fn ordinary_cli_reads_deep_parents_and_reports_incomplete_parent_prefixes() {
         );
         assert_eq!(
             messages(&reading),
-            ["claude-code:missing-anchor-message"],
+            ["claude-code:missing-branch-point-message"],
             "unproven parent included"
         );
     }
-    let paged = read(&env, "claude-code:missing-anchor", true, "json", "2");
+    let paged = read(&env, "claude-code:missing-branch-point", true, "json", "2");
     assert!(paged.pages > 1);
     let issue_position = paged
         .items
@@ -406,19 +418,25 @@ fn ordinary_cli_reads_deep_parents_and_reports_incomplete_parent_prefixes() {
     assert_eq!(lineage(&paged), &ValueState::known(false));
     assert_eq!(
         issues(&paged),
-        [ParentIssue::MissingAnchor {
-            child: sid("missing-anchor"),
+        [ParentIssue::MissingBranchPoint {
+            child: sid("missing-branch-point"),
             parent: sid("s0"),
-            anchor: Some("claude-code:absent-message".into())
+            branch_point: Some("claude-code:absent-message".into())
         }]
     );
-    assert_eq!(messages(&paged), ["claude-code:missing-anchor-message"]);
+    assert_eq!(
+        messages(&paged),
+        ["claude-code:missing-branch-point-message"]
+    );
     assert_eq!(
         texts(&paged),
         ["available λ🙂 --token=synthetic-parents-secret"]
     );
     assert_eq!(std::fs::read(&path).unwrap(), original);
-    let context = cli(&env, &["--json", "takeover", "claude-code:missing-anchor"]);
+    let context = cli(
+        &env,
+        &["--json", "takeover", "claude-code:missing-branch-point"],
+    );
     assert!(context.status.success(), "{context:?}");
     let context = json(&context);
     assert!(

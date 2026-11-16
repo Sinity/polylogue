@@ -24,13 +24,13 @@ pub struct Observation {
     pub machine: String,
     pub host: String,
     pub path: String,
-    /// Exact acquired location bytes; `path` is only its display label.
+    /// The location's bytes as read; `path` is only its display label.
     pub path_bytes: Vec<u8>,
     pub facts: Option<FileFacts>,
     pub seen_at_ms: i64,
     /// Membership established by this explicit import, independent of byte deduplication.
     pub import: Option<ImportMember>,
-    /// Exact membership in original container bytes, independent of imports.
+    /// Membership in the original container bytes, independent of imports.
     pub container: Option<InContainer>,
     /// A tool database's write-ahead log as the read that made this
     /// observation found it; `facts` are the database file's.
@@ -83,11 +83,11 @@ pub struct ParseStep {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stopped_attempt: Option<polylogue_model::batch::StoppedAttempt>,
     #[serde(default)]
-    pub(crate) receipt: Option<crate::wire_shapes::ReadingReceipt>,
-    /// Confirmed surviving facts can omit source ranges despite a scratch reset.
+    pub(crate) source_commit: Option<crate::wire_shapes::ReadingCommit>,
+    /// Confirmed surviving events can omit source ranges despite a scratch reset.
     #[serde(default)]
     pub(crate) source_prefix_missing: bool,
-    /// IDs from admitted products, separate from the explicit map in a sealed callback.
+    /// IDs of products Sinex admitted, separate from the explicit map in a sealed callback.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) confirmed_event_ids: Option<Vec<String>>,
     /// Replaces accounting from an earlier parse of this chain.
@@ -167,7 +167,7 @@ impl ParseStep {
             reading_version: String::new(),
             checkpoint: None,
             stopped_attempt: None,
-            receipt: None,
+            source_commit: None,
             source_prefix_missing: false,
             confirmed_event_ids: None,
             reset: range.start == 0,
@@ -185,7 +185,7 @@ impl ParseStep {
 }
 
 /// What the writer stores for one input in one step. `new blob` holds the new
-/// bytes (already durable when they are a file); `parse` holds the rows
+/// bytes (already saved when they are a file); `parse` holds the rows
 /// parsed from them, if the origin is parsed.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Batch {
@@ -208,14 +208,15 @@ pub struct Batch {
     /// commits (the writer keeps a transaction's batches to retry them one
     /// at a time), or when a batch is dropped unsent.
     pub release: InFlight,
-    /// Receiver-minted evidence of the body acquisition, not parsed payload data.
+    /// The receiver's record of the capture read that produced the body; not
+    /// parsed payload data.
     pub acquisition: Option<crate::primary::AcquisitionReceipt>,
-    /// Actual source precondition sampled before provider IO. It has no
-    /// authority to assign the resulting native chain or revision.
+    /// The source state sampled before provider I/O. It cannot assign the
+    /// resulting chain or revision.
     pub basis: Option<crate::primary::SourceBasis>,
-    /// Restricts this new acquisition to physical custody; it cannot request
-    /// source acceptance or promote a previously unresolved receipt.
-    pub required_disposition: Option<crate::primary::CaptureDisposition>,
+    /// Limits this new capture read to being held in the spool; it cannot
+    /// request source acceptance or accept a previously unresolved group.
+    pub required_outcome: Option<crate::primary::CaptureOutcome>,
 }
 
 /// A callback that runs once, when the value holding it is dropped. The

@@ -15,22 +15,22 @@ fn source(length: u64) -> Source<'static> {
         format: "fixture",
         chain: 1,
         length,
-        receipt: 7,
-        receipt_id: Some("receipt"),
+        commit_sequence: 7,
+        commit_id: Some("occurrence"),
         observation: Some("observation"),
         observed_at_ms: Some(100),
     }
 }
-fn callback(ordinal: u64, footprint: ExportDeliverySource, previous: BlobHash) -> ParseStep {
-    let complete = matches!(footprint, ExportDeliverySource::Complete { .. });
-    let end = match footprint {
+fn callback(ordinal: u64, delivery_source: ExportDeliverySource, previous: BlobHash) -> ParseStep {
+    let complete = matches!(delivery_source, ExportDeliverySource::Complete { .. });
+    let end = match delivery_source {
         ExportDeliverySource::Complete { length, .. } => length,
         _ => 0,
     };
     let mut step = ParseStep::new(Output::default(), RecordCounts::default(), 0..end, complete);
     step.reading_version = "crate::export::VERSION=2".into();
     step.reset = ordinal == 0;
-    if matches!(footprint, ExportDeliverySource::Item { .. }) {
+    if matches!(delivery_source, ExportDeliverySource::Item { .. }) {
         step.counts.records = 1;
         step.counts.add("item", &RecordOutcome::Used);
         step.counts.wire_shapes.insert(
@@ -44,7 +44,8 @@ fn callback(ordinal: u64, footprint: ExportDeliverySource, previous: BlobHash) -
             },
         );
     }
-    step.seal_export(ordinal, footprint, previous).unwrap();
+    step.seal_export(ordinal, delivery_source, previous)
+        .unwrap();
     step
 }
 fn apply_step(conn: &mut Connection, length: u64, step: &ParseStep) -> Result<()> {
@@ -124,8 +125,8 @@ fn callback_prefix_retries_are_read_only_and_completion_waits_for_every_prior_ca
     assert_eq!(reading.status(), CoverageStatus::Complete);
     assert_eq!(reading.parsed_upto, 2);
     assert!(matches!(
-        reading.last.footprint,
-        ReadingFootprint::Export {
+        reading.last.covered,
+        ReadRange::Export {
             source: ExportDeliverySource::Complete { item_count: 1, .. }
         }
     ));
@@ -134,8 +135,8 @@ fn callback_prefix_retries_are_read_only_and_completion_waits_for_every_prior_ca
     let done = state(&conn);
     apply_step(&mut conn, 2, &complete).unwrap();
     assert_eq!(state(&conn), done);
-    // A single retained head cannot authenticate each older callback. Older
-    // callbacks are read-only; the candidate prefix must meet the saved head
+    // A single kept latest callback cannot check each older callback. Older
+    // callbacks are read-only; the new prefix must reach the saved latest one
     // before it can extend or acknowledge completion.
     apply_step(&mut conn, 2, &header).unwrap();
     apply_step(&mut conn, 2, &item).unwrap();
@@ -164,7 +165,7 @@ fn callback_prefix_retries_are_read_only_and_completion_waits_for_every_prior_ca
 }
 
 #[test]
-fn unreadable_header_keeps_diagnostics_without_a_cursor_and_new_actual_length_can_restart() {
+fn unreadable_header_keeps_diagnostics_without_a_cursor_and_new_length_can_restart() {
     let mut conn = database();
     let mut refused = callback(
         0,
@@ -231,7 +232,7 @@ fn unreadable_header_keeps_diagnostics_without_a_cursor_and_new_actual_length_ca
 }
 
 #[test]
-fn semantic_seals_bind_original_event_identities_and_counts() {
+fn seals_bind_original_event_identities_and_counts() {
     let mut step = callback(
         0,
         ExportDeliverySource::ContainerHeader,

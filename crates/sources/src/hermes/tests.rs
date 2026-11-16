@@ -24,7 +24,7 @@ fn parse(records: Vec<Json>) -> Step {
 }
 
 #[test]
-fn native_order_is_insertion_id_not_table_export_or_timestamp_order() {
+fn source_order_is_insertion_id_not_export_or_time() {
     let mut second = message(2, "s", "assistant", "second");
     second["r"]["timestamp"] = json!(0);
     let parsed = parse(vec![
@@ -158,7 +158,7 @@ fn latest_positive_rows_and_gone_keep_the_last_known_message_without_changing_it
 }
 
 #[test]
-fn compression_parents_use_nonempty_ancestor_and_its_actual_leaf() {
+fn compression_parents_use_nonempty_ancestor_and_its_leaf() {
     let parsed = parse(vec![
         header("a"),
         session("child", Some("empty"), None),
@@ -183,7 +183,7 @@ fn compression_parents_use_nonempty_ancestor_and_its_actual_leaf() {
 }
 
 #[test]
-fn source_prose_and_codex_reasoning_reach_blocks_without_duplicating_known_projections() {
+fn prose_and_reasoning_reach_blocks_without_duplicates() {
     let mut row = message(1, "s", "assistant", "");
     row["r"]["reasoning_content"] = json!("primary reasoning");
     row["r"]["codex_message_items"]=json!(json!([{"type":"message","content":[{"type":"output_text","text":"only native item prose"}]}]).to_string());
@@ -213,12 +213,12 @@ fn source_prose_and_codex_reasoning_reach_blocks_without_duplicating_known_proje
             .events
             .iter()
             .all(|event| !event.data.to_string().contains("only native item prose")),
-        "ordered text projections must not be duplicated into independent event masking"
+        "ordered text blocks must not be duplicated into independent event masking"
     );
 }
 
 #[test]
-fn tool_envelopes_preserve_status_types_zero_exit_notes_and_unknown_limits() {
+fn json_tool_outputs_keep_status_and_unknown_limits() {
     for (raw, expected) in [
         (r#"{"output":"ok","exit_code":0}"#, ToolOutcome::Ok),
         (
@@ -332,7 +332,7 @@ fn inactive_positive_rows_are_not_empty_compression_intermediaries() {
 }
 
 #[test]
-fn native_function_calls_reuse_known_projection_ids_and_keep_independent_calls() {
+fn function_calls_reuse_known_ids_and_keep_others() {
     let mut row = message(1, "s", "assistant", "");
     row["r"]["tool_calls"] =
         json!(json!([{"id":"same","function":{"name":"terminal","arguments":"{}"}}]).to_string());
@@ -354,7 +354,7 @@ fn native_function_calls_reuse_known_projection_ids_and_keep_independent_calls()
 }
 
 #[test]
-fn fork_marker_does_not_invent_an_anchor_from_a_parent_that_can_continue() {
+fn fork_marker_does_not_invent_a_branch_point() {
     let mut child = session("child", Some("parent"), None);
     child["r"]["model_config"] = json!("{\"_branched_from\":\"parent\"}");
     let parsed = parse(vec![
@@ -406,7 +406,7 @@ fn missing_or_malformed_activity_does_not_assert_an_empty_path() {
 }
 
 #[test]
-fn folded_rows_replace_earlier_rows_and_keep_original_message_ranges() {
+fn later_rows_replace_earlier_rows_and_keep_message_ranges() {
     let records = vec![
         header("a"),
         session("s", None, None),

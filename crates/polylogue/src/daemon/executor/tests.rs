@@ -16,7 +16,7 @@ fn hold(executor: &Executor, class: Class) -> (Receiver<()>, Sender<()>) {
 }
 
 #[test]
-fn interactive_work_runs_while_every_ordinary_and_background_place_is_held() {
+fn interactive_work_runs_while_every_other_place_is_held() {
     let executor = Executor::new(2);
     let held: Vec<_> = (0..2).map(|_| hold(&executor, Class::Ordinary)).collect();
     let background = hold(&executor, Class::Background);

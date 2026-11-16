@@ -95,7 +95,7 @@ fn chosen_hit_batches_preserve_source_text_and_ignore_unselected_corruption() {
     );
 
     // Unselected earlier rows do not affect a snippet; the original reader
-    // also retains its consistent selected source snapshot.
+    // also keeps its consistent selected source snapshot.
     let header_text: i64 = write
         .query_row(
             "SELECT text_id FROM block WHERE message_pk=?1 LIMIT 1",

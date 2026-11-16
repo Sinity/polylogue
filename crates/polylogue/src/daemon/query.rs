@@ -3,7 +3,7 @@
 //! count leaves the completed rows available.
 
 use polylogue_store::Reader;
-use polylogue_store::query::{Options, Program, RowBasis, Shape};
+use polylogue_store::query::{Options, Program, RowKind, Shape};
 #[cfg(test)]
 use polylogue_store::{SqlValue, query::ColKind};
 use query_language::time::DaySetting;
@@ -24,10 +24,10 @@ pub struct Ask<'a> {
     pub page_size: Option<u64>,
     pub why: bool,
     pub session: Option<String>,
-    /// One captured invocation and owner policy for the complete operation.
+    /// One captured invocation and its policy for the complete operation.
     pub context: std::sync::Arc<crate::operation::Context>,
     pub embeddings: bool,
-    /// Captured provider/vector basis; never inferred from availability.
+    /// Captured provider and vector identity; never inferred from availability.
     pub ranking_identity: Option<String>,
     /// For `similar:`: texts' similarity to a text.
     pub near: Option<&'a NearFn<'a>>,
@@ -153,10 +153,10 @@ pub fn keep(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
     let mut rows = with_similarity(reader, &program, ask.near, || {
         Ok(reader.query_rows(&program)?)
     })?;
-    // Each kept row keeps its native identity, so reading the result back
+    // Each kept row keeps its own row identity, so reading the result back
     // names the same rows; presentation drops these columns.
-    let identities = match &program.row_basis {
-        RowBasis::Native { columns, .. } => Some(
+    let identities = match &program.row_kind {
+        RowKind::UnitRows { columns, .. } => Some(
             rows.iter()
                 .map(|row| columns.iter().map(|c| row[c].clone()).collect::<Vec<_>>())
                 .collect::<Vec<_>>(),
@@ -197,7 +197,7 @@ pub fn keep(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         output_metadata: output_metadata.clone(),
         shape: Some(program.shape),
         native_identity: program.shape == Shape::Rows
-            && matches!(&program.row_basis, RowBasis::Native { .. }),
+            && matches!(&program.row_kind, RowKind::UnitRows { .. }),
         unit: kept["unit"].as_str().expect("producer unit").into(),
         columns: program.columns.clone(),
         match_columns,
@@ -293,7 +293,7 @@ impl PreparedQuery<'_, '_> {
     }
 }
 
-/// Internal query consumers retain their enclosing operation's read phase.
+/// Internal query consumers keep their enclosing operation's read phase.
 pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<QueryAnswer, Failure> {
     prepare(reader, ask)?.complete()
 }
@@ -386,7 +386,7 @@ pub fn prepare<'read, 'pool>(
     };
     let evaluation = ask.context.replay_clock(program.clock.clone())?;
     let resolved = crate::protocol::query::Resolved {
-        context: evaluation.provenance(),
+        context: evaluation.run_context(),
         times: program.resolved_times.clone(),
     };
     let answer = with_similarity(
@@ -631,7 +631,7 @@ fn prepare_measure(program: &mut Program, page_size: Option<u64>) -> Result<(), 
     Ok(())
 }
 
-/// Row selection for ordinary queries and paged measures uses the same SQL and cursor.
+/// Row selection for queries and paged measures uses the same SQL and cursor.
 fn read_page(
     reader: &Reader<'_>,
     program: &Program,
@@ -664,7 +664,7 @@ fn read_at(reader: &Reader<'_>) -> Result<crate::protocol::query::Position, Fail
 
 pub(crate) use polylogue_store::selection::values;
 
-/// Validation shares the Store authority with prepared reads and paging.
+/// Validation uses the same store check as prepared reads and paging.
 fn validate(reader: &Reader<'_>, program: &Program) -> Result<(), Failure> {
     Ok(reader.validate_selection(program)?)
 }

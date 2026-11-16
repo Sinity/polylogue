@@ -48,7 +48,7 @@ fn tied_source_positions_use_ids_in_physical_logical_prompt_and_fingerprint_read
     let id = SessionId::parse("claude-code:ties").unwrap();
     for changed_plan in [false, true] {
         if changed_plan {
-            // Reverse tied native IDs in the actual read index. Row identities,
+            // Reverse tied native IDs in the read index. Row identities,
             // bodies and source positions remain unchanged.
             conn.execute_batch("DROP INDEX message_session; CREATE INDEX message_session ON message(session_pk,session_order,id DESC)").unwrap();
         }

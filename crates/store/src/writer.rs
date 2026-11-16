@@ -29,7 +29,7 @@ mod assets;
 mod dispatch;
 pub use dispatch::ParentLifetime;
 #[cfg(any(test, feature = "fixture"))]
-pub use dispatch::{DispatchBarrier, DispatchPhase};
+pub use dispatch::{DispatchPause, DispatchPhase};
 mod attachments;
 mod authored;
 mod batch;
@@ -48,7 +48,7 @@ mod scoped;
 mod source_snapshot;
 pub(crate) use retractions::{apply_source_retractions, prepare_source_retractions};
 pub(crate) use rows::finish as finish_rows;
-mod native_hook_fields;
+mod hook_fields;
 mod older_archive;
 pub use older_archive::{GroupOutcome, OlderGroup, Restored};
 pub(crate) mod resolve;
@@ -109,12 +109,12 @@ enum Msg {
     CopyReading(crate::ReadingCopy, SyncSender<Result<Result<bool>>>),
     StageConfirmed(
         Vec<crate::primary::Confirmed>,
-        SyncSender<Result<crate::primary::projection::Step>>,
+        SyncSender<Result<crate::primary::confirmed::Step>>,
     ),
     ApplyConfirmed(
-        Box<crate::primary::projection::Preparation>,
+        Box<crate::primary::confirmed::Preparation>,
         crate::completion::Committed,
-        SyncSender<Result<crate::primary::projection::Step>>,
+        SyncSender<Result<crate::primary::confirmed::Step>>,
     ),
     DrainPrimaryCaptures(SyncSender<Result<()>>),
     /// The stream follower handled a page, or failed to read one.
@@ -124,9 +124,9 @@ enum Msg {
         SyncSender<Result<Vec<crate::primary::PreparedBody>>>,
     ),
     Capture(String, SyncSender<Result<crate::primary::Capture>>),
-    RawAcquisitionCursor(
-        Box<crate::primary::RawAcquisitionQuery>,
-        SyncSender<Result<Option<crate::primary::RawAcquisitionCursor>>>,
+    ByteCursor(
+        Box<crate::primary::ByteCursorQuery>,
+        SyncSender<Result<Option<crate::primary::ByteCursor>>>,
     ),
     PendingGroupHeaders(
         String,
@@ -171,7 +171,7 @@ pub struct Writer {
     /// The archive's stop request ([`Archive::stop`]). It ends the writer's
     /// long work early: a derive pass after the transaction in progress, a
     /// first build's ending (its deferred indexes) at its next step, replay
-    /// of retained bytes and copies of identical-chain readings by rolling
+    /// of stored bytes and copies of identical-chain readings by rolling
     /// back their unfinished index transaction. What committed stays; the
     /// rest is done at the next start. Capture and authored writes are not
     /// affected.
@@ -205,7 +205,7 @@ struct WriterQueue {
     sinex: Option<Arc<dyn crate::primary::Sinex>>,
     stop: crate::cancellation::Cancellation,
     #[cfg(any(test, feature = "fixture"))]
-    dispatch: dispatch::Barriers,
+    dispatch: dispatch::DispatchPauses,
 }
 
 enum UserMsg {
@@ -244,7 +244,7 @@ impl WriterQueue {
         commits: crate::completion::CommitEvents,
         sinex: Option<Arc<dyn crate::primary::Sinex>>,
         stop: crate::cancellation::Cancellation,
-        #[cfg(any(test, feature = "fixture"))] dispatch: dispatch::Barriers,
+        #[cfg(any(test, feature = "fixture"))] dispatch: dispatch::DispatchPauses,
     ) -> Self {
         Self {
             wake: Arc::new(Mutex::new(Some(bulk.clone()))),
@@ -381,7 +381,7 @@ pub(crate) fn deferred_index_names() -> impl Iterator<Item = &'static str> {
     KEY_INDEXES.iter().chain(READ_ONLY_INDEXES).copied()
 }
 
-/// Publishes how many stored chains a build has read, from the counts the
+/// Records how many stored chains a build has read, from the counts the
 /// writer keeps with each change ([`crate::chain_progress`]).
 fn record_build_progress(archive: &Archive, index: &Connection) -> Result<()> {
     if archive.is_primary() || !archive.index_build.building() {
@@ -508,7 +508,7 @@ impl Writer {
         let stream_source = sinex.clone();
         let commits = crate::completion::CommitEvents::default();
         #[cfg(any(test, feature = "fixture"))]
-        let dispatch = dispatch::Barriers::default();
+        let dispatch = dispatch::DispatchPauses::default();
         let (tx, rx) = sync_channel::<Msg>(QUEUE);
         let users = Arc::new(user_queue::UserQueue::default());
         let stop = archive.stop().clone();
@@ -573,7 +573,7 @@ impl Writer {
             .ok_or_else(|| StoreError::Invalid("this writer is standalone".into()))?;
         follower.synchronize()?;
         // Acknowledged material can now produce input/reading events. Wait
-        // outside the writer thread while their owner reads the next page.
+        // outside the writer thread while the follower reads the next page.
         let (reply, wait) = sync_channel(1);
         self.tx
             .as_ref()
@@ -623,7 +623,7 @@ impl Writer {
         )
     }
 
-    /// Restore a fact with its independently observed physical source ingress.
+    /// Restore an assertion together with its separately observed import.
     pub fn restore_assertion_from(
         &self,
         fact: polylogue_model::assertion::AssertionFact,
@@ -737,25 +737,25 @@ impl Writer {
         coverage_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, coverage)
     }
 
-    /// Hydrates one locally durable acquisition and its complete private facts.
+    /// Loads one capture read from the spool with its complete metadata.
     pub fn capture(&self, identity: String) -> Result<crate::primary::Capture> {
         capture_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, identity)
     }
 
-    /// Pins one locally durable pending source body without network I/O.
+    /// Pins one pending source body held in the spool, without network I/O.
     pub fn capture_body(&self, identity: String) -> Result<Vec<crate::primary::PreparedBody>> {
         capture_body_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, identity)
     }
 
-    /// Reads a local custody cursor for one exact provider generation.
-    pub fn raw_acquisition_cursor(
+    /// Reads a spool byte cursor for one observed provider state.
+    pub fn byte_cursor(
         &self,
-        query: crate::primary::RawAcquisitionQuery,
-    ) -> Result<Option<crate::primary::RawAcquisitionCursor>> {
-        raw_acquisition_cursor_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, query)
+        query: crate::primary::ByteCursorQuery,
+    ) -> Result<Option<crate::primary::ByteCursor>> {
+        byte_cursor_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, query)
     }
 
-    /// Pages original group membership without hydrating parsed facts.
+    /// Pages original group membership without loading parsed events.
     pub fn pending_group_headers(
         &self,
         group: String,
@@ -770,7 +770,8 @@ impl Writer {
         )
     }
 
-    /// Reads confirmed identity and local durable pending source evidence in writer order.
+    /// Reads the confirmed identity and the pending source held in the spool,
+    /// in writer order.
     pub fn source_snapshot(
         &self,
         source: crate::primary::SourceSelector,
@@ -1014,7 +1015,7 @@ impl WriterSender {
         assertions::restore_via(&self.0, assertions::Restoration { fact, import: None })
     }
 
-    /// Restore an immutable fact and record the independently observed source ingress.
+    /// Restore an assertion together with its separately observed import.
     pub fn restore_assertion_from(
         &self,
         fact: polylogue_model::assertion::AssertionFact,
@@ -1116,7 +1117,7 @@ impl WriterSender {
     }
 
     /// Records one older chain's complete reading from its newer chain of
-    /// the same bytes. A successful copy commits all its rows and receipts
+    /// the same bytes. A successful copy commits all its rows and source commits
     /// before answering. The inner answer is `false` when copying would not
     /// equal parsing (always in primary mode), or an error from the copy;
     /// both leave the chain unchanged and let the caller parse it instead.
@@ -1151,12 +1152,12 @@ impl WriterSender {
         capture_body_via(&self.0, identity)
     }
 
-    /// As [`Writer::raw_acquisition_cursor`].
-    pub fn raw_acquisition_cursor(
+    /// As [`Writer::byte_cursor`].
+    pub fn byte_cursor(
         &self,
-        query: crate::primary::RawAcquisitionQuery,
-    ) -> Result<Option<crate::primary::RawAcquisitionCursor>> {
-        raw_acquisition_cursor_via(&self.0, query)
+        query: crate::primary::ByteCursorQuery,
+    ) -> Result<Option<crate::primary::ByteCursor>> {
+        byte_cursor_via(&self.0, query)
     }
 
     /// As [`Writer::pending_group_headers`].
@@ -1200,12 +1201,12 @@ fn capture_body_via(
     wait.recv().map_err(|_| StoreError::WriterGone)?
 }
 
-fn raw_acquisition_cursor_via(
+fn byte_cursor_via(
     tx: &WriterQueue,
-    query: crate::primary::RawAcquisitionQuery,
-) -> Result<Option<crate::primary::RawAcquisitionCursor>> {
+    query: crate::primary::ByteCursorQuery,
+) -> Result<Option<crate::primary::ByteCursor>> {
     let (reply, wait) = sync_channel(1);
-    tx.send(Msg::RawAcquisitionCursor(Box::new(query), reply))
+    tx.send(Msg::ByteCursor(Box::new(query), reply))
         .map_err(|_| StoreError::WriterGone)?;
     wait.recv().map_err(|_| StoreError::WriterGone)?
 }
@@ -1269,7 +1270,7 @@ struct Inner {
     /// Ends a derive pass or a first build's ending early.
     stop: crate::cancellation::Cancellation,
     #[cfg(any(test, feature = "fixture"))]
-    dispatch: dispatch::Barriers,
+    dispatch: dispatch::DispatchPauses,
     commits: crate::completion::CommitEvents,
     resolver: Arc<resolve::Resolver>,
     segment: Option<hashed_blobs::SegmentWriter>,
@@ -1314,7 +1315,7 @@ impl Inner {
             match message {
                 UserMsg::Request(request, scope, preparation, parent, reply) => {
                     let result = self
-                        .admit_user_parent(&request.id, parent.as_deref())
+                        .check_user_parent(&request.id, parent.as_deref())
                         .and_then(|()| {
                             self.write_user(&request, scope.as_ref(), preparation.as_deref())
                         });
@@ -1327,12 +1328,12 @@ impl Inner {
                 }
                 UserMsg::QueryObject(object, parent, reply) => {
                     let result = self
-                        .admit_user_parent(&object.id.to_string(), parent.as_deref())
+                        .check_user_parent(&object.id.to_string(), parent.as_deref())
                         .and_then(|()| self.write_query_object(&object));
                     let _ = reply.send(result);
                 }
                 UserMsg::QueryRun(run, parent, reply) => {
-                    if let Err(error) = self.admit_user_parent(run.id.as_str(), parent.as_deref()) {
+                    if let Err(error) = self.check_user_parent(run.id.as_str(), parent.as_deref()) {
                         let _ = reply.send(Err(error));
                         continue;
                     }
@@ -1355,7 +1356,7 @@ impl Inner {
                 }
                 UserMsg::History(history) => {
                     if let Err(error) = self
-                        .admit_user_parent(history.run.id.as_str(), None)
+                        .check_user_parent(history.run.id.as_str(), None)
                         .and_then(|()| self.write_history(&history))
                     {
                         self.report
@@ -1369,7 +1370,7 @@ impl Inner {
 
     /// The follower's page was handled: record a failed read once per
     /// distinct error (Sinex's health also shows it in status); after a
-    /// successful one, prepare the facts of captures Sinex confirmed and derive.
+    /// successful one, prepare the events of captures Sinex confirmed and derive.
     fn stream_followed(&mut self, error: Option<String>) {
         let result = match error {
             Some(error) => Err(error),
@@ -1386,7 +1387,7 @@ impl Inner {
         match result {
             Ok(()) => self.stream_error = None,
             Err(error) => {
-                let position = crate::primary::projection::checkpoint(&self.index)
+                let position = crate::primary::confirmed::checkpoint(&self.index)
                     .map(|position| position.unwrap_or(0).to_string())
                     .unwrap_or_else(|error| format!("unavailable ({error})"));
                 let error = format!("confirmed stream: after position {position}: {error}");
@@ -1416,7 +1417,7 @@ impl Inner {
         let mut snapshots = Vec::new();
         let mut pending_bodies = Vec::new();
         let mut private_captures = Vec::new();
-        let mut raw_cursors = Vec::new();
+        let mut byte_cursors = Vec::new();
         let mut group_pages = Vec::new();
         let mut restorations = Vec::new();
         let mut assertion_restorations = Vec::new();
@@ -1497,8 +1498,8 @@ impl Inner {
                         older_groups.push((group, reply));
                         false
                     }
-                    Msg::RawAcquisitionCursor(generation, reply) => {
-                        raw_cursors.push((generation, reply));
+                    Msg::ByteCursor(query, reply) => {
+                        byte_cursors.push((query, reply));
                         false
                     }
                     Msg::PendingGroupHeaders(group, after, limit, reply) => {
@@ -1643,11 +1644,11 @@ impl Inner {
             for (copy, reply) in copies.drain(..) {
                 let _ = reply.send(self.write_copy_reading(&copy));
             }
-            for (query, reply) in raw_cursors.drain(..) {
+            for (query, reply) in byte_cursors.drain(..) {
                 let result = query.validate().and_then(|()| {
                     self.sinex
                         .as_ref()
-                        .map_or(Ok(None), |sinex| sinex.raw_acquisition_cursor(&query))
+                        .map_or(Ok(None), |sinex| sinex.byte_cursor(&query))
                 });
                 let _ = reply.send(result);
             }
@@ -1835,7 +1836,7 @@ impl Inner {
         let tx = self.index.transaction()?;
         let counter = bump_counter(&tx)?;
         let answer = crate::fault::check("write.copy_reading", &copy.input)
-            .and_then(|()| crate::same_bytes::copy_reading(&tx, copy, counter));
+            .and_then(|()| crate::identical_chains::copy_reading(&tx, copy, counter));
         let answer = match answer {
             Err(StoreError::Sqlite(error))
                 if error.sqlite_error_code() == Some(rusqlite::ErrorCode::OperationInterrupted) =>
@@ -1852,7 +1853,7 @@ impl Inner {
                 .committed(crate::completion::Committed::CONTENT);
             self.report.transactions += 1;
         } else {
-            // A refusal or ordinary copy error leaves no rows, receipts or
+            // A refusal or a copy error leaves no rows, source commits or
             // write-counter change from this attempt.
             tx.rollback()?;
         }
@@ -2166,7 +2167,7 @@ impl Inner {
                 &source_snapshot,
                 request,
                 seq,
-                crate::user_writes::Preparation::native(preparation, None),
+                crate::user_writes::Preparation::plain(preparation, None),
             )?
         };
         scoped::require_current(&self.location, scope)?;
@@ -2317,7 +2318,7 @@ impl Inner {
                                 "a parsed step was not resolved for its input chain".into(),
                             )
                         })?;
-                    let receipt = crate::source::Source::reading_receipt(
+                    let source_commit = crate::source::Source::reading_commit(
                         &itx,
                         &b.input.id,
                         chain,
@@ -2331,7 +2332,7 @@ impl Inner {
                         resolution,
                         counter,
                         self.first_build.as_deref(),
-                        Some(&receipt),
+                        Some(&source_commit),
                         &changes,
                     )?;
                 }
@@ -2401,8 +2402,8 @@ fn weight(b: &Batch) -> usize {
 #[cfg(test)]
 mod tests;
 
-/// Decoded blobs are outputs of retained input, not a new input acquisition.
-/// Their custody can finish before the unfinished index reading is cancelled.
+/// Decoded blobs are outputs of stored input, not a new capture read.
+/// Spooling them can finish before the unfinished index reading is cancelled.
 fn replayed_input(batch: &Batch) -> bool {
     matches!(batch.change, Change::Reparse { .. })
         && batch.new_blob.is_none()

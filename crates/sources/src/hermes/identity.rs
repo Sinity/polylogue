@@ -13,7 +13,7 @@ pub(super) fn profile(source: Option<&Json>) -> Result<Option<String>, &'static 
     let raw = source
         .get("path")
         .and_then(Json::as_str)
-        .ok_or("missing native path")?;
+        .ok_or("missing source path")?;
     let mut path = PathBuf::new();
     for component in Path::new(raw).components() {
         match component {
@@ -27,7 +27,7 @@ pub(super) fn profile(source: Option<&Json>) -> Result<Option<String>, &'static 
     if !path.is_absolute() || path.file_name().is_none_or(|name| name != "state.db") {
         return Err("not an absolute Hermes state.db source");
     }
-    let home = path.parent().ok_or("missing native profile root")?;
+    let home = path.parent().ok_or("missing Hermes profile root")?;
     let in_profiles = home
         .parent()
         .and_then(Path::file_name)
@@ -45,7 +45,7 @@ pub(super) fn hash(value: &Json) -> String {
         .to_string()
 }
 
-// Escape the category and occurrence delimiters without changing native bytes.
+// Escape the category and occurrence delimiters without changing the source bytes.
 pub(super) fn component(value: &str) -> String {
     value
         .replace('%', "%25")

@@ -28,7 +28,7 @@ fn positions(reader: &Reader<'_>, selection: &PreparedSelection<'_>) -> Vec<Orde
 }
 
 #[test]
-fn a_row_continuation_resumes_at_its_anchor_by_key_without_earlier_bodies() {
+fn row_continuation_resumes_at_its_start_key() {
     let dir = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(dir.path()).unwrap();
     let session = fixture
@@ -179,8 +179,8 @@ fn reverse_callback_stops_before_poisoned_earlier_body() {
         .unwrap();
     fixture.event(session, "poison", None).unwrap();
     fixture.event(session, "previous", None).unwrap();
-    fixture.event(session, "anchor", None).unwrap();
-    let anchors: Vec<(String, OrderPosition)> = {
+    fixture.event(session, "start", None).unwrap();
+    let starts: Vec<(String, OrderPosition)> = {
         let pool = fixture.reads().unwrap();
         let reader = pool.reader().unwrap();
         ["events | sort by id", "events | sort by id | limit 3"]
@@ -197,11 +197,11 @@ fn reverse_callback_stops_before_poisoned_earlier_body() {
     drop(conn);
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
-    for (query, anchor) in anchors {
+    for (query, start) in starts {
         let selection = reader.prepare_selection(&query, &options()).unwrap();
         let mut found = vec![];
         reader
-            .visit_selection_before_row::<SelectionError>(&selection, &anchor, None, |row| {
+            .visit_selection_before_row::<SelectionError>(&selection, &start, None, |row| {
                 found.push(row.values["kind"].clone());
                 Ok(ControlFlow::Break(()))
             })
@@ -209,7 +209,7 @@ fn reverse_callback_stops_before_poisoned_earlier_body() {
         assert_eq!(found, vec![Value::String("previous".into())]);
         assert!(
             reader
-                .visit_selection_before_row::<SelectionError>(&selection, &anchor, None, |_| Ok(
+                .visit_selection_before_row::<SelectionError>(&selection, &start, None, |_| Ok(
                     ControlFlow::Continue(())
                 ))
                 .is_err()

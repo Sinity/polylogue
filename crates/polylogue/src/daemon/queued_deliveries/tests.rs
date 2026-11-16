@@ -26,13 +26,13 @@ fn captured_advice_remains_pending_until_current_history_confirms_application() 
     assert_eq!(
         first.len(),
         1,
-        "capture ACK is not applied delivery history"
+        "a capture acknowledgment is not applied delivery history"
     );
     drop(reply);
     assert_eq!(
         queued.pending_advice("codex:recipient").unwrap(),
         first,
-        "a consumed capture ACK cannot retire pending ownership"
+        "a consumed capture acknowledgment cannot end the pending hold"
     );
     queued.advice_applied(&["advice-request".into()]);
     assert!(queued.pending_advice("codex:recipient").unwrap().is_empty());

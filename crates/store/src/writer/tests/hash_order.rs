@@ -99,10 +99,7 @@ fn version_hash_ignores_nested_json_member_order() {
                 &[],
             )
             .unwrap();
-        assert_eq!(
-            rows[0]["sources"], 2,
-            "both physical source associations survive"
-        );
+        assert_eq!(rows[0]["sources"], 2, "both source associations survive");
         let count = rows[0]["n"].as_u64().unwrap();
         let hashes = reader
             .query(

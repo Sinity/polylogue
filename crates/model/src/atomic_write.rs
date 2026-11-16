@@ -1,4 +1,4 @@
-//! Durable replacement of a whole file.
+//! Crash-safe replacement of a whole file.
 use std::{
     fs,
     io::{self, Write},

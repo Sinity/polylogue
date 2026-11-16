@@ -81,7 +81,7 @@ fn unused_leaf_counted_without_changing_record_outcomes() {
 }
 
 #[test]
-fn public_shape_kind_uses_declarations_instead_of_wire_discriminator_values() {
+fn public_shape_kind_uses_declarations_not_wire_type_fields() {
     static FIELDS: Fields = Fields::new("unlisted_item", &[("type", Rule::Read(T::String))]).shape(
         &[],
         &[crate::fields::KnownKinds {

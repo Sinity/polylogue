@@ -27,9 +27,9 @@ fn expected(origin: &str, version: &str) -> ReadingContract {
 }
 
 #[test]
-fn real_derived_writer_uses_checkpoint_evidence_across_independent_counter_domains() {
+fn derived_writes_count_checkpoints_across_counter_domains() {
     let mut stored = WriterArchive::new();
-    stored.write("current", prose("current", 1, 1, "retained source text"));
+    stored.write("current", prose("current", 1, 1, "stored source text"));
     let contracts = [expected("claude-code", "synthetic=1")];
     let pool = ReadPool::open(&stored.archive).unwrap();
     let pinned = pool.reader().unwrap();
@@ -41,7 +41,7 @@ fn real_derived_writer_uses_checkpoint_evidence_across_independent_counter_domai
     assert!(pinned.completeness(&contracts).unwrap().caught_up());
 
     // Real new source bytes have no new parsed checkpoint. The old reader still
-    // proves its own snapshot; a fresh reader must observe the actual lag.
+    // sees its own snapshot as complete; a fresh reader must see the lag.
     let mut raw = step(
         "input-current",
         "claude-code",
@@ -56,16 +56,16 @@ fn real_derived_writer_uses_checkpoint_evidence_across_independent_counter_domai
     assert!(pinned.completeness(&contracts).unwrap().caught_up());
     drop(pinned);
     let fresh = pool.reader().unwrap();
-    let proof = fresh.completeness(&contracts).unwrap();
-    assert!(!proof.caught_up());
+    let completeness = fresh.completeness(&contracts).unwrap();
+    assert!(!completeness.caught_up());
     assert!(
-        matches!(proof.parsing, CompletenessDimension::Incomplete(ref reasons)
+        matches!(completeness.parsing, CompletenessDimension::Incomplete(ref reasons)
         if reasons.contains(&CompletenessReason::ParserBehind))
     );
 }
 
 #[test]
-fn exact_waiting_length_and_explicit_kept_contracts_have_distinct_meanings() {
+fn waiting_length_and_explicit_kept_contracts_have_distinct_meanings() {
     let root = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(root.path()).unwrap();
     let archive = Connection::open(fixture.archive.archive_db()).unwrap();
@@ -84,12 +84,12 @@ fn exact_waiting_length_and_explicit_kept_contracts_have_distinct_meanings() {
         )
         .unwrap();
     let pool = fixture.reads().unwrap();
-    let exact = pool
+    let matching = pool
         .reader()
         .unwrap()
         .completeness(&[expected("synthetic", "v1")])
         .unwrap();
-    assert!(exact.caught_up());
+    assert!(matching.caught_up());
     let unknown = pool.reader().unwrap().completeness(&[]).unwrap();
     assert!(matches!(unknown.parsing, CompletenessDimension::Unknown(_)));
     let kept = pool
@@ -132,57 +132,60 @@ fn exact_waiting_length_and_explicit_kept_contracts_have_distinct_meanings() {
 }
 
 #[test]
-fn primary_projection_is_complete_only_when_caught_up_to_the_sinex_head() {
+fn stream_is_complete_only_at_the_latest_sinex_position() {
     let root = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_primary_cache(root.path()).unwrap();
-    let projection = |applied: Option<i64>, head: Option<i64>| {
+    let confirmed_stream = |applied: Option<i64>, latest_position: Option<i64>| {
         let conn = Connection::open(archive.index_db()).unwrap();
-        crate::primary::projection::save_replay(
+        crate::primary::confirmed::save_replay(
             &conn,
             &crate::primary::ReplayState {
                 applied_position: applied,
                 scope: Some("scope".into()),
-                head,
+                latest_position,
                 staged_delivery: None,
                 completed_delivery: None,
                 snapshot: None,
-                projection: None,
+                snapshot_progress: None,
             },
         )
         .unwrap();
         let pool = ReadPool::open(&archive).unwrap();
         let completeness = pool.reader().unwrap().completeness(&[]).unwrap();
-        (completeness.projection.clone(), completeness.degraded())
+        (
+            completeness.confirmed_stream.clone(),
+            completeness.degraded(),
+        )
     };
     assert_eq!(
-        projection(None, Some(5)),
+        confirmed_stream(None, Some(5)),
         (
             CompletenessDimension::Incomplete(vec![CompletenessReason::StreamNotApplied]),
             true
         )
     );
     assert_eq!(
-        projection(Some(3), Some(5)),
+        confirmed_stream(Some(3), Some(5)),
         (
             CompletenessDimension::Incomplete(vec![CompletenessReason::StreamBehind]),
             true
         )
     );
     assert_eq!(
-        projection(Some(3), None),
+        confirmed_stream(Some(3), None),
         (
             CompletenessDimension::Unknown(vec![CompletenessReason::StreamBehind]),
             true
         )
     );
     assert_eq!(
-        projection(Some(5), Some(5)),
+        confirmed_stream(Some(5), Some(5)),
         (CompletenessDimension::Complete, false)
     );
 }
 
 #[test]
-fn explicit_raw_only_declaration_requires_no_parser_version_and_never_claims_parsed_coverage() {
+fn bytes_only_declaration_needs_no_parser_or_parsed_coverage() {
     let root = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(root.path()).unwrap();
     let contracts = [ReadingContract::RawOnly {
@@ -305,7 +308,7 @@ fn import(stored: &WriterArchive, body: &[u8], format: &str) -> crate::staging::
     let prepared = stored.archive.prepare_bytes(body).unwrap();
     let path = format!("/synthetic/{format}.json");
     let batch = crate::writer::Batch {
-        required_disposition: None,
+        required_outcome: None,
         input: crate::writer::InputKey {
             id: prepared.hash().to_string(),
             format: "export-file".into(),

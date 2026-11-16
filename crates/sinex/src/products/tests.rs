@@ -1,6 +1,6 @@
 use super::*;
 #[test]
-fn restored_assertion_keys_retain_each_physical_source_without_receipt_clock_order() {
+fn restored_assertion_keys_keep_each_import_source() {
     let fact = serde_json::from_value(json!({
         "id":"synthetic","root":"synthetic","kind":"note","key":null,
         "value":"Synthetic text", "author":"unattributed","via":"import","machine":"host",

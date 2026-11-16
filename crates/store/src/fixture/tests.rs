@@ -6,7 +6,7 @@ use polylogue_model::{
 };
 
 #[test]
-fn source_time_evidence_and_order_survive_native_fixture_storage() {
+fn time_accuracy_and_order_survive_fixture_storage() {
     let directory = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(&directory.path().join("archive")).unwrap();
     let session_id = SessionId::parse("claude-code:clock").unwrap();
@@ -25,7 +25,7 @@ fn source_time_evidence_and_order_survive_native_fixture_storage() {
     fixture.session_time(session, Some(start), bounded).unwrap();
     assert!(matches!(
         fixture.session_time(session, bounded.until, bounded),
-        Err(StoreError::Projection(BundleError::Time(
+        Err(StoreError::Bundle(BundleError::Time(
             TimeEvidenceError::InvalidBounds
         )))
     ));
@@ -42,11 +42,11 @@ fn source_time_evidence_and_order_survive_native_fixture_storage() {
         )
         .unwrap();
     let at = Timestamp::from_unix_ms(5_000).unwrap();
-    let evidence = TimeEvidence {
+    let accuracy = TimeEvidence {
         until: Timestamp::from_unix_ms(9_000),
         ..bounded
     };
-    fixture.message_time(message, Some(at), evidence).unwrap();
+    fixture.message_time(message, Some(at), accuracy).unwrap();
     assert_eq!(fixture.message_order(message).unwrap(), 7);
     let cached: Option<i64> = fixture
         .index
@@ -68,16 +68,16 @@ fn source_time_evidence_and_order_survive_native_fixture_storage() {
         let messages = reader.messages(&session_id, false).unwrap();
         assert_eq!(
             (messages[0].at, messages[0].time_evidence()),
-            (Some(at), evidence)
+            (Some(at), accuracy)
         );
     }
     let invalid = TimeEvidence {
         until: Some(at),
-        ..evidence
+        ..accuracy
     };
     assert!(matches!(
         fixture.message_time(message, Some(at), invalid),
-        Err(StoreError::Projection(BundleError::Time(
+        Err(StoreError::Bundle(BundleError::Time(
             TimeEvidenceError::InvalidBounds
         )))
     ));
@@ -89,7 +89,7 @@ fn source_time_evidence_and_order_survive_native_fixture_storage() {
             .messages(&session_id, false)
             .unwrap()[0]
             .time_evidence(),
-        evidence
+        accuracy
     );
     drop(reads);
     fixture

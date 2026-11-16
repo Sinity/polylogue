@@ -1,4 +1,4 @@
-//! Current canonical bundle records, framed one record at a time.
+//! Current bundle records, framed one record at a time.
 pub const VERSION: u32 = 4;
 pub const ORIGIN: &str = "polylogue-bundle";
 use crate::RecordOutcome;
@@ -9,7 +9,7 @@ use polylogue_model::bundle::{Manifest, Record};
 use std::ops::Range;
 use std::path::Path;
 
-/// Stream canonical record values, or an inventory-named array of record values.
+/// Stream source record values, or an inventory-named array of record values.
 /// Only one record is buffered; the manifest and inventory are validated by ingress.
 pub fn visit(
     reader: &mut dyn std::io::BufRead,
@@ -71,7 +71,7 @@ pub fn recognize(_: &Path, head: &[u8]) -> bool {
     impl<'de> Visitor<'de> for Data<'_> {
         type Value = ();
         fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-            f.write_str("a bundle manifest discriminator")
+            f.write_str("a bundle manifest type field")
         }
         fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<(), M::Error> {
             while let Some(key) = map.next_key::<String>()? {
@@ -193,12 +193,12 @@ impl ExportParser for Bundle {
                         record
                             .injections
                             .into_iter()
-                            .map(|evidence| evidence.into_declared())
+                            .map(|injection| injection.into_declared())
                             .collect(),
                     );
                 }
                 sink.out.message_order.insert(index, record.order);
-                sink.out.message_projections.insert(
+                sink.out.block_selections.insert(
                     index,
                     polylogue_model::bundle::MessageProjection {
                         source_version: record.source_version,

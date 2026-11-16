@@ -20,7 +20,7 @@ fn writer_never_decodes_staged_input() {
     std::fs::write(file.temporary.as_ref(), &undecodable).unwrap();
     file.descriptor.encoded_hash = hashed_blobs::Hash::of(&undecodable);
     let batch = Batch {
-        required_disposition: None,
+        required_outcome: None,
         input: InputKey {
             id: "staged".into(),
             format: "test-bytes".into(),

@@ -405,7 +405,7 @@ pub(super) fn apply(
     Ok(())
 }
 
-/// Copy semantic records into private scratch. Bodies are decoded and written
+/// Copy authored records into private scratch. Bodies are decoded and written
 /// through these same typed codecs; parser rows, captured bytes and SQL text
 /// never enter the overlay.
 pub(super) fn copy(from: &Connection, to: &Connection) -> Result<()> {
@@ -443,8 +443,8 @@ pub(super) fn copy(from: &Connection, to: &Connection) -> Result<()> {
         let request: Vec<u8> = row.get(3)?;
         let outcome: Option<Vec<u8>> = row.get(4)?;
         let effect: Option<Vec<u8>> = row.get(5)?;
-        // Decode complete records before admitting them to the private view.
-        let missing = || StoreError::Invalid(format!("request {id} has no frozen record"));
+        // Decode complete records before adding them to the private view.
+        let missing = || StoreError::Invalid(format!("request {id} has no recorded record"));
         let _: UserRequest = crate::encoding::unpack_json(&request)?;
         let _: UserOutcome = crate::encoding::unpack_json(outcome.as_ref().ok_or_else(missing)?)?;
         let _: AuthoredEffect = crate::encoding::unpack_json(effect.as_ref().ok_or_else(missing)?)?;

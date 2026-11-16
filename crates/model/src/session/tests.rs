@@ -89,7 +89,7 @@ fn cwd_keeps_order_without_repeats_in_a_row() {
 }
 
 #[test]
-fn merging_session_start_preserves_selected_time_evidence_and_first_equal_claim() {
+fn merged_session_start_keeps_selected_time_accuracy() {
     let at = crate::Timestamp::from_unix_ms(10).unwrap();
     let until = crate::Timestamp::from_unix_ms(20).unwrap();
     let mut earlier = session();

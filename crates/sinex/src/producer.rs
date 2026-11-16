@@ -1,4 +1,4 @@
-//! Durable acquisition and product preparation for the primary writer.
+//! Spooled capture reads and product preparation for the primary writer.
 use crate::{Error, Result, Sinex};
 use polylogue_model::{
     BlobHash,
@@ -11,13 +11,13 @@ use polylogue_store::primary::{
 };
 use sinex_model::{InputRef, Manifest, MaterialId, MaterialRole};
 use sinex_protocol::{Ingress, MaterialFrame};
-mod acquisition;
+mod capture;
 mod reading;
 mod requests;
 
 impl Sinex {
-    /// Optional advice must not mistake unpublished or unapplied producer
-    /// ownership for empty delivery history, including after restart.
+    /// Optional advice must not mistake requests still in the spool, unsent or
+    /// unapplied, for empty delivery history, including after restart.
     pub fn advisory_history_ready(&self) -> bool {
         self.spool
             .try_lock()
@@ -48,10 +48,10 @@ impl Sinex {
                 }
             }
         }
-        // Publication owns this complete retry result. Reading the confirmed
-        // stream remains independent and cannot erase a failed publication.
+        // Sending owns this complete retry result. Reading the confirmed
+        // stream stays separate and cannot erase a failed send.
         if let Ok(mut health) = self.health.lock() {
-            health.publication_error = result.as_ref().err().map(ToString::to_string);
+            health.send_error = result.as_ref().err().map(ToString::to_string);
         }
         result
     }
@@ -201,7 +201,7 @@ impl Sinex {
         if matches!(captured, Capture::Input(input) if input.raw_range.is_none() && !input.rows.extents.is_empty())
         {
             return Err(Error::Invalid(
-                "provider acquisition has no original raw range".into(),
+                "provider capture read has no original byte range".into(),
             ));
         }
         Ok(Ingress::Material {
@@ -306,7 +306,7 @@ impl Sinex {
             } else {
                 Self::capture_material(queue, &entry)?
             };
-            let anchor = acknowledged.as_ref().map(|material| SourceLocation {
+            let location = acknowledged.as_ref().map(|material| SourceLocation {
                 material: material.id.clone(),
                 anchor: 0,
             });
@@ -320,7 +320,7 @@ impl Sinex {
                 identity: entry.record.identity,
                 captured,
                 material,
-                anchor,
+                anchor: location,
             });
             Ok(())
         })?;
@@ -474,7 +474,7 @@ impl Sinex {
         for write in writes {
             if write.product.reading().is_some() {
                 return Err(Error::Invalid(
-                    "parser facts need their original-source publication".into(),
+                    "parser events must be sent with their original source".into(),
                 ));
             }
             crate::products::require_source(&write.product)?;
@@ -498,9 +498,8 @@ impl Sinex {
             }
             let observation = format!("{identity}:observation");
             if queue.get(&observation)?.is_some() {
-                let retained: Vec<ProductWrite> =
-                    crate::spool::decode_json(queue.body(&observation)?)?;
-                if retained != writes {
+                let kept: Vec<ProductWrite> = crate::spool::decode_json(queue.body(&observation)?)?;
+                if kept != writes {
                     return Err(Error::Invalid(
                         "named product identity changed immutable facts".into(),
                     ));
@@ -671,7 +670,7 @@ impl Sinex {
         for write in writes {
             if write.product.reading().is_some() {
                 return Err(Error::Invalid(
-                    "material completion cannot publish parser values".into(),
+                    "material completion cannot send parser values".into(),
                 ));
             }
         }
@@ -774,8 +773,8 @@ impl Sinex {
         Ok(outcome)
     }
 
-    /// Named custody remains visible through publication until its confirmed
-    /// barrier is applied. Only matching immutable product bodies are hydrated.
+    /// Named products held in the spool stay visible while they are sent, until
+    /// their confirmed completion marker is applied. Only matching product bodies are loaded.
     pub(crate) fn visit_named_products(
         &self,
         selector: &polylogue_store::primary::NamedProductSelector,

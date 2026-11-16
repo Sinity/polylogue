@@ -3,7 +3,7 @@ use crate::selection::SelectionError;
 use query_language::{cursor::CursorContext, time::ResolvedTime};
 
 /// The full resolution vector belongs to the execution record. A continuation
-/// commits to it and recomputes it from the frozen question and signed clock.
+/// commits to it and recomputes it from the saved question and signed clock.
 pub fn resolved_times_digest(times: &[ResolvedTime]) -> Result<String, SelectionError> {
     let mut digest = blake3::Hasher::new();
     digest.update(b"polylogue.query.resolved-times\0");
@@ -26,8 +26,8 @@ pub fn compact_resolved_times(context: &mut CursorContext) -> Result<(), Selecti
     Ok(())
 }
 
-/// Call after restoring the authenticated clock and recompiling the same frozen
-/// semantic object. Current-clock resolution is not a replay comparison.
+/// Call after restoring the authenticated clock and recompiling the same saved
+/// query object. Current-clock resolution is not a replay comparison.
 pub fn check_resolved_times(
     context: &CursorContext,
     times: &[ResolvedTime],

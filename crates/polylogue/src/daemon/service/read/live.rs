@@ -57,7 +57,7 @@ pub(crate) fn render(detail: &LiveDetail, now: i64) -> Card {
         }),
         "no tool call open",
     );
-    let task = known_or(detail.facts.task.clone(), "no explicit task evidence");
+    let task = known_or(detail.facts.task.clone(), "no stated task");
     Card::Live {
         state: ValueState::known(state),
         waits_on,

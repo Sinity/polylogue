@@ -8,7 +8,7 @@ use polylogue_store::{Change, FileFacts, InputKey, Observation, read::ChainProgr
 use std::path::{Path, PathBuf};
 
 /// What the loop knows about one input between passes. Its parser state
-/// (`parser_state`) is restored lazily from the admitted cursor after a restart.
+/// (`parser_state`) is restored lazily from the committed cursor after a restart.
 pub(crate) struct InputState {
     pub(crate) input_id: String,
     pub(crate) origin: &'static OriginSpec,
@@ -23,14 +23,14 @@ pub(crate) struct InputState {
     pub(crate) parser_state: Option<Json>,
     pub(crate) tail: Option<Vec<u8>>,
     /// The revision chain whose bytes are stored, from confirmed metadata
-    /// or an actual writer acknowledgment. Unknown until one supplies it.
+    /// or a writer acknowledgment. Unknown until one supplies it.
     pub(crate) chain: Option<i64>,
     /// The file facts a read failed at when no parse state could record the
     /// failure (nothing of the file was stored, or the record itself failed):
     /// the file is tried again only when its bytes change or the daemon
     /// restarts. A failure the parse state records is that table's fact.
     pub(crate) unread: Option<FileFacts>,
-    /// A cache of actual SDK working state, separate from confirmed progress.
+    /// A cache of the SDK's working state, separate from confirmed progress.
     pub(crate) working: Option<WorkingState>,
 }
 
@@ -52,8 +52,8 @@ impl InputState {
         }
     }
 
-    /// Adopt committed logical progress. Private custody never supplies a cursor.
-    /// Cached continuation is useful only at the exact same reading checkpoint.
+    /// Adopt committed logical progress. Bytes held in the spool never supply a cursor.
+    /// Cached continuation is useful only at the same reading checkpoint.
     pub(crate) fn adopt_confirmed(
         &mut self,
         input_id: &str,
@@ -99,8 +99,8 @@ impl InputState {
         self.waiting = waiting;
     }
 
-    /// A new scope reconstructs confirmed facts and parser state. Original
-    /// receiving custody stays owned until its real acknowledgment settles.
+    /// A new scope reconstructs confirmed events and parser state. Original
+    /// bytes stay held in the spool until Sinex acknowledges them.
     pub(crate) fn discard_confirmed(&mut self) {
         let working = self.working.take();
         *self = Self::new(std::mem::take(&mut self.input_id), self.origin);
@@ -119,10 +119,10 @@ pub(crate) struct WorkingState {
     pub(crate) stored: u64,
 }
 
-/// Physical custody has its own continuation and cannot update source state.
-pub(crate) struct RawState {
-    pub(crate) cursor: Option<polylogue_store::primary::RawAcquisitionCursor>,
-    pub(crate) custody: Option<polylogue_store::primary::RawCustodyReceipt>,
+/// A byte read has its own continuation and cannot update source state.
+pub(crate) struct ByteRead {
+    pub(crate) cursor: Option<polylogue_store::primary::ByteCursor>,
+    pub(crate) spooled: Option<polylogue_store::primary::SpooledGroup>,
 }
 
 /// One input's work in this pass, advanced job by job.
@@ -140,7 +140,7 @@ pub(crate) struct Plan {
     /// Capture continues while a missing same-version continuation defers parsing.
     pub(crate) parser_deferred: bool,
     pub(crate) parser_state: Option<Json>,
-    /// Actual selected source chain for parser context, retained across jobs.
+    /// The selected source chain for parser context, kept across jobs.
     pub(crate) parser_chain: Option<i64>,
     pub(crate) tail: Option<Vec<u8>>,
     pub(crate) span: u64,
@@ -160,10 +160,10 @@ pub(crate) struct Plan {
     /// Where the input's bytes come from.
     pub(crate) source: pool::Bytes,
     pub(crate) basis: Option<polylogue_store::primary::SourceBasis>,
-    /// The latest step has durable private custody but no confirmed visibility.
+    /// The latest step is held in the spool but not yet confirmed by Sinex.
     pub(crate) pending: Option<String>,
     pub(crate) checkpoint: Option<polylogue_model::batch::ParserCheckpoint>,
-    pub(crate) raw: Option<RawState>,
+    pub(crate) byte_read: Option<ByteRead>,
     /// Older chains of the input recorded from this chain's reading as the
     /// parse passes the end of the bytes they share with it, by stop
     /// ([`crate::prefix_copies`]). No range reads past the first stop.
@@ -201,7 +201,7 @@ impl Plan {
             basis: None,
             pending: None,
             checkpoint: None,
-            raw: None,
+            byte_read: None,
             span: span(origin, &path, chunk),
             path,
             origin,
@@ -232,9 +232,9 @@ impl Plan {
     }
 
     pub(crate) fn finished(&self) -> bool {
-        if let Some(raw) = &self.raw {
-            // Missing proof stops this attempt with unknown completeness.
-            return raw
+        if let Some(byte_read) = &self.byte_read {
+            // A missing cursor check stops this attempt with unknown completeness.
+            return byte_read
                 .cursor
                 .as_ref()
                 .is_none_or(|cursor| cursor.range().end >= self.size);
@@ -248,10 +248,11 @@ impl Plan {
 
     /// The byte range the next job reads.
     pub(crate) fn next_range(&self) -> (u64, u64) {
-        let start = if let Some(raw) = &self.raw {
-            raw.cursor
+        let start = if let Some(byte_read) = &self.byte_read {
+            byte_read
+                .cursor
                 .as_ref()
-                .expect("a continuing physical acquisition has a verified cursor")
+                .expect("a continuing byte read has a verified cursor")
                 .range()
                 .end
         } else if self.parser_deferred {
@@ -271,7 +272,7 @@ impl Plan {
         stopped_attempt: &polylogue_model::batch::StoppedAttempt,
     ) -> Job {
         let (start, end) = self.next_range();
-        let store_from = if self.raw.is_some() {
+        let store_from = if self.byte_read.is_some() {
             (end > start).then_some(start)
         } else {
             (end > self.stored_upto
@@ -299,7 +300,7 @@ impl Plan {
         };
         Job {
             stopped_attempt: Some(*stopped_attempt),
-            acquisition: None,
+            source_read: None,
             path: self.path.clone(),
             origin: self.origin,
             input: self.input.clone(),
@@ -347,8 +348,8 @@ impl Plan {
         if d.error.is_some() {
             self.failure_recorded |= d.failure_recorded && !d.write_failed;
             if d.stored > 0 && !d.write_failed {
-                // The parser failed after custody succeeded. Preserve its last
-                // valid cursor while continuing raw acquisition through EOF.
+                // The parser failed after its bytes were stored. Keep its last
+                // valid cursor while continuing byte cursor through EOF.
                 self.parser_deferred = true;
                 self.parser_state = d.parser_state;
                 return;

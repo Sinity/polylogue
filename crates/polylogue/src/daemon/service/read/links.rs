@@ -1,6 +1,6 @@
 //! The links view: every session linked to the seed, as a tree from the
-//! proven root or recorded ancestry frontiers, paged from a depth-first walk.
-//! A cycle entry is a display position; each node retains its typed root issue.
+//! proven root or the known parents of its recorded ancestry, paged from a depth-first walk.
+//! A cycle entry is a display position; each node keeps its typed root issue.
 //!
 //! The walk shows each node once, at the first link that reaches it; a later
 //! link to a node already shown is a cross-link, and `reference` links are
@@ -451,8 +451,8 @@ pub(super) fn page(
     let mut steps: Vec<Vec<ReadItem>> = Vec::new();
     let mut nodes = 0;
     let mut ended = false;
-    let anchor = walk.place();
-    let mut reached = anchor.clone();
+    let page_start = walk.place();
+    let mut reached = page_start.clone();
     loop {
         let step = match direction {
             ReadDirection::Before => walk.backward()?,
@@ -481,9 +481,9 @@ pub(super) fn page(
     let (start, end, done) = match direction {
         ReadDirection::Before => {
             steps.reverse();
-            (reached, anchor, false)
+            (reached, page_start, false)
         }
-        _ => (anchor, reached, ended),
+        _ => (page_start, reached, ended),
     };
     let items: Vec<ReadItem> = steps.into_iter().flatten().collect();
     let call = |place: &LinksPlace, direction: ReadDirection| -> Result<ReadyCall, Failure> {

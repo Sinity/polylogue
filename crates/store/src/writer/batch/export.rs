@@ -1,4 +1,5 @@
-//! Semantic export callback seals are independent of receiver admission.
+//! An export callback's seal covers its body, independent of what the receiver
+//! accepts.
 use super::*;
 use polylogue_model::batch::{ExportCursor, ExportDelivery, ExportDeliverySource};
 
@@ -22,7 +23,7 @@ impl ParseStep {
             delivery.validate().map_err(invalid_export)?;
             if delivery.body_hash != self.export_body_hash()? {
                 return Err(StoreError::Invalid(
-                    "export callback changed its sealed semantic body".into(),
+                    "export callback changed its sealed body".into(),
                 ));
             }
         }

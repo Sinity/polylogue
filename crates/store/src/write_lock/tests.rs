@@ -156,7 +156,7 @@ fn the_write_lock_excludes_other_processes_and_releases_on_exit() {
 }
 
 #[test]
-fn a_panic_clears_ownership_before_another_commit() {
+fn panic_releases_the_lock_before_another_commit() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _writer) = Archive::open_or_create(dir.path()).unwrap();
     let mut conn = open_write(&archive.archive_db(), cache::SETUP).unwrap();

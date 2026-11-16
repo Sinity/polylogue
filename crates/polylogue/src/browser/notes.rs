@@ -1,4 +1,4 @@
-//! An explicit browser selection becomes an ordinary operator note.
+//! An explicit browser selection becomes an operator note.
 use super::BrowserHost;
 use crate::daemon::Failure;
 use command_surface::Answer;

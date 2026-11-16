@@ -53,7 +53,7 @@ pub fn command() -> clap::Command {
                 .long("request-id")
                 .global(true)
                 .value_name("ID")
-                .help("The durable request identity"),
+                .help("The request identity, kept across retries"),
         )
         .arg(
             clap::Arg::new("deadline")
@@ -63,7 +63,7 @@ pub fn command() -> clap::Command {
                 .help("Milliseconds from when the daemon accepts the request, or none to lift the deadline"),
         );
     // Each continuation starts a client: project each command once, not once per flag.
-    let projected: Vec<_> = COMMANDS.iter().map(projections).collect();
+    let projected: Vec<_> = COMMANDS.iter().map(arguments_of).collect();
     let mut globals: Vec<&str> = Vec::new();
     for (command, arguments) in COMMANDS.iter().zip(&projected) {
         for a in command.args.iter().filter(|a| a.global) {
@@ -151,7 +151,7 @@ fn subcommand(c: &Command, arguments: &[CliArgument]) -> clap::Command {
 
 /// The product keeps lexical exposure and completion on its command row;
 /// value kinds, choices and requiredness come from the shared input schema.
-pub(crate) fn projections(command: &Command) -> Vec<CliArgument> {
+pub(crate) fn arguments_of(command: &Command) -> Vec<CliArgument> {
     let declared = crate::commands::declarations()
         .cli_arguments(command.name)
         .expect("declared CLI arguments");
@@ -309,8 +309,8 @@ fn parsed(c: &Command, m: &ArgMatches) -> Result<ParsedCommand, String> {
     {
         return Err("--request cannot be mixed with operation arguments".into());
     }
-    let arguments = projections(c);
-    // Options precede positionals so a Rest field retains its literal words.
+    let arguments = arguments_of(c);
+    // Options precede positionals so a Rest field keeps its literal words.
     for positional in [false, true] {
         for projected in arguments
             .iter()
@@ -643,7 +643,7 @@ pub fn status_output(
     ExitCode::from(answer.exit_code())
 }
 
-/// `continue --exec`: replaces this process with the session's native
+/// `continue --exec`: replaces this process with the harness's own
 /// resume command; without `--exec`, the plan is printed.
 pub fn resume_output(
     values: &ParsedCommand,
@@ -672,13 +672,13 @@ pub fn resume_output(
 
 fn exec_plan(data: &Value, output: crate::config::OutputConfig) -> ExitCode {
     use std::os::unix::process::CommandExt;
-    let Some(native) = data.get("harness_command").filter(|n| !n.is_null()) else {
+    let Some(resume) = data.get("harness_command").filter(|n| !n.is_null()) else {
         eprint!(
             "{}",
             print::diagnostic(
                 "",
                 &format!(
-                    "this session has no native resume; continue with context instead: {}",
+                    "this session has no harness resume; continue with context instead: {}",
                     data["context_assisted"]["program"].as_str().map_or_else(
                         String::new,
                         |_| format!(
@@ -693,8 +693,8 @@ fn exec_plan(data: &Value, output: crate::config::OutputConfig) -> ExitCode {
         );
         return ExitCode::from(1);
     };
-    let program = native["program"].as_str().unwrap_or("");
-    let args: Vec<&str> = native["args"]
+    let program = resume["program"].as_str().unwrap_or("");
+    let args: Vec<&str> = resume["args"]
         .as_array()
         .into_iter()
         .flatten()
@@ -702,7 +702,7 @@ fn exec_plan(data: &Value, output: crate::config::OutputConfig) -> ExitCode {
         .collect();
     // The harness reopens the session from its resume directory; the CLI's
     // own directory would reopen nothing or the wrong project.
-    let dir = match native["cwd"].as_str() {
+    let dir = match resume["cwd"].as_str() {
         Some(dir) if std::path::Path::new(dir).is_dir() => Ok(dir),
         Some(dir) => Err(format!("directory_missing: {dir} does not exist here")),
         None => Err("directory_unknown: the session recorded no directory to resume in".into()),

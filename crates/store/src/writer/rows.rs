@@ -22,7 +22,7 @@ pub(super) fn write_rows(
     resolution: &resolve::Resolution,
     counter: i64,
     first_build: Option<&FirstBuild>,
-    receipt: Option<&crate::wire_shapes::ReadingReceipt>,
+    source_commit: Option<&crate::wire_shapes::ReadingCommit>,
     changes: &ChangeSummary,
 ) -> Result<u64> {
     apply_rows(
@@ -36,13 +36,13 @@ pub(super) fn write_rows(
             first_build,
             retraction: false,
             replacement: false,
-            receipt,
+            source_commit,
             changes,
         },
     )
 }
 
-/// A complete replacement uses this entry point for its first chunk. Later chunks use the ordinary continuation path.
+/// A complete replacement uses this entry point for its first chunk. Later chunks use the continuation path.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn write_replacement_rows(
     texts: &crate::text_rows::TextIds,
@@ -52,7 +52,7 @@ pub(super) fn write_replacement_rows(
     resolution: &resolve::Resolution,
     counter: i64,
     first_build: Option<&FirstBuild>,
-    receipt: Option<&crate::wire_shapes::ReadingReceipt>,
+    source_commit: Option<&crate::wire_shapes::ReadingCommit>,
     changes: &ChangeSummary,
 ) -> Result<u64> {
     apply_rows(
@@ -66,13 +66,13 @@ pub(super) fn write_replacement_rows(
             first_build,
             retraction: false,
             replacement: true,
-            receipt,
+            source_commit,
             changes,
         },
     )
 }
 
-/// Retract a native source contribution and show the surviving ordinary readings.
+/// Retract a source's contribution and show the surviving readings.
 pub(super) fn retract_source(
     texts: &crate::text_rows::TextIds,
     tx: &Transaction<'_>,
@@ -93,7 +93,7 @@ pub(super) fn retract_source(
             first_build: None,
             retraction: true,
             replacement: false,
-            receipt: None,
+            source_commit: None,
             changes,
         },
     )
@@ -106,7 +106,7 @@ struct ReadingWrite<'a> {
     first_build: Option<&'a FirstBuild>,
     retraction: bool,
     replacement: bool,
-    receipt: Option<&'a crate::wire_shapes::ReadingReceipt>,
+    source_commit: Option<&'a crate::wire_shapes::ReadingCommit>,
     changes: &'a ChangeSummary,
 }
 
@@ -123,7 +123,7 @@ fn apply_rows(
         first_build,
         retraction,
         replacement,
-        receipt,
+        source_commit,
         changes,
     } = context;
     p.counts.check()?;
@@ -137,7 +137,7 @@ fn apply_rows(
         return Ok(0);
     }
     let previous_checkpoint = checkpoint::read(tx, input_pk, chain)?;
-    if p.delivery.is_none() && !retraction && !admit_step(previous_checkpoint.as_ref(), p)? {
+    if p.delivery.is_none() && !retraction && !accept_step(previous_checkpoint.as_ref(), p)? {
         return Ok(0);
     }
     tx.prepare_cached("INSERT INTO input_ref(pk,id,format) VALUES (?1,?2,?3) ON CONFLICT(pk) DO UPDATE SET format=excluded.format WHERE format IS NOT excluded.format")?
@@ -153,13 +153,13 @@ fn apply_rows(
             previous_checkpoint.as_ref(),
             counter,
             retraction,
-            receipt,
+            source_commit,
         )?,
-        source_admitted: if retraction {
+        source_committed: if retraction {
             None
         } else {
-            receipt
-                .or(p.receipt.as_ref())
+            source_commit
+                .or(p.source_commit.as_ref())
                 .map(|r| r.sequence)
                 .filter(|n| *n > 0)
         },
@@ -197,13 +197,13 @@ fn apply_rows(
     if p.reset {
         rows.retract()?;
     }
-    let source_admission = if retraction {
+    let source_sequence = if retraction {
         None
     } else {
-        receipt
-            .map(|receipt| {
-                u64::try_from(receipt.sequence)
-                    .map_err(|_| StoreError::Invalid("negative source admission".into()))
+        source_commit
+            .map(|source_commit| {
+                u64::try_from(source_commit.sequence)
+                    .map_err(|_| StoreError::Invalid("negative source commit sequence".into()))
             })
             .transpose()?
     };
@@ -222,14 +222,14 @@ fn apply_rows(
                 membership: Some(&membership),
             },
             version.replace,
-            source_admission,
+            source_sequence,
         )?;
         rows.versions
             .insert(version.value.prepared.hash, registered);
     }
     let mut sessions: HashMap<String, i64> = HashMap::new();
     for s in &p.output.sessions {
-        let (pk, _) = rows.upsert_session(s, rows.source_admitted)?;
+        let (pk, _) = rows.upsert_session(s, rows.source_committed)?;
         sessions.insert(s.id.to_string(), pk);
     }
     let source = crate::documents::Source {
@@ -247,12 +247,12 @@ fn apply_rows(
             continue;
         }
         let prepared = &p.prepared.documents[i];
-        crate::documents::write(tx, &source, row, prepared, rows.source_admitted)?;
+        crate::documents::write(tx, &source, row, prepared, rows.source_committed)?;
     }
     p.prepared
         .fragments
         .apply(tx, input_pk, chain, p.parsed_upto, |_| {
-            Ok(rows.source_admitted)
+            Ok(rows.source_committed)
         })?;
     let mut written = 0;
     // Versions a source row of this step now refers to. Removing or changing
@@ -290,9 +290,9 @@ fn apply_rows(
             &mut sessions,
         )?;
         chosen.insert(version_pk);
-        super::native_hook_fields::write(
+        super::hook_fields::write(
             tx,
-            super::native_hook_fields::Source {
+            super::hook_fields::Source {
                 input: &b.input.id,
                 input_pk,
                 chain,
@@ -358,8 +358,8 @@ fn apply_rows(
         let child = prefix.child.to_string();
         let ids = &rows.keys.identities;
         let (parent, child) = (ids.shown_session(&parent), ids.shown_session(&child));
-        let admitted = rows.source_admitted;
-        rows.write_prefix_copy(parent, child, prefix.explicit_members, admitted)?;
+        let committed = rows.source_committed;
+        rows.write_prefix_copy(parent, child, prefix.explicit_members, committed)?;
     }
     for member in &p.output.prefix_members {
         let parent = member.parent.to_string();
@@ -376,14 +376,14 @@ fn apply_rows(
                 chain,
                 reading_version: p.reading_version.clone(),
             });
-        let admitted = rows.source_admitted;
-        tx.prepare_cached("INSERT INTO prefix_member(input_pk,chain,parent_id,child_id,message_id,source_input,source_chain,source_version,sequence,position,admitted) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT DO UPDATE SET admitted=coalesce(max(prefix_member.admitted,excluded.admitted),prefix_member.admitted,excluded.admitted)")?
-            .execute(params![input_pk,chain,parent,child,message,source.input,source.chain,source.reading_version,member.position[0].to_string(),member.position[1].to_string(),admitted])?;
-        rows.write_prefix_copy(parent, child, true, admitted)?;
+        let committed = rows.source_committed;
+        tx.prepare_cached("INSERT INTO prefix_member(input_pk,chain,parent_id,child_id,message_id,source_input,source_chain,source_version,sequence,position,committed) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT DO UPDATE SET committed=coalesce(max(prefix_member.committed,excluded.committed),prefix_member.committed,excluded.committed)")?
+            .execute(params![input_pk,chain,parent,child,message,source.input,source.chain,source.reading_version,member.position[0].to_string(),member.position[1].to_string(),committed])?;
+        rows.write_prefix_copy(parent, child, true, committed)?;
     }
     for (i, l) in p.output.links.iter().enumerate() {
-        let admitted = rows.source_admitted;
-        rows.write_link(l, i, admitted)?;
+        let committed = rows.source_committed;
+        rows.write_link(l, i, committed)?;
     }
     for l in &p.output.repo_lookups {
         crate::repo_lookup::upsert_lookup(tx, l, input_pk, chain)?;
@@ -482,7 +482,7 @@ fn apply_rows(
         for pk in choices.messages.keys() {
             written += u64::from(rows.refresh_message(*pk)?);
         }
-        rows.refresh_event_anchors()?;
+        rows.refresh_event_placement()?;
         for (pk, choice) in &choices.documents {
             crate::documents::apply_choice(
                 tx,
@@ -509,17 +509,18 @@ fn apply_rows(
     for pk in sessions.values() {
         changes.session(tx, *pk)?;
     }
-    // Hooks name the selected tool-call rows, which message projection just wrote.
+    // Hooks name the selected tool-call rows, which message block_selection just wrote.
     for (i, e) in p.output.events.iter().enumerate() {
         let session_pk = e
             .session
             .as_ref()
             .map(|id| rows.session_pk(&mut sessions, id))
             .transpose()?;
-        if let Some(session_pk) = session_pk.filter(|_| polylogue_model::live::is_evidence(&e.kind))
+        if let Some(session_pk) =
+            session_pk.filter(|_| polylogue_model::live::is_live_event(&e.kind))
         {
             // Prepared events release their JSON payload before writing. Live
-            // facts must read the same payload as the stored event.
+            // events must read the same payload as the stored event.
             let event = &choices.live_events[i];
             crate::live::apply(
                 tx,
@@ -568,8 +569,8 @@ fn apply_rows(
         )?
         .execute(params![input_pk, chain, pk])?;
     }
-    let receipt = receipt.or(p.receipt.as_ref());
-    if retraction && receipt.is_none() {
+    let source_commit = source_commit.or(p.source_commit.as_ref());
+    if retraction && source_commit.is_none() {
         crate::wire_shapes::unobserved(tx, input_pk, chain)?;
         tx.execute(
             "DELETE FROM parse_state WHERE input_pk=?1 AND chain=?2",
@@ -577,9 +578,8 @@ fn apply_rows(
         )?;
         return Ok(written);
     }
-    let receipt = receipt.ok_or_else(|| {
-        StoreError::Invalid("an indexed reading has no committed source receipt".into())
-    })?;
+    let source_commit = source_commit
+        .ok_or_else(|| StoreError::Invalid("an indexed reading has no source commit".into()))?;
     let apply_wire = if replacement {
         crate::wire_shapes::replace
     } else {
@@ -593,10 +593,10 @@ fn apply_rows(
             format: &b.input.format,
             chain,
             length: b.length,
-            receipt: receipt.sequence,
-            receipt_id: receipt.id.as_deref(),
-            observation: receipt.observation.as_deref(),
-            observed_at_ms: receipt.observed_at_ms,
+            commit_sequence: source_commit.sequence,
+            commit_id: source_commit.id.as_deref(),
+            observation: source_commit.observation.as_deref(),
+            observed_at_ms: source_commit.observed_at_ms,
         },
         p,
     )?;
@@ -624,7 +624,7 @@ pub(crate) fn finish(
     // A first build derives every session once, when it ends.
     if first_build.is_none() {
         let sessions = changes.sessions(tx)?;
-        crate::derive::links::fold(tx, &sessions)?;
+        crate::derive::links::add_finished_links(tx, &sessions)?;
         crate::measure::time::forget_settled(tx, changes, &sessions)?;
     }
     crate::versions::remove_unreferenced(tx, first_build, texts)?;
@@ -645,7 +645,7 @@ fn validate_range(batch: &Batch, step: &ParseStep) -> Result<()> {
 
 /// A continuing reading can only extend its committed prefix. Explicit resets
 /// replace a complete reading, including row dumps whose accounting starts later.
-fn admit_step(previous: Option<&checkpoint::Stored>, step: &ParseStep) -> Result<bool> {
+fn accept_step(previous: Option<&checkpoint::Stored>, step: &ParseStep) -> Result<bool> {
     if step.reset {
         return Ok(true);
     }
@@ -678,7 +678,7 @@ pub(super) struct RowWriter<'a, 't> {
     /// Results of registering this transaction's message payloads.
     versions: HashMap<[u8; 32], crate::versions::RegisteredMessage<'a>>,
     checkpoint: checkpoint::Update,
-    source_admitted: Option<i64>,
+    source_committed: Option<i64>,
     tx: &'a Transaction<'t>,
     input_pk: i64,
     input_id: &'a str,
@@ -750,11 +750,11 @@ impl RowWriter<'_, '_> {
         parent: &str,
         child: &str,
         explicit: bool,
-        admitted: Option<i64>,
+        committed: Option<i64>,
     ) -> Result<()> {
         self.changes.link_child(self.tx, child)?;
-        self.tx.prepare_cached("INSERT INTO prefix_copy(input_pk,chain,parent_id,child_id,admitted,explicit_members) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(input_pk,chain,parent_id,child_id) DO UPDATE SET admitted=coalesce(max(prefix_copy.admitted,excluded.admitted),prefix_copy.admitted,excluded.admitted),explicit_members=max(prefix_copy.explicit_members,excluded.explicit_members)")?
-            .execute(params![self.input_pk,self.chain,parent,child,admitted,explicit])?;
+        self.tx.prepare_cached("INSERT INTO prefix_copy(input_pk,chain,parent_id,child_id,committed,explicit_members) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(input_pk,chain,parent_id,child_id) DO UPDATE SET committed=coalesce(max(prefix_copy.committed,excluded.committed),prefix_copy.committed,excluded.committed),explicit_members=max(prefix_copy.explicit_members,excluded.explicit_members)")?
+            .execute(params![self.input_pk,self.chain,parent,child,committed,explicit])?;
         let sessions = self
             .tx
             .prepare_cached("SELECT pk FROM session WHERE id IN (?1,?2)")?
@@ -903,7 +903,7 @@ impl RowWriter<'_, '_> {
     /// session's own columns are derived from every input's facts
     /// (derive/session.rs), so no arrival order decides them. Pending links
     /// naming the session as their child are resolved here.
-    fn upsert_session(&self, s: &Session, admitted: Option<i64>) -> Result<(i64, bool)> {
+    fn upsert_session(&self, s: &Session, committed: Option<i64>) -> Result<(i64, bool)> {
         let pk = self.session_row(&s.id, false)?;
         let merged = self
             .choices
@@ -912,10 +912,10 @@ impl RowWriter<'_, '_> {
             .ok_or_else(|| StoreError::Invalid("unresolved session facts".into()))?;
         self.tx
             .prepare_cached(
-                "INSERT INTO session_record(session_pk, input_pk, chain, facts, admitted) VALUES (?1, ?2, ?3, ?4, ?5)
-                 ON CONFLICT(session_pk, input_pk, chain) DO UPDATE SET facts = excluded.facts, admitted=coalesce(max(session_record.admitted,excluded.admitted),session_record.admitted,excluded.admitted)",
+                "INSERT INTO session_record(session_pk, input_pk, chain, facts, committed) VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(session_pk, input_pk, chain) DO UPDATE SET facts = excluded.facts, committed=coalesce(max(session_record.committed,excluded.committed),session_record.committed,excluded.committed)",
             )?
-            .execute(params![pk, self.input_pk, self.chain, serde_json::to_string(&merged)?, admitted])?;
+            .execute(params![pk, self.input_pk, self.chain, serde_json::to_string(&merged)?, committed])?;
         self.tx
             .prepare_cached(
                 "DELETE FROM session_alias WHERE session_pk=?1 AND input_pk=?2 AND chain=?3",
@@ -1066,7 +1066,7 @@ impl RowWriter<'_, '_> {
             }
             self.changes.message(self.tx, pk)?;
             self.clear_blocks(pk)?;
-            self.detach_event_anchors(pk)?;
+            self.detach_event_placement(pk)?;
             self.tx
                 .execute("DELETE FROM message_route WHERE message_pk=?1", [pk])?;
             self.changes.replaced_message(pk)?;
@@ -1118,7 +1118,7 @@ impl RowWriter<'_, '_> {
                     ],
                 )?;
             }
-            // Adding or removing a source claim can change session
+            // Adding or removing a stated source can change session
             // derivations even when the displayed message stays equal.
             self.changes.session(self.tx, session_pk)?;
             return Ok(false);
@@ -1312,7 +1312,7 @@ impl RowWriter<'_, '_> {
 
     /// Sources and selected rows now agree. Events need only their final
     /// anchors, including when an unchanged message's selected source moved.
-    fn refresh_event_anchors(&self) -> Result<()> {
+    fn refresh_event_placement(&self) -> Result<()> {
         if self.choices.messages.is_empty()
             || !self
                 .tx
@@ -1338,12 +1338,12 @@ impl RowWriter<'_, '_> {
             )?
             .query_map([messages], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        self.moved_event_anchors(events)
+        self.apply_event_moves(events)
     }
 
     /// A referenced message cannot be deleted before its events are detached.
     /// Their natural anchor remains available for a later message reading.
-    fn detach_event_anchors(&self, message_pk: i64) -> Result<()> {
+    fn detach_event_placement(&self, message_pk: i64) -> Result<()> {
         let id: String = self
             .tx
             .prepare_cached("SELECT id FROM message WHERE pk=?1")?
@@ -1360,10 +1360,10 @@ impl RowWriter<'_, '_> {
                 Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        self.moved_event_anchors(events)
+        self.apply_event_moves(events)
     }
 
-    fn moved_event_anchors(&self, events: Vec<(i64, Option<i64>)>) -> Result<()> {
+    fn apply_event_moves(&self, events: Vec<(i64, Option<i64>)>) -> Result<()> {
         for (event, session) in events {
             // Only its place moved; its session is the one it had.
             self.changes.event(self.tx, event)?;
@@ -1470,7 +1470,7 @@ impl RowWriter<'_, '_> {
                 "prepared message differs from its parsed blocks".into(),
             ));
         }
-        prepared.projection.validate(m.blocks.len())?;
+        prepared.block_selection.validate(m.blocks.len())?;
         let stored;
         let stored_texts = match self.versions.get(&prepared.hash).and_then(|v| v.text_ids()) {
             Some(ids) => ids,
@@ -1504,7 +1504,7 @@ impl RowWriter<'_, '_> {
                 message_pk,
                 session_pk,
                 m.session.origin().as_str(),
-                (idx as i64, prepared.projection.block_ordinals[idx]),
+                (idx as i64, prepared.block_selection.block_ordinals[idx]),
                 block,
                 stored,
                 ms(m.at),
@@ -1721,8 +1721,8 @@ impl RowWriter<'_, '_> {
     fn write_event(&self, index: usize) -> Result<()> {
         let id = &self.choices.event_ids[index];
         let (pk, source) = &self.choices.event_sources[index];
-        // The resolver has already distinguished retained events from new identities.
-        // Another source claim alone does not change the selected event's items.
+        // The resolver has already distinguished stored events from new identities.
+        // Another stated source alone does not change the selected event's items.
         if !self.keys.get(resolve::Kind::Event, id.as_bytes())?.existing {
             self.changes.event(self.tx, *pk)?;
         }
@@ -1735,8 +1735,8 @@ impl RowWriter<'_, '_> {
         self.store_event_value(index)
     }
 
-    fn write_link(&self, l: &Link, index: usize, admitted: Option<i64>) -> Result<()> {
-        self.store_link(l, index, admitted)
+    fn write_link(&self, l: &Link, index: usize, committed: Option<i64>) -> Result<()> {
+        self.store_link(l, index, committed)
     }
 
     /// Parse position and record counts for the chain, committed with the rows

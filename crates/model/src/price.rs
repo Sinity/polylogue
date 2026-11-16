@@ -238,13 +238,13 @@ impl Catalog {
             None => None,
             Some(w) => Some(w.checked_sub(write_1h.unwrap_or(0))?),
         };
-        let lane =
+        let token_cost =
             |tokens: u64, rate: Rate| i128::from(tokens).checked_mul(rate.pico_usd_per_token);
         // Reasoning is billed at the output rate and is never part of
         // `output` (see `Usage::output`).
-        let mut pico = lane(input, in_rate)?
-            .checked_add(lane(output, out_rate)?)?
-            .checked_add(lane(usage.reasoning.unwrap_or(0), out_rate)?)?;
+        let mut pico = token_cost(input, in_rate)?
+            .checked_add(token_cost(output, out_rate)?)?
+            .checked_add(token_cost(usage.reasoning.unwrap_or(0), out_rate)?)?;
         for (tokens, rate) in [
             (usage.cached_input, cached_rate),
             (write_short, write_rate),
@@ -252,7 +252,7 @@ impl Catalog {
         ] {
             match (tokens, rate) {
                 (None | Some(0), _) => {}
-                (Some(t), Some(r)) => pico = pico.checked_add(lane(t, r)?)?,
+                (Some(t), Some(r)) => pico = pico.checked_add(token_cost(t, r)?)?,
                 (Some(_), None) => return None,
             }
         }

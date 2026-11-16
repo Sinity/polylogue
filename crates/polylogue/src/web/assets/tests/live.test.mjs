@@ -4,11 +4,11 @@ import { readFile } from "node:fs/promises";
 const source = await readFile(new URL("../live.js", import.meta.url), "utf8");
 let serial = 0;
 const flush = async () => { for (let i = 0; i < 8; i++) await new Promise(resolve => setImmediate(resolve)); };
-const envelope = data => "event: " + (data.type === "change" ? "record" : data.type) + "\ndata: " + JSON.stringify(data) + "\n\n";
+const sseFrame = data => "event: " + (data.type === "change" ? "record" : data.type) + "\ndata: " + JSON.stringify(data) + "\n\n";
 const begin = { type: "begin", replacement: false, generation_changed: false };
 const change = { type: "change", component: "index", change: { ref: "session:synthetic" } };
 const complete = position => ({ type: "complete", position, count: 1 });
-const batch = position => new Response(envelope(begin) + envelope(change) + envelope(complete(position)));
+const batch = position => new Response(sseFrame(begin) + sseFrame(change) + sseFrame(complete(position)));
 const currentPage = (next = null) => Response.json({ outcome: "ok", value: { rows: [{ ref: "session:current" }], read_at: { cursor: "synthetic:0:0", generation: "synthetic" }, next }, notes: [], next: [] });
 async function environment(t, fetch) {
   const saved = new Map(["document", "window", "fetch", "setTimeout", "clearTimeout", "setInterval", "clearInterval"].map(key => [key, globalThis[key]]));
@@ -33,7 +33,7 @@ test("an interrupted batch repeats references from the last completed position",
   const env = await environment(t, async url => {
     if (url.startsWith("/api/v1/query")) return currentPage();
     requests.push(url);
-    return requests.length === 2 ? new Response(envelope(begin) + envelope(change)) : batch("synthetic:1:0");
+    return requests.length === 2 ? new Response(sseFrame(begin) + sseFrame(change)) : batch("synthetic:1:0");
   });
   const stop = env.watchChanges({ query: "changes where kind:session", apply: line => applied.push(line.change.ref), error: error => errors.push(error.message) });
   await flush(); await env.tick(); await env.tick();
@@ -86,7 +86,7 @@ test("expired authentication stops requests", async t => {
 });
 test("a generation change reaches views before replacement references", async t => {
   const seen = [];
-  const env = await environment(t, async url => url.startsWith("/api/v1/query") ? currentPage() : new Response(envelope({ ...begin, replacement: true, generation_changed: true }) + envelope(change) + envelope(complete("new:1:0"))));
+  const env = await environment(t, async url => url.startsWith("/api/v1/query") ? currentPage() : new Response(sseFrame({ ...begin, replacement: true, generation_changed: true }) + sseFrame(change) + sseFrame(complete("new:1:0"))));
   const stop = env.watchChanges({ query: "changes where kind:session", begin: line => seen.push(line.generation_changed), apply: () => seen.push("change"), complete: () => seen.push("complete") });
   await flush(); assert.deepEqual(seen, [false,"change","complete",true,"change","complete"]); stop();
 });

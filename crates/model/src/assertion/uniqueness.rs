@@ -27,7 +27,7 @@ pub enum Error {
 
 /// The slots of one write of `kind`, or `None` for a kind with many. Setting
 /// values must already be resolved to their target host; `rubric` is the
-/// exact rubric revision an annotation was derived from.
+/// rubric revision an annotation was derived from.
 pub fn unique<'a>(
     kind: AssertionKind,
     key: Option<&str>,
@@ -118,7 +118,7 @@ impl NewAssertion {
 }
 
 impl AssertionFact {
-    /// The slots a stored fact occupies; the same function a write uses.
+    /// The slots a stored assertion occupies; the same function a write uses.
     pub fn unique(&self, rubric: Option<&Reference>) -> Result<Option<Unique>, Error> {
         let value = self.validate().map_err(|error| match error {
             super::AssertionError::Structure(error) => Error::Structure(error),

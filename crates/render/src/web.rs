@@ -3,7 +3,7 @@
 use command_surface::{Failure, FailureKind, OperationDeclarations, RunnableRequest};
 use maud::{Markup, html};
 use polylogue_model::{
-    currency::{CurrencyState, IndexCurrency},
+    freshness::{FreshnessState, IndexFreshness},
     read::{ReadError, ReadOptions, ReadPage, ReadyCall, View},
 };
 use serde_json::Value;
@@ -34,7 +34,7 @@ pub fn read(
     let query_display = crate::terminal::json(&Value::String(query.into()), false);
     frame.query = &query_display[1..query_display.len() - 1];
     frame.navigation = navigation_entries();
-    frame.status = currency(&page.snapshot.freshness.owner);
+    frame.status = freshness(&page.snapshot.freshness.sinex);
     let body = html! {
         (freshness_notice(&page.snapshot.freshness, &frame.command))
         nav class="read-views" aria-label="Read view" { @for view in View::ALL { a href=(view_url(table,request,view)?) aria-current=[(view==page.document.header.view).then_some("page")] { (view) } } }
@@ -77,13 +77,13 @@ fn follow(
     })
 }
 pub use crate::ready::http_url;
-fn currency(currency: &IndexCurrency) -> Markup {
-    html! { @match currency {
-        IndexCurrency::Standalone=>{span data-mode="standalone" {"Standalone archive"}},
-        IndexCurrency::Primary {scope,applied_position,owner_position,owner_position_seconds_ago,reachable,lag_positions,state,error}=>{
-            @let state = match state {CurrencyState::Current=>"current",CurrencyState::Behind=>"behind",CurrencyState::Unknown=>"unknown",CurrencyState::Unavailable=>"unavailable"};
+fn freshness(freshness: &IndexFreshness) -> Markup {
+    html! { @match freshness {
+        IndexFreshness::Standalone=>{span data-mode="standalone" {"Standalone archive"}},
+        IndexFreshness::Primary {scope,applied_position,sinex_position,sinex_position_seconds_ago,reachable,lag_positions,state,error}=>{
+            @let state = match state {FreshnessState::Current=>"current",FreshnessState::Behind=>"behind",FreshnessState::Unknown=>"unknown",FreshnessState::Unavailable=>"unavailable"};
             span data-mode="primary" data-state=(state) {
-                "Primary: " @if let Some(scope)=scope { (scope) " · " } (state) " · applied " (applied_position.map_or_else(||"unknown".into(),|n|n.to_string())) " · owner " (owner_position.map_or_else(||"unknown".into(),|n|n.to_string())) " · observed " (owner_position_seconds_ago.map_or_else(||"age unknown".into(),|age|format!("{age} seconds ago"))) " · reachable " (reachable.map_or_else(||"unknown".into(),|reachable|reachable.to_string())) " · lag " (lag_positions.map_or_else(||"unknown".into(),|lag|lag.to_string())) @if let Some(error)=error {" · " (error)}
+                "Primary: " @if let Some(scope)=scope { (scope) " · " } (state) " · applied " (applied_position.map_or_else(||"unknown".into(),|n|n.to_string())) " · Sinex " (sinex_position.map_or_else(||"unknown".into(),|n|n.to_string())) " · observed " (sinex_position_seconds_ago.map_or_else(||"age unknown".into(),|age|format!("{age} seconds ago"))) " · reachable " (reachable.map_or_else(||"unknown".into(),|reachable|reachable.to_string())) " · lag " (lag_positions.map_or_else(||"unknown".into(),|lag|lag.to_string())) @if let Some(error)=error {" · " (error)}
             }
         }
     } }
@@ -159,7 +159,10 @@ fn view_url(
     )
 }
 
-fn freshness_notice(freshness: &polylogue_model::currency::ReadFreshness, command: &str) -> Markup {
+fn freshness_notice(
+    freshness: &polylogue_model::freshness::ReadFreshness,
+    command: &str,
+) -> Markup {
     html! { @for note in freshness.notes() {
         (web_shell::values::view_state("behind", note, command))
     } }

@@ -1,4 +1,4 @@
-//! Parsed facts sent to Sinex and durable authored facts.
+//! Parsed events sent to Sinex, and authored records.
 use crate::input_rows::InputRows;
 use crate::writer::InputKey;
 use polylogue_model::authored::PreparedRequest;
@@ -48,7 +48,7 @@ impl Reading {
     }
 }
 
-/// The original chain and parser range one frame of parsed facts comes from.
+/// The original chain and parser range one frame of parsed events comes from.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParsedSource {
     pub root_material: String,
@@ -289,7 +289,7 @@ pub struct Confirmed {
     pub change: ConfirmedChange,
     /// The kind, payload hash and origin Sinex recorded for the event.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub native: Option<super::NativeFactContext>,
+    pub sinex_context: Option<super::SinexEventContext>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -305,7 +305,7 @@ pub enum ConfirmedChange {
     Refused {
         kind: String,
         reason: String,
-        /// The adapter cannot exclude source input semantics for this unreadable event.
+        /// True when this unreadable event may carry source input.
         unreadable_input: bool,
     },
     Control(Box<super::ReplayControl>),
@@ -322,17 +322,20 @@ pub struct CapturedInput {
     pub length: u64,
     pub group: Option<CaptureGroup>,
     pub route: polylogue_model::Route,
-    /// Original acquired interval, independent of tentative source coordinates.
+    /// The byte range the capture read covered, independent of tentative
+    /// source coordinates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_range: Option<super::RawRange>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generation: Option<super::SourceGeneration>,
-    /// Actual validated source EOF, independent of group-header exhaustion.
+    /// The checked end of the source, independent of reaching the last group
+    /// header.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_total: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_predecessor: Option<String>,
-    /// None is legacy unknown evidence, never a freshly observed source.
+    /// None means an older record with an unknown source base, never a freshly
+    /// observed source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub basis: Option<super::SourceBasis>,
 }
@@ -340,7 +343,7 @@ pub struct CapturedInput {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CaptureGroup {
     pub identity: String,
-    /// Stable content intent; legacy missing intent cannot prove a retry.
+    /// Stable content intent; an older record without one cannot show a retry.
     #[serde(default)]
     pub intent: String,
     pub ordinal: u64,
@@ -364,7 +367,8 @@ pub struct PreparedWrite {
     pub pending: bool,
 }
 
-/// An outbound fact with its native source record and genuine parent readings.
+/// An outgoing event with its record offset in a material and its parent
+/// readings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ProductWrite {
     pub product: Product,
@@ -389,14 +393,14 @@ pub fn parse(
 ) -> crate::Result<Vec<Product>> {
     if step.delivery.is_some() && source_length.is_none() {
         return Err(crate::StoreError::Invalid(
-            "export products need their actual stored source length".into(),
+            "export products need their stored source length".into(),
         ));
     }
     let event_ids = step.event_identities(&input.id, chain)?;
     let output = step.complete_output()?;
     if !output.blobs.is_empty() {
         return Err(crate::StoreError::Invalid(
-            "decoded bytes must be prepared before their product facts".into(),
+            "decoded bytes must be prepared before their products".into(),
         ));
     }
     step.validate_export()?;
@@ -407,8 +411,8 @@ pub fn parse(
         facts,
     }));
     let mut message_order = output.message_order;
-    let mut message_projections = output.message_projections;
-    let mut native_fields = output.native_hook_fields;
+    let mut block_selections = output.block_selections;
+    let mut hook_fields = output.hook_fields;
     let mut declared_injections = output.declared_injections;
     let mut declared_attachment_bindings = output.declared_attachment_bindings;
     for (message_index, row) in output.messages.iter().enumerate() {
@@ -429,9 +433,9 @@ pub fn parse(
                     facts: Box::new(ToolCall {
                         session: row.message.session.clone(),
                         message: row.message.id.clone(),
-                        block: message_projections
+                        block: block_selections
                             .get(&message_index)
-                            .map_or(block as u64, |projection| projection.block_ordinals[block]),
+                            .map_or(block as u64, |selection| selection.block_ordinals[block]),
                         source_start: row.offset,
                         source_end: row.end,
                         at: row.message.at,
@@ -458,8 +462,8 @@ pub fn parse(
                 reading: reading.clone(),
                 facts: Box::new(facts),
                 order: message_order.remove(&index),
-                projection: message_projections.remove(&index),
-                native_fields: native_fields.remove(&index),
+                projection: block_selections.remove(&index),
+                native_fields: hook_fields.remove(&index),
                 declared_injections: declared_injections.remove(&index),
                 declared_attachment_bindings: declared_attachment_bindings.remove(&index),
             }),

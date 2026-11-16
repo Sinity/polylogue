@@ -79,12 +79,12 @@ fn every_reference_after_four_thousand_is_still_reported() {
 }
 
 #[test]
-fn ordinary_reopen_observes_local_references_after_raw_commit_before_parse() {
+fn reopen_observes_local_references_after_raw_commit_before_parse() {
     for remove_source in [false, true] {
         let w = ClaudeHome::new();
         let dir = w.home.join(".codex/sessions");
         std::fs::create_dir_all(&dir).unwrap();
-        let image = w.dir.path().join("retained.png");
+        let image = w.dir.path().join("kept.png");
         std::fs::write(&image, b"image after commit boundary").unwrap();
         let row = serde_json::json!({"type":"event_msg","payload":{"type":"user_message","message":"capture pending attachment","local_images":[image]}});
         let path = dir.join("rollout-crash.jsonl");
@@ -129,7 +129,7 @@ fn ordinary_reopen_observes_local_references_after_raw_commit_before_parse() {
 }
 
 #[test]
-fn regular_local_files_keep_exact_binary_bytes_empty_files_and_descriptor_facts() {
+fn regular_local_files_keep_binary_bytes_empty_files_and_descriptor_facts() {
     let home = ClaudeHome::new();
     let (mut engine, _lock) = engine(&home, 64);
     for (name, bytes) in [
@@ -241,7 +241,7 @@ fn a_local_fifo_without_a_writer_is_reported_unreadable() {
         .spawn()
         .unwrap();
     // This watchdog bounds the regression itself, not capture throughput. The
-    // predecessor blocks in open forever because this fixture has no writer.
+    // earlier implementation blocked in open forever because this fixture has no writer.
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if child.try_wait().unwrap().is_some() {

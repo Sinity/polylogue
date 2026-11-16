@@ -61,7 +61,7 @@ impl Update {
         previous: Option<&Stored>,
         counter: i64,
         retraction: bool,
-        receipt: Option<&crate::wire_shapes::ReadingReceipt>,
+        source_commit: Option<&crate::wire_shapes::ReadingCommit>,
     ) -> Result<Self> {
         let counts = [
             step.counts.records,
@@ -143,8 +143,8 @@ impl Update {
             },
         };
         let commit = if retraction {
-            receipt
-                .or(step.receipt.as_ref())
+            source_commit
+                .or(step.source_commit.as_ref())
                 .map(|r| r.sequence)
                 .filter(|n| *n > 0)
         } else if previous.is_some_and(|prior| prior.state == state) {

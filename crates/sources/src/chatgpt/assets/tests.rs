@@ -21,7 +21,7 @@ fn native_member_ids_are_anchored_and_do_not_use_original_basenames() {
 }
 
 #[test]
-fn naming_and_library_sidecars_preserve_exact_metadata_without_opening_files() {
+fn naming_and_library_sidecars_preserve_metadata_without_opening_files() {
     let mut entries = Vec::new();
     metadata(
         "conversation_asset_file_names.json",

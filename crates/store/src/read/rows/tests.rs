@@ -98,7 +98,7 @@ fn caller_sql_may_only_read() {
             "{refused} was not refused"
         );
     }
-    // Refusal leaves the shared connection as it was for ordinary reads.
+    // Refusal leaves the shared connection as it was for later reads.
     assert_eq!(reader.query("SELECT 42 AS n", &[]).unwrap()[0]["n"], 42);
     assert_eq!(temp_objects(&reader), temp_before);
     assert_eq!(databases(&reader), databases_before);

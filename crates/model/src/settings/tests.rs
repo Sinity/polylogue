@@ -2,19 +2,19 @@ use super::*;
 #[test]
 fn catalog_refuses_unknown_blank_and_primary_owned_values() {
     assert!(matches!(
-        parse("day.timezone", "UTC", Owner::Standalone),
+        parse("day.timezone", "UTC", SettingMode::Standalone),
         Err(Error::UnknownKey(_))
     ));
     assert!(matches!(
-        parse("browser.actions", " ", Owner::Standalone),
+        parse("browser.actions", " ", SettingMode::Standalone),
         Err(Error::Blank(_))
     ));
     assert!(matches!(
-        current("signal.interrupts_per_hour", None, Owner::Primary),
+        current("signal.interrupts_per_hour", None, SettingMode::Primary),
         Err(Error::SinexOwned(_))
     ));
     assert!(matches!(
-        parse("signal.quiet_hours", "null", Owner::Primary),
+        parse("signal.quiet_hours", "null", SettingMode::Primary),
         Err(Error::SinexOwned(_))
     ));
 }
@@ -22,19 +22,19 @@ fn catalog_refuses_unknown_blank_and_primary_owned_values() {
 fn all_declared_defaults_validate_and_variants_keep_order() {
     for spec in CATALOG.iter().filter(|spec| !spec.key.ends_with('*')) {
         if let Some(value) = spec.default {
-            parse(spec.key, value, Owner::Standalone).unwrap();
+            parse(spec.key, value, SettingMode::Standalone).unwrap();
         }
     }
     assert_eq!(
         parse(
             "reading.variants",
             r#"["translation:pl","simplification"]"#,
-            Owner::Standalone
+            SettingMode::Standalone
         )
         .unwrap(),
         Value::Variants(vec!["translation:pl".into(), "simplification".into()])
     );
-    assert!(parse("reading.variants", "[\"\"]", Owner::Standalone).is_err());
+    assert!(parse("reading.variants", "[\"\"]", SettingMode::Standalone).is_err());
 }
 #[test]
 fn typed_values_refuse_invalid_minutes_counts_and_plans() {
@@ -47,13 +47,13 @@ fn typed_values_refuse_invalid_minutes_counts_and_plans() {
             r#"{"name":"named","origin":"example","cycle_anchor_day":32,"price_nusd":1,"budget":null}"#,
         ),
     ] {
-        assert!(parse(key, value, Owner::Standalone).is_err(), "{key}");
+        assert!(parse(key, value, SettingMode::Standalone).is_err(), "{key}");
     }
     assert_eq!(
         parse(
             "signal.quiet_hours",
             r#"{"from":1320,"to":420}"#,
-            Owner::Standalone
+            SettingMode::Standalone
         )
         .unwrap(),
         Value::QuietHours(Some([1320, 420]))
@@ -79,7 +79,7 @@ fn scope_resolution_uses_accepting_host_and_rejects_archive_overrides() {
 }
 
 #[test]
-fn captured_setting_conflict_does_not_select_a_default_or_disable_other_keys() {
+fn setting_conflict_picks_no_default_and_spares_other_keys() {
     let reference = |text: &str| crate::Reference::parse(text).unwrap();
     let conflict = vec![
         reference("assertion:setting@left"),
@@ -91,7 +91,7 @@ fn captured_setting_conflict_does_not_select_a_default_or_disable_other_keys() {
             kind: Kind::Boolean,
             default: Some(Value::Boolean(false)),
             scope: Scope::Archive,
-            owner: "polylogue".into(),
+            supplier: "polylogue".into(),
             value: Some(Value::Boolean(true)),
             authored: None,
             conflicts: conflict.clone(),
@@ -101,7 +101,7 @@ fn captured_setting_conflict_does_not_select_a_default_or_disable_other_keys() {
             kind: Kind::Variants,
             default: Some(Value::Variants(vec![])),
             scope: Scope::Archive,
-            owner: "polylogue".into(),
+            supplier: "polylogue".into(),
             value: Some(Value::Variants(vec!["translation:pl".into()])),
             authored: None,
             conflicts: vec![],

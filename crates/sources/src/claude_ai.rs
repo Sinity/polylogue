@@ -259,7 +259,7 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
     }
     if let Some(at) = conv.get("created_at").and_then(time_of) {
         session
-            .offer_start(at.timestamp(), at.evidence())
+            .offer_start(at.timestamp(), at.accuracy())
             .expect("decoded source time is valid");
     }
     sink.out.sessions.push(session);
@@ -360,14 +360,14 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
                             .expect("boundary is JSON"),
                         });
                     } else {
-                        let evidence = msg.time_evidence();
+                        let accuracy = msg.time_evidence();
                         sink.out.events.push(Event {
                             session: Some(sid.clone()),
                             kind: "compaction".into(),
                             at: msg.at,
-                            at_quality: evidence.quality,
-                            at_precision: evidence.precision,
-                            at_until: evidence.until,
+                            at_quality: accuracy.quality,
+                            at_precision: accuracy.precision,
+                            at_until: accuracy.until,
                             after: msg.parent.clone(),
                             range: None,
                             data: serde_json::to_value(
@@ -787,7 +787,7 @@ fn design_chat(chat: &Json, sink: &mut Sink<'_>) {
     }
     if let Some(at) = chat.get("created_at").and_then(time_of) {
         session
-            .offer_start(at.timestamp(), at.evidence())
+            .offer_start(at.timestamp(), at.accuracy())
             .expect("decoded source time is valid");
     }
     sink.out.sessions.push(session);
@@ -908,7 +908,7 @@ fn context_summary(
     id: MessageId,
     parent: Option<MessageId>,
     at: Option<polylogue_model::Timestamp>,
-    evidence: polylogue_model::TimeEvidence,
+    accuracy: polylogue_model::TimeEvidence,
     blocks: Vec<polylogue_model::Block>,
 ) -> polylogue_model::Message {
     polylogue_model::Message {
@@ -917,9 +917,9 @@ fn context_summary(
         parent,
         role: polylogue_model::Role::User,
         at,
-        at_quality: evidence.quality,
-        at_precision: evidence.precision,
-        at_until: evidence.until,
+        at_quality: accuracy.quality,
+        at_precision: accuracy.precision,
+        at_until: accuracy.until,
         model: None,
         prompt_kind: Some(polylogue_model::PromptKind::CompactionSummary),
         blocks,

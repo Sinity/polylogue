@@ -5,7 +5,7 @@ fn an_origin_without_a_parser_keeps_bytes_and_commits_capture_progress() {
     let home = ClaudeHome::new();
     let path = home.home.join(".pi/agent/sessions/project/session.jsonl");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    let bytes = b"{\"native\":\"synthetic retained record\"}\n";
+    let bytes = b"{\"native\":\"synthetic stored record\"}\n";
     std::fs::write(&path, bytes).unwrap();
     let (mut engine, _lock) = open_engine(&home);
     let first = engine.run_pass().unwrap();
@@ -43,13 +43,13 @@ fn an_origin_without_a_parser_keeps_bytes_and_commits_capture_progress() {
 }
 
 #[test]
-fn an_unparsed_database_commits_native_row_comparison_and_capture_progress() {
+fn unparsed_database_commits_rows_and_capture_progress() {
     let home = ClaudeHome::new();
     let path = home.home.join(".config/io.datasette.llm/logs.db");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     let database = rusqlite::Connection::open(&path).unwrap();
     database
-        .execute_batch("CREATE TABLE native_record(id INTEGER PRIMARY KEY,body TEXT); INSERT INTO native_record VALUES(1,'synthetic retained body');")
+        .execute_batch("CREATE TABLE native_record(id INTEGER PRIMARY KEY,body TEXT); INSERT INTO native_record VALUES(1,'synthetic stored body');")
         .unwrap();
     let (mut engine, _lock) = open_engine(&home);
     let first = engine.run_pass().unwrap();

@@ -7,7 +7,7 @@ fn parse_bound(parser: &mut Parse, input: &str, bytes: &[u8]) -> crate::parse::S
 }
 
 #[test]
-fn memory_and_project_text_are_documents_with_unknown_authorship_and_exact_sources() {
+fn memory_and_project_text_are_documents_with_unknown_authorship_and_sources() {
     let bytes=br#"[{"project_memories":{"p":"project memory"},"conversations_memory":"account memory","account_uuid":"a"}]"#;
     let mut parser = open(Path::new("memories.json")).unwrap();
     let step = parse_bound(&mut parser, "input-a", bytes);
@@ -65,7 +65,7 @@ fn memory_and_project_text_are_documents_with_unknown_authorship_and_exact_sourc
 }
 
 #[test]
-fn reused_parser_binds_each_input_and_missing_ids_use_physical_source_coordinates() {
+fn missing_ids_use_input_and_byte_position() {
     let original = br#"[{"conversations_memory":"first"}, {"conversations_memory":"second"}]"#;
     let mut parser = open(Path::new("memories.json")).unwrap();
     let a = parse_bound(&mut parser, "input-a", original);

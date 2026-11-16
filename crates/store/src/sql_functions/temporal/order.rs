@@ -1,5 +1,5 @@
-//! Time-order predicates use exact source periods; only public distances use seconds.
-use super::{Failure, evidence};
+//! Time-order predicates use source periods at full precision; only public distances use seconds.
+use super::{Failure, source_time};
 use query_language::ast::{OrderRelation, TimePoint};
 use query_language::time::Time;
 use rusqlite::{
@@ -62,8 +62,8 @@ fn periods(ctx: &Context<'_>) -> rusqlite::Result<Option<(Period, Period)>> {
     let outer_storage: String = ctx.get(1)?;
     let inner: Option<Vec<u8>> = ctx.get(2)?;
     let inner_storage: String = ctx.get(3)?;
-    let outer = evidence(outer.as_deref(), &outer_storage).map_err(Error::UserFunctionError)?;
-    let inner = evidence(inner.as_deref(), &inner_storage).map_err(Error::UserFunctionError)?;
+    let outer = source_time(outer.as_deref(), &outer_storage).map_err(Error::UserFunctionError)?;
+    let inner = source_time(inner.as_deref(), &inner_storage).map_err(Error::UserFunctionError)?;
     Ok(outer
         .period()
         .zip(inner.period())
@@ -149,7 +149,7 @@ pub(super) fn register(conn: &Connection) -> rusqlite::Result<()> {
             .transpose()?;
         let at: String = ctx.get(6)?;
         let at = point(&at).map_err(Error::UserFunctionError)?;
-        // These sources retain occurrence evidence, but declare no state span.
+        // These sources keep occurrence times, but declare no state span.
         // Its uncertainty bounds must never stand in for state endpoints.
         if matches!(at, TimePoint::MatchStart | TimePoint::MatchEnd)
             || (at == TimePoint::MatchWhen

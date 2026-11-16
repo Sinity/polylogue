@@ -24,7 +24,7 @@ pub static MESSAGE_FIELDS: Fields = Fields::new(
         ("requestId", Read(T::String)),
         (
             "toolUseResult",
-            Kept("structured tool results retained beside paired blocks"),
+            Kept("structured tool results kept beside paired blocks"),
         ),
         ("toolDenialKind", Read(T::String)),
         ("costUSD", Read(T::Number)),
@@ -304,12 +304,12 @@ pub static MESSAGE_FIELDS: Fields = Fields::new(
         ("message.content[].name", Read(T::String)),
         (
             "message.content[].input",
-            Kept("call input retained in the tool block"),
+            Kept("call input kept in the tool block"),
         ),
         ("message.content[].tool_use_id", Read(T::String)),
         (
             "message.content[].content",
-            Kept("every result part retained in structured result data"),
+            Kept("every result part kept in structured result data"),
         ),
         ("message.content[].is_error", Read(T::Boolean)),
         ("message.content[].source", Read(T::Object)),
@@ -384,9 +384,9 @@ pub static COMPACTION_FIELDS: Fields = Fields::new(
         ("timestamp", Read(T::StringOrNumber)),
         (
             "content",
-            Excluded("native boundary display text; the summary is a separate message"),
+            Excluded("harness display text for the boundary; the summary is a separate message"),
         ),
-        ("level", Excluded("native display level")),
+        ("level", Excluded("harness display level")),
         ("compactMetadata", Read(T::Object)),
         ("compactMetadata.preTokens", Read(T::Number)),
         ("compactMetadata.postTokens", Read(T::Number)),

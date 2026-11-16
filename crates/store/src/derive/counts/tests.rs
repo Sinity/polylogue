@@ -127,7 +127,7 @@ fn stored_and_recomputed(w: &crate::fixture::writer::WriterArchive, session: &st
 use polylogue_model::Json;
 
 #[test]
-fn fold_after_append_equals_full_recompute() {
+fn append_update_equals_full_recompute() {
     use crate::fixture::writer::{WriterArchive, bash, message, prose, sid};
     use polylogue_model::{Block, Event, Output, Role, Session, SessionKind, TimeQuality};
     let mut w = WriterArchive::new();

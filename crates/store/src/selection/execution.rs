@@ -1,4 +1,4 @@
-//! Frozen execution inputs reuse the canonical query object and Store lowering.
+//! Saved execution inputs reuse the saved query object and Store lowering.
 use super::*;
 use polylogue_model::query_objects::{
     ExecutionBinding, ExecutionPresentation, FrozenDefinition, QueryExecutionOptions, ReplayBinding,
@@ -6,7 +6,7 @@ use polylogue_model::query_objects::{
 
 impl PreparedSelection<'_> {
     /// Capture accepted inputs before exposing a continuation. Source facts and
-    /// rendered headers remain under their original read authority.
+    /// rendered headers stay tied to their original read.
     pub fn execution_binding(
         &self,
         mut query_options: QueryExecutionOptions,
@@ -33,7 +33,7 @@ impl PreparedSelection<'_> {
         if self.direct.is_some() && matches!(presentation, ExecutionPresentation::Query) {
             return Err(invalid(
                 "conflict",
-                "query execution requires semantic rows, not direct read presentation",
+                "query execution requires query rows, not direct read presentation",
             ));
         }
         if let ExecutionPresentation::Read {
@@ -57,17 +57,17 @@ impl PreparedSelection<'_> {
             .definitions()
             .iter()
             .map(|definition| {
-                let frozen = object
+                let saved = object
                     .definitions
                     .iter()
-                    .find(|frozen| frozen.question == definition.question_id)
-                    .ok_or_else(|| invalid("internal", "bound definition has no frozen body"))?;
+                    .find(|saved| saved.question == definition.question_id)
+                    .ok_or_else(|| invalid("internal", "bound definition has no saved body"))?;
                 Ok(FrozenDefinition {
                     name: definition.name.clone(),
                     root: definition.root.clone(),
                     revision: definition.revision.clone(),
                     question: definition.question_id,
-                    ast: frozen.query.clone(),
+                    ast: saved.query.clone(),
                 })
             })
             .collect::<Result<Vec<_>, SelectionError>>()?;

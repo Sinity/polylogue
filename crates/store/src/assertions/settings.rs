@@ -1,4 +1,4 @@
-//! Settings are single-valued assertion slots. Display time and local receipt
+//! Settings are single-valued assertion slots. Display time and local commit
 //! order never choose a current value or resolve a fork.
 use super::*;
 use polylogue_model::{assertion::values, settings};
@@ -13,7 +13,7 @@ fn roots(conn: &Connection, key: &str) -> Result<Vec<String>> {
 }
 
 /// SQL only nominates families. Present and as-of reads use the same slot
-/// comparison over the heads the currency rule gives.
+/// comparison over the heads the current-revision rule gives.
 fn candidates(
     conn: &Connection,
     key: &str,
@@ -72,7 +72,7 @@ fn history_boundaries(
     let mut relevant = BTreeSet::new();
     while let Some(row) = rows.next()? {
         let root: String = row.get(0)?;
-        if links.eligible(row.get(1)?) {
+        if links.in_view(row.get(1)?) {
             relevant.insert(root);
         }
     }
@@ -100,8 +100,8 @@ fn history_boundaries(
             times.extend(row.fact.created_at);
             pending.push(authored::Target::Root(revision.root.clone()));
         }
-        // Restoration can be arbitrarily deep: walk exactly the withdrawal
-        // links currency reads, including withdrawals of whole families.
+        // Restoration can be arbitrarily deep: walk the same withdrawal
+        // links the current-revision rule reads, including withdrawals of whole families.
         pending.extend(
             links
                 .withdrawers(&target)?
@@ -122,7 +122,7 @@ impl crate::Reader<'_> {
                 key: key.into(),
                 kind: spec.kind,
                 scope: spec.scope,
-                owner: "sinex".into(),
+                supplier: "sinex".into(),
                 default: None,
                 value: None,
                 authored: None,
@@ -136,7 +136,7 @@ impl crate::Reader<'_> {
         let (mut candidates, conflicts) =
             candidates(conn, key, target, roots(conn, key)?, |root| {
                 Ok(self
-                    .assertion_family_currency(&RevisionReference {
+                    .assertion_family_state(&RevisionReference {
                         root,
                         revision: None,
                     })?
@@ -145,7 +145,7 @@ impl crate::Reader<'_> {
             })?;
         let default = spec
             .default
-            .map(|text| settings::parse(key, text, settings::Owner::Standalone))
+            .map(|text| settings::parse(key, text, settings::SettingMode::Standalone))
             .transpose()
             .map_err(|error| invalid(&error.to_string()))?;
         let (value, authored) = if conflicts.is_empty() {
@@ -171,7 +171,7 @@ impl crate::Reader<'_> {
             key: key.into(),
             kind: spec.kind,
             scope: spec.scope,
-            owner: "polylogue".into(),
+            supplier: "polylogue".into(),
             default,
             value,
             authored,

@@ -53,14 +53,14 @@ let
   };
   succeeds = value: (builtins.tryEval (builtins.deepSeq value true)).success;
   refused = value: !succeeds (settings.render (evaluate value));
-  native = settings.render (evaluate {
-    path = "/srv/native";
+  minimal = settings.render (evaluate {
+    path = "/srv/minimal";
   });
 in
 assert lib.assertMsg (
-  native == {
+  minimal == {
     polylogue = {
-      archive = "/srv/native";
+      archive = "/srv/minimal";
       http = { };
     };
     signals = {
@@ -69,7 +69,7 @@ assert lib.assertMsg (
       action_commands = { };
     };
   }
-) "Native deployment must leave runtime-owned defaults unspecified.";
+) "A minimal deployment must leave runtime defaults unspecified.";
 assert lib.assertMsg (refused {
   path = "relative/archive";
 }) "Relative archive paths must fail evaluation.";
@@ -92,7 +92,7 @@ assert lib.assertMsg (refused {
     zone = "UTC";
     start = "04:00:00";
   };
-}) "Primary day ownership must stay with Sinex.";
+}) "The primary day must come from Sinex.";
 pkgs.runCommand "polylogue-settings" { nativeBuildInputs = [ pkgs.python3 ]; } ''
   python3 ${./settings.py} ${settings.configDirectory full} ${settings.configDirectory primary}
   touch "$out"

@@ -1,6 +1,6 @@
-//! Signal runtime facts use the common evaluator and delivery schemas. The
+//! Signal runtime values use the common evaluator and delivery schemas. The
 //! daemon computes these values; they are not an authored rule or a bypass of
-//! the final host policy. Bundles retain them as historical state.
+//! the final host policy. Bundles keep them as historical state.
 use crate::{BlobHash, Timestamp, authored::ExecutionEligibility, user};
 use serde::{Deserialize, Serialize};
 use shared_signals::notifications::{Notice, NotificationReceipt, NotificationState};
@@ -114,7 +114,7 @@ pub struct StoredOutbox {
 
 // Internally tagged authored writes buffer JSON before this field is decoded.
 // Normalize serde_json's arbitrary-precision Number representation once at
-// that boundary so nested shared f64 fields retain their ordinary wire form.
+// that boundary so nested shared f64 fields keep their usual wire form.
 impl<'de> Deserialize<'de> for Commit {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]

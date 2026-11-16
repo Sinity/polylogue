@@ -34,7 +34,7 @@ fn fresh_message_selection_shares_one_value_through_preparation_and_spill() {
         1
     );
     // The existing owned selection is an independent value-equivalent path:
-    // retaining it would put a second complete payload into the spill record.
+    // keeping it would put a second complete payload into the spill record.
     let mut owned = choices.clone();
     owned
         .messages
@@ -92,7 +92,12 @@ fn fresh_message_selection_shares_one_value_through_preparation_and_spill() {
 
 #[test]
 fn selected_version_references_refuse_missing_mismatched_or_sparse_values_atomically() {
-    for defect in ["missing", "different-message", "projection", "prepared-id"] {
+    for defect in [
+        "missing",
+        "different-message",
+        "block_selection",
+        "prepared-id",
+    ] {
         let mut conn = database();
         let messages = ["first", "second"].map(|id| {
             text_message(
@@ -124,10 +129,10 @@ fn selected_version_references_refuse_missing_mismatched_or_sparse_values_atomic
                     .unwrap()
                     .hash = messages[1].content_hash().unwrap().0.to_vec();
             }
-            "projection" => {
+            "block_selection" => {
                 Arc::make_mut(&mut choices.message_versions.get_mut(&hash).unwrap().value)
                     .prepared
-                    .projection
+                    .block_selection
                     .block_count += 1;
             }
             "prepared-id" => {
@@ -180,7 +185,7 @@ fn composed_and_sparse_selections_keep_their_owned_metadata_and_values() {
         selected.prepared.items,
         polylogue_model::read::message_entries(
             &selected.message,
-            &selected.prepared.projection.block_ordinals,
+            &selected.prepared.block_selection.block_ordinals,
             Default::default()
         )
     );
@@ -193,7 +198,7 @@ fn composed_and_sparse_selections_keep_their_owned_metadata_and_values() {
     let mut part = full.clone();
     part.blocks.remove(0);
     let mut b = reading("sparse", vec![part], Vec::new());
-    b.parse[0].output.message_projections.insert(
+    b.parse[0].output.block_selections.insert(
         0,
         polylogue_model::bundle::MessageProjection {
             source_version: full.content_hash().unwrap(),

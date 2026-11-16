@@ -2,12 +2,12 @@
 //! kind, then the shared request rules place it: explicit bases must be
 //! current, a write without bases goes where its uniqueness slots say, and
 //! the writes of one request are numbered and committed together. The stored
-//! currency index is recomputed for the roots the request affects.
+//! current-revision index is recomputed for the roots the request affects.
 use super::*;
 use authored::{Arrival, OnStale, Placed, Plan, Refusal, Refused, Write};
 use polylogue_model::{
     assertion::{AssertionPatch, Change, NewAssertion, NewAssertionLink, values},
-    settings::Owner,
+    settings::SettingMode,
     user::{UserOutcome, UserRequest},
 };
 
@@ -20,7 +20,7 @@ pub(crate) struct WriteContext<'a> {
     pub counter: i64,
     pub hash: &'a Hash<'a>,
     pub quote: &'a QuoteOf<'a>,
-    pub owner: Owner,
+    pub mode: SettingMode,
 }
 
 fn exact_fact(conn: &Connection, reference: &Reference) -> Result<AssertionFact> {
@@ -42,7 +42,7 @@ fn validate_value(
     request: &UserRequest,
     statement: &mut NewAssertion,
     live_value: bool,
-    owner: Owner,
+    mode: SettingMode,
     saved: &mut SavedResolver<'_>,
 ) -> Result<(values::Value, Option<Reference>)> {
     statement
@@ -69,13 +69,13 @@ fn validate_value(
             .resolve(
                 statement.key.as_deref().expect("setting key checked"),
                 &request.machine,
-                owner,
+                mode,
             )
             .map_err(|error| invalid(&error.to_string()))?;
         statement.value = Some(serde_json::to_value(setting)?);
     }
     if let values::Value::SavedQuery(value) = &value {
-        saved(SavedInput::Canonical {
+        saved(SavedInput::Stored {
             value: &value.fields,
             changed: live_value,
         })?;
@@ -227,7 +227,7 @@ fn refusal(kind: &NewAssertion, refused: Refused<StoreError>) -> StoreError {
 #[cfg(test)]
 fn unavailable_saved(_: SavedInput<'_>) -> Result<values::SavedQuery> {
     Err(StoreError::ReferenceUnavailable {
-        reference: "native saved query".into(),
+        reference: "saved query text".into(),
         reason: "trusted query preparation context is missing".into(),
     })
 }
@@ -239,7 +239,7 @@ pub(crate) fn write(
     statements: &[NewAssertion],
     counter: i64,
     hash: &Hash<'_>,
-    owner: Owner,
+    mode: SettingMode,
 ) -> Result<UserOutcome> {
     write_preparing(
         conn,
@@ -249,7 +249,7 @@ pub(crate) fn write(
             counter,
             hash,
             quote: &|_| Ok(None),
-            owner,
+            mode,
         },
         &mut unavailable_saved,
     )
@@ -297,7 +297,7 @@ pub(crate) fn write_preparing(
 }
 
 /// Inserts one write of the request being checked, under the ID it will
-/// take, recomputes its family's currency and returns the family root. Only
+/// take, recomputes its family's current revisions and returns the family root. Only
 /// `accept` calls this, and it removes every preview again.
 fn preview(
     conn: &Connection,
@@ -325,11 +325,11 @@ fn preview(
     let fact =
         AssertionFact::from_request(id.into(), root.clone(), statement.clone(), links, request);
     insert(conn, Source::of(conn)?, &fact, &[], counter)?;
-    currency::recompute(conn, [root.clone()].into())?;
+    current_revisions::recompute(conn, [root.clone()].into())?;
     Ok(root)
 }
 
-/// Removes previewed writes and restores their families' currency.
+/// Removes previewed writes and restores their families' current revisions.
 fn remove_previews(conn: &Connection, previews: Vec<(String, String)>) -> Result<()> {
     if previews.is_empty() {
         return Ok(());
@@ -347,7 +347,7 @@ fn remove_previews(conn: &Connection, previews: Vec<(String, String)>) -> Result
         )?;
         roots.insert(root);
     }
-    currency::recompute(conn, roots)
+    current_revisions::recompute(conn, roots)
 }
 
 fn accept(
@@ -362,7 +362,7 @@ fn accept(
         counter,
         hash,
         quote,
-        owner,
+        mode,
     } = context;
     if statements.is_empty() {
         return Err(invalid("assert needs at least one statement"));
@@ -401,7 +401,7 @@ fn accept(
                 }
             }
             let (value, rubric) =
-                validate_value(conn, request, &mut statement, live_value, owner, saved)?;
+                validate_value(conn, request, &mut statement, live_value, mode, saved)?;
             check_variant_targets(conn, &statement)?;
             for link in &statement.links {
                 if link.role != LinkRole::Revises {
@@ -529,7 +529,7 @@ fn accept(
         ))?;
         insert(conn, source, &fact, &record.slots, counter)?;
     }
-    currency::recompute(conn, planned.affected_roots)?;
+    current_revisions::recompute(conn, planned.affected_roots)?;
     Ok(UserOutcome {
         id: first.expect("a nonempty request places at least one write"),
         repeat: !written,
@@ -545,7 +545,7 @@ pub(crate) fn revise(
     patch: &AssertionPatch,
     counter: i64,
     hash: &Hash<'_>,
-    owner: Owner,
+    mode: SettingMode,
 ) -> Result<UserOutcome> {
     revise_preparing(
         conn,
@@ -556,7 +556,7 @@ pub(crate) fn revise(
             counter,
             hash,
             quote: &|_| Ok(None),
-            owner,
+            mode,
         },
         &mut unavailable_saved,
     )

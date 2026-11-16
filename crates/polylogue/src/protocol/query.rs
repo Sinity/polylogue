@@ -21,7 +21,7 @@ pub struct Arguments {
 #[serde(deny_unknown_fields)]
 pub struct Position {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub freshness: Option<polylogue_model::currency::ReadFreshness>,
+    pub freshness: Option<polylogue_model::freshness::ReadFreshness>,
     pub generation: String,
     pub index: u64,
     pub archive: u64,
@@ -31,7 +31,7 @@ pub struct Position {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Resolved {
-    pub context: polylogue_model::context::Provenance,
+    pub context: polylogue_model::context::RunContext,
     #[serde(default)]
     pub times: Vec<query_language::time::ResolvedTime>,
 }

@@ -1,7 +1,7 @@
 use super::*;
 
 /// Derived text only. Lifecycle and normal derive transactions maintain it
-/// alongside their source position, using the same canonical source rows.
+/// alongside their source position, using the same source rows.
 pub const SCHEMA: &str = include_str!("../schema/variants-index.sql");
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -38,7 +38,7 @@ pub fn project(conn: &Connection) -> Result<()> {
 }
 
 impl Reader<'_> {
-    /// Explicit variant search. Ordinary captured-content searches do not
+    /// Explicit variant search. Captured-content searches do not
     /// read this index. Language restricts the rendition's destination.
     pub fn visit_variant_search(
         &self,

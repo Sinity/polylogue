@@ -38,14 +38,14 @@ static FIELDS: Fields = Fields::new(
         ("name", Rule::Read(T::String)),
         ("scope_category", Rule::Read(T::String)),
         ("category", Rule::Read(T::String)),
-        ("data", Rule::Kept("complete native observation event data")),
-        ("data_schema", Rule::Kept("native observation schema")),
+        ("data", Rule::Kept("complete ATOF observation event data")),
+        ("data_schema", Rule::Kept("ATOF observation schema")),
         (
             "metadata",
-            Rule::Kept("native run metadata does not prove a conversation association"),
+            Rule::Kept("ATOF run metadata does not establish a conversation association"),
         ),
-        ("attributes", Rule::Kept("native observation attributes")),
-        ("category_profile", Rule::Kept("native observation profile")),
+        ("attributes", Rule::Kept("ATOF observation attributes")),
+        ("category_profile", Rule::Kept("ATOF observation profile")),
     ],
 );
 

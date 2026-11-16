@@ -245,20 +245,20 @@ fn stored_counts_and_time_match_morrow_after_the_real_loop() {
     assert_eq!(time["span"]["clustered_ms"], 3_720_000);
     assert_eq!(time["span"]["tool_union_ms"], 1_704_000);
     assert_eq!(time["span"]["tool_sum_ms"], 3_434_000);
-    let lanes = time["lanes"].as_array().unwrap();
-    let lane = |name: &str| {
-        lanes
+    let parties = time["parties"].as_array().unwrap();
+    let party = |name: &str| {
+        parties
             .iter()
-            .filter(|l| l["lane"] == name)
+            .filter(|l| l["party"] == name)
             .map(|l| l["ms"].as_i64().unwrap())
             .sum::<i64>()
     };
     assert_eq!(
         (
-            lane("tool"),
-            lane("model"),
-            lane("human"),
-            lane("unattributed")
+            party("tool"),
+            party("model"),
+            party("human"),
+            party("unattributed")
         ),
         (1_704_000, 2_348_000, 448_000, 0)
     );

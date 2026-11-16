@@ -73,13 +73,13 @@ impl Document {
     pub fn set_time(
         &mut self,
         at: Option<Timestamp>,
-        evidence: crate::TimeEvidence,
+        accuracy: crate::TimeEvidence,
     ) -> Result<(), crate::TimeEvidenceError> {
-        evidence.validate(at)?;
+        accuracy.validate(at)?;
         self.source_time = at;
-        self.source_time_quality = evidence.quality;
-        self.source_time_precision = evidence.precision;
-        self.source_time_until = evidence.until;
+        self.source_time_quality = accuracy.quality;
+        self.source_time_precision = accuracy.precision;
+        self.source_time_until = accuracy.until;
         Ok(())
     }
 

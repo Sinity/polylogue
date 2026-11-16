@@ -2,7 +2,7 @@
 use super::*;
 use polylogue_model::query_objects::{QueryObject, QueryRun, QueryRunOutcome};
 
-/// Semantic and scope validation only; it states nothing about whether Sinex
+/// Content and scope validation only; it states nothing about whether Sinex
 /// has the write.
 pub(super) struct PreparedObjects {
     scope: crate::ReadScopeToken,
@@ -62,7 +62,7 @@ fn finish_via(queue: &WriterQueue, outcome: QueryRunOutcome) -> Result<Receiver<
     Ok(wait)
 }
 
-/// Space admitted before a read, consumed by its completed execution record.
+/// Space reserved before a read, consumed by its completed execution record.
 /// Dropping it returns capacity without creating a run.
 pub struct HistorySlot {
     slot: super::user_queue::Reservation,
@@ -94,7 +94,7 @@ impl HistorySlot {
 }
 
 impl Writer {
-    /// Stores the question durably before a response exposes its reference.
+    /// Stores the question before a response exposes its reference.
     pub fn query_object(&self, object: QueryObject) -> Result<()> {
         object_via(
             self.tx.as_ref().ok_or(StoreError::WriterGone)?,
@@ -108,17 +108,17 @@ impl Writer {
         begin_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, run, None)
     }
 
-    /// Dropping the completion receipt never cancels accepted history work.
+    /// Dropping the completion answer never cancels accepted history work.
     pub fn finish_query_run(&self, outcome: QueryRunOutcome) -> Result<Receiver<Result<()>>> {
         finish_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, outcome)
     }
 }
 
 impl WriterSender {
-    /// Reserve bounded writer capacity before preparing an ordinary read.
-    /// The request's existing deadline and cancellation cover this admission.
+    /// Reserve bounded writer capacity before preparing a read. The request's
+    /// existing deadline and cancellation cover this reservation.
     pub fn reserve_history(&self) -> Result<HistorySlot> {
-        crate::read::limit::ReadLimit::set_stage("query history admission");
+        crate::read::limit::ReadLimit::set_stage("query history reservation");
         let limit = crate::read::limit::ReadLimit::current();
         let slot = self.0.users.reserve(limit.as_ref())?;
         Ok(HistorySlot {
@@ -270,9 +270,9 @@ impl Inner {
         self.persist_query_object(object, None)
     }
 
-    /// Both callers have validated semantic bodies and result schemas: the
-    /// ordinary object path against canonical rows, or the sealed batch against
-    /// its actual original plus pending authored view.
+    /// Both callers have validated bodies and result schemas: the object path
+    /// against stored rows, or the sealed batch against its original plus
+    /// pending authored view.
     fn persist_query_object(
         &mut self,
         object: &QueryObject,

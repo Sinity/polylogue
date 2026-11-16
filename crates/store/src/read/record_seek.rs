@@ -1,5 +1,5 @@
 //! Record-family cardinalities in the same pinned physical session scope as
-//! the canonical event and link ordinal visitors. Payloads are never selected.
+//! the event and link ordinal visitors. Payloads are never selected.
 use crate::{Reader, Result, StoreError};
 use polylogue_model::SessionId;
 use rusqlite::OptionalExtension;

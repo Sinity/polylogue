@@ -293,7 +293,7 @@ pub(crate) fn tables_of(conn: &Connection) -> Result<BTreeMap<String, Vec<String
     let names: Vec<String> = conn
         .prepare(
             // A virtual table's module may not be loaded here; its backing
-            // tables are ordinary tables and are listed.
+            // tables are plain tables and are listed.
             "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
              AND sql NOT LIKE 'CREATE VIRTUAL TABLE%'",
         )?
@@ -1111,7 +1111,7 @@ pub struct StoredDeliveries {
 
 impl crate::read::Reader<'_> {
     /// The deliveries this archive holds, and their events as
-    /// `(delivery, outcome, time)`: what an older archive's import actually
+    /// `(delivery, outcome, time)`: what an older archive's import
     /// stored, whichever request carried it.
     pub fn stored_deliveries(&self) -> Result<StoredDeliveries> {
         let conn = self.conn()?;

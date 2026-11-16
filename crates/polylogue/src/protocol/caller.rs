@@ -29,12 +29,12 @@ pub struct Accepted {
     pub(crate) parent: Option<std::sync::Arc<crate::operation::ParentLifetime>>,
     pub working_directory: Option<PathBuf>,
     pub invocation: Option<crate::operation::Invocation>,
-    /// The existing native token captured after classifying the actual request.
+    /// The read scope token captured after classifying the request.
     pub read_scope: Option<polylogue_store::ReadScopeToken>,
 }
 
 impl Accepted {
-    /// Coalescing must use the same actor and channel as durable request identity.
+    /// Coalescing must use the same actor and channel as the stored request identity.
     pub fn scope(&self) -> String {
         serde_json::to_string(&self.authorship).expect("computed authorship serializes")
     }
@@ -42,13 +42,13 @@ impl Accepted {
 
 pub fn accept(
     registry: &hooks::Registry,
-    evidence: &CallerEvidence,
+    details: &CallerEvidence,
     via: Channel,
     cancellation: polylogue_store::cancellation::Cancellation,
 ) -> Accepted {
-    let hook = registry.identity(evidence);
+    let hook = registry.identity(details);
     Accepted {
-        authorship: polylogue_model::authorship::compute_authorship(via, evidence, hook.as_ref()),
+        authorship: polylogue_model::authorship::compute_authorship(via, details, hook.as_ref()),
         cancellation,
         parent: None,
         working_directory: None,
@@ -57,7 +57,7 @@ pub fn accept(
     }
 }
 
-/// The daemon observes the native peer; request JSON contributes only the
+/// The daemon observes the socket peer; request JSON contributes only the
 /// per-call tool identifier used to join a matching hook event.
 pub fn peer(
     stream: &std::os::unix::net::UnixStream,
@@ -89,7 +89,7 @@ pub fn peer(
     let unit = std::fs::read_to_string(root.join("cgroup"))
         .ok()
         .and_then(|value| command_surface::cgroup_unit(&value));
-    let mut evidence = select(
+    let mut details = select(
         &environment,
         &ancestors(parent, &environment),
         terminal,
@@ -102,12 +102,12 @@ pub fn peer(
         .collect::<Vec<_>>();
     let via = channel(&words);
     if via == Channel::Mcp && supplied.tool_call_id.is_some() {
-        evidence.tool_call_id = supplied.tool_call_id.clone();
+        details.tool_call_id = supplied.tool_call_id.clone();
     }
-    Ok((evidence, via))
+    Ok((details, via))
 }
 
-/// The accepting daemon observes relative-path context from the native peer.
+/// The accepting daemon observes relative-path context from the socket peer.
 pub fn working_directory(stream: &std::os::unix::net::UnixStream) -> std::io::Result<PathBuf> {
     let credentials = rustix::net::sockopt::socket_peercred(stream)?;
     std::fs::read_link(format!("/proc/{}/cwd", credentials.pid.as_raw_pid()))
@@ -126,7 +126,7 @@ static CALLER: std::sync::OnceLock<CallerEvidence> = std::sync::OnceLock::new();
 pub fn initialize(environment: &crate::config::EnvSnapshot) {
     let _ = CALLER.set(capture(environment));
 }
-pub fn evidence() -> CallerEvidence {
+pub fn details() -> CallerEvidence {
     CALLER.get().cloned().unwrap_or_default()
 }
 

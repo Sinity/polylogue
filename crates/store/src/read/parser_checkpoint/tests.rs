@@ -6,7 +6,7 @@ fn checkpoint_commits_with_its_cursor_and_mismatched_state_rolls_back() {
     let (archive, _lock) = Archive::open_or_create(&dir.path().join("archive")).unwrap();
     let writer = Writer::start(&archive).unwrap();
     let mut batch = crate::fixture::writer::step(
-        "native-checkpoint",
+        "checkpoint-input",
         "claude-code",
         "/synthetic/checkpoint.jsonl",
         Default::default(),
@@ -35,20 +35,20 @@ fn checkpoint_commits_with_its_cursor_and_mismatched_state_rolls_back() {
     let row = pool
         .reader()
         .unwrap()
-        .parser_checkpoint("native-checkpoint", stored.chain, "synthetic=1")
+        .parser_checkpoint("checkpoint-input", stored.chain, "synthetic=1")
         .unwrap()
         .unwrap();
     assert_eq!(row.checkpoint, Some(state.clone()));
     assert!(
         pool.reader()
             .unwrap()
-            .parser_checkpoint("native-checkpoint", stored.chain, "synthetic=2")
+            .parser_checkpoint("checkpoint-input", stored.chain, "synthetic=2")
             .unwrap()
             .unwrap()
             .checkpoint
             .is_none()
     );
-    // The invalid checkpoint accompanies a distinct cursor and must not publish it.
+    // The invalid checkpoint comes with a distinct cursor and must not expose it.
     batch.parse[0].parsed_upto = 1;
     batch.parse[0].checkpoint = Some(state.clone());
     writer.send(batch).unwrap();
@@ -57,7 +57,7 @@ fn checkpoint_commits_with_its_cursor_and_mismatched_state_rolls_back() {
     let row = pool
         .reader()
         .unwrap()
-        .parser_checkpoint("native-checkpoint", stored.chain, "synthetic=1")
+        .parser_checkpoint("checkpoint-input", stored.chain, "synthetic=1")
         .unwrap()
         .unwrap();
     assert_eq!(row.parsed_upto, 2);
@@ -65,11 +65,11 @@ fn checkpoint_commits_with_its_cursor_and_mismatched_state_rolls_back() {
     let conn = rusqlite::Connection::open(archive.index_db()).unwrap();
     conn.execute("UPDATE parse_state SET checkpoint=x'ff'", [])
         .unwrap();
-    // A new reading does not even decode the prior reading's opaque envelope.
+    // A new reading does not even decode the prior reading's opaque checkpoint.
     assert!(
         pool.reader()
             .unwrap()
-            .parser_checkpoint("native-checkpoint", stored.chain, "synthetic=2")
+            .parser_checkpoint("checkpoint-input", stored.chain, "synthetic=2")
             .unwrap()
             .unwrap()
             .checkpoint
@@ -78,7 +78,7 @@ fn checkpoint_commits_with_its_cursor_and_mismatched_state_rolls_back() {
     assert!(
         pool.reader()
             .unwrap()
-            .parser_checkpoint("native-checkpoint", stored.chain, "synthetic=1")
+            .parser_checkpoint("checkpoint-input", stored.chain, "synthetic=1")
             .is_err()
     );
 }
@@ -321,7 +321,7 @@ fn rejected_context_and_stopped_attempt_roll_back_with_the_reading_cursor() {
 }
 
 #[test]
-fn keyed_context_reuses_a_retained_message_version_without_changing_source_selection() {
+fn keyed_context_reuses_a_stored_message_version() {
     use polylogue_model::{
         batch::ParserCheckpoint,
         parser_context::{Context, Delta, Entry, Key, Reference, Value},
@@ -415,7 +415,7 @@ fn keyed_context_reuses_a_retained_message_version_without_changing_source_selec
         reads
             .reader()
             .unwrap()
-            .message_with_projection(&first.id)
+            .message_with_block_selection(&first.id)
             .unwrap()
             .unwrap()
             .0
@@ -432,7 +432,7 @@ fn keyed_context_reuses_a_retained_message_version_without_changing_source_selec
     )
     .unwrap();
     let Some(Value::Response { row }) = overlay.get(&key).unwrap() else {
-        panic!("retained keyed response missing")
+        panic!("kept keyed response missing")
     };
     assert_eq!(row.message.text(), "later source copy");
     assert_eq!((row.offset, row.end), (1, 2));
@@ -482,7 +482,7 @@ fn keyed_context_reuses_a_retained_message_version_without_changing_source_selec
         reads
             .reader()
             .unwrap()
-            .message_with_projection(&first.id)
+            .message_with_block_selection(&first.id)
             .unwrap()
             .unwrap()
             .0

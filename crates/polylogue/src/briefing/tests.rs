@@ -109,7 +109,7 @@ fn recall_fuses_prose_and_tool_output_in_the_querys_order() {
     )
     .unwrap();
     // Each list has one first-place hit. Equal ranks and unknown times
-    // are ordered by semantic message identity, lowest first.
+    // are ordered by message identity, lowest first.
     assert_eq!(
         p.refs,
         ["session:test:s1", "message:m1", "message:m2"],
@@ -278,7 +278,7 @@ fn worked_directory() -> (tempfile::TempDir, polylogue_store::fixture::Fixture) 
     }
     f.derive().unwrap();
     let mut facts = polylogue_model::live::LiveFacts::default();
-    polylogue_model::live::fold(
+    polylogue_model::live::apply_live_event(
         &mut facts,
         "hook_task_claimed",
         T0 + 2_000,
@@ -346,7 +346,7 @@ fn a_brief_fits_its_budget_and_names_what_it_left_out() {
             (0..n)
                 .map(|i| Item {
                     expansion: None,
-                    provenance: None,
+                    attribution: None,
                     text: format!("- item {i} {}", "x".repeat(width)),
                     refs: vec![format!("session:test:{i}")],
                 })
@@ -700,7 +700,7 @@ fn named_context_defaults_and_explicit_tight_budgets_share_one_fitter() {
 }
 
 #[test]
-fn default_numeric_and_unlimited_context_budgets_retain_their_distinct_meanings() {
+fn numeric_default_and_unlimited_budgets_keep_distinct_meanings() {
     use polylogue_model::{
         Author,
         assertion::{AssertionFact, AssertionKind, AssertionLink, LinkRole},
@@ -775,13 +775,13 @@ fn tight_fitting_keeps_later_candidates_and_lossless_bounded_prefixes() {
         vec![
             Item {
                 expansion: None,
-                provenance: Some("author:operator via:cli".into()),
+                attribution: Some("author:operator via:cli".into()),
                 text: first.clone(),
                 refs: vec!["assertion:old@v1".into()],
             },
             Item {
                 expansion: None,
-                provenance: Some("author:operator via:cli".into()),
+                attribution: Some("author:operator via:cli".into()),
                 text: correction.clone(),
                 refs: vec!["assertion:current@v2".into()],
             },
@@ -910,7 +910,7 @@ fn older_observed_claims_remain_visible_without_claiming_external_state() {
 }
 
 #[test]
-fn contrary_evidence_precedes_any_claim_expansion_under_a_tight_budget() {
+fn contrary_note_comes_before_the_claim_under_a_tight_budget() {
     use polylogue_model::{
         Author,
         assertion::{AssertionFact, AssertionKind, AssertionLink, LinkRole},
@@ -1007,7 +1007,7 @@ fn omitted_candidates_never_read_their_deferred_bodies() {
                     format!("revision-{index}"),
                 ),
             )),
-            provenance: Some(if index == 0 {
+            attribution: Some(if index == 0 {
                 "scoped metadata; content not expanded".into()
             } else {
                 "source metadata requiring preserved attribution ".repeat(100)
@@ -1186,7 +1186,7 @@ fn unjudged_contrary_bodies_are_counted_without_hiding_the_eligible_claim() {
             },
         ]
     };
-    let claim = "Eligible operator claim with retained qualifications.";
+    let claim = "Eligible operator claim with kept qualifications.";
     let operator_correction = "Operator correction: check the recorded constraint.";
     let agent_correction = "Accepted agent correction: retain this qualification.";
     archive

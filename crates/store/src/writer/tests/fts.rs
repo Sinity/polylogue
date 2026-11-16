@@ -1,4 +1,4 @@
-//! Deferred search retries retain parsed progress and the live indexer's ranking.
+//! Deferred search retries keep parsed progress and the live indexer's ranking.
 use super::*;
 use crate::archive::{cache, open_write};
 use std::path::Path;
@@ -131,7 +131,7 @@ fn parsed(conn: &Connection) -> Vec<String> {
         "SELECT * FROM block ORDER BY pk",
         "SELECT * FROM message_version ORDER BY pk",
         "SELECT * FROM message_version_body ORDER BY version_pk",
-        "SELECT * FROM message_projection ORDER BY version_pk",
+        "SELECT * FROM message_block_selection ORDER BY version_pk",
         "SELECT key,value FROM meta WHERE key LIKE '%generation%' ORDER BY key",
     ]
     .map(|sql| digest(conn, sql))
@@ -237,7 +237,7 @@ fn corruption() -> serde_json::Value {
     drop(w);
     serde_json::json!({"failed":failed,"partial_fts_rows":partial,"parsed_preserved":preserved,
         "deferred_failure":first_resume.is_err(),"not_ready_after_deferred_failure":still_not_ready,
-        "reopen_ok":resumed.is_ok(),"ordinary_reopen":resumed,"ready":ready,"normal_pending_exact":recovered==pending_signature(ROWS)})
+        "reopen_ok":resumed.is_ok(),"reopen_result":resumed,"ready":ready,"normal_pending_exact":recovered==pending_signature(ROWS)})
 }
 
 fn stopped() -> serde_json::Value {
@@ -330,7 +330,7 @@ fn stopped() -> serde_json::Value {
     serde_json::json!({"interrupted":result.is_err(),"wal_at_stop":wal_at_stop,"stop_seconds":stop_seconds,
         "commits_at_stop":commits_at_stop,"postings_at_stop":postings_at_stop,"not_ready_at_stop":not_ready_at_stop,
         "partial_fts_rows":partial,"parsed_preserved":preserved,
-        "reopen_ok":resumed.is_ok(),"ordinary_reopen":resumed,"ready":ready,"normal_pending_exact":recovered==pending_signature(TEXTS)})
+        "reopen_ok":resumed.is_ok(),"reopen_result":resumed,"ready":ready,"normal_pending_exact":recovered==pending_signature(TEXTS)})
 }
 
 #[test]

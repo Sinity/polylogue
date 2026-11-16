@@ -35,12 +35,12 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-mod acquisition;
 mod collectors;
 mod databases;
 mod import;
+mod source_read;
 pub use import::older_archive::{ClassCount, OlderArchiveReport, RefusedRow};
-pub use import::predecessor::PredecessorReport;
+pub use import::python_polylogue::PythonImportReport;
 mod parser_checkpoint;
 mod pass;
 mod plan;
@@ -49,14 +49,14 @@ mod reparse;
 mod writes;
 
 /// An origin has a reading only when its declared parser or generic row-dump
-/// reader supplies one. Raw provider bytes have no parser version to invent.
+/// reader supplies one. Unparsed provider bytes have no parser version to invent.
 fn has_reading(origin: &OriginSpec) -> bool {
     origin.support == Support::Parsed
         || (origin.support == Support::NoParser
             && origin.capture == polylogue_sources::Capture::RowDump)
 }
 
-/// One native registry projection is shared by reparse planning and read currency.
+/// One view of the built-in registry is shared by reparse planning and read freshness.
 pub fn reading_contracts() -> Vec<polylogue_store::ReadingContract> {
     ORIGINS
         .iter()
@@ -238,7 +238,7 @@ impl Config {
 /// What one pass of the loop found and did, for `status`.
 #[derive(Debug, Default, Clone, Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct Pass {
-    /// Historical effects accepted during ordinary stored-input replay.
+    /// Historical effects accepted during stored-input replay.
     pub authored: UserStateReport,
     /// Whole-location scans, excluding changed paths and live-file checks.
     pub full_scans: u64,
@@ -379,7 +379,7 @@ pub struct ImportReport {
     pub refused: Vec<ImportRefusal>,
     pub members: Vec<ImportClassification>,
     pub imported: Vec<PathBuf>,
-    /// Files whose exact bytes are already in the archive.
+    /// Files whose bytes are already in the archive.
     pub already_stored: Vec<PathBuf>,
     /// The user state Polylogue exports carried.
     pub user_state: UserStateReport,
@@ -387,17 +387,17 @@ pub struct ImportReport {
     /// What became of each row of an archive in the older format.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub older_archive: Option<OlderArchiveReport>,
-    /// What became of each row of one of the Python predecessor's stores.
+    /// What became of each row of one of Python Polylogue's stores.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub predecessor: Option<PredecessorReport>,
+    pub python_import: Option<PythonImportReport>,
 }
 
-/// Historical authored records restored through the frozen import ingress.
+/// Historical authored records restored through the recorded import ingress.
 #[derive(
     Debug, Default, Clone, PartialEq, Eq, Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
 pub struct UserStateReport {
-    /// Durably accepted and awaiting the confirmed primary stream.
+    /// Accepted and saved, awaiting the confirmed stream.
     pub pending: u64,
     /// Written into this archive.
     pub applied: u64,
@@ -405,7 +405,7 @@ pub struct UserStateReport {
     pub present: u64,
 }
 
-/// Runtime import failures retain parent cancellation and deadline errors for
+/// Runtime import failures keep parent cancellation and deadline errors for
 /// the accepting transport's shared error classifier.
 #[derive(Debug)]
 pub enum ImportFailure {
@@ -419,8 +419,8 @@ pub enum LoopMsg {
     Changed,
     Import {
         paths: Vec<PathBuf>,
-        /// The declared structure the paths are read as, or the predecessor
-        /// store they are.
+        /// The declared structure the paths are read as, or the Python
+        /// Polylogue store they are.
         format: Option<String>,
         /// An archive in the older format to import, in place of paths.
         from_archive: Option<PathBuf>,
@@ -450,14 +450,14 @@ pub struct Engine {
     pub archive: Archive,
     writer: Writer,
     reads: ReadPool,
-    /// The existing archive scope that admitted the cached confirmed state.
+    /// The existing archive scope that committed the cached confirmed state.
     read_scope: Option<polylogue_store::ReadScopeToken>,
     blobs: Arc<polylogue_store::blobs::Blobs>,
     inputs: HashMap<PathBuf, InputState>,
     /// Rejected writes awaiting checkpoint reload after their plans finish.
     /// Paths excluded from every nested live scan until their readings commit.
     reparsing: HashMap<PathBuf, usize>,
-    /// Actual executable and parser settings for stopped-work selection.
+    /// The executable and parser settings for stopped-work selection.
     stopped_attempt: StoppedAttempt,
     loaded: bool,
     captures: Databases,
@@ -467,9 +467,9 @@ pub struct Engine {
     live_checked: Instant,
     pass_open: bool,
     /// Plans of older chains this pass records from a chain whose bytes they
-    /// share once the pass's parsing is done ([`Engine::copy_same_bytes`]),
-    /// run when the copy would not be exact or leaves bytes to parse.
-    same_bytes: Vec<Plan>,
+    /// share once the pass's parsing is done ([`Engine::copy_identical_readings`]),
+    /// run when the copy would differ or leaves bytes to parse.
+    identical_chains: Vec<Plan>,
     collectors_at: Option<Instant>,
     capture_checked: Option<Instant>,
     lookups: repo_lookup::Cache,
@@ -535,7 +535,7 @@ impl Engine {
             databases: BTreeMap::new(),
             live_checked: Instant::now(),
             pass_open: false,
-            same_bytes: Vec::new(),
+            identical_chains: Vec::new(),
             collectors_at: None,
             capture_checked: None,
             lookups: repo_lookup::Cache::default(),
@@ -546,7 +546,7 @@ impl Engine {
         })
     }
 
-    /// Derives changed sessions. Primary facts are emitted with their source reading.
+    /// Derives changed sessions. In primary mode, events are emitted with their source reading.
     fn derive(&self) -> Result<u64, EngineError> {
         match self.writer.derive() {
             Err(polylogue_store::StoreError::WriterGone) if self.archive.stop().is_cancelled() => {
@@ -562,7 +562,7 @@ impl Engine {
 
     /// Cached confirmed state keeps its original token until invalidation.
     /// A reset between the caller's entry check and this call must not bind
-    /// old state to a newly acquired token.
+    /// old state to a newly obtained token.
     fn cached_scope(&mut self) -> Result<polylogue_store::ReadScopeToken, EngineError> {
         let scope = match &self.read_scope {
             Some(scope) => scope.clone(),
@@ -584,7 +584,7 @@ impl Engine {
             self.discard_confirmed_state();
         }
         let scope = self.cached_scope()?;
-        // Retained replay plans from stored chains, not machine locations.
+        // Kept replay plans from stored chains, not machine locations.
         // Leave discovery unloaded so enabling sources can still restore it.
         if !self.config.reads_sources || self.loaded {
             return Ok(());
@@ -595,7 +595,7 @@ impl Engine {
         drop(reader);
         for mut k in known {
             let Some(path_bytes) = k.path_bytes.take() else {
-                // Historical display text cannot identify a native location.
+                // Historical display text cannot identify a raw path.
                 continue;
             };
             use std::os::unix::ffi::OsStringExt;

@@ -12,9 +12,9 @@ fn begin() -> ReadBegin {
                 index: 1,
                 archive: 1,
             },
-            freshness: polylogue_model::currency::ReadFreshness {
-                local: polylogue_model::currency::ReadCompleteness::empty(),
-                owner: polylogue_model::currency::IndexCurrency::Standalone,
+            freshness: polylogue_model::freshness::ReadFreshness {
+                local: polylogue_model::freshness::ReadCompleteness::empty(),
+                sinex: polylogue_model::freshness::IndexFreshness::Standalone,
             },
             enabled_variants: vec![],
             author: Author::Operator,
@@ -34,19 +34,20 @@ fn begin() -> ReadBegin {
         options: ReadOptions::default(),
     }
 }
-fn session(native: &str) -> ReadRecord {
-    let session =
-        serde_json::from_value(serde_json::json!({"id":format!("codex:{native}"),"kind":"main"}))
-            .unwrap();
-    ReadRecord::Canonical {
+fn session(native_id: &str) -> ReadRecord {
+    let session = serde_json::from_value(
+        serde_json::json!({"id":format!("codex:{native_id}"),"kind":"main"}),
+    )
+    .unwrap();
+    ReadRecord::Original {
         record: Box::new(Record::Session(SessionRecord {
             copied_prefixes: Vec::new(),
-            reference: format!("session:codex:{native}"),
+            reference: format!("session:codex:{native_id}"),
             commit: 1,
             session,
         })),
         parts: vec![ReadPart::Item(ReadItem {
-            source: Source::record(format!("session:codex:{native}")),
+            source: Source::record(format!("session:codex:{native_id}")),
             kind: ItemKind::Text {
                 text: "archived <script>text</script>".into(),
             },
@@ -77,7 +78,7 @@ fn manifest(path: &Path) -> Manifest {
     }
 }
 #[test]
-fn bundle_formats_pin_inventory_and_keep_canonical_records() {
+fn bundle_formats_pin_inventory_and_keep_source_records() {
     for format in [Format::Json, Format::Jsonl, Format::Markdown, Format::Html] {
         let root = tempfile::tempdir().unwrap();
         let destination = root.path().join("bundle");
@@ -124,10 +125,9 @@ fn final_count_failure_and_disconnect_preserve_previous_bundle_and_staging() {
     failed.push(session("new")).unwrap();
     assert!(failed.finish(complete(2)).is_err());
     assert!(staging.exists());
-    let retained = ExportItems::in_directory(&staging.join("_staging")).unwrap();
+    let kept = ExportItems::in_directory(&staging.join("_staging")).unwrap();
     let recovered: ReadRecord = serde_json::from_reader(
-        retained
-            .source_item("session:codex:new")
+        kept.source_item("session:codex:new")
             .unwrap()
             .unwrap()
             .reader,
@@ -137,7 +137,7 @@ fn final_count_failure_and_disconnect_preserve_previous_bundle_and_staging() {
         recovered.record().unwrap().reference(),
         Some("session:codex:new")
     );
-    drop(retained);
+    drop(kept);
     assert_eq!(
         fs::read(destination.join("manifest.json")).unwrap(),
         original
@@ -147,10 +147,9 @@ fn final_count_failure_and_disconnect_preserve_previous_bundle_and_staging() {
     disconnected.push(session("disconnected")).unwrap();
     drop(disconnected);
     assert!(staging.exists());
-    let retained = ExportItems::in_directory(&staging.join("_staging")).unwrap();
+    let kept = ExportItems::in_directory(&staging.join("_staging")).unwrap();
     assert!(
-        retained
-            .source_item("session:codex:disconnected")
+        kept.source_item("session:codex:disconnected")
             .unwrap()
             .is_some()
     );
@@ -191,13 +190,13 @@ fn unrelated_directories_and_symlinks_are_refused() {
     assert!(Bundle::new(&link, begin(), Format::Json, false).is_err());
 }
 #[test]
-fn blob_hash_failure_never_publishes_and_chunk_offsets_are_checked() {
+fn blob_hash_failure_writes_nothing_and_offsets_are_checked() {
     let root = tempfile::tempdir().unwrap();
     let destination = root.path().join("bundle");
     let mut sink = Bundle::new(&destination, begin(), Format::Json, true).unwrap();
     let hash = BlobHash::of(b"correct");
     sink.blob_chunk(hash, 0, b"wrong").unwrap();
-    sink.push(ReadRecord::Canonical {
+    sink.push(ReadRecord::Original {
         record: Box::new(Record::Blob(BlobRecord {
             reference: format!("blob:{hash}"),
             file: FileDescriptor {
@@ -235,7 +234,7 @@ fn duplicate_frames_deduplicate_content_and_conflicts_poison_delivery() {
     let mut sink = Bundle::new(&destination, begin(), Format::Json, false).unwrap();
     sink.push(session("one")).unwrap();
     let mut changed = session("one");
-    if let ReadRecord::Canonical { record, .. } = &mut changed
+    if let ReadRecord::Original { record, .. } = &mut changed
         && let Record::Session(record) = &mut **record
     {
         record.commit = 2;
@@ -245,9 +244,9 @@ fn duplicate_frames_deduplicate_content_and_conflicts_poison_delivery() {
 }
 #[test]
 fn long_opaque_names_have_bounded_distinct_components() {
-    let native = "x/".repeat(1000);
-    let a = SessionId::parse(&format!("codex:{native}")).unwrap();
-    let b = SessionId::parse(&format!("codex:{native}b")).unwrap();
+    let native_id = "x/".repeat(1000);
+    let a = SessionId::parse(&format!("codex:{native_id}")).unwrap();
+    let b = SessionId::parse(&format!("codex:{native_id}b")).unwrap();
     assert!(session_path(&a).len() < 100);
     assert_ne!(session_path(&a), session_path(&b));
 }
@@ -278,7 +277,7 @@ fn sparse_records_union_and_later_partial_does_not_downgrade_content() {
     let mut sink = Bundle::new(&destination, begin(), Format::Json, false).unwrap();
     sink.push(session("session")).unwrap();
     for record in [second, first.clone(), full.clone(), first] {
-        sink.push(ReadRecord::Canonical {
+        sink.push(ReadRecord::Original {
             record: Box::new(Record::Message(Box::new(record))),
             parts: vec![],
         })
@@ -302,14 +301,14 @@ fn sparse_records_union_and_later_partial_does_not_downgrade_content() {
 }
 
 #[test]
-fn valid_blob_chunks_are_pinned_and_unclaimed_bytes_refuse_publication() {
+fn blob_chunks_are_pinned_and_unclaimed_bytes_are_refused() {
     let root = tempfile::tempdir().unwrap();
     let destination = root.path().join("bundle");
     let hash = BlobHash::of(b"complete");
     let mut sink = Bundle::new(&destination, begin(), Format::Jsonl, true).unwrap();
     sink.blob_chunk(hash, 0, b"com").unwrap();
     sink.blob_chunk(hash, 3, b"plete").unwrap();
-    sink.push(ReadRecord::Canonical {
+    sink.push(ReadRecord::Original {
         record: Box::new(Record::Blob(BlobRecord {
             reference: format!("blob:{hash}"),
             file: FileDescriptor {
@@ -340,7 +339,7 @@ fn valid_blob_chunks_are_pinned_and_unclaimed_bytes_refuse_publication() {
 }
 
 #[test]
-fn injected_member_write_failure_retains_previous_destination() {
+fn injected_member_write_failure_keeps_previous_destination() {
     let root = tempfile::tempdir().unwrap();
     let destination = root.path().join("bundle");
     let mut sink = Bundle::new(&destination, begin(), Format::Json, false).unwrap();
@@ -357,7 +356,7 @@ fn injected_member_write_failure_retains_previous_destination() {
 }
 
 #[test]
-fn presentation_omissions_render_without_canonical_payload_or_counts() {
+fn presentation_omissions_render_without_source_payload() {
     for format in [Format::Json, Format::Jsonl, Format::Markdown, Format::Html] {
         let root = tempfile::tempdir().unwrap();
         let destination = root.path().join("bundle");

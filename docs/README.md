@@ -22,7 +22,7 @@ locations are inputs to the runtime and its tests.
 | [archive](archive.md) | stored inputs, versioned rows, evolution, parsers and reading versions, goldens, field accounting, format drift |
 | [sessions](sessions.md) | the parsed model: sessions, messages, message authorship, times, session links, compaction, attachments, logical sessions |
 | [references](references.md) | the one reference grammar and its rules |
-| [assertions](assertions.md) | everything authored: assertions, kinds, currency, authorship, judgment, variants, markup, memory |
+| [assertions](assertions.md) | everything authored: assertions, kinds, current revisions, authorship, judgment, variants, markup, memory |
 | [pages](pages.md) | Pages: layouts, members and roles, agents working through pages, ping records |
 | [query](query.md) | Polylogue's units and fields, query objects, paging, deadlines, answers, watches |
 | [search](search.md) | full-text search, semantic ranking, fusion, recall |
@@ -73,7 +73,7 @@ Every locator resolves in a primary source.
 | `chatgpt:<conversation>:<message>`, `claude.ai:<conversation>:<message>`, `aistudio:<prompt file>:<turn>` | the provider's export, and the Polylogue archive |
 | `journal YYYY-MM-DD HH:MM` | the operator's journal, by entry time |
 | `notes:<file>` | the operator's personal notes, by file name |
-| `polylogue@<commit>:<path>`, `sinex@<commit>:<path>` | the predecessor's code in the repository's history |
+| `polylogue@<commit>:<path>`, `sinex@<commit>:<path>` | earlier code (Python Polylogue, the earlier Sinex) in the repository's history |
 
 Sinex's and polylogue-sinex-common's documentation use the same conventions
 and link here.

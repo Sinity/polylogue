@@ -7,7 +7,7 @@
 //! at a time, as a claim that expires and returns the action to the queue
 //! if the extension goes quiet before sending. Once a send may have begun,
 //! an expired claim has an unknown outcome and is not queued again. Replies
-//! come back only through ordinary capture.
+//! come back only through the usual capture.
 
 use polylogue_model::BlobHash;
 use polylogue_model::user::{CHAT_CLAIM_MS, ChatAction, ChatStatus};

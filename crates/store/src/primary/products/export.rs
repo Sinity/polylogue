@@ -1,4 +1,4 @@
-//! Exact stored reading identity, independent of scheduling rank.
+//! The identity of a stored reading, independent of the input's route.
 use super::*;
 use std::hash::{Hash, Hasher};
 
@@ -18,7 +18,7 @@ impl ExportReadingKey {
             || i64::try_from(self.length).is_err()
         {
             return Err(crate::StoreError::Invalid(
-                "export reading key has no exact stored source".into(),
+                "export reading key names no stored source".into(),
             ));
         }
         Ok(())

@@ -174,7 +174,7 @@ fn explicit_target_selection_is_preserved_without_adding_the_default_tests() {
 }
 
 #[test]
-fn selections_share_features_and_native_targets_through_the_real_runner() {
+fn selections_share_features_and_targets_in_the_runner() {
     let fixture = tempfile::tempdir().unwrap();
     let root = fixture.path();
     fs::write(root.join("Cargo.toml"), "[workspace]\nmembers=['polylogue-store','polylogue-engine','polylogue-sinex','polylogue','helper']\nresolver='3'\n").unwrap();
@@ -344,7 +344,7 @@ fn selections_share_features_and_native_targets_through_the_real_runner() {
         expected(&[("selected_ignored", "ignored"), ("selected_read", "passed")])
     );
 
-    // Native library selection excludes integration binaries without dropping
+    // Selecting `--lib` excludes integration binaries without dropping
     // another workspace member's test-only feature contribution.
     fs::create_dir(root.join("polylogue/tests")).unwrap();
     fs::write(

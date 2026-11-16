@@ -34,7 +34,7 @@ impl ItemSink for Records {
 }
 
 #[test]
-fn every_small_read_boundary_keeps_exact_span_bytes_across_wrappers_and_bad_lines() {
+fn every_small_read_boundary_keeps_span_bytes_across_wrappers_and_bad_lines() {
     let first = r#"{"resourceSpans":[{"resource":{"ignored":"🦆"},"scopeSpans":[{"spans":[{"spanId":"a","name":"é\\\"x"}]},{"spans":[{"spanId":"b"}]}]},{"scopeSpans":[{"spans":[{"spanId":"c"}]}]}]}"#;
     let last = r#"{"resourceSpans":[{"scopeSpans":[{"spans":[{"spanId":"last"}]}]}]}"#;
     let bad_utf8 = b"{\"resourceSpans\":[{\"scopeSpans\":[{\"spans\":[{\"spanId\":\"bad\",\"name\":\"\xff\"}]}]}]}";

@@ -1,5 +1,6 @@
-//! Partial text availability is decided here, against actual canonical rows.
-//! Foreign envelopes remain exportable even when a complete source refutes them.
+//! Partial text availability is decided here, against the stored rows.
+//! Fragment records from another sender stay exportable even when a complete
+//! source contradicts them.
 use crate::{Reader, Result, StoreError};
 use polylogue_model::bundle::fragments::{
     TextFragmentError, TextFragmentRecord, TextSourceVersion,
@@ -12,23 +13,23 @@ use std::ops::ControlFlow;
 pub enum FragmentConflict {
     Overlap,
     Total,
-    CanonicalSource,
+    ShownSource,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FragmentClaims {
+pub enum FragmentAgreement {
     Absent,
     Compatible,
     Conflict(FragmentConflict),
 }
 
-/// Canonical authority is obtained from complete Store rows, never from a
-/// serialized attestation flag or from complete coverage of partial text.
+/// A shown source is decided from complete stored rows, never from a
+/// serialized flag or from complete coverage of partial text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FragmentAvailability {
-    Canonical {
+    Shown {
         version: TextSourceVersion,
-        claims: FragmentClaims,
+        agreement: FragmentAgreement,
     },
     Declared {
         version: TextSourceVersion,
@@ -42,23 +43,23 @@ pub enum FragmentAvailability {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FragmentClaim {
+pub struct StatedFragment {
     pub record: TextFragmentRecord,
     pub input: String,
     pub chain: i64,
     pub start: u64,
     pub end: u64,
-    /// Receiving admission. `record.commit` is the sender's independent claim.
-    pub admitted: Option<u64>,
+    /// Receiving commit. `record.commit` is the commit the sender states.
+    pub committed: Option<u64>,
 }
 
-/// Snapshot evidence for the exact normalized selection. Missing admission
-/// remains unknown; neither sender receipts nor the read position supply it.
+/// What the snapshot shows for the normalized selection. A missing commit
+/// stays unknown; neither the sender nor the read position supplies it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FragmentSelection {
     pub availability: FragmentAvailability,
     pub coverage: polylogue_model::bundle::fragments::TextCoverage,
-    pub admitted: Option<u64>,
+    pub committed: Option<u64>,
 }
 
 fn coordinate(bytes: Vec<u8>) -> Result<u64> {
@@ -73,7 +74,7 @@ fn decode(bytes: &[u8]) -> Result<TextFragmentRecord> {
 }
 fn hash(bytes: Vec<u8>) -> Result<BlobHash> {
     Ok(BlobHash(bytes.try_into().map_err(|_| {
-        StoreError::Invalid("invalid canonical source hash".into())
+        StoreError::Invalid("invalid source hash".into())
     })?))
 }
 
@@ -87,19 +88,19 @@ impl Reader<'_> {
     ) -> Result<FragmentSelection> {
         use polylogue_model::bundle::fragments::TextCoverage;
         let availability = self.fragment_availability(container, version, start, end)?;
-        let (total_bytes, admitted) = match &availability {
-            FragmentAvailability::Canonical { .. } => {
+        let (total_bytes, committed) = match &availability {
+            FragmentAvailability::Shown { .. } => {
                 let total = self.visit_reference_text(container, |_| Ok(()))?;
-                let admitted = match container {
+                let committed = match container {
                     Reference::Message(id) | Reference::Block { message: id, .. } => {
-                        self.message_admission(id)?
+                        self.message_commit(id)?
                     }
                     Reference::Document(id) => self.document_commit(id)?,
-                    // The canonical source owner must supply exact revision
-                    // evidence; a variant header cannot date a later part.
+                    // Only the source can supply the revision it
+                    // belongs to; a variant header cannot date a later part.
                     _ => None,
                 };
-                (total, admitted)
+                (total, committed)
             }
             FragmentAvailability::Declared { version } => {
                 let key = crate::fragment::version_key(version)?;
@@ -111,7 +112,7 @@ impl Reader<'_> {
                     params![container.to_string(),key], |row| row.get(0),
                 ).optional()?.flatten();
                 let mut statement = self.conn()?.prepare_cached(
-                    "SELECT i.id,s.chain,s.end,s.admitted FROM text_fragment f JOIN text_fragment_source s ON s.hash=f.hash
+                    "SELECT i.id,s.chain,s.end,s.committed FROM text_fragment f JOIN text_fragment_source s ON s.hash=f.hash
                      JOIN input_ref i ON i.pk=s.input_pk WHERE f.container=?1 AND f.version=?2 AND f.start<=?4 AND f.end>=?3",
                 )?;
                 let mut rows = statement.query(params![
@@ -120,13 +121,13 @@ impl Reader<'_> {
                     from.as_slice(),
                     until.as_slice()
                 ])?;
-                let mut admitted = None;
+                let mut committed = None;
                 let mut complete = true;
                 while let Some(row) = rows.next()? {
-                    let receipt = match row.get::<_, Option<i64>>(3)? {
+                    let commit = match row.get::<_, Option<i64>>(3)? {
                         Some(n) => {
                             Some(u64::try_from(n).ok().filter(|n| *n > 0).ok_or_else(|| {
-                                StoreError::Invalid("invalid fragment source admission".into())
+                                StoreError::Invalid("invalid fragment source commit".into())
                             })?)
                         }
                         None => {
@@ -140,15 +141,15 @@ impl Reader<'_> {
                             )?
                         }
                     };
-                    if let Some(receipt) = receipt {
-                        admitted = Some(admitted.map_or(receipt, |prior: u64| prior.max(receipt)));
+                    if let Some(commit) = commit {
+                        committed = Some(committed.map_or(commit, |prior: u64| prior.max(commit)));
                     } else {
                         complete = false;
                     }
                 }
                 (
                     total.map(coordinate).transpose()?,
-                    complete.then_some(admitted).flatten(),
+                    complete.then_some(committed).flatten(),
                 )
             }
             _ => (None, None),
@@ -160,36 +161,36 @@ impl Reader<'_> {
                 end,
                 total_bytes,
             },
-            admitted,
+            committed,
         })
     }
 
-    /// Streams retained foreign claims, including conflicts and every actual
+    /// Streams kept stated fragments, including conflicts and every
     /// receiving source. It does not require the complete container to exist.
-    pub fn visit_fragment_claims(
+    pub fn visit_stated_fragments(
         &self,
         container: &Reference,
         version: Option<&TextSourceVersion>,
-        visit: impl FnMut(FragmentClaim) -> ControlFlow<()>,
+        visit: impl FnMut(StatedFragment) -> ControlFlow<()>,
     ) -> Result<()> {
-        self.visit_fragment_claims_from_ordinal(container, version, 0, visit)
+        self.visit_stated_fragments_from_ordinal(container, version, 0, visit)
     }
 
-    /// Ordinals count actual source memberships in the same stable snapshot
-    /// order as `visit_fragment_claims`; SQL skips before payload decoding.
-    pub fn visit_fragment_claims_from_ordinal(
+    /// Ordinals count source memberships in the same stable snapshot
+    /// order as `visit_stated_fragments`; SQL skips before payload decoding.
+    pub fn visit_stated_fragments_from_ordinal(
         &self,
         container: &Reference,
         version: Option<&TextSourceVersion>,
         ordinal: u64,
-        mut visit: impl FnMut(FragmentClaim) -> ControlFlow<()>,
+        mut visit: impl FnMut(StatedFragment) -> ControlFlow<()>,
     ) -> Result<()> {
         let Ok(ordinal) = i64::try_from(ordinal) else {
             return Ok(());
         };
         let version = version.map(crate::fragment::version_key).transpose()?;
         let mut statement = self.conn()?.prepare_cached(
-            "SELECT f.record,i.id,s.chain,s.start,s.end,s.admitted
+            "SELECT f.record,i.id,s.chain,s.start,s.end,s.committed
              FROM text_fragment f JOIN text_fragment_source s ON s.hash=f.hash
              JOIN input_ref i ON i.pk=s.input_pk WHERE f.container=?1
              AND (?2 IS NULL OR f.version=?2)
@@ -205,19 +206,20 @@ impl Reader<'_> {
             };
             let start = checked(row.get(3)?)?;
             let end = checked(row.get(4)?)?;
-            let admitted = match row.get::<_, Option<i64>>(5)? {
-                Some(n) => Some(u64::try_from(n).ok().filter(|n| *n > 0).ok_or_else(|| {
-                    StoreError::Invalid("invalid fragment source admission".into())
-                })?),
-                None => self.source_commit(&input, chain, Some(end))?,
-            };
-            if visit(FragmentClaim {
+            let committed =
+                match row.get::<_, Option<i64>>(5)? {
+                    Some(n) => Some(u64::try_from(n).ok().filter(|n| *n > 0).ok_or_else(|| {
+                        StoreError::Invalid("invalid fragment source commit".into())
+                    })?),
+                    None => self.source_commit(&input, chain, Some(end))?,
+                };
+            if visit(StatedFragment {
                 record: decode(&row.get::<_, Vec<u8>>(0)?)?,
                 input,
                 chain,
                 start,
                 end,
-                admitted,
+                committed,
             })
             .is_break()
             {
@@ -227,7 +229,7 @@ impl Reader<'_> {
         Ok(())
     }
 
-    /// Availability for normalized UTF-8 bounds. An explicit foreign version
+    /// Availability for normalized UTF-8 bounds. An explicit other version
     /// never substitutes the currently selected complete source's version.
     pub fn fragment_availability(
         &self,
@@ -239,12 +241,12 @@ impl Reader<'_> {
         if start > end {
             return Err(crate::fragment::invalid(TextFragmentError::Coverage));
         }
-        let canonical = self.canonical_fragment_version(container)?;
-        if let Some(actual) =
-            canonical.filter(|actual| version.is_none_or(|requested| requested == actual))
+        let shown = self.shown_fragment_version(container)?;
+        if let Some(shown) =
+            shown.filter(|shown| version.is_none_or(|requested| requested == shown))
         {
             // The existing reference reader validates full bounds and character
-            // boundaries before emitting a span. A sparse owner cannot enter here.
+            // boundaries before emitting a span. A sparse message cannot enter here.
             let span = Reference::Span {
                 container: Box::new(container.clone()),
                 unit: SpanUnit::Bytes,
@@ -253,10 +255,10 @@ impl Reader<'_> {
             };
             match self.visit_reference_text(&span, |_| Ok(())) {
                 Ok(Some(_)) => {
-                    let claims = self.check_fragment_claims(container, &actual, start, end)?;
-                    return Ok(FragmentAvailability::Canonical {
-                        version: actual,
-                        claims,
+                    let agreement = self.check_stated_fragments(container, &shown, start, end)?;
+                    return Ok(FragmentAvailability::Shown {
+                        version: shown,
+                        agreement,
                     });
                 }
                 Ok(None) | Err(StoreError::ReferenceUnavailable { .. }) => {}
@@ -382,7 +384,7 @@ impl Reader<'_> {
     /// Emits only an available range, after validating coverage and conflicts.
     /// Memory holds at most two captured records; adjacent text is not collected.
     /// Break stops delivery successfully. Availability validation covers the
-    /// requested range first; callers requesting a prefix pass its exact bounds.
+    /// requested range first; callers requesting a prefix pass its bounds.
     pub fn visit_fragment_text(
         &self,
         container: &Reference,
@@ -393,7 +395,7 @@ impl Reader<'_> {
     ) -> Result<FragmentAvailability> {
         let availability = self.fragment_availability(container, version, start, end)?;
         match &availability {
-            FragmentAvailability::Canonical { .. } => {
+            FragmentAvailability::Shown { .. } => {
                 self.visit_reference_text_while(
                     &Reference::Span {
                         container: Box::new(container.clone()),
@@ -450,15 +452,12 @@ impl Reader<'_> {
         Ok(availability)
     }
 
-    fn canonical_fragment_version(
-        &self,
-        container: &Reference,
-    ) -> Result<Option<TextSourceVersion>> {
+    fn shown_fragment_version(&self, container: &Reference) -> Result<Option<TextSourceVersion>> {
         match container {
             Reference::Message(message) | Reference::Block { message, .. } => {
                 let stored:Option<(Vec<u8>,Option<Vec<u8>>)>=self.conn()?.query_row(
                     "SELECT (SELECT version_hash FROM message_version WHERE pk=s.version_pk),p.layout FROM message m JOIN message_source s ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain
-                     JOIN message_projection p ON p.version_pk=s.version_pk WHERE m.id=?1",
+                     JOIN message_block_selection p ON p.version_pk=s.version_pk WHERE m.id=?1",
                     [message.to_string()],|row|Ok((row.get(0)?,row.get(1)?)),
                 ).optional()?;
                 let Some((version, layout)) = stored else {
@@ -522,13 +521,13 @@ impl Reader<'_> {
         }
     }
 
-    fn check_fragment_claims(
+    fn check_stated_fragments(
         &self,
         container: &Reference,
         version: &TextSourceVersion,
         start: u64,
         end: u64,
-    ) -> Result<FragmentClaims> {
+    ) -> Result<FragmentAgreement> {
         let key = crate::fragment::version_key(version)?;
         let from = start.to_be_bytes();
         let until = end.to_be_bytes();
@@ -542,7 +541,7 @@ impl Reader<'_> {
             from.as_slice(),
             until.as_slice()
         ])?;
-        let mut status = FragmentClaims::Absent;
+        let mut status = FragmentAgreement::Absent;
         while let Some(row) = rows.next()? {
             let record = decode(&row.get::<_, Vec<u8>>(0)?)?;
             let mut checker = record
@@ -558,17 +557,17 @@ impl Reader<'_> {
                 Ok(())
             });
             if conflict {
-                return Ok(FragmentClaims::Conflict(FragmentConflict::CanonicalSource));
+                return Ok(FragmentAgreement::Conflict(FragmentConflict::ShownSource));
             }
             if source?.is_none() {
                 return Err(StoreError::Invalid(
-                    "canonical fragment source disappeared".into(),
+                    "shown fragment source disappeared".into(),
                 ));
             }
             if checker.finish().is_err() {
-                return Ok(FragmentClaims::Conflict(FragmentConflict::CanonicalSource));
+                return Ok(FragmentAgreement::Conflict(FragmentConflict::ShownSource));
             }
-            status = FragmentClaims::Compatible;
+            status = FragmentAgreement::Compatible;
         }
         Ok(status)
     }

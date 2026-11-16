@@ -47,9 +47,9 @@ fn input_observations_are_typed_general_rows_and_do_not_enter_session_scopes() {
     assert_eq!(run(&reader, ask("sessions | events")).unwrap()["count"], 1);
     assert_eq!(reader.events(&sid).unwrap().len(), 1);
     let fields = ["input".into(), "source".into(), "data".into()];
-    let mut projection = ask("events");
-    projection.fields = &fields;
-    let projected = run(&reader, projection).unwrap();
+    let mut query_fields = ask("events");
+    query_fields.fields = &fields;
+    let projected = run(&reader, query_fields).unwrap();
     assert_eq!(projected["rows"][0]["data"], data);
     assert_eq!(
         run(&reader, ask("events where text:λ.rs")).unwrap()["count"],
@@ -62,7 +62,7 @@ fn input_observations_are_typed_general_rows_and_do_not_enter_session_scopes() {
     assert_eq!(
         run(&reader, ask("events where text:0")).unwrap()["count"],
         0,
-        "numbers do not become text evidence"
+        "numbers do not become searchable text"
     );
     assert_eq!(
         run(&reader, ask("events where text:approved")).unwrap()["count"],

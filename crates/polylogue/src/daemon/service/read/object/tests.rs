@@ -14,7 +14,7 @@ fn actor() -> Authorship {
         via: Channel::Cli,
     }
 }
-fn native_no_effect(d: &Daemon, id: &str) {
+fn repeat_write_with_no_effect(d: &Daemon, id: &str) {
     let invocation = d.invocation(&actor());
     let write = || UserWrite::Assert {
         assertions: vec![NewAssertion {
@@ -123,10 +123,10 @@ fn assert_single_object_run(d: &Daemon, reference: &str, begin: &ReadBegin) {
 }
 
 #[test]
-fn actual_no_effect_request_read_records_one_object_run_and_roundtrips_through_directory_import() {
+fn no_effect_request_read_records_one_object_run_and_roundtrips_through_directory_import() {
     let mut d = test_daemon::start("synthetic input");
     d.pause_signals();
-    native_no_effect(&d.daemon, "no-effect");
+    repeat_write_with_no_effect(&d.daemon, "no-effect");
     let (begin, record, complete) = streamed(&d.daemon, "no-effect");
     assert_eq!(complete.counts.authored, 1);
     let Some(Record::Authored(original)) = record.record() else {
@@ -158,9 +158,7 @@ fn actual_no_effect_request_read_records_one_object_run_and_roundtrips_through_d
             .answer(&receiver.daemon);
     crate::test_answers::ok(imported);
     let reader = receiver.daemon.reads.reader().unwrap();
-    let Some(polylogue_store::read::authored_evidence::AuthoredReadEvidence::Local {
-        record, ..
-    }) = reader
+    let Some(polylogue_store::read::authored_read::AuthoredRead::Local { record, .. }) = reader
         .authored_record(&Reference::Request("no-effect".into()))
         .unwrap()
     else {
@@ -186,11 +184,11 @@ impl Write for Interrupt<'_> {
     }
 }
 #[test]
-fn actual_object_stream_stops_on_scope_reset_and_cancellation_before_record_body() {
+fn object_stream_stops_on_scope_reset_and_cancellation_before_record_body() {
     for scope_reset in [false, true] {
         let mut d = test_daemon::start("synthetic input");
         d.pause_signals();
-        native_no_effect(&d.daemon, "interrupted-object");
+        repeat_write_with_no_effect(&d.daemon, "interrupted-object");
         let operation = d.daemon.operation_context(&actor()).unwrap();
         let limit = crate::daemon::execution::limit(None, Default::default());
         let cancellation = limit.cancellation.clone();

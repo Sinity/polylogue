@@ -25,7 +25,7 @@ fn opts(saved: &[(&str, &str)]) -> Options {
 }
 
 // Invalid/cyclic definitions deliberately carry a mismatched declared identity;
-// valid definitions below are frozen through the production Plan factory.
+// valid definitions below are saved through the production Plan factory.
 fn saved_bindings(
     definitions: &[(&str, &str)],
 ) -> std::collections::BTreeMap<String, Vec<SavedQuery>> {
@@ -40,7 +40,7 @@ fn saved_bindings(
                 hash: query_language::identity::QuestionId([0; 32]),
                 denominator: None,
                 conflicts: vec![],
-                body: polylogue_query::SavedQueryBody::Frozen {
+                body: polylogue_query::SavedQueryBody::Available {
                     object: None,
                     syntax: (*text).into(),
                 },
@@ -343,7 +343,7 @@ fn similar_to_a_reference_answers_not_built() {
 }
 
 #[test]
-fn column_references_follow_fields_and_projection_owners() {
+fn column_references_follow_shown_fields() {
     let kinds = |program: Program| {
         program
             .columns
@@ -385,10 +385,7 @@ fn column_references_follow_fields_and_projection_owners() {
         let program = c(query);
         assert_eq!(kinds(program.clone())[field], Some(reference), "{query}");
         assert!(
-            matches!(
-                program.row_basis,
-                RowBasis::Group { .. } | RowBasis::Summary
-            ),
+            matches!(program.row_kind, RowKind::Group { .. } | RowKind::Summary),
             "{query}"
         );
     }
@@ -420,7 +417,7 @@ fn kept_rows_preserve_only_recorded_reference_metadata() {
         grouped.columns[0].reference,
         Some(ColumnReference::Document)
     );
-    assert!(matches!(grouped.row_basis, RowBasis::Group { .. }));
+    assert!(matches!(grouped.row_kind, RowKind::Group { .. }));
     let fields = [("name", "id"), ("kind", "text")].into_iter();
     let without_reference: Column =
         serde::Deserialize::deserialize(serde::de::value::MapDeserializer::<
@@ -628,7 +625,7 @@ fn omitted_nested_source_inherits_the_bound_tool_call_unit() {
 }
 
 #[test]
-fn source_schema_exposes_native_relations_and_only_shaped_output_columns() {
+fn source_schema_shows_tables_and_only_shaped_columns() {
     let options = opts(&[]);
     let (produced, relation) = options
         .bindings()
@@ -700,7 +697,7 @@ mod combine;
 mod stage_filters;
 
 #[test]
-fn explicit_projection_reference_metadata_shadows_native_match_sources() {
+fn explicit_reference_metadata_shadows_match_sources() {
     for query in [
         "sessions | join (sessions | fields text(id) as id) on id = id | fields match.id",
         "sessions | join (sessions | fields text(id) as id) on id = id | fields match.id as id | fields id",
@@ -711,6 +708,6 @@ fn explicit_projection_reference_metadata_shadows_native_match_sources() {
         assert_eq!(program.columns[0].kind, ColKind::Text, "{query}");
         assert_eq!(program.columns[0].reference, None, "{query}");
     }
-    let native = c("sessions | join (sessions | fields id) on id = id | fields match.id");
-    assert_eq!(native.columns[0].reference, Some(ColumnReference::Session));
+    let joined = c("sessions | join (sessions | fields id) on id = id | fields match.id");
+    assert_eq!(joined.columns[0].reference, Some(ColumnReference::Session));
 }

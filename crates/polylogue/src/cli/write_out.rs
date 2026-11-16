@@ -1,5 +1,5 @@
 //! Client delivery of the same finite reading. Files and directories publish
-//! only after a validated completion; staged failures retain their diagnosis.
+//! only after a validated completion; staged failures keep their diagnosis.
 pub(crate) mod bundle;
 
 use super::{Archive, fail};
@@ -117,7 +117,7 @@ fn page_notes(
 }
 
 /// Not a terminal: the page on standard output, then its notes and the
-/// exact command that continues it on standard error.
+/// command that continues it on standard error.
 fn one_page(
     startup: &crate::config::Startup,
     answer: command_surface::Answer<serde_json::Value>,
@@ -326,7 +326,7 @@ fn deliver(
     }
     let with_blobs = arguments.with_blobs;
     // Writing to a destination selects streaming delivery. Keep the caller's
-    // arguments and admission fields rather than serializing execution defaults.
+    // arguments and request fields rather than serializing execution defaults.
     let mut call = accepted.clone();
     if destination.is_some() {
         call.arguments["delivery"] = serde_json::json!("stream");
@@ -501,10 +501,7 @@ fn consume(
                         }
                         eprintln!("polylogue: wrote {}", summary.destination.display());
                         if let Some(previous) = summary.previous {
-                            eprintln!(
-                                "polylogue: previous bundle retained at {}",
-                                previous.display()
-                            );
+                            eprintln!("polylogue: previous bundle kept at {}", previous.display());
                         }
                     }
                     Sink::Encoded {
@@ -548,7 +545,7 @@ fn consume(
         Ok(false)
     });
     if let Err(error) = result {
-        let retained = if let Some(Sink::Directory(bundle)) = sink.as_mut() {
+        let kept = if let Some(Sink::Directory(bundle)) = sink.as_mut() {
             Some(bundle.abort(error.to_string()).to_string())
         } else {
             None
@@ -570,13 +567,13 @@ fn consume(
                         envelope: command_surface::Envelope { notes, .. },
                         ..
                     },
-                ) = (retained, answer.as_mut())
+                ) = (kept, answer.as_mut())
                 {
                     notes.push(note);
                 }
                 DeliveryError::Answer(answer)
             }
-            other => DeliveryError::Text(retained.unwrap_or_else(|| other.to_string())),
+            other => DeliveryError::Text(kept.unwrap_or_else(|| other.to_string())),
         });
     }
     if !completed {
@@ -589,9 +586,7 @@ fn written(value: serde_json::Value, code: u8) -> io::Result<()> {
         command_surface::Answer {
             outcome: command_surface::Outcome::Degraded {
                 value,
-                missing: vec![
-                    "the reading has incomplete coverage or noncurrent index currency".into(),
-                ],
+                missing: vec!["the reading has incomplete coverage or a stale index".into()],
             },
             envelope: command_surface::Envelope {
                 next: vec![],

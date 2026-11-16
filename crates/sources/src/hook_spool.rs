@@ -11,7 +11,7 @@
 //!
 //! Each line becomes an event on the session it names, kept whole: what
 //! the hook saw (tool input, permission mode, effort, working directory)
-//! is evidence the transcript does not always hold. The session ID is
+//! is information the transcript does not always hold. The session ID is
 //! the harness's own, so the events land on the same session as its
 //! transcript. A hook line never makes a session: until the transcript or
 //! an export provides it, its events wait on a placeholder that reads do
@@ -21,7 +21,7 @@
 //! watcher write lines of the same shape under `process/`, `registry/` and
 //! `git/`, with `route` naming them; their events are `process_<event>`,
 //! `registry_<event>` and `git_<event>` instead of `hook_<event>`, and
-//! together with hook events they are a session's live evidence
+//! together with hook events they are a session's live events
 //! (`polylogue_model::live`).
 //!
 //! An event is one hook invocation. The producer gives each invocation its
@@ -44,12 +44,12 @@ use std::path::Path;
 
 pub const ORIGIN: &str = "hook-spool";
 
-/// Written only after the native hook output was successfully handed over.
+/// Written only after the hook output was successfully handed over.
 pub const CONTEXT_EMITTED: &str = "HookContextEmitted";
 
-// These native envelope fields are copied alongside, rather than inside, the
-// payload in Event.data. Keep decoding and event retention on the same list.
-const ENVELOPE_FIELDS: &[&str] = &[
+// These record wrapper fields are copied alongside, rather than inside, the
+// payload in Event.data. Keep decoding and event copying on the same list.
+const WRAPPER_FIELDS: &[&str] = &[
     "event_id",
     "at_ns",
     "harness_pid",
@@ -61,31 +61,31 @@ const ENVELOPE_FIELDS: &[&str] = &[
     "native_unavailable",
 ];
 
-/// Decode an emission claim retained by this parser. This is not native
-/// admission and confers no authority on imported bytes. The receipt proves no
-/// transcript-message attribution without an exact native message link.
+/// Decode a stated context emission kept by this parser. It is not a Sinex
+/// event and gives imported bytes no standing. Its event ID alone does not
+/// attribute the context to a transcript message; that needs a link to it.
 pub fn context_emission(event: &Event) -> Option<polylogue_model::HookContextEmission> {
     if event.kind != event_kind(CONTEXT_EMITTED) {
         return None;
     }
     let mut payload = event.data.as_object()?.clone();
-    let receipt = payload.get("event_id")?.as_str()?.to_owned();
-    for key in ENVELOPE_FIELDS {
+    let event_id = payload.get("event_id")?.as_str()?.to_owned();
+    for key in WRAPPER_FIELDS {
         payload.remove(*key);
     }
-    let claim: polylogue_model::HookContextEmission =
+    let emission: polylogue_model::HookContextEmission =
         serde_json::from_value(Json::Object(payload)).ok()?;
-    if receipt.is_empty() || claim.invocation.is_empty() || receipt == claim.invocation
-        || claim.hook_event.is_empty() || event.session.as_ref() != Some(&claim.session)
-        || claim.deliveries.is_empty()
-        || !claim.deliveries.iter().all(|reference| {
+    if event_id.is_empty() || emission.invocation.is_empty() || event_id == emission.invocation
+        || emission.hook_event.is_empty() || event.session.as_ref() != Some(&emission.session)
+        || emission.deliveries.is_empty()
+        || !emission.deliveries.iter().all(|reference| {
             matches!(polylogue_model::Reference::parse(reference),
                 Ok(parsed @ polylogue_model::Reference::Delivery(_)) if parsed.to_string() == *reference)
         })
     {
         return None;
     }
-    Some(claim)
+    Some(emission)
 }
 
 pub const LOCATIONS: &[&str] = &[
@@ -98,7 +98,7 @@ pub const LOCATIONS: &[&str] = &[
 ];
 
 /// Per-session and per-process spools are `.jsonl` or `.ndjson`; the
-/// predecessor's dated spool held one event per `.json` file.
+/// Python Polylogue's dated spool held one event per `.json` file.
 fn is_spool_file(path: &Path) -> bool {
     path.extension()
         .is_some_and(|e| e == "jsonl" || e == "ndjson" || e == "json")
@@ -134,19 +134,19 @@ static FIELDS: Fields = Fields::new(
         ("timestamp", Rule::Read(T::StringOrNumber)),
         ("provider", Rule::Read(T::String)),
         ("session_id", Rule::Read(T::String)),
-        ("git_identity", Rule::Kept("native Git snapshot")),
+        ("git_identity", Rule::Kept("stated Git snapshot")),
         (
             "terminal_identity",
-            Rule::Kept("native terminal adapter identity"),
+            Rule::Kept("stated terminal adapter identity"),
         ),
         (
             "repository",
-            Rule::Kept("repository named by native Git configuration"),
+            Rule::Kept("repository named by the Git configuration"),
         ),
         ("boot_id", Rule::Kept("the source boot identity")),
         (
             "native_unavailable",
-            Rule::Kept("unavailable optional native observations"),
+            Rule::Kept("optional observations that were unavailable"),
         ),
         (
             "payload",
@@ -247,7 +247,7 @@ impl Parser for HookSpool {
             Some(other) => serde_json::json!({ "payload": other }),
         };
         if let Json::Object(map) = &mut data {
-            for key in ENVELOPE_FIELDS {
+            for key in WRAPPER_FIELDS {
                 if let Some(v) = value.get(*key) {
                     map.insert((*key).into(), v.clone());
                 }

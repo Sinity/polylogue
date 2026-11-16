@@ -22,11 +22,11 @@ fn count(w: &Morrow, sql: &str) -> i64 {
         .unwrap()
 }
 
-/// raw bytes survive the source. Deleting any provider file and
+/// Original bytes survive the source. Deleting any provider file and
 /// running a pass leaves the view unchanged, and the file's bytes still read
 /// back exactly from the store.
 #[test]
-fn raw_bytes_survive_the_source() {
+fn original_bytes_survive_the_source() {
     let probe = Morrow::build(Set::Main);
     let home = probe.home.clone();
     // Every provider file stored as an input of its own; the rest are side

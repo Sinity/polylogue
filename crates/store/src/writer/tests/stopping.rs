@@ -4,7 +4,7 @@ use super::*;
 /// that uncommitted reading, while its source and previous reading stay usable.
 #[cfg(feature = "faults")]
 #[test]
-fn stopping_retained_byte_replay_rolls_back_the_index_and_restart_replays_it() {
+fn stopping_stored_byte_replay_rolls_back_the_index() {
     for mode in [
         "queued",
         "staged",

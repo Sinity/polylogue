@@ -93,7 +93,7 @@ impl Reader<'_> {
         let mut index_rows = indexed.query([fts])?;
         let mut occurrences = 0u64;
         // A rare index leg is cheaper to read directly than to establish a
-        // scope's size, especially across owners with no eligible blocks.
+        // scope's size, especially across rows with no in-scope blocks.
         while occurrences <= SMALL_SCOPE {
             if index_rows.next()?.is_none() {
                 return Ok(SearchDriver::Index);
@@ -115,7 +115,7 @@ impl Reader<'_> {
             }
             blocks += 1;
         }
-        // Probe the two sources together, without retaining their prefixes.
+        // Probe the two sources together, without keeping their prefixes.
         // A shared indexed text counts once for every block it expands to.
         loop {
             while occurrences <= blocks.saturating_mul(SCOPE_ADVANTAGE) {

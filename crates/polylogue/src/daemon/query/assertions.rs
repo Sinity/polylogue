@@ -1,5 +1,5 @@
 //! Assertions read through the single query backend for briefings, resume and
-//! signal definitions. Every caller shares graph currency and visibility.
+//! signal definitions. Every caller sees the same current revisions and visibility.
 
 use super::{Ask, run};
 use polylogue_model::{Reference, RevisionReference, assertion::Assertion};

@@ -6,7 +6,7 @@ use polylogue_model::{
 use serde_json::json;
 use std::io::Write;
 
-fn evidence(tool: Option<&str>) -> CallerEvidence {
+fn caller_details(tool: Option<&str>) -> CallerEvidence {
     CallerEvidence {
         harness: Some(Origin::new("claude-code").unwrap()),
         session: Some(SessionId::parse("claude-code:stale-startup").unwrap()),
@@ -29,7 +29,7 @@ fn event(kind: &str, session: &str, tool: Option<&str>, agent: Option<&str>) -> 
 }
 
 #[test]
-fn exact_tool_evidence_selects_the_worker_and_explicit_session_stays_session_only() {
+fn caller_tool_call_selects_the_worker_session() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("17.ndjson");
     let registry = Registry::new(directory.path().into());
@@ -52,14 +52,14 @@ fn exact_tool_evidence_selects_the_worker_and_explicit_session_stays_session_onl
             Some("worker-two"),
         ),
     );
-    let caller = evidence(Some("call-two"));
+    let caller = caller_details(Some("call-two"));
     let selected = registry.identity(&caller).unwrap();
     let accepted = compute_authorship(Channel::Mcp, &caller, Some(&selected));
     assert_eq!(
         accepted.author.to_string(),
         "agent:claude-code:agent-worker-two"
     );
-    let caller = evidence(None);
+    let caller = caller_details(None);
     assert!(registry.identity(&caller).is_none());
     append(
         &path,
@@ -67,9 +67,13 @@ fn exact_tool_evidence_selects_the_worker_and_explicit_session_stays_session_onl
     );
     assert!(
         registry.identity(&caller).is_none(),
-        "a unique remaining call is not evidence"
+        "a unique remaining call does not identify the caller"
     );
-    assert!(registry.identity(&evidence(Some("call-two"))).is_none());
+    assert!(
+        registry
+            .identity(&caller_details(Some("call-two")))
+            .is_none()
+    );
     let session_only = CallerEvidence {
         session: Some(SessionId::parse("claude-code:explicit-session").unwrap()),
         ..caller
@@ -87,7 +91,7 @@ fn partial_hook_record_is_observed_only_after_its_newline_and_file_replacement_r
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("17.ndjson");
     let registry = Registry::new(directory.path().into());
-    let caller = evidence(Some("call-one"));
+    let caller = caller_details(Some("call-one"));
     let next = serde_json::to_vec(&event("PreToolUse", "first", Some("call-one"), None)).unwrap();
     let mut output = std::fs::OpenOptions::new()
         .create(true)
@@ -110,7 +114,7 @@ fn partial_hook_record_is_observed_only_after_its_newline_and_file_replacement_r
     assert!(registry.identity(&caller).is_none());
     assert_eq!(
         registry
-            .identity(&evidence(Some("other-call")))
+            .identity(&caller_details(Some("other-call")))
             .unwrap()
             .session
             .to_string(),
@@ -124,7 +128,11 @@ fn a_reused_pid_never_applies_another_harnesses_hook_identity() {
     let path = directory.path().join("17.ndjson");
     let registry = Registry::new(directory.path().into());
     append(&path, event("PreToolUse", "old", Some("call-one"), None));
-    assert!(registry.identity(&evidence(Some("call-one"))).is_some());
+    assert!(
+        registry
+            .identity(&caller_details(Some("call-one")))
+            .is_some()
+    );
     let caller = CallerEvidence {
         harness: Some(Origin::new("codex").unwrap()),
         harness_pid: Some(17),

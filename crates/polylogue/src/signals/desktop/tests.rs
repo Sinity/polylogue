@@ -26,7 +26,7 @@ fn seed(d: &Daemon) -> Notice {
         .transpose()
         .unwrap();
     let checkpoint = previous.unwrap_or_else(|| initial(d, &context, Some(&attention)).unwrap());
-    // This fixture only records an outbox; no rule fired it.
+    // This fixture only records a pending delivery; no rule fired it.
     assert!(
         persist(d, &context, prior, checkpoint, vec![outbox], vec![])
             .unwrap()
@@ -93,18 +93,18 @@ async fn stopping_drains_submitted_unknown_ack_before_joining_the_worker() {
 }
 
 #[tokio::test]
-async fn an_admission_stop_does_not_report_a_closed_startup_reader_as_failure() {
+async fn closed_startup_reader_is_no_failure_when_work_stops() {
     let mut fixture = fixture();
     fixture.stop().unwrap();
     // The daemon's stop already ended reads, but this worker's own token
-    // is not cancelled. No new restoration is admitted.
+    // is not cancelled. No new restoration starts.
     run(fixture.daemon.clone(), CancellationToken::new())
         .await
         .unwrap();
 }
 
 #[tokio::test]
-async fn notification_cleanup_preserves_the_delivery_workers_actual_error() {
+async fn notification_cleanup_preserves_the_delivery_workers_error() {
     let fixture = fixture();
     let (updates, mut returned) = mpsc::unbounded_channel();
     let worker = tokio::spawn(async move {

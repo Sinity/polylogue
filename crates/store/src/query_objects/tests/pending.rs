@@ -9,7 +9,7 @@ use std::{path::PathBuf, sync::Arc};
 struct PendingProducer(PathBuf);
 
 #[test]
-fn completed_history_keeps_question_lookup_and_one_durable_run_group() {
+fn completed_history_keeps_lookup_and_one_run_group() {
     let dir = tempfile::tempdir().unwrap();
     let producer = Arc::new(PendingProducer(dir.path().join("named.json")));
     let object = question("sessions");
@@ -69,9 +69,9 @@ fn completed_history_keeps_question_lookup_and_one_durable_run_group() {
                 .unwrap(),
             completed
         );
-        let retained = producer.writes().unwrap();
-        assert_eq!(retained.len(), 2);
-        let group = &retained[&format!("query-run:{}", expected.id)];
+        let kept = producer.writes().unwrap();
+        assert_eq!(kept.len(), 2);
+        let group = &kept[&format!("query-run:{}", expected.id)];
         assert_eq!(group.len(), 2);
         assert!(matches!(&group[0].product, Product::QueryRun { run } if **run == expected));
         assert!(
@@ -102,7 +102,7 @@ impl Sinex for PendingProducer {
         &self,
         _: &crate::primary::CapturePlan,
         _: &mut crate::primary::CaptureMembers<'_>,
-    ) -> Result<crate::primary::CaptureReceipt> {
+    ) -> Result<crate::primary::CaptureResult> {
         Self::unavailable()
     }
     fn pending_source(
@@ -119,10 +119,10 @@ impl Sinex for PendingProducer {
     ) -> Result<crate::primary::PendingGroupPage> {
         Self::unavailable()
     }
-    fn raw_acquisition_cursor(
+    fn byte_cursor(
         &self,
-        _: &crate::primary::RawAcquisitionQuery,
-    ) -> Result<Option<crate::primary::RawAcquisitionCursor>> {
+        _: &crate::primary::ByteCursorQuery,
+    ) -> Result<Option<crate::primary::ByteCursor>> {
         Ok(None)
     }
     fn capture_body(&self, _: &str) -> Result<Vec<PreparedBody>> {
@@ -143,7 +143,7 @@ impl Sinex for PendingProducer {
         _: &[crate::primary::ProductWrite],
     ) -> Result<PreparedWrite> {
         Err(StoreError::Invalid(
-            "this synthetic adapter does not admit source interpretations".into(),
+            "this synthetic adapter does not accept source readings".into(),
         ))
     }
     fn prepare_products(&self, _: &[ProductWrite]) -> Result<PreparedWrite> {
@@ -195,15 +195,15 @@ impl Sinex for PendingProducer {
         identity: &str,
         writes: &[ProductWrite],
     ) -> Result<PreparedWrite> {
-        let mut retained = self.writes()?;
-        if let Some(existing) = retained.get(identity) {
+        let mut kept = self.writes()?;
+        if let Some(existing) = kept.get(identity) {
             if existing != writes {
                 return Err(StoreError::Conflict(identity.into()));
             }
         } else {
-            retained.insert(identity.into(), writes.to_vec());
+            kept.insert(identity.into(), writes.to_vec());
             let file = std::fs::File::create(&self.0)?;
-            serde_json::to_writer(&file, &retained)?;
+            serde_json::to_writer(&file, &kept)?;
             file.sync_all()?;
             std::fs::File::open(self.0.parent().unwrap())?.sync_all()?;
         }
@@ -265,10 +265,10 @@ fn completed_run_keeps_its_original_scope_in_the_spool_during_cache_reset() {
             Err(StoreError::ScopeChanged)
         ));
         writer.begin_query_run(expected.clone()).unwrap();
-        let retained = producer.writes().unwrap();
-        let writes = retained.get(&format!("query-run:{}", expected.id)).unwrap();
+        let kept = producer.writes().unwrap();
+        let writes = kept.get(&format!("query-run:{}", expected.id)).unwrap();
         let [write] = writes.as_slice() else {
-            panic!("one frozen query run expected");
+            panic!("one saved query run expected");
         };
         assert!(write.parents.is_empty());
         let Product::QueryRun { run } = &write.product else {
@@ -399,7 +399,7 @@ fn confirmed_outcome_first_rejects_another_begin_intent_before_primary_spooling(
     drop(conn);
     let writer = crate::Writer::start_on_sinex(&archive, producer.clone()).unwrap();
     let mut changed = original.clone();
-    changed.machine = "another-actual-accepting-machine".into();
+    changed.machine = "another-accepting-machine".into();
     assert!(matches!(
         writer.begin_query_run(changed),
         Err(StoreError::Conflict(_))

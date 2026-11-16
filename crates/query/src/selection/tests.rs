@@ -155,14 +155,14 @@ fn similar_by_a_reference_is_not_built() {
     );
 }
 
-/// The columns shown are a projection beside the selection.
+/// The columns shown are a field selection beside the selection.
 #[test]
-fn fields_are_a_projection() {
+fn shown_fields_sit_beside_the_selection() {
     let fields = vec!["id".to_owned(), "repo".to_owned()];
     let shown = selection_with("sessions where repo:morrow", &fields);
-    assert_eq!(shown.projection, Projection::Fields(fields));
+    assert_eq!(shown.field_selection, FieldSelection::Fields(fields));
     let plain = selection("sessions where repo:morrow");
-    assert_eq!(plain.projection, Projection::Default);
+    assert_eq!(plain.field_selection, FieldSelection::Default);
     assert_eq!(conditions(&shown), conditions(&plain));
     assert_eq!(shown.defaults, plain.defaults);
 }

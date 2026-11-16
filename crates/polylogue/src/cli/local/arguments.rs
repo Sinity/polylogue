@@ -1,5 +1,5 @@
 //! Arguments of operations that run in the calling process. The same schemas
-//! drive common's CLI projection and word decoding.
+//! drive common's CLI rendering and word decoding.
 use command_surface::JsonSchema;
 use serde::{Deserialize, Serialize};
 

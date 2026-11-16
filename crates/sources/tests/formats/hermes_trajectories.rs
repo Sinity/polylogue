@@ -88,17 +88,17 @@ fn atif_transcript_keeps_text_tools_images_and_embedded_scope_without_fabricated
     );
     assert!(docs[3]["metadata"].get("llm_call_count").unwrap().is_null());
     assert_eq!(docs[4]["metadata"]["llm_call_count"], 1);
-    let facts = events(&parsed, "hermes_trajectory");
-    assert_eq!(facts.len(), 3);
-    for fact in facts {
-        assert!(fact.get("session").is_none());
-        let metadata = fact["data"].to_string();
+    let found = events(&parsed, "hermes_trajectory");
+    assert_eq!(found.len(), 3);
+    for event in found {
+        assert!(event.get("session").is_none());
+        let metadata = event["data"].to_string();
         assert!(!metadata.contains("exact λ") && !metadata.contains("first result"));
     }
 }
 
 #[test]
-fn atif_future_versions_are_explicitly_unsupported_and_foreign_schema_keys_do_not_claim_hermes() {
+fn atif_future_versions_are_explicitly_unsupported_and_other_schema_keys_do_not_claim_hermes() {
     let mut value = trajectory(
         "future",
         json!([{"step_id":1,"source":"agent","message":"stored source text"}]),
@@ -120,13 +120,13 @@ fn atif_future_versions_are_explicitly_unsupported_and_foreign_schema_keys_do_no
             .any(|s| s.contains("unsupported ATIF"))
     );
     assert!(!(by_name("hermes").unwrap().recognize)(
-        Path::new("foreign.json"),
+        Path::new("other.json"),
         br#"{"schema_version":"other-format"}"#
     ));
 }
 
 #[test]
-fn atif_native_timing_and_provider_ids_do_not_become_authorship_or_guessed_time() {
+fn atif_timing_and_ids_are_not_authorship_or_time() {
     let value = trajectory(
         "metadata",
         json!([{

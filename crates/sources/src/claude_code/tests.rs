@@ -178,7 +178,7 @@ fn copied_history_stays_in_its_original_session() {
 }
 
 #[test]
-fn a_subagent_keeps_its_owner_and_only_a_native_sidechain_marker_links_its_carrier() {
+fn subagent_links_its_carrier_only_by_sidechain_flag() {
     let sub = ClaudeCode {
         file: File::Subagent {
             stem: "agent-x1".into(),
@@ -400,7 +400,7 @@ fn thinking_above_output_leaves_output_unknown() {
 }
 
 #[test]
-fn native_background_notification_keeps_reported_clock_precision_or_unknown() {
+fn background_notice_keeps_clock_precision_or_unknown() {
     use polylogue_model::{Precision, TimeEvidence, Timestamp};
     for (clock, precision) in [
         (Some("2026-03-01T10:00:05Z"), Some(Precision::Second)),
@@ -432,7 +432,7 @@ fn native_background_notification_keeps_reported_clock_precision_or_unknown() {
     }
 }
 
-mod hook_provenance;
+mod hook_fields;
 
 #[test]
 fn a_response_reopens_after_more_than_the_hot_cache_window() {
@@ -475,7 +475,7 @@ fn a_response_reopens_after_more_than_the_hot_cache_window() {
 }
 
 #[test]
-fn a_child_of_an_evicted_record_alias_keeps_its_canonical_parent() {
+fn child_of_an_evicted_alias_keeps_its_resolved_parent() {
     let mut records = vec![
         assistant("a1", "response-a", json!({"type":"text","text":"first"})),
         assistant("a2", "response-a", json!({"type":"text","text":"last"})),
@@ -498,7 +498,7 @@ fn a_child_of_an_evicted_record_alias_keeps_its_canonical_parent() {
 }
 
 #[test]
-fn a_context_backend_error_rejects_the_entire_parse_before_rows_are_published() {
+fn context_backend_error_rejects_the_whole_parse() {
     struct Unavailable;
     impl polylogue_model::parser_context::Context for Unavailable {
         fn get(
@@ -552,13 +552,13 @@ fn explicit_resume_and_distinct_fork_points_survive_source_deduplication() {
     assert_eq!(resume.parent.native().as_str(), "prior");
     assert_eq!(resume.child.native().as_str(), "child");
     assert!(!resume.copies_prefix);
-    let anchors: Vec<_> = out
+    let branch_points: Vec<_> = out
         .links
         .iter()
         .filter(|l| l.kind == LinkKind::Fork)
         .map(|l| l.at.as_ref().unwrap().native().as_str())
         .collect();
-    assert_eq!(anchors, ["first", "second"]);
+    assert_eq!(branch_points, ["first", "second"]);
 }
 
 #[test]
@@ -647,7 +647,7 @@ fn a_nested_agent_carrier_does_not_invent_an_immediate_parent() {
 }
 
 #[test]
-fn rewritten_compactor_markers_report_unknown_work_ownership() {
+fn rewritten_compactor_markers_report_unknown_session() {
     let parser = ClaudeCode {
         file: File::Subagent {
             stem: "agent-acompact-one".into(),
@@ -655,7 +655,7 @@ fn rewritten_compactor_markers_report_unknown_work_ownership() {
     };
     let records = [
         json!({"type":"user","uuid":"replayed","sessionId":"root-carrier",
-        "agentId":"acompact-one","isSidechain":true,"message":{"content":"retained context"}}),
+        "agentId":"acompact-one","isSidechain":true,"message":{"content":"kept context"}}),
     ];
     let out = run(&parser, &mut ParserState::default(), &jsonl(&records), 0)
         .unwrap()

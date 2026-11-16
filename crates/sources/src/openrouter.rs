@@ -217,7 +217,7 @@ impl OpenRouter {
         }
         if let Some(at) = first.and_then(|m| m.get("createdAt")).and_then(time_of) {
             session
-                .offer_start(at.timestamp(), at.evidence())
+                .offer_start(at.timestamp(), at.accuracy())
                 .expect("decoded source time is valid");
         }
         self.session = Some(sid.clone());

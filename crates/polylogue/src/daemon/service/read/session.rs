@@ -1,5 +1,5 @@
 //! Paged session reads over the session item index. A page is a run of
-//! shown entries read in windows from its anchor; where it sits among the
+//! shown entries read in windows from its first entry; where it sits among the
 //! shown entries, and the counts a reading shows, come from the counts the
 //! writer stores per entry class, so a page reads its own entries and the
 //! bodies of its messages and events, not the entries before it. A
@@ -9,7 +9,7 @@
 use super::super::{Daemon, Failure};
 use super::ReadRequest;
 use super::records::{SelectedRecord, message_record};
-use super::{evidence, output};
+use super::{layout_facts, output};
 use polylogue_model::{MessageId, Reference, SessionId, bundle::Record, read::*};
 use polylogue_store::Reader;
 use polylogue_store::items::{ItemLookup, ItemVersions};
@@ -51,7 +51,7 @@ pub(super) fn scope(reader: &Reader<'_>, target: &str) -> Result<Option<Scope>, 
     let Ok(reference) = Reference::parse(target) else {
         return Ok(None);
     };
-    let owner = |message: &MessageId| -> Result<SessionId, Failure> {
+    let session_of = |message: &MessageId| -> Result<SessionId, Failure> {
         reader
             .message_session(message)?
             .ok_or_else(|| Failure::new("not_found", format!("no message {message}")))
@@ -63,13 +63,13 @@ pub(super) fn scope(reader: &Reader<'_>, target: &str) -> Result<Option<Scope>, 
             logical: false,
         }),
         Reference::Message(message) => Some(Scope {
-            session: owner(&message)?,
+            session: session_of(&message)?,
             range: Some((message.clone(), message)),
             logical: false,
         }),
         Reference::MessageRange { first, last } => {
-            let session = owner(&first)?;
-            if owner(&last)? != session {
+            let session = session_of(&first)?;
+            if session_of(&last)? != session {
                 return Err(Failure::new(
                     "bad_request",
                     "a message range is read inside one session",
@@ -111,7 +111,7 @@ fn session_index(
 
 /// Cards shown after one entry: a fork at its branch point, a spawned
 /// session at its call.
-struct Anchored {
+struct CardsAfterEntry {
     session: SessionId,
     seq: usize,
     cards: Vec<ReadItem>,
@@ -125,7 +125,7 @@ struct Composed {
     issues: Vec<ParentIssue>,
     /// Lines shown before an entry (a `continues` line at a continuation).
     before: std::collections::HashMap<EntryKey, Vec<ReadItem>>,
-    after: Vec<Anchored>,
+    after: Vec<CardsAfterEntry>,
 }
 /// A part that reads a spawned session inline.
 fn spawned(part: &Part) -> bool {
@@ -257,15 +257,15 @@ fn prefix(
             .collect();
         if forks.len() > 1 {
             let mut recorded = forks.into_iter();
-            let (first, first_anchor) = recorded.next().expect("two forks");
-            let (second, second_anchor) = recorded.next().expect("two forks");
+            let (first, first_branch_point) = recorded.next().expect("two forks");
+            let (second, second_branch_point) = recorded.next().expect("two forks");
             if let (Ok(first), Ok(second)) = (SessionId::parse(&first), SessionId::parse(&second)) {
                 composed.issues.push(ParentIssue::ConflictingParents {
                     child: current.clone(),
                     first,
-                    first_anchor,
+                    first_branch_point,
                     second,
-                    second_anchor,
+                    second_branch_point,
                 });
             }
             break;
@@ -283,15 +283,15 @@ fn prefix(
             .collect();
         if parents.len() > 1 {
             let mut recorded = parents.into_iter();
-            let (first, first_anchor) = recorded.next().expect("two parents");
-            let (second, second_anchor) = recorded.next().expect("two parents");
+            let (first, first_branch_point) = recorded.next().expect("two parents");
+            let (second, second_branch_point) = recorded.next().expect("two parents");
             if let (Ok(first), Ok(second)) = (SessionId::parse(first), SessionId::parse(second)) {
                 composed.issues.push(ParentIssue::ConflictingParents {
                     child: current.clone(),
                     first,
-                    first_anchor: first_anchor.to_owned(),
+                    first_branch_point: first_branch_point.to_owned(),
                     second,
-                    second_anchor: second_anchor.to_owned(),
+                    second_branch_point: second_branch_point.to_owned(),
                 });
             }
             break;
@@ -309,10 +309,10 @@ fn prefix(
             break;
         }
         if !link.copies_prefix && link.branch_point.is_none() {
-            composed.issues.push(ParentIssue::MissingAnchor {
+            composed.issues.push(ParentIssue::MissingBranchPoint {
                 child: current.clone(),
                 parent,
-                anchor: None,
+                branch_point: None,
             });
             break;
         }
@@ -346,11 +346,11 @@ fn prefix(
             },
             index,
         ));
-        if let Some(anchor) = branch_point {
+        if let Some(point) = branch_point {
             let mut cut = None;
-            if let Ok(anchor) = MessageId::parse(anchor) {
+            if let Ok(message) = MessageId::parse(point) {
                 for (which, (part, index)) in parts.iter().enumerate().rev() {
-                    if let Some((header, end)) = reader.item_message_span(index.pk, &anchor)?
+                    if let Some((header, end)) = reader.item_message_span(index.pk, &message)?
                         && (part.start..part.end).contains(&(header as usize))
                     {
                         cut = Some((which, (end as usize).min(part.end)));
@@ -364,10 +364,10 @@ fn prefix(
                     parts[which].0.end = end;
                 }
                 None => {
-                    composed.issues.push(ParentIssue::MissingAnchor {
+                    composed.issues.push(ParentIssue::MissingBranchPoint {
                         child,
                         parent: parent.clone(),
-                        anchor: Some(anchor.clone()),
+                        branch_point: Some(point.clone()),
                     });
                     parts.clear();
                 }
@@ -529,7 +529,7 @@ fn children(
                 continue;
             }
             // A card at the branch point or the spawning call.
-            let (anchor, call) = match link.kind.as_str() {
+            let (slot, call) = match link.kind.as_str() {
                 "spawn" => match link.spawning_call.as_deref() {
                     Some(call) => match spawning_call(reader, &index, call)? {
                         Some((seq, entry)) => (Some(seq), Some(entry)),
@@ -553,11 +553,11 @@ fn children(
                     )
                 }
             };
-            let Some(anchor) = anchor else { continue };
+            let Some(slot) = slot else { continue };
             let card = card(d, reader, &link, &child, call.as_ref(), view, target)?;
-            composed.after.push(Anchored {
+            composed.after.push(CardsAfterEntry {
                 session: session.clone(),
-                seq: anchor,
+                seq: slot,
                 cards: vec![card],
             });
         }
@@ -625,7 +625,7 @@ fn inline_spawns(
             // place their own.
             if level > 0 {
                 let card = card(d, reader, &link, &child, Some(&call), view, target)?;
-                composed.after.push(Anchored {
+                composed.after.push(CardsAfterEntry {
                     session: part.session.clone(),
                     seq: entry,
                     cards: vec![card],
@@ -1009,7 +1009,7 @@ pub(super) fn page(
     still_wanted()?;
     let runs = runs(reader, &composed, options)?;
     still_wanted()?;
-    let shown = ShownEntries::new(reader, &composed, &runs, FoldProfile::of(options))?;
+    let shown = ShownEntries::new(reader, &composed, &runs, ShowProfile::of(options))?;
     still_wanted()?;
     // Where a key sits in the reading: the first part that holds it.
     let locate = |key: &EntryKey| -> Result<Option<(usize, usize)>, Failure> {
@@ -1645,7 +1645,7 @@ fn lay_out(
                     emit(
                         reader,
                         Record::Event(record),
-                        ProjectionEvidence::default(),
+                        LayoutFacts::default(),
                         options,
                         &selected,
                         &ready_attachment,
@@ -1669,20 +1669,23 @@ fn lay_out(
         let wanted_messages: HashSet<&MessageId> = messages.iter().collect();
         let last_message = messages.last().expect("one message").clone();
         let mut result = Ok(());
-        selection.visit_from_with_record_evidence(
+        selection.visit_from_with_record_arrival(
             start,
-            |message, projection, commit, order| {
+            |message, block_selection, commit, order| {
                 let id = message.id.clone();
                 if wanted_messages.contains(&id) {
                     let step = (|| {
                         let commit = commit.ok_or_else(|| {
                             Failure::new(
                                 "not_yet_available",
-                                format!("message:{id} has no retained source admission evidence"),
+                                format!(
+                                    "message:{id} has no stored commit position for its source"
+                                ),
                             )
                         })?;
-                        let record = message_record(reader, message, projection, commit, order)?;
-                        let evidence = ProjectionEvidence {
+                        let record =
+                            message_record(reader, message, block_selection, commit, order)?;
+                        let facts = LayoutFacts {
                             inherited,
                             ..Default::default()
                         };
@@ -1690,7 +1693,7 @@ fn lay_out(
                         emit(
                             reader,
                             record,
-                            evidence,
+                            facts,
                             options,
                             &selected,
                             &ready_attachment,
@@ -1956,10 +1959,10 @@ fn context_meter(
 /// Per page slot, the cards placed before its entry and after it.
 type PlacedCards = std::collections::HashMap<usize, (Vec<ReadItem>, Vec<ReadItem>)>;
 
-/// Cards for each page slot, placed after their anchor entry when it is
-/// shown, or before the next shown entry when the reading hides the anchor
+/// Cards for each page slot, placed after the entry they follow when it is
+/// shown, or before the next shown entry when the reading hides that entry
 /// (a spawning call in the dialogue view), so a card is never lost. A card
-/// belongs to this page when its anchor comes after the shown entry before
+/// belongs to this page when that entry comes after the shown entry before
 /// the page and no later than the page's last entry.
 fn place_cards(
     composed: &Composed,
@@ -1975,15 +1978,15 @@ fn place_cards(
         return Ok(placed);
     }
     let previous = shown.last_before(first.place())?.map(|entry| entry.place());
-    for anchored in &composed.after {
+    for card_slot in &composed.after {
         let Some(place) = composed
             .parts
             .iter()
             .position(|bounds| {
-                bounds.session == anchored.session
-                    && (bounds.start..bounds.end).contains(&anchored.seq)
+                bounds.session == card_slot.session
+                    && (bounds.start..bounds.end).contains(&card_slot.seq)
             })
-            .map(|part| (part, anchored.seq))
+            .map(|part| (part, card_slot.seq))
         else {
             continue;
         };
@@ -1991,7 +1994,7 @@ fn place_cards(
             continue;
         }
         let slot = page.partition_point(|entry| entry.place() < place);
-        let cards = anchored.cards.iter().filter(|item| {
+        let cards = card_slot.cards.iter().filter(|item| {
             options.spawns != SpawnFold::Hidden
                 || !matches!(&item.kind, ItemKind::Card { card } if matches!(**card, Card::Delegation { .. }))
         });
@@ -2009,19 +2012,19 @@ fn place_cards(
 fn emit(
     reader: &Reader<'_>,
     record: Record,
-    evidence: ProjectionEvidence,
+    facts: LayoutFacts,
     options: &ReadOptions,
     selected: &dyn Fn(&Source) -> Result<bool, Failure>,
-    ready_attachment: &super::attachment_evidence::ReadyAttachment<'_>,
+    ready_attachment: &super::attachment_facts::ReadyAttachment<'_>,
     footer: &mut ReadFooter,
     out: &mut dyn FnMut(ReadItem),
 ) -> Result<(), Failure> {
     // A context reading's entries were chosen from the index as members, so
     // each one laid out is selected; what it leaves out is said once, in
     // the reading's first lines.
-    let mut evidence = evidence;
+    let mut facts = facts;
     if options.view == View::Context {
-        evidence.context = Some(ContextEvidence {
+        facts.context = Some(ContextState {
             selected: true,
             complete: true,
             reason: None,
@@ -2030,24 +2033,24 @@ fn emit(
         });
     }
     let Some(record) = output::project(
-        SelectedRecord::Canonical(Box::new(record)),
+        SelectedRecord::Original(Box::new(record)),
         options,
-        &evidence,
+        &facts,
         false,
         footer,
     )?
     else {
         return Ok(());
     };
-    let layout = evidence::Layout {
+    let layout = layout_facts::Layout {
         options,
-        evidence: &evidence,
+        facts: &facts,
         selected,
         ready_attachment,
         backwards: false,
-        anchor: None,
+        page_start: None,
     };
-    evidence::visit_parts(reader, &record, &layout, |item, _| {
+    layout_facts::visit_parts(reader, &record, &layout, |item, _| {
         out(item);
         Ok(true)
     })?;

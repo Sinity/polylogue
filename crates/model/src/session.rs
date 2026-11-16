@@ -108,13 +108,13 @@ impl Session {
     pub fn set_time(
         &mut self,
         at: Option<Timestamp>,
-        evidence: crate::TimeEvidence,
+        accuracy: crate::TimeEvidence,
     ) -> Result<(), crate::TimeEvidenceError> {
-        evidence.validate(at)?;
+        accuracy.validate(at)?;
         self.started = at;
-        self.started_quality = evidence.quality;
-        self.started_precision = evidence.precision;
-        self.started_until = evidence.until;
+        self.started_quality = accuracy.quality;
+        self.started_precision = accuracy.precision;
+        self.started_until = accuracy.until;
         Ok(())
     }
 
@@ -160,16 +160,16 @@ impl Session {
         }
     }
 
-    /// Keeps the earliest stated start together with its original evidence.
-    /// Equal starts retain the first claim.
+    /// Keeps the earliest stated start together with its original accuracy.
+    /// Equal starts keep the first one.
     pub fn offer_start(
         &mut self,
         at: Timestamp,
-        evidence: crate::TimeEvidence,
+        accuracy: crate::TimeEvidence,
     ) -> Result<bool, crate::TimeEvidenceError> {
-        evidence.validate(Some(at))?;
+        accuracy.validate(Some(at))?;
         if self.started.is_none_or(|current| at < current) {
-            self.set_time(Some(at), evidence)?;
+            self.set_time(Some(at), accuracy)?;
             return Ok(true);
         }
         Ok(false)
@@ -181,7 +181,7 @@ impl Session {
     /// facts in full after every step. The kind first recorded stays; the
     /// title goes by precedence; working directories keep their order;
     /// branch and tool version take the newer value; the earliest start wins
-    /// with its complete time evidence. Equal starts keep the first evidence.
+    /// with its complete time accuracy. Equal starts keep the first one.
     pub fn merge(&mut self, other: &Session) {
         if let Some(t) = &other.title {
             self.offer_title(&t.text, t.source);

@@ -4,7 +4,7 @@ use polylogue_sources::origin::by_name;
 use polylogue_store::Archive;
 use polylogue_testkit::{ClaudeHome, claude_user};
 
-fn admitted_continuation(
+fn committed_continuation(
     w: &ClaudeHome,
 ) -> (
     Vec<polylogue_model::Json>,
@@ -21,7 +21,7 @@ fn admitted_continuation(
 }
 
 #[test]
-fn a_rejected_replacement_preserves_the_admitted_reading_and_retries_without_source_changes() {
+fn rejected_replacement_keeps_the_committed_reading() {
     for point in ["reparse.prepare", "reparse.commit", "parse"] {
         fault::clear();
         let w = ClaudeHome::new();
@@ -38,7 +38,7 @@ fn a_rejected_replacement_preserves_the_admitted_reading_and_retries_without_sou
                 .0,
             1
         );
-        let before = admitted_continuation(&w);
+        let before = committed_continuation(&w);
         let messages = w.export("claude-code:s").messages;
         let mut engine = Engine::new(
             w.config(first.len() as u64),
@@ -60,9 +60,9 @@ fn a_rejected_replacement_preserves_the_admitted_reading_and_retries_without_sou
             );
         }
         assert_eq!(
-            admitted_continuation(&w),
+            committed_continuation(&w),
             before,
-            "a rejected {point} changed admitted progress or keyed context"
+            "a rejected {point} changed committed progress or keyed context"
         );
         assert_eq!(w.export("claude-code:s").messages, messages);
         let retried = engine.run_pass().unwrap();

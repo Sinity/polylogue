@@ -1,5 +1,5 @@
-//! Canonical saved definitions retain their declared semantic identity. Query
-//! preparation resolves that identity through retained immutable query objects.
+//! Saved definitions keep their declared identity. Query
+//! preparation resolves that identity through kept immutable query objects.
 use super::*;
 use polylogue_model::assertion::values;
 use std::collections::BTreeMap;
@@ -7,11 +7,11 @@ mod preparation;
 pub(crate) use preparation::SavedPreparation;
 
 pub(crate) enum SavedInput<'a> {
-    Native {
+    Text {
         text: &'a str,
         denominator: Option<&'a str>,
     },
-    Canonical {
+    Stored {
         value: &'a values::SavedQuery,
         changed: bool,
     },
@@ -104,7 +104,7 @@ mod tests;
 
 /// The current saved definitions under `names`, and no others. SQL
 /// nominates every family any revision of which carried one of the names;
-/// the stored currency index selects heads, and only heads still named so
+/// the stored current-revision index selects heads, and only heads still named so
 /// are kept.
 pub(crate) fn saved_query_snapshot<'a>(
     conn: &Connection,

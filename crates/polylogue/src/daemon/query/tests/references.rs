@@ -3,7 +3,7 @@
 use super::*;
 
 #[test]
-fn provider_conversation_urls_select_native_sessions_through_declared_shapes() {
+fn conversation_urls_select_sessions_by_declared_shape() {
     let dir = tempfile::tempdir().unwrap();
     let mut fx = polylogue_store::fixture::Fixture::new(dir.path()).unwrap();
     for (index, id) in [

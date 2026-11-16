@@ -1,6 +1,6 @@
 use super::*;
 #[test]
-fn cloud_tasks_keep_native_turns_metadata_and_unknown_times() {
+fn cloud_tasks_keep_turns_metadata_and_unknown_times() {
     let bytes=br#"[{"id":"task_e_sample","title":"Repair example","archived":false,"turns":[{"id":"task_e_sample~usertrn_e_one","role":"user","custom_instructions":null,"input_items":[{"type":"message","role":"user","content":[{"content_type":"text","text":"Repair it."}]}]},{"id":"task_e_sample~assttrn_e_two","role":"assistant","previous_turn_id":"task_e_sample~usertrn_e_one","branch":"feature/example","external_pull_request_id":"None","turn_status":"completed","output_items":[{"content":[{"content_type":"text","text":"Repaired."},{"content_type":"repo_file_citation","path":"src/example.rs","line_range_start":4,"line_range_end":9}]}]}]}]"#;
     let step =
         crate::export::fixture::parse(&mut open(Path::new("codex.json")).unwrap(), bytes).unwrap();
@@ -80,7 +80,7 @@ fn a_cloud_browser_capture_and_codex_export_share_provider_task_and_turn_ids() {
 }
 
 #[test]
-fn native_capture_accounts_the_payload_once_and_leaves_unused_dom_turns_visible() {
+fn capture_counts_payload_once_and_shows_dom_turns() {
     let capture = serde_json::json!({"polylogue_capture_kind":"browser_llm_session","schema_version":1,"provenance":{"captured_at":"2026-01-01T00:00:00Z","transport":"native"},"provider_meta":{"adapter":"cloud"},"session":{"provider":"codex-cloud","provider_session_id":"task_e_accounting","turns":[{"role":"user","text":"ignored DOM copy"}]},"raw_provider_payload":{"id":"task_e_accounting","turns":[{"id":"task_e_accounting~usertrn_e_one","role":"user","input_items":[{"content":[{"content_type":"text","text":"native request"}]}]}]}});
     let step = crate::export::fixture::parse(
         &mut crate::browser_capture::open(Path::new("capture.json")).unwrap(),

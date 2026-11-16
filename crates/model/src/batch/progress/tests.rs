@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn a_step_that_reaches_the_end_before_the_stored_length_waits_at_that_length() {
+fn step_ending_before_stored_length_waits_there() {
     let cases = [
         (
             StepProgress::AtEnd,

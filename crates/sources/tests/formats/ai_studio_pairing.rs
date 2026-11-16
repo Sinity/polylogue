@@ -51,11 +51,11 @@ fn check_results(parsed: &Value, expected: &[(&Value, Option<&str>)]) {
         .filter(|b| b["type"] == "tool_result")
         .collect();
     assert_eq!(results.len(), expected.len());
-    for (actual, (native, owner)) in results.iter().zip(expected) {
-        assert_eq!(actual["data"], native["codeExecutionResult"]);
-        assert_eq!(actual["output"], native["codeExecutionResult"]["output"]);
+    for (actual, (written, call_id)) in results.iter().zip(expected) {
+        assert_eq!(actual["data"], written["codeExecutionResult"]);
+        assert_eq!(actual["output"], written["codeExecutionResult"]["output"]);
         assert_eq!(actual["outcome"], json!({"kind": "ok"}));
-        assert_eq!(actual["call_id"], json!(owner));
+        assert_eq!(actual["call_id"], json!(call_id));
     }
 }
 
@@ -72,12 +72,15 @@ fn a_result_only_chunk_or_part_keeps_an_unresolved_call_identity() {
 #[test]
 fn a_result_before_code_cannot_borrow_that_future_call_identity() {
     let before = result("before");
-    let owned = result("owned");
-    let parsed = run(json!({"parts": [before, code(1), owned,
+    let paired = result("paired");
+    let parsed = run(json!({"parts": [before, code(1), paired,
         {"fileData": {"mimeType": "text/plain", "fileUri": "drive://synthetic-output"}}]}));
     check_results(
         &parsed,
-        &[(&before, None), (&owned, Some("7:pairing#id:4:turn:code1"))],
+        &[
+            (&before, None),
+            (&paired, Some("7:pairing#id:4:turn:code1")),
+        ],
     );
     let calls: Vec<_> = blocks(&parsed)
         .into_iter()
@@ -117,9 +120,9 @@ fn an_answered_execution_cannot_lend_its_identity_to_an_extra_result() {
 }
 
 #[test]
-fn multiple_unanswered_executions_do_not_establish_a_unique_result_owner() {
+fn multiple_unanswered_executions_leave_results_unpaired() {
     let ambiguous = result("ambiguous");
-    let stray = result("still unowned");
+    let stray = result("still unpaired");
     let fresh = result("fresh pair");
     let parsed = run(json!({"parts": [code(1), code(2), ambiguous, stray, code(3), fresh]}));
     check_results(
@@ -141,14 +144,14 @@ fn multiple_unanswered_executions_do_not_establish_a_unique_result_owner() {
 }
 
 #[test]
-fn consecutive_model_chunks_keep_the_actual_preceding_call_identity() {
-    let native = result("owned across chunks");
+fn consecutive_model_chunks_keep_the_preceding_call_identity() {
+    let answer = result("paired across chunks");
     let parsed = run_chunks(&[
         json!({"id": "call", "role": "model", "executableCode": code(1)["executableCode"]}),
         json!({"id": "explanation", "role": "model", "text": "Continuing explanation"}),
-        json!({"id": "answer", "role": "model", "codeExecutionResult": native["codeExecutionResult"]}),
+        json!({"id": "answer", "role": "model", "codeExecutionResult": answer["codeExecutionResult"]}),
     ]);
-    check_results(&parsed, &[(&native, Some("7:pairing#id:4:call:code1"))]);
+    check_results(&parsed, &[(&answer, Some("7:pairing#id:4:call:code1"))]);
     let rows = parsed["output"]["messages"].as_array().unwrap();
     assert_eq!(rows.len(), 3);
     assert_eq!(rows[1]["message"]["parent"], rows[0]["message"]["id"]);
@@ -157,7 +160,7 @@ fn consecutive_model_chunks_keep_the_actual_preceding_call_identity() {
 
 #[test]
 fn user_or_unreadable_chunks_end_the_preceding_unanswered_call() {
-    let native = result("unowned after boundary");
+    let answer = result("unpaired after boundary");
     for boundary in [
         json!({"id": "boundary", "role": "user", "text": "new prompt"}),
         json!({"id": "boundary", "role": "user", "executableCode": code(2)["executableCode"]}),
@@ -169,9 +172,9 @@ fn user_or_unreadable_chunks_end_the_preceding_unanswered_call() {
         let parsed = run_chunks(&[
             json!({"id": "call", "role": "model", "executableCode": code(1)["executableCode"]}),
             boundary,
-            json!({"id": "answer", "role": "model", "codeExecutionResult": native["codeExecutionResult"]}),
+            json!({"id": "answer", "role": "model", "codeExecutionResult": answer["codeExecutionResult"]}),
         ]);
-        check_results(&parsed, &[(&native, None)]);
+        check_results(&parsed, &[(&answer, None)]);
         assert_eq!(
             parsed["output"]["messages"].as_array().unwrap().len(),
             expected_rows
@@ -180,15 +183,15 @@ fn user_or_unreadable_chunks_end_the_preceding_unanswered_call() {
 }
 
 #[test]
-fn several_unanswered_calls_across_chunks_do_not_establish_a_unique_owner() {
-    let native = result("ambiguous across chunks");
+fn unanswered_calls_across_chunks_leave_result_unpaired() {
+    let answer = result("ambiguous across chunks");
     let parsed = run_chunks(&[
         json!({"id": "first", "role": "model", "executableCode": code(1)["executableCode"]}),
         json!({"id": "second", "role": "model", "executableCode": code(2)["executableCode"]}),
         json!({"id": "third", "role": "model", "executableCode": code(3)["executableCode"]}),
-        json!({"id": "answer", "role": "model", "codeExecutionResult": native["codeExecutionResult"]}),
+        json!({"id": "answer", "role": "model", "codeExecutionResult": answer["codeExecutionResult"]}),
     ]);
-    check_results(&parsed, &[(&native, None)]);
+    check_results(&parsed, &[(&answer, None)]);
     assert_eq!(
         blocks(&parsed)
             .into_iter()

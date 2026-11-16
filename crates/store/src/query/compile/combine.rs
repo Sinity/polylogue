@@ -127,15 +127,13 @@ impl<'a> Compiler<'a> {
                 position: at,
             });
         }
-        if !matches!(program.row_basis, RowBasis::Native { .. })
+        if !matches!(program.row_kind, RowKind::UnitRows { .. })
             || !relations::Relation::new(program.clone())
                 .sources
                 .iter()
                 .any(|source| source.prefix.is_empty())
         {
-            return Err(not_built(
-                "combining rows without native source coordinates",
-            ));
+            return Err(not_built("combining rows without source coordinates"));
         }
         Ok(program)
     }
@@ -193,7 +191,7 @@ impl<'a> Compiler<'a> {
         if pending.is_empty() {
             return Ok(());
         }
-        if !matches!(relation.program.row_basis, RowBasis::Native { .. })
+        if !matches!(relation.program.row_kind, RowKind::UnitRows { .. })
             || !relation
                 .sources
                 .iter()
@@ -205,9 +203,9 @@ impl<'a> Compiler<'a> {
             || relation.program.ranked
             || pending.unions.iter().any(|program| program.ranked);
         let mut left = relation.program.clone();
-        // The active relation owns coordinates added by witness stages; its
+        // The active relation owns coordinates added by matching row stages; its
         // Program snapshot is otherwise finalized only after all stages.
-        left.native_sources = Some(relation.sources.clone());
+        left.row_sources = Some(relation.sources.clone());
         let mut members = vec![left];
         members.extend(pending.unions);
         let mut fuses = pending.fuses;
@@ -218,12 +216,12 @@ impl<'a> Compiler<'a> {
             program.derived_mut().rows = format!("SELECT * FROM {name}");
         }
         let source_list = self.slot();
-        let mut projections = Vec::new();
+        let mut union_branches = Vec::new();
         let mut slots = Vec::new();
         for (index, program) in members.iter().enumerate() {
             let columns = aligned_columns(self, relation, program, ranked)?;
             slots = columns.keys().cloned().collect();
-            projections.push(format!(
+            union_branches.push(format!(
                 "SELECT {}, {index} AS {source_list} FROM ({}) r",
                 columns
                     .iter()
@@ -237,7 +235,7 @@ impl<'a> Compiler<'a> {
         let precedence = self.slot();
         self.ctes.push(format!(
             "{values} AS MATERIALIZED (SELECT *, row_number() OVER (PARTITION BY _pk ORDER BY {source_list}) AS {precedence} FROM ({}))",
-            projections.join(" UNION ALL ")
+            union_branches.join(" UNION ALL ")
         ));
         // Counting needs selected identities, not value precedence or fusion
         // scores. Fall back to the captured operand only when its stages made
@@ -274,7 +272,7 @@ impl<'a> Compiler<'a> {
             "1".into()
         };
         // One unordered identity set avoids UNION's merge-sorted inputs;
-        // similarity witnesses never participate in duplicate elimination.
+        // similarity matching rows never participate in duplicate elimination.
         let membership =
             format!("SELECT k._pk,{near} AS _near FROM (SELECT DISTINCT _pk FROM ({keys})) k");
         let count = format!(
@@ -285,7 +283,7 @@ impl<'a> Compiler<'a> {
                 "0"
             }
         );
-        let mut projection = slots
+        let mut select_list = slots
             .iter()
             .map(|slot| format!("d.{0} AS {0}", column_sql(slot)))
             .collect::<Vec<_>>();
@@ -322,19 +320,19 @@ impl<'a> Compiler<'a> {
             let contributors = self.slot();
             let recency = self.slot();
             let undated = self.slot();
-            projection.push("f.r AS _rank".into());
-            projection.push(format!("f.r AS {}", column_sql(&rank)));
-            projection.push(format!("f.r IS NULL AS {}", column_sql(&missing)));
-            projection.push(format!("f.recency AS {}", column_sql(&recency)));
-            projection.push(format!("f.recency IS NULL AS {}", column_sql(&undated)));
-            projection.push(format!(
+            select_list.push("f.r AS _rank".into());
+            select_list.push(format!("f.r AS {}", column_sql(&rank)));
+            select_list.push(format!("f.r IS NULL AS {}", column_sql(&missing)));
+            select_list.push(format!("f.recency AS {}", column_sql(&recency)));
+            select_list.push(format!("f.recency IS NULL AS {}", column_sql(&undated)));
+            select_list.push(format!(
                 "(SELECT json_group_array(value) FROM json_each(json_array({})) WHERE value>0) AS {}",
                 (1..=members.len()).map(|index| format!("f.in{index}*{index}")).collect::<Vec<_>>().join(", "),
                 column_sql(&contributors)
             ));
             join_rank = format!(" JOIN {scores} f ON f.k=d._pk");
             if let Some(index) = slots.iter().position(|slot| slot == "_recency") {
-                projection[index] = "f.recency AS _recency".into();
+                select_list[index] = "f.recency AS _recency".into();
             }
             relation
                 .program
@@ -372,7 +370,7 @@ impl<'a> Compiler<'a> {
             relation,
             format!(
                 "SELECT {} FROM {values} d{join_rank} WHERE d.{precedence}=1 ORDER BY {}",
-                projection.join(", "),
+                select_list.join(", "),
                 order_by(&order)
             ),
         );
@@ -419,8 +417,8 @@ fn other_list(other: &Program, within: Option<&str>, list: usize) -> String {
     }
 }
 
-/// Align actual operand values and private native coordinates, never aliases
-/// fetched afresh from the current native tables.
+/// Align each operand's own values and private row coordinates, never aliases
+/// fetched afresh from the current unit tables.
 fn aligned_columns(
     compiler: &mut Compiler<'_>,
     relation: &relations::Relation,
@@ -429,16 +427,16 @@ fn aligned_columns(
 ) -> Result<std::collections::BTreeMap<String, String>, QueryError> {
     let mut columns = std::collections::BTreeMap::from([("_pk".into(), "r._pk".into())]);
     if let (
-        RowBasis::Native {
+        RowKind::UnitRows {
             columns: output, ..
         },
-        RowBasis::Native {
+        RowKind::UnitRows {
             columns: source, ..
         },
-    ) = (&relation.program.row_basis, &input.row_basis)
+    ) = (&relation.program.row_kind, &input.row_kind)
     {
         if output.len() != source.len() {
-            return Err(not_built("combining different native row identities"));
+            return Err(not_built("combining different row identities"));
         }
         for (output, source) in output.iter().zip(source) {
             columns.insert(output.clone(), format!("r.{}", column_sql(source)));
@@ -452,9 +450,9 @@ fn aligned_columns(
             .find(|candidate| candidate.prefix == source.prefix && candidate.unit == source.unit);
         let value = match input_source {
             Some(input_source) => format!("r.{}", column_sql(&input_source.key)),
-            // An operand without this optional witness has no witness provenance.
+            // An operand without this optional matching row has no matching row source.
             None if source.prefix.starts_with("match.") => "NULL".into(),
-            None => return Err(not_built("combining different native source coordinates")),
+            None => return Err(not_built("combining different source coordinates")),
         };
         columns.insert(source.key.clone(), value);
     }
@@ -480,8 +478,8 @@ fn aligned_columns(
                 && input_relation.open_fields
                 && column.name.starts_with("match.")
             {
-                // The shared scope permits this witness namespace on native
-                // rows. RHS-only members without a witness retain unknowns.
+                // The shared scope permits this matching row namespace on unit
+                // rows. RHS-only members without a matching row keep unknowns.
                 columns.insert(
                     relation.program.column_slot(&column.name).to_owned(),
                     "NULL".into(),

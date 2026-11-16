@@ -3,7 +3,7 @@ use crate::archive::open_write;
 use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-fn deny_old_projection(context: AuthContext<'_>) -> Authorization {
+fn deny_old_block_selection(context: AuthContext<'_>) -> Authorization {
     match context.action {
         AuthAction::Update {
             table_name: "message",
@@ -31,7 +31,7 @@ fn apply(
         step.resolution.as_ref().unwrap(),
         1,
         None,
-        Some(&fixture_receipt()),
+        Some(&fixture_commit()),
         changes,
     )
     .unwrap()
@@ -58,7 +58,7 @@ fn check_items(tx: &Transaction<'_>, changes: &crate::change_summary::ChangeSumm
 }
 
 #[test]
-fn fresh_selected_messages_install_without_replacing_an_old_projection() {
+fn fresh_messages_install_without_replacing_old_blocks() {
     let directory = tempfile::tempdir().unwrap();
     let mut conn = open_write(&directory.path().join("index.db"), 1).unwrap();
     crate::schema::create_index(&conn).unwrap();
@@ -93,7 +93,7 @@ fn fresh_selected_messages_install_without_replacing_an_old_projection() {
         [true, true]
     );
     let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
-    tx.authorizer(Some(deny_old_projection)).unwrap();
+    tx.authorizer(Some(deny_old_block_selection)).unwrap();
     assert_eq!(apply(&tx, &b, 0, &changes), 1);
     tx.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
         .unwrap();
@@ -186,7 +186,7 @@ fn reserved_message_keys_are_not_creation_results_across_steps() {
         );
     }
     let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
-    tx.authorizer(Some(deny_old_projection)).unwrap();
+    tx.authorizer(Some(deny_old_block_selection)).unwrap();
     assert_eq!(apply(&tx, &b, 0, &changes), 1);
     tx.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
         .unwrap();
@@ -194,7 +194,7 @@ fn reserved_message_keys_are_not_creation_results_across_steps() {
     assert_eq!(
         apply(&tx, &b, 1, &changes),
         0,
-        "an exact retry keeps the admitted projection"
+        "a retry keeps the committed block_selection"
     );
     assert_eq!(
         tx.query_row(
@@ -235,7 +235,7 @@ fn reserved_message_keys_are_not_creation_results_across_steps() {
 }
 
 #[test]
-fn fresh_tool_pairs_and_earlier_event_anchors_keep_the_main_source_sequence() {
+fn fresh_tool_pairs_and_earlier_event_placements_keep_order() {
     for result_first in [false, true] {
         let directory = tempfile::tempdir().unwrap();
         let mut conn = open_write(&directory.path().join("index.db"), 1).unwrap();
@@ -266,7 +266,7 @@ fn fresh_tool_pairs_and_earlier_event_anchors_keep_the_main_source_sequence() {
         let mut b = batch("input", Route::Live, 0, records, &["s"]);
         resolve::prepare_index(&tx, &mut b, 1, false).unwrap();
         let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
-        tx.authorizer(Some(deny_old_projection)).unwrap();
+        tx.authorizer(Some(deny_old_block_selection)).unwrap();
         assert_eq!(apply(&tx, &b, 0, &changes), 2);
         tx.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
             .unwrap();
@@ -418,7 +418,7 @@ fn early_copy_materialization_then_refresh_keeps_one_body_through_release() {
             crate::items::computed_entries(r.conn().unwrap(), index.session_pk).unwrap()
         );
     }
-    // A second explicit owner releases the copy. Its missing target is
+    // A second explicit session releases the copy. Its missing target is
     // installed before the final selected-message refresh in the same step.
     w.store_reading(declare("ambiguous", &ambiguous), Some(&SOURCE_RECORD))
         .unwrap();

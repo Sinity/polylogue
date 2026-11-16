@@ -110,7 +110,7 @@ pub(super) fn outbox(name: &str) -> Outbox {
 }
 
 #[test]
-fn restart_recovers_confirmed_outbox_and_preserves_unknown_attempt() {
+fn restart_recovers_confirmed_deliveries_and_unknown_attempts() {
     use shared_signals::notifications::NotificationState;
     let mut fixture = crate::test_daemon::start_with_clock(
         "synthetic",
@@ -347,7 +347,7 @@ fn completion_commit_wakes_rules_while_operation_clock_is_stopped() {
     });
     assert!(
         matches!(startup, Phase::TickCompleted { persisted: false }),
-        "startup changed the durable baseline: {:?}",
+        "startup changed the stored baseline: {:?}",
         observe.seen
     );
     observe.until("startup controller wait", |phase| {
@@ -396,7 +396,7 @@ fn completion_commit_wakes_rules_while_operation_clock_is_stopped() {
     );
     committed
         .try_recv()
-        .expect("writer ACK followed its actual committed cue");
+        .expect("writer acknowledgment followed its committed cue");
     observations::emit(&fixture.daemon, Phase::IndependentCommitCue);
 
     let mut cue = false;
@@ -422,14 +422,14 @@ fn completion_commit_wakes_rules_while_operation_clock_is_stopped() {
             }
             Phase::PersistStarted { .. } | Phase::PersistAcknowledged { .. } => {
                 panic!(
-                    "missing proof changed the durable checkpoint: {:?}",
+                    "an unconfirmed author changed the stored checkpoint: {:?}",
                     observe.seen
                 )
             }
             Phase::TickCompleted { persisted: false } if status => complete = true,
             Phase::TickCompleted { persisted: true } => {
                 panic!(
-                    "missing proof persisted a rule adoption: {:?}",
+                    "an unconfirmed author saved a rule adoption: {:?}",
                     observe.seen
                 )
             }
@@ -455,13 +455,13 @@ fn completion_commit_wakes_rules_while_operation_clock_is_stopped() {
     assert_eq!(
         load(&fixture.daemon).unwrap().unwrap().identity().unwrap(),
         baseline,
-        "unproven assertion adoption changed the durable checkpoint"
+        "an unconfirmed assertion adoption changed the stored checkpoint"
     );
     assert_eq!(fixture.daemon.config.requests.now().unix_ms(), FIXED);
 }
 
 #[test]
-fn unavailable_assertion_closure_preserves_pending_state_without_author_exemption() {
+fn unavailable_dependencies_keep_the_assertion_pending() {
     use shared_signals::{ActiveRule, Evaluation, Occurrence, Origin, Row, RuleVersion};
     use std::sync::atomic::{AtomicI64, Ordering};
     let at = Arc::new(AtomicI64::new(1_792_332_000_000));
@@ -484,11 +484,11 @@ fn unavailable_assertion_closure_preserves_pending_state_without_author_exemptio
     let active = ActiveRule {
         version: RuleVersion {
             product: "polylogue".into(),
-            id: "authored:retained".into(),
+            id: "authored:kept".into(),
             revision: 7,
         },
         rule: serde_json::from_value(
-            json!({"name":"retained","query":"sessions","for":"1h","interrupt":true}),
+            json!({"name":"kept","query":"sessions","for":"1h","interrupt":true}),
         )
         .unwrap(),
         author: shared_signals::Author::Operator,
@@ -542,7 +542,7 @@ fn unavailable_assertion_closure_preserves_pending_state_without_author_exemptio
     );
     let before = checkpoint.identity().unwrap();
     at.fetch_add(2 * shared_signals::HOUR, Ordering::SeqCst);
-    // An empty current-looking assertion read is not withdrawal/closure proof.
+    // An empty current-looking assertion read does not show a withdrawal or closure.
     tick(&fixture.daemon).unwrap();
     assert_eq!(
         load(&fixture.daemon).unwrap().unwrap().identity().unwrap(),

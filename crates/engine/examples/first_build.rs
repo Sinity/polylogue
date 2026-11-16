@@ -330,7 +330,7 @@ fn main() {
     let databases = checkpoint_first_build(&archive).unwrap();
     let checkpoint_seconds = checkpoint_started.elapsed().as_secs_f64();
     let secs = started.elapsed().as_secs_f64();
-    // Both arms include the same final WAL materialization. This explicit
+    // Both arms include the same final WAL checkpoint into the database file. This explicit
     // benchmark step is separate from normal engine shutdown.
 
     let io = fs::read_to_string("/proc/self/io").ok();

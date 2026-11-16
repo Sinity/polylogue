@@ -75,7 +75,7 @@ pub(super) async fn run(d: Arc<Daemon>, stop: CancellationToken) -> Result<(), H
         return Ok(());
     };
     // The subscription precedes both startup snapshots. It carries wakeups,
-    // not work counters or authoritative observation timestamps.
+    // not work counters or observation timestamps to rely on.
     let commits = writes.completion_commits();
     #[cfg(test)]
     super::observations::emit(&d, super::observations::Phase::Subscribed);
@@ -102,7 +102,7 @@ pub(super) async fn run(d: Arc<Daemon>, stop: CancellationToken) -> Result<(), H
             }
             // A tick reads the rule set, the attention settings and its own
             // checkpoint, all authored records. A rule's query reads
-            // content, but every rule is held until its closure is proven
+            // content, but every rule is held until all its dependencies are confirmed
             // (`rules::definition`), so while none runs, a commit of content
             // or of a read's run record changes nothing a tick reads.
             // Installing a built index is a content commit, but it is the
@@ -246,7 +246,7 @@ async fn drive(
                 };
                 match persist_update(d,&update) {
                     Ok(true)=>{let _=update.persisted.send(());}
-                    Ok(false)=>{failure=Some(Held::from("notification receipt is pending canonical confirmation"));break;}
+                    Ok(false)=>{failure=Some(Held::from("notification receipt is pending confirmation"));break;}
                     Err(error)=>{failure=Some(error);break;}
                 }
             }
@@ -277,7 +277,7 @@ async fn drive(
         failure.get_or_insert(error);
     }
     if worker_ended {
-        // Joining above retains a delivery error; channel closure alone is
+        // Joining above keeps a delivery error; channel closure alone is
         // only the fallback when that worker returned successfully.
         failure.get_or_insert_with(|| Held::from("desktop worker stopped"));
     }
@@ -301,7 +301,7 @@ async fn drain_worker(
             }
             Ok(false) => {
                 failure.get_or_insert_with(|| {
-                    Held::from("notification receipt is pending canonical confirmation")
+                    Held::from("notification receipt is pending confirmation")
                 });
             }
             Err(error) => {

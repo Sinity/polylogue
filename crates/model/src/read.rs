@@ -1,37 +1,37 @@
-//! The read contract shared by selection, view projection, layout and delivery.
-//! Canonical source records stay separate from presentation substitutions.
+//! The read contract shared by selection, view filter, layout and delivery.
+//! Source records stay separate from presentation substitutions.
 mod composition;
 mod cursor;
 mod delivery;
-mod evidence;
 mod format;
 mod fragments;
 mod item_index;
 mod items;
+mod layout_facts;
 mod lineage;
 mod options;
 mod parents;
 
 mod presentation;
-mod projection;
 mod target;
 mod tokens;
+mod view_filter;
 pub use composition::*;
 pub use cursor::*;
 pub use delivery::*;
-pub use evidence::*;
 pub use format::*;
 pub use fragments::*;
 pub use item_index::*;
 pub use items::*;
+pub use layout_facts::*;
 pub use lineage::*;
 pub use options::*;
 pub use parents::*;
 
 pub use presentation::*;
-pub use projection::*;
 pub use target::*;
 pub use tokens::*;
+pub use view_filter::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ReadError {
@@ -51,10 +51,10 @@ pub enum ReadError {
         option: String,
         accepted_by: String,
     },
-    #[error("{view} needs prepared {evidence} evidence for {reference}")]
-    MissingEvidence {
+    #[error("{view} needs prepared {facts} for {reference}")]
+    MissingPreparedData {
         view: View,
-        evidence: String,
+        facts: String,
         reference: String,
     },
     #[error("view {view} needs {option}=full for {target}")]
@@ -63,10 +63,10 @@ pub enum ReadError {
         target: String,
         option: String,
     },
-    #[error("invalid read evidence: {0}")]
-    InvalidEvidence(String),
-    #[error("unknown fold {word:?}; kinds: {kinds}")]
-    UnknownFold { word: String, kinds: String },
+    #[error("invalid prepared read data: {0}")]
+    InvalidPreparedData(String),
+    #[error("unknown show or hide word {word:?}; kinds: {kinds}")]
+    UnknownShowWord { word: String, kinds: String },
 }
 
 #[cfg(test)]

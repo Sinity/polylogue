@@ -1,15 +1,15 @@
-//! Hydrate canonical rows lazily after the shared selector has resolved refs.
+//! Hydrate stored rows lazily after the shared selector has resolved refs.
 use super::super::Failure;
 use polylogue_model::{
     SessionId,
     bundle::*,
-    read::{ProjectionEvidence, ReadRecordKind, ReadRecordLocator, ReadTarget},
+    read::{LayoutFacts, ReadRecordKind, ReadRecordLocator, ReadTarget},
 };
 use polylogue_store::{Reader, read::limit::ReadLimit};
 use std::ops::ControlFlow;
 
 pub(super) enum SelectedRecord {
-    Canonical(Box<Record>),
+    Original(Box<Record>),
     LinkIssue {
         session: SessionId,
         issue: Box<polylogue_model::read::ParentIssue>,
@@ -17,12 +17,12 @@ pub(super) enum SelectedRecord {
 }
 impl From<Record> for SelectedRecord {
     fn from(record: Record) -> Self {
-        Self::Canonical(Box::new(record))
+        Self::Original(Box::new(record))
     }
 }
 
 pub(super) type Visit<'a> =
-    dyn FnMut(SelectedRecord, ProjectionEvidence, ReadRecordLocator) -> Result<bool, Failure> + 'a;
+    dyn FnMut(SelectedRecord, LayoutFacts, ReadRecordLocator) -> Result<bool, Failure> + 'a;
 
 fn locator(kind: ReadRecordKind, ordinal: u64) -> ReadRecordLocator {
     ReadRecordLocator { kind, ordinal }
@@ -32,11 +32,11 @@ fn stale_record() -> Failure {
     Failure::new("stale_cursor", "continued record is no longer selected")
 }
 
-fn admission(commit: Option<u64>, reference: &str) -> Result<u64, Failure> {
+fn required_commit(commit: Option<u64>, reference: &str) -> Result<u64, Failure> {
     commit.ok_or_else(|| {
         Failure::new(
             "not_yet_available",
-            format!("{reference} has no retained source admission evidence"),
+            format!("{reference} has no stored commit position for its source"),
         )
     })
 }
@@ -62,7 +62,7 @@ pub(super) fn reference(
             let at = single(ReadRecordKind::Message)?;
             visit(
                 message(reader, id, None)?.into(),
-                ProjectionEvidence::default(),
+                LayoutFacts::default(),
                 at,
             )
         }
@@ -70,7 +70,7 @@ pub(super) fn reference(
             let at = single(ReadRecordKind::Message)?;
             visit(
                 message(reader, id, Some(*n))?.into(),
-                ProjectionEvidence::default(),
+                LayoutFacts::default(),
                 at,
             )
         }
@@ -92,7 +92,7 @@ pub(super) fn reference(
                             ordinal = next;
                             visit(
                                 message(reader, &id, None)?.into(),
-                                ProjectionEvidence::default(),
+                                LayoutFacts::default(),
                                 current,
                             )
                         });
@@ -117,7 +117,7 @@ pub(super) fn reference(
                 .map_err(Failure::from)?
                 .ok_or_else(|| Failure::new("not_found", format!("no document {id}")))?;
             let reference = format!("document:{id}");
-            let commit = admission(
+            let commit = required_commit(
                 reader.document_commit(id).map_err(Failure::from)?,
                 &reference,
             )?;
@@ -128,7 +128,7 @@ pub(super) fn reference(
                     document,
                 })
                 .into(),
-                ProjectionEvidence::default(),
+                LayoutFacts::default(),
                 at,
             )
         }
@@ -138,34 +138,30 @@ pub(super) fn reference(
                 .event_record(id)
                 .map_err(Failure::from)?
                 .ok_or_else(|| Failure::new("not_found", format!("no event {id}")))?;
-            visit(
-                Record::Event(record).into(),
-                ProjectionEvidence::default(),
-                at,
-            )
+            visit(Record::Event(record).into(), LayoutFacts::default(), at)
         }
         ReadTarget::Assertion { .. } | ReadTarget::Delivery(_) => {
             let at = single(ReadRecordKind::Authored)?;
-            super::authored::reference(reader, &target.reference(), &mut |record, evidence| {
-                visit(record.into(), evidence, at)
+            super::authored::reference(reader, &target.reference(), &mut |record, facts| {
+                visit(record.into(), facts, at)
             })
         }
     }
 }
 
-/// One message, or one of its blocks, with its admission and reading order.
+/// One message, or one of its blocks, with its commit position and reading order.
 fn message(
     reader: &Reader<'_>,
     id: &polylogue_model::MessageId,
     block: Option<u64>,
 ) -> Result<Record, Failure> {
-    let (mut message, mut projection) = reader
-        .message_with_projection(id)
+    let (mut message, mut block_selection) = reader
+        .message_with_block_selection(id)
         .map_err(Failure::from)?
         .ok_or_else(|| Failure::new("not_found", format!("no message {id}")))?;
     let reference = format!("message:{id}");
-    let commit = admission(
-        reader.message_admission(id).map_err(Failure::from)?,
+    let commit = required_commit(
+        reader.message_commit(id).map_err(Failure::from)?,
         &reference,
     )?;
     let order = reader
@@ -174,11 +170,11 @@ fn message(
         .ok_or_else(|| {
             Failure::new(
                 "not_yet_available",
-                format!("{reference} has no physical reading position"),
+                format!("{reference} has no reading position"),
             )
         })?;
     if let Some(n) = block {
-        let Some(position) = projection
+        let Some(position) = block_selection
             .block_ordinals
             .iter()
             .position(|ordinal| *ordinal == n)
@@ -189,9 +185,9 @@ fn message(
             ));
         };
         message.blocks = vec![message.blocks.swap_remove(position)];
-        projection.block_ordinals = vec![n];
+        block_selection.block_ordinals = vec![n];
     }
-    message_record(reader, message, projection, commit, order)
+    message_record(reader, message, block_selection, commit, order)
 }
 
 fn session(
@@ -217,7 +213,7 @@ fn session(
             .session(id)
             .map_err(Failure::from)?
             .ok_or_else(|| Failure::new("not_found", format!("no session {id}")))?;
-        let commit = admission(
+        let commit = required_commit(
             reader.session_commit(id).map_err(Failure::from)?,
             &reference,
         )?;
@@ -229,7 +225,7 @@ fn session(
                 session,
             })
             .into(),
-            ProjectionEvidence {
+            LayoutFacts {
                 lineage_complete: if inherited {
                     polylogue_model::read::ValueState::known(selected.parents().complete)
                 } else {
@@ -265,7 +261,7 @@ fn session(
                     session: id.clone(),
                     issue: Box::new(issue.clone()),
                 },
-                ProjectionEvidence::default(),
+                LayoutFacts::default(),
                 locator(
                     LinkIssue,
                     u64::try_from(ordinal).map_err(|_| stale_record())?,
@@ -292,19 +288,19 @@ fn session(
         let mut result = Ok(true);
         ReadLimit::set_stage("read records: messages");
         selected
-            .visit_from_with_record_evidence(from, |message, projection, commit, order| {
+            .visit_from_with_record_arrival(from, |message, block_selection, commit, order| {
                 ReadLimit::set_stage("read records: messages");
                 let reference = format!("message:{}", message.id);
-                let next = admission(commit, &reference).and_then(|commit| {
-                    let evidence = ProjectionEvidence {
+                let next = required_commit(commit, &reference).and_then(|commit| {
+                    let facts = LayoutFacts {
                         inherited: message.session != *id,
                         ..Default::default()
                     };
                     let current = locator(Message, ordinal);
                     ordinal = ordinal.checked_add(1).ok_or_else(stale_record)?;
                     visit(
-                        message_record(reader, message, projection, commit, order)?.into(),
-                        evidence,
+                        message_record(reader, message, block_selection, commit, order)?.into(),
+                        facts,
                         current,
                     )
                 });
@@ -338,11 +334,7 @@ fn session(
                     .ok_or_else(stale_record)
                     .and_then(|next| {
                         ordinal = next;
-                        visit(
-                            Record::Event(event).into(),
-                            ProjectionEvidence::default(),
-                            current,
-                        )
+                        visit(Record::Event(event).into(), LayoutFacts::default(), current)
                     });
                 match next {
                     Ok(true) => ControlFlow::Continue(()),
@@ -369,12 +361,12 @@ fn session(
     reader
         .visit_links_from_ordinal(id, ordinal, |link| {
             seen = true;
-            ReadLimit::set_stage("read records: link admission");
+            ReadLimit::set_stage("read records: link commit");
             let reference = LinkRecord::reference(&link);
             let next = reader
                 .link_commit(&link)
                 .map_err(Failure::from)
-                .and_then(|commit| admission(commit, &reference))
+                .and_then(|commit| required_commit(commit, &reference))
                 .and_then(|commit| {
                     let current = locator(Link, ordinal);
                     ordinal = ordinal.checked_add(1).ok_or_else(stale_record)?;
@@ -385,7 +377,7 @@ fn session(
                             link,
                         })
                         .into(),
-                        ProjectionEvidence::default(),
+                        LayoutFacts::default(),
                         current,
                     )
                 });
@@ -411,76 +403,78 @@ fn session(
 pub(super) fn message_record(
     reader: &Reader<'_>,
     message: polylogue_model::Message,
-    projection: MessageProjection,
+    block_selection: MessageProjection,
     commit: u64,
     order: u64,
 ) -> Result<Record, Failure> {
     use polylogue_model::attachment_binding::AttachmentNamespace;
     let mut injections = reader
-        .injection_evidence(&message.id, projection.source_version)
+        .injection_evidence(&message.id, block_selection.source_version)
         .map_err(Failure::from)?;
-    injections.retain(|evidence| {
-        projection
+    injections.retain(|facts| {
+        block_selection
             .block_ordinals
-            .binary_search(&evidence.block)
+            .binary_search(&facts.block)
             .is_ok()
     });
-    let retained = reader
-        .attachment_binding_claims(&message.id, projection.source_version)
+    let kept = reader
+        .stated_attachment_bindings(&message.id, block_selection.source_version)
         .map_err(Failure::from)?;
     let mut bindings = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for record in retained {
-        let mut claim = record.claim().clone();
-        if projection
+    for record in kept {
+        let mut binding = record.claim().clone();
+        if block_selection
             .block_ordinals
-            .binary_search(&claim.block)
+            .binary_search(&binding.block)
             .is_err()
         {
             continue;
         }
-        let actual = record.context();
-        // Original claims and supplied prior exports remain declarations.
-        claim.exported_from = AttachmentNamespace {
-            input: actual.input.clone(),
-            chain: actual.chain,
-            import_id: actual.import_id.clone(),
+        let context = record.context();
+        // Stated bindings and earlier exports the source supplied stay as declared.
+        binding.exported_from = AttachmentNamespace {
+            input: context.input.clone(),
+            chain: context.chain,
+            import_id: context.import_id.clone(),
         };
-        claim
+        binding
             .validate()
             .map_err(|e| Failure::from(polylogue_store::StoreError::Invalid(e.to_string())))?;
-        if seen.insert(claim.clone()) {
-            bindings.push(claim);
+        if seen.insert(binding.clone()) {
+            bindings.push(binding);
         }
     }
     let covered: std::collections::HashSet<_> = bindings
         .iter()
-        .map(|claim| (claim.block, claim.attachment))
+        .map(|binding| (binding.block, binding.attachment))
         .collect();
     let uncovered: Vec<_> = polylogue_model::attachment_binding::attachment_slots(
         &message.blocks,
-        &projection.block_ordinals,
+        &block_selection.block_ordinals,
     )
     .into_iter()
     .filter(|slot| !covered.contains(&(slot.block, slot.attachment)))
     .collect();
-    for claim in
-        reader.current_attachment_claims(&message.id, projection.source_version, &uncovered)?
-    {
-        claim
+    for binding in reader.current_attachment_bindings(
+        &message.id,
+        block_selection.source_version,
+        &uncovered,
+    )? {
+        binding
             .validate()
             .map_err(|e| Failure::from(polylogue_store::StoreError::Invalid(e.to_string())))?;
-        if seen.insert(claim.clone()) {
-            bindings.push(claim);
+        if seen.insert(binding.clone()) {
+            bindings.push(binding);
         }
     }
     Ok(Record::Message(Box::new(MessageRecord {
         reference: format!("message:{}", message.id),
         commit,
         order,
-        source_version: projection.source_version,
-        block_count: projection.block_count,
-        block_ordinals: projection.block_ordinals,
+        source_version: block_selection.source_version,
+        block_count: block_selection.block_count,
+        block_ordinals: block_selection.block_ordinals,
         injections,
         bindings,
         copied_for: reader.copied_for(&message.id).map_err(Failure::from)?,

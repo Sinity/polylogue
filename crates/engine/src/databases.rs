@@ -10,7 +10,7 @@ pub(super) struct DatabaseInput {
     pub path: PathBuf,
     pub input: InputKey,
     pub observation: Observation,
-    pub acquisition: crate::acquisition::AcquisitionContext,
+    pub source_read: crate::source_read::SourceReadContext,
 }
 #[derive(Default)]
 pub(super) struct Completed {
@@ -113,7 +113,7 @@ impl Databases {
                     match outcome {
                         Ok(Ok(report)) => {
                             completed.changed = true;
-                            if let Err(error) = queue.publish(report.snapshot) {
+                            if let Err(error) = queue.enqueue_staged(report.snapshot) {
                                 reader.forget(&source.path);
                                 completed.errors.push(format!(
                                     "stage database {}: {error}",
@@ -279,8 +279,8 @@ impl<'a> InputWriter<'a> {
                 })?;
             (Some(blob), file.into_iter().collect())
         };
-        let acquisition = new_blob.as_ref().map(|blob| {
-            self.source.acquisition.finish(
+        let source_read = new_blob.as_ref().map(|blob| {
+            self.source.source_read.finish(
                 polylogue_store::primary::RawRange {
                     start: self.length - size,
                     end: self.length,
@@ -289,7 +289,7 @@ impl<'a> InputWriter<'a> {
             )
         });
         let batch = Batch {
-            required_disposition: None,
+            required_outcome: None,
             input: self.source.input.clone(),
             change: if !self.exists {
                 Change::First
@@ -306,8 +306,8 @@ impl<'a> InputWriter<'a> {
             blobs: vec![],
             length: self.length,
             parse: vec![],
-            acquisition,
-            basis: self.source.acquisition.basis.clone(),
+            acquisition: source_read,
+            basis: self.source.source_read.basis.clone(),
             release: Default::default(),
         };
         self.exists = true;
@@ -317,7 +317,7 @@ impl<'a> InputWriter<'a> {
         self.bytes += size;
         Ok(())
     }
-    fn publish(
+    fn enqueue_staged(
         &mut self,
         snapshot: Option<polylogue_store::primary::DatabaseSnapshotToken>,
     ) -> Result<(), DatabaseError> {
@@ -326,14 +326,14 @@ impl<'a> InputWriter<'a> {
         }
         let snapshot = snapshot.ok_or_else(|| {
             polylogue_store::StoreError::Invalid(
-                "database sample has no actual consistent-read token".into(),
+                "database sample has no consistent-read token".into(),
             )
         })?;
         let start = self.staged.iter().find_map(|part| {
             part.batch
                 .acquisition
                 .as_ref()
-                .map(|receipt| receipt.range.start)
+                .map(|source_read| source_read.range.start)
         });
         if let Some(start) = start {
             let window = polylogue_store::primary::RawRange {
@@ -341,11 +341,11 @@ impl<'a> InputWriter<'a> {
                 end: self.length,
             };
             for part in &mut self.staged {
-                if let Some(receipt) = &mut part.batch.acquisition {
-                    receipt.generation =
+                if let Some(source_read) = &mut part.batch.acquisition {
+                    source_read.generation =
                         Some(polylogue_store::primary::SourceGeneration::Database {
                             stream: polylogue_store::primary::RawStream {
-                                source: receipt.source.clone(),
+                                source: source_read.source.clone(),
                                 input: part.batch.input.clone(),
                                 role: polylogue_store::primary::RawStreamRole::DatabaseDump,
                                 namespace: None,
@@ -353,15 +353,16 @@ impl<'a> InputWriter<'a> {
                             snapshot: snapshot.clone(),
                             window,
                         });
-                    receipt.raw_total = (receipt.range.end == window.end).then_some(window.end);
-                    // Original sibling body addresses are assigned by atomic
-                    // custody; no operation ID is inferred from its ordinal.
-                    receipt.raw_predecessor = None;
+                    source_read.raw_total =
+                        (source_read.range.end == window.end).then_some(window.end);
+                    // Sibling body addresses are assigned when the group is
+                    // spooled as one unit; no operation ID is inferred from its ordinal.
+                    source_read.raw_predecessor = None;
                 }
             }
         }
         // The read transaction has completed successfully before one SDK group
-        // can accept any of its members. The pre-IO basis is unchanged.
+        // can accept any of its members. The base read before IO is unchanged.
         self.acknowledgment = Some(
             self.writer
                 .enqueue_group(std::mem::take(&mut self.staged), Arc::clone(&self.blobs))?,
@@ -432,12 +433,12 @@ impl Engine {
                 .is_none();
         }
         if self.archive.is_primary() {
-            // The database worker can finish before its durable acquisition is
-            // confirmed. Keep that existing producer custody visible on later
+            // The database worker can finish before Sinex confirms its spooled
+            // read. Keep those spooled bytes visible on later
             // turns, even when unchanged file facts need no new worker.
             for (path, origin) in &self.databases {
                 let source = self
-                    .acquisition_context(
+                    .source_read_context(
                         path,
                         origin,
                         polylogue_store::primary::AcquisitionRoute::NativeCapture,
@@ -487,7 +488,7 @@ impl Engine {
                         "unknown database origin {origin}"
                     ))
                 })?;
-                let acquisition = self.sampling_context(&path, origin)?;
+                let source_read = self.sampling_context(&path, origin)?;
                 databases.push(databases::DatabaseInput {
                     input: InputKey {
                         id: self
@@ -500,7 +501,7 @@ impl Engine {
                         route: polylogue_model::Route::Live,
                     },
                     observation: self.observation(&path, None),
-                    acquisition,
+                    source_read,
                     path,
                 });
             }

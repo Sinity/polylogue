@@ -1,5 +1,5 @@
 mod boundaries;
-mod native_paths;
+mod raw_paths;
 use super::*;
 
 #[test]
@@ -46,9 +46,9 @@ fn cache_schema_renames_tables_without_changing_input_columns_or_counter_keys() 
 fn standalone_logical_source_views_preserve_rowids_and_live_values() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("archive.db");
-    let ledger = Connection::open(&path).unwrap();
-    ledger.execute_batch(crate::schema::ARCHIVE).unwrap();
-    ledger
+    let standalone = Connection::open(&path).unwrap();
+    standalone.execute_batch(crate::schema::ARCHIVE).unwrap();
+    standalone
         .execute("INSERT INTO input(id,format) VALUES ('i','test')", [])
         .unwrap();
     let reader = Connection::open_in_memory().unwrap();
@@ -64,7 +64,7 @@ fn standalone_logical_source_views_preserve_rowids_and_live_values() {
         )
         .unwrap();
     assert_eq!(before, 1);
-    ledger
+    standalone
         .execute("INSERT INTO input(id,format) VALUES ('j','test')", [])
         .unwrap();
     let actual: (i64, String) = reader
@@ -74,7 +74,7 @@ fn standalone_logical_source_views_preserve_rowids_and_live_values() {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
-    let expected: (i64, String) = ledger
+    let expected: (i64, String) = standalone
         .query_row("SELECT rowid,id FROM input WHERE id='j'", [], |row| {
             Ok((row.get(0)?, row.get(1)?))
         })
@@ -83,7 +83,7 @@ fn standalone_logical_source_views_preserve_rowids_and_live_values() {
 }
 
 #[test]
-fn primary_opens_one_source_cache_and_never_creates_a_local_input_ledger() {
+fn primary_opens_one_source_cache_and_no_local_input_table() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().join("polylogue");
     let sinex = directory.path().join("sinex");
@@ -111,7 +111,7 @@ fn primary_opens_one_source_cache_and_never_creates_a_local_input_ledger() {
 }
 
 #[test]
-fn later_chunks_keep_their_actual_admission_when_one_revision_grows() {
+fn later_chunks_keep_their_commit_when_a_revision_grows() {
     for primary in [false, true] {
         let conn = Connection::open_in_memory().unwrap();
         if primary {
@@ -152,33 +152,33 @@ fn later_chunks_keep_their_actual_admission_when_one_revision_grows() {
         row.extents[0].blob_offset = 4;
         row.insert(&conn, 9).unwrap();
         assert_eq!(
-            Source::admitted_through(&conn, "input", 1, 4).unwrap(),
+            Source::committed_through(&conn, "input", 1, 4).unwrap(),
             Some(2)
         );
         assert_eq!(
-            Source::admitted_through(&conn, "input", 1, 6).unwrap(),
+            Source::committed_through(&conn, "input", 1, 6).unwrap(),
             Some(9)
         );
         assert_eq!(
-            Source::admitted_through(&conn, "input", 1, 9).unwrap(),
+            Source::committed_through(&conn, "input", 1, 9).unwrap(),
             None
         );
         row.insert(&conn, 15).unwrap();
         assert_eq!(
-            Source::admitted_through(&conn, "input", 1, 8).unwrap(),
+            Source::committed_through(&conn, "input", 1, 8).unwrap(),
             Some(9)
         );
         conn.execute(&source.sql("DELETE FROM @source.extent WHERE offset=0"), [])
             .unwrap();
         assert_eq!(
-            Source::admitted_through(&conn, "input", 1, 8).unwrap(),
+            Source::committed_through(&conn, "input", 1, 8).unwrap(),
             None
         );
     }
 }
 
 #[test]
-fn a_proven_shorter_prefix_has_a_receipt_without_replacing_native_progress() {
+fn shorter_prefix_has_a_commit_and_keeps_progress() {
     use crate::{Batch, Change, InputKey, Observation, Writer};
     use std::sync::Arc;
     let directory = tempfile::tempdir().unwrap();
@@ -192,7 +192,7 @@ fn a_proven_shorter_prefix_has_a_receipt_without_replacing_native_progress() {
         .store_group(
             vec![crate::staging::PreparedBatch {
                 batch: Batch {
-                    required_disposition: None,
+                    required_outcome: None,
                     input: InputKey {
                         id: "native".into(),
                         format: "synthetic".into(),
@@ -228,8 +228,8 @@ fn a_proven_shorter_prefix_has_a_receipt_without_replacing_native_progress() {
     let (prefix_blob, prepared) = archive.prepare_blob(b"abcd").unwrap();
     writer.store_blob(prefix_blob.clone(), prepared).unwrap();
     drop(writer);
-    let mut ledger = Connection::open(archive.archive_db()).unwrap();
-    let tx = ledger.transaction().unwrap();
+    let mut standalone = Connection::open(archive.archive_db()).unwrap();
+    let tx = standalone.transaction().unwrap();
     crate::input_rows::InputRows {
         acquisition: None,
         input: "native".into(),
@@ -261,7 +261,7 @@ fn a_proven_shorter_prefix_has_a_receipt_without_replacing_native_progress() {
     .unwrap();
     tx.commit().unwrap();
     assert_eq!(
-        ledger
+        standalone
             .query_row(
                 "SELECT count(*) FROM revision WHERE input='native'",
                 [],
@@ -270,16 +270,16 @@ fn a_proven_shorter_prefix_has_a_receipt_without_replacing_native_progress() {
             .unwrap(),
         1
     );
-    let receipt = Source::reading_receipt(&ledger, "native", 1, 4).unwrap();
-    assert_eq!(receipt.observation.as_deref(), Some("prefix-four"));
+    let source_commit = Source::reading_commit(&standalone, "native", 1, 4).unwrap();
+    assert_eq!(source_commit.observation.as_deref(), Some("prefix-four"));
     assert_ne!(
-        Source::reading_receipt(&ledger, "native", 1, 8)
+        Source::reading_commit(&standalone, "native", 1, 8)
             .unwrap()
             .observation
             .as_deref(),
         Some("prefix-four")
     );
-    drop(ledger);
+    drop(standalone);
     drop(lock);
     let (archive, _lock) = crate::Archive::open_or_create(&root).unwrap();
     let reads = crate::ReadPool::open(&archive).unwrap();
@@ -307,9 +307,9 @@ fn a_proven_shorter_prefix_has_a_receipt_without_replacing_native_progress() {
 fn source_reference_namespace_keeps_archive_metadata_distinct_from_index_metadata() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("archive.db");
-    let ledger = Connection::open(&path).unwrap();
-    ledger.execute_batch(crate::schema::ARCHIVE).unwrap();
-    ledger
+    let standalone = Connection::open(&path).unwrap();
+    standalone.execute_batch(crate::schema::ARCHIVE).unwrap();
+    standalone
         .execute(
             "INSERT INTO meta(key,value) VALUES('namespace','archive')",
             [],
@@ -330,11 +330,11 @@ fn source_reference_namespace_keeps_archive_metadata_distinct_from_index_metadat
         )
         .unwrap();
     assert_eq!(value, "archive");
-    assert!(matches!(Source::of(&reader).unwrap(), Source::Ledger));
+    assert!(matches!(Source::of(&reader).unwrap(), Source::Standalone));
 }
 
 #[test]
-fn narrow_canonical_schema_uses_the_existing_sqlite_namespace_rewriter() {
+fn narrow_schema_uses_the_sqlite_namespace_rewriter() {
     let schema = from_archive(crate::assertions::SCHEMA).unwrap();
     let conn = Connection::open_in_memory().unwrap();
     conn.pragma_update(None, "foreign_keys", true).unwrap();

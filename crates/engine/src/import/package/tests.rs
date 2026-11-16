@@ -289,12 +289,12 @@ fn non_utf8_container_names_keep_distinct_original_bytes() {
 }
 
 #[test]
-fn member_names_are_opaque_provenance_and_never_filesystem_destinations() {
+fn member_names_are_never_filesystem_paths() {
     let root = tempfile::tempdir().unwrap();
     let scratch = root.path().join("scratch");
     std::fs::create_dir(&scratch).unwrap();
-    let sentinel = root.path().join("asset.bin");
-    std::fs::write(&sentinel, b"untouched").unwrap();
+    let marker = root.path().join("asset.bin");
+    std::fs::write(&marker, b"untouched").unwrap();
     let source = root.path().join("names.zip");
     zip(
         &source,
@@ -318,7 +318,7 @@ fn member_names_are_opaque_provenance_and_never_filesystem_destinations() {
         members[3].member_path_bytes.as_deref(),
         Some(b"/absolute/conversations.json".as_slice())
     );
-    assert_eq!(std::fs::read(&sentinel).unwrap(), b"untouched");
+    assert_eq!(std::fs::read(&marker).unwrap(), b"untouched");
     let source = root.path().join("names.tar");
     let mut tar = tar::Builder::new(std::fs::File::create(&source).unwrap());
     for name in ["../conversations.json", "/absolute/conversations.json"] {
@@ -341,11 +341,11 @@ fn member_names_are_opaque_provenance_and_never_filesystem_destinations() {
         members[2].member_path_bytes.as_deref(),
         Some(b"/absolute/conversations.json".as_slice())
     );
-    assert_eq!(std::fs::read(&sentinel).unwrap(), b"untouched");
+    assert_eq!(std::fs::read(&marker).unwrap(), b"untouched");
 }
 
 #[test]
-fn package_preflight_keeps_only_encoded_members_and_releases_refused_or_dropped_custody() {
+fn package_preflight_releases_refused_members() {
     use std::io::Read;
     let root = tempfile::tempdir().unwrap();
     let archive = Archive::at(&root.path().join("archive"));

@@ -10,7 +10,7 @@ pub(super) const STRUCTURES: &[&str] = &[
     "ChatGPT conversation",
     "Codex Cloud tasks",
     "Aider paired histories",
-    "predecessor source catalog",
+    "Python Polylogue source catalog",
     "claude.ai export",
     "claude.ai conversation",
     "Grok account export",
@@ -220,8 +220,8 @@ pub(super) fn declared(
     if let Some(name) = name {
         return Ok(polylogue_sources::origin::by_name(name));
     }
-    // Native export names and stream signatures also identify incomplete
-    // containers. Their owning scanner retains unreadable input diagnostics;
+    // Provider export names and stream signatures also identify incomplete
+    // containers. Their scanner keeps unreadable input diagnostics;
     // a whole-JSON shape cannot identify JSONL or a malformed suffix.
     for name in ["chatgpt", "claude-ai", "openrouter", "otel-genai"] {
         // A standalone project needs its docs/template shape above; the
@@ -233,7 +233,7 @@ pub(super) fn declared(
             return Ok(Some(origin));
         }
     }
-    // The predecessor's hook and browser-capture spools are read only when
+    // Python Polylogue's hook and browser-capture spools are read only when
     // named with --format, like its other stores.
     for name in ["hermes", "claude-design"] {
         if let Some(origin) = polylogue_sources::origin::by_name(name)
@@ -251,7 +251,7 @@ pub(super) fn declared(
         }))
 }
 
-// Standalone project evidence identifies that native sidecar, not a whole
+// A standalone project path identifies that sidecar, not a whole
 // account export or arbitrary neighboring files.
 pub(super) fn claude_project_path(path: &Path) -> bool {
     path.extension()
@@ -271,7 +271,7 @@ pub(super) fn refuse(report: &mut ImportReport, path: &Path, reason: impl Into<S
     });
 }
 
-// Recognizing a retired discriminator refuses it; it does not decode old data.
+// Recognizing a retired type field refuses it; it does not decode old data.
 fn retired_export(reader: impl std::io::Read) -> std::io::Result<bool> {
     struct Header<'a>(&'a mut bool);
     impl<'de> Visitor<'de> for Header<'_> {

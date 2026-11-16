@@ -121,7 +121,7 @@ fn equal_idless_turns_keep_occurrences_and_report_the_correspondence_limit() {
         parsed.output.events[0]
             .data
             .to_string()
-            .contains("physical correspondence is ambiguous")
+            .contains("which file record is which is ambiguous")
     );
 }
 

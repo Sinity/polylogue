@@ -41,7 +41,7 @@ fn saved_loader_preserves_declared_hash_denominator_and_cross_name_family_confli
     let first = fact("first", "original", 1, None);
     let left = fact("left", "renamed-left", 2, Some("assertion:family@first"));
     let right = fact("right", "renamed-right", 3, Some("assertion:family@first"));
-    // Restore facts out of graph order; a local receipt never chooses a head.
+    // Restore facts out of graph order; a local commit order never chooses a head.
     super::super::apply(&conn, &[right, first, left], 7).unwrap();
     conn.execute_batch("BEGIN").unwrap();
     let saved = saved_query_snapshot(&conn, ["original", "renamed-left", "renamed-right"])

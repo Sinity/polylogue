@@ -9,7 +9,7 @@
 //! [`RESCORED`] of them from their stored f32 values ([`Similarity`]). The
 //! daemon keeps loaded vectors by model revision read from the same SQLite
 //! snapshot as their rows, and brings them to a newer revision by reading
-//! only appended rows when the revision proves an append-only change
+//! only appended rows when the revision shows an append-only change
 //! ([`Vectors::append`]), and reloading the snapshot after a replacement,
 //! on a cue from [`write_events`]. [`writes`] is a coarse process-local invalidation
 //! counter for query continuations, not the identity of a loaded snapshot.
@@ -318,10 +318,10 @@ impl Vectors {
     /// Stores vectors bought for another archive exactly as they were: the
     /// same text hash, key, chunk, values and known purchase time. At one
     /// address the newest known purchase wins, including a newer time for
-    /// identical values. Older imports leave that authoritative value in
+    /// identical values. Older imports leave that newest value in
     /// place. Conflicting dimensions are refused; equal-time conflicting
     /// values cannot be ordered and are also refused.
-    /// Original source stores retain the earlier paid values.
+    /// Original source stores keep the earlier paid values.
     pub fn restore(
         &mut self,
         vectors: &[crate::older_archive::StoredVector],
@@ -496,7 +496,7 @@ impl Vectors {
     /// triggers increment once per changed row. When the revision moved by
     /// exactly the number of appended rows, sharing the earlier runs is
     /// valid. Any other change, including replacement or paid-time update,
-    /// reloads the snapshot instead of retaining stale values below `through`.
+    /// reloads the snapshot instead of keeping stale values below `through`.
     pub fn append(&self, base: &Loaded) -> Result<Loaded> {
         let _read = self.read_transaction()?;
         let revision = self.revision(&base.key)?;
@@ -546,7 +546,7 @@ impl Vectors {
             let largest = floats.iter().fold(0f32, |m, x| m.max(x.abs()));
             let scale = if largest > 0.0 { largest / 127.0 } else { 1.0 };
             let text = run.text(hash.into_boxed_slice());
-            run.owner.push(text);
+            run.text.push(text);
             run.scale.push(scale);
             run.values.extend(
                 floats
@@ -554,7 +554,7 @@ impl Vectors {
                     .map(|x| (x / scale).round().clamp(-127.0, 127.0) as i8),
             );
         }
-        if !run.owner.is_empty() {
+        if !run.text.is_empty() {
             loaded.push(run);
         }
         Ok(loaded)
@@ -719,7 +719,7 @@ struct Run {
     texts: HashMap<Box<[u8]>, u32>,
     hashes: Vec<Box<[u8]>>,
     /// Per vector: its text, and the factor its bytes are scaled by.
-    owner: Vec<u32>,
+    text: Vec<u32>,
     scale: Vec<f32>,
     values: Vec<i8>,
     /// Vector numbers grouped by text: text `t`'s are
@@ -732,15 +732,15 @@ impl Run {
     /// Groups the vectors by text, for scoring one text at a time.
     fn indexed(mut self) -> Self {
         let mut starts = vec![0u32; self.hashes.len() + 1];
-        for text in &self.owner {
+        for text in &self.text {
             starts[*text as usize + 1] += 1;
         }
         for t in 1..starts.len() {
             starts[t] += starts[t - 1];
         }
         let mut next = starts.clone();
-        let mut by_text = vec![0u32; self.owner.len()];
-        for (v, text) in self.owner.iter().enumerate() {
+        let mut by_text = vec![0u32; self.text.len()];
+        for (v, text) in self.text.iter().enumerate() {
             let at = &mut next[*text as usize];
             by_text[*at as usize] = u32::try_from(v).unwrap_or(u32::MAX);
             *at += 1;
@@ -770,7 +770,7 @@ impl Run {
         let mut out = Run {
             texts: self.texts.clone(),
             hashes: self.hashes.clone(),
-            owner: self.owner.clone(),
+            text: self.text.clone(),
             scale: self.scale.clone(),
             values: self.values.clone(),
             starts: Vec::new(),
@@ -781,8 +781,8 @@ impl Run {
             .iter()
             .map(|hash| out.text(hash.clone()))
             .collect();
-        out.owner
-            .extend(later.owner.iter().map(|text| renumbered[*text as usize]));
+        out.text
+            .extend(later.text.iter().map(|text| renumbered[*text as usize]));
         out.scale.extend_from_slice(&later.scale);
         out.values.extend_from_slice(&later.values);
         out.texts.shrink_to_fit();
@@ -805,7 +805,7 @@ impl Loaded {
     fn push(&mut self, run: Run) {
         let mut run = Arc::new(run.indexed());
         while let Some(last) = self.runs.last()
-            && last.owner.len() <= run.owner.len() * 2
+            && last.text.len() <= run.text.len() * 2
         {
             let earlier = self.runs.pop().expect("a last run");
             run = Arc::new(earlier.joined(&run));
@@ -814,7 +814,7 @@ impl Loaded {
     }
 
     pub fn vectors(&self) -> usize {
-        self.runs.iter().map(|run| run.owner.len()).sum()
+        self.runs.iter().map(|run| run.text.len()).sum()
     }
 
     /// The similarity of texts to `query`, a unit vector of the same
@@ -881,7 +881,7 @@ pub struct Similarity {
 
 impl Similarity {
     /// Exact model snapshot and seed supplying this query's scores.
-    pub(crate) fn count_basis(&self) -> (&str, i64, usize, blake3::Hash) {
+    pub(crate) fn count_inputs(&self) -> (&str, i64, usize, blake3::Hash) {
         let mut query = blake3::Hasher::new();
         for component in &self.query {
             query.update(&component.to_bits().to_le_bytes());

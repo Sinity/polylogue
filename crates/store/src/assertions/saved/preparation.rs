@@ -1,4 +1,4 @@
-//! Native saved values are checked against the one original/scratch binder.
+//! Saved query text is checked against the one original/scratch binder.
 //! Provisional objects provide syntax only; final acceptance requires the stored object.
 use super::*;
 use crate::{
@@ -107,7 +107,7 @@ impl<'a> SavedPreparation<'a> {
         }
         Ok(())
     }
-    fn retained_plan(&mut self, hash: QuestionId) -> Result<Plan> {
+    fn saved_plan(&mut self, hash: QuestionId) -> Result<Plan> {
         self.context()?;
         let object = self.object(hash)?;
         let plan =
@@ -119,7 +119,7 @@ impl<'a> SavedPreparation<'a> {
         reference
             .map(|reference| {
                 let hash = polylogue_query::plan::question_id_from_reference(reference)?;
-                self.retained_plan(hash)?;
+                self.saved_plan(hash)?;
                 Ok(hash)
             })
             .transpose()
@@ -136,7 +136,7 @@ impl<'a> SavedPreparation<'a> {
     }
     pub(crate) fn resolve(&mut self, input: SavedInput<'_>) -> Result<values::SavedQuery> {
         match input {
-            SavedInput::Native { text, denominator } => {
+            SavedInput::Text { text, denominator } => {
                 let plan = self.prepare(text)?;
                 let denominator = denominator
                     .map(|text| self.prepare(text).map(|plan| plan.question_id()))
@@ -148,12 +148,12 @@ impl<'a> SavedPreparation<'a> {
                     denominator: denominator.map(|hash| format!("query:{hash}")),
                 })
             }
-            SavedInput::Canonical { value, changed } => {
+            SavedInput::Stored { value, changed } => {
                 let expected = QuestionId(value.hash.0);
                 let plan = if changed {
                     self.prepare(&value.text)?
                 } else {
-                    self.retained_plan(expected)?
+                    self.saved_plan(expected)?
                 };
                 if plan.question_id() != expected {
                     return Err(invalid(

@@ -22,7 +22,7 @@ pub fn run_call(
 ) -> Result<(), Error> {
     let outgoing = crate::protocol::wire::Outgoing {
         request,
-        caller: crate::protocol::caller::evidence(),
+        caller: crate::protocol::caller::details(),
         parent_deadline_ms: None,
     };
     send(archive, &outgoing, budget, event)
@@ -62,7 +62,7 @@ pub(crate) fn receive(
             .into());
         }
         // Dispatch can refuse before selecting a stream (for example an
-        // unknown operation). Its ordinary shared error remains actionable.
+        // unknown operation). Its shared error stays actionable.
         if first && bytes[0] == b'{' {
             let mut reply = bytes[..count].to_vec();
             if !reply.contains(&b'\n') {

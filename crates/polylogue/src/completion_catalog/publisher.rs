@@ -82,7 +82,7 @@ impl Publisher {
                                 }
                                 continue;
                             }
-                            // Retry a failed publication without advancing its receipt.
+                            // Retry a failed write without advancing its position.
                             // Successful idle publishers wait solely on commit events.
                             std::thread::sleep(std::time::Duration::from_millis(100));
                             continue;
@@ -121,7 +121,7 @@ impl Publisher {
         .then_some("completion worker terminated")
     }
 
-    /// Stop and join the exact worker before the runtime records its end.
+    /// Stop and join the worker before the runtime records its end.
     pub(crate) fn shutdown(&mut self) -> std::io::Result<()> {
         self.stop.store(true, Ordering::Release);
         if let Some(wake) = &self.wake {
@@ -460,10 +460,10 @@ impl State {
             for value in change.queries.values().flatten() {
                 sources.insert(format!("query:{}", value.hash));
                 sources.extend(value.denominator.map(|id| format!("query:{id}")));
-                // An unavailable body can still declare exact dependencies. Read
-                // that immutable object for invalidation only, never as execution proof.
+                // An unavailable body can still declare its dependencies. Read
+                // that immutable object for invalidation only, never as a check that it can run.
                 let object = match &value.body {
-                    polylogue_query::SavedQueryBody::Frozen { object, .. } => object.clone(),
+                    polylogue_query::SavedQueryBody::Available { object, .. } => object.clone(),
                     polylogue_query::SavedQueryBody::Unavailable { .. } => {
                         match reader.query_object(&value.hash.to_string(), None) {
                             Ok(found) => found.map(std::sync::Arc::new),
@@ -539,7 +539,7 @@ impl State {
 
     fn definition_metadata(
         &self,
-        saved: &completion::NativeSaved,
+        saved: &completion::SavedEntry,
         change: &completion::DefinitionChange,
         names: usize,
         update: &VocabularyUpdate,
@@ -572,7 +572,7 @@ impl State {
         }
         let mut kept = BTreeMap::new();
         for value in change.queries.values().flatten() {
-            if let polylogue_query::SavedQueryBody::Frozen {
+            if let polylogue_query::SavedQueryBody::Available {
                 object: Some(object),
                 ..
             } = &value.body
@@ -696,7 +696,7 @@ impl State {
         }
         for key in keys {
             let current = reader.setting_current(&key, self.requests.machine())?;
-            let choices = if current.owner == "sinex" {
+            let choices = if current.supplier == "sinex" {
                 Vec::new()
             } else {
                 polylogue_model::settings::declaration(&key)

@@ -57,7 +57,7 @@ impl ScopeSession {
     }
 
     /// The wait the common live model shows at this instant, including
-    /// harness status and process evidence that outrank an earlier hook.
+    /// harness status and process observations that outrank an earlier hook.
     pub fn waiting_on_at(&self, now: i64) -> Option<&'static str> {
         polylogue_model::live::view(
             Some(&self.live),
@@ -74,8 +74,8 @@ impl ScopeSession {
     }
 
     /// Files structured edit tools changed and no commit has closed.
-    pub fn footprint(&self) -> usize {
-        self.live.footprint.len()
+    pub fn edited_files(&self) -> usize {
+        self.live.edited_files.len()
     }
 
     /// The harness's in-progress todo item.
@@ -350,8 +350,8 @@ impl ScopeIndex {
         let mut out = BTreeSet::new();
         for dir in dirs {
             let base = dir.trim_end_matches('/');
-            for exact in [dir.as_str(), base] {
-                if let Some(pks) = self.by_directory.get(exact) {
+            for key in [dir.as_str(), base] {
+                if let Some(pks) = self.by_directory.get(key) {
                     out.extend(pks);
                 }
             }

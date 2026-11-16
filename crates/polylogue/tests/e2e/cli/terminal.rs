@@ -69,9 +69,9 @@ fn archived_controls_are_data_in_pipes_and_terminals() {
             index: 1,
             archive: 1,
         },
-        freshness: polylogue_model::currency::ReadFreshness {
-            local: polylogue_model::currency::ReadCompleteness::empty(),
-            owner: polylogue_model::currency::IndexCurrency::Standalone,
+        freshness: polylogue_model::freshness::ReadFreshness {
+            local: polylogue_model::freshness::ReadCompleteness::empty(),
+            sinex: polylogue_model::freshness::IndexFreshness::Standalone,
         },
         counts: bundle::Counts {
             sessions: 1,

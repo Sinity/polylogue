@@ -28,8 +28,8 @@ fn fresh_context_leaves_checkpoint_free_while_resumed_context_keeps_its_snapshot
     let restart = || restart_full_log(&writer, &path, 0, std::time::Duration::ZERO).unwrap();
     assert!(restart());
 
-    // An independent real reader proves that the checkpoint control detects
-    // an admitted snapshot, rather than succeeding regardless of readers.
+    // An independent real reader shows that the checkpoint control detects
+    // an committed snapshot, rather than succeeding regardless of readers.
     let held = open_read(&path).unwrap();
     held.execute_batch("BEGIN").unwrap();
     held.query_row("SELECT count(*) FROM input_ref", [], |row| {
@@ -46,7 +46,7 @@ fn fresh_context_leaves_checkpoint_free_while_resumed_context_keeps_its_snapshot
     drop(held);
     assert!(restart());
 
-    // Fresh parsing ignores admitted context even when its chain is known.
+    // Fresh parsing ignores committed context even when its chain is known.
     // Its private values and source binding survive a complete WAL restart.
     for chain in [None, Some(3)] {
         let mut fresh =
@@ -88,7 +88,7 @@ fn fresh_context_leaves_checkpoint_free_while_resumed_context_keeps_its_snapshot
             .unwrap();
     }
 
-    // A resumed parser must retain the exact admitted view it selected,
+    // A resumed parser must keep the committed view it selected,
     // including when a later writer changes that same mapping.
     let mut resumed = Overlay::open(
         &archive,
@@ -129,7 +129,7 @@ fn fresh_context_leaves_checkpoint_free_while_resumed_context_keeps_its_snapshot
         target: Some(target),
     }) = reopened.get(&key).unwrap()
     else {
-        panic!("later admitted alias is absent")
+        panic!("later committed alias is absent")
     };
     assert_eq!(target.to_string(), "claude-code:later");
 }

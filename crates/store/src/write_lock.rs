@@ -53,7 +53,7 @@ pub(crate) fn hold(conn: &Connection) -> Result<WriteLock> {
     let path = Path::new(path);
     if path.file_name().and_then(|name| name.to_str()) == Some("index.db")
         && conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='primary_fact')",
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='confirmed_event')",
             [],
             |row| row.get::<_, bool>(0),
         )?
@@ -90,11 +90,11 @@ pub(crate) fn hold(conn: &Connection) -> Result<WriteLock> {
     })
 }
 
-/// Commits a transaction under the lock. A register commit is then made
-/// durable by syncing the register's log, outside the lock: the writer's
+/// Commits a transaction under the lock. A register commit then reaches
+/// disk when the register's log is synced, outside the lock: the writer's
 /// register connection commits with `synchronous=NORMAL`, and this sync
 /// returns before the commit is acknowledged or anything is written after
-/// it, so the register is as durable as with `FULL` while readers that start
+/// it, so the register is as safe on disk as with `FULL` while readers that start
 /// meanwhile read the commit instead of waiting for the disk.
 ///
 /// A failed sync is recorded ([`crate::storage_failure`]) and stops the

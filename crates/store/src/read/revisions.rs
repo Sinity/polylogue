@@ -10,11 +10,11 @@ impl Reader<'_> {
     /// Every chain of `input`, with its extents and reading, by chain: what
     /// deciding which chains' bytes begin alike needs.
     pub fn chain_layouts(&self, input: &str) -> Result<Vec<crate::ChainLayout>> {
-        crate::same_bytes::chain_layouts(self.conn()?, input)
+        crate::identical_chains::chain_layouts(self.conn()?, input)
     }
 
     /// Visits known points at exactly this length, at most once per byte chain.
-    /// Returning true stops the stream once the caller proves an exact copy.
+    /// Returning true stops the stream once the caller confirms a byte-for-byte copy.
     pub fn visit_revisions_at_length(
         &self,
         input: &str,
@@ -24,7 +24,7 @@ impl Reader<'_> {
         self.visit_revision_points(input, length, None, &mut visit)
     }
 
-    /// Uses only bytes and revision declarations admitted before provider I/O.
+    /// Uses only bytes and revision declarations committed before provider I/O.
     pub fn visit_revisions_at_length_before(
         &self,
         boundary: &crate::primary::SourceBoundary,
@@ -47,7 +47,7 @@ impl Reader<'_> {
             StoreError::Invalid("revision length exceeds archive address space".into())
         })?;
         let through = through.map(i64::try_from).transpose().map_err(|_| {
-            StoreError::Invalid("source admission fence exceeds archive address space".into())
+            StoreError::Invalid("source commit position exceeds archive address space".into())
         })?;
         let conn = self.conn()?;
         let mut statement = conn.prepare("SELECT max(number),chain FROM source_revision WHERE input=?1 AND length=?2 AND (?3 IS NULL OR commit_seq<=?3) GROUP BY chain ORDER BY max(number) DESC")?;
@@ -55,9 +55,9 @@ impl Reader<'_> {
         while let Some(row) = rows.next()? {
             let chain = row.get(1)?;
             if let Some(through) = through {
-                let admitted =
-                    crate::source::Source::admitted_through(conn, input, chain, length as u64)?;
-                if admitted.is_none_or(|position| position > through as u64) {
+                let committed =
+                    crate::source::Source::committed_through(conn, input, chain, length as u64)?;
+                if committed.is_none_or(|position| position > through as u64) {
                     continue;
                 }
             }

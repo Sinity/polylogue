@@ -2,7 +2,7 @@ use super::*;
 use serde_json::json;
 
 #[test]
-fn event_identity_distinguishes_message_anchors_and_ignores_physical_ranges() {
+fn event_identity_depends_on_its_message_not_its_range() {
     let mut event = Event {
         at_quality: polylogue_model::TimeQuality::Unknown,
         at_precision: None,
@@ -21,9 +21,9 @@ fn event_identity_distinguishes_message_anchors_and_ignores_physical_ranges() {
     let second = pack_event(&event).unwrap().0;
     assert_ne!(second, first);
     event.after = None;
-    let unanchored = pack_event(&event).unwrap().0;
-    assert_ne!(unanchored, first);
-    assert_ne!(unanchored, second);
+    let unplaced = pack_event(&event).unwrap().0;
+    assert_ne!(unplaced, first);
+    assert_ne!(unplaced, second);
 }
 
 #[test]

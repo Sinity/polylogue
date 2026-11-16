@@ -33,7 +33,7 @@ pub struct ReadPageSnapshot {
     pub query: String,
     pub ran_at: crate::Timestamp,
     pub read_at: crate::ChangePosition,
-    pub freshness: crate::currency::ReadFreshness,
+    pub freshness: crate::freshness::ReadFreshness,
 }
 impl From<&ReadSnapshot> for ReadPageSnapshot {
     fn from(snapshot: &ReadSnapshot) -> Self {
@@ -61,7 +61,7 @@ pub struct ReadBegin {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ReadRecord {
-    Canonical {
+    Original {
         record: Box<Record>,
         parts: Vec<ReadPart>,
     },
@@ -73,14 +73,14 @@ pub enum ReadRecord {
 impl ReadRecord {
     pub fn record(&self) -> Option<&Record> {
         match self {
-            Self::Canonical { record, .. } => Some(record),
+            Self::Original { record, .. } => Some(record),
             Self::Presentation { .. } => None,
         }
     }
 
     pub fn parts(&self) -> &[ReadPart] {
         match self {
-            Self::Canonical { parts, .. } | Self::Presentation { parts, .. } => parts,
+            Self::Original { parts, .. } | Self::Presentation { parts, .. } => parts,
         }
     }
 }

@@ -72,7 +72,7 @@ impl Reader<'_> {
                     || source.source_id.as_deref() != Some(context.claim.source_id.as_str())
                 {
                     return Err(StoreError::Invalid(
-                        "binding claim differs from the selected attachment".into(),
+                        "stated binding differs from the selected attachment".into(),
                     ));
                 }
                 for member in &context.members {
@@ -254,12 +254,12 @@ pub(super) fn scope_matches(
 }
 
 impl Reader<'_> {
-    /// Claims describing the stored bytes behind a message's attachments, for
-    /// slots no retained binding covers. Each import namespace that read the
-    /// message's shown source makes one claim per slot: its candidates are the
+    /// Stated bindings for the stored bytes behind a message's attachments, for
+    /// slots no stored binding covers. Each import namespace that read the
+    /// message's shown source states one binding per slot: its candidates are the
     /// complete bytes of the members carrying the slot's source ID, and none
     /// when no such member is stored.
-    pub fn current_attachment_claims(
+    pub fn current_attachment_bindings(
         &self,
         message: &MessageId,
         source_version: BlobHash,
@@ -284,7 +284,7 @@ impl Reader<'_> {
                 |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut claims = Vec::new();
+        let mut stated = Vec::new();
         for (input, chain) in shown {
             for scope in import_scopes(conn, &input, chain)? {
                 let namespace = AttachmentNamespace {
@@ -338,7 +338,7 @@ impl Reader<'_> {
                                 declared_sizes: asset.declared_sizes,
                             });
                     }
-                    claims.push(AttachmentBinding {
+                    stated.push(AttachmentBinding {
                         source_version,
                         namespace: namespace.clone(),
                         exported_from: namespace.clone(),
@@ -351,7 +351,7 @@ impl Reader<'_> {
                 }
             }
         }
-        Ok(claims)
+        Ok(stated)
     }
 }
 

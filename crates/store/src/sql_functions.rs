@@ -44,7 +44,7 @@ pub fn register(conn: &Connection) -> rusqlite::Result<()> {
             .collect::<std::collections::BTreeSet<_>>();
         if targets.len() > 1 {
             return Err(rusqlite::Error::UserFunctionError(
-                "native record alias has conflicting canonical messages".into(),
+                "record alias has conflicting resolved messages".into(),
             ));
         }
         Ok(targets.into_iter().next().unwrap_or(fallback))
@@ -173,11 +173,11 @@ thread_local! {
         const { RefCell::new(None) };
 }
 
-/// Count caches bind the exact active vector snapshot and query vector.
-pub(crate) fn similarity_count_basis() -> Option<(String, i64, usize, [u8; 32])> {
+/// Count caches bind the active vector snapshot and query vector.
+pub(crate) fn similarity_count_inputs() -> Option<(String, i64, usize, [u8; 32])> {
     SIMILARITY.with(|similarity| {
         similarity.borrow().as_ref().map(|similarity| {
-            let (key, revision, dims, query) = similarity.count_basis();
+            let (key, revision, dims, query) = similarity.count_inputs();
             (key.to_owned(), revision, dims, *query.as_bytes())
         })
     })
@@ -327,7 +327,7 @@ pub(crate) fn register_calendar(
                 .cloned()
                 .ok_or_else(|| {
                     rusqlite::Error::UserFunctionError(
-                        "calendar labels require an explicit owner clock".into(),
+                        "calendar labels require an explicit operation clock".into(),
                     )
                 })?;
             label(&day, ms)
@@ -355,7 +355,7 @@ pub(crate) fn register_calendar(
                 .cloned()
                 .ok_or_else(|| {
                     rusqlite::Error::UserFunctionError(
-                        "calendar values require an explicit owner clock".into(),
+                        "calendar values require an explicit operation clock".into(),
                     )
                 })?;
             number(&day, ms)

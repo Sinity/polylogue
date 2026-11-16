@@ -203,8 +203,8 @@ async fn answer(
             Default::default(),
         )
         .await;
-    let publication = crate::protocol::ReadScopes::single(read_scope.clone());
-    let answer = crate::protocol::scope_answer(dispatched, &publication);
+    let scopes = crate::protocol::ReadScopes::single(read_scope.clone());
+    let answer = crate::protocol::scope_answer(dispatched, &scopes);
     if c.name == "read"
         && headers
             .get(header::ACCEPT)
@@ -226,7 +226,7 @@ async fn answer(
             .and_then(|page| super::pages::reader::read(&page, table, &request))
         {
             Ok(html) => {
-                if let Err(error) = publication.check() {
+                if let Err(error) = scopes.check() {
                     return json_answer(web, crate::daemon::service::store_error(&error));
                 }
                 return scoped_body_response(
@@ -234,7 +234,7 @@ async fn answer(
                     StatusCode::OK,
                     "text/html; charset=utf-8",
                     html.into_bytes(),
-                    &publication,
+                    &scopes,
                 );
             }
             Err(error) => {
@@ -246,7 +246,7 @@ async fn answer(
         }
     }
     let (status, bytes) = super::prepare_json_answer(web, answer);
-    scoped_body_response(web, status, "application/json", bytes, &publication)
+    scoped_body_response(web, status, "application/json", bytes, &scopes)
 }
 
 struct ScopedBytes {

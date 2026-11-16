@@ -124,7 +124,7 @@ fn explicit_shutdown_accepts_only_a_recorded_expected_return() {
 }
 
 #[test]
-fn saved_metadata_follows_committed_families_and_late_exact_query_bodies() {
+fn saved_metadata_follows_committed_families_and_late_query_bodies() {
     use polylogue_model::{
         Author, Timestamp,
         assertion::{AssertionFact, AssertionKind},
@@ -136,7 +136,7 @@ fn saved_metadata_follows_committed_families_and_late_exact_query_bodies() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("catalog");
     let mut state = State::new(false, super::super::tests::request_metadata());
-    // This is a genuine historical assertion whose frozen body arrives later.
+    // This is a genuine historical assertion whose saved body arrives later.
     let plan = polylogue_query::compile(
         "sessions | group by origin | count",
         &polylogue_query::Options {
@@ -174,7 +174,7 @@ fn saved_metadata_follows_committed_families_and_late_exact_query_bodies() {
             hash: child.id,
             denominator: None,
             conflicts: vec![],
-            body: polylogue_query::SavedQueryBody::Frozen {
+            body: polylogue_query::SavedQueryBody::Available {
                 syntax: plan.text().into(),
                 object: Some(std::sync::Arc::new(child.clone())),
             },
@@ -209,7 +209,7 @@ fn saved_metadata_follows_committed_families_and_late_exact_query_bodies() {
             .unwrap()[0]
             .schema
             .is_some(),
-        "the parent retains its own immutable dependency closure"
+        "the parent keeps its own immutable dependencies"
     );
     let before = state.position.clone().unwrap();
     archive.writer.query_object(child.clone()).unwrap();
@@ -363,7 +363,7 @@ fn failed_catalog_transaction_retries_the_same_committed_definition_delta() {
 }
 
 #[test]
-fn late_kept_custody_refreshes_a_saved_inline_dependency_without_a_child_record() {
+fn late_kept_result_refreshes_inline_dependency() {
     use polylogue_model::user::UserWrite;
     let donor = polylogue_store::fixture::writer::WriterArchive::new();
     let rows = serde_json::json!({"unit":"sessions","shape":"rows","columns":[{"name":"title","kind":"text"}],"rows":[],"identities":[]}).to_string();
@@ -404,7 +404,7 @@ fn late_kept_custody_refreshes_a_saved_inline_dependency_without_a_child_record(
             hash: child.id,
             denominator: None,
             conflicts: vec![],
-            body: polylogue_query::SavedQueryBody::Frozen {
+            body: polylogue_query::SavedQueryBody::Available {
                 syntax: "result:late-kept".into(),
                 object: Some(std::sync::Arc::new(child)),
             },
@@ -418,11 +418,11 @@ fn late_kept_custody_refreshes_a_saved_inline_dependency_without_a_child_record(
     let writer = polylogue_store::Writer::start(&archive.archive).unwrap();
     let error = writer.query_object(object).unwrap_err();
     assert!(
-        matches!(&error, polylogue_store::StoreError::NotFound(what) if what == "canonical result schema result:late-kept"),
+        matches!(&error, polylogue_store::StoreError::NotFound(what) if what == "stored result schema result:late-kept"),
         "{error:?}"
     );
-    // A historical/partial read view can retain a formerly valid frozen query
-    // whose kept dependency is unavailable. New admission above must refuse it.
+    // A historical/partial read view can keep a formerly valid saved query
+    // whose kept dependency is unavailable. Saving it again, above, must be refused.
     archive.saved_query("dependent", &parent).unwrap();
     // Account for the fixture's seeded source record before measuring deltas.
     writer
@@ -473,7 +473,7 @@ fn late_kept_custody_refreshes_a_saved_inline_dependency_without_a_child_record(
             .completion_changed_queries(before.archive)
             .unwrap()
             .is_empty(),
-        "kept custody must invalidate this family without another query admission"
+        "the kept result must invalidate this family without another saved query"
     );
     state
         .refresh(&reads.reader().unwrap(), &path, "synthetic")

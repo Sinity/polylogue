@@ -136,9 +136,9 @@ fn an_old_publisher_cannot_reactivate_its_pointer_after_scope_invalidation() {
 fn a_preopen_registration_shares_the_later_archive_scope_and_retires_with_its_guard() {
     let root = tempfile::tempdir().unwrap();
     let alias = root.path().join("alias");
-    let actual = root.path().join("actual");
-    std::fs::create_dir(&actual).unwrap();
-    std::os::unix::fs::symlink(&actual, &alias).unwrap();
+    let target = root.path().join("target");
+    std::fs::create_dir(&target).unwrap();
+    std::os::unix::fs::symlink(&target, &alias).unwrap();
     let missing = alias.join("cache");
     let calls = Arc::new(AtomicUsize::new(0));
     let counter = Arc::clone(&calls);
@@ -149,7 +149,7 @@ fn a_preopen_registration_shares_the_later_archive_scope_and_retires_with_its_gu
     .unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     std::fs::create_dir(&missing).unwrap();
-    let archive = crate::Archive::at(&actual.join("cache"));
+    let archive = crate::Archive::at(&target.join("cache"));
     {
         let mut reset = archive.read_scope.begin_reset().unwrap();
         reset.invalidate().unwrap();
@@ -178,7 +178,7 @@ fn a_second_starter_cannot_invalidate_the_active_daemons_pointer() {
         let invalidate = move || {
             if !probe.lock_held() {
                 return Err(StoreError::Invalid(
-                    "invalidation preceded writer custody".into(),
+                    "invalidation preceded the writer lock".into(),
                 ));
             }
             pointer.store(false, Ordering::SeqCst);

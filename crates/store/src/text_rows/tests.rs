@@ -217,7 +217,7 @@ fn first_build_texts_share_rows_without_sql_readback_or_prefix_aliasing() {
         .unwrap()
         .id;
     assert_ne!(a, b);
-    // Both hits must use exact hashes in writer memory, even when the
+    // Both hits must compare full hashes in writer memory, even when the
     // eight-byte prefixes are equal. SQLite refuses any text-table read.
     conn.flush_prepared_statement_cache();
     conn.authorizer(Some(|context: AuthContext<'_>| match context.action {
@@ -311,7 +311,7 @@ fn failed_text_transaction_reloads_presence_without_reassigning_known_ids() {
 }
 
 #[test]
-fn cached_text_identity_does_not_claim_a_payload_write() {
+fn cached_text_identity_records_no_payload_write() {
     let mut conn = Connection::open_in_memory().unwrap();
     crate::schema::create_index(&conn).unwrap();
     let identities = TextIds::new(&conn, true).unwrap();

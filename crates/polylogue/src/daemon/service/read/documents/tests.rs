@@ -65,22 +65,22 @@ fn ready(
 }
 fn layout<'a>(
     options: &'a ReadOptions,
-    evidence: &'a ProjectionEvidence,
+    facts: &'a LayoutFacts,
     backwards: bool,
-) -> evidence::Layout<'a> {
-    evidence::Layout {
+) -> layout_facts::Layout<'a> {
+    layout_facts::Layout {
         options,
-        evidence,
+        facts,
         selected: &selected,
         ready_attachment: &ready,
         backwards,
-        anchor: None,
+        page_start: None,
     }
 }
 
 fn item(record: &ReadRecord) -> ReadItem {
     let ReadRecord::Presentation { parts } = record else {
-        panic!("page exposed a partial canonical document")
+        panic!("page exposed a partial stored document")
     };
     let [ReadPart::Item(item)] = parts.as_slice() else {
         panic!("one block item per callback")
@@ -105,7 +105,7 @@ fn a_document_page_stops_before_corrupt_later_blocks_but_full_transfer_refuses()
     let pool = ReadPool::open(&writer.archive).unwrap();
     let reader = pool.reader().unwrap();
     let options = options();
-    let evidence = ProjectionEvidence::default();
+    let facts = LayoutFacts::default();
     let mut page = PageBuilder::new(
         header(&id),
         PageBudget {
@@ -125,7 +125,7 @@ fn a_document_page_stops_before_corrupt_later_blocks_but_full_transfer_refuses()
             &id,
             7,
             None,
-            &layout(&options, &evidence, false),
+            &layout(&options, &facts, false),
             &mut |record, at, local| {
                 let value = item(record);
                 seen.push((value.clone(), at, local));
@@ -144,7 +144,7 @@ fn a_document_page_stops_before_corrupt_later_blocks_but_full_transfer_refuses()
     assert_eq!(page.position().unwrap().selection, position(7, 2));
     let page = page.finish(ReadFooter::default()).unwrap();
     assert_eq!(page.items, vec![expected(&id, 0, "first")]);
-    let mut canonical = 0;
+    let mut visited = 0;
     assert!(
         super::super::records::reference(
             &reader,
@@ -152,13 +152,13 @@ fn a_document_page_stops_before_corrupt_later_blocks_but_full_transfer_refuses()
             false,
             None,
             &mut |_, _, _| {
-                canonical += 1;
+                visited += 1;
                 Ok(true)
             }
         )
         .is_err()
     );
-    assert_eq!(canonical, 0);
+    assert_eq!(visited, 0);
 }
 
 fn header(id: &DocumentId) -> ReadHeader {
@@ -199,14 +199,14 @@ fn document_after_and_before_seek_original_blocks_and_keep_full_item_digest_chec
         }
         .unwrap();
         let options = options();
-        let evidence = ProjectionEvidence::default();
+        let facts = LayoutFacts::default();
         assert!(
             visit(
                 &reader,
                 &id,
                 7,
                 Some(start),
-                &layout(&options, &evidence, backwards),
+                &layout(&options, &facts, backwards),
                 &mut |record, at, local| {
                     assert_eq!(
                         page.push_at(at, local.unwrap(), item(record)).unwrap(),
@@ -244,7 +244,7 @@ fn document_after_and_before_seek_original_blocks_and_keep_full_item_digest_chec
                 &id,
                 7,
                 Some(changed),
-                &layout(&options, &evidence, backwards),
+                &layout(&options, &facts, backwards),
                 &mut |record, at, local| {
                     mismatch = Some(page.push_at(at, local.unwrap(), item(record)).unwrap_err());
                     Ok(false)
@@ -270,14 +270,14 @@ fn document_block_decode_obeys_cancellation_and_generation_changes_between_items
             let pool = ReadPool::open(&writer.archive).unwrap();
             let reader = pool.reader().unwrap();
             let options = options();
-            let evidence = ProjectionEvidence::default();
+            let facts = LayoutFacts::default();
             let mut emitted = 0;
             let result = visit(
                 &reader,
                 &id,
                 0,
                 None,
-                &layout(&options, &evidence, false),
+                &layout(&options, &facts, false),
                 &mut |record, _, _| {
                     assert_eq!(item(record), expected(&id, 0, "first"));
                     emitted += 1;

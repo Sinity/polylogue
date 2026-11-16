@@ -56,7 +56,7 @@ impl<'a> Compiler<'a> {
                 Filter::SessionWord { word, span } => self.reference_word(word, scope, *span)?,
                 Filter::Session { id, span } => self.session_ref(id, scope, *span)?,
                 Filter::Rows { reference, span } => {
-                    self.native_reference(reference, scope, *span)?
+                    self.reference_membership(reference, scope, *span)?
                 }
                 Filter::Related {
                     prefix,
@@ -71,16 +71,16 @@ impl<'a> Compiler<'a> {
     }
 
     /// Conditions joined by AND. Search words among them must occur in the
-    /// same message; `since:` and `until:` on one native time read it once.
+    /// same message; `since:` and `until:` on one stored time read it once.
     fn lower_all(
         &mut self,
         all: &[Filter],
         scope: &RowContext,
         top: bool,
     ) -> Result<String, QueryError> {
-        let native_bounds = if scope.unit != Unit::ToolCalls {
-            fields::native_window(scope.unit, true, &scope.a).filter(|lower| {
-                fields::native_window(scope.unit, false, &scope.a).is_some_and(|upper| {
+        let time_bounds = if scope.unit != Unit::ToolCalls {
+            fields::time_window(scope.unit, true, &scope.a).filter(|lower| {
+                fields::time_window(scope.unit, false, &scope.a).is_some_and(|upper| {
                     lower.bytes == upper.bytes && lower.storage == upper.storage
                 })
             })
@@ -88,7 +88,7 @@ impl<'a> Compiler<'a> {
             None
         };
         let mut conjuncts = vec![];
-        if native_bounds.is_some() {
+        if time_bounds.is_some() {
             fn flatten<'b>(all: &'b [Filter], output: &mut Vec<&'b Filter>) {
                 query_language::depth::deeper(|| {
                     for filter in all {
@@ -135,7 +135,7 @@ impl<'a> Compiler<'a> {
             }) if field.declaration().name == name => Some(at.clone()),
             _ => None,
         };
-        let combine_bounds = native_bounds.is_some()
+        let combine_bounds = time_bounds.is_some()
             && conjuncts.iter().any(|x| bound(x, "since").is_some())
             && conjuncts.iter().any(|x| bound(x, "until").is_some());
         let mut since = None;
@@ -162,10 +162,8 @@ impl<'a> Compiler<'a> {
                 _ => parts.push(self.lower(x, scope, top)?),
             }
         }
-        if let Some(native) = native_bounds.filter(|_| combine_bounds) {
-            parts.push(
-                self.native_time_test(&native, time::NativePredicate::Overlap { since, until }),
-            );
+        if let Some(stored) = time_bounds.filter(|_| combine_bounds) {
+            parts.push(self.time_test(&stored, time::TimePredicate::Overlap { since, until }));
         }
         if !words.is_empty() {
             parts.push(self.text(&words, scope, Index::Prose, top)?);
@@ -428,7 +426,7 @@ impl<'a> Compiler<'a> {
             params: vec![Param::Text(id.to_owned()), Param::Text(like_prefix(id))],
         });
         // The check above refuses missing or ambiguous references. Resolve the
-        // value once, with a short-circuited fallback, so an exact ID remains
+        // value once, with a short-circuited fallback, so a full ID remains
         // an indexed equality when it drives a scope.
         format!(
             "{expr}=coalesce(\
@@ -437,7 +435,7 @@ impl<'a> Compiler<'a> {
         )
     }
 
-    /// `origin:native` (or a unique prefix of it) as a session condition.
+    /// `origin:native-id` (or a unique prefix of it) as a session condition.
     pub(super) fn session_ref(
         &mut self,
         id: &str,
@@ -525,7 +523,7 @@ impl<'a> Compiler<'a> {
         Ok(scope.a.expand(t).replace("{sessions}", sessions))
     }
 
-    fn native_reference(
+    fn reference_membership(
         &mut self,
         text: &str,
         scope: &RowContext,
@@ -576,9 +574,9 @@ impl<'a> Compiler<'a> {
             self.show(def.name, &expr, def.column_kind(), def.column_reference());
         }
         if def.kind == Kind::Time
-            && let Some(native) = fields::native_time(def.unit, def.name, &a)
+            && let Some(stored) = fields::stored_time(def.unit, def.name, &a)
         {
-            return self.native_time_condition(&native, &t.test, t.span);
+            return self.time_condition(&stored, &t.test, t.span);
         }
         // A structured value matches by its JSON scalar, so a string value
         // matches its text rather than its quoted JSON spelling.
@@ -593,38 +591,38 @@ impl<'a> Compiler<'a> {
         self.typed(def, def.kind, &expr, &t.test)
     }
 
-    pub(super) fn native_time_test(
+    pub(super) fn time_test(
         &mut self,
-        native: &fields::NativeTime,
-        predicate: time::NativePredicate,
+        stored: &fields::StoredTime,
+        predicate: time::TimePredicate,
     ) -> String {
-        let broad = predicate.candidates(&native.cache);
+        let broad = predicate.candidates(&stored.cache);
         let encoded = serde_json::to_string(&predicate).expect("typed time predicates serialize");
         let parameter = self.text_param(&encoded);
         let exact = format!(
             "pl_time_test({}, '{}', {parameter})",
-            native.bytes,
-            native.storage.code()
+            stored.bytes,
+            stored.storage.code()
         );
         if broad == "1" {
             exact
         } else {
             format!(
                 "(({broad} OR NOT pl_time_is_point({}, '{}')) AND {exact})",
-                native.bytes,
-                native.storage.code()
+                stored.bytes,
+                stored.storage.code()
             )
         }
     }
 
-    fn native_time_condition(
+    fn time_condition(
         &mut self,
-        native: &fields::NativeTime,
+        stored: &fields::StoredTime,
         test: &Test,
         span: Span,
     ) -> Result<String, QueryError> {
         use query_language::time::{TimeCondition as C, TimeRange};
-        use time::NativePredicate as P;
+        use time::TimePredicate as P;
         let compare = |value: Time, op: Op| -> Result<P, QueryError> {
             let (condition, invert) = match (op, value) {
                 (Op::Eq | Op::Ne, Time::Instant { at }) => (C::Equal { at }, op == Op::Ne),
@@ -647,17 +645,17 @@ impl<'a> Compiler<'a> {
         let predicate = match test {
             Test::Any => return Ok("1".into()),
             Test::Unknown => {
-                return Ok(format!("NOT ({})", self.native_time_test(native, P::Known)));
+                return Ok(format!("NOT ({})", self.time_test(stored, P::Known)));
             }
-            Test::Known => return Ok(self.native_time_test(native, P::Known)),
+            Test::Known => return Ok(self.time_test(stored, P::Known)),
             Test::Time(TimeTest::Within(at)) => compare(self.resolved(at), Op::Eq)?,
             Test::Time(TimeTest::Compare(op, at)) => compare(self.resolved(at), *op)?,
             Test::Time(TimeTest::Between(from, to)) => {
                 let a = self.resolved(from);
                 let b = self.resolved(to);
                 if matches!(b, Time::Instant { at } if at == jiff::Timestamp::MAX) {
-                    return Ok(self.native_time_test(
-                        native,
+                    return Ok(self.time_test(
+                        stored,
                         P::Compare {
                             condition: C::AtOrAfter { at: a.start() },
                             invert: false,
@@ -682,7 +680,7 @@ impl<'a> Compiler<'a> {
             }
             _ => return Err(not_built("this time field condition")),
         };
-        Ok(self.native_time_test(native, predicate))
+        Ok(self.time_test(stored, predicate))
     }
     pub(super) fn display_value(expr: &str, kind: ColKind) -> String {
         match kind {

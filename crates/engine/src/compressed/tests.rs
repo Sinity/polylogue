@@ -3,9 +3,9 @@ use crate::import::tests::engine;
 use polylogue_testkit::ClaudeHome;
 use std::io::Write;
 
-pub(super) fn rollout(native: &str) -> String {
+pub(super) fn rollout(session_id: &str) -> String {
     format!(
-        "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{native}\"}}}}\n{{\"type\":\"response_item\",\"payload\":{{\"id\":\"m1\",\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"independent payload\"}}]}}}}\n"
+        "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{session_id}\"}}}}\n{{\"type\":\"response_item\",\"payload\":{{\"id\":\"m1\",\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"independent payload\"}}]}}}}\n"
     )
 }
 fn captured(e: &Engine, id: &str) -> Vec<u8> {
@@ -15,7 +15,7 @@ fn captured(e: &Engine, id: &str) -> Vec<u8> {
 }
 
 #[test]
-fn plain_moved_compressed_and_reencoded_rollouts_share_native_input_without_extra_revisions() {
+fn moved_and_reencoded_rollouts_share_one_input() {
     let w = ClaudeHome::new();
     let dir = w.home.join(".codex/sessions");
     std::fs::create_dir_all(&dir).unwrap();
@@ -72,8 +72,7 @@ fn plain_moved_compressed_and_reencoded_rollouts_share_native_input_without_extr
 }
 
 #[test]
-fn appended_plain_rollout_extends_the_native_chain_and_corrupt_encoding_keeps_original_uncommitted()
-{
+fn appended_rollout_extends_chain_but_corrupt_does_not() {
     let w = ClaudeHome::new();
     let dir = w.home.join(".codex/sessions");
     std::fs::create_dir_all(&dir).unwrap();
@@ -121,7 +120,7 @@ fn a_large_compressed_record_has_no_decoded_size_cap() {
 }
 
 #[test]
-fn a_proven_stale_alias_observes_its_old_revision_without_regressing_the_native_input() {
+fn stale_alias_keeps_old_revision_and_the_input() {
     let w = ClaudeHome::new();
     let sessions = w.home.join(".codex/sessions");
     let archived = w.home.join(".codex/archived_sessions");
@@ -194,7 +193,7 @@ fn a_proven_stale_alias_observes_its_old_revision_without_regressing_the_native_
 }
 
 #[test]
-fn equal_decoded_acquisition_keeps_its_actual_body_without_an_extra_revision() {
+fn equal_decoded_read_keeps_its_body_without_a_revision() {
     let w = ClaudeHome::new();
     let dir = w.home.join(".codex/sessions");
     std::fs::create_dir_all(&dir).unwrap();

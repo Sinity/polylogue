@@ -1,4 +1,4 @@
-//! Test-only phase evidence. This channel never wakes the controller or writer.
+//! Test-only phase observations. This channel never wakes the controller or writer.
 use super::Daemon;
 use serde_json::Value;
 

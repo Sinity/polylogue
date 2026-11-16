@@ -65,7 +65,7 @@ pub const SESSION_SPAN: Construct = Construct {
     parameters: TIME_PARAMETERS,
     validity: Validity::Parameterized,
     tests: &[
-        "span_and_lanes_match_a_hand_computed_session",
+        "span_and_parties_match_a_hand_computed_session",
         "tool_intervals_extend_clusters_and_share_overlap",
         "clustering_sensitivity_matches_the_morrow_shaped_sample",
     ],
@@ -85,9 +85,9 @@ pub const SESSION_TIME: Construct = Construct {
     parameters: TIME_PARAMETERS,
     validity: Validity::Parameterized,
     tests: &[
-        "span_and_lanes_match_a_hand_computed_session",
+        "span_and_parties_match_a_hand_computed_session",
         "tool_intervals_extend_clusters_and_share_overlap",
-        "time_lanes_sum_to_wall_for_overlapping_intervals",
+        "party_times_sum_to_wall_for_overlapping_intervals",
     ],
     figures: SESSION_SPAN.figures,
 };
@@ -203,7 +203,7 @@ pub const COMPARE: Construct = Construct {
     figures: &[],
 };
 
-/// The checked-in reference uses these exact declarations.
+/// The checked-in reference is generated from these declarations.
 pub fn markdown(products: &[Construct]) -> String {
     let mut out = String::from(
         "# Derived data\n\nGenerated from the product declarations. Session products read parsed rows; read-time products may read settings, notes and the query clock.\n",

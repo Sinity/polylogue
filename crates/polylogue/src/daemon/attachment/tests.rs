@@ -33,9 +33,9 @@ fn page(response: command_surface::Answer<BytePage>) -> BytePage {
 }
 
 #[test]
-fn selected_inline_cas_pages_keep_exact_bytes_without_inventing_an_input() {
+fn selected_inline_cas_pages_keep_bytes_without_inventing_an_input() {
     for bytes in [Vec::new(), vec![b'Q'; PAGE_BYTES + 17]] {
-        let daemon = test_daemon::start("synthetic canonical inline attachment");
+        let daemon = test_daemon::start("synthetic inline attachment");
         let message = inline(&daemon, &bytes);
         let mut cursor = None;
         let mut actual = Vec::new();
@@ -134,7 +134,7 @@ fn receiving_member_cursors_keep_their_input_selection_and_original_wire_shape()
         let input = page
             .input
             .clone()
-            .expect("a receiving member retains its actual input");
+            .expect("a receiving member keeps its input");
         if let Some(selected) = &selected {
             assert_eq!(&input, selected);
         } else {
@@ -156,7 +156,7 @@ fn receiving_member_cursors_keep_their_input_selection_and_original_wire_shape()
             assert_eq!(wire["input"], input);
             assert!(
                 wire.get("source").is_none(),
-                "old receiving cursors need no inline discriminator"
+                "old receiving cursors need no inline type field"
             );
             if actual.len() == 3 {
                 let refused = read(
@@ -183,7 +183,7 @@ fn receiving_member_cursors_keep_their_input_selection_and_original_wire_shape()
 #[test]
 fn missing_or_corrupt_inline_frames_refuse_even_a_zero_byte_page() {
     for missing in [false, true] {
-        let daemon = test_daemon::start("synthetic physical inline empty body");
+        let daemon = test_daemon::start("synthetic inline empty body");
         let message = inline(&daemon, b"");
         let (root, extent) = {
             let reader = daemon.daemon.reads.reader().unwrap();

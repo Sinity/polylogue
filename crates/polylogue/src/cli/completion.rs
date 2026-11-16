@@ -78,7 +78,7 @@ pub(super) fn candidate(value: String, help: String) -> Option<CompletionCandida
 }
 
 /// Shell arguments are already decoded. Their query spelling is the same join
-/// used by ordinary CLI parsing; only the current shell word is replaced.
+/// used by CLI parsing; only the current shell word is replaced.
 fn context(
     arguments: &[OsString],
     index: usize,

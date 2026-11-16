@@ -88,11 +88,11 @@ fn available(engine: &Engine) -> (AssetMatch, ObservedMember) {
     assert!(reader.attachment_range(&asset, 0..0).unwrap().is_empty());
     assert!(reader.attachment_range(&asset, 0..1).is_err());
     let member = observed(&reader, MEMBER);
-    let witness = reader
+    let checked_member = reader
         .validate_attachment_member(&member, BlobHash::of(b""), 0)
         .unwrap();
-    assert_eq!(witness.identity().hash, BlobHash::of(b""));
-    assert_eq!(witness.identity().size, 0);
+    assert_eq!(checked_member.identity().hash, BlobHash::of(b""));
+    assert_eq!(checked_member.identity().size, 0);
     (asset, member)
 }
 
@@ -128,7 +128,7 @@ fn real_directory_and_zip_empty_members_survive_provider_removal_reopen_and_rebu
 }
 
 #[test]
-fn missing_or_corrupt_empty_frames_refuse_hash_range_and_receiving_witness() {
+fn missing_or_corrupt_empty_frames_are_refused() {
     for missing in [false, true] {
         let home = ClaudeHome::new();
         let provider = package(&home, false, true);
@@ -168,7 +168,7 @@ fn missing_or_corrupt_empty_frames_refuse_hash_range_and_receiving_witness() {
                     .is_err(),
             ]
         };
-        // Restore this synthetic physical fault before assertions or teardown.
+        // Restore this synthetic filesystem fault before assertions or teardown.
         if missing {
             std::fs::rename(&held, &path).unwrap();
         } else {
@@ -217,7 +217,7 @@ fn unrelated_empty_blob_does_not_supply_a_missing_import_member() {
 }
 
 #[test]
-fn empty_member_namespaces_must_match_the_actual_receiving_observation() {
+fn empty_member_namespaces_must_match_the_receiving_observation() {
     let home = ClaudeHome::new();
     let provider = package(&home, false, true);
     let (mut engine, _lock) = engine(&home, 1024);
@@ -240,7 +240,7 @@ fn empty_member_namespaces_must_match_the_actual_receiving_observation() {
 }
 
 #[test]
-fn metadata_only_and_mismatched_receipts_cannot_borrow_an_unrelated_empty_body() {
+fn mismatched_source_reads_cannot_borrow_an_empty_body() {
     for invalid in ["absent", "machine", "path", "range", "hash"] {
         let home = ClaudeHome::new();
         let provider = package(&home, false, false);
@@ -264,20 +264,20 @@ fn metadata_only_and_mismatched_receipts_cannot_borrow_an_unrelated_empty_body()
             authorship: None,
             format: Some("export-file".into()),
         });
-        let mut receipt = engine
-            .acquisition_context(&path, "export-file", AcquisitionRoute::ExplicitImport)
+        let mut source_read = engine
+            .source_read_context(&path, "export-file", AcquisitionRoute::ExplicitImport)
             .finish(RawRange { start: 0, end: 0 }, prepared.hash());
         match invalid {
-            "machine" => receipt.source.machine = "another-machine".into(),
-            "path" => receipt.source.path_bytes = b"/synthetic/another-empty".to_vec(),
-            "range" => receipt.range = RawRange { start: 1, end: 1 },
-            "hash" => receipt.hash = BlobHash::of(b"different"),
+            "machine" => source_read.source.machine = "another-machine".into(),
+            "path" => source_read.source.path_bytes = b"/synthetic/another-empty".to_vec(),
+            "range" => source_read.range = RawRange { start: 1, end: 1 },
+            "hash" => source_read.hash = BlobHash::of(b"different"),
             _ => {}
         }
         let result = engine.writer.store_bytes(
             prepared,
             Batch {
-                required_disposition: None,
+                required_outcome: None,
                 input: InputKey {
                     id: BlobHash::of(b"").to_string(),
                     format: "export-file".into(),
@@ -290,13 +290,16 @@ fn metadata_only_and_mismatched_receipts_cannot_borrow_an_unrelated_empty_body()
                 blobs: vec![],
                 length: 0,
                 parse: vec![],
-                acquisition: (invalid != "absent").then_some(receipt),
+                acquisition: (invalid != "absent").then_some(source_read),
                 basis: None,
                 release: Default::default(),
             },
         );
         if matches!(invalid, "machine" | "path") {
-            assert!(result.is_err(), "mismatched {invalid} receipt was accepted");
+            assert!(
+                result.is_err(),
+                "mismatched {invalid} source read was accepted"
+            );
         } else if result.is_ok() {
             engine.refresh_import_assets(&mut Pass::default()).unwrap();
             let reader = engine.reads.reader().unwrap();
@@ -329,7 +332,7 @@ fn saved_empty_selection_refuses_a_real_nonempty_source_rewrite() {
         .store_bytes(
             prepared,
             Batch {
-                required_disposition: None,
+                required_outcome: None,
                 input: InputKey {
                     id: asset.input.clone(),
                     format: "export-file".into(),

@@ -135,7 +135,7 @@ fn dialogue_shows_only_people_and_model_text() {
             entries: &entries,
             inherited: false,
         }],
-        &FoldProfile::of(&options),
+        &ShowProfile::of(&options),
     );
     let keys: Vec<String> = sums
         .shown
@@ -169,11 +169,11 @@ fn branches_and_harness_follow_the_options() {
         entries: &entries,
         inherited: false,
     }];
-    let hidden = visible_entries(&segment, &FoldProfile::of(&ReadOptions::default()));
+    let hidden = visible_entries(&segment, &ShowProfile::of(&ReadOptions::default()));
     assert!(hidden.is_empty());
     let shown = visible_entries(
         &segment,
-        &FoldProfile::of(&ReadOptions {
+        &ShowProfile::of(&ReadOptions {
             branches: true,
             ..ReadOptions::default()
         }),
@@ -286,7 +286,7 @@ fn varied_entries() -> Vec<IndexEntry> {
 }
 
 /// Every combination of the options that decide what a reading shows.
-fn every_profile() -> Vec<FoldProfile> {
+fn every_profile() -> Vec<ShowProfile> {
     let levels = [
         None,
         Some(Expansion::None),
@@ -299,7 +299,7 @@ fn every_profile() -> Vec<FoldProfile> {
             for thinking in levels {
                 for harness in levels {
                     for branches in [false, true] {
-                        out.push(FoldProfile::of(&ReadOptions {
+                        out.push(ShowProfile::of(&ReadOptions {
                             view,
                             tools,
                             thinking,

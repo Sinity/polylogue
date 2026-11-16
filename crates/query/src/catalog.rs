@@ -211,7 +211,7 @@ pub fn target_unit(target: &polylogue_model::read::ReadTarget) -> Unit {
     }
 }
 
-/// The native row domain of a typed address. This is pure product vocabulary;
+/// The row domain a typed address names. This is pure product vocabulary;
 /// membership and source availability remain Store responsibilities.
 pub fn reference_unit(reference: &polylogue_model::Reference) -> Option<Unit> {
     use polylogue_model::Reference;

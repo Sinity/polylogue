@@ -30,7 +30,7 @@ pub(crate) fn expand(
     expand_ast(parse_query(text, options)?, text, options)
 }
 
-/// Expand the already parsed question; text is retained only for diagnostics.
+/// Expand the already parsed question; text is kept only for diagnostics.
 pub(crate) fn expand_ast(
     mut query: Query,
     text: &str,

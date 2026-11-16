@@ -2,7 +2,7 @@ use super::*;
 use sinex_protocol::{ConfirmedConsumerReply, FetchEventReply, Subjects};
 use std::sync::Arc;
 
-// Owner subscriptions must be processed before another connection requests them.
+// Fake Sinex subscriptions must be processed before another connection requests them.
 // In pinned async-nats 0.47, Client::flush completes at ConnectionHandler's
 // socket poll_flush, without a server roundtrip. query_account on the same
 // connection waits for the server to process all preceding SUB commands.
@@ -106,14 +106,14 @@ fn provisioned() -> ConfirmedConsumerReply {
     ConfirmedConsumerReply::Provisioned {
         position: 17,
         stream: subjects.confirmed_stream(),
-        stream_instance: Some("native-instance".into()),
+        stream_instance: Some("stream-instance".into()),
         consumer: subjects.consumer_name("test-scope"),
         scope: "test-scope".into(),
     }
 }
 
 #[test]
-fn background_follow_drains_split_position_after_durable_staging_then_waits_when_current() {
+fn background_follow_drains_split_position_then_waits() {
     let server = crate::client::tests::server();
     let root = tempfile::tempdir().unwrap();
     let config = crate::Config {
@@ -167,7 +167,7 @@ fn background_follow_drains_split_position_after_durable_staging_then_waits_when
         (daemon, consumers)
     });
     let admin = daemon.clone();
-    let owner = sinex.runtime.spawn(async move {
+    let fake_sinex = sinex.runtime.spawn(async move {
         let mut number = 0;
         while let Some(request) = consumers.next().await {
             number += 1;
@@ -188,7 +188,7 @@ fn background_follow_drains_split_position_after_durable_staging_then_waits_when
             };
             let mut status = provisioned();
             if number <= 2 {
-                // Delivery may include a commit newer than the sampled head.
+                // Delivery may include a commit newer than the sampled latest position.
                 let ConfirmedConsumerReply::Provisioned { position, .. } = &mut status else {
                     unreachable!()
                 };
@@ -231,7 +231,7 @@ fn background_follow_drains_split_position_after_durable_staging_then_waits_when
     assert_eq!(
         pool.reader()
             .unwrap()
-            .query("SELECT count(*) AS n FROM primary_fact", &[])
+            .query("SELECT count(*) AS n FROM confirmed_event", &[])
             .unwrap(),
         [json!({"n":300})]
     );
@@ -244,8 +244,8 @@ fn background_follow_drains_split_position_after_durable_staging_then_waits_when
     let stopped = std::time::Instant::now();
     writer.stop();
     assert!(stopped.elapsed() < Duration::from_secs(1));
-    // Reprovision the native consumer from its beginning while retaining the
-    // applied cache. Old deliveries still need draining and durable ACKs.
+    // Reprovision the confirmed-stream consumer from its beginning while keeping
+    // the applied cache. Old deliveries still need draining and NATS ACKs.
     sinex.runtime.block_on(async {
         let subjects = Subjects::new("auth");
         let stream = jetstream::new(admin)
@@ -291,7 +291,7 @@ fn background_follow_drains_split_position_after_durable_staging_then_waits_when
     assert_eq!(
         pool.reader()
             .unwrap()
-            .query("SELECT count(*) AS n FROM primary_fact", &[])
+            .query("SELECT count(*) AS n FROM confirmed_event", &[])
             .unwrap(),
         [json!({"n":300})]
     );
@@ -302,7 +302,7 @@ fn background_follow_drains_split_position_after_durable_staging_then_waits_when
         "an exhausted replay must idle"
     );
     resumed.stop();
-    owner.abort();
+    fake_sinex.abort();
 }
 
 async fn answer_fetch(
@@ -360,7 +360,7 @@ fn withheld_fetches_overlap_with_a_bound_and_keep_order_refusals_and_erasure() {
             let (inflight, first_fetches) = tokio::sync::oneshot::channel();
             let (resume, resumed) = tokio::sync::oneshot::channel();
             let template = current_event(&document(polylogue_model::batch::StepProgress::AtEnd));
-            let owner = async move {
+            let fake_sinex = async move {
                 let request = consumers.next().await.unwrap();
                 reply(&daemon, request, provisioned()).await;
                 let mut interrupted = Vec::new();
@@ -382,7 +382,7 @@ fn withheld_fetches_overlap_with_a_bound_and_keep_order_refusals_and_erasure() {
                     });
                     let first = requests.remove(0);
                     // Complete later events before the first one, without
-                    // serializing every framed response and its acknowledgements.
+                    // serializing every framed response and its acknowledgments.
                     futures_util::stream::iter(requests.into_iter().rev().map(|request| answer_fetch(&daemon, request, &template)))
                         .buffer_unordered(16)
                         .collect::<Vec<_>>().await;
@@ -419,19 +419,19 @@ fn withheld_fetches_overlap_with_a_bound_and_keep_order_refusals_and_erasure() {
                         _ => assert!(matches!(&item.change, ConfirmedChange::Live(_))),
                     }
                 }
-                assert!(matches!(&page[37].change, ConfirmedChange::Control(c) if matches!(c.as_ref(), ReplayControl::Completion { position: 17, delivery: Some(receipt) } if receipt.stream_sequence == 37 && receipt.fingerprint.len() == 64)));
+                assert!(matches!(&page[37].change, ConfirmedChange::Control(c) if matches!(c.as_ref(), ReplayControl::Completion { position: 17, delivery: Some(marker) } if marker.stream_sequence == 37 && marker.fingerprint.len() == 64)));
                 assert!(matches!(&page[38].change, ConfirmedChange::Control(c) if matches!(c.as_ref(), ReplayControl::Delivered { delivery } if delivery.stream_sequence == 37)));
-                // Transport delivery alone cannot authorize ACK or retire producer custody.
-                assert!(client.acknowledge(&state, &|_| Ok(false)).await.unwrap_err().to_string().contains("not been durably staged"));
+                // Transport delivery alone cannot allow an ACK or remove bytes from the producer spool.
+                assert!(client.acknowledge(&state, &|_| Ok(false)).await.unwrap_err().to_string().contains("not been staged in the index"));
                 assert_eq!(client.pending.len(), 37);
             };
-            tokio::join!(owner, reader);
+            tokio::join!(fake_sinex, reader);
         }).await.expect("bounded confirmed transport fixture");
     });
 }
 
 #[test]
-fn reconnect_requests_the_completed_receipt_and_delivers_the_head_marker_without_new_data() {
+fn reconnect_resends_the_completion_marker() {
     let server = crate::client::tests::server();
     let root = tempfile::tempdir().unwrap();
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -449,8 +449,8 @@ fn reconnect_requests_the_completed_receipt_and_delivers_the_head_marker_without
             publish(&daemon, sinex_protocol::Confirmed::PositionComplete { commit_seq: 17 }).await;
             let stream = jetstream::new(daemon.clone()).get_stream(subjects.confirmed_stream()).await.unwrap();
             let raw = stream.get_raw_message(37).await.unwrap();
-            let receipt = local::CompletedDelivery {
-                stream_instance: "native-instance".into(), stream_sequence: 37,
+            let marker = local::CompletedDelivery {
+                stream_instance: "stream-instance".into(), stream_sequence: 37,
                 fingerprint: sinex_protocol::DeliveredCompletion::fingerprint(37, raw.time.unix_timestamp_nanos(), raw.subject.as_str(), &raw.payload),
             };
             let name = subjects.consumer_name("test-scope");
@@ -465,26 +465,26 @@ fn reconnect_requests_the_completed_receipt_and_delivers_the_head_marker_without
             jetstream::new(daemon.clone()).query_account().await.unwrap();
             let state = ReplayState {
                 applied_position: Some(17), scope: Some("test-scope".into()),
-                completed_delivery: Some(receipt.clone()),
-                staged_delivery: Some(local::NativeDeliveryCursor { stream_instance: "native-instance".into(), stream_sequence: 99 }),
+                completed_delivery: Some(marker.clone()),
+                staged_delivery: Some(local::StreamCursor { stream_instance: "stream-instance".into(), stream_sequence: 99 }),
                 ..Default::default()
             };
-            let owner = async {
+            let fake_sinex = async {
                 let request = requests.next().await.unwrap();
                 let body: sinex_protocol::ConfirmedConsumer = serde_json::from_slice(&request.payload).unwrap();
                 assert_eq!(body.after, 17);
                 assert_eq!(body.completion.as_ref().unwrap().stream_sequence, 37, "a newer partial cursor cannot replace completion");
-                assert_eq!(body.completion.as_ref().unwrap().fingerprint, receipt.fingerprint);
+                assert_eq!(body.completion.as_ref().unwrap().fingerprint, marker.fingerprint);
                 reply(&daemon, request, provisioned()).await;
             };
             let read = async {
                 let page = client.confirmed(&state, "cache").await.unwrap();
-                assert_eq!(client.pending.len(), 1, "native delivery excludes all original data");
+                assert_eq!(client.pending.len(), 1, "the confirmed delivery carries no original data");
                 assert_eq!(page.len(), 3);
                 assert!(matches!(&page[1].change, ConfirmedChange::Control(control)
-                    if matches!(control.as_ref(), ReplayControl::Completion { position: 17, delivery: Some(actual) } if actual == &receipt)));
+                    if matches!(control.as_ref(), ReplayControl::Completion { position: 17, delivery: Some(actual) } if actual == &marker)));
             };
-            tokio::join!(owner, read);
+            tokio::join!(fake_sinex, read);
         }).await.expect("bounded reconnect fixture");
     });
 }
@@ -525,7 +525,7 @@ fn an_open_event_on_the_stream_is_applied_without_a_fetch() {
                 sinex_protocol::Confirmed::PositionComplete { commit_seq: 17 },
             )
             .await;
-            let owner = async {
+            let fake_sinex = async {
                 let request = consumers.next().await.unwrap();
                 reply(&daemon, request, provisioned()).await;
             };
@@ -536,7 +536,7 @@ fn an_open_event_on_the_stream_is_applied_without_a_fetch() {
                 };
                 client.confirmed(&state, "cache").await
             };
-            let (_, page) = tokio::join!(owner, reader);
+            let (_, page) = tokio::join!(fake_sinex, reader);
             let page = page.unwrap();
             let live = page
                 .iter()
@@ -544,7 +544,7 @@ fn an_open_event_on_the_stream_is_applied_without_a_fetch() {
                 .expect("the open event is staged");
             assert_eq!(live.position, 17);
             assert!(matches!(&live.change, ConfirmedChange::Live(_)));
-            assert!(live.native.is_some());
+            assert!(live.sinex_context.is_some());
             assert!(
                 tokio::time::timeout(Duration::from_millis(50), fetches.next())
                     .await

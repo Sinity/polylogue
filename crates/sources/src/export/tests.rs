@@ -14,7 +14,7 @@ impl Read for Fragmented<'_> {
 }
 
 #[test]
-fn serde_raw_elements_have_exact_spans_on_fragmented_input() {
+fn serde_raw_elements_have_spans_on_fragmented_input() {
     let values = [
         r#"{"text":"é 🦀 [,] \\\"","nested":[{},[1,2]]}"#,
         "-12.3e+4",
@@ -145,7 +145,7 @@ fn scan_failures_distinguish_provider_syntax_input_callback_and_span() {
 }
 
 #[test]
-fn nested_chunks_keep_exact_spans_and_metadata_on_either_side() {
+fn nested_chunks_keep_spans_and_metadata_on_either_side() {
     let input = br#"{"before":17,"chunkedPrompt":{"pendingInputs":[{"text":"draft"}],"chunks":[{"role":"user","text":"[,{}]"},{"role":"model","text":"answer"}],"after":false},"runSettings":{"model":"models/example"}}"#;
     for fragment in 1..=17 {
         let mut chunks = Vec::new();
@@ -294,7 +294,7 @@ fn number_keys_keep_total_float_order_and_unknowns_last() {
 }
 
 #[test]
-fn keyed_maps_keep_exact_spans_across_short_reads_and_ignore_large_separators() {
+fn keyed_maps_keep_spans_across_short_reads_and_ignore_large_separators() {
     struct Short<'a> {
         bytes: &'a [u8],
         chunk: usize,

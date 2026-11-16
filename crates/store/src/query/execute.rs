@@ -150,7 +150,7 @@ impl Reader<'_> {
                 &program.clock,
                 &program.near,
                 &program.incomplete,
-                crate::sql_functions::similarity_count_basis(),
+                crate::sql_functions::similarity_count_inputs(),
                 self.index_identity()?,
                 self.query_scope_fingerprint()?,
             ))
@@ -301,14 +301,14 @@ impl Reader<'_> {
             None => match row_at {
                 None => self.query_each(&page, &params, |row| flow(visit(row))),
                 Some(row_at) => self.query_each(&page, &params, |order| {
-                    let mut exact = values(&program.params);
-                    exact.extend(
+                    let mut row_params = values(&program.params);
+                    row_params.extend(
                         program
                             .order
                             .iter()
                             .map(|key| sql_value(&order[&key.column])),
                     );
-                    let row = self.query(&row_at, &exact)?.pop().ok_or_else(|| {
+                    let row = self.query(&row_at, &row_params)?.pop().ok_or_else(|| {
                         StreamError::Selection(SelectionError::Invalid {
                             kind: "stale_cursor",
                             message: "the selected row position is unavailable".into(),
@@ -325,7 +325,7 @@ impl Reader<'_> {
         }
     }
 
-    /// One candidate cursor stays open while bounded owner batches are tested.
+    /// One candidate cursor stays open while bounded batches of row keys are tested.
     /// Only the requested page and the current batch live in Rust memory.
     fn recent_keys(
         &self,
@@ -370,21 +370,21 @@ impl Reader<'_> {
         let mut rows = Vec::new();
         let mut batch_size = limit.clamp(1, 256) as usize;
         loop {
-            let mut owners = Vec::new();
+            let mut batch = Vec::new();
             let mut exhausted = false;
             for _ in 0..batch_size {
                 let Some(row) = candidates.next().map_err(crate::StoreError::from)? else {
                     exhausted = true;
                     break;
                 };
-                owners.push(row.get::<_, i64>("_pk").map_err(crate::StoreError::from)?);
+                batch.push(row.get::<_, i64>("_pk").map_err(crate::StoreError::from)?);
             }
-            if owners.is_empty() {
+            if batch.is_empty() {
                 break;
             }
             params[scope.mode - 1] = SqlValue::Int(2);
-            params[recent.owners - 1] =
-                SqlValue::Text(serde_json::to_string(&owners).expect("owner keys serialize"));
+            params[recent.batch - 1] =
+                SqlValue::Text(serde_json::to_string(&batch).expect("row keys serialize"));
             let remaining = limit - rows.len() as i64;
             *params.last_mut().expect("result page limit") = SqlValue::Int(remaining);
             let matched = self.query(page, &params)?;
@@ -403,8 +403,8 @@ impl Reader<'_> {
     }
 
     /// Enlarge the ranked text prefix until no unseen score can enter this
-    /// page. Owner best scores are folded by SQL before the cursor applies,
-    /// so weaker duplicate hits never reintroduce an earlier owner.
+    /// page. Each row's best score is chosen in SQL before the cursor applies,
+    /// so weaker duplicate hits never bring back an earlier row.
     fn ranked_keys(
         &self,
         page: &str,
@@ -675,7 +675,7 @@ pub fn attach(
     })
 }
 
-/// Shape declared output columns and retain generated snippets.
+/// Shape declared output columns and keep generated snippets.
 pub fn present(program: &Program, row: &mut Value) -> Result<(), SelectionError> {
     let mut output = serde_json::Map::new();
     for col in &program.columns {
@@ -837,7 +837,7 @@ impl<E> From<crate::StoreError> for StreamError<E> {
     }
 }
 
-/// Capture options that survive canonical semantic binding. Transfer size and
+/// Capture options that survive binding to the normal form. Transfer size and
 /// current alias tables are deliberately outside the immutable execution input.
 pub fn options_snapshot(
     options: &super::Options,
@@ -859,7 +859,7 @@ pub fn options_snapshot(
     })
 }
 
-/// Lowering takes saved definitions and kept schemas from the validated frozen
+/// Lowering takes saved definitions and kept schemas from the validated saved
 /// Plan. It never needs current names, completion values or command vocabulary.
 pub fn options_from_snapshot(
     options: &polylogue_model::query_objects::QueryExecutionOptions,

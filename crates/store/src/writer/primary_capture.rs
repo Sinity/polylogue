@@ -1,4 +1,4 @@
-//! Raw acquisition is durable in the SDK spool before its temporary bytes are
+//! A capture read is saved in the SDK spool before its temporary bytes are
 //! released. Only a confirmed Input frame changes the source cache.
 use super::*;
 use crate::input_rows::{InputRows, Revision};
@@ -22,9 +22,9 @@ fn failed(count: usize, error: StoreError) -> Vec<Result<StoredInput>> {
                 StoreError::PrimaryPending { identity } => StoreError::PrimaryPending {
                     identity: identity.clone(),
                 },
-                StoreError::UnresolvedBasisConflict { custody } => {
+                StoreError::UnresolvedBasisConflict { spooled } => {
                     StoreError::UnresolvedBasisConflict {
-                        custody: custody.clone(),
+                        spooled: spooled.clone(),
                     }
                 }
                 _ => StoreError::Invalid(reason.clone()),
@@ -104,35 +104,36 @@ impl Placed {
     }
 }
 
-/// The acquired body of a batch: the whole bytes' identity and the private
+/// The captured body of a batch: the whole bytes' identity and the private
 /// encodings that hold them, in order (one, or one per chunk).
-struct AcquiredBody<'a> {
+struct CapturedBody<'a> {
     hash: BlobHash,
     length: u64,
     files: Vec<&'a crate::staging::PreparedBytes>,
 }
 
-impl AcquiredBody<'_> {
+impl CapturedBody<'_> {
     fn bodies(&self) -> Result<Vec<crate::primary::PreparedBody>> {
         self.files.iter().map(|file| file.body()).collect()
     }
 }
 
-// The acquired body may be retained without creating a logical source extent.
-// A receipt identifies the physical preparation, never a whole-chain blob guess.
-fn acquired_body(item: &PreparedBatch) -> Result<Option<AcquiredBody<'_>>> {
+// The captured body may be kept without creating a source extent. The
+// capture-read record names the prepared bytes; it never guesses a blob for the
+// whole chain.
+fn captured_body(item: &PreparedBatch) -> Result<Option<CapturedBody<'_>>> {
     let batch = &item.batch;
-    let expected = if let Some(receipt) = &batch.acquisition {
-        let length = receipt.range.length()?;
-        let parts = if receipt.chunks.is_empty() {
+    let expected = if let Some(capture_read) = &batch.acquisition {
+        let length = capture_read.range.length()?;
+        let parts = if capture_read.chunks.is_empty() {
             vec![crate::Chunk {
-                hash: receipt.hash,
+                hash: capture_read.hash,
                 size: length,
             }]
         } else {
-            receipt.chunks.clone()
+            capture_read.chunks.clone()
         };
-        Some((receipt.hash, length, parts))
+        Some((capture_read.hash, length, parts))
     } else {
         batch
             .new_blob
@@ -149,12 +150,12 @@ fn acquired_body(item: &PreparedBatch) -> Result<Option<AcquiredBody<'_>>> {
                         .find(|file| file.hash() == part.hash && file.len() == part.size)
                         .ok_or_else(|| {
                             StoreError::Invalid(
-                                "acquired provider body has no matching private encoding".into(),
+                                "captured provider body has no matching private encoding".into(),
                             )
                         })
                 })
                 .collect::<Result<_>>()?;
-            Ok(AcquiredBody {
+            Ok(CapturedBody {
                 hash,
                 length,
                 files,
@@ -165,7 +166,7 @@ fn acquired_body(item: &PreparedBatch) -> Result<Option<AcquiredBody<'_>>> {
 
 pub(super) fn validate(item: &PreparedBatch, archive: &Archive) -> Result<()> {
     let batch = &item.batch;
-    acquired_body(item)?;
+    captured_body(item)?;
     if batch.input.id.is_empty() || i64::try_from(batch.length).is_err() {
         return Err(StoreError::Invalid("invalid primary capture input".into()));
     }
@@ -204,8 +205,8 @@ pub(super) fn validate(item: &PreparedBatch, archive: &Archive) -> Result<()> {
     Ok(())
 }
 
-// An acquisition intent is independent of observer time and generated observation IDs.
-// Ordered source content and source facts distinguish actual new work.
+// A capture group's intent is independent of observer time and generated
+// observation IDs. Ordered source content and file facts tell new work apart.
 fn capture_group_identity(group: &[PreparedBatch], immutable: bool) -> Result<String> {
     let mut hash = blake3::Hasher::new();
     hash.update(b"polylogue-capture-group-v1");
@@ -266,11 +267,11 @@ impl Inner {
             .any(|item| matches!(item.batch.change, Change::Reparse { .. }))
         {
             // Stored readings refer to confirmed input chains, never to the
-            // latest provider-path head or a fresh receiving-I/O acquisition.
+            // current size at the provider path or a fresh capture read.
             let valid = (|| {
-                if super::staging::atomic_acquisition(&group) {
+                if super::staging::is_atomic_capture_group(&group) {
                     return Err(StoreError::Invalid(
-                        "stored readings cannot join a source acquisition".into(),
+                        "stored readings cannot join a capture group".into(),
                     ));
                 }
                 for item in &group {
@@ -337,27 +338,28 @@ impl Inner {
         for item in group {
             validate(item, &self.location)?;
         }
-        let sinex = Arc::clone(self.sinex.as_ref().ok_or_else(|| {
-            StoreError::Invalid("primary acquisition requires a producer".into())
-        })?);
+        let sinex =
+            Arc::clone(self.sinex.as_ref().ok_or_else(|| {
+                StoreError::Invalid("primary capture requires a producer".into())
+            })?);
         let immutable = group.iter().all(|item| {
-            item.batch.acquisition.as_ref().is_some_and(|receipt| {
-                receipt.route == crate::primary::AcquisitionRoute::ExplicitImport
+            item.batch.acquisition.as_ref().is_some_and(|capture_read| {
+                capture_read.route == crate::primary::AcquisitionRoute::ExplicitImport
             })
         });
         let intent = capture_group_identity(group, immutable)?;
         let pending = sinex.pending_captures()?;
         let mut bases = BTreeMap::new();
-        let mut required_disposition = None;
+        let mut required_outcome = None;
         for item in group {
-            match item.batch.required_disposition {
-                Some(crate::primary::CaptureDisposition::Prepared) => {
+            match item.batch.required_outcome {
+                Some(crate::primary::CaptureOutcome::Prepared) => {
                     return Err(StoreError::Invalid(
-                        "an acquisition constraint cannot require source acceptance".into(),
+                        "a capture constraint cannot require source acceptance".into(),
                     ));
                 }
-                Some(crate::primary::CaptureDisposition::UnresolvedBasisConflict) => {
-                    required_disposition = item.batch.required_disposition
+                Some(crate::primary::CaptureOutcome::UnresolvedBasisConflict) => {
+                    required_outcome = item.batch.required_outcome
                 }
                 None => {}
             }
@@ -369,24 +371,24 @@ impl Inner {
                     .batch
                     .basis
                     .as_ref()
-                    .is_some_and(|basis| basis != existing)
+                    .is_some_and(|base| base != existing)
                 {
-                    required_disposition =
-                        Some(crate::primary::CaptureDisposition::UnresolvedBasisConflict);
+                    required_outcome =
+                        Some(crate::primary::CaptureOutcome::UnresolvedBasisConflict);
                 }
             } else {
-                let basis = if let Some(sampled) = &item.batch.basis {
-                    if !self.sampled_basis_matches(sampled, &source, &item.batch.input.id)? {
-                        required_disposition =
-                            Some(crate::primary::CaptureDisposition::UnresolvedBasisConflict);
+                let base = if let Some(sampled) = &item.batch.basis {
+                    if !self.sampled_base_matches(sampled, &source, &item.batch.input.id)? {
+                        required_outcome =
+                            Some(crate::primary::CaptureOutcome::UnresolvedBasisConflict);
                     }
-                    // Pending predecessor is compared under the SDK custody
-                    // lock, after the serialized writer checks confirmed state.
+                    // The pending previous revision is compared under the SDK
+                    // spool lock, after the serialized writer checks confirmed state.
                     sampled.clone()
                 } else {
                     self.source_snapshot(source.clone())?.basis
                 };
-                bases.insert(source, basis);
+                bases.insert(source, base);
             }
         }
         let mut revisions = BTreeMap::new();
@@ -406,7 +408,7 @@ impl Inner {
             intent: intent.clone(),
             bases: bases.values().cloned().collect(),
             count: group.len() as u64,
-            required_disposition,
+            required_outcome,
             mode: if immutable {
                 crate::primary::CaptureMode::Immutable
             } else {
@@ -414,15 +416,16 @@ impl Inner {
             },
         };
         plan.validate()?;
-        // Provider-output blobs have their own durable capture. Group callbacks
-        // stage encodings outside the SDK lock; publication rechecks the basis.
+        // Provider-output blobs are spooled on their own. Group callbacks stage
+        // encodings outside the SDK lock; spooling the group rechecks the base.
         for item in group {
             for blob in &item.batch.blobs {
-                // The acquired provider body belongs to this atomic group, even
-                // when it creates no logical extent. Generic blob replay must
-                // not publish bytes from an unresolved acquisition separately.
-                if item.batch.acquisition.as_ref().is_some_and(|receipt| {
-                    receipt.hash == blob.hash && receipt.range.length().ok() == Some(blob.size)
+                // The captured provider body belongs to this atomic group, even
+                // when it creates no source extent. Generic blob replay must
+                // not send bytes from an unresolved capture read separately.
+                if item.batch.acquisition.as_ref().is_some_and(|capture_read| {
+                    capture_read.hash == blob.hash
+                        && capture_read.range.length().ok() == Some(blob.size)
                 }) {
                     continue;
                 }
@@ -455,7 +458,7 @@ impl Inner {
                     Some(revision) => Some(revision.clone()),
                     None => latest(&self.index, &batch.input.id)?,
                 };
-                // Metadata describes the original acquired source range. Exact overlap
+                // Metadata describes the original captured source range. Overlap
                 // with a later confirmed prefix is resolved when this group is ready.
                 let mut metadata = batch.clone();
                 metadata.new_blob = None;
@@ -473,10 +476,10 @@ impl Inner {
                 }
                 let name = source_name(&self.index, batch, &pending)?;
                 let (index, previous_material) =
-                    self.capture_predecessor(&batch.input.id, chain, &pending)?;
+                    self.capture_previous(&batch.input.id, chain, &pending)?;
                 let metadata_bytes = serde_json::to_vec(&rows)?;
-                let raw_body = acquired_body(item)?;
-                let (hash, length) = raw_body
+                let read_body = captured_body(item)?;
+                let (hash, length) = read_body
                     .as_ref()
                     .map(|body| (body.hash, body.length))
                     .unwrap_or_else(|| {
@@ -486,21 +489,21 @@ impl Inner {
                     generation: batch
                         .acquisition
                         .as_ref()
-                        .and_then(|receipt| receipt.generation.clone()),
+                        .and_then(|capture_read| capture_read.generation.clone()),
                     raw_total: batch
                         .acquisition
                         .as_ref()
-                        .and_then(|receipt| receipt.raw_total),
+                        .and_then(|capture_read| capture_read.raw_total),
                     raw_predecessor: batch
                         .acquisition
                         .as_ref()
-                        .and_then(|receipt| receipt.raw_predecessor.clone()),
+                        .and_then(|capture_read| capture_read.raw_predecessor.clone()),
                     raw_range: batch
                         .acquisition
                         .as_ref()
-                        .map(|receipt| receipt.range)
+                        .map(|capture_read| capture_read.range)
                         .or_else(|| {
-                            raw_body.as_ref().map(|body| crate::primary::RawRange {
+                            read_body.as_ref().map(|body| crate::primary::RawRange {
                                 start: batch.length - body.length,
                                 end: batch.length,
                             })
@@ -520,7 +523,7 @@ impl Inner {
                         count: group.len() as u64,
                     }),
                 };
-                let body = if let Some(body) = &raw_body {
+                let body = if let Some(body) = &read_body {
                     body.bodies()?
                 } else {
                     vec![
@@ -529,19 +532,19 @@ impl Inner {
                             .body()?,
                     ]
                 };
-                // The SDK assigns the original frozen occurrence to all members at
-                // one publication boundary. No per-member durable acceptance exists.
+                // The SDK spools all members together under the group's original
+                // record. No member is accepted on its own.
                 accepted[ordinal].2 = Some(captured.rows.clone());
                 emit(captured, body)?;
             }
             Ok(())
         };
         let prepared = match sinex.prepare_input_group(&plan, &mut members)? {
-            crate::primary::CaptureReceipt::Accepted { write } => write,
-            crate::primary::CaptureReceipt::UnresolvedBasisConflict { custody } => {
+            crate::primary::CaptureResult::Accepted { write } => write,
+            crate::primary::CaptureResult::UnresolvedBasisConflict { spooled } => {
                 return Ok(failed(
                     group.len(),
-                    StoreError::UnresolvedBasisConflict { custody },
+                    StoreError::UnresolvedBasisConflict { spooled },
                 ));
             }
         };
@@ -552,7 +555,7 @@ impl Inner {
         let mut outcomes = Vec::new();
         for (input, length, rows, already_stored, bytes_written) in accepted {
             let pending = prepared.identity.clone();
-            // An idempotent SDK retry can return its frozen group without
+            // An idempotent SDK retry can return its recorded group without
             // calling the visitor. Its original metadata is not replaced by
             // newly generated observation IDs.
             let Some(rows) = rows else {
@@ -585,8 +588,8 @@ impl Inner {
         batch: &Batch,
         pending: &[PendingCapture],
     ) -> Result<crate::primary::SourceSelector> {
-        if let Some(receipt) = &batch.acquisition {
-            return Ok(receipt.source.clone());
+        if let Some(capture_read) = &batch.acquisition {
+            return Ok(capture_read.source.clone());
         }
         if let Some(observation) = &batch.observation {
             return Ok(crate::primary::SourceSelector {
@@ -600,7 +603,7 @@ impl Inner {
             .rev()
             .find_map(|pending| match &pending.captured {
                 Capture::Input(input) if input.rows.input == batch.input.id => {
-                    input.basis.as_ref().map(|basis| basis.source.clone())
+                    input.basis.as_ref().map(|base| base.source.clone())
                 }
                 _ => None,
             })
@@ -618,12 +621,12 @@ impl Inner {
                 path_bytes,
             }),
             _ => Err(StoreError::Invalid(
-                "continuing capture has no exact source location evidence".into(),
+                "continuing capture has no recorded source location".into(),
             )),
         }
     }
 
-    fn capture_predecessor(
+    fn capture_previous(
         &self,
         input: &str,
         chain: i64,
@@ -671,7 +674,7 @@ impl Inner {
         self.complete_ready_captures()
     }
 
-    /// Prepares the parsed facts of captures whose materials Sinex has
+    /// Prepares the input events of captures whose materials Sinex has
     /// confirmed. It reads only the spool and the index.
     pub(super) fn complete_ready_captures(&mut self) -> Result<()> {
         let sinex = Arc::clone(
@@ -728,7 +731,7 @@ impl Inner {
                     let material = member.material.as_ref().expect("ready material");
                     if material.hash != *hash || material.length != *length {
                         return Err(StoreError::Invalid(
-                            "ready blob differs from its durable capture".into(),
+                            "ready blob differs from its spooled capture".into(),
                         ));
                     }
                     writes.push(ProductWrite {
@@ -742,16 +745,14 @@ impl Inner {
                 Capture::Input(input) => {
                     if let Some(range) = input.raw_range {
                         let material = member.material.as_ref().ok_or_else(|| {
-                            StoreError::Invalid(
-                                "ready provider capture has no actual material".into(),
-                            )
+                            StoreError::Invalid("ready provider capture has no material".into())
                         })?;
                         if material.hash != input.hash
                             || material.length != input.length
                             || range.length()? != input.length
                         {
                             return Err(StoreError::Invalid(
-                                "ready provider material differs from its acquired body".into(),
+                                "ready provider material differs from its captured body".into(),
                             ));
                         }
                     }
@@ -819,7 +820,7 @@ impl Inner {
         let source = input
             .basis
             .as_ref()
-            .map(|basis| basis.source.clone())
+            .map(|base| base.source.clone())
             .or_else(|| {
                 let observation = input.rows.observation.as_ref()?;
                 Some(crate::primary::SourceSelector {
@@ -831,9 +832,9 @@ impl Inner {
         let Some(source) = source else {
             return Ok(None);
         };
-        // Current source coordinates require a complete scoped prefix; a known
-        // exact row alone cannot exclude an unreadable newer input. Frozen
-        // pre-I/O uncertainty continues to govern the pending capture's alias claims.
+        // Current source coordinates need a complete scoped prefix; one known
+        // row cannot rule out an unreadable newer input. The uncertainty fixed
+        // before I/O still decides the pending capture's stated aliases.
         self.primary_cache_ready()?;
         let (status, confirmed) = crate::source::Source::confirmed_source(&self.index, &source)?;
         if status != crate::primary::SourceStatus::Ready {
@@ -848,11 +849,12 @@ impl Inner {
         {
             return Ok(None);
         }
-        let replay = crate::primary::projection::replay_state(&self.index)?;
-        if replay
-            .head
-            .is_some_and(|head| replay.applied_position.is_none_or(|applied| applied < head))
-        {
+        let replay = crate::primary::confirmed::replay_state(&self.index)?;
+        if replay.latest_position.is_some_and(|latest| {
+            replay
+                .applied_position
+                .is_none_or(|applied| applied < latest)
+        }) {
             return Ok(None);
         }
         let mut rows = input.rows.clone();
@@ -963,8 +965,9 @@ impl Inner {
             rows.revision = None;
             rows.extents.clear();
             if let Some(observation) = &mut rows.observation {
-                let exact=self.index.query_row("SELECT number FROM source_revision WHERE input=?1 AND chain=?2 AND length=?3 ORDER BY number DESC LIMIT 1",params![rows.input,current.chain,end as i64],|row|row.get(0)).optional()?;
-                observation.revision = exact.or_else(|| (end == stored).then_some(current.number));
+                let same_length=self.index.query_row("SELECT number FROM source_revision WHERE input=?1 AND chain=?2 AND length=?3 ORDER BY number DESC LIMIT 1",params![rows.input,current.chain,end as i64],|row|row.get(0)).optional()?;
+                observation.revision =
+                    same_length.or_else(|| (end == stored).then_some(current.number));
                 observation.chain = observation.revision.is_none().then_some(current.chain);
                 observation.length = Some(end as i64);
                 observation.class = "back".into();

@@ -12,7 +12,7 @@ pub struct PreparedBatch {
 }
 
 /// One private encoded file and the descriptor produced by its encoder.
-/// The archive lock owns its path until storing it opens a file handle.
+/// The archive lock holds its path until storing it opens a file handle.
 /// Closed preparations keep read-ahead independent of the descriptor limit.
 #[derive(Clone)]
 pub struct PreparedBytes {
@@ -59,7 +59,7 @@ impl PreparedBytes {
 }
 
 impl crate::Archive {
-    /// Prepare frames off the writer thread. The bytes become durable when
+    /// Prepare frames off the writer thread. The bytes reach disk when
     /// a group append syncs them, or when the primary producer accepts them.
     pub fn prepare_blob(&self, bytes: &[u8]) -> Result<(crate::NewBlob, Option<PreparedBytes>)> {
         let prepared = self.prepare_bytes(bytes)?;
@@ -167,7 +167,7 @@ pub struct StoredInput {
     pub bytes_written: u64,
 }
 
-/// All catalogued extents are durable. Missing source ranges are detected
+/// All catalogued extents are on disk. Missing source ranges are detected
 /// while constructing a stored chain; no blob can be partly installed.
 pub(crate) fn require_range(
     conn: &Connection,

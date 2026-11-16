@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn frozen_semantic_outputs_ignore_parser_atoms_and_replay_exactly() {
+fn saved_outputs_ignore_parser_atoms() {
     use query_language::catalog::{Field, FieldKind};
     let mut previous = None;
     for origins in [vec![], vec!["claude-code".into(), "codex".into()]] {
@@ -55,7 +55,7 @@ fn frozen_semantic_outputs_ignore_parser_atoms_and_replay_exactly() {
         });
         assert!(
             matches!(validate_object(&changed), Err(QueryError::Invalid { .. })),
-            "previously frozen parser atoms must be refused, not rewritten"
+            "previously recorded parser atoms must be refused, not rewritten"
         );
         let mut changed = object.clone();
         changed.source_outputs[0].schema.fields[0].kind = FieldKind::Json;
@@ -124,7 +124,7 @@ fn metadata_preparation_uses_shared_binding_before_value_and_reference_formattin
                     name: name.clone(),
                     arguments: arguments.clone()
                 },
-                "frozen output uses the actual bound key"
+                "saved output uses the bound key"
             );
             let mut duplicate = object.clone();
             let mut snapshot = duplicate.source_outputs[0].clone();
@@ -138,14 +138,14 @@ fn metadata_preparation_uses_shared_binding_before_value_and_reference_formattin
             duplicate.source_outputs.push(snapshot);
             assert!(
                 validate_object(&duplicate).is_err(),
-                "semantic duplicate output snapshot"
+                "duplicate output snapshot differing only in quoting"
             );
             let replayed = replay(&object, catalog_fingerprint()).unwrap();
             assert_eq!(
                 identity::normal_form(replayed.expanded_query().query(), replayed.catalog())
                     .unwrap(),
                 identity::normal_form(direct.expanded_query().query(), direct.catalog()).unwrap(),
-                "frozen {text}"
+                "replayed {text}"
             );
         }
     }

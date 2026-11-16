@@ -50,7 +50,7 @@ fn a_turn_with_a_server_tool_keeps_call_and_result_together() {
     ])]);
     let msgs: Vec<&Message> = step.output.messages.iter().map(|r| &r.message).collect();
     assert_eq!(msgs.len(), 2);
-    assert_eq!(msgs[0].parent, None, "the root sentinel is no parent");
+    assert_eq!(msgs[0].parent, None, "the root placeholder is no parent");
     assert_eq!(msgs[1].parent.as_ref().unwrap().native().as_str(), "u1");
     let kinds: Vec<&str> = msgs[1]
         .blocks
@@ -282,7 +282,7 @@ fn unknown_summary_parts_leave_an_explicit_boundary_without_an_empty_message() {
         json!([{"type":"text","text":"continue"}]),
     );
     next["compaction_summary"] =
-        json!([{"type":"future_summary","payload":"retained in original input"}]);
+        json!([{"type":"future_summary","payload":"kept in original input"}]);
     let step = run(vec![conv(vec![next])]);
     assert_eq!(step.output.messages.len(), 1);
     assert_eq!(step.output.messages[0].message.text(), "continue");

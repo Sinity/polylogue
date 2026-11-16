@@ -20,7 +20,7 @@ fn source(n: u64) -> Source {
     }
 }
 #[test]
-fn document_body_ranges_are_simultaneous_and_inherited_identity_is_unchanged() {
+fn document_body_ranges_apply_together() {
     let key = Reference::Document(crate::DocumentId::parse("test:document").unwrap());
     let mut map = PresentationMap::default();
     map.insert(
@@ -118,7 +118,7 @@ fn utf8_boundaries_are_checked_before_any_replacement() {
 }
 
 #[test]
-fn mixed_declared_relations_keep_nonempty_rendition_and_all_omits_remove_it() {
+fn omits_remove_a_rendition_only_when_all_omit() {
     let key = Reference::parse("block:test:session:message#0").unwrap();
     let mut mixed = variant(&key.to_string(), vec![]);
     mixed.relations = vec![VariantRelation::Omits, VariantRelation::Expands];
@@ -147,7 +147,7 @@ fn mixed_declared_relations_keep_nonempty_rendition_and_all_omits_remove_it() {
     );
 }
 #[test]
-fn many_exact_body_renditions_use_only_their_derived_body_index() {
+fn many_body_renditions_use_only_their_derived_body_index() {
     let mut map = PresentationMap::default();
     for n in 0..10_000 {
         let key = Reference::parse(&format!("block:test:session:message#{n}")).unwrap();

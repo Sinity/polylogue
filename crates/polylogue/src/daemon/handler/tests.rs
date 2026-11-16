@@ -298,7 +298,7 @@ fn typed_setting_catalog_is_a_real_table_answer() {
 }
 
 #[test]
-fn typed_import_uses_the_same_path_authority_and_recursive_answer_schema() {
+fn typed_import_uses_the_same_path_and_answer_schema() {
     let relative = std::path::Path::new("relative.json");
     assert!(resolve_path(None, relative, "import path").is_err());
     assert_eq!(
@@ -388,9 +388,9 @@ fn typed_write_identity_comes_from_the_request_on_every_surface() {
 }
 
 #[test]
-fn measurement_answers_retain_the_actual_resolved_context_on_the_shared_socket() {
+fn measurement_answers_keep_resolved_context_on_shared_socket() {
     let daemon = crate::test_daemon::start_with_clock(
-        "measurement provenance example",
+        "measurement source example",
         polylogue_model::WallClock::fixed("2026-03-01T12:00:00Z".parse().unwrap()),
     );
     for (text, paged) in [
@@ -433,14 +433,14 @@ fn measurement_answers_retain_the_actual_resolved_context_on_the_shared_socket()
                     );
                 }
             }
-            _ => panic!("actual measurement answer: {typed:?}"),
+            _ => panic!("unexpected measurement answer: {typed:?}"),
         }
         assert_eq!(serde_json::to_value(&typed).unwrap(), *value);
         let mut missing = value.clone();
         missing.as_object_mut().unwrap().remove("resolved");
         assert!(serde_json::from_value::<crate::protocol::query::Answer>(missing).is_err());
         let mut unknown = value.clone();
-        unknown["caller_supplied_provenance"] = json!(true);
+        unknown["caller_supplied_source"] = json!(true);
         assert!(serde_json::from_value::<crate::protocol::query::Answer>(unknown).is_err());
     }
     for schema in [
@@ -581,7 +581,7 @@ fn answer_errors_keep_credential_shaped_messages_and_hints() {
 }
 
 #[test]
-fn setting_cli_arguments_and_socket_keep_the_declared_receipt_and_current_value() {
+fn setting_write_returns_its_result_and_value() {
     let daemon = crate::test_daemon::start("setting transport example");
     let (_, _, arguments) = crate::cli::request_arguments(
         &["polylogue", "setting", "reading.variants", "[]"],
@@ -590,20 +590,20 @@ fn setting_cli_arguments_and_socket_keep_the_declared_receipt_and_current_value(
     .unwrap();
     let ready = request("setting", Value::Object(arguments), "setting-cli-socket");
     let first = crate::client::call_ready(&daemon.daemon.archive, &ready).unwrap();
-    let crate::protocol::setting::Answer::Receipt(receipt) =
+    let crate::protocol::setting::Answer::Outcome(write_result) =
         serde_json::from_value(first.value().unwrap().clone()).unwrap()
     else {
-        panic!("write must return a receipt: {first:?}")
+        panic!("write must return a write result: {first:?}")
     };
-    assert!(!receipt.pending);
-    assert!(!receipt.repeat);
+    assert!(!write_result.pending);
+    assert!(!write_result.repeat);
     let repeated = crate::client::call_ready(&daemon.daemon.archive, &ready).unwrap();
-    let crate::protocol::setting::Answer::Receipt(repeat) =
+    let crate::protocol::setting::Answer::Outcome(repeat) =
         serde_json::from_value(repeated.value().unwrap().clone()).unwrap()
     else {
-        panic!("repeat must return a receipt: {repeated:?}")
+        panic!("repeat must return a write result: {repeated:?}")
     };
-    assert_eq!(repeat.id, receipt.id);
+    assert_eq!(repeat.id, write_result.id);
     assert!(repeat.repeat);
     assert!(!repeat.pending);
     let shown = crate::client::call_ready(

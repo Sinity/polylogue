@@ -1,7 +1,7 @@
 use polylogue_model::assertion::{Assertion, AssertionKind, values};
 
 /// Validated content is distinct from an active evaluator revision. Neither a
-/// historical author claim nor the local projection counter grants activation.
+/// stated historical author nor a local index counter grants activation.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct Definition {
     pub family: String,

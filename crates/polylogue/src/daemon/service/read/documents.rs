@@ -1,6 +1,6 @@
 //! Page presentation seeks original document blocks without making a partial
-//! canonical Document. Full record transfer retains the strict record adapter.
-use super::{Emit, Failure, attachment_evidence, evidence, output};
+//! stored Document. Full record transfer keeps the strict record adapter.
+use super::{Emit, Failure, attachment_facts, layout_facts, output};
 use polylogue_model::{
     Block, DocumentId,
     read::{
@@ -42,12 +42,12 @@ fn emit_items(
     ordinal: u64,
     items: Vec<ReadItem>,
     start: Option<ItemPlace>,
-    layout: &evidence::Layout<'_>,
+    layout: &layout_facts::Layout<'_>,
     emit: &mut Emit<'_>,
 ) -> Result<bool, Failure> {
     let at = position(row, ordinal);
-    let anchor = start.filter(|start| start.selection == at);
-    if anchor.is_some_and(|start| {
+    let page_start = start.filter(|start| start.selection == at);
+    if page_start.is_some_and(|start| {
         usize::try_from(start.item)
             .ok()
             .is_none_or(|item| item >= items.len())
@@ -60,11 +60,11 @@ fn emit_items(
     }
     for (item, value) in items {
         let item = u64::try_from(item).map_err(|_| stale())?;
-        if anchor.is_some_and(|anchor| {
+        if page_start.is_some_and(|page_start| {
             if layout.backwards {
-                item > anchor.item
+                item > page_start.item
             } else {
-                item < anchor.item
+                item < page_start.item
             }
         }) {
             continue;
@@ -88,7 +88,7 @@ fn block_items(
     reference: &str,
     ordinal: u64,
     block: Block,
-    layout: &evidence::Layout<'_>,
+    layout: &layout_facts::Layout<'_>,
 ) -> Result<Vec<ReadItem>, Failure> {
     check(reader)?;
     let source = Source {
@@ -99,7 +99,7 @@ fn block_items(
     polylogue_render::visit_source_block(
         &SourceBlock { source, block },
         layout.options,
-        layout.evidence,
+        layout.facts,
         |item| {
             items.push(item);
             true
@@ -112,7 +112,7 @@ fn block_items(
             item.kind,
             polylogue_model::read::ItemKind::Attachment { .. }
         ) {
-            *item = attachment_evidence::prepare(
+            *item = attachment_facts::prepare(
                 reader,
                 item.clone(),
                 attachment,
@@ -129,7 +129,7 @@ pub(super) fn visit(
     id: &DocumentId,
     row: u64,
     start: Option<ItemPlace>,
-    layout: &evidence::Layout<'_>,
+    layout: &layout_facts::Layout<'_>,
     emit: &mut Emit<'_>,
 ) -> Result<bool, Failure> {
     check(reader)?;
@@ -140,7 +140,7 @@ pub(super) fn visit(
     if reader.document_commit(id)?.is_none() {
         return Err(Failure::new(
             "not_yet_available",
-            format!("{reference} has no retained source admission evidence"),
+            format!("{reference} has no stored commit position for its source"),
         ));
     }
     if start.is_some_and(|start| {
@@ -166,15 +166,10 @@ pub(super) fn visit(
     }
     let root = || -> Result<Vec<ReadItem>, Failure> {
         let mut items = Vec::new();
-        polylogue_render::visit_document_root(
-            &reference,
-            layout.options,
-            layout.evidence,
-            |item| {
-                items.push(item);
-                true
-            },
-        )
+        polylogue_render::visit_document_root(&reference, layout.options, layout.facts, |item| {
+            items.push(item);
+            true
+        })
         .map_err(output::read_error)?;
         Ok(items)
     };

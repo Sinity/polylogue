@@ -184,7 +184,7 @@ fn server_tool_results_pair_and_keep_structured_success_or_failure() {
 }
 
 #[test]
-fn file_tool_bodies_keep_exact_new_text_and_original_arguments() {
+fn file_tool_bodies_keep_new_text_and_original_arguments() {
     for (tool, input, expected) in [
         (
             "Write",

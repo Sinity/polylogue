@@ -1,4 +1,4 @@
-//! Reject duplicate keys before decoding settings with native JSON number handling.
+//! Reject duplicate keys before decoding settings with serde_json's own number handling.
 
 use serde::Deserialize;
 use serde::de::{self, MapAccess, SeqAccess, Visitor};
@@ -11,7 +11,7 @@ pub(super) fn settings(text: &str) -> io::Result<serde_json::Value> {
     UniqueKeys::deserialize(&mut input).map_err(io::Error::other)?;
     input.end().map_err(io::Error::other)?;
     // The validation pass discards values. Value still owns number decoding,
-    // including arbitrary-precision integers and native unknown fields.
+    // including arbitrary-precision integers and unknown fields.
     serde_json::from_str(text).map_err(io::Error::other)
 }
 

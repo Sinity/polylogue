@@ -192,7 +192,7 @@ fn delayed_rate_only_snapshots_preserve_state_without_provider_time_or_window_sp
 }
 
 #[test]
-fn unresolved_item_and_harness_followups_do_not_prove_a_call_was_passed_without_a_result() {
+fn followups_do_not_mark_a_call_passed_without_result() {
     let mut fixture = WriterArchive::new();
     let mut call =
         crate::fixture::writer::bash("pending", 1, T0, "synthetic", true, "unused").remove(0);
@@ -315,7 +315,7 @@ fn an_unrelated_provider_scope_does_not_taint_known_boundary_counts() {
 }
 
 #[test]
-fn ordinary_complete_request_usage_keeps_its_daily_values_and_baseline() {
+fn complete_request_usage_keeps_its_daily_values_and_baseline() {
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(dir.path()).unwrap();
     let s = session(&mut f, "claude-code:daily");

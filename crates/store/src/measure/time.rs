@@ -36,8 +36,8 @@ pub struct Span {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Lane {
-    pub lane: String,
+pub struct PartyTime {
+    pub party: String,
     pub key: String,
     pub ms: i64,
 }
@@ -46,7 +46,7 @@ pub struct Lane {
 pub struct SessionTime {
     pub session: String,
     pub span: Option<Span>,
-    pub lanes: Vec<Lane>,
+    pub parties: Vec<PartyTime>,
     pub computed_at_read: bool,
     pub parameters: &'static [polylogue_model::derived::Parameter],
 }
@@ -84,7 +84,7 @@ impl Message {
         }
     }
 
-    fn waiting_lane(&self) -> &'static str {
+    fn waiting_party(&self) -> &'static str {
         if self.human_prompt() || self.last_block.as_deref() == Some("tool_result") {
             "model"
         } else if self.author == "model" && self.stop.as_deref() == Some("end_turn") {
@@ -189,7 +189,7 @@ fn rows(conn: &Connection, pk: i64, after: Option<&OrderKey>) -> Result<Rows> {
 }
 
 /// The same calculation serves the derivation and a read of a behind session.
-pub(crate) fn compute(conn: &Connection, pk: i64, gap_ms: i64) -> Result<(Span, Vec<Lane>)> {
+pub(crate) fn compute(conn: &Connection, pk: i64, gap_ms: i64) -> Result<(Span, Vec<PartyTime>)> {
     let rows = rows(conn, pk, None)?;
     if rows.messages.is_empty() {
         return Ok(from_events(conn, pk)?.finish());
@@ -210,12 +210,12 @@ fn from_events(conn: &Connection, pk: i64) -> Result<Prefix> {
         ..Prefix::default()
     };
     if let Some((a, b)) = first.zip(last) {
-        prefix.add_lanes(split(a, b, &[], &[]));
+        prefix.add_parties(split(a, b, &[], &[]));
     }
     Ok(prefix)
 }
 
-fn calculate(messages: &[Message], tools: &[Tool], gap_ms: i64) -> (Span, Vec<Lane>) {
+fn calculate(messages: &[Message], tools: &[Tool], gap_ms: i64) -> (Span, Vec<PartyTime>) {
     let mut prefix = Prefix::default();
     prefix.extend(messages, tools, 0, gap_ms);
     prefix.finish()
@@ -237,7 +237,7 @@ pub(crate) struct Prefix {
     timed: i64,
     untimed: i64,
     unordered_gaps: i64,
-    /// The last message's time and the lane the gap after it waits in.
+    /// The last message's time and the party the gap after it waits in.
     previous: Option<(Option<i64>, String)>,
     tools: i64,
     intervals: i64,
@@ -256,7 +256,7 @@ pub(crate) struct Prefix {
     last_model_stop: Option<Option<String>>,
     /// What the last message ends with, and its ID, when it is timed.
     ends: Option<(String, String)>,
-    lanes: Vec<Lane>,
+    parties: Vec<PartyTime>,
 }
 
 impl Prefix {
@@ -284,17 +284,17 @@ impl Prefix {
                 self.stop_reported |= m.stop.is_some();
                 self.last_model_stop = Some(m.stop.clone());
             }
-            if let (Some((Some(a), lane)), Some(b)) = (&self.previous, m.at) {
+            if let (Some((Some(a), party)), Some(b)) = (&self.previous, m.at) {
                 if b < *a {
                     self.unordered_gaps += 1;
                 } else {
                     if b - a <= gap_ms {
                         clustered.push((*a, b));
                     }
-                    waiting.push((*a, b, lane.clone()));
+                    waiting.push((*a, b, party.clone()));
                 }
             }
-            self.previous = Some((m.at, m.waiting_lane().to_owned()));
+            self.previous = Some((m.at, m.waiting_party().to_owned()));
         }
         if let Some(m) = messages.last() {
             self.ends = m.at.map(|_| (m.ends_with().to_owned(), m.id.clone()));
@@ -335,27 +335,27 @@ impl Prefix {
         if let Some((a, b)) = lower.or(self.first).zip(self.last) {
             let waiting: Vec<_> = waiting
                 .iter()
-                .map(|(a, b, lane)| (*a, *b, lane.as_str()))
+                .map(|(a, b, party)| (*a, *b, party.as_str()))
                 .collect();
-            self.add_lanes(split(a, b, &intervals, &waiting));
+            self.add_parties(split(a, b, &intervals, &waiting));
         }
     }
 
-    fn add_lanes(&mut self, lanes: Vec<Lane>) {
-        let mut totals: BTreeMap<(String, String), i64> = std::mem::take(&mut self.lanes)
+    fn add_parties(&mut self, parties: Vec<PartyTime>) {
+        let mut totals: BTreeMap<(String, String), i64> = std::mem::take(&mut self.parties)
             .into_iter()
-            .map(|l| ((l.lane, l.key), l.ms))
+            .map(|l| ((l.party, l.key), l.ms))
             .collect();
-        for l in lanes {
-            *totals.entry((l.lane, l.key)).or_default() += l.ms;
+        for l in parties {
+            *totals.entry((l.party, l.key)).or_default() += l.ms;
         }
-        self.lanes = totals
+        self.parties = totals
             .into_iter()
-            .map(|((lane, key), ms)| Lane { lane, key, ms })
+            .map(|((party, key), ms)| PartyTime { party, key, ms })
             .collect();
     }
 
-    fn finish(&self) -> (Span, Vec<Lane>) {
+    fn finish(&self) -> (Span, Vec<PartyTime>) {
         let time_source = if self.timed > 0 {
             "messages"
         } else if self.untimed == 0 && self.first.is_some() {
@@ -391,19 +391,19 @@ impl Prefix {
             ends_with_message: self.ends.as_ref().map(|(_, id)| id.clone()),
             last_stop_reason: self.last_model_stop.clone().flatten(),
         };
-        let mut lanes = if self.first.is_some() && self.last.is_some() {
-            self.lanes.clone()
+        let mut parties = if self.first.is_some() && self.last.is_some() {
+            self.parties.clone()
         } else {
             Vec::new()
         };
         // Waiting for the human starts where a model message ends its turn. A
         // session none of whose model messages states a stop reason comes from
-        // a provider that reports no turn end: its human lane is unknown, not 0,
+        // a provider that reports no turn end: its human party is unknown, not 0,
         // and that time stays unattributed.
         if !self.stop_reported {
-            lanes.retain(|l| l.lane != "human");
+            parties.retain(|l| l.party != "human");
         }
-        (span, lanes)
+        (span, parties)
     }
 }
 
@@ -469,16 +469,16 @@ fn settled(before: Option<i64>, rows: &Rows) -> Option<usize> {
     found
 }
 
-/// A session's span and lanes, with the calculation's state at its last
+/// A session's span and parties, with the calculation's state at its last
 /// settled message when it has one ([`derive`]).
 #[derive(Debug)]
 pub(crate) struct Derived {
     span: Span,
-    lanes: Vec<Lane>,
+    parties: Vec<PartyTime>,
     prefix: Option<Prefix>,
 }
 
-/// Derives the session's span and lanes: from the stored prefix when
+/// Derives the session's span and parties: from the stored prefix when
 /// nothing up to its settled message changed since it was stored, reading
 /// only the messages after it, else from the whole session. Returns them
 /// with the number of messages read.
@@ -504,11 +504,11 @@ pub(crate) fn derive(conn: &Connection, pk: i64, from_start: bool) -> Result<(De
         None => {
             let rows = rows(conn, pk, None)?;
             if rows.messages.is_empty() {
-                let (span, lanes) = from_events(conn, pk)?.finish();
+                let (span, parties) = from_events(conn, pk)?.finish();
                 return Ok((
                     Derived {
                         span,
-                        lanes,
+                        parties,
                         prefix: None,
                     },
                     0,
@@ -535,11 +535,11 @@ pub(crate) fn derive(conn: &Connection, pk: i64, from_start: bool) -> Result<(De
             (prefix.end.is_some().then_some(prefix), whole)
         }
     };
-    let (span, lanes) = whole.finish();
+    let (span, parties) = whole.finish();
     Ok((
         Derived {
             span,
-            lanes,
+            parties,
             prefix: stored,
         },
         rows.messages.len(),
@@ -551,7 +551,7 @@ pub(crate) fn write_derived(conn: &Connection, pk: i64, derived: &Derived) -> Re
         conn,
         pk,
         &derived.span,
-        &derived.lanes,
+        &derived.parties,
         derived.prefix.as_ref(),
     )
 }
@@ -655,7 +655,7 @@ fn split(
     last: i64,
     tools: &[(i64, i64, String)],
     waiting: &[(i64, i64, &str)],
-) -> Vec<Lane> {
+) -> Vec<PartyTime> {
     let mut points = BTreeMap::<i64, Changes<'_>>::new();
     points.entry(first).or_default();
     points.entry(last).or_default();
@@ -666,16 +666,16 @@ fn split(
             points.entry(b).or_default().tool_end.push(i);
         }
     }
-    for (a, b, lane) in waiting {
+    for (a, b, party) in waiting {
         let (a, b) = ((*a).max(first), (*b).min(last));
         if b > a {
-            points.entry(a).or_default().wait_start.push(*lane);
-            points.entry(b).or_default().wait_end.push(*lane);
+            points.entry(a).or_default().wait_start.push(*party);
+            points.entry(b).or_default().wait_end.push(*party);
         }
     }
     let mut totals = BTreeMap::<(String, String), i64>::new();
-    for lane in ["model", "human", "unattributed"] {
-        totals.insert((lane.into(), String::new()), 0);
+    for party in ["model", "human", "unattributed"] {
+        totals.insert((party.into(), String::new()), 0);
     }
     let mut active_tools = BTreeSet::<usize>::new();
     let mut active_wait = BTreeMap::<&str, usize>::new();
@@ -690,12 +690,12 @@ fn split(
                     .or_default() += ms / n + i64::from((rank as i64) < ms % n);
             }
         } else {
-            let lane = if active_wait.len() == 1 && active_wait.values().sum::<usize>() == 1 {
+            let party = if active_wait.len() == 1 && active_wait.values().sum::<usize>() == 1 {
                 *active_wait.keys().next().unwrap()
             } else {
                 "unattributed"
             };
-            *totals.entry((lane.into(), String::new())).or_default() += ms;
+            *totals.entry((party.into(), String::new())).or_default() += ms;
         }
         for i in change.tool_end {
             active_tools.remove(&i);
@@ -703,22 +703,22 @@ fn split(
         for i in change.tool_start {
             active_tools.insert(i);
         }
-        for lane in change.wait_end {
-            if let Some(n) = active_wait.get_mut(lane) {
+        for party in change.wait_end {
+            if let Some(n) = active_wait.get_mut(party) {
                 *n -= 1;
                 if *n == 0 {
-                    active_wait.remove(lane);
+                    active_wait.remove(party);
                 }
             }
         }
-        for lane in change.wait_start {
-            *active_wait.entry(lane).or_default() += 1;
+        for party in change.wait_start {
+            *active_wait.entry(party).or_default() += 1;
         }
         previous = at;
     }
     totals
         .into_iter()
-        .map(|((lane, key), ms)| Lane { lane, key, ms })
+        .map(|((party, key), ms)| PartyTime { party, key, ms })
         .collect()
 }
 
@@ -726,7 +726,7 @@ fn write(
     conn: &Connection,
     pk: i64,
     span: &Span,
-    lanes: &[Lane],
+    parties: &[PartyTime],
     prefix: Option<&Prefix>,
 ) -> Result<()> {
     let prefix = prefix.map(serde_json::to_string).transpose()?;
@@ -735,9 +735,9 @@ fn write(
     conn.prepare_cached("DELETE FROM session_time WHERE session_pk=?1")?
         .execute([pk])?;
     let mut statement = conn
-        .prepare_cached("INSERT INTO session_time(session_pk,lane,key,ms) VALUES(?1,?2,?3,?4)")?;
-    for l in lanes {
-        statement.execute(params![pk, l.lane, l.key, l.ms])?;
+        .prepare_cached("INSERT INTO session_time(session_pk,party,key,ms) VALUES(?1,?2,?3,?4)")?;
+    for l in parties {
+        statement.execute(params![pk, l.party, l.key, l.ms])?;
     }
     Ok(())
 }
@@ -778,7 +778,7 @@ fn stored(conn: &Connection, pk: i64) -> Result<Option<Span>> {
         .optional()?)
 }
 
-/// Survival reads all current spans in one statement, without loading lane rows.
+/// Survival reads all current spans in one statement, without loading party rows.
 pub(crate) fn selected_spans(
     reader: &Reader<'_>,
     selection: &Selection,
@@ -814,7 +814,7 @@ pub(crate) fn read(
     conn: &Connection,
     pk: i64,
     compute_behind: bool,
-) -> Result<(Option<Span>, Vec<Lane>, bool)> {
+) -> Result<(Option<Span>, Vec<PartyTime>, bool)> {
     if !crate::derive::is_current(conn, "session_span", pk)? {
         return if compute_behind {
             let (s, l) = compute(conn, pk, CLUSTER_GAP_MS)?;
@@ -824,19 +824,19 @@ pub(crate) fn read(
         };
     }
     let span = stored(conn, pk)?;
-    let lanes = conn
+    let parties = conn
         .prepare_cached(
-            "SELECT lane,key,ms FROM session_time WHERE session_pk=?1 ORDER BY lane,key",
+            "SELECT party,key,ms FROM session_time WHERE session_pk=?1 ORDER BY party,key",
         )?
         .query_map([pk], |r| {
-            Ok(Lane {
-                lane: r.get(0)?,
+            Ok(PartyTime {
+                party: r.get(0)?,
                 key: r.get(1)?,
                 ms: r.get(2)?,
             })
         })?
         .collect::<rusqlite::Result<_>>()?;
-    Ok((span, lanes, false))
+    Ok((span, parties, false))
 }
 
 pub fn times(reader: &Reader<'_>, selection: &Selection) -> Result<Vec<SessionTime>> {
@@ -853,11 +853,11 @@ pub fn times(reader: &Reader<'_>, selection: &Selection) -> Result<Vec<SessionTi
     let single = rows.len() == 1;
     rows.into_iter()
         .map(|(pk, session)| {
-            let (span, lanes, computed_at_read) = read(conn, pk, single)?;
+            let (span, parties, computed_at_read) = read(conn, pk, single)?;
             Ok(SessionTime {
                 session,
                 span,
-                lanes,
+                parties,
                 computed_at_read,
                 parameters: polylogue_model::derived::TIME_PARAMETERS,
             })

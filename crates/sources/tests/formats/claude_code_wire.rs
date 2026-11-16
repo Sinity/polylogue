@@ -312,28 +312,28 @@ fn per_turn_effort_lands_as_the_turn_effort() {
 }
 
 fn hook_summary(uuid: &str, extra: Value) -> Value {
-    let mut native = json!({"type": "system", "subtype": "stop_hook_summary",
+    let mut hook_record = json!({"type": "system", "subtype": "stop_hook_summary",
         "uuid": uuid, "sessionId": "s1", "timestamp": "2026-03-01T10:00:00Z"});
-    native
+    hook_record
         .as_object_mut()
         .unwrap()
         .extend(extra.as_object().unwrap().clone());
-    native
+    hook_record
 }
 
 #[test]
 fn hook_summary_preserves_supplied_context_even_when_continuation_is_prevented() {
-    let native = hook_summary(
+    let hook_record = hook_summary(
         "sy1",
         json!({
         "hookErrors": ["synthetic hook failed"], "preventedContinuation": true,
         "hookAdditionalContext": ["  Zażółć 🦀\n", "", "\tsecond  "],
         "hookCount": 2, "hasOutput": true, "stopReason": "hook stopped"}),
     );
-    let p = run(std::slice::from_ref(&native));
+    let p = run(std::slice::from_ref(&hook_record));
     let hooks = events(&p, "stop_hook_summary");
     assert_eq!(hooks.len(), 1);
-    assert_eq!(hooks[0]["data"], native);
+    assert_eq!(hooks[0]["data"], hook_record);
     let m = message(&p, ":sy1");
     assert_eq!(m["role"], "system");
     assert_eq!(m["prompt_kind"], "injected_context");
@@ -387,7 +387,7 @@ fn hook_context_does_not_promote_generic_output_or_another_system_subtype() {
 }
 
 #[test]
-fn hook_context_unsupported_shapes_keep_native_facts_and_diagnose_the_shape() {
+fn hook_context_unsupported_shapes_keep_facts() {
     for value in [
         Value::Null,
         json!("scalar"),
@@ -395,9 +395,9 @@ fn hook_context_unsupported_shapes_keep_native_facts_and_diagnose_the_shape() {
         json!({"text": "object"}),
         json!([null, "valid", 3]),
     ] {
-        let native = hook_summary("sy1", json!({"hookAdditionalContext": value}));
-        let p = run(std::slice::from_ref(&native));
-        assert_eq!(events(&p, "stop_hook_summary")[0]["data"], native);
+        let hook_record = hook_summary("sy1", json!({"hookAdditionalContext": value}));
+        let p = run(std::slice::from_ref(&hook_record));
+        assert_eq!(events(&p, "stop_hook_summary")[0]["data"], hook_record);
         assert_eq!(
             p["counts"]["unreadable"]
                 .as_object()
@@ -424,7 +424,7 @@ fn hook_context_keeps_native_identity_and_parent_links_outside_model_responses()
     };
     let hook = hook_summary(
         "sy1",
-        json!({"parentUuid": "a1", "hookAdditionalContext": ["context"], "hookErrors": ["native error"]}),
+        json!({"parentUuid": "a1", "hookAdditionalContext": ["context"], "hookErrors": ["harness error"]}),
     );
     let bytes = jsonl(&[
         human.clone(),
@@ -459,14 +459,14 @@ fn hook_context_keeps_native_identity_and_parent_links_outside_model_responses()
 
 #[test]
 fn hook_errors_and_prevented_continuation_are_one_harness_record_with_context() {
-    let native = hook_summary(
+    let hook_record = hook_summary(
         "sy1",
         json!({"hookErrors": ["  synthetic failure λ\n", ""],
         "preventedContinuation": true, "stopReason": "  stopped 🦀\n",
         "hookAdditionalContext": ["  supplied context\n"], "hookCount": 2,
         "hookInfos": [{"command": "synthetic-check", "durationMs": 2}]}),
     );
-    let p = run(std::slice::from_ref(&native));
+    let p = run(std::slice::from_ref(&hook_record));
     assert_eq!(messages(&p).len(), 1);
     let m = message(&p, ":sy1");
     assert_eq!(m["role"], "system");
@@ -481,7 +481,7 @@ fn hook_errors_and_prevented_continuation_are_one_harness_record_with_context() 
         {"type":"text", "text":"Stop hook reason:\n  stopped 🦀\n"},
         {"type":"text", "text":"  supplied context\n"}])
     );
-    assert_eq!(events(&p, "stop_hook_summary")[0]["data"], native);
+    assert_eq!(events(&p, "stop_hook_summary")[0]["data"], hook_record);
 }
 
 #[test]
@@ -509,7 +509,7 @@ fn hook_prevention_and_errors_do_not_require_additional_context_or_each_other() 
 }
 
 #[test]
-fn malformed_hook_diagnostics_preserve_valid_context_and_native_evidence() {
+fn malformed_hook_diagnostics_keep_valid_entries() {
     for extra in [
         json!({"hookErrors":"scalar"}),
         json!({"hookErrors":[false,"valid error"]}),
@@ -518,9 +518,9 @@ fn malformed_hook_diagnostics_preserve_valid_context_and_native_evidence() {
         json!({"preventedContinuation":true,"stopReason":3}),
         json!({"hookAdditionalContext":null,"hookErrors":["valid error"]}),
     ] {
-        let native = hook_summary("sy1", extra);
-        let p = run(std::slice::from_ref(&native));
-        assert_eq!(events(&p, "stop_hook_summary")[0]["data"], native);
+        let hook_record = hook_summary("sy1", extra);
+        let p = run(std::slice::from_ref(&hook_record));
+        assert_eq!(events(&p, "stop_hook_summary")[0]["data"], hook_record);
         assert_eq!(
             p["counts"]["unreadable"]
                 .as_object()
@@ -530,7 +530,7 @@ fn malformed_hook_diagnostics_preserve_valid_context_and_native_evidence() {
                 .sum::<u64>(),
             1
         );
-        if let Some(items) = native["hookErrors"].as_array() {
+        if let Some(items) = hook_record["hookErrors"].as_array() {
             for error in items.iter().filter_map(Value::as_str) {
                 assert!(
                     blocks(&p)
@@ -571,10 +571,10 @@ fn tool_result(id: &str, content: &str, is_error: Option<bool>) -> Value {
     b
 }
 
-/// A user-role envelope holding only tool results is the harness writing,
+/// A user-role record holding only tool results is the harness writing,
 /// not the operator; one with typed text beside them is still the operator.
 #[test]
-fn tool_result_envelopes_are_not_counted_as_typed_prompts() {
+fn tool_result_only_records_are_not_typed_prompts() {
     let p = run(&[
         user("u1", json!([tool_result("t1", "out", None)])),
         user(
@@ -647,18 +647,18 @@ fn a_synthetic_no_response_notice_is_harness_text_without_an_api_error() {
 }
 
 #[test]
-fn ordinary_assistant_text_or_a_missing_model_does_not_mark_a_harness_notice() {
+fn assistant_text_or_a_missing_model_does_not_mark_a_harness_notice() {
     for model in [
         None,
         Some("actual-model"),
         Some("<synthetic>-suffix"),
         Some("prefix-<synthetic>"),
     ] {
-        let mut native = json!({"role": "assistant", "content": text("The prose quotes <synthetic> and API Error.")});
+        let mut body = json!({"role": "assistant", "content": text("The prose quotes <synthetic> and API Error.")});
         if let Some(model) = model {
-            native["model"] = json!(model);
+            body["model"] = json!(model);
         }
-        let parsed = run(&[record("assistant", "real", native, json!({}))]);
+        let parsed = run(&[record("assistant", "real", body, json!({}))]);
         let real = message(&parsed, ":real");
         assert_eq!(real["role"], "assistant");
         assert!(real.get("prompt_kind").is_none());
@@ -737,12 +737,12 @@ fn synthetic_notices_do_not_join_real_response_fragments_even_without_a_model() 
 #[test]
 fn claude_hook_summary_id_survives_rewrite() {
     let summary = || {
-        let mut native = hook_summary(
+        let mut hook_record = hook_summary(
             "unused",
             json!({"hookErrors": ["synthetic hook failed"], "hookCount": 1}),
         );
-        native.as_object_mut().unwrap().remove("uuid");
-        native
+        hook_record.as_object_mut().unwrap().remove("uuid");
+        hook_record
     };
     let hook_id = |records: &[Value]| -> String {
         let parsed = run(records);

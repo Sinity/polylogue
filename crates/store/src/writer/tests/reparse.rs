@@ -223,7 +223,7 @@ fn chain_selection_keeps_changed_readings_and_incomplete_stored_bytes() {
             .unwrap()
             .chains_behind_index(
                 &versions,
-                crate::StoppedChains::Settled,
+                crate::StoppedChains::Finished,
                 crate::RevisionChains::All,
                 None,
             )
@@ -642,10 +642,7 @@ fn a_session_stated_later_in_a_reading_is_not_removed_mid_transaction() {
         "a",
         Route::Live,
         0,
-        vec![row(
-            1,
-            text_message("same", "s", Role::User, "retained", None),
-        )],
+        vec![row(1, text_message("same", "s", Role::User, "kept", None))],
         &["s"],
     );
     write(
@@ -680,7 +677,7 @@ fn a_session_stated_later_in_a_reading_is_not_removed_mid_transaction() {
             .unwrap(),
         before
     );
-    assert_eq!(texts(&w, "s"), ["retained"]);
+    assert_eq!(texts(&w, "s"), ["kept"]);
 }
 
 #[test]

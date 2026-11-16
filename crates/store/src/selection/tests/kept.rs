@@ -16,7 +16,7 @@ fn answer(f: &Fixture, text: &str) -> Vec<Value> {
 }
 
 #[test]
-fn kept_stages_use_captured_values_after_native_rows_change() {
+fn kept_stages_use_captured_values_after_rows_change() {
     let (_dir, mut f) = fixture();
     let body = {
         let pool = f.reads().unwrap();
@@ -28,12 +28,12 @@ fn kept_stages_use_captured_values_after_native_rows_change() {
         let mut rows = reader.query_rows(program).unwrap();
         let identities: Vec<_> = rows
             .iter()
-            .map(|row| match &program.row_basis {
-                crate::query::compile::RowBasis::Native { columns, .. } => columns
+            .map(|row| match &program.row_kind {
+                crate::query::compile::RowKind::UnitRows { columns, .. } => columns
                     .iter()
                     .map(|name| row[name].clone())
                     .collect::<Vec<_>>(),
-                _ => panic!("native capture"),
+                _ => panic!("unit-row capture"),
             })
             .collect();
         for row in &mut rows {
@@ -55,7 +55,7 @@ fn kept_stages_use_captured_values_after_native_rows_change() {
             at: Some(900),
             role: "assistant",
             written_by: "model",
-            text: Some("new native content"),
+            text: Some("new content"),
             ..Default::default()
         },
     )
@@ -109,7 +109,7 @@ fn kept_stages_use_captured_values_after_native_rows_change() {
 }
 
 #[test]
-fn duplicate_kept_items_have_distinct_stable_cursor_identity_without_entity_proof() {
+fn duplicate_kept_items_get_distinct_stable_cursors() {
     let (_dir, mut f) = fixture();
     f.kept_result(
         "duplicates",
@@ -205,7 +205,7 @@ fn kept_join_and_aggregate_use_captured_numeric_slots() {
 }
 
 #[test]
-fn kept_same_name_text_casts_retain_their_bound_matching_policy() {
+fn same_name_text_casts_keep_their_matching_policy() {
     use query_language::catalog::FieldKind;
     let directory = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(directory.path()).unwrap();
@@ -224,7 +224,7 @@ fn kept_same_name_text_casts_retain_their_bound_matching_policy() {
     let mut physical_paths = vec![];
     for (id, text, id_kind, path_kind) in [
         (
-            "native-policy",
+            "typed-policy",
             "sessions | fields id, cwd",
             FieldKind::Reference,
             FieldKind::Subtree,
@@ -256,7 +256,7 @@ fn kept_same_name_text_casts_retain_their_bound_matching_policy() {
     }
     // These physically identical columns need the producer's logical declaration.
     assert_eq!(physical_paths[0], physical_paths[1]);
-    assert!(answer(&fixture, "result:native-policy | where id:one").is_empty());
+    assert!(answer(&fixture, "result:typed-policy | where id:one").is_empty());
     assert_eq!(
         answer(&fixture, "result:cast-policy | where id:one | fields id"),
         [json!({"id":"test:one"})]
@@ -264,7 +264,7 @@ fn kept_same_name_text_casts_retain_their_bound_matching_policy() {
     assert_eq!(
         answer(
             &fixture,
-            "result:native-policy | where cwd:/work/module | fields id"
+            "result:typed-policy | where cwd:/work/module | fields id"
         ),
         [json!({"id":"test:one"})]
     );

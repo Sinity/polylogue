@@ -52,8 +52,8 @@ fn invalid(message: impl Into<String>) -> FacetError {
 }
 
 impl Reader<'_> {
-    /// Native rows are counted within one physical session. Model/tool
-    /// collections retain their child grain; cwd ancestors count the session
+    /// Unit rows are counted within one physical session. Model/tool
+    /// collections keep their child grain; cwd ancestors count the session
     /// once. An instant is supplied explicitly; no day policy is needed.
     pub fn visit_session_facets<E>(
         &self,
@@ -153,15 +153,15 @@ fn branch(index: usize, key: &FacetKey, now: jiff::Timestamp) -> Result<String, 
         )));
     }
     if unit == Unit::Sessions && name == "cwd" {
-        // Prefixes are derived from native slash components. SQL owns the
+        // Prefixes are derived from the stored path's slash components. SQL holds the
         // distinct set and can spill it; Rust keeps one path at a time.
         let directories = fields::working_directories("s");
         return Ok(format!(
-            "SELECT {index} AS field,value,1 AS n FROM (WITH RECURSIVE native(value) AS (SELECT DISTINCT cj.value FROM session s,{directories} cj WHERE s.id=?1 AND cj.value IS NOT NULL), prefixes(full,n,value) AS (SELECT value,0,'' FROM native UNION ALL SELECT full,n+instr(substr(full,n+1),'/'),substr(full,1,n+instr(substr(full,n+1),'/')-1) FROM prefixes WHERE instr(substr(full,n+1),'/')>0) SELECT value FROM native UNION SELECT value FROM prefixes WHERE value<>'' UNION SELECT '/' WHERE EXISTS(SELECT 1 FROM native WHERE substr(value,1,1)='/'))"
+            "SELECT {index} AS field,value,1 AS n FROM (WITH RECURSIVE directory(value) AS (SELECT DISTINCT cj.value FROM session s,{directories} cj WHERE s.id=?1 AND cj.value IS NOT NULL), prefixes(full,n,value) AS (SELECT value,0,'' FROM directory UNION ALL SELECT full,n+instr(substr(full,n+1),'/'),substr(full,1,n+instr(substr(full,n+1),'/')-1) FROM prefixes WHERE instr(substr(full,n+1),'/')>0) SELECT value FROM directory UNION SELECT value FROM prefixes WHERE value<>'' UNION SELECT '/' WHERE EXISTS(SELECT 1 FROM directory WHERE substr(value,1,1)='/'))"
         ));
     }
-    let projection = compile::field_expression(unit, name, now)?;
-    if matches!(projection.kind, ColKind::Json | ColKind::Ids) {
+    let field_sql = compile::field_expression(unit, name, now)?;
+    if matches!(field_sql.kind, ColKind::Json | ColKind::Ids) {
         return Err(invalid(format!(
             "{}.{name} is not a scalar facet",
             unit.name()
@@ -177,7 +177,7 @@ fn branch(index: usize, key: &FacetKey, now: jiff::Timestamp) -> Result<String, 
     };
     Ok(format!(
         "SELECT {index} AS field,CAST({expr} AS TEXT) AS value,count(*) AS n FROM {from} WHERE s.id=?1{own} AND ({expr}) IS NOT NULL GROUP BY ({expr})",
-        expr = projection.sql,
+        expr = field_sql.sql,
         from = spec.from(&aliases)
     ))
 }

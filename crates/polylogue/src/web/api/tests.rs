@@ -63,9 +63,7 @@ fn stream_failure_after_begin_delivers_error_without_final_completion() {
             authorship.authorship.via,
             polylogue_model::authorship::Channel::Web
         );
-        let accepted = authorship
-            .accepted_request()
-            .expect("canonical accepted request");
+        let accepted = authorship.accepted_request().expect("accepted request");
         assert_eq!(accepted.request_id, "http-accepted-stream");
         assert_eq!(accepted.deadline, command_surface::Deadline::None);
         assert_eq!(accepted.arguments["uncapped"], true);
@@ -252,7 +250,7 @@ fn read_html_negotiates_on_the_same_typed_operation_route() {
 }
 
 #[test]
-fn native_scope_reset_terminates_a_begun_http_stream_without_final_completion() {
+fn scope_reset_ends_a_begun_http_stream_unfinished() {
     fn reset_after_begin(
         daemon: &Daemon,
         _: &crate::operation::Invocation,
@@ -280,7 +278,7 @@ fn native_scope_reset_terminates_a_begun_http_stream_without_final_completion() 
         })();
         result.map_err(|error| Failure::new("io", error))
     }
-    let daemon = crate::test_daemon::start("native generation stream example");
+    let daemon = crate::test_daemon::start("generation stream example");
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -322,7 +320,7 @@ fn native_scope_reset_terminates_a_begun_http_stream_without_final_completion() 
 
 #[test]
 fn scope_reset_after_http_encoding_cannot_activate_the_old_body() {
-    let daemon = crate::test_daemon::start("native HTTP activation fence");
+    let daemon = crate::test_daemon::start("HTTP activation fence");
     let web = web(&daemon);
     let scope = daemon.daemon.reads.scope_token().unwrap();
     let (status, bytes) = super::super::prepare_json_answer(
@@ -359,7 +357,7 @@ fn scope_reset_after_http_encoding_cannot_activate_the_old_body() {
 
 #[test]
 fn scope_reset_before_polling_an_encoded_http_body_aborts_its_frame() {
-    let daemon = crate::test_daemon::start("native HTTP frame fence");
+    let daemon = crate::test_daemon::start("HTTP frame fence");
     let web = web(&daemon);
     let scope = daemon.daemon.reads.scope_token().unwrap();
     let (status, bytes) = super::super::prepare_json_answer(
@@ -381,7 +379,7 @@ fn scope_reset_before_polling_an_encoded_http_body_aborts_its_frame() {
         .block_on(axum::body::to_bytes(response.into_body(), usize::MAX));
     assert!(
         result.is_err(),
-        "a revoked HTTP body must not publish a complete value"
+        "a revoked HTTP body must not send a complete value"
     );
 }
 
@@ -449,7 +447,7 @@ fn no_outer_header_does_not_supply_a_default_parent_for_a_null_request() {
 
 #[test]
 fn a_cancelled_http_parent_without_a_header_cannot_submit_a_pure_write() {
-    let daemon = crate::test_daemon::start("cancelled HTTP write admission");
+    let daemon = crate::test_daemon::start("cancelled HTTP write acceptance");
     let web = web(&daemon);
     let cancellation = polylogue_store::cancellation::Cancellation::default();
     cancellation.cancel();
@@ -484,7 +482,7 @@ fn a_cancelled_http_parent_without_a_header_cannot_submit_a_pure_write() {
         ..
     } = answer
     else {
-        panic!("cancelled admission cannot yield a receipt")
+        panic!("cancelled acceptance cannot yield a write result")
     };
     assert_eq!(error.kind, command_surface::FailureKind::Cancelled);
     assert!(
@@ -503,8 +501,8 @@ fn a_cancelled_http_parent_without_a_header_cannot_submit_a_pure_write() {
 fn writer_dispatch_refuses_queued_expiry_but_finishes_an_already_owned_write() {
     use polylogue_store::writer::DispatchPhase;
     use std::time::{Duration, Instant};
-    for phase in [DispatchPhase::BeforeAdmission, DispatchPhase::Owned] {
-        let daemon = crate::test_daemon::start("HTTP writer admission barrier");
+    for phase in [DispatchPhase::BeforeParentCheck, DispatchPhase::Owned] {
+        let daemon = crate::test_daemon::start("HTTP writer pause");
         let web = web(&daemon);
         let id = if phase == DispatchPhase::Owned {
             "owned-before-expiry"
@@ -512,7 +510,7 @@ fn writer_dispatch_refuses_queued_expiry_but_finishes_an_already_owned_write() {
             "queued-before-expiry"
         };
         let writer = daemon.daemon.writes.as_ref().unwrap();
-        let barrier = writer.pause_user_dispatch_for_test(id, phase);
+        let pause = writer.pause_user_dispatch_for_test(id, phase);
         let parent = Instant::now() + Duration::from_secs(2);
         let request = command_surface::Request {
             operation: "setting".into(),
@@ -537,12 +535,12 @@ fn writer_dispatch_refuses_queued_expiry_but_finishes_an_already_owned_write() {
                 .await
             },
         ));
-        // This is the native writer's dispatch, not a client-response delay.
-        barrier.wait().unwrap();
+        // This is the writer's own dispatch, not a client-response delay.
+        pause.wait().unwrap();
         runtime.block_on(async {
             tokio::time::sleep_until(tokio::time::Instant::from_std(parent)).await;
         });
-        barrier.release();
+        pause.release();
         let response = runtime.block_on(task).unwrap();
         let status = response.status();
         let bytes = runtime
@@ -564,13 +562,14 @@ fn writer_dispatch_refuses_queued_expiry_but_finishes_an_already_owned_write() {
                 "{}",
                 String::from_utf8_lossy(&bytes)
             );
-            let Some(crate::protocol::setting::Answer::Receipt(receipt)) = answer.value() else {
-                panic!("owned write must retain the actual writer ACK")
+            let Some(crate::protocol::setting::Answer::Outcome(write_result)) = answer.value()
+            else {
+                panic!("owned write must keep the writer acknowledgment")
             };
-            assert_eq!(receipt.id, id);
-            assert!(!receipt.repeat);
+            assert_eq!(write_result.id, id);
+            assert!(!write_result.repeat);
             let recorded = recorded.expect("owned write is durably recorded");
-            assert_eq!(recorded.id, receipt.id);
+            assert_eq!(recorded.id, write_result.id);
             assert_eq!(
                 recorded.authorship.via,
                 polylogue_model::authorship::Channel::Web
@@ -582,7 +581,7 @@ fn writer_dispatch_refuses_queued_expiry_but_finishes_an_already_owned_write() {
                 ..
             } = answer
             else {
-                panic!("unadmitted write cannot return a receipt")
+                panic!("unaccepted write cannot return a write result")
             };
             assert_eq!(error.kind, command_surface::FailureKind::Timeout);
             assert!(recorded.is_none());
@@ -591,7 +590,7 @@ fn writer_dispatch_refuses_queued_expiry_but_finishes_an_already_owned_write() {
 }
 
 #[test]
-fn actual_ready_http_calls_preserve_absent_null_and_finite_deadlines() {
+fn ready_http_calls_preserve_absent_null_and_finite_deadlines() {
     let daemon = crate::test_daemon::start("HTTP deadline envelope roundtrip");
     for deadline in [
         command_surface::Deadline::Default,
@@ -601,7 +600,7 @@ fn actual_ready_http_calls_preserve_absent_null_and_finite_deadlines() {
         let request = command_surface::Request {
             operation: "query".into(),
             arguments: serde_json::json!({"query":"sessions","session":null,"limit":null,"fields":[]}),
-            request_id: "actual-ready-http-deadline".into(),
+            request_id: "ready-http-deadline".into(),
             deadline,
             budget_tokens: Default::default(),
             cursor: None,
@@ -624,7 +623,7 @@ fn actual_ready_http_calls_preserve_absent_null_and_finite_deadlines() {
             .unwrap();
         assert_eq!(
             parsed, request,
-            "actual generated call changed its accepted envelope: {url}"
+            "generated call changed its accepted envelope: {url}"
         );
         assert!(
             parsed

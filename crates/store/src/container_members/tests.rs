@@ -18,7 +18,7 @@ fn stage(
 ) -> PreparedBatch {
     let prepared = archive.prepare_bytes(body).unwrap();
     let batch = Batch {
-        required_disposition: None,
+        required_outcome: None,
         input: InputKey {
             id: prepared.hash().to_string(),
             format: "export-file".into(),
@@ -189,7 +189,7 @@ fn a_container_in_one_import_can_be_a_real_member_in_another() {
 }
 
 #[test]
-fn historical_observation_requires_the_exact_stored_revision_point_and_has_no_new_bytes() {
+fn historical_observation_requires_the_stored_revision_point_and_has_no_new_bytes() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     let writer = Writer::start(&archive).unwrap();

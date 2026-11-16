@@ -8,8 +8,8 @@ use polylogue_model::{
 mod append_cost;
 mod assertions;
 mod empty_source;
-mod event_anchors;
 mod event_fk;
+mod event_placement;
 mod extent_checkpoint;
 mod fresh_messages;
 #[cfg(all(feature = "faults", target_os = "linux"))]
@@ -26,7 +26,7 @@ mod scoped;
 mod session_order;
 mod session_summaries;
 mod sinex_lifecycle;
-mod sparse_projection;
+mod sparse_block_selection;
 mod stopping;
 mod stored_replay;
 mod tool_durations;
@@ -52,15 +52,15 @@ fn write_test_rows(
         batch.parse[0].resolution.as_ref().unwrap(),
         counter,
         first,
-        Some(&fixture_receipt()),
+        Some(&fixture_commit()),
         &changes,
     )?;
     changes.finish_summaries(tx, Some(counter))?;
     Ok(written)
 }
 
-fn fixture_receipt() -> crate::wire_shapes::ReadingReceipt {
-    crate::wire_shapes::ReadingReceipt {
+fn fixture_commit() -> crate::wire_shapes::ReadingCommit {
+    crate::wire_shapes::ReadingCommit {
         sequence: 1,
         id: Some("fixture-confirmation".into()),
         observation: None,
@@ -101,12 +101,12 @@ impl TestArchive {
             .expect("one source reading")
     }
 
-    /// Separate raw capture from queued parsing when a test observes asynchronous work.
+    /// Separate storing the bytes from queued parsing when a test observes asynchronous work.
     fn commit_source(&self, mut reading: Batch, bytes: &[u8]) -> Result<Batch> {
-        let mut raw = reading.clone();
-        raw.parse.clear();
+        let mut bytes_only = reading.clone();
+        bytes_only.parse.clear();
         let prepared = self.archive.prepare_bytes(bytes)?;
-        let stored = self.writer.store_bytes(prepared, raw)?;
+        let stored = self.writer.store_bytes(prepared, bytes_only)?;
         reading.change = Change::Reparse {
             chain: stored.chain,
         };
@@ -181,7 +181,7 @@ fn counts(n: u64) -> RecordCounts {
 fn batch(input: &str, route: Route, start: u64, rows: Vec<MessageRow>, sessions: &[&str]) -> Batch {
     let n = rows.len() as u64;
     Batch {
-        required_disposition: None,
+        required_outcome: None,
         input: InputKey {
             id: input.into(),
             format: "claude-code".into(),
@@ -1031,7 +1031,7 @@ fn dropping_the_writer_drains_accepted_work_with_sender_clones_alive() {
                 0,
                 vec![row(
                     0,
-                    text_message("kept", "s", Role::User, "durable before stop", None),
+                    text_message("kept", "s", Role::User, "stored before stop", None),
                 )],
                 &["s"],
             ),
@@ -1079,7 +1079,7 @@ fn dropping_the_writer_drains_accepted_work_with_sender_clones_alive() {
     let reader = reads.reader().unwrap();
     assert_eq!(
         reader.messages(&sid("s"), false).unwrap()[0].text(),
-        "durable before stop"
+        "stored before stop"
     );
     assert_eq!(
         reader.setting_value("browser.actions", "").unwrap(),
@@ -1171,7 +1171,7 @@ mod prepared_items;
 
 mod observation_order;
 
-mod text_projection;
+mod stored_text_reuse;
 
 mod parse_positions;
 
@@ -1182,7 +1182,7 @@ mod authorship;
 mod hash_order;
 
 mod documents;
-mod same_bytes;
+mod identical_chains;
 
 #[test]
 fn a_user_write_goes_ahead_of_queued_batches() {
@@ -1224,7 +1224,7 @@ fn a_user_write_goes_ahead_of_queued_batches() {
     sender.send(a).unwrap();
     inside.recv().unwrap();
     // The source bytes already exist; parsed batches fill the queue behind it.
-    // Each completion observes whether the durable setting was already committed.
+    // Each completion observes whether the saved setting was already committed.
     let queued = std::thread::spawn({
         let sender = sender.clone();
         move || {
@@ -1327,7 +1327,7 @@ fn parse_positions_and_rows_commit_atomically_during_first_build() {
 
 #[cfg(feature = "faults")]
 #[test]
-fn interrupted_secondary_index_finish_retries_ordinary_build() {
+fn interrupted_secondary_index_finish_retries_build() {
     let w = test_archive();
     w.store_reading(
         batch(
@@ -1438,7 +1438,7 @@ fn recorded_message_sessions_preserve_ambiguity_after_shown_row_deduplication() 
     let reads = ReadPool::open(&w.archive).unwrap();
     let reader = reads.reader().unwrap();
     let id = MessageId::parse("claude-code:same-native-id").unwrap();
-    assert!(reader.message_admission(&id).unwrap().is_some());
+    assert!(reader.message_commit(&id).unwrap().is_some());
     let mut sessions = Vec::new();
     reader
         .visit_message_sessions(&id, |session| {
@@ -1590,7 +1590,7 @@ fn a_stop_during_deferred_indexes_keeps_committed_rows_for_restart() {
     while !crate::fault::held() {
         assert!(
             guard.elapsed() < std::time::Duration::from_secs(30),
-            "index finish did not reach barrier"
+            "index finish did not reach pause"
         );
         std::thread::yield_now();
     }

@@ -47,10 +47,10 @@ fn a_resent_context_request_is_one_delivery() {
 }
 
 #[test]
-fn an_accepted_prepared_receipt_crosses_the_read_deadline_without_a_false_refusal() {
+fn accepted_write_result_survives_the_read_deadline() {
     use polylogue_store::read::limit::ReadLimit;
     use std::time::{Duration, Instant};
-    let d = test_daemon::start("receipt handoff");
+    let d = test_daemon::start("write result handoff");
     let blocker = std::fs::File::open(d.daemon.archive.archive_db()).unwrap();
     // Readers may start; the writer waits only at the register commit boundary.
     blocker.lock_shared().unwrap();
@@ -80,14 +80,14 @@ fn an_accepted_prepared_receipt_crosses_the_read_deadline_without_a_false_refusa
     });
     assert!(
         handed_off,
-        "context never handed off its receipt: {response:?}"
+        "context never handed off its write result: {response:?}"
     );
     assert!(matches!(
         limit.check(),
         Err(polylogue_store::StoreError::ReadDeadlineExceeded)
     ));
     let Some(data) = response.value().cloned() else {
-        panic!("accepted receipt was reported as a refusal: {response:?}");
+        panic!("accepted write result was reported as a refusal: {response:?}");
     };
     assert_eq!(data["delivery"], id);
     after_queued_writes(&d);
@@ -164,11 +164,11 @@ fn hold_writer(
     d: &test_daemon::TestDaemon,
     id: &'static str,
 ) -> (
-    polylogue_store::writer::DispatchBarrier,
+    polylogue_store::writer::DispatchPause,
     std::thread::JoinHandle<()>,
 ) {
     let writer = d.daemon.writes.as_ref().unwrap();
-    let barrier =
+    let pause =
         writer.pause_user_dispatch_for_test(id, polylogue_store::writer::DispatchPhase::Owned);
     let daemon = std::sync::Arc::clone(&d.daemon);
     let held = std::thread::spawn(move || {
@@ -178,14 +178,14 @@ fn hold_writer(
                 .answer(&daemon),
         );
     });
-    barrier.wait().unwrap();
-    (barrier, held)
+    pause.wait().unwrap();
+    (pause, held)
 }
 
 #[test]
 fn a_brief_answers_while_the_writer_is_held_and_its_delivery_commits_after() {
     let d = daemon_with_a_project();
-    let (barrier, held) = hold_writer(&d, "held-writer-turn");
+    let (pause, held) = hold_writer(&d, "held-writer-turn");
     let id = polylogue_store::user_writes::new_request_id();
     let answer = brief(&d, &id, StartSource::Startup);
     assert_eq!(answer["delivery"], id.as_str());
@@ -209,7 +209,7 @@ fn a_brief_answers_while_the_writer_is_held_and_its_delivery_commits_after() {
         !recorded(&d),
         "the delivery waited for the held writer turn"
     );
-    barrier.release();
+    pause.release();
     held.join().unwrap();
     after_queued_writes(&d);
     assert!(recorded(&d));
@@ -245,7 +245,7 @@ fn a_compaction_brief_right_after_a_startup_brief_reports_only_what_changed_sinc
     let d = daemon_with_a_project();
     // The startup brief's record is still queued when the compaction brief
     // is prepared.
-    let (barrier, held) = hold_writer(&d, "held-before-compaction");
+    let (pause, held) = hold_writer(&d, "held-before-compaction");
     let startup = brief(
         &d,
         &polylogue_store::user_writes::new_request_id(),
@@ -270,7 +270,7 @@ fn a_compaction_brief_right_after_a_startup_brief_reports_only_what_changed_sinc
     assert_eq!(compact["prepared"]["left_out"], serde_json::json!([]));
     // The protected compaction manual is still handed over without a delta.
     assert_eq!(compact["prepared"]["empty"], false, "{text}");
-    barrier.release();
+    pause.release();
     held.join().unwrap();
 }
 
@@ -280,7 +280,7 @@ fn a_brief_answers_while_the_writer_queue_is_full_and_its_delivery_commits_once_
     use polylogue_store::writer::Queued;
     use std::time::{Duration, Instant};
     let d = daemon_with_a_project();
-    let (barrier, held) = hold_writer(&d, "held-with-a-full-queue");
+    let (pause, held) = hold_writer(&d, "held-with-a-full-queue");
     let writes = d.daemon.writes.as_ref().unwrap();
     let invocation = d
         .daemon
@@ -317,7 +317,7 @@ fn a_brief_answers_while_the_writer_queue_is_full_and_its_delivery_commits_once_
     // Its outcome waits behind it, in order.
     let event = crate::test_answers::ok(crate::test_daemon::Call::new("delivery-event", serde_json::json!({"delivery": id.clone(), "what": polylogue_model::DeliveryOutcome::Delivered})).answer(&d.daemon));
     assert_eq!(event["queued"], true);
-    barrier.release();
+    pause.release();
     held.join().unwrap();
     for committed in filling {
         committed.recv().unwrap().unwrap();
@@ -358,7 +358,7 @@ fn a_brief_answers_while_the_writer_queue_is_full_and_its_delivery_commits_once_
 #[test]
 fn timeout_outcome_requires_positive_preparation_without_waiting_for_the_writer() {
     let d = daemon_with_a_project();
-    let (barrier, held) = hold_writer(&d, "held-timeout-receipt");
+    let (pause, held) = hold_writer(&d, "held-timeout-write-result");
     let id = polylogue_store::user_writes::new_request_id();
     let prepared = brief(&d, &id, StartSource::Startup);
     let event = |delivery: &str| {
@@ -366,7 +366,7 @@ fn timeout_outcome_requires_positive_preparation_without_waiting_for_the_writer(
     };
     let unknown = crate::test_answers::ok(event("unconfirmed-prepare"));
     let known = crate::test_answers::ok(event(&id));
-    barrier.release();
+    pause.release();
     held.join().unwrap();
     assert_eq!(prepared["delivery"], id);
     assert_eq!(unknown["queued"], false);

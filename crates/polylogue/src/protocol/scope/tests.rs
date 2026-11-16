@@ -16,8 +16,8 @@ use std::{
 };
 use tokio::sync::Semaphore;
 
-/// Holds the actual setting producer after selecting its data, reproducing the
-/// scheduling interval between a worker answer and shared result publication.
+/// Holds the setting producer after it selects its data, reproducing the
+/// scheduling interval between a worker answer and handing out the shared result.
 struct HeldCatalog {
     daemon: Arc<Daemon>,
     release: Arc<Semaphore>,
@@ -64,7 +64,7 @@ impl Operation for HeldCatalog {
         })
     }
 }
-fn admitted(
+fn accept_request(
     daemon: &Daemon,
     envelope: &command_surface::RunnableRequest,
 ) -> (command_surface::Caller, Option<ReadScopeToken>) {
@@ -111,8 +111,8 @@ async fn pending<T>(mut future: Pin<&mut impl Future<Output = T>>) {
 }
 
 #[tokio::test]
-async fn each_request_publishes_only_under_its_own_native_scope() {
-    let daemon = crate::test_daemon::start("native per-request publication scope");
+async fn each_request_answers_only_in_its_own_scope() {
+    let daemon = crate::test_daemon::start("per-request answer scope");
     let release = Arc::new(Semaphore::new(0));
     let calls = Arc::new(AtomicUsize::new(0));
     let mut declarations =
@@ -152,18 +152,18 @@ async fn each_request_publishes_only_under_its_own_native_scope() {
         fresh: false,
         format: Default::default(),
     };
-    let (owner_caller, owner_scope) = admitted(&daemon.daemon, &envelope);
-    let mut owner = Box::pin(table.call_as(
+    let (first_caller, first_scope) = accept_request(&daemon.daemon, &envelope);
+    let mut first = Box::pin(table.call_as(
         envelope.clone(),
         command_surface::Via::Mcp,
-        owner_caller,
+        first_caller,
         Default::default(),
     ));
-    pending(owner.as_mut()).await;
+    pending(first.as_mut()).await;
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     daemon.daemon.archive.advance_generation_for_test().unwrap();
-    assert!(owner_scope.as_ref().unwrap().check().is_err());
-    let (waiter_caller, waiter_scope) = admitted(&daemon.daemon, &envelope);
+    assert!(first_scope.as_ref().unwrap().check().is_err());
+    let (waiter_caller, waiter_scope) = accept_request(&daemon.daemon, &envelope);
     assert!(waiter_scope.as_ref().unwrap().check().is_ok());
     let mut waiter = Box::pin(table.call_as(
         envelope,
@@ -175,15 +175,15 @@ async fn each_request_publishes_only_under_its_own_native_scope() {
     assert_eq!(
         calls.load(Ordering::SeqCst),
         2,
-        "each admission selects its own source data"
+        "each accepted request selects its own source data"
     );
     release.add_permits(2);
-    let owner = owner.await;
+    let first = first.await;
     let waiter = waiter.await;
     let fresh = ReadScopes::single(waiter_scope);
     assert!(super::answer(waiter, &fresh).value().is_some());
-    let publication = ReadScopes::single(owner_scope);
-    let answer = super::answer(owner, &publication);
+    let first_scopes = ReadScopes::single(first_scope);
+    let answer = super::answer(first, &first_scopes);
     let command_surface::Answer {
         outcome: command_surface::Outcome::Error(error),
         ..
@@ -192,30 +192,30 @@ async fn each_request_publishes_only_under_its_own_native_scope() {
         panic!("old selected data escaped to a fresh scope");
     };
     assert_eq!(error.code.as_deref(), Some("scope_changed"));
-    let published = AtomicBool::new(false);
+    let ran = AtomicBool::new(false);
     assert!(
-        publication
+        first_scopes
             .with_current(|| {
-                published.store(true, Ordering::SeqCst);
+                ran.store(true, Ordering::SeqCst);
                 Ok(())
             })
             .is_err()
     );
-    assert!(!published.load(Ordering::SeqCst));
+    assert!(!ran.load(Ordering::SeqCst));
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 
-    // The same group's actual write form uses Writer admission, not a read-output token.
+    // The same group's write form is accepted by the writer, not by a read-output token.
     let write = command_surface::Request {
         operation: "setting".into(),
         arguments: json!({"key":"browser.actions","value":"on"}),
-        request_id: "pure-write-admission".into(),
+        request_id: "write-only-request".into(),
         deadline: command_surface::Deadline::None,
         budget_tokens: Default::default(),
         cursor: None,
         fresh: false,
         format: Default::default(),
     };
-    let (caller, scope) = admitted(&daemon.daemon, &write);
+    let (caller, scope) = accept_request(&daemon.daemon, &write);
     assert!(scope.is_none());
     let accepted = caller
         .identity::<crate::protocol::caller::Accepted>()
