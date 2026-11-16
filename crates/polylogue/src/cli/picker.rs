@@ -197,9 +197,9 @@ fn keys() -> &'static [Key] {
                 command,
             });
         }
-        // Legacy terminals encode Ctrl-/ as the ASCII unit separator.
+        // Crossterm decodes the ASCII unit separator as Ctrl-7.
         keys.push(Key {
-            code: KeyCode::Char('_'),
+            code: KeyCode::Char('7'),
             modifiers: KeyModifiers::CONTROL,
             label: "",
             command: Preview,
@@ -780,7 +780,7 @@ fn draw(
         lines.extend(
             state
                 .overview
-                .lines()
+                .split('\n')
                 .take(preview_lines.saturating_sub(1))
                 .map(screen::safe_line),
         );

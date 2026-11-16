@@ -284,7 +284,10 @@ impl Terminal {
         self.send(b"\x1b[201~");
     }
     fn until(&mut self, text: &str) {
-        while !String::from_utf8_lossy(&self.bytes).contains(text) {
+        self.until_after(0, text);
+    }
+    fn until_after(&mut self, start: usize, text: &str) {
+        while !String::from_utf8_lossy(&self.bytes[start..]).contains(text) {
             self.bytes.extend(
                 self.output
                     .recv_timeout(Duration::from_secs(5))
@@ -373,10 +376,40 @@ fn picker_footer_shows_keys_and_enter_action() {
     );
     let mut terminal = Terminal::new("normal", true, true);
     terminal.until("Esc cancel");
-    terminal.send(b"\x1b[B\t\x1b[A\t\r");
+    terminal.send(b"\x0a\t\x0b\t\r");
     assert_eq!(
         terminal.finish().0,
         json!({"choice":["session:codex:Beta","session:codex:Alpha"]})
+    );
+    let mut terminal = Terminal::new("normal", true, true);
+    terminal.until("overview: Alpha");
+    let overview = String::from_utf8_lossy(&terminal.bytes)
+        .rfind("overview: Alpha")
+        .unwrap();
+    terminal.until_after(overview, "^/ preview");
+    let start = terminal.bytes.len();
+    terminal.send(b"\x1f");
+    terminal.until_after(start, "^/ preview");
+    let output = String::from_utf8_lossy(&terminal.bytes[start..]);
+    let body: Vec<_> = lines(&output)
+        .into_iter()
+        .filter(|line| !line.is_empty())
+        .take_while(|line| !line.contains("Enter tag"))
+        .collect();
+    assert_eq!(
+        body,
+        [
+            "sessions ›  [fuzzy] → 2 rows",
+            "›  1 Alpha title  morrow  Nov 12 · codex",
+            "   2 Beta title  morrow  Nov 12 · codex",
+        ]
+    );
+    terminal.send(b"\x1f\x0a");
+    terminal.until("overview: Beta");
+    terminal.send(b"\r");
+    assert_eq!(
+        terminal.finish().0,
+        json!({"choice":["session:codex:Beta"]})
     );
 }
 
