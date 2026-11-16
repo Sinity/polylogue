@@ -68,7 +68,7 @@ pub struct Arguments {
     #[schemars(extend("unlisted" = true))]
     pub physical: bool,
 }
-fn output_lines() -> u64 {
+pub(crate) fn output_lines() -> u64 {
     100
 }
 pub type Answer = polylogue_model::read::ReadPage;

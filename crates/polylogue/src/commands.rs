@@ -13,12 +13,13 @@
 //! request type; binary inputs reach the daemon directly as bytes.
 
 pub(crate) mod arguments;
+mod replaced;
 
 use crate::cli::{calling_process, local};
 use crate::daemon::handler::{FeedRegistration, Registration, daemon, feed, streams};
 use crate::daemon::measure::{MEASURES, Measure};
 use crate::daemon::service::handlers as H;
-use crate::daemon::service::{acts, browser, feeds, follow, read};
+use crate::daemon::service::{acts, browser, feeds, line};
 use serde_json::{Map, Value};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -72,6 +73,27 @@ impl Tool {
     }
 }
 
+/// The smallest MCP tool that may run a request: one that reads, one
+/// that also writes the archive, or one that also acts outside it.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolAccess {
+    Read,
+    Write,
+    Act,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cli {
     Subcommand,
@@ -79,6 +101,16 @@ pub enum Cli {
     Hidden,
     /// What `polylogue` runs when no subcommand is given.
     NoSubcommand,
+    /// A selection and the verbs after it. Until the line parser reads it,
+    /// the row is a hidden subcommand taking `--request`.
+    Line,
+}
+
+impl Cli {
+    /// Left out of help and completion.
+    pub fn hidden(self) -> bool {
+        matches!(self, Cli::Hidden | Cli::Line)
+    }
 }
 
 pub type OutputHandler = fn(
@@ -317,9 +349,11 @@ pub const GROUPS: &[Group] = &[
 ];
 
 /// Every command, in the order help lists them: the written ones, with a
-/// `measure NAME` for each measurement after `setting`.
+/// `measure NAME` for each measurement after `setting`, then the rows the
+/// line replaces.
 pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
     let mut all = WRITTEN.to_vec();
+    all.extend_from_slice(replaced::REPLACED);
     let at = all
         .iter()
         .position(|c| c.name == "setting")
@@ -365,6 +399,17 @@ fn query_help() -> &'static str {
 
 const WRITTEN: &[Command] = &[
     Command {
+        name: "rows",
+        reason: "Acts on selected rows with verbs, in order, on every surface",
+        latency: command_surface::LatencyClass::Search,
+        help: "A selection and the verbs that act on its rows, in order: the line every surface carries",
+        run: Run::Daemon(streams::<line::Line>()),
+        cli: Cli::Line,
+        http: true,
+        writes: true,
+        ..CLI
+    },
+    Command {
         name: "schema infer",
         reason: "Observe stored wire structure that parsed query rows cannot reconstruct",
         latency: command_surface::LatencyClass::Local,
@@ -399,49 +444,6 @@ const WRITTEN: &[Command] = &[
         name: "demo tour",
         help: "Prepare a separate Morrow archive and walk through search, tool outcomes, parents, costs and notes",
         run: configured_local::<local::arguments::Tour>(crate::demo::tour),
-        ..CLI
-    },
-    Command {
-        name: "explain",
-        reason: "Describe the language and a query's plan without running it",
-        help: "Explain a query without executing it, or page through current syntax, units, fields, operators and capabilities",
-        run: Run::Daemon(daemon::<H::Explain>()),
-        tool: Some(Tool::Read),
-        http: true,
-        ..CLI
-    },
-    Command {
-        name: "manual",
-        help: "The agent card and the MCP operation reference, every argument named (available without a daemon)",
-        run: local_command::<local::arguments::Empty>(local::manual),
-        ..CLI
-    },
-    Command {
-        name: "query",
-        help: "Run a query",
-        reason: "Execute a question expressed in the archive query language",
-        latency: command_surface::LatencyClass::Search,
-        failures: &[
-            command_surface::FailureKind::InvalidQuery,
-            command_surface::FailureKind::UnknownField,
-            command_surface::FailureKind::BadValue,
-            command_surface::FailureKind::NotAQuery,
-            command_surface::FailureKind::BadRequest,
-            command_surface::FailureKind::Ambiguous,
-            command_surface::FailureKind::StaleCursor,
-            command_surface::FailureKind::NotYetAvailable,
-            command_surface::FailureKind::NotFound,
-            command_surface::FailureKind::Conflict,
-            command_surface::FailureKind::Refused,
-            command_surface::FailureKind::NotRunning,
-            command_surface::FailureKind::Io,
-            command_surface::FailureKind::Timeout,
-            command_surface::FailureKind::Cancelled,
-        ],
-        run: Run::Daemon(daemon::<H::Query>()),
-        cli: Cli::NoSubcommand,
-        tool: Some(Tool::Read),
-        http: true,
         ..CLI
     },
     Command {
@@ -492,20 +494,6 @@ const WRITTEN: &[Command] = &[
         ..CLI
     },
     Command {
-        name: "read",
-        reason: "Render a selected query or reference and transfer its records",
-        latency: command_surface::LatencyClass::Read,
-        help: "Read a query or reference; write a consistent bundle with --to DIR",
-        calling_process: Some(calling_process::schema::<calling_process::Read>),
-        run: Run::Delivered {
-            registration: streams::<read::Read>(),
-            deliver: crate::cli::write_out::run,
-        },
-        tool: Some(Tool::Read),
-        http: true,
-        ..CLI
-    },
-    Command {
         name: "attachment",
         reason: "Retrieve the checked stored bytes behind an attachment descriptor",
         latency: command_surface::LatencyClass::Read,
@@ -518,160 +506,11 @@ const WRITTEN: &[Command] = &[
         ..CLI
     },
     Command {
-        name: "assert",
-        help: "Record checked assertions; the accepting transport supplies authorship",
-        reason: "Record an authored assertion through the writer",
-        latency: command_surface::LatencyClass::Local,
-        failures: &[
-            command_surface::FailureKind::BadRequest,
-            command_surface::FailureKind::InvalidQuery,
-            command_surface::FailureKind::UnknownField,
-            command_surface::FailureKind::BadValue,
-            command_surface::FailureKind::NotAQuery,
-            command_surface::FailureKind::Ambiguous,
-            command_surface::FailureKind::NotFound,
-            command_surface::FailureKind::Conflict,
-            command_surface::FailureKind::NotYetAvailable,
-            command_surface::FailureKind::Refused,
-            command_surface::FailureKind::NotRunning,
-            command_surface::FailureKind::Io,
-            command_surface::FailureKind::Timeout,
-            command_surface::FailureKind::Cancelled,
-        ],
-        run: Run::Daemon(daemon::<H::Assert>()),
-        tool: Some(Tool::Note),
-        http: true,
-        writes: true,
-        ..CLI
-    },
-    Command {
-        name: "assert-query",
-        help: "Record one checked assertion about each selected query row",
-        reason: "Record an authored assertion through the writer",
-        latency: command_surface::LatencyClass::Search,
-        failures: &[
-            command_surface::FailureKind::BadRequest,
-            command_surface::FailureKind::InvalidQuery,
-            command_surface::FailureKind::UnknownField,
-            command_surface::FailureKind::BadValue,
-            command_surface::FailureKind::NotAQuery,
-            command_surface::FailureKind::Ambiguous,
-            command_surface::FailureKind::NotFound,
-            command_surface::FailureKind::Conflict,
-            command_surface::FailureKind::NotYetAvailable,
-            command_surface::FailureKind::Refused,
-            command_surface::FailureKind::NotRunning,
-            command_surface::FailureKind::Io,
-            command_surface::FailureKind::Timeout,
-            command_surface::FailureKind::Cancelled,
-        ],
-        run: Run::Daemon(daemon::<H::AssertQuery>()),
-        tool: Some(Tool::Note),
-        http: true,
-        writes: true,
-        ..CLI
-    },
-    Command {
-        name: "revise",
-        help: "Revise assertion heads with one checked patch",
-        reason: "Record an authored assertion through the writer",
-        latency: command_surface::LatencyClass::Local,
-        failures: &[
-            command_surface::FailureKind::BadRequest,
-            command_surface::FailureKind::InvalidQuery,
-            command_surface::FailureKind::UnknownField,
-            command_surface::FailureKind::BadValue,
-            command_surface::FailureKind::NotAQuery,
-            command_surface::FailureKind::Ambiguous,
-            command_surface::FailureKind::NotFound,
-            command_surface::FailureKind::Conflict,
-            command_surface::FailureKind::NotYetAvailable,
-            command_surface::FailureKind::Refused,
-            command_surface::FailureKind::NotRunning,
-            command_surface::FailureKind::Io,
-            command_surface::FailureKind::Timeout,
-            command_surface::FailureKind::Cancelled,
-        ],
-        run: Run::Daemon(daemon::<H::Revise>()),
-        tool: Some(Tool::Note),
-        http: true,
-        writes: true,
-        ..CLI
-    },
-    Command {
-        name: "withdraw",
-        help: "Withdraw assertion or variant roots, exact revisions, or withdrawals",
-        reason: "Record an authored assertion through the writer",
-        latency: command_surface::LatencyClass::Local,
-        failures: &[
-            command_surface::FailureKind::BadRequest,
-            command_surface::FailureKind::InvalidQuery,
-            command_surface::FailureKind::UnknownField,
-            command_surface::FailureKind::BadValue,
-            command_surface::FailureKind::NotAQuery,
-            command_surface::FailureKind::Ambiguous,
-            command_surface::FailureKind::NotFound,
-            command_surface::FailureKind::Conflict,
-            command_surface::FailureKind::NotYetAvailable,
-            command_surface::FailureKind::Refused,
-            command_surface::FailureKind::NotRunning,
-            command_surface::FailureKind::Io,
-            command_surface::FailureKind::Timeout,
-            command_surface::FailureKind::Cancelled,
-        ],
-        run: Run::Daemon(daemon::<H::Withdraw>()),
-        tool: Some(Tool::Note),
-        http: true,
-        writes: true,
-        ..CLI
-    },
-    Command {
-        name: "brief",
-        reason: "Prepare the named context with its declared selection and token budget",
-        latency: command_surface::LatencyClass::Search,
-        help: "The session-start brief for a directory or session: the operator's notes there, other agents working there now, Beads claimed and open, what the recent sessions did, checks failing with no later pass, and signal notices; within its request token budget",
-        run: Run::Daemon(daemon::<H::Brief>()),
-        tool: Some(Tool::Context),
-        http: true,
-        ..CLI
-    },
-    Command {
         name: "advisory",
         reason: "Offer one operator-judged file pointer without delaying the prompt",
         latency: command_surface::LatencyClass::Read,
         help: "One current operator-judged decision or correction for a file named in a prompt; silent when unavailable within 20 ms or on cooldown",
         run: Run::Daemon(daemon::<H::Advisory>()),
-        tool: Some(Tool::Context),
-        http: true,
-        ..CLI
-    },
-    Command {
-        name: "takeover",
-        reason: "Prepare the named context with its declared selection and token budget",
-        latency: command_surface::LatencyClass::Search,
-        help: "Context for taking over another session: its prompts, notes, what it left open and its last answer",
-        run: Run::Daemon(daemon::<H::Takeover>()),
-        tool: Some(Tool::Context),
-        http: true,
-        ..CLI
-    },
-    Command {
-        name: "continue",
-        reason: "Resume a session through its own tool, which no query can start",
-        help: "Resume a session through its tool's own command. Without a session, the sessions in this directory that left something open (an unanswered prompt, an unfinished tool call, a todo, a handoff)",
-        calling_process: Some(calling_process::schema::<calling_process::Continue>),
-        run: Run::Daemon(daemon::<H::Continue>()),
-        output: Some(crate::cli::resume_output),
-        tool: Some(Tool::Context),
-        http: true,
-        ..CLI
-    },
-    Command {
-        name: "recall",
-        reason: "Prepare the named context with its declared selection and token budget",
-        latency: command_surface::LatencyClass::Search,
-        help: "Search past work for something relevant now: messages holding every word (in prose or tool output) and, when vectors exist, messages similar to the text, ranked together; grouped by session, with notes on them and a summary of how it searched. A page ends with the cursor of the next",
-        run: Run::Daemon(daemon::<H::Recall>()),
         tool: Some(Tool::Context),
         http: true,
         ..CLI
@@ -716,61 +555,10 @@ const WRITTEN: &[Command] = &[
         ..CLI
     },
     Command {
-        name: "follow",
-        help: "Follow a session or a sessions query: one line per live-state change (`→ waiting: permission`) and per new message or tool call, until interrupted",
-        reason: "A live stream records nothing and cannot be a query's page",
-        calling_process: Some(calling_process::schema::<calling_process::Follow>),
-        run: Run::Feed {
-            registration: feed::<follow::Follow>(),
-            deliver: crate::cli::follow::run,
-        },
-        ..CLI
-    },
-    Command {
-        name: "ping",
-        help: "Send an addressed message to a session, or to every session a quoted query selects now (`@[sessions repo:x running:true]`): a running session gets it at its next tool result or prompt, one that ended is resumed headlessly with it. Each recipient gets one delivery; there is no undo",
-        reason: "An authored act that reaches a session through its harness",
-        run: Run::Daemon(daemon::<acts::Ping>()),
-        tool: Some(Tool::Act),
-        http: true,
-        writes: true,
-        ..CLI
-    },
-    Command {
-        name: "answer",
-        help: "Approve or deny a session's pending permission request; --standing answers the same tool and input whenever the session asks next. The first answer wins; there is no undo",
-        reason: "An authored act on a request a session waits on",
-        run: Run::Daemon(daemon::<acts::AnswerRequest>()),
-        tool: Some(Tool::Act),
-        http: true,
-        writes: true,
-        ..CLI
-    },
-    Command {
-        name: "interrupt",
-        help: "Stop a session's current turn, through the control connection of a session Polylogue hosts; refused otherwise",
-        reason: "An authored act that reaches a session through its harness",
-        run: Run::Daemon(daemon::<acts::Interrupt>()),
-        tool: Some(Tool::Act),
-        http: true,
-        writes: true,
-        ..CLI
-    },
-    Command {
         name: "start",
         help: "Start a session Polylogue hosts on the harness's control protocol (Codex's app-server, Claude Code stream-json, Gemini CLI and Hermes ACP): its approvals, questions and turns can then be answered, steered and interrupted from anywhere, and it survives a daemon restart. With --role, an instance of that role: its harness, with its instructions",
         reason: "Starts a harness session; no query selects one that does not exist yet",
         run: Run::Daemon(daemon::<acts::Start>()),
-        tool: Some(Tool::Act),
-        http: true,
-        writes: true,
-        ..CLI
-    },
-    Command {
-        name: "hand-off",
-        help: "Hand a session's work to a new hosted session in any harness, briefed with the session's takeover pack and the message to continue from (--at), in its directory; the new session records what it was briefed from and is never a resume or fork. --stop-source then interrupts the source; --print shows the pack and starts nothing",
-        reason: "Starts a harness session; no query selects one that does not exist yet",
-        run: Run::Daemon(daemon::<acts::HandOffSession>()),
         tool: Some(Tool::Act),
         http: true,
         writes: true,
@@ -783,36 +571,6 @@ const WRITTEN: &[Command] = &[
         latency: command_surface::LatencyClass::Read,
         run: Run::Daemon(daemon::<H::Notices>()),
         tool: Some(Tool::Read),
-        ..CLI
-    },
-    Command {
-        name: "save",
-        reason: "Record a named query as the operator's authored definition",
-        help: "Save a query under a name, to run as `query:NAME`, alone or among other conditions. A `$word` standing for a value is a parameter, given when it runs: `query:NAME(word=VALUE)`. Saving a name again revises it",
-        run: Run::Daemon(daemon::<H::Save>()),
-        tool: Some(Tool::Note),
-        http: true,
-        writes: true,
-        ..CLI
-    },
-    Command {
-        name: "watch",
-        reason: "Record a signal rule that delivers notices as rows start matching",
-        help: "Watch a query: each row that starts matching is a notice in `status`, the next briefs and `notices`. Rows matching when the watch starts are its baseline. Withdraw it like a note",
-        run: Run::Daemon(daemon::<H::Watch>()),
-        tool: Some(Tool::Note),
-        http: true,
-        writes: true,
-        ..CLI
-    },
-    Command {
-        name: "keep",
-        reason: "Freeze the rows a query returned now as a result that later reads cite",
-        help: "Run a query and keep the rows it returned, to read back later as `result:<id>` (or `result:<id>.matches`) exactly as they were",
-        run: Run::Daemon(daemon::<H::Keep>()),
-        tool: Some(Tool::Note),
-        http: true,
-        writes: true,
         ..CLI
     },
     Command {
@@ -999,15 +757,6 @@ const WRITTEN: &[Command] = &[
     },
     // Rows the hooks, the browser extension's host and the operator's own
     // pages ask; no person types them.
-    Command {
-        name: "judge",
-        reason: "The operator accepts or rejects one revision of an agent's note",
-        help: "Accept or reject one revision of an agent's note",
-        run: Run::Daemon(daemon::<H::Judge>()),
-        cli: Cli::Hidden,
-        writes: true,
-        ..CLI
-    },
     Command {
         name: "delivery-event",
         reason: "A hook reports what happened to a delivery it was handed",
@@ -1217,7 +966,7 @@ pub(crate) fn specification<A: command_surface::JsonSchema>(
             command_surface::Access::Read
         },
         arguments,
-        listed: command.cli != Cli::Hidden,
+        listed: !command.cli.hidden(),
         default_budget_tokens: None,
     }
 }
@@ -1267,6 +1016,15 @@ pub fn declarations() -> &'static std::sync::Arc<command_surface::OperationDecla
                         .registration()
                         .expect("request registration")
                         .declare(&mut declarations, command),
+                }
+                if command.cli == Cli::Line {
+                    declarations
+                        .declare_steps(
+                            command.name,
+                            "steps",
+                            crate::protocol::steps::declarations(),
+                        )
+                        .expect("the line's steps are declared once");
                 }
             }
             declarations.finish()

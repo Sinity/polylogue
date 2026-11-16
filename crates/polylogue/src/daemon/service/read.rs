@@ -119,26 +119,35 @@ impl crate::daemon::handler::Handler for Read {
         arguments: Self::Arguments,
         call: &crate::daemon::handler::Call<'_>,
     ) -> Result<Answer<Self::Answer>, Failure> {
-        let request =
-            request_of(arguments, call.cursor.map(str::to_owned)).map_err(Failure::bad_request)?;
-        let history = if request.cursor.is_none() && !polylogue_reading::is_object_read(&request) {
-            call.daemon
-                .writes
-                .as_ref()
-                .map(|writer| writer.reserve_history())
-                .transpose()?
-        } else {
-            None
-        };
-        let reader = call.reader()?;
-        let context = call.context()?;
-        let request = polylogue_reading::with_variants(&reader, call.daemon, request.clone())
-            .map_err(|error| failure(error, &request))?;
-        let page = polylogue_reading::page(&reader, call.daemon, &request, &context, history)
-            .map_err(|error| failure(error, &request))?;
-        let freshness = page.snapshot.freshness.clone();
-        Ok(crate::protocol::read(page, &freshness))
+        page(arguments, call, call.daemon)
     }
+}
+
+/// One page of a read; `services` make its ready calls.
+pub(crate) fn page(
+    arguments: crate::protocol::read::Arguments,
+    call: &crate::daemon::handler::Call<'_>,
+    services: &impl ReadServices,
+) -> Result<Answer<ReadPage>, Failure> {
+    let request =
+        request_of(arguments, call.cursor.map(str::to_owned)).map_err(Failure::bad_request)?;
+    let history = if request.cursor.is_none() && !polylogue_reading::is_object_read(&request) {
+        call.daemon
+            .writes
+            .as_ref()
+            .map(|writer| writer.reserve_history())
+            .transpose()?
+    } else {
+        None
+    };
+    let reader = call.reader()?;
+    let context = call.context()?;
+    let request = polylogue_reading::with_variants(&reader, services, request.clone())
+        .map_err(|error| failure(error, &request))?;
+    let page = polylogue_reading::page(&reader, services, &request, &context, history)
+        .map_err(|error| failure(error, &request))?;
+    let freshness = page.snapshot.freshness.clone();
+    Ok(crate::protocol::read(page, &freshness))
 }
 impl crate::daemon::handler::Streams for Read {
     fn streaming(arguments: &Self::Arguments) -> bool {
@@ -150,14 +159,25 @@ impl crate::daemon::handler::Streams for Read {
         context: &Arc<Context>,
         output: &mut dyn Write,
     ) -> Result<(), Failure> {
-        let request = request_of(arguments, None).map_err(Failure::bad_request)?;
-        super::accepting(call.daemon)?;
-        let reader = call.reader()?;
-        let request = polylogue_reading::with_variants(&reader, call.daemon, request.clone())
-            .map_err(|error| failure(error, &request))?;
-        polylogue_reading::stream(&reader, call.daemon, &request, context, output)
-            .map_err(|error| failure(error, &request))
+        stream(arguments, call, context, output, call.daemon)
     }
+}
+
+/// A read as a stream of events; `services` make its ready calls.
+pub(crate) fn stream(
+    arguments: crate::protocol::read::Arguments,
+    call: &crate::daemon::handler::Call<'_>,
+    context: &Arc<Context>,
+    output: &mut dyn Write,
+    services: &impl ReadServices,
+) -> Result<(), Failure> {
+    let request = request_of(arguments, None).map_err(Failure::bad_request)?;
+    super::accepting(call.daemon)?;
+    let reader = call.reader()?;
+    let request = polylogue_reading::with_variants(&reader, services, request.clone())
+        .map_err(|error| failure(error, &request))?;
+    polylogue_reading::stream(&reader, services, &request, context, output)
+        .map_err(|error| failure(error, &request))
 }
 
 impl ReadServices for Daemon {
