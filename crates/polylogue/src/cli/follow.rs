@@ -5,7 +5,9 @@
 //! A query prints the rows that were not in its earlier answers. Nothing is
 //! recorded.
 use super::{Archive, fail, fail_with};
+use crate::cli::calling_process;
 use crate::protocol::follow::{Line, Marks};
+use crate::protocol::query::{Answer, Rows};
 use polylogue_model::JsonExt as _;
 use polylogue_model::read::{HeaderKind, ReadPage, ReadyCall};
 use std::collections::HashSet;
@@ -32,6 +34,10 @@ pub fn run(
             2,
         );
     };
+    let options = match calling_process::options::<calling_process::Follow>(values) {
+        Ok(options) => options,
+        Err(e) => return fail(output, json, polylogue_model::Code::BadRequest, &e, 2),
+    };
     let archive = Archive::at(&startup.config.archive);
     let session_target = target.starts_with("root:")
         || matches!(
@@ -41,30 +47,7 @@ pub fn run(
                 | polylogue_model::Reference::MessageRange { .. })
         );
     if !session_target {
-        if values
-            .calling_process
-            .get("until_idle")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false)
-            || !values
-                .calling_process
-                .get("show")
-                .and_then(serde_json::Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(|value| value.as_str().map(str::to_owned))
-                .collect::<Vec<_>>()
-                .is_empty()
-            || !values
-                .calling_process
-                .get("hide")
-                .and_then(serde_json::Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(|value| value.as_str().map(str::to_owned))
-                .collect::<Vec<_>>()
-                .is_empty()
-        {
+        if options.until_idle || !options.show.is_empty() || !options.hide.is_empty() {
             return fail(
                 output,
                 json,
@@ -78,35 +61,23 @@ pub fn run(
         }
         return follow_query(&archive, &target, output, json);
     }
-    follow_session(&archive, &target, values, output, json)
+    follow_session(&archive, &target, options, output, json)
 }
 
 fn follow_session(
     archive: &Archive,
     target: &str,
-    values: &command_surface::ParsedCommand,
+    options: calling_process::Follow,
     output: crate::config::OutputConfig,
     json: bool,
 ) -> ExitCode {
-    let until_idle = values
-        .calling_process
-        .get("until_idle")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
+    let until_idle = options.until_idle;
     let mut arguments = serde_json::json!({
         "target": target,
         "format": "json",
         "latest": true,
     });
-    for name in ["show", "hide"] {
-        let words = values
-            .calling_process
-            .get(name)
-            .and_then(serde_json::Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|value| value.as_str().map(str::to_owned))
-            .collect::<Vec<_>>();
+    for (name, words) in [("show", options.show), ("hide", options.hide)] {
         if !words.is_empty() {
             arguments[name] = serde_json::json!(words);
         }
@@ -225,9 +196,12 @@ fn live_state(
         fresh: false,
         format: Default::default(),
     };
-    let rows: serde_json::Value = answer(archive, &call)?;
-    Ok(rows["rows"][0]["live"]
-        .as_str()
+    let found: Rows = answer(archive, &call)?;
+    Ok(found
+        .rows
+        .first()
+        .and_then(|row| row.get("live"))
+        .and_then(serde_json::Value::as_str)
         .unwrap_or("unknown")
         .to_owned())
 }
@@ -249,7 +223,7 @@ fn follow_query(
     let mut position = serde_json::Value::Null;
     let stdout = io::stdout();
     loop {
-        let page = |cursor: Option<&str>| -> Result<serde_json::Value, command_surface::Failure> {
+        let page = |cursor: Option<&str>| -> Result<Answer, command_surface::Failure> {
             answer(
                 archive,
                 &command_surface::RunnableRequest {
@@ -264,41 +238,48 @@ fn follow_query(
                 },
             )
         };
-        let mut data = match page(None) {
-            Ok(data) => data,
-            Err(error) => return fail_with(output, json, &error, &[]),
+        let rows_of = |answer: Answer| match answer {
+            Answer::Rows(found) => Some(*found),
+            Answer::PagedMeasure(_) | Answer::Measure(_) => None,
         };
-        if data["outcome"] == "measure" {
-            return fail(
+        let not_rows = || {
+            fail(
                 output,
                 json,
                 polylogue_model::Code::BadRequest,
                 "follow takes a query of rows, not a measure",
                 2,
-            );
-        }
-        if data["read_at"] == position {
+            )
+        };
+        let mut found = match page(None).map(rows_of) {
+            Ok(Some(found)) => found,
+            Ok(None) => return not_rows(),
+            Err(error) => return fail_with(output, json, &error, &[]),
+        };
+        let read_at = serde_json::to_value(&found.read_at).unwrap_or_default();
+        if read_at == position {
             std::thread::sleep(QUIET_WAIT);
             continue;
         }
-        position = data["read_at"].clone();
-        let mut rows = data["rows"].as_array().cloned().unwrap_or_default();
-        let mut next = data["next"].as_str().map(str::to_owned);
+        position = read_at;
+        let mut rows = std::mem::take(&mut found.rows);
+        let mut next = found.next.take();
         while let Some(cursor) = next {
-            let more = match page(Some(&cursor)) {
-                Ok(more) => more,
+            let more = match page(Some(&cursor)).map(rows_of) {
+                Ok(Some(more)) => more,
+                Ok(None) => return not_rows(),
                 Err(error) => return fail_with(output, json, &error, &[]),
             };
-            rows.extend(more["rows"].as_array().cloned().unwrap_or_default());
-            next = more["next"].as_str().map(str::to_owned);
+            rows.extend(more.rows);
+            next = more.next;
         }
-        let fresh: Vec<serde_json::Value> = rows
+        let fresh: Vec<_> = rows
             .into_iter()
             .filter(|row| seen.insert(row_identity(row)))
             .collect();
         if !fresh.is_empty() {
-            data["rows"] = serde_json::Value::Array(fresh);
-            data["next"] = serde_json::Value::Null;
+            found.rows = fresh;
+            let data = serde_json::to_value(&found).expect("query rows serialize");
             let mut out = stdout.lock();
             if polylogue_render::results::plain_terminal(&data, &mut out).is_err()
                 || out.flush().is_err()
@@ -312,11 +293,15 @@ fn follow_query(
 
 /// A row is the same row again when its reference is: `ref`, else `id`,
 /// else its whole value.
-fn row_identity(row: &serde_json::Value) -> String {
+fn row_identity(row: &serde_json::Map<String, serde_json::Value>) -> String {
     ["ref", "id"]
         .into_iter()
-        .find_map(|key| row[key].as_str().map(str::to_owned))
-        .unwrap_or_else(|| row.to_string())
+        .find_map(|key| {
+            row.get(key)
+                .and_then(|value| value.as_str())
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| serde_json::Value::Object(row.clone()).to_string())
 }
 
 fn answer<T: serde::de::DeserializeOwned>(

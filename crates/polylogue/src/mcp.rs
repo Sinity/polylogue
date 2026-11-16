@@ -157,7 +157,7 @@ fn run(
         .enable_all()
         .build()
         .map_err(|e| e.to_string())?;
-    let mut caller = crate::protocol::caller::details();
+    let mut caller = crate::client::this_process();
     if tool_call_id.is_some() {
         caller.tool_call_id = tool_call_id;
     }

@@ -36,11 +36,12 @@ fn shutdown_cancels_a_stream_read_and_keeps_its_producers_writes_admissible() {
     let mut daemon = crate::test_daemon::start("stream shutdown");
     let parent = daemon.daemon.archive.stop().child();
     let limit = ReadLimit::without_deadline(parent.clone());
-    let authorship = polylogue_model::authorship::compute_authorship(
-        polylogue_model::authorship::Channel::Cli,
-        &Default::default(),
+    let authorship: polylogue_model::authorship::Authorship = command_surface::author_of(
+        &command_surface::CallerEvidence::default(),
+        command_surface::Via::Cli,
         None,
-    );
+    )
+    .into();
     let invocation = daemon.daemon.invocation(&authorship);
     let (entered, ready) = std::sync::mpsc::channel();
     let (cancelled, stopped) = std::sync::mpsc::channel();

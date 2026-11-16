@@ -1,6 +1,7 @@
 //! Chat actions and backfill jobs the browser extension runs, and what the
 //! extension asks the archive about the conversations it sees.
-use crate::browser::actions::{ChatFile, Update};
+use crate::browser::actions::{ActionSummary, ChatFile, Update};
+use crate::browser::backfill::JobSummary;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -9,17 +10,28 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ChatSend {
+    /// The web chat: chatgpt
+    #[schemars(extend("argument_form" = "positional"))]
     pub provider: String,
+    /// What to write
+    #[schemars(extend("argument_form" = "words"))]
     pub text: String,
+    /// The model, as the provider's model menu names it
     pub model: String,
+    /// The reasoning effort, as the provider's menu names it
+    #[schemars(extend("unlisted" = true))]
     pub effort: Option<String>,
-    /// The conversation to reply in; none starts a new one.
+    /// Reply in this conversation (its ID); without it a new conversation starts
     pub conversation: Option<String>,
+    /// Start the conversation in this project
+    #[schemars(extend("unlisted" = true))]
     pub project: Option<String>,
+    /// Send the turn instead of leaving a draft
     #[serde(default)]
     pub submit: bool,
-    /// The attached files with their bytes; the command line reads `--attach`.
+    /// The attached files with their bytes; the command line reads `--attach`
     #[serde(default)]
+    #[schemars(extend("hidden" = true, "unlisted" = true))]
     pub files: Vec<ChatFile>,
 }
 
@@ -32,6 +44,8 @@ pub struct ChatList {}
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ChatDecide {
+    /// The chat action
+    #[schemars(extend("argument_form" = "positional"))]
     pub id: String,
 }
 
@@ -40,13 +54,16 @@ pub struct ChatDecide {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ChatClaim {
+    /// The extension instance taking the action
     pub by: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ChatReport {
+    /// The chat action
     pub id: String,
+    /// Its progress or outcome
     pub update: Update,
 }
 
@@ -54,9 +71,13 @@ pub struct ChatReport {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ChatDecision {
+    /// The chat action
     pub id: String,
+    /// Approve it; without this it is declined
     pub approve: bool,
+    /// Who decided, as the extension reports it
     pub by: String,
+    /// Why, in the decider's words
     pub detail: Option<String>,
 }
 
@@ -64,7 +85,9 @@ pub struct ChatDecision {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ChatAttachment {
+    /// The chat action
     pub id: String,
+    /// The attachment's ID within the action
     pub attachment: String,
 }
 
@@ -73,7 +96,10 @@ pub struct ChatAttachment {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BackfillStart {
+    /// The web chat: chatgpt, claude-ai or grok
+    #[schemars(extend("argument_form" = "positional"))]
     pub provider: String,
+    /// Only conversations changed on or after this date or time
     pub since: Option<String>,
 }
 
@@ -84,6 +110,8 @@ pub struct BackfillList {}
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BackfillCancel {
+    /// The job
+    #[schemars(extend("argument_form" = "positional"))]
     pub id: String,
 }
 
@@ -92,14 +120,18 @@ pub struct BackfillCancel {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BackfillClaim {
+    /// The extension instance taking the job
     pub by: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BackfillReport {
+    /// The job
     pub id: String,
+    /// The extension instance holding the job's claim
     pub by: String,
+    /// Its progress or outcome
     pub report: polylogue_model::user::BackfillReport,
 }
 
@@ -108,7 +140,9 @@ pub struct BackfillReport {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Conversations {
+    /// The web chat, by the extension's name for it
     pub provider: String,
+    /// The provider's conversation IDs
     pub ids: Vec<String>,
 }
 
@@ -117,7 +151,9 @@ pub struct Conversations {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StoredFiles {
+    /// The web chat, by the extension's name for it
     pub provider: String,
+    /// The provider's conversation ID
     pub conversation: String,
 }
 
@@ -126,12 +162,19 @@ pub struct StoredFiles {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SelectionNote {
+    /// The note's text
     pub body: String,
+    /// The selected text it quotes
     pub quote: String,
+    /// The web chat, by the extension's name for it
     pub provider: String,
+    /// The provider's conversation ID
     pub conversation_id: String,
+    /// The provider's message ID the selection is in
     pub message_id: String,
+    /// The page the selection was made on
     pub page_url: String,
+    /// When the selection was made
     pub selected_at: String,
 }
 
@@ -147,7 +190,7 @@ pub struct PendingCapture {
 pub struct ChatCurrent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
-    pub action: Option<serde_json::Value>,
+    pub action: Option<Box<ActionSummary>>,
 }
 
 /// Confirmed state, a saved write result, or files held in the spool before enqueue.
@@ -162,7 +205,7 @@ pub enum ChatAnswer {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BackfillCurrent {
-    pub job: Option<serde_json::Value>,
+    pub job: Option<Box<JobSummary>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -170,4 +213,74 @@ pub struct BackfillCurrent {
 pub enum BackfillAnswer {
     Current(BackfillCurrent),
     Outcome(polylogue_model::user::UserOutcome),
+}
+
+/// `chat list`: every chat action and where it stands.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ChatActionList {
+    pub actions: Vec<ActionSummary>,
+}
+
+/// `backfill list`: every backfill job and how far it got.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BackfillJobList {
+    pub jobs: Vec<JobSummary>,
+}
+
+/// `chat attachment`: an attached file's bytes.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ChatAttachmentBytes {
+    pub media_type: String,
+    /// The bytes, standard base64.
+    pub bytes: String,
+}
+
+/// `conversations`: what the archive holds of each asked conversation, in
+/// the order asked.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ConversationsAnswer {
+    pub provider: String,
+    pub conversations: Vec<ConversationState>,
+}
+
+/// One conversation as the archive holds it; a conversation it lacks has
+/// no message count.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ConversationState {
+    /// The provider's conversation ID.
+    pub id: String,
+    /// The session it is stored as; none for an ID no session can name.
+    pub session: Option<String>,
+    pub messages: Option<u64>,
+    /// Its latest capture said files were still downloading.
+    pub downloading: bool,
+    /// When the latest stored capture of it was taken (ms).
+    pub last_captured_at: Option<i64>,
+}
+
+/// `stored-files`: the conversation's files whose bytes the archive holds.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StoredFilesAnswer {
+    pub files: Vec<StoredFile>,
+    /// Its latest capture said files were still downloading; absent when no
+    /// session can name the conversation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub downloading: Option<bool>,
+}
+
+/// A file of a conversation whose bytes the blob store holds.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StoredFile {
+    /// The provider's ID of the file.
+    pub id: String,
+    #[schemars(with = "String")]
+    pub blob: polylogue_model::BlobHash,
+    pub size: Option<u64>,
 }

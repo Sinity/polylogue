@@ -2,8 +2,8 @@
 //! (`polylogue repo:x since:7d`) runs the query language; subcommands cover
 //! everything else. Every command takes `--json` for programs and agents.
 
-use polylogue_model::JsonExt as _;
 pub(crate) mod attachment;
+pub(crate) mod calling_process;
 pub mod changes;
 pub(crate) mod completion;
 pub(crate) mod follow;
@@ -14,11 +14,12 @@ pub(crate) mod schema;
 pub(crate) mod staged_file;
 pub(crate) mod write_out;
 
-use crate::commands::{COMMANDS, Cli, Command, GROUPS, Run, Surface};
+use crate::commands::{COMMANDS, Cli, Command, GROUPS, Run};
 use clap::ArgAction;
 use clap::parser::{ArgMatches, ValueSource};
-use command_surface::{Answer, ArgumentForm, CliArgument, ParsedCommand};
+use command_surface::{Answer, ArgumentForm, CliArgument, ParsedCommand, TextStyle};
 use polylogue_store::Archive;
+use serde::Deserialize as _;
 use serde_json::Value;
 use std::process::ExitCode;
 
@@ -63,37 +64,30 @@ pub fn command() -> clap::Command {
                 .global(true)
                 .value_name("MS|none")
                 .help("Milliseconds from when the daemon accepts the request, or none to lift the deadline"),
+        )
+        .arg(
+            clap::Arg::new("cursor")
+                .long("cursor")
+                .global(true)
+                .value_name("CURSOR")
+                .help("Continue from a previous page's `next`"),
+        )
+        .arg(
+            clap::Arg::new("budget")
+                .long("budget")
+                .global(true)
+                .value_name("BUDGET")
+                .help("Tokens for a prepared context; defaults to its named pack"),
         );
-    // Each continuation starts a client: project each command once, not once per flag.
-    let projected: Vec<_> = COMMANDS.iter().map(arguments_of).collect();
-    let mut globals: Vec<&str> = Vec::new();
-    for (command, arguments) in COMMANDS.iter().zip(&projected) {
-        for a in command.args.iter().filter(|a| a.global) {
-            if !globals.contains(&a.name) {
-                globals.push(a.name);
-                let argument = arguments
-                    .iter()
-                    .find(|argument| argument.spec.name == a.name)
-                    .expect("global argument is projected");
-                root = root.arg(clap_arg(argument).global(true));
-            }
-        }
-    }
-    for (c, arguments) in COMMANDS.iter().zip(&projected) {
+    for c in COMMANDS.iter() {
         match c.cli {
             Cli::NoSubcommand => {
-                for a in c.args_for(Surface::Cli).filter(|a| !a.global) {
-                    root = root.arg(clap_arg(
-                        arguments
-                            .iter()
-                            .find(|argument| argument.spec.name == a.name)
-                            .expect("root argument is projected"),
-                    ));
-                }
-                root = root.subcommand(subcommand(c, arguments).name("find"));
+                root = root
+                    .args(row_args(c))
+                    .subcommand(subcommand(c).name("find"));
             }
             Cli::Subcommand | Cli::Hidden => {
-                let sub = subcommand(c, arguments);
+                let sub = subcommand(c);
                 root = match c.name.split_once(' ') {
                     None => root.subcommand(sub),
                     Some((group, _)) => {
@@ -124,93 +118,98 @@ pub fn command() -> clap::Command {
     crate::config::augment_command(root)
 }
 
-fn subcommand(c: &Command, arguments: &[CliArgument]) -> clap::Command {
+fn subcommand(c: &Command) -> clap::Command {
     let word = c.name.rsplit(' ').next().unwrap_or(c.name);
     let mut sub = clap::Command::new(word)
         .about(c.help)
-        .hide(c.cli == Cli::Hidden);
-    for a in c.args_for(Surface::Cli).filter(|a| !a.global) {
-        let mut arg = clap_arg(
-            arguments
-                .iter()
-                .find(|argument| argument.spec.name == a.name)
-                .expect("command argument is projected"),
-        );
-        if let Some(value) = a.default {
-            arg = arg.default_value(value);
-        }
-        if c.name == "setting" && matches!(a.name, "key" | "value") {
-            arg = arg.add(clap_complete::engine::ArgValueCompleter::new(
-                completion::Setting {
-                    key: a.name == "key",
-                },
-            ));
-        }
-        sub = sub.arg(arg);
+        .hide(c.cli == Cli::Hidden)
+        .args(row_args(c));
+    if !c.examples.is_empty() {
+        sub = sub.after_help(format!("Examples:\n  {}", c.examples.join("\n  ")));
     }
     sub
 }
 
-/// The product keeps lexical exposure and completion on its command row;
-/// value kinds, choices and requiredness come from the shared input schema.
+/// A row's clap arguments: help from the field's doc comment, the default
+/// shown from its declared serde default.
+fn row_args(c: &Command) -> Vec<clap::Arg> {
+    shown_arguments(c)
+        .into_iter()
+        .map(|(argument, property)| {
+            let mut arg = clap_arg(&argument);
+            match property.and_then(|property| property.get("default")) {
+                Some(Value::String(text)) if !text.is_empty() => {
+                    arg = arg.default_value(text.clone());
+                }
+                Some(Value::Number(number)) => arg = arg.default_value(number.to_string()),
+                _ => {}
+            }
+            if c.name == "setting" && matches!(argument.spec.name.as_str(), "key" | "value") {
+                arg = arg.add(clap_complete::engine::ArgValueCompleter::new(
+                    completion::Setting {
+                        key: argument.spec.name == "key",
+                    },
+                ));
+            }
+            arg
+        })
+        .collect()
+}
+
+/// A row's arguments on the command line: its declared request fields and
+/// calling-process options, with the product's choice lists the input
+/// schema cannot carry. Fields whose schema marks them hidden are filled
+/// by the command line itself (`chat send`'s files) and are left out.
 pub(crate) fn arguments_of(command: &Command) -> Vec<CliArgument> {
-    let declared = crate::commands::declarations()
-        .cli_arguments(command.name)
-        .expect("declared CLI arguments");
-    command
-        .args
+    shown_arguments(command)
+        .into_iter()
+        .map(|(argument, _)| argument)
+        .collect()
+}
+
+/// Each shown argument with its input-schema property; calling-process
+/// options have none.
+fn shown_arguments(command: &Command) -> Vec<(CliArgument, Option<&'static Value>)> {
+    let declarations = crate::commands::declarations();
+    let properties = declarations
+        .descriptions()
         .iter()
-        .map(|argument| {
-            if matches!(argument.name, "cursor" | "budget") {
-                return CliArgument {
-                    spec: command_surface::ArgumentSpec::new(
-                        argument.name,
-                        ArgumentForm::Named,
-                        argument.help,
-                    ),
-                    kind: command_surface::ValueKind::Text,
-                    required: false,
-                    choices: vec![],
-                };
-            }
-            let mut projected = declared
+        .find(|description| description.spec.name == command.name)
+        .and_then(|description| description.input_schema.get("properties"));
+    let globals = declarations.cli_globals();
+    declarations
+        .cli_arguments(command.name)
+        .expect("declared CLI arguments")
+        .into_iter()
+        .filter(|argument| {
+            !globals
                 .iter()
-                .find(|item| item.spec.name == argument.name)
-                .expect("CLI field belongs to its input")
-                .clone();
-            // A named measure's series come from that measure's domain catalog;
-            // its shared request type also serves measures with free-text options.
-            if argument.name == "metric"
-                && projected.choices.is_empty()
-                && let Some(name) = command.name.strip_prefix("measure ")
-                && let Some(measure) = crate::daemon::measure::MEASURES
-                    .iter()
-                    .find(|measure| measure.name == name)
-            {
-                projected.choices = measure
-                    .metrics
-                    .iter()
-                    .map(|name| (*name).to_owned())
-                    .collect();
-            }
-            if projected.choices.is_empty() {
-                if command.name == "explain" && argument.name == "subject" {
-                    projected.choices = crate::explain::SUBJECTS
+                .any(|global| global.name == argument.spec.name)
+        })
+        .map(|mut argument| {
+            let property = properties
+                .filter(|_| !argument.spec.calling_process)
+                .and_then(|properties| properties.get(&argument.spec.name));
+            if argument.choices.is_empty() {
+                let name = argument.spec.name.as_str();
+                if command.name == "explain" && name == "subject" {
+                    argument.choices = crate::explain::SUBJECTS
                         .iter()
                         .map(|subject| (*subject).to_owned())
                         .collect();
-                } else if (command.name == "start" && argument.name == "harness")
-                    || (command.name == "hand-off" && argument.name == "to")
+                } else if (command.name == "start" && name == "harness")
+                    || (command.name == "hand-off" && name == "to")
                 {
-                    projected.choices = polylogue_model::live::channel::HARNESSES
+                    argument.choices = polylogue_model::live::channel::HARNESSES
                         .iter()
                         .filter(|harness| harness.host.is_some())
                         .map(|harness| harness.name.to_owned())
                         .collect();
                 }
             }
-            projected
+            (argument, property)
         })
+        .filter(|(_, property)| !property.is_some_and(crate::commands::arguments::hidden))
         .collect()
 }
 
@@ -303,21 +302,17 @@ fn parsed(c: &Command, m: &ArgMatches) -> Result<ParsedCommand, String> {
             words.extend([format!("--{}", name.replace('_', "-")), value.clone()]);
         }
     }
+    let arguments = arguments_of(c);
     if m.get_one::<String>("request").is_some()
-        && c.args_for(Surface::Cli).any(|argument| {
-            !matches!(argument.name, "cursor" | "budget")
-                && m.value_source(argument.name) == Some(ValueSource::CommandLine)
-        })
+        && arguments
+            .iter()
+            .any(|argument| m.value_source(&argument.spec.name) == Some(ValueSource::CommandLine))
     {
         return Err("--request cannot be mixed with operation arguments".into());
     }
-    let arguments = arguments_of(c);
     // Options precede positionals so a Rest field keeps its literal words.
     for positional in [false, true] {
-        for projected in arguments
-            .iter()
-            .filter(|argument| !matches!(argument.spec.name.as_str(), "cursor" | "budget"))
-        {
+        for projected in &arguments {
             let name = projected.spec.name.as_str();
             let is_positional = matches!(
                 projected.spec.form,
@@ -403,7 +398,7 @@ pub fn request_arguments(
         .ok_or("operation arguments must be an object")?
         .clone();
     if let Some(prepare) = c.prepare {
-        prepare(&values.calling_process, cwd, &mut arguments)?;
+        prepare(&values, cwd, &mut arguments)?;
     }
     Ok((c, values, arguments))
 }
@@ -494,7 +489,7 @@ pub fn run(
     if m.get_one::<String>("request").is_none()
         && let Some(prepare) = cmd.prepare
     {
-        let Some(arguments) = values.request.arguments.as_object_mut() else {
+        let Some(mut arguments) = values.request.arguments.as_object().cloned() else {
             return fail(
                 policy,
                 json,
@@ -503,9 +498,10 @@ pub fn run(
                 2,
             );
         };
-        if let Err(message) = prepare(&values.calling_process, cwd, arguments) {
+        if let Err(message) = prepare(&values, cwd, &mut arguments) {
             return fail(policy, json, polylogue_model::Code::BadRequest, &message, 2);
         }
+        values.request.arguments = Value::Object(arguments);
     }
     let call = &values.request;
     if let Run::Feed {
@@ -583,23 +579,27 @@ pub fn run(
         let mismatch = crate::protocol::protocol_mismatch(cmd.name, failure.message);
         return fail_with(policy, json, &mismatch, &[]);
     }
+    // Rows a person reads are numbered for the next command line; only a
+    // query's row answer has them, and any other answer does not decode.
     let data = answer.value().expect("a non-error answer has a value");
-    if !json && matches!(data["shape"].as_str(), Some("rows" | "matches")) {
+    if !json
+        && let Ok(rows) = crate::protocol::query::Rows::deserialize(data)
+        && matches!(
+            rows.shape,
+            polylogue_query::Shape::Rows | polylogue_query::Shape::Matches
+        )
+    {
+        let rows = Value::Array(rows.rows.into_iter().map(Value::Object).collect());
         crate::row_numbers::remember(
             &startup.config.paths,
             &root,
-            &crate::row_numbers::row_ids(&data["rows"]),
+            &crate::row_numbers::row_ids(&rows),
         );
     }
     match cmd.output {
         Some(output) => output(&values, &answer, startup, json),
         None => {
-            let style = if policy.stdout_color() {
-                command_surface::TextStyle::Ansi
-            } else {
-                command_surface::TextStyle::Plain
-            };
-            match crate::commands::declarations().render_text(cmd.name, &answer, style) {
+            match crate::commands::declarations().render_text(cmd.name, &answer, style(policy)) {
                 Ok(text) => print!("{text}"),
                 Err(failure) => return fail_with(policy, json, &failure, &[]),
             }
@@ -622,6 +622,15 @@ fn notes(notes: &[String], output: crate::config::OutputConfig) {
     }
 }
 
+/// How text for standard output is styled under `output`.
+fn style(output: crate::config::OutputConfig) -> TextStyle {
+    if output.stdout_color() {
+        TextStyle::Ansi
+    } else {
+        TextStyle::Plain
+    }
+}
+
 /// `status`: the whole answer, or with `--line` the one line a status bar
 /// shows (`3 running · 1 waiting 7m`).
 pub fn status_output(
@@ -633,7 +642,23 @@ pub fn status_output(
     let data = answer
         .value()
         .expect("output handlers receive answers with values");
-    if !values.request.arguments.bool("line").unwrap_or(false) {
+    let decoded = crate::protocol::status::Answer::deserialize(data).and_then(|status| {
+        crate::protocol::status::Arguments::deserialize(&values.request.arguments)
+            .map(|arguments| (status, arguments))
+    });
+    let (status, arguments) = match decoded {
+        Ok(decoded) => decoded,
+        Err(error) => {
+            return fail(
+                startup.output,
+                json,
+                polylogue_model::Code::Internal,
+                &error.to_string(),
+                1,
+            );
+        }
+    };
+    if !arguments.line {
         if json {
             println!(
                 "{}",
@@ -643,24 +668,11 @@ pub fn status_output(
                 )
             );
         } else {
-            print!("{}", print::json(data, startup.output.stdout_color()));
+            print!("{}", print::json(&status, style(startup.output)));
         }
         return ExitCode::from(answer.exit_code());
     }
-    let running: crate::protocol::status::Running =
-        match serde_json::from_value(data["running"].clone()) {
-            Ok(running) => running,
-            Err(error) => {
-                return fail(
-                    startup.output,
-                    json,
-                    polylogue_model::Code::Internal,
-                    &error.to_string(),
-                    1,
-                );
-            }
-        };
-    let line = running.line(startup.clock.now().as_millisecond());
+    let line = status.running.line(startup.clock.now().as_millisecond());
     if json {
         println!("{}", serde_json::json!({ "line": line }));
     } else {
@@ -680,38 +692,65 @@ pub fn resume_output(
     let data = answer
         .value()
         .expect("output handlers receive answers with values");
-    if !values
-        .calling_process
-        .get("exec")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false)
-    {
+    let resume = match crate::protocol::resume::Answer::deserialize(data) {
+        Ok(resume) => resume,
+        Err(error) => {
+            return fail(
+                startup.output,
+                json,
+                polylogue_model::Code::Internal,
+                &error.to_string(),
+                1,
+            );
+        }
+    };
+    let options = match calling_process::options::<calling_process::Continue>(values) {
+        Ok(options) => options,
+        Err(error) => {
+            return fail(
+                startup.output,
+                json,
+                polylogue_model::Code::BadRequest,
+                &error,
+                2,
+            );
+        }
+    };
+    if !options.exec {
         if json {
             println!("{}", polylogue_render::terminal::json(data, false));
         } else {
-            print!("{}", print::resume(data, startup.output.stdout_color()));
+            print!("{}", print::resume(&resume, style(startup.output)));
         }
         return ExitCode::SUCCESS;
     }
-    exec_plan(data, startup.output)
+    match &resume {
+        crate::protocol::resume::Answer::Plan(plan) => exec_plan(plan, startup.output),
+        crate::protocol::resume::Answer::Sessions(_) => {
+            eprint!(
+                "{}",
+                print::diagnostic(
+                    "",
+                    "--exec runs one session's resume; name the session",
+                    None,
+                    startup.output.stderr_color()
+                )
+            );
+            ExitCode::from(1)
+        }
+    }
 }
 
-fn exec_plan(data: &Value, output: crate::config::OutputConfig) -> ExitCode {
+fn exec_plan(plan: &crate::resume::Plan, output: crate::config::OutputConfig) -> ExitCode {
     use std::os::unix::process::CommandExt;
-    let Some(resume) = data.get("harness_command").filter(|n| !n.is_null()) else {
+    let Some(resume) = &plan.harness_command else {
         eprint!(
             "{}",
             print::diagnostic(
                 "",
                 &format!(
-                    "this session has no harness resume; continue with context instead: {}",
-                    data["context_assisted"]["program"].as_str().map_or_else(
-                        String::new,
-                        |_| format!(
-                            "polylogue takeover {}",
-                            data["session"].as_str().unwrap_or("")
-                        )
-                    )
+                    "this session has no harness resume; continue with context instead: polylogue takeover {}",
+                    plan.session
                 ),
                 None,
                 output.stderr_color()
@@ -719,16 +758,9 @@ fn exec_plan(data: &Value, output: crate::config::OutputConfig) -> ExitCode {
         );
         return ExitCode::from(1);
     };
-    let program = resume["program"].as_str().unwrap_or("");
-    let args: Vec<&str> = resume["args"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|a| a.as_str())
-        .collect();
     // The harness reopens the session from its resume directory; the CLI's
     // own directory would reopen nothing or the wrong project.
-    let dir = match resume["cwd"].as_str() {
+    let dir = match resume.cwd.as_deref() {
         Some(dir) if std::path::Path::new(dir).is_dir() => Ok(dir),
         Some(dir) => Err(format!("directory_missing: {dir} does not exist here")),
         None => Err("directory_unknown: the session recorded no directory to resume in".into()),
@@ -742,7 +774,7 @@ fn exec_plan(data: &Value, output: crate::config::OutputConfig) -> ExitCode {
                     "",
                     &format!(
                         "{reason}; continue with context instead: polylogue takeover {}",
-                        data["session"].as_str().unwrap_or("")
+                        plan.session
                     ),
                     None,
                     output.stderr_color()
@@ -751,14 +783,14 @@ fn exec_plan(data: &Value, output: crate::config::OutputConfig) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    let mut cmd = std::process::Command::new(program);
-    cmd.args(&args).current_dir(dir);
+    let mut cmd = std::process::Command::new(&resume.program);
+    cmd.args(&resume.args).current_dir(dir);
     let err = cmd.exec();
     eprint!(
         "{}",
         print::diagnostic(
             "",
-            &format!("could not run {program}: {err}"),
+            &format!("could not run {}: {err}", resume.program),
             None,
             output.stderr_color()
         )

@@ -9,7 +9,6 @@ use polylogue_model::{bundle::ReadSnapshot, read::*};
 use polylogue_render::pager::{PageBuilder, PageError, Push};
 use polylogue_store::{Reader, selection::PreparedSelection};
 use query_language::cursor::OrderPosition;
-use serde_json::Value;
 use std::{collections::BTreeMap, io::Write, num::NonZeroU64, ops::ControlFlow, sync::Arc};
 
 mod attachment_facts;
@@ -112,7 +111,7 @@ impl crate::daemon::handler::Handler for Read {
     fn default_deadline(arguments: &Self::Arguments) -> bool {
         arguments.delivery != ReadDelivery::Stream
     }
-    const PRINT: fn(&Value, bool) -> String = crate::cli::print::read;
+    const PRINT: fn(&Self::Answer, command_surface::TextStyle) -> String = crate::cli::print::read;
     fn run(
         arguments: Self::Arguments,
         call: &crate::daemon::handler::Call<'_>,

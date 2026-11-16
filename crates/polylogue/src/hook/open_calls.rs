@@ -1,8 +1,7 @@
-//! Incremental identity reads from the hook spool owned by capture.
-use polylogue_model::{
-    SessionId,
-    authorship::{CallerEvidence, HookIdentity},
-};
+//! The tool calls a harness has open, read incrementally from the hook
+//! spool capture writes: which session (and subagent) a calling tool call
+//! belongs to.
+use command_surface::{AgentSession, CallerEvidence, Harness, HookIdentity};
 use serde::Deserialize;
 use std::{
     collections::BTreeMap,
@@ -13,7 +12,7 @@ use std::{
     sync::Mutex,
 };
 
-pub struct Registry {
+pub struct OpenCalls {
     directory: PathBuf,
     cursors: Mutex<BTreeMap<u32, Cursor>>,
 }
@@ -45,7 +44,7 @@ struct Payload {
     agent_id: Option<String>,
 }
 
-impl Registry {
+impl OpenCalls {
     pub fn new(directory: PathBuf) -> Self {
         Self {
             directory,
@@ -96,7 +95,7 @@ impl Registry {
             caller
                 .harness
                 .as_ref()
-                .is_none_or(|harness| identity.session.origin() == harness)
+                .is_none_or(|harness| identity.session.harness == *harness)
         })
     }
 }
@@ -106,7 +105,7 @@ impl Cursor {
         let session = event
             .session_id
             .or(event.payload.session_id)
-            .and_then(|native| SessionId::parse(&format!("{}:{native}", event.provider)).ok());
+            .and_then(|native| AgentSession::new(Harness::new(event.provider)?, native));
         let identity = session.map(|session| HookIdentity {
             harness_pid: event.harness_pid,
             tool_call_id: tool.clone(),

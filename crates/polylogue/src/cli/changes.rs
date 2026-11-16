@@ -16,24 +16,13 @@ pub fn run(
     startup: &crate::config::Startup,
     call: &command_surface::RunnableRequest,
 ) -> ExitCode {
-    let arguments = match arguments(values) {
-        Ok(arguments) => arguments,
-        Err(message) => {
-            return fail(
-                startup.output,
-                true,
-                polylogue_model::Code::BadRequest,
-                &message,
-                2,
-            );
-        }
-    };
     let timeout = call
         .deadline
         .duration(Some(crate::daemon::execution::timeout()));
     let archive = Archive::at(&startup.config.archive);
     let mut request = call.clone();
-    request.arguments = arguments;
+    // The feed's arguments: only the last applied position.
+    request.arguments = values.request.arguments.clone();
     match send(&archive, &request, &mut io::stdout().lock(), timeout) {
         Ok(code) => ExitCode::from(code),
         Err(e)
@@ -58,16 +47,6 @@ pub fn run(
             1,
         ),
     }
-}
-
-/// The feed's arguments: only the last applied position.
-pub(crate) fn arguments(
-    values: &command_surface::ParsedCommand,
-) -> Result<serde_json::Value, String> {
-    if values.calling_process.contains_key("fields") || values.calling_process.contains_key("why") {
-        return Err("the change feed takes --since; use a changes query for filtering, fields or paged results".into());
-    }
-    Ok(values.request.arguments.clone())
 }
 
 fn send(

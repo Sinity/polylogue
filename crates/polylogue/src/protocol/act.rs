@@ -10,11 +10,16 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Ping {
+    /// A session reference, @[role:NAME] for the role's running instance (or a new one), or @[QUERY] for every session the query selects now
+    #[schemars(extend("argument_form" = "positional"))]
     pub target: String,
+    /// The message
+    #[schemars(extend("argument_form" = "words"))]
     pub text: String,
-    /// Refuse rather than resume a session that is not running.
+    /// Refuse rather than resume a session that is not running
     #[serde(default)]
     pub live: bool,
+    /// A reference the ping is about
     pub about: Option<String>,
 }
 
@@ -30,9 +35,15 @@ pub enum Decision {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Answer {
+    /// The waiting session
+    #[schemars(extend("argument_form" = "positional"))]
     pub session: SessionId,
+    /// approve or deny
+    #[schemars(extend("argument_form" = "positional"))]
     pub decision: Decision,
+    /// A reason given with the answer
     pub text: Option<String>,
+    /// Answer the same tool and input next time in this session
     #[serde(default)]
     pub standing: bool,
 }
@@ -41,6 +52,8 @@ pub struct Answer {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Interrupt {
+    /// The session
+    #[schemars(extend("argument_form" = "positional"))]
     pub session: SessionId,
 }
 
@@ -49,9 +62,14 @@ pub struct Interrupt {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Start {
+    /// The first turn
+    #[schemars(extend("argument_form" = "words"))]
     pub text: String,
+    /// The harness to host
     pub harness: Option<String>,
+    /// Start an instance of this role
     pub role: Option<String>,
+    /// The working directory
     pub cwd: PathBuf,
 }
 
@@ -60,14 +78,19 @@ pub struct Start {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct HandOff {
+    /// The session whose work is handed off
+    #[schemars(extend("argument_form" = "positional"))]
     pub session: SessionId,
+    /// The harness of the new session
     pub to: String,
+    /// The message to continue from
     pub at: Option<String>,
+    /// The working directory, when not the source's
     pub cwd: Option<PathBuf>,
-    /// Interrupt the source afterwards.
+    /// Interrupt the source session once the new one runs
     #[serde(default)]
     pub stop_source: bool,
-    /// Show the pack and start nothing.
+    /// Show the pack and start nothing
     #[serde(default)]
     pub print: bool,
 }

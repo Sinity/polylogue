@@ -3,54 +3,64 @@
 //! command names its printer in the command table; `--json` prints the
 //! answer itself.
 
+use crate::protocol;
+use command_surface::TextStyle;
 use polylogue_render::shell_quote;
+use serde::Serialize;
 use serde_json::Value;
 use std::fmt::Write as _;
 
-fn s(v: &Value) -> String {
-    v.as_str().unwrap_or("").to_owned()
+/// The serde name of a unit variant (`awaiting_approval`).
+fn name_of(value: &impl Serialize) -> String {
+    match serde_json::to_value(value) {
+        Ok(Value::String(name)) => name,
+        _ => String::new(),
+    }
 }
 
 /// The answer as indented JSON: commands without a text view.
-pub fn json(data: &Value, _color: bool) -> String {
-    format!("{}\n", polylogue_render::terminal::json(data, true))
+pub fn json<T: Serialize>(answer: &T, _style: TextStyle) -> String {
+    let value = serde_json::to_value(answer).expect("typed answer serializes");
+    format!("{}\n", polylogue_render::terminal::json(&value, true))
 }
 
 /// A query's rows as a table, or a measurement in its
 /// own text view.
-pub fn query(data: &Value, color: bool) -> String {
-    use crate::protocol::query::Answer;
-    match query_answer(data) {
+pub fn query(answer: &protocol::query::Answer, style: TextStyle) -> String {
+    use protocol::query::Answer;
+    match answer {
         Answer::PagedMeasure(measure) => {
             measurement(&measure.measure, &measure.data, measure.next.as_deref())
         }
         Answer::Measure(measure) => measurement(&measure.measure, &measure.data, None),
-        Answer::Rows(_) => {
-            let mut out = Vec::new();
-            let _ = polylogue_render::results::terminal_with_color(data, color, &mut out);
-            String::from_utf8_lossy(&out).into_owned()
-        }
+        Answer::Rows(found) => rows(found, style),
     }
+}
+
+/// Query rows as a table numbered for `@N`.
+pub fn rows(found: &protocol::query::Rows, style: TextStyle) -> String {
+    let data = serde_json::to_value(found).expect("query rows serialize");
+    let mut out = Vec::new();
+    let _ =
+        polylogue_render::results::terminal_with_color(&data, style == TextStyle::Ansi, &mut out);
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Query text for the tour, whose final display handles styling.
-pub fn query_plain(data: &Value) -> String {
-    match query_answer(data) {
-        crate::protocol::query::Answer::Rows(_) => {
+pub fn query_plain(answer: &protocol::query::Answer) -> String {
+    match answer {
+        protocol::query::Answer::Rows(found) => {
+            let data = serde_json::to_value(found).expect("query rows serialize");
             let mut out = Vec::new();
-            let _ = polylogue_render::results::plain_terminal(data, &mut out);
+            let _ = polylogue_render::results::plain_terminal(&data, &mut out);
             String::from_utf8_lossy(&out).into_owned()
         }
-        _ => query(data, false),
+        _ => query(answer, TextStyle::Plain),
     }
 }
 
-/// The query operation's declared answer.
-fn query_answer(data: &Value) -> crate::protocol::query::Answer {
-    serde::Deserialize::deserialize(data).expect("query operation returns its declared answer")
-}
-
 /// A measurement in its measure's text view, with the continuation line.
+/// Measure data is JSON: each measure declares its own shape.
 fn measurement(what: &str, data: &Value, next: Option<&str>) -> String {
     let text = crate::daemon::measure::find(what)
         .map_or(polylogue_render::measures::json as fn(&_) -> _, |(m, _)| {
@@ -67,9 +77,7 @@ fn measurement(what: &str, data: &Value, next: Option<&str>) -> String {
 }
 
 /// The same typed read document, rendered for an MCP/model-facing transcript.
-pub fn read(data: &Value, _color: bool) -> String {
-    let page: polylogue_model::read::ReadPage = serde_json::from_value(data.clone())
-        .expect("read operation returns its declared page type");
+pub fn read(page: &polylogue_model::read::ReadPage, _style: TextStyle) -> String {
     let mut bytes = Vec::new();
     polylogue_render::encode_document(
         &page.document,
@@ -87,133 +95,124 @@ pub fn read(data: &Value, _color: bool) -> String {
 }
 
 /// A prepared brief, takeover or recall.
-pub fn context(data: &Value, _color: bool) -> String {
-    polylogue_render::terminal::escape(&context_text(data))
-}
-
-fn context_text(data: &Value) -> String {
-    s(&data["prepared"]["text"])
+pub fn context(answer: &protocol::context::Answer, _style: TextStyle) -> String {
+    polylogue_render::terminal::escape(&answer.prepared.text)
 }
 
 /// `continue`: the sessions worth resuming here, or one session's plan.
-pub fn resume(data: &Value, _color: bool) -> String {
-    polylogue_render::terminal::escape(&resume_text(data))
+pub fn resume(answer: &protocol::resume::Answer, _style: TextStyle) -> String {
+    polylogue_render::terminal::escape(&match answer {
+        protocol::resume::Answer::Sessions(sessions) => resumable(sessions),
+        protocol::resume::Answer::Plan(found) => plan(found),
+    })
 }
 
-fn resume_text(data: &Value) -> String {
-    match data.as_array() {
-        Some(sessions) => resumable(sessions),
-        None => plan(data),
-    }
-}
-
-fn resumable(sessions: &[Value]) -> String {
+fn resumable(sessions: &[crate::resume::ResumableSession]) -> String {
     let mut out = String::new();
     for c in sessions {
-        let open = &c["open"];
+        let open = &c.open;
         let mut why = Vec::new();
-        if open["unanswered_prompt"].as_bool() == Some(true) {
+        if open.unanswered_prompt {
             why.push("unanswered prompt".to_owned());
         }
-        if open["open_tool_call"].as_bool() == Some(true) {
+        if open.open_tool_call {
             why.push("unfinished tool call".to_owned());
         }
-        if let Some(t) = open["todo"].as_str() {
+        if let Some(t) = &open.todo {
             why.push(format!("todo: {t}"));
         }
-        if let Some(w) = open["waiting_on"].as_str() {
+        if let Some(w) = &open.waiting_on {
             why.push(format!("waiting on {w}"));
         }
-        for f in c["follow_ups"].as_array().into_iter().flatten() {
-            why.push(s(f));
-        }
+        why.extend(c.follow_ups.iter().cloned());
         let _ = writeln!(
             out,
             "{}  {}  {}\n    {}",
-            s(&c["session"]["last_activity"]),
-            s(&c["session"]["id"]),
-            s(&c["session"]["title"]),
+            c.session
+                .last_activity
+                .map(|at| at.to_string())
+                .unwrap_or_default(),
+            c.session.id,
+            c.session.title.as_deref().unwrap_or_default(),
             why.join("; ")
         );
     }
     out
 }
 
-fn plan(data: &Value) -> String {
-    let line = |c: &Value| -> String {
-        let mut words = vec![shell_quote(&s(&c["program"]))];
-        words.extend(
-            c["args"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .map(|a| shell_quote(&s(a))),
-        );
-        let cmd = words.join(" ");
-        match c["cwd"].as_str() {
-            Some(d) => format!("cd {} && {cmd}", shell_quote(d)),
-            None => cmd,
-        }
-    };
+/// A command line as a shell would run it, in its directory.
+fn command_line(command: &crate::resume::Command) -> String {
+    let mut words = vec![shell_quote(&command.program)];
+    words.extend(command.args.iter().map(|a| shell_quote(a)));
+    let line = words.join(" ");
+    match &command.cwd {
+        Some(d) => format!("cd {} && {line}", shell_quote(d)),
+        None => line,
+    }
+}
+
+fn plan(found: &crate::resume::Plan) -> String {
     let mut out = String::new();
-    if !data["harness_command"].is_null() {
-        let _ = writeln!(
-            out,
-            "harness command:    {}",
-            line(&data["harness_command"])
-        );
+    if let Some(harness) = &found.harness_command {
+        let _ = writeln!(out, "harness command:    {}", command_line(harness));
     }
     let _ = writeln!(
         out,
         "with context:       {}",
-        line(&data["context_assisted"])
+        command_line(&found.context_assisted)
     );
     out
 }
 
 /// `chat list`: one line per chat action.
-pub fn chat_actions(data: &Value, _color: bool) -> String {
-    polylogue_render::terminal::escape(&chat_actions_text(data))
+pub fn chat_actions(list: &protocol::browser::ChatActionList, _style: TextStyle) -> String {
+    polylogue_render::terminal::escape(&chat_actions_text(&list.actions))
 }
 
-fn chat_actions_text(data: &Value) -> String {
-    let actions = data["actions"].as_array().map_or(&[][..], Vec::as_slice);
+fn chat_actions_text(actions: &[crate::browser::actions::ActionSummary]) -> String {
     if actions.is_empty() {
         return "no chat actions\n".into();
     }
     let mut out = String::new();
     for a in actions {
-        let target = a["conversation"].as_str().unwrap_or("new conversation");
+        let target = a
+            .request
+            .conversation
+            .as_deref()
+            .unwrap_or("new conversation");
         let _ = writeln!(
             out,
             "{}  {}  {}  {}  {}",
-            s(&a["id"]),
-            s(&a["status"]),
-            s(&a["provider"]),
+            a.id,
+            name_of(&a.status),
+            a.request.provider,
             target,
-            s(&a["updated_at"])
+            a.updated_at.as_deref().unwrap_or_default()
         );
-        if let Some(error) = a["last_error"].as_str() {
+        if let Some(error) = &a.last_error {
             let _ = writeln!(out, "    {error}");
         }
     }
     out
 }
 
-/// `backfill start`, `list` and `cancel`: one line per job.
-pub fn backfill_jobs(data: &Value, _color: bool) -> String {
-    polylogue_render::terminal::escape(&backfill_jobs_text(data))
+/// `backfill list`: one line per job.
+pub fn backfill_jobs(list: &protocol::browser::BackfillJobList, _style: TextStyle) -> String {
+    polylogue_render::terminal::escape(&backfill_jobs_text(&list.jobs))
 }
 
-fn backfill_jobs_text(data: &Value) -> String {
-    let jobs: Vec<&Value> = match data["jobs"].as_array() {
-        Some(jobs) => jobs.iter().collect(),
-        None => data
-            .get("job")
-            .filter(|j| !j.is_null())
-            .into_iter()
-            .collect(),
-    };
+/// `backfill start` and `cancel`: the job's line, or a write still
+/// awaiting confirmation as JSON.
+pub fn backfill_answer(answer: &protocol::browser::BackfillAnswer, style: TextStyle) -> String {
+    match answer {
+        protocol::browser::BackfillAnswer::Current(current) => polylogue_render::terminal::escape(
+            &backfill_jobs_text(current.job.as_deref().map_or(&[], std::slice::from_ref)),
+        ),
+        protocol::browser::BackfillAnswer::Outcome(_) => json(answer, style),
+    }
+}
+
+fn backfill_jobs_text(jobs: &[crate::browser::backfill::JobSummary]) -> String {
     if jobs.is_empty() {
         return "no backfill jobs\n".into();
     }
@@ -222,16 +221,16 @@ fn backfill_jobs_text(data: &Value) -> String {
         let _ = writeln!(
             out,
             "{}  {}  {}  listed {}, captured {}, unchanged {}, failed {}  {}",
-            s(&j["id"]),
-            s(&j["provider"]),
-            s(&j["status"]),
-            j["listed"],
-            j["captured"],
-            j["unchanged"],
-            j["failed"],
-            s(&j["updated_at"])
+            j.id,
+            j.provider,
+            name_of(&j.status),
+            j.listed,
+            j.captured,
+            j.unchanged,
+            j.failed,
+            j.updated_at.as_deref().unwrap_or_default()
         );
-        if let Some(detail) = j["detail"].as_str() {
+        if let Some(detail) = &j.detail {
             let _ = writeln!(out, "    {detail}");
         }
     }
@@ -303,11 +302,7 @@ pub fn idle_summary(summary: &polylogue_engine::RunSummary) -> String {
 }
 
 /// `verify`: the counts, then each problem.
-pub fn verify(data: &Value, _color: bool) -> String {
-    let Ok(found) = serde_json::from_value::<polylogue_store::verify::Verification>(data.clone())
-    else {
-        return json(data, false);
-    };
+pub fn verify(found: &polylogue_store::verify::Verification, _style: TextStyle) -> String {
     let counts = &found.counts;
     let mut out = format!(
         "{} inputs, {} revisions, {} extents, {} observations, {} blobs ({} bytes)\n",
@@ -358,10 +353,7 @@ pub fn verify(data: &Value, _color: bool) -> String {
         out.push_str("no problems\n");
     }
     for problem in &found.problems {
-        let kind = serde_json::to_value(problem.kind)
-            .ok()
-            .and_then(|kind| kind.as_str().map(str::to_owned))
-            .unwrap_or_default();
+        let kind = name_of(&problem.kind);
         let _ = writeln!(
             out,
             "{kind}: {}: {}",

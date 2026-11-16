@@ -1,5 +1,5 @@
 //! Caller details from the transport surround the shared request without entering operation arguments.
-use polylogue_model::authorship::CallerEvidence;
+use command_surface::CallerEvidence;
 use serde::Serialize;
 
 #[derive(Serialize)]

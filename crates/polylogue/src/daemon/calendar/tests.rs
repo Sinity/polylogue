@@ -1,6 +1,11 @@
 use super::*;
 use polylogue_store::fixture::{Fixture, MessageFacts, SessionFacts};
 
+/// The answer as the JSON its callers read.
+fn value(answer: impl Serialize) -> Value {
+    serde_json::to_value(answer).unwrap()
+}
+
 fn setup(root: &std::path::Path) -> Fixture {
     let mut f = Fixture::new(root).unwrap();
     let s = f
@@ -55,12 +60,14 @@ fn period_totals_models_days_and_paged_responses_are_one_population() {
     let f = setup(temp.path());
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();
-    let result = cost(
-        &r,
-        options(Some("2024-03-30"), None),
-        &fixture_context("04:00:00", 0),
-    )
-    .unwrap();
+    let result = value(
+        cost(
+            &r,
+            options(Some("2024-03-30"), None),
+            &fixture_context("04:00:00", 0),
+        )
+        .unwrap(),
+    );
     assert_eq!(result["usage"]["data"]["known_response_messages"], 2);
     assert_eq!(result["usage"]["data"]["by_model"][0]["messages"], 2);
     assert_eq!(result["days"].as_array().unwrap().len(), 1);
@@ -71,12 +78,14 @@ fn period_totals_models_days_and_paged_responses_are_one_population() {
     );
     assert_eq!(result["responses"]["rows"][0]["id"], "codex:b");
     let next = result["responses"]["next"].as_str().unwrap();
-    let second = cost(
-        &r,
-        options(Some("2024-03-30"), Some(next)),
-        &fixture_context("04:00:00", 10_000_000),
-    )
-    .unwrap();
+    let second = value(
+        cost(
+            &r,
+            options(Some("2024-03-30"), Some(next)),
+            &fixture_context("04:00:00", 10_000_000),
+        )
+        .unwrap(),
+    );
     assert_eq!(second["responses"]["rows"][0]["id"], "codex:c");
     assert!(second["responses"]["next"].is_null());
     assert!(
@@ -90,7 +99,7 @@ fn period_totals_models_days_and_paged_responses_are_one_population() {
     let mut undated = options(None, None);
     undated.undated = true;
     undated.unknown_model = true;
-    let result = cost(&r, undated, &fixture_context("04:00:00", 0)).unwrap();
+    let result = value(cost(&r, undated, &fixture_context("04:00:00", 0)).unwrap());
     assert_eq!(result["usage"]["data"]["known_response_messages"], 2);
     assert_eq!(result["responses"]["rows"][0]["id"], "codex:unknown");
 }
@@ -114,7 +123,10 @@ fn request_day_binds_continuation_and_keeps_leap_days() {
             &fixture_context("04:00:00", 0),
         )
         .unwrap();
-        result["activity"]["next"].as_str().unwrap().to_owned()
+        value(result)["activity"]["next"]
+            .as_str()
+            .unwrap()
+            .to_owned()
     };
     let reader = pool.reader().unwrap();
     assert!(
@@ -131,18 +143,20 @@ fn request_day_binds_continuation_and_keeps_leap_days() {
         )
         .is_err()
     );
-    let leap = timeline(
-        &reader,
-        Timeline {
-            date: Some("2024-02-29"),
-            across_years: true,
-            undated: false,
-            cursor: None,
-            page_size: Some(1),
-        },
-        &fixture_context("04:00:00", 0),
-    )
-    .unwrap();
+    let leap = value(
+        timeline(
+            &reader,
+            Timeline {
+                date: Some("2024-02-29"),
+                across_years: true,
+                undated: false,
+                cursor: None,
+                page_size: Some(1),
+            },
+            &fixture_context("04:00:00", 0),
+        )
+        .unwrap(),
+    );
     assert_eq!(leap["calendar"].as_array().unwrap().len(), 29);
     assert!(
         timeline(
@@ -193,7 +207,7 @@ fn all_time_model_drilldown_reaches_every_dated_and_undated_response() {
     loop {
         let mut request = options(None, next.as_deref());
         request.model = Some("test");
-        let result = cost(&reader, request, &fixture_context("04:00:00", 0)).unwrap();
+        let result = value(cost(&reader, request, &fixture_context("04:00:00", 0)).unwrap());
         assert_eq!(result["unplaced"]["count"], 2);
         count.get_or_insert(
             result["usage"]["data"]["by_model"]
@@ -257,7 +271,7 @@ fn unrepresentable_price_totals_leave_response_records_readable() {
     let reader = pool.reader().unwrap();
     let mut request = options(Some("2024-03-30"), None);
     request.page_size = Some(50);
-    let result = cost(&reader, request, &fixture_context("04:00:00", 0)).unwrap();
+    let result = value(cost(&reader, request, &fixture_context("04:00:00", 0)).unwrap());
     assert_eq!(result["responses"]["rows"].as_array().unwrap().len(), 2);
     assert_eq!(result["usage"]["error"], "store");
     assert!(result["days"].is_null());
@@ -297,7 +311,7 @@ fn calendar_continuation_checks_the_request_clock_and_day() {
             page_size: Some(1),
         }
     }
-    let first = timeline(&reader, request(None), &request_context).unwrap();
+    let first = value(timeline(&reader, request(None), &request_context).unwrap());
     let cursor = first["activity"]["next"].as_str().unwrap();
     let later = fixture_context(
         "04:00:00",
@@ -320,7 +334,7 @@ fn calendar_continuation_checks_the_request_clock_and_day() {
             .parse::<jiff::Timestamp>()
             .unwrap()
     );
-    let next = timeline(&reader, request(Some(cursor)), &later).unwrap();
+    let next = value(timeline(&reader, request(Some(cursor)), &later).unwrap());
     assert_eq!(next["activity"]["rows"][0]["id"], "codex:c");
     assert_eq!(next["context"]["ran_at"], "2026-10-07T00:00:00Z");
     assert_eq!(

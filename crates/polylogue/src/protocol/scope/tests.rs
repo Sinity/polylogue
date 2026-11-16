@@ -36,7 +36,7 @@ impl Operation for HeldCatalog {
             self.calls.fetch_add(1, Ordering::SeqCst);
             let accepted = context
                 .caller()
-                .identity::<crate::protocol::caller::Accepted>()
+                .identity::<crate::operation::Accepted>()
                 .unwrap();
             let limit =
                 polylogue_store::read::limit::ReadLimit::without_deadline(Default::default());
@@ -81,10 +81,10 @@ fn accept_request(
     let scope = policy
         .read_only
         .then(|| daemon.reads.scope_token().unwrap());
-    let mut accepted = crate::protocol::caller::accept(
+    let mut accepted = crate::operation::Accepted::new(
         &daemon.callers,
         &Default::default(),
-        polylogue_model::authorship::Channel::Mcp,
+        command_surface::Via::Mcp,
         Default::default(),
     );
     accepted.invocation = Some(
@@ -127,7 +127,9 @@ async fn each_request_answers_only_in_its_own_scope() {
         .unwrap();
     declarations
         .declare::<crate::protocol::setting::Arguments, crate::protocol::setting::Answer>(
-            crate::commands::specification(crate::commands::command("setting").unwrap()),
+            crate::commands::specification::<crate::protocol::setting::Arguments>(
+                crate::commands::command("setting").unwrap(),
+            ),
             |answer, _| serde_json::to_string(answer).unwrap(),
         )
         .unwrap();
@@ -217,8 +219,6 @@ async fn each_request_answers_only_in_its_own_scope() {
     };
     let (caller, scope) = accept_request(&daemon.daemon, &write);
     assert!(scope.is_none());
-    let accepted = caller
-        .identity::<crate::protocol::caller::Accepted>()
-        .unwrap();
+    let accepted = caller.identity::<crate::operation::Accepted>().unwrap();
     assert!(accepted.read_scope.is_none());
 }

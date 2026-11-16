@@ -23,7 +23,11 @@ pub(crate) struct Follow;
 #[derive(serde::Serialize, serde::Deserialize, command_surface::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Arguments {
+    /// A session reference or a query
+    #[schemars(extend("argument_form" = "words"))]
     pub target: String,
+    /// Where a previous follow of the same target stopped
+    #[schemars(extend("hidden" = true))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub marks: Option<Marks>,
 }

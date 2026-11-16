@@ -119,7 +119,7 @@ pub(crate) trait Handler: Send + Sync + 'static {
     /// then writes.
     const RECORDS_DELIVERY: bool = false;
     /// The answer as text for a person or a model.
-    const PRINT: fn(&Value, bool) -> String = crate::cli::print::json;
+    const PRINT: fn(&Self::Answer, TextStyle) -> String = crate::cli::print::json::<Self::Answer>;
 
     /// Whether this request leaves the archive unchanged; a request that
     /// changes it is refused while writes are blocked.
@@ -262,15 +262,13 @@ pub(crate) const fn feed<F: Feed>() -> FeedRegistration {
 }
 
 fn declare_feed<F: Feed>(declarations: &mut DeclarationsBuilder, row: &'static Command) {
-    let mut spec = crate::commands::specification(row);
+    let mut spec = crate::commands::specification::<F::Arguments>(row);
     spec.kind = command_surface::OperationKind::Stream;
     if spec.reason.is_empty() {
         spec.reason = row.help.into();
     }
     declarations
-        .declare_stream::<F::Arguments, Value>(spec, |value, _| {
-            crate::cli::print::json(value, false)
-        })
+        .declare_stream::<F::Arguments, Value>(spec, crate::cli::print::json::<Value>)
         .expect("feed arguments match their declaration");
 }
 impl FeedRegistration {
@@ -357,13 +355,11 @@ fn decode<T: DeserializeOwned>(arguments: &Value) -> Result<T, Failure> {
 
 fn declare<H: Handler>(declarations: &mut DeclarationsBuilder, row: &'static Command) {
     declarations
-        .declare::<H::Arguments, H::Answer>(crate::commands::specification(row), render::<H>)
+        .declare::<H::Arguments, H::Answer>(
+            crate::commands::specification::<H::Arguments>(row),
+            H::PRINT,
+        )
         .expect("declared command is unique");
-}
-
-fn render<H: Handler>(answer: &H::Answer, style: TextStyle) -> String {
-    let value = serde_json::to_value(answer).expect("typed answer serializes");
-    (H::PRINT)(&value, style == TextStyle::Ansi)
 }
 
 fn bind<H: Handler>(daemon: Arc<Daemon>, table: &mut OperationTable, row: &'static Command) {
@@ -503,9 +499,7 @@ fn produce_feed<F: Feed>(
 
 /// The caller as handlers see it: its surface, working directory and output.
 pub(crate) fn caller(context: &RequestContext) -> Caller {
-    let accepted = context
-        .caller()
-        .identity::<crate::protocol::caller::Accepted>();
+    let accepted = context.caller().identity::<crate::operation::Accepted>();
     Caller {
         surface: if accepted.is_some_and(|accepted| {
             accepted.authorship.via == polylogue_model::authorship::Channel::Hook
@@ -595,9 +589,7 @@ impl<H: Handler> Operation for Row<H> {
                 return Answer::error(error);
             }
             let caller = caller(&context);
-            let accepted = context
-                .caller()
-                .identity::<crate::protocol::caller::Accepted>();
+            let accepted = context.caller().identity::<crate::operation::Accepted>();
             let cancellation = accepted.map_or_else(
                 || self.daemon.archive.stop().child(),
                 |caller| caller.cancellation.child(),
@@ -605,12 +597,12 @@ impl<H: Handler> Operation for Row<H> {
             let authorship = accepted
                 .map(|caller| caller.authorship.clone())
                 .unwrap_or_else(|| {
-                    let via = match context.via {
-                        command_surface::Via::Web => polylogue_model::authorship::Channel::Web,
-                        command_surface::Via::Mcp => polylogue_model::authorship::Channel::Mcp,
-                        _ => polylogue_model::authorship::Channel::Cli,
-                    };
-                    polylogue_model::authorship::compute_authorship(via, &Default::default(), None)
+                    command_surface::author_of(
+                        &command_surface::CallerEvidence::default(),
+                        context.via,
+                        None,
+                    )
+                    .into()
                 });
             let invocation = accepted.and_then(|caller| caller.invocation.clone());
             let parent = accepted.and_then(|caller| caller.parent.clone());

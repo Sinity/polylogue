@@ -3,7 +3,7 @@
 //! typed adapters this module replaces.
 mod feeds;
 use super::*;
-use crate::commands::{COMMANDS, Cli};
+
 use serde_json::json;
 
 fn runtime() -> tokio::runtime::Runtime {
@@ -80,27 +80,6 @@ fn typed_query_refuses_unknown_fields_and_another_operations_arguments() {
 }
 
 #[test]
-fn declaration_and_typed_query_schema_have_the_same_argument_names() {
-    let command = crate::commands::command("query").unwrap();
-    let declared = command
-        .args_for(Surface::Mcp)
-        .filter(|arg| !matches!(arg.name, "cursor" | "budget"))
-        .map(|arg| arg.name.to_owned())
-        .collect::<std::collections::BTreeSet<_>>();
-    let schema = &description("query").input_schema;
-    let typed = schema["properties"]
-        .as_object()
-        .unwrap()
-        .keys()
-        .cloned()
-        .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(typed, declared);
-    assert_eq!(schema["additionalProperties"], false);
-    let output = &description("query").output_schema;
-    assert!(output.to_string().contains("\"read_at\""));
-}
-
-#[test]
 fn status_operation_uses_its_typed_answer_on_the_shared_socket_path() {
     let daemon = crate::test_daemon::start("typed status example");
     let answer = crate::client::call_ready(
@@ -154,26 +133,15 @@ fn closed_argument_names(
         .unwrap_or_default()
 }
 
-/// Every row a person types declares exactly its typed request's fields.
-/// Rows the hooks and the extension send take their typed request as JSON;
-/// `measure NAME` rows share one request with the options each offers;
-/// `chat send` sends the files its `--attach` names.
+/// Every typed request refuses fields it does not declare.
 #[test]
-fn each_typed_declaration_exposes_exactly_its_runtime_arguments() {
-    for command in COMMANDS.iter().filter(|command| {
-        command.registration().is_some()
-            && !(command.cli == Cli::Hidden && command.args.is_empty())
-            && !command.name.starts_with("measure ")
-            && command.prepare.is_none()
-    }) {
-        let declared = command
-            .args_for(Surface::Mcp)
-            .filter(|arg| !matches!(arg.name, "cursor" | "budget"))
-            .map(|arg| arg.name.to_owned())
-            .collect::<std::collections::BTreeSet<_>>();
+fn each_typed_request_is_closed() {
+    for command in crate::commands::COMMANDS
+        .iter()
+        .filter(|command| command.registration().is_some())
+    {
         let schema = &description(command.name).input_schema;
-        let typed = closed_argument_names(schema, schema);
-        assert_eq!(typed, declared, "{}", command.name);
+        closed_argument_names(schema, schema);
     }
 }
 
@@ -355,8 +323,11 @@ fn typed_write_identity_comes_from_the_request_on_every_surface() {
     let command = crate::commands::command("setting").unwrap();
     for surface in [Surface::Cli, Surface::Http, Surface::Mcp] {
         assert!(
-            !command
-                .args_for(surface)
+            !crate::commands::declarations()
+                .spec_named(command.name)
+                .unwrap()
+                .arguments
+                .iter()
                 .any(|arg| arg.name == "request_id")
         );
         assert!(policy("setting", json!({}), surface).is_ok());

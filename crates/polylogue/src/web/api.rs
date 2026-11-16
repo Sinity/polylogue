@@ -184,10 +184,10 @@ async fn answer(
     };
     let table = &web.operations;
     let limit = super::request_limit();
-    let mut accepted = crate::protocol::caller::accept(
+    let mut accepted = crate::operation::Accepted::new(
         &web.daemon.callers,
         &Default::default(),
-        polylogue_model::authorship::Channel::Web,
+        command_surface::Via::Web,
         limit.cancellation,
     );
     accepted.parent = super::parent_lifetime();
@@ -327,10 +327,10 @@ async fn stream(
     produce: crate::daemon::streaming::Produce,
 ) -> HttpResponse {
     let cancellation = limit.cancellation.clone();
-    let accepted = crate::protocol::caller::accept(
+    let accepted = crate::operation::Accepted::new(
         &web.daemon.callers,
         &Default::default(),
-        polylogue_model::authorship::Channel::Web,
+        command_surface::Via::Web,
         cancellation.clone(),
     );
     let invocation = web

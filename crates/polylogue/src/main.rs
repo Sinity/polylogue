@@ -178,7 +178,7 @@ fn main() -> ExitCode {
         Ok(startup) => startup,
         Err(error) => return startup_error(hook, error, process.output),
     };
-    protocol::caller::initialize(&process.environment);
+    crate::client::remember_this_process(&process.environment);
     if native {
         return browser::native::run(
             &startup.engine,

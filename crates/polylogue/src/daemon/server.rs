@@ -109,6 +109,86 @@ struct Clients {
 
 impl Clients {}
 
+/// The caller's facts as the daemon observes them from the socket peer. The
+/// request contributes only an MCP call's tool call ID, which joins a
+/// matching hook event.
+pub(crate) fn peer(
+    stream: &UnixStream,
+    supplied: &command_surface::CallerEvidence,
+) -> std::io::Result<(command_surface::CallerEvidence, command_surface::Via)> {
+    use std::os::unix::ffi::OsStringExt as _;
+    let pid = rustix::net::sockopt::socket_peercred(stream)?
+        .pid
+        .as_raw_pid()
+        .unsigned_abs();
+    let root = PathBuf::from(format!("/proc/{pid}"));
+    let mut details = command_surface::gather_peer(pid)?;
+    let environment = std::fs::read(root.join("environ"))?;
+    let variable = |name: &str| {
+        environment.split(|byte| *byte == 0).find_map(|entry| {
+            let value = entry.strip_prefix(name.as_bytes())?.strip_prefix(b"=")?;
+            Some(std::ffi::OsString::from_vec(value.to_vec()))
+        })
+    };
+    crate::hook::hermes_session(&mut details, variable);
+    let arguments = std::fs::read(root.join("cmdline"))?;
+    let words = arguments
+        .split(|byte| *byte == 0)
+        .filter_map(|word| std::str::from_utf8(word).ok())
+        .collect::<Vec<_>>();
+    let via = via_of_command_line(&words);
+    if via == command_surface::Via::Mcp && supplied.tool_call_id.is_some() {
+        details.tool_call_id = supplied.tool_call_id.clone();
+    }
+    Ok((details, via))
+}
+
+/// The socket peer's working directory, against which relative paths in its
+/// requests resolve.
+fn working_directory(stream: &UnixStream) -> std::io::Result<PathBuf> {
+    let credentials = rustix::net::sockopt::socket_peercred(stream)?;
+    std::fs::read_link(format!("/proc/{}/cwd", credentials.pid.as_raw_pid()))
+}
+
+/// How a peer process reached the daemon, from its command line: the first
+/// word after the global options names the subcommand.
+fn via_of_command_line(words: &[&str]) -> command_surface::Via {
+    use command_surface::Via;
+    const VALUED: [&str; 8] = [
+        "--deadline",
+        "--timeout",
+        "--archive",
+        "--config",
+        "--listen",
+        "--auth-token-file",
+        "--request",
+        "--request-id",
+    ];
+    let mut words = words.iter().skip(1);
+    while let Some(word) = words.next() {
+        match *word {
+            "--json" => continue,
+            word if VALUED.contains(&word) => {
+                words.next();
+                continue;
+            }
+            word if VALUED.iter().any(|option| {
+                word.strip_prefix(option)
+                    .is_some_and(|rest| rest.starts_with('='))
+            }) =>
+            {
+                continue;
+            }
+            "mcp" => return Via::Mcp,
+            "hook" => return Via::Hook,
+            "browser-host" => return Via::Extension,
+            word if word.starts_with("chrome-extension://") => return Via::Extension,
+            _ => return Via::Cli,
+        }
+    }
+    Via::Cli
+}
+
 fn serve_client(stream: UnixStream, shared: &Shared) {
     let d = &shared.daemon;
     let Ok(read_half) = stream.try_clone() else {
@@ -164,15 +244,10 @@ fn serve_client(stream: UnixStream, shared: &Shared) {
             caller,
             parent_deadline_ms,
         } = incoming;
-        let (details, channel) =
-            crate::protocol::caller::peer(&out, &caller).unwrap_or_else(|_| {
-                (
-                    Default::default(),
-                    polylogue_model::authorship::Channel::Cli,
-                )
-            });
+        let (details, via) =
+            peer(&out, &caller).unwrap_or_else(|_| (Default::default(), command_surface::Via::Cli));
         let mut accepted =
-            crate::protocol::caller::accept(&d.callers, &details, channel, cancellation.clone());
+            crate::operation::Accepted::new(&d.callers, &details, via, cancellation.clone());
         accepted.parent = parent_deadline_ms.map(|deadline| {
             crate::operation::ParentLifetime::capture(
                 super::execution::limit(Some(deadline), cancellation.clone()).deadline(),
@@ -183,11 +258,11 @@ fn serve_client(stream: UnixStream, shared: &Shared) {
             d.invocation(&accepted.authorship)
                 .with_accepted_request(Some(Arc::new(request.clone()))),
         );
-        accepted.working_directory = crate::protocol::caller::working_directory(&out).ok();
+        accepted.working_directory = working_directory(&out).ok();
         let caller = crate::commands::Caller {
-            surface: match channel {
-                polylogue_model::authorship::Channel::Mcp => crate::commands::Surface::Mcp,
-                polylogue_model::authorship::Channel::Hook => crate::commands::Surface::Hook,
+            surface: match via {
+                command_surface::Via::Mcp => crate::commands::Surface::Mcp,
+                command_surface::Via::Hook => crate::commands::Surface::Hook,
                 _ => crate::commands::Surface::Cli,
             },
             cwd: accepted.working_directory.clone(),
@@ -295,7 +370,7 @@ fn serve_client(stream: UnixStream, shared: &Shared) {
             continue;
         }
         let deadline = stream_limit(&request, command, true, &accepted, &cancellation).deadline();
-        let via = if channel == polylogue_model::authorship::Channel::Mcp {
+        let table_via = if via == command_surface::Via::Mcp {
             command_surface::Via::Mcp
         } else {
             command_surface::Via::Cli
@@ -304,7 +379,7 @@ fn serve_client(stream: UnixStream, shared: &Shared) {
             .with_access(command_surface::Access::Write);
         let answer = shared.runtime.block_on(shared.operations.call_as(
             request,
-            via,
+            table_via,
             trusted,
             Default::default(),
         ));
@@ -322,7 +397,7 @@ fn stream_limit(
     request: &command_surface::RunnableRequest,
     command: &crate::commands::Command,
     default_deadline: bool,
-    accepted: &crate::protocol::caller::Accepted,
+    accepted: &crate::operation::Accepted,
     cancellation: &polylogue_store::cancellation::Cancellation,
 ) -> polylogue_store::read::limit::ReadLimit {
     use polylogue_store::read::limit::ReadLimit;
@@ -356,7 +431,7 @@ fn send_stream(
     out: &mut UnixStream,
     d: &Arc<Daemon>,
     class: super::executor::Class,
-    accepted: &crate::protocol::caller::Accepted,
+    accepted: &crate::operation::Accepted,
     limit: polylogue_store::read::limit::ReadLimit,
     produce: super::streaming::Produce,
 ) -> bool {

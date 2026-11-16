@@ -5,7 +5,7 @@
 use super::*;
 use crate::test_daemon;
 use axum::body::{Body, to_bytes};
-use polylogue_model::authorship::{Authorship, Channel};
+use polylogue_model::authorship::Authorship;
 use std::sync::Arc;
 use tower::ServiceExt;
 
@@ -98,7 +98,14 @@ fn mcp_answer(
             values.request.arguments["position"].as_u64(),
         );
     }
-    let names: Vec<&str> = c.args_for(Surface::Mcp).map(|a| a.name).collect();
+    let names: Vec<&str> = crate::commands::declarations()
+        .spec_named(c.name)
+        .expect("declared row")
+        .arguments
+        .iter()
+        .filter(|a| !a.calling_process)
+        .map(|a| a.name.as_str())
+        .collect();
     let arguments = values
         .request
         .arguments
@@ -138,7 +145,14 @@ fn http_answer(
     request_id: &str,
 ) -> (Answer, Exit) {
     let mut pairs: Vec<String> = Vec::new();
-    let names: Vec<&str> = c.args_for(Surface::Http).map(|a| a.name).collect();
+    let names: Vec<&str> = crate::commands::declarations()
+        .spec_named(c.name)
+        .expect("declared row")
+        .arguments
+        .iter()
+        .filter(|a| !a.calling_process)
+        .map(|a| a.name.as_str())
+        .collect();
     for (name, value) in values
         .request
         .arguments
@@ -215,9 +229,9 @@ fn http_answer(
 // channel. Expectations come from those boundaries, never from an answer.
 fn socket_authorship() -> Authorship {
     let (_client, server) = std::os::unix::net::UnixStream::pair().unwrap();
-    let (details, via) = crate::protocol::caller::peer(&server, &Default::default()).unwrap();
-    assert_eq!(via, Channel::Cli);
-    polylogue_model::authorship::compute_authorship(via, &details, None)
+    let (details, via) = crate::daemon::server::peer(&server, &Default::default()).unwrap();
+    assert_eq!(via, command_surface::Via::Cli);
+    command_surface::author_of(&details, via, None).into()
 }
 
 fn context_authorship_path(name: &str) -> Option<&'static str> {
@@ -315,8 +329,12 @@ fn every_client_answers_the_same_request_identically() {
         port: 8765,
     });
     let socket_author = socket_authorship();
-    let web_author =
-        polylogue_model::authorship::compute_authorship(Channel::Web, &Default::default(), None);
+    let web_author: Authorship = command_surface::author_of(
+        &command_surface::CallerEvidence::default(),
+        command_surface::Via::Web,
+        None,
+    )
+    .into();
     for (index, (name, args)) in ASKED.iter().enumerate() {
         let request_id = format!("client-parity-{index}");
         let command = command(name).unwrap();

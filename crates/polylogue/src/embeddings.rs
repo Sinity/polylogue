@@ -22,12 +22,14 @@
 //! `--yes` after a preview.
 
 use crate::daemon::Failure;
-use crate::daemon::service::{error, ok, store_error};
-use command_surface::Answer;
+use crate::daemon::service::{error, store_error};
+use command_surface::Answer as Answered;
 use polylogue_model::JsonExt as _;
+use polylogue_model::money::Amount;
 use polylogue_store::Reader;
-use polylogue_store::vectors::{Vector, Vectors};
-use serde::Serialize;
+use polylogue_store::vectors::{Vector, VectorStatus, Vectors};
+use schemars::JsonSchema;
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
@@ -414,8 +416,49 @@ fn chunks(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// What `embed status`, `embed preview` and `embed build` answer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum Answer {
+    Status(EmbeddingStatus),
+    Preview(Preview),
+    Built(Built),
+}
+
+/// The configured provider, if embeddings are on, and the stored vectors.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EmbeddingStatus {
+    pub provider: Option<ProviderSettings>,
+    pub vectors: VectorStatus,
+}
+
+/// Where the provider is reached, which model it runs and whether model
+/// calls are on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderSettings {
+    pub endpoint: String,
+    pub model: String,
+    pub calls: bool,
+}
+
+/// A money amount as `money::Amount` writes it; read back to its nano-USD.
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct WrittenAmount {
+    nusd: i64,
+    #[serde(rename = "usd")]
+    _usd: serde_json::Number,
+}
+
+fn written_amount<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Amount>, D::Error> {
+    Ok(Option::<WrittenAmount>::deserialize(d)?.map(|amount| Amount(amount.nusd)))
+}
+
 /// What a build would embed, and what it would cost.
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Preview {
     pub provider: String,
     pub model: String,
@@ -425,11 +468,14 @@ pub struct Preview {
     /// About four characters per token; the provider counts exactly.
     pub tokens_estimate: u64,
     /// `None`: the price is unknown (set `embed.price_per_mtok`).
-    pub cost_estimate: Option<polylogue_model::money::Amount>,
+    #[serde(deserialize_with = "written_amount")]
+    #[schemars(with = "Option<WrittenAmount>")]
+    pub cost_estimate: Option<Amount>,
     pub already_embedded: u64,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Built {
     pub key: Option<String>,
     pub texts: u64,
@@ -767,7 +813,7 @@ pub fn handle(
     limit: Option<u64>,
     yes: bool,
     context: Context<'_>,
-) -> Answer<Value> {
+) -> Answered<Answer> {
     let provider = match Provider::from_settings(context.settings, context.credentials) {
         Ok(p) => p,
         Err(e) => return error(polylogue_model::Code::BadRequest, e),
@@ -775,11 +821,13 @@ pub fn handle(
     if what == "status" {
         let vectors = reader.vectors().and_then(|v| v.status());
         return match vectors {
-            Ok(s) => ok(serde_json::json!({
-                "provider": provider.as_ref().map(|p| serde_json::json!({
-                    "endpoint": p.endpoint, "model": p.model, "calls": p.calls,
-                })),
-                "vectors": s,
+            Ok(vectors) => Answered::ok(Answer::Status(EmbeddingStatus {
+                provider: provider.as_ref().map(|p| ProviderSettings {
+                    endpoint: p.endpoint.clone(),
+                    model: p.model.clone(),
+                    calls: p.calls,
+                }),
+                vectors,
             })),
             Err(e) => store_error(&e),
         };
@@ -806,8 +854,7 @@ pub fn handle(
         );
     }
     let result = match what {
-        "preview" => preview(reader, &provider, sessions.as_deref(), limit)
-            .map(|p| serde_json::to_value(p).unwrap_or_default()),
+        "preview" => preview(reader, &provider, sessions.as_deref(), limit).map(Answer::Preview),
         "build" => {
             if provider.kind == ProviderKind::Voyage && !yes {
                 return error(
@@ -815,8 +862,7 @@ pub fn handle(
                     "Voyage is paid: `polylogue embed preview` shows the cost; build with --yes",
                 );
             }
-            build(context.clock, reader, &provider, sessions.as_deref(), limit)
-                .map(|b| serde_json::to_value(b).unwrap_or_default())
+            build(context.clock, reader, &provider, sessions.as_deref(), limit).map(Answer::Built)
         }
         other => {
             return error(
@@ -826,7 +872,7 @@ pub fn handle(
         }
     };
     match result {
-        Ok(v) => ok(v),
+        Ok(answer) => Answered::ok(answer),
         Err(e) => error(polylogue_model::Code::Embed, e),
     }
 }

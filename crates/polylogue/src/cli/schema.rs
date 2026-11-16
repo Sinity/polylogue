@@ -49,17 +49,18 @@ pub fn diff(
                 schema::compare(schema, schema)?;
             }
             let report = match (before.origins.get(name), after.origins.get(name)) {
-                (Some(left), Some(right)) => serde_json::to_value(schema::compare(left, right)?)
-                    .map_err(|e| e.to_string())?,
+                (Some(left), Some(right)) => {
+                    let compared = schema::compare(left, right)?;
+                    if !compared.comparable {
+                        reasons.insert("incomparable_origin_samples");
+                    }
+                    serde_json::to_value(compared).map_err(|e| e.to_string())?
+                }
                 (left, right) => {
+                    reasons.insert("different_origins");
                     serde_json::json!({"kind": if left.is_some() { "removed_origin" } else { "added_origin" }, "before": left, "after": right})
                 }
             };
-            if report.get("kind").is_some() {
-                reasons.insert("different_origins");
-            } else if report["comparable"] != true {
-                reasons.insert("incomparable_origin_samples");
-            }
             origins.insert(name.clone(), report);
         }
         let report = serde_json::json!({"origins": origins, "before": before.selection, "after": after.selection, "comparable": reasons.is_empty(), "reasons": reasons});
@@ -76,14 +77,19 @@ pub fn output(
     let value = answer
         .value()
         .expect("output handlers receive answers with values");
-    if json
-        && values
-            .calling_process
-            .get("output")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned)
-            .is_none()
-    {
+    let destination = match destination(values) {
+        Ok(destination) => destination,
+        Err(message) => {
+            return super::fail(
+                startup.output,
+                json,
+                polylogue_model::Code::BadRequest,
+                &message,
+                2,
+            );
+        }
+    };
+    if json && destination.is_none() {
         println!(
             "{}",
             polylogue_render::terminal::json(
@@ -94,6 +100,12 @@ pub fn output(
         return ExitCode::from(answer.exit_code());
     }
     run(values, json, startup.output, || Ok(value.clone()))
+}
+
+/// Where `--output` sends the result; standard output without it.
+fn destination(values: &command_surface::ParsedCommand) -> Result<Option<String>, String> {
+    use crate::cli::calling_process;
+    calling_process::options::<calling_process::SchemaOutput>(values).map(|options| options.output)
 }
 
 fn run(
@@ -110,12 +122,7 @@ fn run(
             polylogue_render::Format::Terminal
         };
         polylogue_render::schema::render(&value, format, &mut bytes).map_err(|e| e.to_string())?;
-        match values
-            .calling_process
-            .get("output")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned)
-        {
+        match destination(values)? {
             Some(path) => std::fs::write(path, bytes).map_err(|e| e.to_string()),
             None => io::stdout()
                 .lock()

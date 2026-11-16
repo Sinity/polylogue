@@ -7,12 +7,10 @@ fn argv(c: &Command) -> Vec<&'static str> {
     if c.cli != Cli::NoSubcommand {
         argv.extend(c.name.split(' '));
     }
-    for a in crate::cli::arguments_of(c).into_iter().filter(|argument| {
-        argument.required
-            && c.args
-                .iter()
-                .any(|a| a.name == argument.spec.name && a.default.is_none())
-    }) {
+    for a in crate::cli::arguments_of(c)
+        .into_iter()
+        .filter(|argument| argument.required)
+    {
         if !matches!(
             a.spec.form,
             command_surface::ArgumentForm::Positional
@@ -49,6 +47,17 @@ fn argv(c: &Command) -> Vec<&'static str> {
         argv.push(Box::leak(value.into_boxed_str()));
     }
     argv
+}
+
+/// The request arguments a row declares, calling-process options left out.
+fn request_arguments_of(c: &Command) -> Vec<&'static command_surface::ArgumentSpec> {
+    declarations()
+        .spec_named(c.name)
+        .unwrap_or_else(|| panic!("{} is declared", c.name))
+        .arguments
+        .iter()
+        .filter(|argument| !argument.calling_process)
+        .collect()
 }
 
 /// The arguments a command line sends, prepared in a fixed directory.
@@ -211,9 +220,9 @@ fn one_operation_makes_one_request_on_every_surface() {
 fn query_commands_carry_every_option() {
     let (c, _, arguments) = cli(&[
         "polylogue",
-        "--why",
         "measure",
         "survival-turns",
+        "--why",
         "repo:x",
         "--fields",
         "id,cost",
@@ -276,13 +285,13 @@ fn mcp_schemas_follow_the_arguments() {
             .unwrap();
         let schema = &tool["inputSchema"];
         assert_eq!(schema["additionalProperties"], false, "{}", command.name);
-        for arg in command
-            .args_for(Surface::Mcp)
-            .filter(|arg| !arg.unlisted && !matches!(arg.name, "cursor" | "budget"))
+        for arg in request_arguments_of(command)
+            .into_iter()
+            .filter(|arg| arg.listed)
         {
             assert!(
                 schema["properties"]["arguments"]["properties"]
-                    .get(arg.name)
+                    .get(&arg.name)
                     .is_some(),
                 "{} {}",
                 command.name,
@@ -331,7 +340,10 @@ fn every_measurement_is_a_command_and_named_in_the_query_help() {
     for m in MEASURES {
         let c = command(&format!("measure {}", m.name)).unwrap();
         assert_eq!(c.help, m.help);
-        assert_eq!(c.args.iter().any(|a| a.name == "query"), !m.whole_archive);
+        assert_eq!(
+            request_arguments_of(c).iter().any(|a| a.name == "query"),
+            !m.whole_archive
+        );
         assert!(query.help.contains(m.name), "{}", m.name);
     }
     for u in polylogue_query::ast::Unit::all() {
@@ -375,12 +387,19 @@ fn chat_send_reads_attached_files_on_the_command_line() {
     );
     assert_eq!(send.files[0].bytes, b"synthetic");
     // Over MCP there is no file to read.
+    let chat_send = command("chat send").unwrap();
     assert!(
-        command("chat send")
-            .unwrap()
-            .args_for(Surface::Mcp)
+        request_arguments_of(chat_send)
+            .iter()
             .all(|a| a.name != "attach")
     );
+    let input = &declarations()
+        .descriptions()
+        .iter()
+        .find(|description| description.spec.name == "chat send")
+        .unwrap()
+        .input_schema;
+    assert!(input["properties"].get("attach").is_none());
 }
 
 mod client_answers;
@@ -403,15 +422,16 @@ fn request_id_travels_beside_the_arguments_on_every_surface() {
             .any(|arg| arg.get_id() == "request_id" && arg.is_global_set())
     );
     for command in COMMANDS.iter().filter(|command| command.writes) {
-        for surface in [Surface::Cli, Surface::Mcp, Surface::Http] {
-            assert!(
-                !command
-                    .args_for(surface)
-                    .any(|arg| arg.name == "request_id"),
-                "{} {surface:?}",
-                command.name
-            );
-        }
+        assert!(
+            !declarations()
+                .spec_named(command.name)
+                .unwrap()
+                .arguments
+                .iter()
+                .any(|arg| arg.name == "request_id"),
+            "{}",
+            command.name
+        );
         if let Some(tool) = command.tool {
             let listed = crate::mcp::tools()
                 .into_iter()

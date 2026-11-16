@@ -474,7 +474,7 @@ fn captured_output_policy_reaches_query_and_error_renderers_per_sink() {
         assert!(!error.contains("\x1b[31m"));
         assert!(error.contains("\\x1b[31m"));
         assert!(error.ends_with("polylogue: try: query λ\n"));
-        let json = print::json(&data, output.stdout_color());
+        let json = print::json(&data, style);
         assert!(!json.contains('\x1b'));
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&json).unwrap(),
@@ -640,9 +640,17 @@ fn rows_document(
 #[test]
 fn status_exit_code_is_degraded_when_answer_is_degraded() {
     let root = tempfile::tempdir().unwrap();
-    let engine = crate::test_daemon::engine_config(root.path().join("home"));
-    let startup = crate::config::Startup::for_test(engine, root.path());
-    let data = serde_json::json!({"running": {"error": "the live table is unavailable"}});
+    let daemon = crate::test_daemon::start("status example");
+    let startup = crate::config::Startup::for_test(daemon.config.clone(), root.path());
+    // A whole status answer, read or degraded, with its running part unreadable.
+    let mut data = crate::test_daemon::call(&daemon.daemon, "status", serde_json::json!({}))
+        .value()
+        .cloned()
+        .expect("status answers with a value");
+    data.as_object_mut().unwrap().insert(
+        "running".into(),
+        serde_json::json!({"error": "the live table is unavailable"}),
+    );
     let degraded =
         command_surface::Answer::degraded(data.clone(), vec!["the index is behind".into()]);
     for line in [false, true] {
@@ -804,4 +812,25 @@ fn cli_domain_choices_keep_their_existing_operation() {
         ])
         .is_err()
     );
+}
+
+#[test]
+fn read_help_shows_the_view_doc_comment_and_its_default() {
+    let help = command()
+        .try_get_matches_from(["polylogue", "read", "--help"])
+        .unwrap_err();
+    assert_eq!(help.kind(), clap::error::ErrorKind::DisplayHelp);
+    let help = help.to_string();
+    // The `--view` line and its wrapped continuation, up to the next option.
+    let mut lines = help
+        .lines()
+        .skip_while(|line| !line.trim_start().starts_with("--view"));
+    let view = lines
+        .next()
+        .into_iter()
+        .chain(lines.take_while(|line| !line.trim_start().starts_with('-')))
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(view.contains("The reading view"), "{help}");
+    assert!(view.contains("[default: transcript]"), "{help}");
 }

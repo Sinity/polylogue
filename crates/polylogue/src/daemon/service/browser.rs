@@ -5,7 +5,7 @@
 //! the one writer ([`polylogue_store::chat_actions`],
 //! [`polylogue_store::backfill_jobs`]).
 
-use super::{Daemon, browser_refusal, ok, store_error, writer};
+use super::{Daemon, browser_refusal, store_error, writer};
 use crate::browser::{actions, backfill};
 use crate::cli::print;
 use crate::daemon::Failure;
@@ -13,11 +13,9 @@ use crate::daemon::handler::{Call, Handler};
 use crate::operation::Invocation;
 use crate::protocol::browser as protocol;
 use base64::Engine as _;
-use command_surface::Answer;
+use command_surface::{Answer, TextStyle};
 use polylogue_model::user::{UserOutcome, UserWrite};
 use polylogue_store::{Reader, StoreError, user_writes};
-use serde_json::Value;
-use serde_json::json;
 
 fn refused(e: &StoreError) -> Failure {
     match e {
@@ -94,10 +92,13 @@ fn chat_then_view(
         Err(e) => return store_error(&e),
     };
     match reader.chat_action(&outcome.id) {
-        Ok(Some(action)) => Answer::ok(protocol::ChatAnswer::Current(protocol::ChatCurrent {
-            enabled: None,
-            action: Some(actions::view(&action, invocation.at.unix_ms())),
-        })),
+        Ok(Some(action)) => match actions::view(&action, invocation.at.unix_ms()) {
+            Ok(action) => Answer::ok(protocol::ChatAnswer::Current(protocol::ChatCurrent {
+                enabled: None,
+                action: Some(Box::new(action)),
+            })),
+            Err(error) => unreadable_request(&error).answer(),
+        },
         Ok(None) => browser_refusal(actions::refusal(polylogue_model::Code::UnknownChatAction)),
         Err(e) => store_error(&e),
     }
@@ -127,12 +128,20 @@ fn backfill_then_view(
     match reader.backfill_job(&outcome.id) {
         Ok(Some(job)) => Answer::ok(protocol::BackfillAnswer::Current(
             protocol::BackfillCurrent {
-                job: Some(backfill::view(&job, invocation.at.unix_ms())),
+                job: Some(Box::new(backfill::view(&job, invocation.at.unix_ms()))),
             },
         )),
         Ok(None) => browser_refusal(actions::refusal(polylogue_model::Code::UnknownBackfillJob)),
         Err(e) => store_error(&e),
     }
+}
+
+/// A stored chat action whose request is not a [`actions::ChatRequest`].
+fn unreadable_request(error: &serde_json::Error) -> Failure {
+    Failure::new(
+        polylogue_model::Code::Internal,
+        format!("a stored chat action request is unreadable: {error}"),
+    )
 }
 
 enum PreparedFiles {
@@ -170,7 +179,7 @@ macro_rules! browser {
         impl Handler for $name {
             type Arguments = $arguments;
             type Answer = $answer;
-            const PRINT: fn(&Value, bool) -> String = $print;
+            const PRINT: fn(&Self::Answer, TextStyle) -> String = $print;
             fn run($args: Self::Arguments, $call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
                 Ok($body)
             }
@@ -232,15 +241,20 @@ browser!(
 browser!(
     ChatList,
     protocol::ChatList,
-    Value,
+    protocol::ChatActionList,
     print::chat_actions,
     |_a, call| {
         let reader = reader(call)?;
         let now = call.invocation.at.unix_ms();
         match reader.chat_actions() {
-            Ok(list) => ok(json!({
-                "actions": list.iter().map(|a| actions::view(a, now)).collect::<Vec<_>>(),
-            })),
+            Ok(list) => match list
+                .iter()
+                .map(|a| actions::view(a, now))
+                .collect::<Result<Vec<_>, _>>()
+            {
+                Ok(actions) => Answer::ok(protocol::ChatActionList { actions }),
+                Err(error) => unreadable_request(&error).answer(),
+            },
             Err(e) => store_error(&e),
         }
     }
@@ -334,15 +348,15 @@ browser!(
 browser!(
     ChatAttachment,
     protocol::ChatAttachment,
-    Value,
+    protocol::ChatAttachmentBytes,
     print::json,
     |a, call| {
         let reader = reader(call)?;
         match reader.chat_attachment(&a.id, &a.attachment) {
-            Ok((attachment, bytes)) => ok(json!({
-                "media_type": attachment.media_type,
-                "bytes": base64::engine::general_purpose::STANDARD.encode(bytes),
-            })),
+            Ok((attachment, bytes)) => Answer::ok(protocol::ChatAttachmentBytes {
+                media_type: attachment.media_type,
+                bytes: base64::engine::general_purpose::STANDARD.encode(bytes),
+            }),
             Err(e) => refused(&e).answer(),
         }
     }
@@ -352,7 +366,7 @@ browser!(
     BackfillStart,
     protocol::BackfillStart,
     protocol::BackfillAnswer,
-    print::backfill_jobs,
+    print::backfill_answer,
     |a, call| {
         match backfill::new_job(&a.provider, a.since.as_deref()) {
             Ok(new) => {
@@ -366,15 +380,15 @@ browser!(
 browser!(
     BackfillList,
     protocol::BackfillList,
-    Value,
+    protocol::BackfillJobList,
     print::backfill_jobs,
     |_a, call| {
         let reader = reader(call)?;
         let now = call.invocation.at.unix_ms();
         match reader.backfill_jobs() {
-            Ok(jobs) => ok(json!({
-                "jobs": jobs.iter().map(|job| backfill::view(job, now)).collect::<Vec<_>>(),
-            })),
+            Ok(jobs) => Answer::ok(protocol::BackfillJobList {
+                jobs: jobs.iter().map(|job| backfill::view(job, now)).collect(),
+            }),
             Err(e) => store_error(&e),
         }
     }
@@ -384,7 +398,7 @@ browser!(
     BackfillCancel,
     protocol::BackfillCancel,
     protocol::BackfillAnswer,
-    print::backfill_jobs,
+    print::backfill_answer,
     |a, call| {
         backfill_then_view(
             call.daemon,
@@ -429,7 +443,7 @@ browser!(
 browser!(
     Conversations,
     protocol::Conversations,
-    Value,
+    protocol::ConversationsAnswer,
     print::json,
     |a, call| {
         let reader = reader(call)?;
@@ -449,34 +463,50 @@ browser!(
             .zip(&sessions)
             .map(|(id, session)| {
                 let held = session.as_ref().and_then(|_| found.next().flatten());
-                json!({
-                    "id": id,
-                    "session": session.as_ref().map(ToString::to_string),
-                    "messages": held.as_ref().map(|h| h.messages),
-                    "downloading": held.as_ref().is_some_and(|h| h.downloading),
-                    "last_captured_at": held.and_then(|h| h.last_captured_at),
-                })
+                protocol::ConversationState {
+                    id: id.clone(),
+                    session: session.as_ref().map(ToString::to_string),
+                    messages: held.as_ref().map(|h| h.messages),
+                    downloading: held.as_ref().is_some_and(|h| h.downloading),
+                    last_captured_at: held.and_then(|h| h.last_captured_at),
+                }
             })
             .collect();
-        ok(json!({ "provider": a.provider, "conversations": conversations }))
+        Answer::ok(protocol::ConversationsAnswer {
+            provider: a.provider,
+            conversations,
+        })
     }
 );
 
 browser!(
     StoredFiles,
     protocol::StoredFiles,
-    Value,
+    protocol::StoredFilesAnswer,
     print::json,
     |a, call| {
         let Some(session) =
             polylogue_sources::browser_capture::session_for(&a.provider, &a.conversation)
         else {
-            return Ok(ok(json!({ "files": [] })));
+            return Ok(Answer::ok(protocol::StoredFilesAnswer {
+                files: Vec::new(),
+                downloading: None,
+            }));
         };
         let reader = reader(call)?;
         match reader.stored_files(&session) {
             Ok(files) => match reader.downloading_files(&session) {
-                Ok(downloading) => ok(json!({ "files": files, "downloading": downloading })),
+                Ok(downloading) => Answer::ok(protocol::StoredFilesAnswer {
+                    files: files
+                        .into_iter()
+                        .map(|file| protocol::StoredFile {
+                            id: file.id,
+                            blob: file.blob,
+                            size: file.size,
+                        })
+                        .collect(),
+                    downloading: Some(downloading),
+                }),
                 Err(e) => store_error(&e),
             },
             Err(e) => store_error(&e),

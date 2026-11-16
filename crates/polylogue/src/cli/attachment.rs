@@ -14,13 +14,21 @@ pub(crate) fn output(
     let data = answer
         .value()
         .expect("output handlers receive answers with values");
-    if values
-        .calling_process
-        .get("out")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned)
-        .is_none()
-    {
+    let out = match crate::cli::calling_process::options::<crate::cli::calling_process::Attachment>(
+        values,
+    ) {
+        Ok(options) => options.out,
+        Err(e) => {
+            return fail(
+                startup.output,
+                json,
+                polylogue_model::Code::BadRequest,
+                &e,
+                2,
+            );
+        }
+    };
+    let Some(out) = out else {
         if json {
             println!(
                 "{}",
@@ -30,11 +38,11 @@ pub(crate) fn output(
                 )
             );
         } else {
-            print!("{}", print::json(data, false));
+            print!("{}", print::json(data, command_surface::TextStyle::Plain));
         }
         return ExitCode::from(answer.exit_code());
-    }
-    match write(values, data, startup) {
+    };
+    match write(values, PathBuf::from(out), data, startup) {
         Ok(path) => {
             if json {
                 println!(
@@ -59,17 +67,10 @@ pub(crate) fn output(
 
 fn write(
     values: &command_surface::ParsedCommand,
+    path: PathBuf,
     data: &Value,
     startup: &crate::config::Startup,
 ) -> Result<PathBuf, String> {
-    let path = PathBuf::from(
-        values
-            .calling_process
-            .get("out")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned)
-            .ok_or("--out is required")?,
-    );
     let mut temporary = super::staged_file::StagedFile::new(&path).map_err(|e| e.to_string())?;
     let arguments: serde_json::Map<String, Value> =
         ["message", "block", "attachment", "input", "length"]

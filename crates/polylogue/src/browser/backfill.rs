@@ -4,8 +4,8 @@
 
 use super::actions::Refused;
 use polylogue_model::user::NewBackfillJob;
-use polylogue_model::user::{BACKFILL_CLAIM_MS, BackfillJob};
-use serde_json::{Value, json};
+use polylogue_model::user::{BACKFILL_CLAIM_MS, BackfillJob, BackfillStatus};
+use serde::{Deserialize, Serialize};
 
 /// The providers whose conversation lists the extension can page through,
 /// by the extension's names for them.
@@ -43,31 +43,62 @@ pub fn new_job(provider: &str, since: Option<&str>) -> Result<NewBackfillJob, Re
     })
 }
 
-fn iso(ms: i64) -> Value {
-    jiff::Timestamp::from_millisecond(ms).map_or(Value::Null, |t| json!(t.to_string()))
+fn iso(ms: i64) -> Option<String> {
+    jiff::Timestamp::from_millisecond(ms)
+        .ok()
+        .map(|t| t.to_string())
+}
+
+/// One backfill job as the CLI and the extension read it.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct JobSummary {
+    pub id: String,
+    pub provider: String,
+    /// Only conversations changed on or after this time.
+    pub since: Option<String>,
+    #[schemars(with = "String")]
+    pub status: BackfillStatus,
+    /// Conversations the provider listed.
+    pub listed: u64,
+    /// Conversations captured and stored.
+    pub captured: u64,
+    /// Conversations already in the archive as the provider has them.
+    pub unchanged: u64,
+    /// Conversations that could not be captured.
+    pub failed: u64,
+    /// Where the extension continues the provider's list.
+    pub position: Option<String>,
+    /// The latest report's detail.
+    pub detail: Option<String>,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+    /// The extension instance whose claim has not expired.
+    pub claimed_by: Option<String>,
+    pub claim_expires_at: Option<String>,
 }
 
 /// One job as the CLI and the extension read it, at `now`.
-pub fn view(job: &BackfillJob, now: i64) -> Value {
+pub fn view(job: &BackfillJob, now: i64) -> JobSummary {
     let (status, holder) = job.status(now);
     let (counts, position) = job.progress();
     let last = job.events.last();
-    json!({
-        "id": job.id,
-        "provider": job.provider,
-        "since": job.since.map(iso),
-        "status": status,
-        "listed": counts.listed,
-        "captured": counts.captured,
-        "unchanged": counts.unchanged,
-        "failed": counts.failed,
-        "position": position,
-        "detail": last.and_then(|e| e.detail.clone()),
-        "created_at": iso(job.created_at),
-        "updated_at": iso(last.map_or(job.created_at, |e| e.at)),
-        "claimed_by": holder,
-        "claim_expires_at": holder.and(last).map(|e| iso(e.at + BACKFILL_CLAIM_MS)),
-    })
+    JobSummary {
+        id: job.id.clone(),
+        provider: job.provider.clone(),
+        since: job.since.and_then(iso),
+        status,
+        listed: counts.listed,
+        captured: counts.captured,
+        unchanged: counts.unchanged,
+        failed: counts.failed,
+        position: position.map(str::to_owned),
+        detail: last.and_then(|e| e.detail.clone()),
+        created_at: iso(job.created_at),
+        updated_at: iso(last.map_or(job.created_at, |e| e.at)),
+        claimed_by: holder.map(str::to_owned),
+        claim_expires_at: holder.and(last).and_then(|e| iso(e.at + BACKFILL_CLAIM_MS)),
+    }
 }
 
 #[cfg(test)]

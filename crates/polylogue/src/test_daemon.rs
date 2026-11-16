@@ -379,11 +379,12 @@ impl Call {
             cursor: None,
             surface: crate::commands::Surface::Cli,
             cwd: None,
-            authorship: polylogue_model::authorship::compute_authorship(
-                polylogue_model::authorship::Channel::Daemon,
-                &Default::default(),
+            authorship: command_surface::author_of(
+                &command_surface::CallerEvidence::default(),
+                command_surface::Via::Daemon,
                 None,
-            ),
+            )
+            .into(),
             limit: crate::daemon::execution::limit(None, Default::default()),
         }
     }

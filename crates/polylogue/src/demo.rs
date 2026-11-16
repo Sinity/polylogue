@@ -6,7 +6,7 @@ mod files;
 use crate::commands::{self, Caller, Command, Surface};
 use crate::daemon::service;
 use polylogue_engine::Config;
-use serde::Serialize;
+use serde::{Deserialize as _, Serialize};
 use serde_json::{Value, json};
 use std::fs;
 use std::path::Path;
@@ -132,11 +132,12 @@ fn run(directory: &Path, startup: &crate::config::Startup) -> Result<Tour, Strin
     let invoke = |command: &str, arguments: Value| -> Result<Value, String> {
         let declaration =
             commands::command(command).ok_or_else(|| format!("no command {command}"))?;
-        let authorship = polylogue_model::authorship::compute_authorship(
-            polylogue_model::authorship::Channel::Cli,
-            &Default::default(),
+        let authorship: polylogue_model::authorship::Authorship = command_surface::author_of(
+            &command_surface::CallerEvidence::default(),
+            command_surface::Via::Cli,
             None,
-        );
+        )
+        .into();
         let invocation = runtime.daemon.invocation(&authorship);
         let limit = crate::daemon::execution::limit(None, Default::default());
         let answer = crate::daemon::handler::local(
@@ -175,7 +176,9 @@ fn run(directory: &Path, startup: &crate::config::Startup) -> Result<Tour, Strin
             let seconds = started.elapsed().as_secs_f64();
             let declaration = commands::command(command).ok_or("missing command")?;
             let text = if command == "query" {
-                crate::cli::print::query_plain(&result)
+                let answer = crate::protocol::query::Answer::deserialize(&result)
+                    .map_err(|error| format!("{command}: {error}"))?;
+                crate::cli::print::query_plain(&answer)
             } else {
                 commands::declarations()
                     .render_text(
@@ -286,8 +289,14 @@ fn command_line(command: &Command, arguments: &Value) -> String {
     if command.name != "query" {
         words.push(command.name.to_owned());
     }
-    for arg in command.args {
-        let value = &arguments[arg.name];
+    let declared = commands::declarations()
+        .spec_named(command.name)
+        .map(|spec| spec.arguments.as_slice())
+        .unwrap_or_default();
+    for arg in declared.iter().filter(|arg| !arg.calling_process) {
+        let Some(value) = arguments.get(&arg.name) else {
+            continue;
+        };
         if value.is_null() || value == false {
             continue;
         }

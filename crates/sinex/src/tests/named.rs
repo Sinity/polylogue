@@ -1,7 +1,7 @@
 use super::*;
 use polylogue_model::{
     ChangePosition, RunId, SessionId, Timestamp,
-    authorship::{CallerEvidence, Channel, compute_authorship},
+    authorship::{Author, Authorship, Channel},
     query_objects::{
         ExecutionBinding, ExecutionPresentation, QueryExecutionOptions, QueryObject, QueryRun,
         QueryRunOutcome, ReplayBinding, RunBinding, RunOutcome,
@@ -45,14 +45,10 @@ pub(crate) fn phases() -> Vec<(String, Product)> {
             archive: 3,
         },
         machine: "synthetic-machine".into(),
-        authorship: compute_authorship(
-            Channel::Mcp,
-            &CallerEvidence {
-                session: Some(SessionId::parse("codex:synthetic-agent").unwrap()),
-                ..Default::default()
-            },
-            None,
-        ),
+        authorship: Authorship {
+            author: Author::Agent(Some(SessionId::parse("codex:synthetic-agent").unwrap())),
+            via: Channel::Mcp,
+        },
         binding: RunBinding::Original {
             execution: Box::new(ExecutionBinding {
                 replay: ReplayBinding {
