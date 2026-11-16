@@ -6,7 +6,7 @@ Neighbouring facts live elsewhere: the durability order and pipeline are [archit
 
 ## The daemon
 
-Polylogue runs as one resident daemon per archive. The daemon is the only process that opens the archive; every client (CLI, MCP, hooks, the web UI, the browser host) is a thin client of its socket, for reads as well as writes. It exists so that Polylogue answers at interactive speed and so that what should be happening can be seen happening. (ruling 2026-09-14, cc:652ae14f-a036-496b-abfa-42e7574c9ec9:b8a68d64-772f-4d8c-8e95-435ce601d245).
+Polylogue runs as one resident daemon per archive. The daemon is the only process that opens the archive; every client (CLI, MCP, hooks, the web UI, the browser host) is a thin client of its socket, for reads as well as writes. It exists so that Polylogue answers at interactive speed and so that what should be happening can be seen happening.
 
 **Start.** `polylogue daemon` runs in the foreground under a service manager (a systemd user unit on Linux). In order, it:
 1. raises the open-file limit;
@@ -138,25 +138,25 @@ The commands this area owns, each with the reason it is a command rather than a 
 | `schema infer\|diff\|unread` | describes stored inputs' shapes ([archive.md#format-drift](archive.md#format-drift)) |
 | `sinex cutover [--dry-run]` | the one-way move to primary mode ([primary-mode.md#cutover](primary-mode.md#cutover)) |
 
-Notices, the running list and the live list are shipped saved queries (`query:notices`, `query:running`), not commands. No command checks for a terminal or harness variables to decide whether it may run, and every write records its computed author ([assertions.md#authorship](assertions.md#authorship)). Every command shows stored text as it is: Polylogue censors no output.
+Notices, the running list and the live list are shipped saved queries (`query:notices`, `query:running`), not commands. No command checks for a terminal or harness variables to decide whether it may run, and every write records its computed author ([assertions.md](assertions.md#authorship)). Every command shows stored text as it is: Polylogue censors no output.
 
 There is no repair, reconcile, reindex or reset command and no scheduled check: the stores are kept consistent at every commit, and a crash leaves only states the open path resumes ([architecture.md#durability](architecture.md#durability)).
 
 ## Notices
 
-Polylogue's signals use the common [signals](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/signals/README.md) rule schema, evaluator, interrupt budget and desktop notifications. (ruling 2026-10-28, cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:3ae3257e-e70a-433a-be97-d1222670c284).
+Polylogue's signals use the common [signals](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/signals/README.md) rule schema, evaluator, interrupt budget and desktop notifications.
 
 What is Polylogue's:
-- **Storage.** A rule is a `signal` assertion ([assertions.md#kinds](assertions.md#kinds)); each firing is a delivery naming the rule and revision, the triggering occurrences with their observation, the time, the channel, and the route decision with its holds and the attention it was decided under ([agents.md#deliveries](agents.md#deliveries)). Deliveries survive an index rebuild and reach Sinex in primary mode.
+- **Storage.** A rule is a `signal` assertion ([assertions.md#kinds](assertions.md#kinds)); each firing is a delivery naming the rule and revision, the triggering occurrences with their observation, the time, the channel, and the route decision with its holds and the attention it was decided under ([agent-context.md#deliveries](agent-context.md#deliveries)). Deliveries survive an index rebuild and reach Sinex in primary mode.
 - **Rules.** `query` is a `query:<hash>` or saved name over Polylogue's catalog; `target` and `command` name entries of the deployment's signal configuration ([Configuration](#configuration)), so a rule can run only what the deployment configured; `scope` routes notices to the session-start brief of a repository or session. Every author may write, revise, enable and withdraw rules; the author is computed.
 - **A watch is a rule** with `fires: on_change` and `deliver: notice` ([query.md#watches](query.md#watches)); there is no second watch mechanism.
 - **Occurrences** follow lineage: for rows about sessions, the occurrence is the logical session ([sessions.md#logical-sessions](sessions.md#logical-sessions)), so a waiting episode carried across a fork, resume or continuation fires once. Repeats of the same note (same kind, target and value) are one occurrence.
 - **Injected text** (`injected_context`) and deliveries are excluded from every rule's input.
 - **Imports only:** a rule whose query reads only imported exports can fire no earlier than the next import, and writing it says so.
 - **Incomplete:** a rule is `incomplete` while `status` does not say "up to date" for the data it reads.
-- **Outlets:** `status` (count and latest), the next session-start brief whose scope the notice concerns, a desktop notification for interrupting notices, the change feed, and `query:notices`. Notices addressed to sessions reach them at their next context-accepting hook event ([agents.md#notices-to-sessions](agents.md#notices-to-sessions)).
+- **Outlets:** `status` (count and latest), the next session-start brief whose scope the notice concerns, a desktop notification for interrupting notices, the change feed, and `query:notices`. Notices addressed to sessions reach them at their next context-accepting hook event ([session-control.md#notices-to-sessions](session-control.md#notices-to-sessions)).
 - **One deliverer per host.** Standalone, Polylogue's daemon shows its own desktop notifications. In primary mode its evaluator sends its reports (firings, cleared conditions, rule revisions and progress) to Sinex, whose deliverer routes them under the one interrupt budget and quiet hours; Polylogue notifies directly only for `Sinex blocked`.
-- **Value and action deliveries** run only targets and commands the deployment configured. No rule starts or resumes an agent session ([agents.md](agents.md#pings)).
+- **Value and action deliveries** run only targets and commands the deployment configured. No rule starts or resumes an agent session ([session-control.md#pings](session-control.md#pings)).
 
 **What interrupts.** A notice interrupts only when the operator would want to stop what he is doing for it; everything else is passive (status, briefs, the feed). "Agent waiting on you" is passive unless the operator makes it interrupting.
 
@@ -201,9 +201,9 @@ that directory.
 
 ## Configuration
 
-Configuration exists only where the operator's choice is genuinely open. (ruling 2026-07-29, cc-queued:d6f4b0c3-840b-47b6-bd57-5f1bd6c9c7d4@2026-07-29T09:22:39).
+Configuration exists only where the operator's choice is genuinely open.
 
-Deployment configuration is loaded once by `main`, from the config file, then flags, then environment where meaningful, into one typed value ([architecture.md#configuration-and-clocks](architecture.md#configuration-and-clocks)). It is set through the Nix module options, the files under `$XDG_CONFIG_HOME/polylogue/`, or environment variables. (ruling 2026-10-28, cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:3ae3257e-e70a-433a-be97-d1222670c284).
+Deployment configuration is loaded once by `main`, from the config file, then flags, then environment where meaningful, into one typed value ([architecture.md#configuration-and-clocks](architecture.md#configuration-and-clocks)). It is set through the Nix module options, the files under `$XDG_CONFIG_HOME/polylogue/`, or environment variables.
 
 | What | Where | Why it is a choice |
 |---|---|---|
@@ -248,7 +248,7 @@ Polylogue owns one **hook declaration**: per harness, each event with its mode (
 
 **Modes.** Recording entries run asynchronously where the harness supports it; context entries (session start, prompt submission, advisories, permission requests) are synchronous because the harness injects or acts on their output. What a recording entry stores is [capture.md#hooks](capture.md#hooks).
 
-`install-agent` installs agent integration only; the browser extension's native-messaging host is installed by `polylogue browser-host install` ([extension.md](extension.md)).
+`polylogue install-agent chrome --extension-id ID [--remove]` installs or removes the browser extension's native-messaging host ([extension.md](extension.md)).
 
 ## Upgrades
 

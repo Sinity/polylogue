@@ -1,8 +1,8 @@
 # Assertions
 
-Everything people and agents add to the archive is an assertion, except variants, which have their own records here too. This page owns the record and its tables, kinds, links and current revisions, authorship of every authored record, reading, judgment, comparisons and forecasts, rubrics and passes, checked claims, variants, markup, memory and methods, and the one write path. Pages are built from assertions and are described in [pages.md](pages.md); the reference grammar is [references.md](references.md); how agents receive assertions in briefs is [agents.md](agents.md#brief); how a web view edits them is [web.md](web.md).
+Everything people and agents add to the archive is an assertion, except variants, which have their own records here too. This page owns the record and its tables, kinds, links and current revisions, authorship of every authored record, reading, judgment, comparisons and forecasts, rubrics and passes, checked claims, variants, markup, memory and methods, and the one write path. Pages are built from assertions and are described in [pages.md](pages.md); the reference grammar is [references.md](references.md); how agents receive assertions in briefs is [agent-context.md#brief](agent-context.md#brief); how a web view edits them is [web.md](web.md).
 
-Assertions are the substrate of everything authored, and there are no separate tables per kind of mark. (ruling 2026-06-20, codex:019ecc6e-b42c-73b1-865a-6a59d352de2c@2026-06-20T20:08:14Z).
+Assertions are the substrate of everything authored, and there are no separate tables per kind of mark.
 
 ## The record
 
@@ -146,7 +146,7 @@ A setting's `machine` is its target host for a host-scoped key and null for an a
 
 ## Authorship
 
-Every authored record in Polylogue (assertions, variants, withdrawals, judgments, settings, kept results, deliveries, chat actions, backfill requests) stores who wrote it and how it arrived. Agents are primary users with no fewer powers than the operator; what distinguishes the operator is authorship, which the daemon computes and no caller supplies. (ruling 2026-07-03, cc-queued:30f5e650-7033-4423-9f91-2b66ebd1e6b2@2026-07-03T13:20:44Z).
+Every authored record in Polylogue (assertions, variants, withdrawals, judgments, settings, kept results, deliveries, chat actions, backfill requests) stores who wrote it and how it arrived. Agents are primary users with no fewer powers than the operator; what distinguishes the operator is authorship, which the daemon computes and no caller supplies.
 
 ### The record
 
@@ -186,7 +186,7 @@ How captured messages record who wrote them (`written_by`, `prompt_kind`) is a s
 - "Operator" means exactly `operator`; `agent:*`, `script:*` and `unattributed` are best-effort attributions.
 - Readers show author and `via` on every record. Query fields: `author`, `by_operator` (exactly `operator`), `agent` (any `agent:*`), `unattributed`, `via`. Unattributed records are labelled "author unknown", never shown as the operator's.
 - **Claiming.** The operator makes an unattributed or mis-attributed record their own by a revision authored `operator`. The original stays in history; there is no re-attribution verb.
-- Briefs and signals read the author: how briefs treat agent assertions is [agents.md](agents.md#brief); which rules may interrupt is [operations.md](operations.md#notices).
+- Briefs and signals read the author: how briefs treat agent assertions is [agent-context.md#brief](agent-context.md#brief); which rules may interrupt is [operations.md](operations.md#notices).
 
 ### MCP completeness
 
@@ -227,7 +227,7 @@ A later answer is tied to an earlier item only by an explicit link (a marker arg
 
 ## Judgment
 
-Judgment is optional and never a gate: most agent assertions will never be seen by a person, and nothing waits for one. (ruling 2026-07-19, cc:af12164b-a2fc-42cb-a548-22277c0875a2:ce6a2395-1934-42dc-8ff5-f909be411f74).
+Judgment is optional and never a gate: most agent assertions will never be seen by a person, and nothing waits for one.
 
 - A `judgment` is an assertion about one exact revision, keyed `accepted`, `rejected` or `deferred`, with an optional reason.
 - **Any author may judge,** and the judgment records its true author.
@@ -246,7 +246,7 @@ Judgment is optional and never a gate: most agent assertions will never be seen 
 
 ## Passes and bulk writes
 
-Systematic agent annotation is a **pass**: key/value assertions governed by a rubric, recording what was covered and where the annotator abstained. (ruling 2026-07-09, cc:3b0038ec-234c-44b8-bb88-fe222b44fe0f:389179b6-472e-4a33-b0eb-e3b0209a0ac2).
+Systematic agent annotation is a **pass**: key/value assertions governed by a rubric, recording what was covered and where the annotator abstained.
 
 1. A `rubric` declares instructions, a unit query, and fields with types, enums or ranges, plus whether abstaining, a confidence and a rationale are allowed.
 2. A pass first keeps its population as `result:<id>` ([query.md](query.md#query-objects)), then writes one `pass` assertion, the `origin` of everything that follows, and one `annotation` per row and field, each `derived_from` the rubric's exact revision.
@@ -268,7 +268,7 @@ A `claim` or `finding` may carry `check: {query, expect}`, where `expect` is `ro
 
 ## Variants
 
-A variant is transformed content: a translation, transliteration, simplification or summary. It is not an assertion, and assertions may be about it. Its purpose is that agents can render anything in the archive for the reader, such as translating a session the operator wants to read in Polish. (ruling 2026-07-04, codex:019f2e28-d759-7283-8d83-cf147b04bf75@2026-07-04T18:33)
+A variant is transformed content: a translation, transliteration, simplification or summary. It is not an assertion, and assertions may be about it. Its purpose is that agents can render anything in the archive for the reader, such as translating a session the operator wants to read in Polish.
 
 ```sql
 CREATE TABLE variant (
@@ -308,7 +308,7 @@ Revisions use `base`; withdrawal is a plain `withdrawal` that `withdraws variant
 
 ## Markup
 
-Agents and the operator write assertions and pings inside their messages, as an alternative to tool calls. (ruling 2026-07-03, cc:30f5e650-7033-4423-9f91-2b66ebd1e6b2:027fee03-005e-46fe-9d0f-eb7c62ed4b8a).
+Agents and the operator write assertions and pings inside their messages, as an alternative to tool calls.
 
 ```ebnf
 marker = "::" kind [ "(" args ")" ] [ ":" " " body ] ;
@@ -332,7 +332,7 @@ Named arguments: `about=` (by default the session for `title` and `outcome`, oth
 
 ## Memory
 
-**Project memory is assertions:** decisions, lessons, handoffs, problems, questions and findings scoped to a `repo:` or `cwd:`, or about sessions there. Briefs read them by scope ([agents.md](agents.md#brief)); each cites its origin, and nothing decays except through an explicit `valid_until`. A later session confirms an entry by revising it with a `supports` link to the confirming message; a contradiction is a `challenges` assertion shown beside the entry.
+**Project memory is assertions:** decisions, lessons, handoffs, problems, questions and findings scoped to a `repo:` or `cwd:`, or about sessions there. Briefs read them by scope ([agent-context.md#brief](agent-context.md#brief)); each cites its origin, and nothing decays except through an explicit `valid_until`. A later session confirms an entry by revising it with a `supports` link to the confirming message; a contradiction is a `challenges` assertion shown beside the entry.
 
 **The memory-tool adapter** maps a harness's memory tool onto `memory` assertions: key = path, value = text, `scope` = the repository or directory (none for global). `view` is a query; `create` is a write or revision; `str_replace` and `insert` are a revision on the current base, refused as `stale` when the base moved; `delete` is a withdrawal; `rename` is a revision with the new key. It is a thin mapping on the MCP side, so an agent's memories become queryable across sessions, machines and agents with no second store. Harness memory files (`CLAUDE.md`, `AGENTS.md`, a harness's memory directory) are captured inputs with their revision history ([capture.md](capture.md)); Polylogue does not inject them, and an assertion cites one by its `document:` reference.
 

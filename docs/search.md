@@ -59,7 +59,7 @@ succeeds.
 
 ## Semantic ranking
 
-`similar:` orders a query's rows by meaning, using embeddings. Direction, 2026-01-24: "Not as a filter, but as a scoring criteria, to rank order items" (cc:1d6c0b33-94c7-4a2a-9957-347e5383f5c5:0bdc45a3-7aca-41a6-9b70-6f6fb086bbbe).
+`similar:` orders a query's rows by meaning, using embeddings. It ranks rows rather than filtering them.
 
 ### Forms and meaning
 
@@ -76,7 +76,7 @@ succeeds.
 - Model calls are off for now (default; open operator question); `polylogue setting embed.calls on` turns them on. The provider and model (`embed.provider`, `embed.model`) name the vectors that rank either way.
 - **With calls off,** `similar:REF` works on every stored vector, and `similar:"text"` works when that text's vector is already stored. Otherwise the answer is `incomplete`: rows in the default order, marked unranked, with the note "semantic search for new text is off (model calls are off); `similar:` on a stored session or message still works". In a hybrid query the text side ranks alone and the note names the missing side. `embed status` and `embed preview` work; building is refused with the same reason.
 - **With calls on,** a query text is embedded once and its vector stored, keyed by model and normalized text hash, so it is never paid for twice. New messages and assertions are embedded in the background at idle priority within a monthly budget, default up to $5 a month, with a preview and confirmation for paid providers (default; open operator question).
-- **Providers:** a local OpenAI-compatible endpoint (default model `qwen3-embedding:0.6b`) and Voyage. The Voyage key is only ever sent to Voyage's origin (`https://api.voyageai.com`): a Voyage provider configured with an endpoint elsewhere is refused at startup, and a request to another origin never carries the key. The local provider only sends text to a loopback address (`127.0.0.0/8`, `::1`, an IPv4-mapped loopback address or `localhost`) and never through a proxy, even when one is set in the environment, so message text never leaves the machine through it. Vectors from different models are compared only where the provider documents a shared space. (ruling 2026-10-11, cc:e3e37f29-2490-47ae-89ef-fd40b6242e9a:07bbe1df-c4cd-4c59-b07e-540182d93fdd).
+- **Providers:** a local OpenAI-compatible endpoint (default model `qwen3-embedding:0.6b`) and Voyage. The Voyage key is only ever sent to Voyage's origin (`https://api.voyageai.com`): a Voyage provider configured with an endpoint elsewhere is refused at startup, and a request to another origin never carries the key. The local provider only sends text to a loopback address (`127.0.0.0/8`, `::1`, an IPv4-mapped loopback address or `localhost`) and never through a proxy, even when one is set in the environment, so message text never leaves the machine through it. Vectors from different models are compared only where the provider documents a shared space.
 - **Provider failures:** a transient failure leaves the text without a vector until the next round; a permanent rejection is recorded once and listed in `status`; a hybrid query with a failed side runs the other side and is `incomplete`.
 - Provider responses are validated as whole indexed batches before storage: exactly one nonempty, finite, nonzero vector of the same dimension per requested input, with unique indexes covering that request. Malformed responses are transient failures, never partial purchases or permanent input rejections. Normalization preserves finite tiny and large f32 components.
 - A stored chunk does not make its whole text complete. Preview and build use the missing chunk identities for the current embedding key; the existing key selection keeps dimension recipes separate. A retry requests only missing chunks, preserves purchased ones, and refuses returned dimensions that differ from the selected key. Permanent provider rejections remain recorded and skipped.
@@ -105,7 +105,7 @@ A query with text terms and `similar:` fuses its rankings by reciprocal rank: ea
 4. `similar:` to the whole hint, when a vector for it exists;
 5. sessions in the caller's directory, as a `fuse` list.
 
-Words found in more than 20% of texts are dropped from the OR lists when the hint has other words, and `notes` name them. Hits are grouped by session in fused order, with snippet, `found_in`, and the attached assertions and judgments; text not written by the operator is labelled with its author. A budget cuts what is shown, never what is ranked. When exact search finds nothing and the semantic list did not run, the answer says so: "semantic search is off, so related work under other wording may exist". Recall for agents (in briefs and packs) is in [agents.md](agents.md#packs).
+Words found in more than 20% of texts are dropped from the OR lists when the hint has other words, and `notes` name them. Hits are grouped by session in fused order, with snippet, `found_in`, and the attached assertions and judgments; text not written by the operator is labelled with its author. A budget cuts what is shown, never what is ranked. When exact search finds nothing and the semantic list did not run, the answer says so: "semantic search is off, so related work under other wording may exist". Recall for agents (in briefs and packs) is in [agent-context.md#packs](agent-context.md#packs).
 
 ### Fuzzy recall
 

@@ -6,9 +6,9 @@ input. Change the compiler version in common and both products together.
 
 | Command | Does |
 |---|---|
-| `cargo xtask check --changed` | formatting, crate boundaries, Clippy (unchanged crates reuse their result) and the tests your changes since the merge base with `origin/master` can affect: the loop while editing |
+| `cargo xtask check --changed` | formatting, Clippy (unchanged crates reuse their result) and the tests your changes since the merge base with `origin/master` can affect: the loop while editing |
 | `cargo xtask check [--changed-base <ref>]` | the same with every test, or with the tests the changes since the merge base with `<ref>` can affect |
-| `cargo xtask fast` | formatting, boundaries and clippy, without tests |
+| `cargo xtask fast` | formatting and clippy, without tests |
 | `cargo xtask test -p <crate> -E 'test(<name>)'` | the selected tests under nextest |
 | `cargo xtask test --changed` | tests selected through changed packages and their dependents (`--changed-base=<ref>` for another base than `origin/master`) |
 | `cargo xtask test --no-run` | build every test binary without running tests |
@@ -64,8 +64,7 @@ fault features as `cargo xtask test`, without the real-process
 offline shell-completion cases remain included;
 `cargo xtask check` still runs every e2e and Sinex client test. The behavior VM
 runs the packaged daemon, CLI status, MCP initialization and a native-messaging
-exchange in a guest with private XDG and archive paths. Formatting, crate
-boundaries, extension packaging, deployment-file rendering and Nix formatting
+exchange in a guest with private XDG and archive paths. Formatting, extension packaging, deployment-file rendering and Nix formatting
 are flake checks too. The `modules` check evaluates both deployment modules,
 and the `services` VM starts the Home Manager user service and reaches its
 daemon through every installed alias and MCP. Its regular account home lets
@@ -80,8 +79,7 @@ staged whitespace and formats staged Rust files, including partial staging and
 renames. Formatting-only shell entry supplies an unused local target directory
 so it does not select or seed a compiler cache. The hook enters the shell once
 for the complete staged Rust set; the declared `fmt` operation also skips cache
-selection. The lock operation likewise supplies an unused local target before shell entry because dependency resolution uses no compiler artifacts. There is no push hook: crate boundaries run in `cargo xtask check`,
-which GitHub Actions runs for every pull request. The shell also carries coverage and fuzzing tools, LLVM tools matching
+selection. The lock operation likewise supplies an unused local target before shell entry because dependency resolution uses no compiler artifacts. There is no push hook. GitHub Actions runs `cargo xtask check` for every pull request. The shell also carries coverage and fuzzing tools, LLVM tools matching
 the compiler, SQLite, jq and the time zone database.
 
 `direnv allow` loads the same shell through `.envrc`, which reloads when the

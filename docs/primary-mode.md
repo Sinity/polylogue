@@ -321,13 +321,13 @@ recorded path on the local filesystem. Rebuilding the local index does not send 
 
 ## Moving user state
 
-User state (assertions, their revisions and links, variants, pages, deliveries) moves between archives without Sinex as a bundle: `polylogue QUERY read --to DIR` writes the matched sessions with their assertions and variants, and a query over the user-data units writes user state alone ([reading.md#writing-out](reading.md#writing-out)). `polylogue import DIR` replays the records through the one write path ([assertions.md#write-path](assertions.md#write-path)), keeping each record's stored author with `via: import`; it is idempotent by request ID, and conflicting revisions become visible heads.
+User state (assertions, their revisions and links, variants, pages, deliveries) moves between archives without Sinex as a bundle: `polylogue QUERY read --to DIR` writes the matched sessions with their assertions and variants, and a query over the user-data units writes user state alone ([reading.md#writing-out](reading.md#writing-out)). `polylogue import DIR` replays the records through the one write path ([assertions.md](assertions.md#write-path)), keeping each record's stored author with `via: import`; it is idempotent by request ID, and conflicting revisions become visible heads.
 
 Python Polylogue's authored records are imported as a declared older format ([assertions.md](assertions.md#write-path)).
 
 ## Cutover
 
-Moving an archive to primary mode is a technical act, run by whoever builds it once the comparison passes. (ruling 2026-10-27, cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:f1f39c29-7c7d-42e0-99ec-0c7a1b10b751).
+Moving an archive to primary mode is a technical act, run by whoever builds it once the comparison passes.
 
 `polylogue sinex cutover`:
 1. checks that the primary daemon has collected every provider location and is idle;

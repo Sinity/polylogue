@@ -1,6 +1,6 @@
 # References
 
-A reference names one thing in the archive, or one thing outside it, in a form every surface accepts: the CLI, MCP, HTTP, hooks, markup in transcripts, the web reader and the import of user state. One grammar and one parser serve all of them. How references appear inside query text is [query.md](query.md); the CLI's own shorthands (`@N`, `@last`) are [interfaces.md](interfaces.md#addressing).
+A reference names one thing in the archive, or one thing outside it, in a form every surface accepts: the CLI, MCP, HTTP, hooks, markup in transcripts, the web reader and the import of user state. One grammar and one parser serve all of them. How references appear inside query text is [query.md](query.md); the CLI's own shorthands (`@N`, `@last`) are [terminal.md#addressing](terminal.md#addressing).
 
 ## Forms
 
@@ -23,7 +23,7 @@ A reference names one thing in the archive, or one thing outside it, in a form e
 | `role:<name>`, `role:<root>[@<rev>]` | a role by name (resolved to its root), or by root, optionally at an exact revision ([pages.md](pages.md#members-and-roles)) |
 | `query:<hash>`, `query:<name>[(p=v,…)]` | a query object, or a saved query by name with parameters ([query.md](query.md#query-objects)) |
 | `result:<id>`, `result:<id>#<row>` | a kept result, or one of its rows |
-| `delivery:<id>` | one delivery to an agent ([agents.md](agents.md#deliveries)) |
+| `delivery:<id>` | one delivery to an agent ([agent-context.md#deliveries](agent-context.md#deliveries)) |
 | `file:<path>@<commit>` | a file at a commit, read through git |
 | `repo:<name>`, `cwd:<path>` | a repository, a working directory; used as scopes |
 | `url:<absolute URL>` | an outside page, stored as text; reading the reference never fetches it |

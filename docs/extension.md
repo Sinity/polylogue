@@ -1,12 +1,12 @@
 # Browser extension
 
-The browser extension captures web chats (ChatGPT, claude.ai, Grok, Gemini, AI Studio, Codex Cloud) into the archive as the operator uses them, backfills their history, and puts Polylogue into the provider's own pages: per-message state and actions, archive search, recall and a popup. It also acts in web chats on request (chat actions). Where its captures go once stored is [archive.md](archive.md); every other capture route is [capture.md](capture.md); the web workbench is [web.md](web.md); deliveries and authorship are [agents.md](agents.md#deliveries) and [assertions.md](assertions.md#authorship); installing the messaging host is [operations.md](operations.md#installing-into-harnesses).
+The browser extension captures web chats (ChatGPT, claude.ai, Grok, Gemini, AI Studio, Codex Cloud) into the archive as the operator uses them, backfills their history, and puts Polylogue into the provider's own pages: per-message state and actions, archive search, recall and a popup. It also acts in web chats on request (chat actions). Where its captures go once stored is [archive.md](archive.md); every other capture route is [capture.md](capture.md); the web workbench is [web.md](web.md); deliveries and authorship are [agent-context.md#deliveries](agent-context.md#deliveries) and [assertions.md](assertions.md#authorship); installing the messaging host is [operations.md](operations.md#installing-into-harnesses).
 
-The extension is designed whole rather than adjusted. (ruling 2026-07-09, cc-queued:3b0038ec-234c-44b8-bb88-fe222b44fe0f@2026-07-09T10:46:47Z).
+The extension is designed whole rather than adjusted.
 
 ## Live capture
 
-Live capture is the core of the extension and works in about real time. (ruling 2026-07-31, cc:38baa1de-9715-48fa-8175-f2a29d92800e:38ab559c-4d32-4cc3-8901-268b17eaed02).
+Live capture is the core of the extension and works in about real time.
 
 | Site | Route |
 |---|---|
@@ -16,11 +16,11 @@ Live capture is the core of the extension and works in about real time. (ruling 
 | gemini.google.com | the page's own data responses, intercepted; reading the DOM is a fallback whose captures are marked *partial fidelity* and are outranked by any route through the page's data |
 | aistudio.google.com | the prompt JSON the page loads (the same shape as Drive) |
 
-The extension captures the provider's data, not its rendered page; a DOM route exists only where no data route covers the origin. (ruling 2026-07-31, cc-queued:38baa1de-9715-48fa-8175-f2a29d92800e@2026-07-31T03:06:53Z).
+The extension captures the provider's data, not its rendered page; a DOM route exists only where no data route covers the origin.
 
 - **Transport:** a Manifest V3 extension and the native-messaging host `polylogue browser-host`, with no token or pairing. Each capture is appended to a per-conversation capture log in the spool; the host answers only after the append is synced, naming the hash and whether it was new. The extension's outbox holds pending capture bytes; browser-local fingerprints and pacing state are disposable scheduling metadata.
 - **When:** a capture fires when a conversation stops changing; an unchanged conversation is not captured again; open tabs are swept periodically. Capture, status and tab sync are automatic, never actions the operator takes.
-- **Fidelity:** attachment and generated-file bytes (uploads, generated images, code-interpreter and sandbox files, file previews, provider assets) are fetched before their links expire, in chunks, with no size cap. (ruling 2026-07-10, cc:3347cf34-ca12-45ae-918f-781c7f96a704:5c99f860-6e9d-4005-a224-9c08ae24bd40). Temporary chats are captured and marked as not saved by the provider: the capture's `session_kind` is `temporary`, and the parsed session's mode is `temporary`. Projects, custom GPTs and Claude projects are captured with their conversations.
+- **Fidelity:** attachment and generated-file bytes (uploads, generated images, code-interpreter and sandbox files, file previews, provider assets) are fetched before their links expire, in chunks, with no size cap. Temporary chats are captured and marked as not saved by the provider: the capture's `session_kind` is `temporary`, and the parsed session's mode is `temporary`. Projects, custom GPTs and Claude projects are captured with their conversations.
 - **Politeness:** a conversation is fetched again only when its update time or message count changed; a 429 or 5xx stops all fetching from that provider for `Retry-After` or a jittered backoff.
 - One provider lane is shared by automatic and explicit capture, file retrieval, backfill and chat actions. Retry-After accepts seconds or an HTTP date; retryable responses end the current provider operation before another fetch. Cooldown and background budget counters survive service-worker and browser restarts in browser-local storage; neither holds captures for the archive.
 - **Several browser instances** each carry an instance identity and never overwrite each other's captures.
@@ -37,7 +37,7 @@ Backfill brings in a provider's whole history in the background, independent of 
 
 ## In-page UI
 
-The extension's main surface is inside the provider's page, blended with the provider's controls; the popup is secondary. (ruling 2026-07-09, claude.ai:f5d2d5c9-0277-45d4-83bb-82821a96da0b:9d661ad9-5a52-4ab9-b2b8-32dc4b7a3a36). The in-page UI has no board yet and is drawn before it is built ([web.md](web.md#views-without-a-board)).
+The extension's main surface is inside the provider's page, blended with the provider's controls; the popup is secondary. The in-page UI has no board yet and is drawn before it is built ([web-design.md#views-without-a-board](web-design.md#views-without-a-board)).
 
 - **Per-message state and actions in the provider's own action row**, next to its copy button: the message's capture state, **Save to Polylogue** (capture now), **Annotate**, **Copy reference**, **Open in Polylogue** (the reader at that message), and the message's note count with a hover preview.
 - **A summonable chip and panel:** a small chip on the page's edge, with a keyboard shortcut; the panel floats over the page and shows:
