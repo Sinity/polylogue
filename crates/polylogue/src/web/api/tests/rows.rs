@@ -207,7 +207,7 @@ fn http_html_renders_listing_brief_and_partial_steps() {
             (
                 json!({"selection":"session:claude-code:s1","steps":[{"verb":"brief"}]}),
                 StatusCode::OK,
-                vec!["Synthetic brief &lt;script&gt;λ🙂&lt;/script&gt;"],
+                vec![r"Synthetic brief \u003cscript\u003eλ🙂\u003c/script\u003e"],
             ),
             (
                 json!({"selection":"session:claude-code:s1","steps":[{"verb":"note","text":"Synthetic completed write"},{"verb":"read","budget":0}]}),
