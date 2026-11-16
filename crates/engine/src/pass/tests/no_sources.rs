@@ -277,6 +277,38 @@ fn stored_planning_skips_watched_history() {
     assert_eq!(rows(&home), stored);
 }
 
+/// A run until idle whose turns fail the same way returns after the repeat,
+/// with the failure reported, instead of retrying it.
+#[cfg(feature = "faults")]
+#[test]
+fn a_turn_failing_as_the_one_before_ends_an_idle_run() {
+    use polylogue_store::fault::{self, Action};
+
+    let home = ClaudeHome::new();
+    home.append("stored.jsonl", &claude_user("one", "stored", "stored body"));
+    let (mut engine, _lock) = open_engine(&home);
+    engine.config.reads_sources = true;
+    fault::clear();
+    fault::arm(
+        "read.watched_inputs",
+        "test-machine",
+        Action::Fail,
+        0,
+        u32::MAX,
+    );
+    let summary = until_idle(&mut engine, Vec::new());
+    fault::clear();
+    assert_eq!(summary.passes, 2, "{summary:?}");
+    assert!(
+        summary
+            .work
+            .errors
+            .iter()
+            .any(|e| e.contains("read.watched_inputs")),
+        "{summary:?}"
+    );
+}
+
 #[test]
 fn stopped_readings_keep_their_attempt_and_upgrade() {
     use polylogue_model::batch::StepProgress;

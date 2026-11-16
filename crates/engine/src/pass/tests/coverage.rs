@@ -78,3 +78,64 @@ fn status_keeps_the_last_completed_full_walk_across_incremental_events() {
         2
     );
 }
+
+/// A tool home holding a symbolic link, a socket and a user project gives one
+/// coverage report, with an ignored `**` entry for each reason.
+#[test]
+fn ignored_files_matching_any_path_are_one_entry_per_reason() {
+    let home = ClaudeHome::new();
+    let claude = home.home.join(".claude");
+    let project = claude.join("work");
+    std::fs::create_dir_all(project.join(".git")).unwrap();
+    std::fs::write(project.join("notes.txt"), b"a user file").unwrap();
+    std::os::unix::fs::symlink(home.file("elsewhere.jsonl"), claude.join("link")).unwrap();
+    let _socket = std::os::unix::net::UnixListener::bind(claude.join("agent.sock")).unwrap();
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 1024);
+    let pass = engine.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    let coverage = engine
+        .reads
+        .reader()
+        .unwrap()
+        .capture_coverage(&engine.config.machine)
+        .unwrap()
+        .unwrap();
+    let root = coverage
+        .roots
+        .iter()
+        .find(|r| r.path_bytes == claude.as_os_str().as_encoded_bytes())
+        .unwrap();
+    let mut reasons: Vec<_> = root
+        .entries
+        .iter()
+        .filter(|e| e.class == Classification::Ignored && e.pattern == "**")
+        .map(|e| e.reason.clone().unwrap())
+        .collect();
+    reasons.sort();
+    assert_eq!(
+        reasons,
+        [
+            "special filesystem entry is not read",
+            "symbolic link is not followed",
+            "user project under tool home",
+        ]
+    );
+}
+
+/// A refused coverage report is the pass's error; the files the walk found
+/// are still stored and read.
+#[test]
+fn a_refused_coverage_report_does_not_stop_reading() {
+    let home = ClaudeHome::new();
+    home.append("kept.jsonl", &claude_user("one", "kept", "kept words"));
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 1024);
+    engine.config.machine = String::new();
+    let pass = engine.run_pass().unwrap();
+    assert!(
+        pass.errors
+            .iter()
+            .any(|e| e.contains("coverage machine is empty")),
+        "{pass:?}"
+    );
+    assert_eq!(home.texts("kept"), ["kept words"]);
+}
