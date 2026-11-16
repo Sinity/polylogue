@@ -299,7 +299,7 @@ fn source_checkpoint_skips_prefix_hydration_in_physical_and_logical_order() {
         let mut actual = Vec::new();
         selected
             .visit(
-                VisitStart {
+                MessagePosition {
                     message: from,
                     key: None,
                 },

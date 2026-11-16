@@ -9,13 +9,13 @@ fn message_count(count: i64) -> Result<usize> {
 impl MessageSelection<'_, '_> {
     /// Seek this selection's metadata order without hydrating skipped bodies.
     /// Physical selections share the session order used by message bundles.
-    pub fn locate_ordinal(&self, ordinal: u64) -> Result<Option<VisitStart>> {
+    pub fn locate_ordinal(&self, ordinal: u64) -> Result<Option<MessagePosition>> {
         self.reader.check()?;
         let Ok(message) = usize::try_from(ordinal) else {
             return Ok(None);
         };
         if let Some(keys) = &self.with_parents {
-            return Ok(keys.get(message).map(|key| VisitStart {
+            return Ok(keys.get(message).map(|key| MessagePosition {
                 message,
                 key: Some(key.message_pk),
             }));
@@ -35,7 +35,7 @@ impl MessageSelection<'_, '_> {
             .conn()?
             .query_row(&sql, params![session, ordinal], |row| row.get::<_, i64>(0))
             .optional()?;
-        Ok(key.map(|key| VisitStart {
+        Ok(key.map(|key| MessagePosition {
             message,
             key: Some(key),
         }))
@@ -78,14 +78,17 @@ impl MessageSelection<'_, '_> {
 
     /// A known message, or the last selected message, without reading bodies.
     /// A missing reference remains distinguishable from an empty session.
-    pub fn locate(&self, id: Option<&polylogue_model::MessageId>) -> Result<Option<VisitStart>> {
+    pub fn locate(
+        &self,
+        id: Option<&polylogue_model::MessageId>,
+    ) -> Result<Option<MessagePosition>> {
         if let Some(keys) = &self.with_parents {
             let id = id.map(ToString::to_string);
             return Ok(match &id {
                 Some(id) => keys.iter().enumerate().find(|(_, key)| key.id == *id),
                 None => keys.iter().enumerate().next_back(),
             }
-            .map(|(message, key)| VisitStart {
+            .map(|(message, key)| MessagePosition {
                 message,
                 key: Some(key.message_pk),
             }));
@@ -107,7 +110,7 @@ impl MessageSelection<'_, '_> {
             AND (m.session_order,m.id) < (target.session_order,target.id)",
             params![pk, key],
         )?;
-        Ok(Some(VisitStart {
+        Ok(Some(MessagePosition {
             message: message_count(count)?,
             key: Some(key),
         }))
@@ -119,7 +122,7 @@ impl MessageSelection<'_, '_> {
         &self,
         kinds: &[polylogue_model::BlockKind],
         prompts: bool,
-    ) -> Result<Option<VisitStart>> {
+    ) -> Result<Option<MessagePosition>> {
         if kinds.is_empty() {
             return Ok(None);
         }
@@ -159,17 +162,17 @@ impl MessageSelection<'_, '_> {
     /// The closest preceding visible message, seeking backwards in source order.
     pub fn previous(
         &self,
-        from: VisitStart,
+        from: MessagePosition,
         kinds: &[polylogue_model::BlockKind],
         prompts: bool,
-    ) -> Result<Option<VisitStart>> {
+    ) -> Result<Option<MessagePosition>> {
         let Some(key) = from.key else { return Ok(None) };
         let conn = self.reader.conn()?;
         if let Some(keys) = &self.with_parents {
             let at = from.message.min(keys.len());
             for (index, item) in keys[..at].iter().enumerate().rev() {
                 if self.visible_key(item.message_pk, kinds, prompts)? {
-                    return Ok(Some(VisitStart {
+                    return Ok(Some(MessagePosition {
                         message: index,
                         key: Some(item.message_pk),
                     }));
@@ -202,7 +205,7 @@ impl MessageSelection<'_, '_> {
                 AND (m.session_order,m.id)<(SELECT session_order,id FROM message WHERE pk=?3)",
                     params![session, previous, key],
                 )?;
-                Ok(VisitStart {
+                Ok(MessagePosition {
                     message: from.message.saturating_sub(message_count(stepped)?),
                     key: Some(previous),
                 })

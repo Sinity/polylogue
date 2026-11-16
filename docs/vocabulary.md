@@ -162,6 +162,8 @@ generated page of the thing they belong to, or on the area page that owns them.
   an attachment's stated hash.
 - **visit start**: the position where a streaming read starts, including
   whether it walks forward or backward.
+- **message position**: a message's ordinal in a selection and its row key
+  when known.
 - **message source**: the selected blocks, commit position and ordinal
   returned beside a message by a sourced visit.
 

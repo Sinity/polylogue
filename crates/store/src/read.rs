@@ -56,7 +56,7 @@ pub use span::SpanSource;
 mod source_snapshot;
 use order::RecordOrder;
 
-pub use parents::{MessageSelection, ParentIssue, Parents, VisitStart};
+pub use parents::{MessagePosition, MessageSelection, ParentIssue, Parents};
 
 /// Where a visit starts and which way it walks.
 /// First, At and After walk forward; Before and Last walk backward.

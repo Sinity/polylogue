@@ -40,10 +40,9 @@ struct Frame {
     via: Option<(SessionId, Option<String>)>,
 }
 
-/// Where a visit of a selection starts: a message's place in it, and the
-/// message's key when the caller knows it.
+/// A message's place in a selection, and its key when the caller knows it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct VisitStart {
+pub struct MessagePosition {
     pub message: usize,
     pub key: Option<i64>,
 }
@@ -452,7 +451,7 @@ impl MessageSelection<'_, '_> {
 
     pub fn visit_with_sources(
         &self,
-        start: VisitStart,
+        start: MessagePosition,
         mut visit: impl FnMut(Message, MessageSource) -> ControlFlow<()>,
     ) -> Result<Option<i64>> {
         let mut error = None;
@@ -484,7 +483,7 @@ impl MessageSelection<'_, '_> {
     /// at all. Returns the key of the last message visited.
     pub fn visit(
         &self,
-        start: VisitStart,
+        start: MessagePosition,
         mut visit: impl FnMut(Message) -> ControlFlow<()>,
     ) -> Result<Option<i64>> {
         self.visit_from_rows(start, false, |message, _, _| visit(message))
@@ -492,7 +491,7 @@ impl MessageSelection<'_, '_> {
 
     fn visit_from_selected_blocks(
         &self,
-        start: VisitStart,
+        start: MessagePosition,
         ordered: bool,
         mut visit: impl FnMut(Message, MessageProjection, MessageArrival) -> ControlFlow<()>,
     ) -> Result<Option<i64>> {
@@ -517,7 +516,7 @@ impl MessageSelection<'_, '_> {
 
     fn visit_from_rows(
         &self,
-        start: VisitStart,
+        start: MessagePosition,
         ordered: bool,
         mut visit: impl FnMut(Message, Option<MessageProjection>, MessageArrival) -> ControlFlow<()>,
     ) -> Result<Option<i64>> {
