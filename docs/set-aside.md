@@ -96,6 +96,49 @@ with no name and starring is `tag star`.
 
 Single comparisons, blind ones included, are built ([judging.md](judging.md)).
 
+## Options and smaller forms
+
+- **MCP resources and prompts** (`polylogue://agent/manual`, session,
+  assertion, page table-of-contents and result resources) and the MCP
+  `detail` argument (`agents.md`, MCP server; `reading.md`, Rendering for
+  models). The three tools carry every read; `show: ["tools:full"]` says what
+  `detail` said.
+- **Pack and recall options**: `--purpose`, `--for operator`, named packs,
+  recall's `--keep`, `--fuzzy` and query scope narrowing, MCP `brief` with
+  `task` (`agent-context.md`, Packs, Brief and Recall; `search.md`, Recall).
+  The forms of `brief` and `word~` cover them.
+- **Reading options**: `--output-lines`, `--latest`, `--at` on the context
+  view and `--with-blobs` (`reading.md`). Ranges, selecting the message, and
+  bundles that always carry present attachment bytes cover them.
+- **Reports**: the `analyze` verb with `--by`, `--cost`, `--tools`,
+  `--time`, `--windows` and `--compare`, and the `prices` command
+  (`measures.md`, Reports and The price catalog). Reports are queries with
+  `group by`, `agg` and `| measure`; prices are the unit `prices`.
+- **`explain syntax`**, **`explain capabilities`** and **`--detail full`**
+  (`query.md`, Explain). `help query`, `help --all --json` and
+  `--explain --json` cover them.
+- **`install-agent --instructions`** and **`setting --machine NAME`**
+  (`operations.md`, Installing into harnesses and Configuration).
+- **`schema infer|unread --all`**, `--timeout` and `--output`
+  (`archive.md`, Schema tools). Naming no origin means every origin;
+  `--deadline` and `--to` are the line and output options.
+- **Renaming a web conversation in the provider** (`extension.md`, Chat
+  actions); no verb does it.
+
+## Web views
+
+- **Pages, Workspaces and Project story** views with the composer, decision
+  box, layouts, templates and saved workspaces (`web-views.md`; `web.md`,
+  Frame, Keys and Routes `/pages`, `/p/PAGE`, `/w/MODE`).
+- **Judging passes on `/judge`**: sampling, agreement, calibration and rubric
+  runs again (`web-views.md`, Notes, claims, judging, triage).
+- **Compare alignment** by lineage, time or shared file, and its page actions
+  (`web-views.md`, Compare).
+- **Context bundles** with their manifest and composer, branching through the
+  harness's own fork, pin and bundle actions, copy as prompt, and share files
+  written by the daemon (`web-reader.md`). `brief`, `tag star`, `resume --in`
+  and the share view's download cover what remains.
+
 ## Writers
 
 The earlier Python Polylogue had these writers. They are outside the current

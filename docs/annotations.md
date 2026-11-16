@@ -107,7 +107,7 @@ Kinds are one closed declaration in the `model` crate. Each states the key's mea
 | `origin` | where it came from: the message a marker was in, the pass or import it belongs to | — |
 | `revises` | it is a new revision of the named revision | written by `edit` |
 | `withdraws` | it withdraws the named revision, root, alternate or withdrawal | written by `withdraw` |
-| `replies_to`, `challenges`, `supports`, `qualifies`, `corrects`, `derived_from`, `blocks` | typed relations between annotations | `--replies-to`, `--challenges`, `--supports`, `--qualifies`, `--corrects`, `--derived-from`, `--blocks` |
+| `replies_to`, `challenges`, `supports`, `qualifies`, `corrects`, `derived_from`, `blocks` | typed relations between annotations; `replies_to` may also name the `delivery:` of a sent message | `--replies-to`, `--challenges`, `--supports`, `--qualifies`, `--corrects`, `--derived-from`, `--blocks` |
 | `slot_of`, `member_of`, `role_of` | structure of the import-only kinds | — |
 
 **Stacks.** An annotation may be about another annotation at an exact revision, through one typed relation, so a claim, a question about it and a reply that challenges it form a stack. What links to a note is a query: `polylogue 'annotations where links_to:annotation:01JB7Q2M'` lists everything that links to any revision of it, each with author, revision, whether it is current, and relation.

@@ -183,7 +183,7 @@ One name per concept, on every verb and command that has the concept.
 | a reason | `--reason TEXT` | `withdraw`, `judge`, `answer` |
 | input structure | `--origin NAME` | `import` of files |
 | a feed position | `--after POSITION` | `dev feed` |
-| changed since (time) | `--since TIME` | `import` of a provider |
+| changed since (time) | `--since TIME` | `import` of a provider, `dev schema infer` |
 | how long a watched row must match | `--hold D` | `save --watch` |
 | deep storage check | `--verify` | `status` |
 | time | `since:` and `until:` in the query | every query |
@@ -194,7 +194,7 @@ One name per concept, on every verb and command that has the concept.
 | the session alone | `--physical` | `read` |
 | labels for excerpts | `--neutral-names` | `read` |
 
-`--since TIME` on `import PROVIDER` is the one option named like the query's `since:` field, and it means the same thing. `--json` is the typed reply itself; `--format json` is the bundle encoding of a reading ([reading.md](reading.md#formats-and-destinations)).
+`--since TIME` is named like the query's `since:` field and means the same thing: a time. `--json` is the typed reply itself; `--format json` is the bundle encoding of a reading ([reading.md](reading.md#formats-and-destinations)).
 
 ## Exit codes
 
