@@ -58,6 +58,23 @@ use order::RecordOrder;
 
 pub use parents::{MessageSelection, ParentIssue, Parents, VisitStart};
 
+/// Where a visit starts and which way it walks.
+/// First, At and After walk forward; Before and Last walk backward.
+pub enum VisitFrom<P> {
+    First,
+    At(P),
+    After(P),
+    Before(P),
+    Last,
+}
+
+/// What a sourced message visit adds to each message.
+pub struct MessageSource {
+    pub blocks: MessageProjection,
+    pub committed: Option<u64>,
+    pub ordinal: u64,
+}
+
 struct MessageArrival {
     order: Option<i64>,
     fact: Option<i64>,

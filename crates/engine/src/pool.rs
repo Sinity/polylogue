@@ -116,6 +116,34 @@ pub struct Done {
     pub source_read: Option<polylogue_store::primary::AcquisitionReceipt>,
 }
 
+pub(crate) enum Task {
+    Range(Job),
+    Chain { id: u64, plan: crate::plan::Plan },
+}
+
+pub(crate) enum Finished {
+    Range(Done),
+    Chain(ChainDone),
+}
+
+pub(crate) struct ChainDone {
+    pub id: u64,
+    pub plan: crate::plan::Plan,
+    pub written: Result<Option<u64>, crate::EngineError>,
+    pub bytes_read: u64,
+}
+
+pub(crate) struct ChainSettings {
+    pub stopped_attempt: polylogue_model::batch::StoppedAttempt,
+    pub read_memory: u64,
+    pub yielding: Arc<std::sync::atomic::AtomicBool>,
+}
+
+pub(crate) struct Cancelled {
+    pub ranges: usize,
+    pub chains: Vec<crate::plan::Plan>,
+}
+
 struct Queue {
     live: VecDeque<Job>,
     bulk: VecDeque<Job>,

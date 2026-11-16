@@ -211,6 +211,28 @@ struct WriterQueue {
     dispatch: dispatch::DispatchPauses,
 }
 
+/// A user request and what the writer checks before committing it.
+pub struct UserSubmission {
+    pub request: polylogue_model::user::UserRequest,
+    /// The pinned read that selected the request.
+    pub scope: Option<crate::ReadScopeToken>,
+    /// Trusted catalog context.
+    pub preparation: Option<crate::user_writes::PreparationContext>,
+    /// The caller's deadline and cancellation.
+    pub parent: Option<Arc<ParentLifetime>>,
+}
+
+impl From<polylogue_model::user::UserRequest> for UserSubmission {
+    fn from(request: polylogue_model::user::UserRequest) -> Self {
+        Self {
+            request,
+            scope: None,
+            preparation: None,
+            parent: None,
+        }
+    }
+}
+
 enum UserMsg {
     Request(
         Box<polylogue_model::user::UserRequest>,
@@ -280,6 +302,13 @@ impl WriterQueue {
             crate::timing::queue(crate::timing::Queue::Writer, -1);
         }
         result
+    }
+
+    fn ask<T>(&self, message: impl FnOnce(SyncSender<Result<T>>) -> Msg) -> Result<T> {
+        let (reply, wait) = sync_channel(1);
+        self.send(message(reply))
+            .map_err(|_| StoreError::WriterGone)?;
+        wait.recv().map_err(|_| StoreError::WriterGone)?
     }
 
     fn send_user(&self, message: UserMsg) -> std::result::Result<(), ()> {
@@ -573,13 +602,10 @@ impl Writer {
         follower.synchronize()?;
         // Acknowledged material can now produce input/reading events. Wait
         // outside the writer thread while the follower reads the next page.
-        let (reply, wait) = sync_channel(1);
         self.tx
             .as_ref()
             .ok_or(StoreError::WriterGone)?
-            .send(Msg::DrainPrimaryCaptures(reply))
-            .map_err(|_| StoreError::WriterGone)?;
-        wait.recv().map_err(|_| StoreError::WriterGone)??;
+            .ask(Msg::DrainPrimaryCaptures)?;
         follower.synchronize()
     }
 
