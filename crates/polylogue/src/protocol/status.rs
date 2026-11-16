@@ -6,7 +6,7 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Arguments {
-    /// Print one line for status bars instead of the whole answer.
+    /// One line for status bars: running sessions and the longest wait
     #[serde(default)]
     pub line: bool,
 }

@@ -6,9 +6,14 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Save {
+    /// A query name; entirely hexadecimal names are reserved
+    #[schemars(extend("argument_form" = "positional"))]
     pub name: String,
+    /// The query
+    #[schemars(extend("argument_form" = "rest"))]
     pub query: String,
-    /// The saved query a ratio divides by.
+    /// The denominator query required for a measure or aggregate figure
+    #[schemars(extend("unlisted" = true))]
     pub denominator: Option<String>,
 }
 
@@ -16,13 +21,18 @@ pub struct Save {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Watch {
+    /// What the notices are called (default: the query)
     pub name: Option<String>,
-    /// How long a row must keep matching first, such as `20m`.
+    /// How long a row must keep matching before it is a notice, such as 20m
     #[serde(rename = "for")]
+    #[schemars(extend("unlisted" = true))]
     pub hold: Option<String>,
-    /// Also show each notice as a desktop notification.
+    /// Also show each notice as a desktop notification
     #[serde(default)]
+    #[schemars(extend("unlisted" = true))]
     pub notify: bool,
+    /// The query
+    #[schemars(extend("argument_form" = "rest"))]
     pub query: String,
 }
 
@@ -30,6 +40,9 @@ pub struct Watch {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Keep {
+    /// A name for the kept result
     pub name: Option<String>,
+    /// The query
+    #[schemars(extend("argument_form" = "rest"))]
     pub query: String,
 }

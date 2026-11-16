@@ -66,12 +66,16 @@ pub struct Vector {
 }
 
 /// Vectors per embedding key, for `status`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(
+    Debug, Clone, Default, PartialEq, Eq, Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(deny_unknown_fields)]
 pub struct VectorStatus {
     pub keys: Vec<KeyStatus>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct KeyStatus {
     pub key: String,
     pub dims: u32,

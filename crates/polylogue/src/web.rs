@@ -333,11 +333,12 @@ pub async fn ask(
     let limit = request_limit();
     let parent = parent_lifetime();
     let mut cancel = CancelRead(Some(limit.cancellation.clone()));
-    let authorship = polylogue_model::authorship::compute_authorship(
-        polylogue_model::authorship::Channel::Web,
-        &Default::default(),
+    let authorship: polylogue_model::authorship::Authorship = command_surface::author_of(
+        &command_surface::CallerEvidence::default(),
+        command_surface::Via::Web,
         None,
-    );
+    )
+    .into();
     let deadline = limit.deadline();
     let executor = Arc::clone(&web.daemon);
     let answer = executor

@@ -109,26 +109,15 @@ pub fn hook(
     startup: &crate::config::Startup,
     _: bool,
 ) -> ExitCode {
-    let name = v
-        .request
-        .arguments
-        .str("harness")
-        .map(str::to_owned)
-        .unwrap_or_else(|| "claude-code".into());
-    let Some(harness) = crate::hook::Harness::parse(&name) else {
-        // A non-zero exit would block the harness's tool call.
-        eprintln!("polylogue hook: unknown harness {name:?}");
-        return ExitCode::SUCCESS;
+    let arguments: arguments::Hook = match serde_json::from_value(v.request.arguments.clone()) {
+        Ok(arguments) => arguments,
+        Err(error) => {
+            // A non-zero exit would block the harness's tool call.
+            eprintln!("polylogue hook: {error}");
+            return ExitCode::SUCCESS;
+        }
     };
-    crate::hook::run(
-        harness,
-        &v.request
-            .arguments
-            .str("event")
-            .map(str::to_owned)
-            .unwrap_or_default(),
-        startup,
-    )
+    crate::hook::run(arguments.harness, &arguments.event, startup)
 }
 
 pub fn web(
@@ -224,18 +213,20 @@ fn hooks(
     json: bool,
     on: bool,
 ) -> ExitCode {
-    let name = v
-        .request
-        .arguments
-        .str("harness")
-        .map(str::to_owned)
-        .unwrap_or_else(|| "claude-code".into());
-    let Some(harness) = crate::hook::Harness::parse(&name) else {
-        // A non-zero exit would block the harness's tool call.
-        eprintln!("polylogue hook: unknown harness {name:?}");
-        return ExitCode::SUCCESS;
+    let arguments: arguments::Hooks = match serde_json::from_value(v.request.arguments.clone()) {
+        Ok(arguments) => arguments,
+        Err(error) => {
+            return fail(
+                startup.output,
+                json,
+                polylogue_model::Code::BadRequest,
+                &error.to_string(),
+                2,
+            );
+        }
     };
-    let path = match v.request.arguments.str("settings").map(str::to_owned) {
+    let harness = arguments.harness;
+    let path = match arguments.settings {
         Some(path) => std::path::PathBuf::from(path),
         None => match crate::hook::settings_path(harness, &startup.engine) {
             Ok(path) => path,

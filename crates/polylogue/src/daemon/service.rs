@@ -29,7 +29,7 @@ pub struct Daemon {
     /// Runs every request's work within bounded slots.
     pub(crate) executor: super::executor::Executor,
     pub(crate) completion_path: std::path::PathBuf,
-    pub(crate) callers: crate::protocol::caller::hooks::Registry,
+    pub(crate) callers: crate::hook::open_calls::OpenCalls,
     operations: std::sync::OnceLock<std::sync::Weak<command_surface::OperationTable>>,
 
     pub(crate) warm: super::warm::Warm,
@@ -647,23 +647,6 @@ pub(crate) fn browser_refusal<T>(refused: crate::browser::actions::Refused) -> A
     error(refused.0, refused.0.as_str())
 }
 
-/// A list read: empty when it matched nothing.
-fn listed<T: serde::Serialize>(items: Vec<T>) -> Answer<Value> {
-    let empty = items.is_empty();
-    match serde_json::to_value(items) {
-        Ok(value) if empty => command_surface::Answer {
-            outcome: command_surface::Outcome::Empty(value),
-            envelope: command_surface::Envelope {
-                notes: vec![],
-                next: vec![],
-                ..Default::default()
-            },
-        },
-        Ok(value) => Answer::ok(value),
-        Err(cause) => error(polylogue_model::Code::Internal, cause),
-    }
-}
-
 pub(crate) fn ok(data: impl serde::Serialize) -> Answer<Value> {
     match serde_json::to_value(data) {
         Ok(data) => Answer::ok(data),
@@ -1253,7 +1236,7 @@ pub fn start(
         reads,
         executor: super::executor::Executor::new(settings.workers),
         completion_path,
-        callers: crate::protocol::caller::hooks::Registry::new(
+        callers: crate::hook::open_calls::OpenCalls::new(
             settings.spool_dir(polylogue_sources::hook_spool::ORIGIN),
         ),
         warm,

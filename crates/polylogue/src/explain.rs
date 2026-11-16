@@ -124,7 +124,7 @@ fn entries(subject: &str, unit: Option<Unit>) -> Result<Vec<Value>, String> {
                 "kind": "command", "name": c.name, "help": c.help,
                 "tool": c.tool.map(commands::Tool::name), "http": c.http, "writes": c.writes,
                 "arguments": declared(c.name).map(|description| description.input_schema.clone()),
-                "unlisted": c.args_for(commands::Surface::Mcp).filter(|a| a.unlisted).map(|a| a.name).collect::<Vec<_>>(),
+                "unlisted": commands::declarations().spec_named(c.name).map(|spec| spec.arguments.as_slice()).unwrap_or_default().iter().filter(|a| !a.listed && !a.calling_process).map(|a| a.name.as_str()).collect::<Vec<_>>(),
                 "answer": declared(c.name).map(|description| description.output_schema.clone()),
             })).collect();
             entries.push(json!({"kind": "answer", "schema": schemars::schema_for!(command_surface::Answer<Value>).to_value()}));

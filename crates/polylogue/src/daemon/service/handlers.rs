@@ -3,15 +3,15 @@
 //! on live sessions live in `acts`, the browser extension's in `browser`,
 //! and reads in `read`.
 use super::{
-    Failure, advisory_silence, context, delivery_event, error, listed, ok, query_targets,
-    query_targets_in, repeated_request, status, store_error, write, write_from_read,
+    Failure, advisory_silence, context, delivery_event, error, ok, query_targets, query_targets_in,
+    repeated_request, status, store_error, write, write_from_read,
 };
 use crate::briefing::Ask;
 use crate::cli::print;
 use crate::commands::{Caller, Command, LIVE, NOTICES, WAITING};
 use crate::daemon::handler::{Call, Handler};
 use crate::protocol;
-use command_surface::{Access, Answer};
+use command_surface::{Access, Answer, TextStyle};
 use polylogue_model::user::UserWrite;
 use serde_json::Value;
 use std::sync::mpsc::sync_channel;
@@ -88,7 +88,7 @@ impl Handler for Query {
     fn query_text(arguments: &Self::Arguments) -> Option<&str> {
         Some(&arguments.query)
     }
-    const PRINT: fn(&Value, bool) -> String = print::query;
+    const PRINT: fn(&Self::Answer, TextStyle) -> String = print::query;
     fn ranking_query(arguments: &Self::Arguments, _row: &Command) -> Option<String> {
         Some(arguments.query.clone())
     }
@@ -115,7 +115,7 @@ impl Handler for List {
     fn query_text(arguments: &Self::Arguments) -> Option<&str> {
         arguments.query.as_deref()
     }
-    const PRINT: fn(&Value, bool) -> String = print::query;
+    const PRINT: fn(&Self::Answer, TextStyle) -> String = print::query;
     fn ranking_query(arguments: &Self::Arguments, _row: &Command) -> Option<String> {
         Some(
             arguments
@@ -151,7 +151,7 @@ impl Handler for Live {
     type Arguments = protocol::query_aliases::Live;
     type Answer = protocol::query::Rows;
     const PAGES: bool = true;
-    const PRINT: fn(&Value, bool) -> String = print::query;
+    const PRINT: fn(&Self::Answer, TextStyle) -> String = print::rows;
     fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         run_rows(
             call,
@@ -172,7 +172,7 @@ impl Handler for Waiting {
     type Arguments = protocol::query_aliases::Live;
     type Answer = protocol::query::Rows;
     const PAGES: bool = true;
-    const PRINT: fn(&Value, bool) -> String = print::query;
+    const PRINT: fn(&Self::Answer, TextStyle) -> String = print::rows;
     fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         run_rows(
             call,
@@ -193,13 +193,13 @@ impl Handler for Notices {
     type Arguments = protocol::query_aliases::Notices;
     type Answer = protocol::query::Rows;
     const PAGES: bool = true;
-    const PRINT: fn(&Value, bool) -> String = print::query;
+    const PRINT: fn(&Self::Answer, TextStyle) -> String = print::rows;
     fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         run_rows(
             call,
             QueryInput {
                 text: NOTICES,
-                page_size: Some(arguments.limit.unwrap_or(50)),
+                page_size: Some(arguments.limit),
                 why: arguments.why,
                 session: None,
                 fields: &arguments.fields,
@@ -217,7 +217,7 @@ impl Handler for Measure {
     fn query_text(arguments: &Self::Arguments) -> Option<&str> {
         arguments.query.as_deref()
     }
-    const PRINT: fn(&Value, bool) -> String = print::query;
+    const PRINT: fn(&Self::Answer, TextStyle) -> String = print::query;
     fn ranking_query(arguments: &Self::Arguments, row: &Command) -> Option<String> {
         Some(measure_query(row.name, arguments))
     }
@@ -408,7 +408,7 @@ impl Handler for Explain {
 pub(crate) struct Timeline;
 impl Handler for Timeline {
     type Arguments = protocol::calendar::Timeline;
-    type Answer = Value;
+    type Answer = super::super::calendar::TimelineAnswer;
     const PAGES: bool = true;
     fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         let reader = call.reader()?;
@@ -425,7 +425,7 @@ impl Handler for Timeline {
                 },
                 &context,
             ) {
-                Ok(data) => ok(data),
+                Ok(data) => Answer::ok(data),
                 Err(f) => f.answer(),
             },
         )
@@ -437,7 +437,7 @@ impl Handler for Timeline {
 pub(crate) struct Cost;
 impl Handler for Cost {
     type Arguments = protocol::calendar::Cost;
-    type Answer = Value;
+    type Answer = super::super::calendar::CostAnswer;
     const PAGES: bool = true;
     fn query_text(arguments: &Self::Arguments) -> Option<&str> {
         arguments.query.as_deref()
@@ -477,7 +477,7 @@ impl Handler for Cost {
                 },
                 &context,
             ) {
-                Ok(data) => ok(data),
+                Ok(data) => Answer::ok(data),
                 Err(f) => f.answer(),
             },
         ))
@@ -555,7 +555,7 @@ impl Handler for Verify {
     fn default_deadline(_: &Self::Arguments) -> bool {
         false
     }
-    const PRINT: fn(&Value, bool) -> String = print::verify;
+    const PRINT: fn(&Self::Answer, TextStyle) -> String = print::verify;
     fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         let manifest = arguments
             .manifest
@@ -1139,13 +1139,13 @@ impl Handler for Setting {
 pub(crate) struct Continue;
 impl Handler for Continue {
     type Arguments = protocol::resume::Arguments;
-    type Answer = Value;
-    const PRINT: fn(&Value, bool) -> String = print::resume;
+    type Answer = protocol::resume::Answer;
+    const PRINT: fn(&Self::Answer, TextStyle) -> String = print::resume;
     fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         let reader = call.reader()?;
         if let Some(session) = arguments.session {
             return Ok(match crate::resume::plan(&reader, &session) {
-                Ok(plan) => ok(plan),
+                Ok(plan) => Answer::ok(protocol::resume::Answer::Plan(plan)),
                 Err(e) => store_error(&e),
             });
         }
@@ -1159,7 +1159,10 @@ impl Handler for Continue {
                 arguments.limit.unwrap_or(10),
                 &context,
             ) {
-                Ok(sessions) => listed(sessions),
+                Ok(sessions) if sessions.is_empty() => {
+                    Answer::empty(protocol::resume::Answer::Sessions(sessions))
+                }
+                Ok(sessions) => Answer::ok(protocol::resume::Answer::Sessions(sessions)),
                 Err(e) => store_error(&e),
             },
         )
@@ -1171,7 +1174,7 @@ impl Handler for Continue {
 pub(crate) struct Embed;
 impl Handler for Embed {
     type Arguments = protocol::embed::Arguments;
-    type Answer = Value;
+    type Answer = crate::embeddings::Answer;
     fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         let what = call.row.name.trim_start_matches("embed ");
         embed(
@@ -1188,7 +1191,7 @@ impl Handler for Embed {
 pub(crate) struct EmbedStatus;
 impl Handler for EmbedStatus {
     type Arguments = protocol::embed::Status;
-    type Answer = Value;
+    type Answer = crate::embeddings::Answer;
     fn run(_: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         embed(call, "status", None, None, false)
     }
@@ -1200,7 +1203,7 @@ fn embed(
     query: Option<String>,
     limit: Option<u64>,
     yes: bool,
-) -> Result<Answer<Value>, Failure> {
+) -> Result<Answer<crate::embeddings::Answer>, Failure> {
     let reader = call.reader()?;
     let context = call.context()?;
     let d = call.daemon;
@@ -1255,7 +1258,7 @@ impl Handler for Brief {
     const BUDGETED: bool = true;
     const RECORDS_DELIVERY: bool = true;
     const READS_FIRST: bool = true;
-    const PRINT: fn(&Value, bool) -> String = print::context;
+    const PRINT: fn(&Self::Answer, TextStyle) -> String = print::context;
     fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         let cwd = call.directory(arguments.cwd.as_deref())?;
         prepare_context(
@@ -1280,7 +1283,7 @@ impl Handler for Advisory {
     fn read_cap() -> Option<std::time::Duration> {
         Some(crate::advisory::BUDGET)
     }
-    const PRINT: fn(&Value, bool) -> String = print::context;
+    const PRINT: fn(&Self::Answer, TextStyle) -> String = print::context;
     fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         let cwd = call.directory(arguments.cwd.as_deref())?;
         prepare_context(
@@ -1301,7 +1304,7 @@ impl Handler for Takeover {
     const BUDGETED: bool = true;
     const RECORDS_DELIVERY: bool = true;
     const READS_FIRST: bool = true;
-    const PRINT: fn(&Value, bool) -> String = print::context;
+    const PRINT: fn(&Self::Answer, TextStyle) -> String = print::context;
     fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         prepare_context(
             call,
@@ -1324,7 +1327,7 @@ impl Handler for Recall {
     fn query_text(arguments: &Self::Arguments) -> Option<&str> {
         Some(&arguments.query)
     }
-    const PRINT: fn(&Value, bool) -> String = print::context;
+    const PRINT: fn(&Self::Answer, TextStyle) -> String = print::context;
     fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         prepare_context(
             call,

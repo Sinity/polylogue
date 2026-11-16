@@ -1,4 +1,8 @@
 use super::*;
+use crate::browser::actions::{ActionSummary, ChatRequest};
+use crate::browser::backfill::JobSummary;
+use crate::resume::{Command, Plan, ResumableSession};
+use polylogue_model::SessionId;
 use serde_json::json;
 
 const HOSTILE: &str = "\x1b]0;title\x07\x1b]2;title\x1b\\\x1b]52;c;YQ==\x07\x1b]8;;https://example.test\x1b\\link\x1b]8;;\x1b\\\x7f\x1b[2J\x1b\u{9b}2J\u{202e}";
@@ -12,21 +16,98 @@ fn safe(text: &str) {
     );
 }
 
+fn escaped(text: &str) {
+    safe(text);
+    assert!(text.contains("\\x1b"), "{text:?}");
+}
+
+fn hostile_command() -> Command {
+    Command {
+        program: HOSTILE.into(),
+        args: vec![HOSTILE.into()],
+        cwd: Some(HOSTILE.into()),
+    }
+}
+
+fn session() -> SessionId {
+    SessionId::parse("codex:print-test").unwrap()
+}
+
 #[test]
 fn terminal_printers_escape_archived_text() {
-    let data = json!({
-        "content":HOSTILE, "text":HOSTILE, "next":HOSTILE,
-        "prepared":{"text":HOSTILE},
-        "actions":[{"id":HOSTILE,"conversation":HOSTILE,"last_error":HOSTILE}],
-        "jobs":[{"id":HOSTILE,"detail":HOSTILE}],
-        "harness_command":{"program":HOSTILE,"args":[HOSTILE],"cwd":HOSTILE},
-        "context_assisted":{"program":HOSTILE,"args":[HOSTILE],"cwd":HOSTILE}
+    let context_answer = protocol::context::Answer {
+        delivery: None,
+        prepared: crate::briefing::Prepared {
+            event: "synthetic".into(),
+            text: HOSTILE.into(),
+            refs: vec![],
+            left_out: vec![],
+            search_summary: None,
+            empty: false,
+            next: None,
+        },
+    };
+    escaped(&context(&context_answer, TextStyle::Plain));
+    let plan_answer = protocol::resume::Answer::Plan(Plan {
+        session: session(),
+        harness_command: Some(hostile_command()),
+        context_assisted: hostile_command(),
     });
-    for printer in [context, resume, chat_actions, backfill_jobs] {
-        let text = printer(&data, false);
-        safe(&text);
-        assert!(text.contains("\\x1b"), "{text:?}");
-    }
+    escaped(&resume(&plan_answer, TextStyle::Plain));
+    let actions = protocol::browser::ChatActionList {
+        actions: vec![ActionSummary {
+            request: ChatRequest {
+                provider: HOSTILE.into(),
+                conversation: Some(HOSTILE.into()),
+                project: None,
+                text: HOSTILE.into(),
+                model: HOSTILE.into(),
+                effort: None,
+                submit: false,
+            },
+            id: HOSTILE.into(),
+            attachments: vec![],
+            status: polylogue_model::user::ChatStatus::Queued,
+            phase: HOSTILE.into(),
+            created_at: None,
+            updated_at: Some(HOSTILE.into()),
+            claimed_by: None,
+            claim_expires_at: None,
+            needs_approval: false,
+            last_error: Some(HOSTILE.into()),
+            receipt: None,
+            events: vec![],
+        }],
+    };
+    escaped(&chat_actions(&actions, TextStyle::Plain));
+    let job = JobSummary {
+        id: HOSTILE.into(),
+        provider: HOSTILE.into(),
+        since: None,
+        status: polylogue_model::user::BackfillStatus::Running,
+        listed: 1,
+        captured: 0,
+        unchanged: 0,
+        failed: 0,
+        position: None,
+        detail: Some(HOSTILE.into()),
+        created_at: None,
+        updated_at: Some(HOSTILE.into()),
+        claimed_by: None,
+        claim_expires_at: None,
+    };
+    escaped(&backfill_jobs(
+        &protocol::browser::BackfillJobList {
+            jobs: vec![job.clone()],
+        },
+        TextStyle::Plain,
+    ));
+    escaped(&backfill_answer(
+        &protocol::browser::BackfillAnswer::Current(protocol::browser::BackfillCurrent {
+            job: Some(Box::new(job)),
+        }),
+        TextStyle::Plain,
+    ));
     let page = json!({
         "format":"markdown",
         "snapshot":{"query":"query:synthetic","ran_at":"2026-03-01T12:00:00Z","read_at":{"generation":"synthetic","index":0,"archive":0},"freshness":{"local":{"parsing":{"state":"complete"},"derivation":{"state":"complete"},"search":{"state":"complete"},"confirmed_stream":{"state":"not_applicable"},"kept_chains":0,"raw_only_chains":0},"sinex":{"mode":"standalone"}}},
@@ -37,15 +118,51 @@ fn terminal_printers_escape_archived_text() {
             "footer":{"referenced_by":[],"shown":1,"count":{"state":"value","value":1}}
         }
     });
-    let text = read(&page, false);
-    safe(&text);
-    assert!(text.contains("\\x1b"));
-    safe(&resume(
-        &json!([{"session":{"title":HOSTILE,"id":HOSTILE},"open":{"todo":HOSTILE,"waiting_on":HOSTILE},"follow_ups":[HOSTILE]}]),
-        false,
-    ));
+    let page: polylogue_model::read::ReadPage = serde_json::from_value(page).unwrap();
+    escaped(&read(&page, TextStyle::Plain));
+    let sessions = protocol::resume::Answer::Sessions(vec![ResumableSession {
+        session: polylogue_store::NearbySession {
+            id: session(),
+            kind: polylogue_model::SessionKind::Main,
+            title: Some(HOSTILE.into()),
+            started: None,
+            last_activity: None,
+            messages: None,
+            cwd: None,
+        },
+        open: polylogue_store::OpenItems {
+            todo: Some(HOSTILE.into()),
+            waiting_on: Some(HOSTILE.into()),
+            ..Default::default()
+        },
+        follow_ups: vec![HOSTILE.into()],
+        harness_command: None,
+    }]);
+    safe(&resume(&sessions, TextStyle::Plain));
     let status = json!({"notices":[HOSTILE], "errors":[HOSTILE]});
-    let text = super::json(&status, false);
+    let text = super::json(&status, TextStyle::Plain);
     safe(&text);
     assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), status);
+}
+
+#[test]
+fn continue_plan_prints_the_harness_command_line() {
+    let answer = protocol::resume::Answer::Plan(Plan {
+        session: session(),
+        harness_command: Some(Command {
+            program: "codex".into(),
+            args: vec!["resume".into(), "print-test".into()],
+            cwd: Some("/work/project".into()),
+        }),
+        context_assisted: Command {
+            program: "polylogue".into(),
+            args: vec!["takeover".into(), "codex:print-test".into()],
+            cwd: None,
+        },
+    });
+    assert_eq!(
+        resume(&answer, TextStyle::Plain),
+        "harness command:    cd /work/project && codex resume print-test\n\
+         with context:       polylogue takeover codex:print-test\n"
+    );
 }

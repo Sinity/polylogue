@@ -5,7 +5,7 @@ use super::*;
 use crate::fixture::writer::WriterArchive;
 use polylogue_model::{
     ChangePosition, SessionId, Timestamp,
-    authorship::{CallerEvidence, Channel, compute_authorship},
+    authorship::{Author, Authorship, Channel},
     query_objects::{
         ExecutionBinding, ExecutionPresentation, QueryExecutionOptions, QueryRunOutcome,
         ReadSpanBinding, ReplayBinding, RunBinding, RunOutcome,
@@ -45,14 +45,12 @@ pub(super) fn run(object: &QueryObject, id: &str, at: i64, position: ChangePosit
         )
         .unwrap(),
     );
-    let authorship = compute_authorship(
-        Channel::Mcp,
-        &CallerEvidence {
-            session: Some(SessionId::parse("codex:synthetic-query-agent").unwrap()),
-            ..Default::default()
-        },
-        None,
-    );
+    let authorship = Authorship {
+        author: Author::Agent(Some(
+            SessionId::parse("codex:synthetic-query-agent").unwrap(),
+        )),
+        via: Channel::Mcp,
+    };
     QueryRun {
         id: run_id(id),
         question: Some(object.id),
@@ -310,7 +308,7 @@ fn result_output_schemas_require_the_kept_columns() {
     }];
     archive.writer.user(polylogue_model::user::UserRequest {
         id: "kept".into(), machine: "synthetic-machine".into(), at: Timestamp::from_unix_ms(1).unwrap(),
-        authorship:compute_authorship(Channel::Cli,&CallerEvidence::default(),None),
+        authorship:Authorship { author: Author::Unattributed, via: Channel::Cli },
         write: polylogue_model::user::UserWrite::KeepResult {
             name: None, query: "sessions | select title".into(), read_at: "synthetic-read".into(),
             rows_json: serde_json::json!({"unit":"sessions","columns":columns,"rows":[{"title":"synthetic"}]}).to_string(),

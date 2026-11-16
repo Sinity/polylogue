@@ -301,8 +301,12 @@ fn clustered_fields_print_the_parameter_in_query_output() {
             .any(|n| n.as_str().is_some_and(|n| n.contains("5-minute gap")))
     );
     let printed = crate::cli::print::query(
-        &super::document(&archive, "sessions | agg p50(clustered_time)"),
-        false,
+        &serde_json::from_value(super::document(
+            &archive,
+            "sessions | agg p50(clustered_time)",
+        ))
+        .unwrap(),
+        command_surface::TextStyle::Plain,
     );
     assert!(printed.contains("5-minute gap"));
 }

@@ -10,7 +10,7 @@
 //! come back only through the usual capture.
 
 use polylogue_model::BlobHash;
-use polylogue_model::user::{CHAT_CLAIM_MS, ChatAction, ChatStatus};
+use polylogue_model::user::{CHAT_CLAIM_MS, ChatAction, ChatEvent, ChatStatus};
 use polylogue_model::user::{ChatAttachment, NewChatAction};
 
 use serde::{Deserialize, Serialize};
@@ -131,12 +131,51 @@ pub fn attachment(file: &ChatFile, blob: BlobHash) -> ChatAttachment {
     }
 }
 
-fn iso(ms: i64) -> Value {
-    jiff::Timestamp::from_millisecond(ms).map_or(Value::Null, |t| json!(t.to_string()))
+fn iso(ms: i64) -> Option<String> {
+    jiff::Timestamp::from_millisecond(ms)
+        .ok()
+        .map(|t| t.to_string())
 }
 
-/// One action as the CLI and the extension read it, at `now`.
-pub fn view(a: &ChatAction, now: i64) -> Value {
+/// One chat action as the CLI and the extension read it: the request as
+/// queued, then where it stands.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ActionSummary {
+    #[serde(flatten)]
+    pub request: ChatRequest,
+    pub id: String,
+    pub attachments: Vec<AttachmentSummary>,
+    #[schemars(with = "String")]
+    pub status: ChatStatus,
+    pub phase: String,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+    /// The extension instance whose claim has not expired.
+    pub claimed_by: Option<String>,
+    pub claim_expires_at: Option<String>,
+    pub needs_approval: bool,
+    /// The detail of the latest failed or blocked outcome.
+    pub last_error: Option<String>,
+    /// What the extension reported last about the sent turn.
+    pub receipt: Option<Value>,
+    pub events: Vec<ChatEvent>,
+}
+
+/// A file a chat action attaches, without its bytes.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AttachmentSummary {
+    pub id: String,
+    pub name: String,
+    pub media_type: String,
+    pub size: u64,
+    /// The hash of its stored bytes.
+    pub hash: String,
+}
+
+/// One action as the CLI and the extension read it, at `now`. Its stored
+/// request is the [`ChatRequest`] it was queued with.
+pub fn view(a: &ChatAction, now: i64) -> Result<ActionSummary, serde_json::Error> {
     let (status, holder) = a.status(now);
     let last = a.events.last();
     let claim = a
@@ -156,31 +195,31 @@ pub fn view(a: &ChatAction, now: i64) -> Value {
             )
         })
         .map(|e| e.detail.clone().unwrap_or_else(|| e.kind.clone()));
-    let mut out = a.request.clone();
-    let fields = json!({
-        "id": a.id,
-        "attachments": a.attachments.iter().map(|x| json!({
-            "id": x.id,
-            "name": x.name,
-            "media_type": x.media_type,
-            "size": x.size,
-            "hash": x.blob.to_string(),
-        })).collect::<Vec<_>>(),
-        "status": status,
-        "phase": last.map_or("queued", |e| e.phase.as_str()),
-        "created_at": iso(a.created_at),
-        "updated_at": iso(last.map_or(a.created_at, |e| e.at)),
-        "claimed_by": holder,
-        "claim_expires_at": claim.map(|e| iso(e.at + CHAT_CLAIM_MS)),
-        "needs_approval": a.needs_approval,
-        "last_error": failure,
-        "receipt": a.events.iter().rev().find_map(|e| e.receipt.clone()),
-        "events": a.events,
-    });
-    if let (Some(out), Value::Object(fields)) = (out.as_object_mut(), fields) {
-        out.extend(fields);
-    }
-    out
+    Ok(ActionSummary {
+        request: serde_json::from_value(a.request.clone())?,
+        id: a.id.clone(),
+        attachments: a
+            .attachments
+            .iter()
+            .map(|x| AttachmentSummary {
+                id: x.id.clone(),
+                name: x.name.clone(),
+                media_type: x.media_type.clone(),
+                size: x.size,
+                hash: x.blob.to_string(),
+            })
+            .collect(),
+        status,
+        phase: last.map_or("queued", |e| e.phase.as_str()).to_owned(),
+        created_at: iso(a.created_at),
+        updated_at: iso(last.map_or(a.created_at, |e| e.at)),
+        claimed_by: holder.map(str::to_owned),
+        claim_expires_at: claim.and_then(|e| iso(e.at + CHAT_CLAIM_MS)),
+        needs_approval: a.needs_approval,
+        last_error: failure,
+        receipt: a.events.iter().rev().find_map(|e| e.receipt.clone()),
+        events: a.events.clone(),
+    })
 }
 
 /// The product code is classified at the shared operation boundary.

@@ -1,13 +1,16 @@
-//! The command table: every operation once, with its help, its arguments
-//! and the surfaces that offer it. The CLI and its completions, the MCP
-//! tools and the HTTP API under `/api/v1/` are built from it, and its
-//! command names are the words a query may not start with.
+//! The command table: every operation once, with its help and the
+//! surfaces that offer it. The CLI and its completions, the MCP tools and
+//! the HTTP API under `/api/v1/` are built from it, and its command names
+//! are the words a query may not start with.
 //!
-//! An argument has one name everywhere: `--name` on the command line (with
+//! A row's arguments are declared on its request type ([`arguments`]): a
+//! field's doc comment is its help, its serde default its default. An
+//! argument has one name everywhere: `--name` on the command line (with
 //! `-` for `_`), the property of an MCP tool's input, the field of an HTTP
 //! request. Arguments become one checked JSON object by the shared parser.
-//! HTTP-only structured bodies use their owning request type; binary inputs
-//! reach the daemon directly as bytes.
+//! Options acting on the calling machine are typed structs too
+//! (`cli::calling_process`). HTTP-only structured bodies use their owning
+//! request type; binary inputs reach the daemon directly as bytes.
 
 pub(crate) mod arguments;
 
@@ -95,8 +98,11 @@ pub type Deliver = fn(
 
 /// Turns the command line's values into the request's arguments where
 /// they differ.
-pub type Prepare =
-    fn(&Map<String, Value>, &std::path::Path, &mut Map<String, Value>) -> Result<(), String>;
+pub type Prepare = fn(
+    &command_surface::ParsedCommand,
+    &std::path::Path,
+    &mut Map<String, Value>,
+) -> Result<(), String>;
 
 /// What runs a command.
 #[derive(Clone, Copy)]
@@ -1113,19 +1119,12 @@ pub fn command(name: &str) -> Option<&'static Command> {
 /// `chat send`: the command line reads the `--attach` files in the
 /// caller's process and sends their bytes.
 fn attach_files(
-    values: &Map<String, Value>,
+    parsed: &command_surface::ParsedCommand,
     cwd: &std::path::Path,
     arguments: &mut Map<String, Value>,
 ) -> Result<(), String> {
     let mut files = Vec::new();
-    for path in values
-        .get("attach")
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|value| value.as_str().map(str::to_owned))
-        .collect::<Vec<_>>()
-    {
+    for path in calling_process::options::<calling_process::ChatSend>(parsed)?.attach {
         let path = cwd.join(path);
         let bytes =
             std::fs::read(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;

@@ -1,5 +1,4 @@
 use super::*;
-use crate::commands::Surface;
 use serde_json::json;
 
 #[test]
@@ -28,15 +27,20 @@ fn infer_and_unread_share_typed_requests_and_keep_local_output_off_remote_surfac
         json!({"origin":"claude-code","input":["opaque:input"],"revision":2,"field":["named"]})
     );
     assert!(command.tool == Some(crate::commands::Tool::Read) && command.http);
+    // MCP and HTTP requests carry the input schema's fields; `--output`
+    // acts on the calling machine and is not one of them.
+    let declared = crate::commands::declarations()
+        .descriptions()
+        .iter()
+        .find(|description| description.spec.name == "schema infer")
+        .unwrap();
+    assert!(declared.input_schema["properties"].get("output").is_none());
     assert!(
-        !command
-            .args_for(Surface::Mcp)
-            .any(|arg| arg.name == "output")
-    );
-    assert!(
-        !command
-            .args_for(Surface::Http)
-            .any(|arg| arg.name == "output")
+        declared
+            .spec
+            .arguments
+            .iter()
+            .any(|argument| argument.name == "output" && argument.calling_process)
     );
     let daemon = crate::test_daemon::start("schema arguments");
     for args in [

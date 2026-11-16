@@ -951,3 +951,35 @@ fn a_follow_whose_client_hangs_up_gives_up_its_place_at_once() {
         d.executor.running() == 0
     });
 }
+
+#[test]
+fn a_query_word_named_mcp_does_not_change_the_observed_channel() {
+    use command_surface::Via;
+    assert_eq!(via_of_command_line(&["polylogue", "find", "mcp"]), Via::Cli);
+    assert_eq!(
+        via_of_command_line(&["polylogue", "--json", "mcp"]),
+        Via::Mcp
+    );
+    assert_eq!(
+        via_of_command_line(&["polylogue", "--deadline", "100", "mcp"]),
+        Via::Mcp
+    );
+}
+
+#[test]
+fn concurrent_request_identity_distinguishes_the_accepting_channel() {
+    use crate::operation::Accepted;
+    use command_surface::Via;
+    let directory = tempfile::tempdir().unwrap();
+    let open_calls = crate::hook::open_calls::OpenCalls::new(directory.path().to_owned());
+    let details = command_surface::CallerEvidence {
+        controlling_terminal: true,
+        ..Default::default()
+    };
+    let cli = Accepted::new(&open_calls, &details, Via::Cli, Default::default());
+    let web = Accepted::new(&open_calls, &details, Via::Web, Default::default());
+    assert_eq!(cli.authorship.author, web.authorship.author);
+    assert_ne!(cli.scope(), web.scope());
+    let repeated_cli = Accepted::new(&open_calls, &details, Via::Cli, Default::default());
+    assert_eq!(cli.scope(), repeated_cli.scope());
+}

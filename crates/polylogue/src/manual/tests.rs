@@ -55,9 +55,20 @@ fn the_manual_gives_working_example_queries() {
         // Every argument is named, unlisted ones included.
         let (_, named) = line.rsplit_once("; arguments: ").unwrap();
         let named: Vec<&str> = named.split(", ").collect();
-        for arg in command.args_for(crate::commands::Surface::Mcp) {
-            if arg.name != "request_id" {
-                assert!(named.contains(&arg.name), "{} {}", command.name, arg.name);
+        let input = &crate::commands::declarations()
+            .descriptions()
+            .iter()
+            .find(|description| description.spec.name == command.name)
+            .unwrap()
+            .input_schema;
+        for name in input["properties"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .map(|(name, _)| name)
+        {
+            if name != "request_id" {
+                assert!(named.contains(&name.as_str()), "{} {}", command.name, name);
             }
         }
     }

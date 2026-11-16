@@ -1,7 +1,6 @@
 //! MCP tool calls against a real daemon on a temporary archive.
 
 use super::*;
-use crate::commands::Surface;
 use crate::test_daemon;
 use serde_json::json;
 
@@ -435,6 +434,18 @@ fn every_tool_operation_is_reachable_from_exactly_one_tool() {
     }
 }
 
+/// A row's request arguments as declared, without its calling-process options.
+fn arguments(
+    command: &crate::commands::Command,
+) -> impl Iterator<Item = &'static command_surface::ArgumentSpec> {
+    crate::commands::declarations()
+        .spec_named(command.name)
+        .expect("declared row")
+        .arguments
+        .iter()
+        .filter(|arg| !arg.calling_process)
+}
+
 #[test]
 fn every_argument_is_in_its_tool_schema_or_unlisted() {
     let tools = tools();
@@ -444,65 +455,17 @@ fn every_argument_is_in_its_tool_schema_or_unlisted() {
             .find(|tool| tool["name"] == command.tool.unwrap().name())
             .unwrap();
         let properties = &tool["inputSchema"]["properties"]["arguments"]["properties"];
-        for arg in command.args_for(Surface::Mcp) {
-            if matches!(arg.name, "request_id" | "cursor") {
-                assert!(properties.get(arg.name).is_none());
-                assert!(tool["inputSchema"]["properties"].get(arg.name).is_some());
-                continue;
-            }
+        for arg in arguments(command) {
             assert_eq!(
-                properties.get(arg.name).is_some(),
-                !arg.unlisted
-                    || operations(command.tool.unwrap()).any(|other| {
-                        other
-                            .args_for(Surface::Mcp)
-                            .any(|a| a.name == arg.name && !a.unlisted)
-                    }),
+                properties.get(&arg.name).is_some(),
+                arg.listed
+                    || operations(command.tool.unwrap())
+                        .any(|other| arguments(other).any(|a| a.name == arg.name && a.listed)),
                 "{} {}",
                 command.name,
                 arg.name
             );
         }
-    }
-}
-
-#[test]
-fn typed_operations_declare_every_field_of_their_arguments() {
-    fn fields(schema: &Value, root: &Value, names: &mut std::collections::BTreeSet<String>) {
-        if let Some(reference) = schema["$ref"].as_str() {
-            let name = reference.strip_prefix("#/$defs/").unwrap();
-            return fields(&root["$defs"][name], root, names);
-        }
-        names.extend(
-            schema["properties"]
-                .as_object()
-                .into_iter()
-                .flatten()
-                .map(|(k, _)| k.clone()),
-        );
-        for key in ["anyOf", "oneOf"] {
-            for choice in schema[key].as_array().into_iter().flatten() {
-                fields(choice, root, names);
-            }
-        }
-    }
-    // `chat send` takes the files its `--attach` names on the command line.
-    for command in tool_commands().filter(|command| command.prepare.is_none()) {
-        let schema = crate::commands::declarations()
-            .descriptions()
-            .iter()
-            .find(|description| description.spec.name == command.name)
-            .unwrap()
-            .input_schema
-            .clone();
-        let mut typed = std::collections::BTreeSet::new();
-        fields(&schema, &schema, &mut typed);
-        let declared: std::collections::BTreeSet<String> = command
-            .args_for(Surface::Mcp)
-            .map(|arg| arg.name.to_owned())
-            .filter(|name| !matches!(name.as_str(), "request_id" | "cursor"))
-            .collect();
-        assert_eq!(typed, declared, "{}", command.name);
     }
 }
 

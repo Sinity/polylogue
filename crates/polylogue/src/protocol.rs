@@ -9,12 +9,22 @@ pub mod attachment {
     #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
     #[serde(deny_unknown_fields)]
     pub struct Arguments {
+        /// The message ID
+        #[schemars(extend("argument_form" = "positional"))]
         pub message: String,
+        /// Zero-based source block index
+        #[schemars(extend("argument_form" = "positional"))]
         pub block: u64,
+        /// Zero-based attachment within a tool result (default 0)
         #[serde(default)]
+        #[schemars(extend("unlisted" = true))]
         pub attachment: u64,
+        /// The stored input to read when several match
+        #[schemars(extend("unlisted" = true))]
         pub input: Option<String>,
+        /// Bytes per retrieval range
         #[serde(default = "range_bytes")]
+        #[schemars(extend("unlisted" = true))]
         pub length: u64,
     }
     fn range_bytes() -> u64 {
@@ -25,7 +35,6 @@ pub mod attachment {
 
 pub mod browser;
 pub mod calendar;
-pub mod caller;
 pub mod complete {
     //! Full query completion uses the shared replacement span and candidate type.
     use schemars::JsonSchema;
@@ -34,8 +43,11 @@ pub mod complete {
     #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
     #[serde(deny_unknown_fields)]
     pub struct Arguments {
+        /// The full query text
         #[serde(default)]
+        #[schemars(extend("argument_form" = "positional"))]
         pub text: String,
+        /// UTF-8 byte offset of the cursor (default: end of text)
         pub position: Option<u64>,
     }
     pub type Answer = Vec<query_language::complete::Completion>;
@@ -55,11 +67,12 @@ pub mod embed {
     #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
     #[serde(deny_unknown_fields)]
     pub struct Arguments {
-        /// A sessions query limiting the texts (default: every prose text).
+        /// A sessions query limiting the texts (default: every prose text)
+        #[schemars(extend("argument_form" = "words"))]
         pub query: Option<String>,
-        /// At most this many texts.
+        /// At most this many texts
         pub limit: Option<u64>,
-        /// Confirm a build with a paid provider.
+        /// Confirm a build with a paid provider
         #[serde(default)]
         pub yes: bool,
     }
@@ -73,15 +86,18 @@ pub mod explain {
     #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
     #[serde(deny_unknown_fields)]
     pub struct Arguments {
-        /// `query`, `syntax`, `units`, `fields`, `operators` or `capabilities`.
+        /// query, syntax, units, fields, operators or capabilities
+        #[schemars(extend("argument_form" = "positional"))]
         pub subject: String,
-        /// The query, for subject `query`.
+        /// Required for subject query
         pub expression: Option<String>,
-        /// List fields for this unit.
+        /// List fields for this unit
+        #[schemars(extend("unlisted" = true))]
         pub unit: Option<String>,
-        /// Declarations per page.
+        /// Declarations per page (default 20)
+        #[schemars(extend("unlisted" = true))]
         pub page_size: Option<u64>,
-        /// The calling session, which `self` names.
+        /// Calling session for self references
         pub session: Option<String>,
     }
 }
@@ -95,16 +111,17 @@ pub mod import {
     #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
     #[serde(deny_unknown_fields)]
     pub struct Arguments {
+        /// Files or directories on the daemon host; relative paths need the caller's working directory
         #[serde(default)]
+        #[schemars(extend("argument_form" = "words"))]
         pub paths: Vec<std::path::PathBuf>,
-        /// The declared structure the paths are read as, or the Python Polylogue store
-        /// they are (`python-archive`, `python-user-db`, `python-vectors`).
+        /// Read the paths as this declared structure (an origin name), or as one of Python Polylogue's stores: python-archive (a folder with source.db and blob/), python-user-db (its user.db) or python-vectors (one of its vector stores)
         #[serde(default)]
         pub format: Option<String>,
-        /// The folder of an archive in the older format, imported once in place of paths.
+        /// The folder of an archive written before the version 1 baseline, imported once in place of paths
         #[serde(default)]
         pub from_archive: Option<std::path::PathBuf>,
-        /// With `from_archive`: read and check it, write nothing, and report counts per class.
+        /// With --from-archive: read and check the archive, write nothing, and report counts per class
         #[serde(default)]
         pub dry_run: bool,
     }
@@ -126,10 +143,12 @@ pub mod resume {
     #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
     #[serde(deny_unknown_fields)]
     pub struct Arguments {
-        /// The session; without one, the sessions in `cwd` worth resuming.
+        /// `origin:native_id`
+        #[schemars(extend("argument_form" = "positional"))]
         pub session: Option<SessionId>,
+        /// The directory (default: the caller's working directory)
         pub cwd: Option<PathBuf>,
-        /// At most this many sessions.
+        /// At most this many sessions
         pub limit: Option<u64>,
     }
 
@@ -151,22 +170,38 @@ pub mod schema {
     #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
     #[serde(deny_unknown_fields)]
     pub struct Infer {
+        /// One origin (default: all origins)
+        #[schemars(extend("argument_form" = "positional"))]
         pub origin: Option<String>,
+        /// Select every origin
         #[serde(default)]
+        #[schemars(extend("unlisted" = true))]
         pub all: bool,
+        /// Explicit stored input IDs (repeatable)
         #[serde(default)]
+        #[schemars(extend("unlisted" = true))]
         pub input: Vec<String>,
+        /// Observation time lower bound, RFC 3339 with an offset
+        #[schemars(extend("unlisted" = true))]
         pub since: Option<String>,
+        /// Exact revision (default: latest for each input)
+        #[schemars(extend("unlisted" = true))]
         pub revision: Option<u64>,
+        /// Keep these field names instead of grouping them as dynamic keys
         #[serde(default)]
+        #[schemars(extend("unlisted" = true))]
         pub field: Vec<String>,
     }
 
     #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
     #[serde(deny_unknown_fields)]
     pub struct Unread {
+        /// One origin (default: all origins)
+        #[schemars(extend("argument_form" = "positional"))]
         pub origin: Option<String>,
+        /// Select every origin
         #[serde(default)]
+        #[schemars(extend("unlisted" = true))]
         pub all: bool,
     }
 }
@@ -179,8 +214,14 @@ pub mod setting {
     #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
     #[serde(deny_unknown_fields)]
     pub struct Arguments {
+        /// The setting; without it, list catalog, defaults, scopes and values
+        #[schemars(extend("argument_form" = "positional"))]
         pub key: Option<String>,
+        /// The new value; without it, read the current value
+        #[schemars(extend("argument_form" = "positional"))]
         pub value: Option<String>,
+        /// A named host for host-scoped settings; default: the accepting machine
+        #[schemars(extend("unlisted" = true))]
         pub machine: Option<String>,
     }
 
@@ -229,8 +270,7 @@ pub mod verify {
     #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
     #[serde(deny_unknown_fields)]
     pub struct Arguments {
-        /// Also hash every revision from its chain and write one line per
-        /// revision to this new file on the daemon's host.
+        /// Also write each revision's input, number, length and BLAKE3 to this new file on the daemon's host
         pub manifest: Option<std::path::PathBuf>,
     }
     pub type Answer = polylogue_store::verify::Verification;

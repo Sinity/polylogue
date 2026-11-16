@@ -272,12 +272,10 @@ fn deliver(
     let archive = Archive::at(&startup.config.archive);
     let arguments: crate::protocol::read::Arguments =
         serde_json::from_value(accepted.arguments.clone()).map_err(|e| e.to_string())?;
-    let destination = values
-        .calling_process
-        .get("to")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned)
-        .map(PathBuf::from);
+    let destination =
+        crate::cli::calling_process::options::<crate::cli::calling_process::Read>(values)?
+            .to
+            .map(PathBuf::from);
     // Writing to a destination streams the reading; a terminal shows
     // the terminal form unless JSON was asked for.
     let delivery = if destination.is_some() {

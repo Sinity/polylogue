@@ -449,12 +449,7 @@ fn every_http_command_is_served_and_nothing_else() {
                 .cli_arguments(c.name)
                 .unwrap()
                 .into_iter()
-                .filter(|argument| {
-                    argument.required
-                        && c.args
-                            .iter()
-                            .any(|a| a.name == argument.spec.name && a.default.is_none())
-                })
+                .filter(|argument| argument.required)
             {
                 let value = match argument.kind {
                     command_surface::ValueKind::List(_) => {

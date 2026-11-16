@@ -142,14 +142,14 @@ fn append_record(
 ) -> std::io::Result<String> {
     use std::os::unix::fs::OpenOptionsExt;
     std::fs::create_dir_all(dir)?;
-    let caller = crate::protocol::caller::details();
+    let caller = crate::client::this_process();
     let process = caller
         .harness_pid
         .filter(|_| {
             caller
                 .harness
                 .as_ref()
-                .is_some_and(|origin| origin.as_str() == harness.origin())
+                .is_some_and(|caller_harness| caller_harness.as_str() == harness.origin())
         })
         .unwrap_or_else(std::os::unix::process::parent_id);
     let at = startup.clock.now();

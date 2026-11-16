@@ -39,7 +39,7 @@ fn answer(
         BufReader::new(&stream).read_line(&mut request).unwrap();
         let request: serde_json::Value = serde_json::from_str(&request).unwrap();
         let mut envelope = request;
-        let caller: polylogue_model::authorship::CallerEvidence =
+        let caller: command_surface::CallerEvidence =
             serde_json::from_value(envelope.as_object_mut().unwrap().remove("caller").unwrap())
                 .unwrap();
         assert!(!caller.controlling_terminal);

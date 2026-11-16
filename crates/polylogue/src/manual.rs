@@ -19,10 +19,13 @@ pub fn text() -> String {
     for tool in crate::commands::Tool::ALL {
         let _ = writeln!(text, "\n## `{}`\n", tool.name());
         for command in crate::mcp::operations(tool) {
-            let arguments: Vec<&str> = command
-                .args_for(crate::commands::Surface::Mcp)
-                .map(|arg| arg.name)
-                .filter(|name| *name != "request_id")
+            let arguments: Vec<&str> = crate::commands::declarations()
+                .spec_named(command.name)
+                .map(|spec| spec.arguments.as_slice())
+                .unwrap_or_default()
+                .iter()
+                .filter(|arg| !arg.calling_process && arg.name != "request_id")
+                .map(|arg| arg.name.as_str())
                 .collect();
             let _ = writeln!(
                 text,

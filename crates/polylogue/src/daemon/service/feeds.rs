@@ -8,6 +8,7 @@ pub(crate) struct Changes;
 #[derive(serde::Serialize, serde::Deserialize, command_surface::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ChangesArguments {
+    /// The last fully applied feed position (GEN:COUNTER:ARCHIVE)
     since: Option<String>,
 }
 
