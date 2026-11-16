@@ -273,6 +273,8 @@ pub fn start(
     let to_io = |e: &dyn std::fmt::Display| std::io::Error::other(e.to_string());
     let pointer = polylogue_store::completion::CatalogPointer::new(completion_path.clone());
     let invalidate = move || pointer.invalidate();
+    let budget = config.memory_budget;
+    let config = config.with_memory_budget(budget);
     let settings = config.clone();
     let attempt = || {
         stopped_attempt.ok_or_else(|| {
@@ -284,6 +286,7 @@ pub fn start(
             let attempt = attempt()?;
             let (archive, lock, scope) = Archive::open_or_create_with_invalidator(root, invalidate)
                 .map_err(std::io::Error::other)?;
+            let archive = archive.with_memory_budget(settings.memory_budget);
             let engine = Engine::new(config, archive.clone(), attempt).map_err(|e| to_io(&e))?;
             (archive, lock, ModeState::Standalone, Some(engine), scope)
         }
@@ -294,6 +297,7 @@ pub fn start(
         } => {
             let (archive, lock, scope) = Archive::open_blocked_with_invalidator(root, invalidate)
                 .map_err(std::io::Error::other)?;
+            let archive = archive.with_memory_budget(settings.memory_budget);
             let state = ModeState::Blocked {
                 configured,
                 path,
@@ -307,6 +311,7 @@ pub fn start(
             let (archive, lock, scope) =
                 Archive::open_primary_with_invalidator(root, &sinex.store, invalidate)
                     .map_err(std::io::Error::other)?;
+            let archive = archive.with_memory_budget(settings.memory_budget);
             let connection = Arc::new(
                 polylogue_sinex::Sinex::open(&sinex, &deployment.primary_auth, &settings.host)
                     .map_err(std::io::Error::other)?,

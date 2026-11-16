@@ -1,8 +1,11 @@
 //! Worker-owned natural keys. A key lock covers the batch until its commit result,
 //! so a following worker opens its snapshot after overlapping work has finished.
 use super::*;
+use crate::key_maps::KeyRows;
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Condvar;
+use std::ops::ControlFlow;
+use std::os::unix::fs::FileExt;
+use std::sync::{Condvar, RwLock};
 pub(crate) mod membership;
 
 /// How the database the writer writes keeps its indexes.
@@ -21,15 +24,17 @@ impl IndexUpkeep {
             Self::AtBuildEnd(keys) => Some(keys),
         }
     }
-    pub(crate) fn remember_message(&self, id: &str, pk: i64) {
+    pub(crate) fn remember_message(&self, id: &str, pk: i64) -> Result<()> {
         if let Some(keys) = self.key_maps() {
-            keys.add_message(id, pk);
+            keys.add_message(id, pk)?;
         }
+        Ok(())
     }
-    pub(crate) fn remember_event(&self, id: &str, pk: i64) {
+    pub(crate) fn remember_event(&self, id: &str, pk: i64) -> Result<()> {
         if let Some(keys) = self.key_maps() {
-            keys.add_event(id, pk);
+            keys.add_event(id, pk)?;
         }
+        Ok(())
     }
 }
 
@@ -156,18 +161,84 @@ pub(super) fn resolved_key(identities: &crate::session_alias::Identities, key: K
     })
 }
 
+/// Exact row reservations outlive old snapshots without retaining every key in memory.
+struct ReservationHistory {
+    rows: KeyRows,
+    file: tempfile::NamedTempFile,
+    end: u64,
+}
+impl ReservationHistory {
+    fn new(bytes: u64) -> Result<Self> {
+        Ok(Self {
+            rows: KeyRows::new(bytes)?,
+            file: tempfile::NamedTempFile::new()?,
+            end: 0,
+        })
+    }
+    fn set(&mut self, key: &Key, pk: i64) -> Result<()> {
+        let mut header = [0; 17];
+        header[0] = key.kind as u8;
+        header[1..9].copy_from_slice(&pk.to_le_bytes());
+        header[9..].copy_from_slice(&(key.bytes.len() as u64).to_le_bytes());
+        let offset = self.end;
+        let end = offset
+            .checked_add(17)
+            .and_then(|at| at.checked_add(key.bytes.len() as u64))
+            .or_invalid("key history exhausted")?;
+        self.file.as_file().write_all_at(&header, offset)?;
+        self.file.as_file().write_all_at(&key.bytes, offset + 17)?;
+        self.rows.set(
+            history_key(key),
+            i64::try_from(offset).map_err(StoreError::invalid)?,
+        )?;
+        self.end = end;
+        Ok(())
+    }
+    fn get(&self, key: &Key) -> Result<Option<i64>> {
+        let mut found = None;
+        self.rows.visit(&history_key(key), |offset| {
+            let offset = u64::try_from(offset).map_err(StoreError::invalid)?;
+            let mut header = [0; 17];
+            self.file.as_file().read_exact_at(&mut header, offset)?;
+            let length = u64::from_le_bytes(header[9..].try_into().expect("key length"));
+            if header[0] != key.kind as u8 || length != key.bytes.len() as u64 {
+                return Ok(ControlFlow::Continue(()));
+            }
+            let mut buffer = [0; 4096];
+            for (n, expected) in key.bytes.chunks(buffer.len()).enumerate() {
+                let stored = &mut buffer[..expected.len()];
+                self.file
+                    .as_file()
+                    .read_exact_at(stored, offset + 17 + (n * 4096) as u64)?;
+                if stored != expected {
+                    return Ok(ControlFlow::Continue(()));
+                }
+            }
+            found = Some(i64::from_le_bytes(
+                header[1..9].try_into().expect("row identity"),
+            ));
+            Ok(ControlFlow::Break(()))
+        })?;
+        Ok(found)
+    }
+    fn clear(&mut self) {
+        self.rows.clear();
+        self.end = 0;
+    }
+}
+
 struct Active {
     keys: BTreeSet<Key>,
     next: BTreeMap<Kind, i64>,
-    // IDs outlive the groups that wrote them: an older snapshot can resolve a value
-    // after another group committed it and released its prepared bytes.
+    // A snapshot may still precede another group's committed identity.
+    history: ReservationHistory,
     values: BTreeMap<Key, (i64, std::sync::Weak<Reservation>)>,
 }
 pub(crate) struct Resolver {
     archive: Archive,
-    active: Mutex<Active>,
+    active: Arc<Mutex<Active>>,
     available: Condvar,
-    first: Option<Arc<crate::key_maps::KeyMaps>>,
+    upkeep: RwLock<IndexUpkeep>,
     #[cfg(test)]
     waiting: Mutex<Option<std::sync::mpsc::Sender<()>>>,
 }
@@ -197,6 +268,7 @@ impl Resolver {
             ));
         }
         active.values.clear();
+        active.history.clear();
         Ok(())
     }
 
@@ -210,7 +282,7 @@ impl Resolver {
     pub(crate) fn new(
         archive: &Archive,
         index: &Connection,
-        first: Option<Arc<crate::key_maps::KeyMaps>>,
+        upkeep: IndexUpkeep,
     ) -> Result<Arc<Self>> {
         let mut next = BTreeMap::new();
         for kind in [
@@ -236,20 +308,39 @@ impl Resolver {
                 max.checked_add(1).or_invalid("row identity exhausted")?,
             );
         }
+        let mut history = ReservationHistory::new(archive.memory_budget().keys() / 3)?;
+        if upkeep.at_build_end() {
+            for kind in [Kind::EventValue, Kind::LinkValue] {
+                let mut statement =
+                    index.prepare(&format!("SELECT hash,pk FROM {}", kind.table()))?;
+                let mut rows = statement.query([])?;
+                while let Some(row) = rows.next()? {
+                    let hash: Vec<u8> = row.get(0)?;
+                    history.set(&Key::new(kind, hash), row.get(1)?)?;
+                }
+            }
+        }
         Ok(Arc::new(Self {
             archive: archive.clone(),
-            active: Mutex::new(Active {
+            active: Arc::new(Mutex::new(Active {
                 keys: BTreeSet::new(),
                 next,
                 values: BTreeMap::new(),
-            }),
+                history,
+            })),
             available: Condvar::new(),
-            first,
+            upkeep: RwLock::new(upkeep),
             #[cfg(test)]
             waiting: Mutex::new(None),
         }))
     }
 
+    pub(crate) fn upkeep(&self) -> IndexUpkeep {
+        self.upkeep.read().expect("index upkeep lock").clone()
+    }
+    pub(crate) fn set_upkeep(&self, upkeep: IndexUpkeep) {
+        *self.upkeep.write().expect("index upkeep lock") = upkeep;
+    }
     pub(super) fn lock_keys(self: &Arc<Self>, keys: BTreeSet<Key>) -> KeyLock {
         let mut active = self.active.lock().expect("resolver lock");
         while keys.iter().any(|key| active.keys.contains(key)) {
@@ -286,27 +377,27 @@ impl Resolver {
                 None => self.allocate(key.kind)?,
             }
         };
-        self.remember(key, pk);
+        self.remember(key, pk)?;
         Ok(RowKey {
             pk,
             existing: existing.is_some(),
         })
     }
-    pub(super) fn remember(&self, key: &Key, pk: i64) {
-        if let Some(first) = &self.first {
-            match key.kind {
-                Kind::Message => {
-                    first.add_message(std::str::from_utf8(&key.bytes).expect("message key"), pk)
-                }
-                Kind::Event => {
-                    first.add_event(std::str::from_utf8(&key.bytes).expect("event key"), pk)
-                }
-                _ => {}
+    pub(super) fn remember(&self, key: &Key, pk: i64) -> Result<()> {
+        let upkeep = self.upkeep();
+        match key.kind {
+            Kind::Message => {
+                upkeep.remember_message(std::str::from_utf8(&key.bytes).expect("message key"), pk)
             }
+            Kind::Event => {
+                upkeep.remember_event(std::str::from_utf8(&key.bytes).expect("event key"), pk)
+            }
+            _ => Ok(()),
         }
     }
     pub(super) fn find(&self, index: &Connection, key: &Key) -> Result<Option<i64>> {
-        let first = self.first.as_deref();
+        let upkeep = self.upkeep();
+        let first = upkeep.key_maps();
         match key.kind {
             Kind::Message if first.is_some() => first
                 .expect("first build")
@@ -703,9 +794,47 @@ impl Resolver {
     }
 }
 
-#[derive(Debug, PartialEq)]
 pub(crate) struct Reservation {
     pub pk: i64,
+    release: Option<ReservationRelease>,
+}
+struct ReservationRelease {
+    active: std::sync::Weak<Mutex<Active>>,
+    key: Key,
+}
+impl std::fmt::Debug for Reservation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Reservation").field("pk", &self.pk).finish()
+    }
+}
+impl PartialEq for Reservation {
+    fn eq(&self, other: &Self) -> bool {
+        self.pk == other.pk
+    }
+}
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        let Some(release) = self.release.take() else {
+            return;
+        };
+        let Some(active) = release.active.upgrade() else {
+            return;
+        };
+        let mut active = active.lock().expect("resolver lock");
+        if active
+            .values
+            .get(&release.key)
+            .is_some_and(|(_, prior)| prior.strong_count() == 0)
+        {
+            active.values.remove(&release.key);
+        }
+    }
+}
+fn history_key(key: &Key) -> [u8; 32] {
+    let mut hash = blake3::Hasher::new();
+    hash.update(&[key.kind as u8]);
+    hash.update(&key.bytes);
+    *hash.finalize().as_bytes()
 }
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct PackedValue {
@@ -717,22 +846,24 @@ pub(crate) struct PackedValue {
 impl Resolver {
     fn identity(&self, key: Key, existing: Option<i64>) -> Result<Arc<Reservation>> {
         let mut active = self.active.lock().expect("resolver lock");
-        if let Some((pk, prior)) = active.values.get_mut(&key) {
+        if let Some((pk, prior)) = active.values.get(&key) {
             if existing.is_some_and(|existing| existing != *pk) {
                 return Err(StoreError::Invalid(
                     "a shared hash has conflicting row identities".into(),
                 ));
             }
-            return Ok(match prior.upgrade() {
-                Some(prior) => prior,
-                None => {
-                    let reservation = Arc::new(Reservation { pk: *pk });
-                    *prior = Arc::downgrade(&reservation);
-                    reservation
-                }
-            });
+            if let Some(prior) = prior.upgrade() {
+                drop(active);
+                return Ok(prior);
+            }
         }
-        let pk = match existing {
+        let remembered = active.history.get(&key)?;
+        if remembered.is_some_and(|prior| existing.is_some_and(|existing| prior != existing)) {
+            return Err(StoreError::Invalid(
+                "a shared hash has conflicting row identities".into(),
+            ));
+        }
+        let pk = match remembered.or(existing) {
             Some(pk) => pk,
             None => {
                 let next = active.next.get_mut(&key.kind).expect("identity allocator");
@@ -741,10 +872,20 @@ impl Resolver {
                 pk
             }
         };
-        let reservation = Arc::new(Reservation { pk });
+        if remembered.is_none() {
+            active.history.set(&key, pk)?;
+        }
+        let reservation = Arc::new(Reservation {
+            pk,
+            release: Some(ReservationRelease {
+                active: Arc::downgrade(&self.active),
+                key: key.clone(),
+            }),
+        });
         active
             .values
             .insert(key, (pk, Arc::downgrade(&reservation)));
+        drop(active);
         Ok(reservation)
     }
     pub(super) fn value(
@@ -758,11 +899,20 @@ impl Resolver {
             canonical_json::canonical_json(value).map_err(crate::encoding::identity_encoding)?;
         let hash = *blake3::hash(&canonical).as_bytes();
         let body = crate::encoding::RowPacker::new()?.pack_json(value)?;
-        let pk = index.scalar_optional::<i64>(
-            &format!("SELECT pk FROM {} WHERE hash=?1", kind.table()),
-            [hash.as_slice()],
-        )?;
-        let key = self.identity(Key::new(kind, hash.as_slice()), pk)?;
+        let identity = Key::new(kind, hash.as_slice());
+        let pk = if self.upkeep().at_build_end() {
+            self.active
+                .lock()
+                .expect("resolver lock")
+                .history
+                .get(&identity)?
+        } else {
+            index.scalar_optional::<i64>(
+                &format!("SELECT pk FROM {} WHERE hash=?1", kind.table()),
+                [hash.as_slice()],
+            )?
+        };
+        let key = self.identity(identity, pk)?;
         Ok(PackedValue { key, hash, body })
     }
 }
@@ -780,6 +930,7 @@ mod reservation {
     ) -> std::result::Result<Arc<Reservation>, D::Error> {
         Ok(Arc::new(Reservation {
             pk: serde::Deserialize::deserialize(deserializer)?,
+            release: None,
         }))
     }
 }
@@ -791,13 +942,15 @@ pub(super) fn prepare_index(
     chain: i64,
     first: bool,
 ) -> Result<()> {
-    let first = first
-        .then(|| crate::key_maps::KeyMaps::load(index).map(Arc::new))
-        .transpose()?;
+    let upkeep = if first {
+        IndexUpkeep::AtBuildEnd(Arc::new(crate::key_maps::KeyMaps::load(index)?))
+    } else {
+        IndexUpkeep::PerTransaction
+    };
     let resolver = Resolver::new(
         &Archive::at(std::path::Path::new("unused-test-location")),
         index,
-        first,
+        upkeep,
     )?;
     let change = std::mem::replace(&mut batch.change, Change::Reparse { chain });
     let (keys, chains) = resolver.gather(&mut [batch], index, index)?;

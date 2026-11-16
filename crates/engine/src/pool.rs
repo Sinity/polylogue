@@ -802,7 +802,8 @@ fn run_chain(
             plan.failure_recorded = true;
         }
     } else {
-        let context = if plan.origin.name == "claude-code" {
+        let context = if (plan.origin.open)(&plan.path).is_some_and(|parser| parser.uses_context())
+        {
             Some(polylogue_store::parser_context::Overlay::open(
                 archive,
                 &plan.input.id,
@@ -1049,9 +1050,10 @@ pub(crate) fn run(
                 None
             }
         }
-    } else if job.origin.name == "claude-code"
+    } else if job.origin.support == polylogue_sources::Support::Parsed
+        && (job.origin.open)(&job.path).is_some_and(|parser| parser.uses_context())
         && !job.parser_deferred
-        && (job.start == 0 || out.parser_state.is_some())
+        && (job.start == 0 || out.parser_state.as_ref().is_some_and(Json::is_object))
     {
         let chain = job.parser_chain.or(match job.change {
             Change::Reparse { chain } => Some(chain),
@@ -1202,14 +1204,22 @@ pub(crate) fn run(
                     if let Some(last) = parsed.last_mut()
                         && !matches!(last.progress, polylogue_model::batch::StepProgress::NoParserYet { .. }) {
                         if let Some(overlay) = &context_overlay {
-                            let Some(state) = out.parser_state.as_mut().and_then(Json::as_object_mut) else {
-                                let error = "keyed parser continuation has no object state";
-                                out.error = Some(error.into());
-                                out.failure_recorded = true;
-                                return vec![failed_step(&job, error.into(), prepare)];
-                            };
-                            match overlay.checkpoint_delta(out.parsed_upto).and_then(|delta| serde_json::to_value(delta).map_err(Into::into)) {
-                                Ok(delta) => { state.insert(polylogue_model::parser_context::FIELD.into(), delta); }
+                            match overlay.checkpoint_delta(out.parsed_upto) {
+                                Ok(delta) => {
+                                    if let Some(state) = out.parser_state.as_mut().and_then(Json::as_object_mut) {
+                                        match serde_json::to_value(delta) {
+                                            Ok(delta) => { state.insert(polylogue_model::parser_context::FIELD.into(),delta); }
+                                            Err(error) => {
+                                                out.error=Some(error.to_string());out.failure_recorded=true;
+                                                return vec![failed_step(&job,error.to_string(),prepare)];
+                                            }
+                                        }
+                                    } else if !delta.entries.is_empty() {
+                                        let error="keyed parser continuation has no object state";
+                                        out.error=Some(error.into());out.failure_recorded=true;
+                                        return vec![failed_step(&job,error.into(),prepare)];
+                                    }
+                                }
                                 Err(polylogue_store::StoreError::Stopped) => {
                                     out.cancelled = true;
                                     return Vec::new();

@@ -1,6 +1,6 @@
 //! Building `index.db` in a private file. Every standalone build, a first
 //! build or one replacing an index from another schema, writes
-//! `index-build/index.db` with no journal and no sync. Only the build
+//! `index-build/index.db` with a disk rollback journal and no transaction syncs. Only the build
 //! pipeline opens that file: the writer, its resolver and parser-context
 //! reads, the engine's planning reads and tool-database catalog reads. When
 //! the build ends the file is synced, closed, switched to WAL and renamed
@@ -43,14 +43,17 @@ pub struct IndexBuild {
     /// their current reading version or found without a parser.
     pub chains: u64,
     pub chains_read: u64,
+    /// Newest readable chains' bytes and their committed parser positions.
+    pub bytes: u64,
+    pub bytes_read: u64,
 }
 
 impl std::fmt::Display for IndexBuild {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "the index is being built: {} of {} input chains read",
-            self.chains_read, self.chains
+            "the index is being built: {} of {} bytes parsed; {} of {} input chains read",
+            self.bytes_read, self.bytes, self.chains_read, self.chains
         )
     }
 }
@@ -122,6 +125,8 @@ struct Inner {
     serving_previous: bool,
     chains: u64,
     chains_read: u64,
+    bytes: u64,
+    bytes_read: u64,
 }
 
 pub(crate) fn state(root: &Path) -> Arc<State> {
@@ -156,6 +161,8 @@ impl Inner {
             serving_previous: self.serving_previous,
             chains: self.chains,
             chains_read: self.chains_read,
+            bytes: self.bytes,
+            bytes_read: self.bytes_read,
         })
     }
 
@@ -255,6 +262,21 @@ impl Archive {
     /// no index can be served until it ends.
     pub(crate) fn served_index(&self) -> Result<PathBuf> {
         self.with_index_path(Reads::Serving, |path| Ok(path.to_path_buf()))
+    }
+
+    /// Record byte progress from newest chains' stored parser positions.
+    pub fn record_build_bytes(&self, bytes: u64, bytes_read: u64) {
+        let mut inner = self.index_build.inner();
+        inner.bytes = bytes;
+        inner.bytes_read = bytes_read.min(bytes);
+    }
+
+    /// Advance byte progress only after a range's write is acknowledged.
+    pub fn advance_build_bytes(&self, bytes: u64) {
+        let mut inner = self.index_build.inner();
+        if inner.file.is_some() {
+            inner.bytes_read = inner.bytes_read.saturating_add(bytes).min(inner.bytes);
+        }
     }
 
     /// The build in progress, if `index.db` is being built.
@@ -363,7 +385,7 @@ fn open_setup(path: &Path) -> Result<Connection> {
 
 /// The writer's connection to the build file. `unsynced` is created and
 /// synced before this connection may write anything: its commits do not
-/// sync and its rollback journal is in memory, so a lost process or boot can
+/// sync, so a lost process or boot can
 /// leave the file torn. A failed transaction still rolls back in process.
 pub(crate) fn open_writer(archive: &Archive) -> Result<Connection> {
     let paths = Paths::of(&archive.root);
@@ -374,11 +396,11 @@ pub(crate) fn open_writer(archive: &Archive) -> Result<Connection> {
             | OpenFlags::SQLITE_OPEN_NO_MUTEX
             | OpenFlags::SQLITE_OPEN_URI,
     )?;
-    conn.pragma_update(Some("main"), "journal_mode", "memory")?;
+    conn.pragma_update(Some("main"), "journal_mode", "persist")?;
     conn.pragma_update(Some("main"), "synchronous", "off")?;
-    conn.pragma_update(None, "temp_store", "memory")?;
+    conn.pragma_update(None, "temp_store", "file")?;
     conn.busy_timeout(crate::archive::BUSY_TIMEOUT)?;
-    crate::archive::writer_settings(&conn, crate::archive::cache::INDEX_WRITER)?;
+    crate::archive::writer_settings(&conn, archive.memory_budget().writer_cache_mib())?;
     crate::fault::check("index.build.after_marker", &archive.root.to_string_lossy())?;
     Ok(conn)
 }

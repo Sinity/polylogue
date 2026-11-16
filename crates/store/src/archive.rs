@@ -514,7 +514,7 @@ pub(crate) const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 fn tune(conn: &Connection) -> Result<()> {
     conn.pragma_update(None, "journal_mode", "wal")?;
     conn.pragma_update(None, "synchronous", "normal")?;
-    conn.pragma_update(None, "temp_store", "memory")?;
+    conn.pragma_update(None, "temp_store", "file")?;
     conn.busy_timeout(BUSY_TIMEOUT)?;
     Ok(())
 }
@@ -522,18 +522,9 @@ fn tune(conn: &Connection) -> Result<()> {
 /// Page-cache targets of write connections, in MiB. Process memory also includes
 /// parsed values, queued batches, SQLite temporary work and allocator overhead.
 pub mod cache {
-    /// The writer's `index.db` connection. It holds the indexes probed on
-    /// every insert (text hashes, message IDs) and the search segments it
-    /// merges; at 256 MB a first build read back from disk more than twice
-    /// its input.
-    pub const INDEX_WRITER: i64 = 768;
-    /// The search thread's `index.db` connection (writer.rs, `Search`).
-    pub const SEARCH: i64 = 64;
-    /// The derive thread's `index.db` connection (writer.rs, `DeriveThread`):
-    /// it reads one session at a time.
-    pub const DERIVE: i64 = 64;
-    /// The writer's `archive.db` connection: inputs, revisions, extents.
-    pub const ARCHIVE_WRITER: i64 = 256;
+    /// Default for callers without an archive allowance. Pipeline writers
+    /// take their cache from the process's memory budget.
+    pub const INDEX_WRITER: i64 = 384;
     /// Schema setup and one-off maintenance.
     pub const SETUP: i64 = 16;
 }
@@ -627,7 +618,10 @@ pub(crate) fn open_runtime_writer(path: &Path, cache_mib: i64) -> Result<Connect
 /// [`crate::write_lock::commit`], which syncs the log after the commit is
 /// visible, outside the readers' lock.
 pub(crate) fn open_archive_writer(archive: &Archive) -> Result<Connection> {
-    let conn = open_runtime_writer(&archive.archive_db(), cache::ARCHIVE_WRITER)?;
+    let conn = open_runtime_writer(
+        &archive.archive_db(),
+        archive.memory_budget().archive_cache_mib(),
+    )?;
     conn.pragma_update(None, "temp_store", "file")?;
     conn.pragma_update(Some("temp"), "cache_size", -1024)?;
     Ok(conn)
@@ -653,6 +647,8 @@ pub fn open_read(path: &Path) -> Result<Connection> {
     // from their aggregate budget after attaching archive.db.
     conn.pragma_update(None, "cache_size", -(cache::SETUP * 1024))?;
     conn.pragma_update(None, "mmap_size", 0)?;
+    conn.pragma_update(None, "temp_store", "file")?;
+    conn.pragma_update(Some("temp"), "cache_size", -1024)?;
     crate::sql_functions::register(&conn)?;
     Ok(conn)
 }

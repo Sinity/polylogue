@@ -7,10 +7,10 @@ pub struct RevisionPoint {
     pub length: u64,
 }
 impl Reader<'_> {
-    /// Every chain of `input`, with its extents and reading, by chain: what
-    /// deciding which chains' bytes begin alike needs.
-    pub fn chain_layouts(&self, input: &str) -> Result<Vec<crate::ChainLayout>> {
-        crate::identical_chains::chain_layouts(self.conn()?, input)
+    /// Multiple chains of `input`, staged on disk for comparison by chain.
+    /// A single chain has no other reading to take its rows from.
+    pub fn chain_layouts(&self, input: &str) -> Result<Option<crate::ChainLayouts>> {
+        crate::ChainLayouts::load(self.conn()?, input)
     }
 
     /// Visits known points at exactly this length, at most once per byte chain.

@@ -2,6 +2,7 @@ use super::*;
 use crate::parse::{Step, run};
 use polylogue_model::{ErrorReason, UnknownReason};
 use serde_json::json;
+use std::collections::BTreeMap;
 
 const THREAD: &str = "019a0000-0000-7000-8000-000000000001";
 const PARENT: &str = "019a0000-0000-7000-8000-0000000000aa";
@@ -266,9 +267,11 @@ fn parsing_in_appended_bytes_equals_parsing_at_once() {
     while cut < input.len() {
         let mut parser_state = ParserState::default();
         let first = run(&rollout(), &mut parser_state, &input[..cut], 0).unwrap();
-        // The parser state crosses a restart as JSON.
+        // Active state crosses as JSON; keyed history remains in the context.
+        let context = parser_state.context.clone();
         let mut parser_state: ParserState =
             serde_json::from_value(serde_json::to_value(&parser_state).unwrap()).unwrap();
+        parser_state.bind(context);
         let used = first.consumed as usize;
         let second = run(&rollout(), &mut parser_state, &input[used..], used as u64).unwrap();
         assert_eq!(final_messages(&[first, second]), whole, "cut at {cut}");
@@ -278,7 +281,7 @@ fn parsing_in_appended_bytes_equals_parsing_at_once() {
 
 #[test]
 fn a_command_left_running_is_updated_when_it_ends() {
-    let records = vec![
+    let mut records = vec![
         meta(json!({})),
         env(
             2,
@@ -305,6 +308,21 @@ fn a_command_left_running_is_updated_when_it_ends() {
             "output": "Chunk ID: y\nWall time: 5.0 seconds\nProcess exited with code 1\nOutput:\nerror"}),
         ),
     ];
+    // A later poll cannot report the completed original call again.
+    records.extend([
+        env(
+            6,
+            "response_item",
+            json!({"type":"function_call","name":"write_stdin",
+            "arguments":"{\"session_id\":4242,\"chars\":\"\"}","call_id":"call_c"}),
+        ),
+        env(
+            7,
+            "response_item",
+            json!({"type":"function_call_output","call_id":"call_c",
+            "output":"Process exited with code 1\nOutput:\nerror"}),
+        ),
+    ]);
     let mut parser_state = ParserState::default();
     let step = run(&rollout(), &mut parser_state, &jsonl(&records), 0).unwrap();
     let msgs = final_messages(std::slice::from_ref(&step));
@@ -327,7 +345,6 @@ fn a_command_left_running_is_updated_when_it_ends() {
             reason: Some(ErrorReason::ExitCode(1))
         }
     );
-    assert!(parser_state.running.is_empty());
 }
 
 #[test]
@@ -762,8 +779,10 @@ fn copied_history_branch_point_survives_split_appends() {
                 .as_ref()
                 .is_some_and(|id| id.native().as_str() == "copied-first")
         }));
+        let context = state.context.clone();
         let mut state: ParserState =
             serde_json::from_value(serde_json::to_value(state).unwrap()).unwrap();
+        state.bind(context);
         let second = run(&rollout(), &mut state, &input[cut..], cut as u64).unwrap();
         let links: Vec<_> = first
             .output

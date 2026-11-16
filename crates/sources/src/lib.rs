@@ -35,6 +35,7 @@ pub mod openrouter;
 pub mod origin;
 pub mod otel_genai;
 pub mod parse;
+mod parser_state;
 pub mod polylogue_bundle;
 mod records;
 pub mod repo_lookup;

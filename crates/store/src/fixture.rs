@@ -141,7 +141,13 @@ impl Fixture {
 
     pub fn queue_search_text(&self, body: &str) -> Result<i64> {
         let tx = self.index.unchecked_transaction()?;
-        let id = crate::text_rows::intern(&tx, body, 1, None, None)?;
+        let id = crate::text_rows::intern(
+            &tx,
+            body,
+            1,
+            None,
+            &crate::writer::resolve::IndexUpkeep::PerTransaction,
+        )?;
         tx.commit()?;
         Ok(id)
     }
@@ -312,7 +318,13 @@ impl Fixture {
             &self.index,
             rusqlite::TransactionBehavior::Immediate,
         )?;
-        let id = crate::text_rows::intern(&tx, body, bit, None, None)?;
+        let id = crate::text_rows::intern(
+            &tx,
+            body,
+            bit,
+            None,
+            &crate::writer::resolve::IndexUpkeep::PerTransaction,
+        )?;
         tx.commit()?;
         crate::text_rows::index_pending(&self.index, || ())?;
         Ok(id)
@@ -531,7 +543,7 @@ impl Fixture {
                             &format!("Answer {n}: the synthetic work is finished."),
                             1,
                             None,
-                            None,
+                            &crate::writer::resolve::IndexUpkeep::PerTransaction,
                         )?;
                         block.execute(params![message_pk, pk, text, text_body])?;
                     }

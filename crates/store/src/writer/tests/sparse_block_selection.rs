@@ -257,7 +257,8 @@ fn primary_readings_preserve_every_known_block() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_primary_cache(dir.path()).unwrap();
     let mut index = crate::archive::open_write(&archive.index_db(), 1).unwrap();
-    let resolver = resolve::Resolver::new(&archive, &index, None).unwrap();
+    let resolver =
+        resolve::Resolver::new(&archive, &index, resolve::IndexUpkeep::PerTransaction).unwrap();
     let message = original();
     let mut readings = Vec::new();
     for (n, ordinals) in [&[0][..], &[1][..], &[2, 3][..]].into_iter().enumerate() {
@@ -288,10 +289,15 @@ fn primary_readings_preserve_every_known_block() {
                 input,
                 step,
                 rows::ReadingWrite {
-                    texts: &crate::text_rows::TextIds::new(&tx, false).unwrap(),
+                    texts: &crate::text_rows::TextIds::new(
+                        &tx,
+                        false,
+                        crate::archive::MemoryBudget::default().keys() / 3,
+                    )
+                    .unwrap(),
                     resolution: step.resolution.as_ref().unwrap(),
                     counter: 1,
-                    first_build: None,
+                    upkeep: &resolve::IndexUpkeep::PerTransaction,
                     source_commit: Some(&fixture_commit()),
                     changes: &crate::change_summary::ChangeSummary::start(&tx).unwrap(),
                     retraction: false,
@@ -480,7 +486,15 @@ fn complete_repeated_readings_do_not_reload_historical_message_bodies() {
     let mut replay = batch("native", Route::Live, 0, vec![row(0, message)], &["s"]);
     replay.change = Change::Reparse { chain: 1 };
     assert_eq!(
-        write_test_rows(&tx, &replay, &replay.parse[0], 1, 2, None).unwrap(),
+        write_test_rows(
+            &tx,
+            &replay,
+            &replay.parse[0],
+            1,
+            2,
+            &resolve::IndexUpkeep::PerTransaction
+        )
+        .unwrap(),
         0
     );
     tx.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)

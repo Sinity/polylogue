@@ -121,6 +121,55 @@ fn planning_sql(selected: bool, chains: RevisionChains) -> String {
 }
 
 impl Reader<'_> {
+    /// One page of stored input identities, independent of their parsing progress.
+    pub fn input_ids_after(&self, after: Option<&str>, limit: usize) -> Result<Vec<String>> {
+        let token = self.scope_token();
+        let conn = self.conn()?;
+        let condition = if after.is_some() { " WHERE id>?1" } else { "" };
+        let mut query = conn.prepare_cached(&format!(
+            "SELECT id FROM source_input{condition} ORDER BY id LIMIT ?2",
+        ))?;
+        let ids = query
+            .query_map(params![after, limit as u64], |row| row.get(0))?
+            .collect::<std::result::Result<Vec<String>, _>>()?;
+        token.check()?;
+        Ok(ids)
+    }
+
+    /// Bytes the newest readable chains hold and their committed parser positions.
+    pub fn newest_parse_bytes(&self, versions: &[(String, String)]) -> Result<(u64, u64)> {
+        let token = self.scope_token();
+        let progress = self.conn()?.query_row(
+            "WITH latest AS (
+                 SELECT input,max(number) AS number FROM source_revision GROUP BY input
+             ), newest AS (
+                 SELECT r.input,r.chain,
+                     (SELECT max(s.length) FROM source_revision s
+                      WHERE s.input=r.input AND s.chain=r.chain) AS length
+                 FROM latest l JOIN source_revision r ON r.input=l.input AND r.number=l.number
+             ), formats AS (
+                 SELECT i.id,COALESCE((
+                     SELECT json_extract(o.details_json,'$.import_format')
+                     FROM source_observation o WHERE o.input=i.id AND o.class='imported'
+                     AND json_valid(o.details_json)
+                     AND json_type(o.details_json,'$.import_format')='text'
+                     ORDER BY (json_extract(o.details_json,'$.import_format')='export-file'),o.rowid DESC
+                     LIMIT 1),i.format) AS format FROM source_input i
+             )
+             SELECT coalesce(sum(c.length),0),coalesce(sum(
+                 CASE WHEN p.reading_version=json_extract(e.value,'$[1]')
+                      THEN min(c.length,p.parsed_upto) ELSE 0 END),0)
+             FROM newest c JOIN formats f ON f.id=c.input
+             JOIN json_each(?1) e ON json_extract(e.value,'$[0]')=f.format
+             LEFT JOIN input_ref i ON i.id=c.input
+             LEFT JOIN parse_state p ON p.input_pk=i.pk AND p.chain=c.chain",
+            [serde_json::to_string(versions)?],
+            |row| Ok((row.get(0)?,row.get(1)?)),
+        )?;
+        token.check()?;
+        Ok(progress)
+    }
+
     /// Every chain whose index is behind its stored bytes. Waiting at the
     /// recorded source length is current for that reading version; a refusal
     /// or failure recorded there is too, unless `stopped` asks for it again.

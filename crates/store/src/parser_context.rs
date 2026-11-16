@@ -15,12 +15,14 @@ use std::sync::{Arc, Mutex};
 // replaced is never read again.
 pub(crate) const SCHEMA: &str = "CREATE TABLE parser_context_state(input_pk INTEGER NOT NULL REFERENCES input_ref(pk),chain INTEGER NOT NULL,reading_version TEXT NOT NULL,through INTEGER NOT NULL,PRIMARY KEY(input_pk,chain)) STRICT, WITHOUT ROWID;
 CREATE TABLE parser_context_response(input_pk INTEGER NOT NULL REFERENCES input_ref(pk),chain INTEGER NOT NULL,namespace TEXT NOT NULL,session TEXT NOT NULL,key TEXT NOT NULL,version_pk INTEGER NOT NULL REFERENCES message_version(pk),source_start INTEGER NOT NULL,source_end INTEGER NOT NULL,PRIMARY KEY(input_pk,chain,namespace,session,key)) STRICT, WITHOUT ROWID;
-CREATE TABLE parser_context_alias(input_pk INTEGER NOT NULL REFERENCES input_ref(pk),chain INTEGER NOT NULL,namespace TEXT NOT NULL,uuid TEXT NOT NULL,target TEXT,PRIMARY KEY(input_pk,chain,namespace,uuid)) STRICT, WITHOUT ROWID;";
+CREATE TABLE parser_context_alias(input_pk INTEGER NOT NULL REFERENCES input_ref(pk),chain INTEGER NOT NULL,namespace TEXT NOT NULL,uuid TEXT NOT NULL,target TEXT,PRIMARY KEY(input_pk,chain,namespace,uuid)) STRICT, WITHOUT ROWID;
+CREATE TABLE parser_context_value(input_pk INTEGER NOT NULL REFERENCES input_ref(pk),chain INTEGER NOT NULL,namespace TEXT NOT NULL,key TEXT NOT NULL,value BLOB NOT NULL,PRIMARY KEY(input_pk,chain,namespace,key)) STRICT, WITHOUT ROWID;";
 
-// Collection and foreign-key checks follow this reference during first build,
-// so its reverse index must remain present while query-only indexes are deferred.
-pub(crate) const VERSION_INDEX: &str =
-    "CREATE INDEX IF NOT EXISTS parser_context_version ON parser_context_response(version_pk);";
+fn scratch_values() -> Result<Connection> {
+    let scratch = Connection::open("")?;
+    scratch.execute_batch("PRAGMA cache_size=-256; PRAGMA mmap_size=0; PRAGMA temp_store=FILE; PRAGMA journal_mode=OFF; PRAGMA cache_spill=ON; CREATE TABLE entry(key TEXT PRIMARY KEY,value BLOB NOT NULL,dirty INTEGER NOT NULL) WITHOUT ROWID; CREATE INDEX entry_dirty ON entry(key) WHERE dirty=1; BEGIN;")?;
+    Ok(scratch)
+}
 
 #[derive(Clone)]
 pub struct Overlay(Arc<Mutex<Attempt>>);
@@ -94,8 +96,7 @@ impl Overlay {
                 })?);
             }
         }
-        let scratch = Connection::open("")?;
-        scratch.execute_batch("PRAGMA cache_size=-256; PRAGMA mmap_size=0; PRAGMA temp_store=FILE; PRAGMA journal_mode=OFF; CREATE TABLE entry(key TEXT PRIMARY KEY,value BLOB NOT NULL,dirty INTEGER NOT NULL) WITHOUT ROWID; CREATE INDEX entry_dirty ON entry(key) WHERE dirty=1;")?;
+        let scratch = scratch_values()?;
         Ok(Self(Arc::new(Mutex::new(Attempt {
             scratch,
             index,
@@ -111,6 +112,21 @@ impl Overlay {
             lookup_through: base,
             base: if replay_chain.is_some() { 0 } else { base },
             replay_chain,
+        }))))
+    }
+    /// Export items reconstruct their cross-item state by replaying from byte zero.
+    pub fn temporary() -> Result<Self> {
+        Ok(Self(Arc::new(Mutex::new(Attempt {
+            scratch: scratch_values()?,
+            index: None,
+            input: None,
+            chain: None,
+            source: String::new(),
+            source_chain: None,
+            version: String::new(),
+            lookup_through: 0,
+            base: 0,
+            replay_chain: None,
         }))))
     }
     pub fn replay_chain(&self) -> Option<i64> {
@@ -162,6 +178,7 @@ impl Overlay {
                     end: row.end,
                 },
                 Value::Alias { target } => Reference::Alias { target },
+                Value::State { value } => Reference::State { value },
             };
             entries.push(Entry { key, value });
         }
@@ -171,6 +188,7 @@ impl Overlay {
         attempt
             .scratch
             .execute("UPDATE entry SET dirty=0 WHERE dirty=1", [])?;
+        attempt.scratch.execute_batch("COMMIT; BEGIN")?;
         attempt.base = through;
         attempt.replay_chain = None;
         Ok(Delta {
@@ -228,6 +246,19 @@ impl Overlay {
             StoreError::Invalid("committed parser context has no read snapshot".into())
         })?;
         match key {
+            Key::State { namespace, key } => {
+                let value: Option<Vec<u8>> = index.scalar_optional(
+                    "SELECT value FROM parser_context_value WHERE input_pk=?1 AND chain=?2 AND namespace=?3 AND key=?4",
+                    params![input,chain,namespace,key],
+                )?;
+                value
+                    .map(|value| {
+                        Ok(Value::State {
+                            value: crate::encoding::unpack_json(&value)?,
+                        })
+                    })
+                    .transpose()
+            }
             Key::Alias { namespace, uuid } => {
                 let row = index
                     .prepare_cached("SELECT target FROM parser_context_alias WHERE input_pk=?1 AND chain=?2 AND namespace=?3 AND uuid=?4")?
@@ -344,6 +375,7 @@ pub(crate) fn apply(
             (&entry.key, &entry.value),
             (Key::Response { .. }, Reference::Response { .. })
                 | (Key::Alias { .. }, Reference::Alias { .. })
+                | (Key::State { .. }, Reference::State { .. })
         ) {
             return Err(StoreError::Invalid(
                 "parser context key and value have different kinds".into(),
@@ -387,7 +419,11 @@ pub(crate) fn apply(
         }
     }
     if delta.base == 0 {
-        for table in ["parser_context_response", "parser_context_alias"] {
+        for table in [
+            "parser_context_response",
+            "parser_context_alias",
+            "parser_context_value",
+        ] {
             tx.prepare_cached(&format!(
                 "DELETE FROM {table} WHERE input_pk=?1 AND chain=?2"
             ))?
@@ -420,6 +456,10 @@ pub(crate) fn apply(
             (Key::Alias { namespace, uuid }, Reference::Alias { target }) => {
                 tx.prepare_cached("INSERT INTO parser_context_alias VALUES(?1,?2,?3,?4,?5) ON CONFLICT(input_pk,chain,namespace,uuid) DO UPDATE SET target=excluded.target")?
                     .execute(params![input, chain, namespace, uuid, target.as_ref().map(ToString::to_string)])?;
+            }
+            (Key::State { namespace, key }, Reference::State { value }) => {
+                tx.prepare_cached("INSERT INTO parser_context_value VALUES(?1,?2,?3,?4,?5) ON CONFLICT(input_pk,chain,namespace,key) DO UPDATE SET value=excluded.value")?
+                    .execute(params![input,chain,namespace,key,crate::encoding::pack_json(value)?])?;
             }
             _ => unreachable!("key and value kinds were checked above"),
         }

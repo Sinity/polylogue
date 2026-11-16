@@ -112,6 +112,7 @@ pub(crate) fn engine(
         home: w.home.clone(),
         tool_dirs: Default::default(),
         workers: 3,
+        memory_budget: Default::default(),
         reader_memory_bytes: 128 << 20,
         bytes_in_flight: 1 << 20,
         machine: "test-machine".into(),

@@ -100,6 +100,7 @@ impl Morrow {
             home: self.home.clone(),
             tool_dirs: Default::default(),
             workers: 3,
+            memory_budget: Default::default(),
             reader_memory_bytes: 128 << 20,
             bytes_in_flight: 64 << 20,
             machine: "morrow-machine".into(),

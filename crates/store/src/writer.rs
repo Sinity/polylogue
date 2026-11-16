@@ -347,46 +347,6 @@ impl WriterQueue {
 /// commits whenever no batch is waiting.
 const ROWS_PER_TRANSACTION: usize = 50_000;
 
-/// Secondary indexes no statement of the writer uses: a first build drops
-/// them and builds each once at its end ([`Inner::build_deferred`]).
-/// Checked with `EXPLAIN QUERY PLAN` over the store's statements
-/// (2026-10-19).
-const READ_ONLY_INDEXES: &[&str] = &[
-    "text_normalized",
-    "message_order",
-    "tool_call_order",
-    "event_order",
-    "message_at",
-    "message_recent",
-    "message_session_at",
-    "message_model_at",
-    "message_session_model_at",
-    "event_at",
-    "session_order",
-    "session_activity",
-    "session_recent",
-    "session_started",
-    "session_cwd",
-    "session_repo",
-    "session_live",
-    "message_prose",
-    "message_branch",
-    "tool_call_tool",
-    "tool_call_action",
-    "tool_call_path",
-    "tool_call_repo_command",
-    "event_kind",
-    "commit_link_hash",
-    "pr_link_number",
-    "removed_session_changed",
-    "message_pem",
-];
-
-/// Unique indexes on natural keys, which the writer's statements use: a first
-/// build drops them too, finds rows by key in memory meanwhile
-/// ([`crate::key_maps`]), and builds them first when it ends.
-const KEY_INDEXES: &[&str] = &["message_id", "event_id", "text_hash"];
-
 /// Groups waiting for the writer before senders block. A batch's bytes stay
 /// counted against the parse pool's limit until its transaction commits
 /// ([`InFlight`]), so that limit bounds their memory, not this depth. The
@@ -402,10 +362,6 @@ const QUEUE: usize = 256;
 /// commits ([`InFlight`]); committing well before that limit lets the pool
 /// keep parsing while the writer commits, instead of the two alternating.
 const BYTES_PER_TRANSACTION: u64 = 128 << 20;
-
-pub(crate) fn deferred_index_names() -> impl Iterator<Item = &'static str> {
-    KEY_INDEXES.iter().chain(READ_ONLY_INDEXES).copied()
-}
 
 /// Records how many stored chains a build has read, from the counts the
 /// writer keeps with each change ([`crate::chain_progress`]).
@@ -433,7 +389,10 @@ fn open_index_writer(archive: &Archive, building: bool) -> Result<Connection> {
     let index = if building {
         crate::archive::index_build::open_writer(archive)?
     } else {
-        open_runtime_writer(&archive.index_db(), crate::archive::cache::INDEX_WRITER)?
+        open_runtime_writer(
+            &archive.index_db(),
+            archive.memory_budget().writer_cache_mib(),
+        )?
     };
     if archive.is_primary() {
         // Changing temporary storage drops TEMP objects, so set it before triggers.
@@ -478,36 +437,6 @@ impl Writer {
         let building = !archive.is_primary() && archive.index_build.building();
         let index = open_index_writer(archive, building)?;
         let installed = archive.root.join("index.db");
-        // A first build inserts rows without maintaining the indexes only
-        // reads use, or the unique indexes on natural keys; each is built
-        // once from a sorted scan when the build ends. The writer's other
-        // indexes stay, and an index missing from these lists is kept, which
-        // is the safe default.
-        let deferred_indexes = if building {
-            let expected = Connection::open_in_memory()?;
-            expected.execute_batch(crate::schema::INDEX)?;
-            expected.execute_batch(crate::schema::OPEN_INDEXES)?;
-            let mut defs = Vec::new();
-            // One transaction: each drop committed alone cost a full sync.
-            let tx = rusqlite::Transaction::new_unchecked(
-                &index,
-                rusqlite::TransactionBehavior::Immediate,
-            )?;
-            for name in deferred_index_names() {
-                let sql: Option<String> = expected.scalar_optional(
-                    "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?1",
-                    [name],
-                )?;
-                if let Some(sql) = sql {
-                    tx.execute(&format!("DROP INDEX IF EXISTS \"{name}\""), [])?;
-                    defs.push(sql);
-                }
-            }
-            tx.commit()?;
-            defs
-        } else {
-            Vec::new()
-        };
         let archive_conn = if archive.is_primary() {
             crate::archive::open_read(&archive.index_db())?
         } else {
@@ -518,16 +447,22 @@ impl Writer {
         };
         crate::chain_progress::open(&index, !archive.is_primary())?;
         record_build_progress(archive, &index)?;
-        let first_build = building
-            .then(|| crate::key_maps::KeyMaps::load(&index).map(Arc::new))
-            .transpose()?;
-        let texts = crate::text_rows::TextIds::new(&index, building)?;
+        let upkeep = if building {
+            resolve::IndexUpkeep::AtBuildEnd(Arc::new(crate::key_maps::KeyMaps::load_with_budget(
+                &index,
+                archive.memory_budget().keys() / 3,
+            )?))
+        } else {
+            resolve::IndexUpkeep::PerTransaction
+        };
+        let texts =
+            crate::text_rows::TextIds::new(&index, building, archive.memory_budget().keys() / 3)?;
         let segment = if sinex.is_none() {
             Some(crate::blobs::open_writer(&archive_conn, &archive.root)?)
         } else {
             None
         };
-        let resolver = resolve::Resolver::new(archive, &index, first_build.clone())?;
+        let resolver = resolve::Resolver::new(archive, &index, upkeep)?;
         let stream_source = sinex.clone();
         let commits = crate::completion::CommitEvents::default();
         #[cfg(any(test, feature = "fixture"))]
@@ -555,13 +490,20 @@ impl Writer {
             archive: archive_conn,
             index,
             report: WriteReport::default(),
-            first_build,
             texts,
-            deferred_indexes,
             users,
             // Both open the installed index, once a build has ended.
-            search: Search::start(installed.clone(), !building)?,
-            derive: derive_thread::DeriveThread::start(installed, queue.clone(), stop.child())?,
+            search: Search::start(
+                installed.clone(),
+                !building,
+                archive.memory_budget().search_cache_mib(),
+            )?,
+            derive: derive_thread::DeriveThread::start(
+                installed,
+                queue.clone(),
+                stop.child(),
+                archive.memory_budget().search_cache_mib(),
+            )?,
             location: archive.clone(),
             sinex,
             stream_error: None,
@@ -877,12 +819,7 @@ struct Inner {
     archive: Connection,
     index: Connection,
     report: WriteReport,
-    /// Set while the index is being built from nothing, without syncs
-    /// ([`Writer::start`]).
-    first_build: Option<Arc<crate::key_maps::KeyMaps>>,
     texts: crate::text_rows::TextIds,
-    /// Secondary indexes dropped for a first build, recreated when it ends.
-    deferred_indexes: Vec<String>,
     /// User requests, served between the writer's transactions.
     users: Arc<user_queue::UserQueue>,
     /// The search thread ([`search_thread`]): woken after each commit, and
@@ -983,10 +920,7 @@ impl Inner {
             None => self
                 .complete_ready_captures()
                 .map(|()| {
-                    // A first build derives every session once, when it ends.
-                    if self.first_build.is_none() {
-                        self.request_derive(derive_thread::Waiting::Nobody);
-                    }
+                    self.request_derive(derive_thread::Waiting::Nobody);
                 })
                 .map_err(|error| error.to_string()),
         };
@@ -1317,7 +1251,7 @@ impl Inner {
                 // Whatever a flush reports written is also derived, except in
                 // a first build, which a flush in the middle of a pass (each
                 // import item, each run of the parse pool) must not end.
-                if derive && self.first_build.is_none() {
+                if derive && !self.resolver.upkeep().at_build_end() {
                     self.request_derive(derive_thread::Waiting::Flush(reply, Box::new(report)));
                 } else {
                     let _ = reply.send(Ok(report));
@@ -1500,7 +1434,7 @@ impl Inner {
                     return Err(StoreError::WriterGone);
                 }
                 inner.project_variant_text()?;
-                if inner.first_build.is_none() {
+                if !inner.resolver.upkeep().at_build_end() {
                     crate::text_rows::index_pending(&inner.index, || ())?;
                 }
                 crate::derive::mark_moved_versions(&mut inner.index)
@@ -1539,6 +1473,7 @@ impl Inner {
         self.index.progress_handler(0, None::<fn() -> bool>)?;
         match result {
             Ok(value) => Ok(Some(value)),
+            Err(StoreError::Stopped) if self.stop.is_cancelled() => Ok(None),
             Err(StoreError::Sqlite(error))
                 if self.stop.is_cancelled()
                     && error.sqlite_error_code()
@@ -1555,7 +1490,7 @@ impl Inner {
     /// and the writer continues on it. A stop or failure before the install
     /// leaves the build to resume at the next start.
     fn finish_build(&mut self) -> Result<()> {
-        if self.first_build.is_none() || self.stop.is_cancelled() {
+        if !self.resolver.upkeep().at_build_end() || self.stop.is_cancelled() {
             return Ok(());
         }
         let finished = self.until_stopped(Inner::build_deferred);
@@ -1563,7 +1498,8 @@ impl Inner {
             return finished.map(drop);
         }
         self.install_build()?;
-        self.first_build = None;
+        self.resolver
+            .set_upkeep(resolve::IndexUpkeep::PerTransaction);
         self.search.ready();
         self.commits
             .committed(crate::completion::Committed::CONTENT);
@@ -1587,51 +1523,32 @@ impl Inner {
         installed
     }
 
-    /// Ends a first build's bulk load: writes the search entries the build
-    /// marked, rebuilds the trigram index from `tool_call`, and creates the
-    /// indexes it dropped, the unique ones on natural keys first. Each from one ordered scan, so the
-    /// indexes are written once instead of rewritten through the build.
+    /// Builds search beside the file while the writer creates its secondary
+    /// indexes. Unique keys are checked before the completed file is installed.
     fn build_deferred(&mut self) -> Result<()> {
         use crate::timing::{Stage, add};
-        // Bulk inserts are finished; release their cached programs before the search scan.
         self.index.flush_prepared_statement_cache();
-        let started = std::time::Instant::now();
-        crate::text_rows::index_marked(&self.index)?;
-        add(Stage::SearchIndex, started.elapsed());
-        let started = std::time::Instant::now();
-        self.index.execute(
-            "INSERT INTO tool_call_trigram(tool_call_trigram) VALUES ('rebuild')",
-            [],
-        )?;
-        add(Stage::TrigramIndex, started.elapsed());
-        let started = std::time::Instant::now();
-        for sql in &self.deferred_indexes {
-            if self.stop.is_cancelled() {
-                return Err(rusqlite::Error::SqliteFailure(
-                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERRUPT),
-                    None,
-                )
-                .into());
+        let stop = self.stop.clone();
+        let root = self.location.root.clone();
+        crate::text_rows::build_search_indexes(&self.index, |index| {
+            let started = std::time::Instant::now();
+            index.execute(
+                "INSERT INTO tool_call_trigram(tool_call_trigram) VALUES ('rebuild')",
+                [],
+            )?;
+            add(Stage::TrigramIndex, started.elapsed());
+            let started = std::time::Instant::now();
+            for sql in crate::schema::built_at_end_sql()? {
+                if stop.is_cancelled() {
+                    return Err(StoreError::Stopped);
+                }
+                index.execute(&sql, [])?;
+                crate::fault::check("index.deferred", &root.to_string_lossy())?;
             }
-            let sql = sql
-                .replacen(
-                    "CREATE UNIQUE INDEX ",
-                    "CREATE UNIQUE INDEX IF NOT EXISTS ",
-                    1,
-                )
-                .replacen("CREATE INDEX ", "CREATE INDEX IF NOT EXISTS ", 1);
-            self.index.execute(&sql, [])?;
-            crate::fault::check("index.deferred", &self.location.root.to_string_lossy())?;
-        }
-        self.deferred_indexes.clear();
-        // Without row counts the planner rates a lookup by a column of few
-        // values (a call's action) like one by a session. A sample of each
-        // index is enough to tell them apart and reads a bounded number of
-        // rows. Only `main`: the attached databases are read-only here.
-        self.index
-            .execute_batch("PRAGMA analysis_limit = 1000; ANALYZE main;")?;
-        add(Stage::SecondaryIndexes, started.elapsed());
-        Ok(())
+            index.execute_batch("PRAGMA analysis_limit = 1000; ANALYZE main;")?;
+            add(Stage::SecondaryIndexes, started.elapsed());
+            Ok(())
+        })
     }
 
     /// Writes a group in one transaction per database. If it fails, each
@@ -1805,6 +1722,7 @@ impl Inner {
         &mut self,
         batches: impl Iterator<Item = &'a Batch> + Clone,
     ) -> Result<()> {
+        let upkeep = self.resolver.upkeep();
         let primary = self.sinex.is_some();
         if primary {
             for batch in batches.clone() {
@@ -1932,7 +1850,7 @@ impl Inner {
                             texts: &self.texts,
                             resolution,
                             counter,
-                            first_build: self.first_build.as_deref(),
+                            upkeep: &upkeep,
                             source_commit: Some(&source_commit),
                             changes: &changes,
                             retraction: false,
@@ -1946,13 +1864,7 @@ impl Inner {
             }
             stats.0 += 1;
         }
-        self.report.item_units_read += rows::finish(
-            &itx,
-            &changes,
-            self.first_build.as_deref(),
-            &self.texts,
-            counter,
-        )?;
+        self.report.item_units_read += rows::finish(&itx, &changes, &upkeep, &self.texts, counter)?;
         let source_changed = if !primary {
             let changed = crate::chain_progress::recorded(&self.archive)?;
             crate::chain_progress::refresh(&itx, &changed)?;

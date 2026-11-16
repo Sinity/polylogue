@@ -350,7 +350,7 @@ fn value_identity_survives_a_commit_newer_than_the_workers_snapshot() {
 }
 
 #[test]
-fn keys_created_after_the_first_build_are_shared_by_following_routes() {
+fn keys_created_after_the_build_are_shared_by_following_routes() {
     let w = test_archive();
     w.writer
         .send(
@@ -474,7 +474,8 @@ fn original_readings_use_confirmed_blob_sizes_without_a_local_source_database() 
     let archive = Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
     let mut index = crate::archive::open_write(&archive.index_db(), 1).unwrap();
     crate::schema::ensure_primary_index(&index).unwrap();
-    let resolver = resolve::Resolver::new(&archive, &index, None).unwrap();
+    let resolver =
+        resolve::Resolver::new(&archive, &index, resolve::IndexUpkeep::PerTransaction).unwrap();
     let blob = BlobHash::of(b"confirmed image");
     let mut message = text_message("confirmed", "s", Role::User, "confirmed text", None);
     message
@@ -506,10 +507,15 @@ fn original_readings_use_confirmed_blob_sizes_without_a_local_source_database() 
         &input,
         step,
         rows::ReadingWrite {
-            texts: &crate::text_rows::TextIds::new(&tx, false).unwrap(),
+            texts: &crate::text_rows::TextIds::new(
+                &tx,
+                false,
+                crate::archive::MemoryBudget::default().keys() / 3,
+            )
+            .unwrap(),
             resolution: step.resolution.as_ref().unwrap(),
             counter: 1,
-            first_build: None,
+            upkeep: &resolve::IndexUpkeep::PerTransaction,
             source_commit: Some(&fixture_commit()),
             changes: &crate::change_summary::ChangeSummary::start(&tx).unwrap(),
             retraction: false,
@@ -541,7 +547,8 @@ fn source_retractions_require_the_confirmed_chain_identity() {
     let archive = Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
     let index = crate::archive::open_write(&archive.index_db(), 1).unwrap();
     crate::schema::ensure_primary_index(&index).unwrap();
-    let resolver = resolve::Resolver::new(&archive, &index, None).unwrap();
+    let resolver =
+        resolve::Resolver::new(&archive, &index, resolve::IndexUpkeep::PerTransaction).unwrap();
     let mut input = batch("confirmed-input", Route::Live, 0, Vec::new(), &[]);
     input.change = Change::Reparse { chain: 0 };
     input.parse[0].parsed_upto = 0;
@@ -568,7 +575,15 @@ fn continuing_readings_require_the_committed_prefix_and_retry_once() {
         )],
         &["s"],
     );
-    write_test_rows(&tx, &first, &first.parse[0], 1, 1, None).unwrap();
+    write_test_rows(
+        &tx,
+        &first,
+        &first.parse[0],
+        1,
+        1,
+        &resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     let gap = batch(
         "cursor",
         Route::Live,
@@ -579,7 +594,17 @@ fn continuing_readings_require_the_committed_prefix_and_retry_once() {
         )],
         &["s"],
     );
-    assert!(write_test_rows(&tx, &gap, &gap.parse[0], 1, 2, None).is_err());
+    assert!(
+        write_test_rows(
+            &tx,
+            &gap,
+            &gap.parse[0],
+            1,
+            2,
+            &resolve::IndexUpkeep::PerTransaction
+        )
+        .is_err()
+    );
     assert_eq!(
         tx.query_row("SELECT count(*) FROM message", [], |r| r.get::<_, i64>(0))
             .unwrap(),
@@ -596,15 +621,39 @@ fn continuing_readings_require_the_committed_prefix_and_retry_once() {
         &["s"],
     );
     assert_eq!(
-        write_test_rows(&tx, &middle, &middle.parse[0], 1, 3, None).unwrap(),
+        write_test_rows(
+            &tx,
+            &middle,
+            &middle.parse[0],
+            1,
+            3,
+            &resolve::IndexUpkeep::PerTransaction
+        )
+        .unwrap(),
         1
     );
     assert_eq!(
-        write_test_rows(&tx, &middle, &middle.parse[0], 1, 4, None).unwrap(),
+        write_test_rows(
+            &tx,
+            &middle,
+            &middle.parse[0],
+            1,
+            4,
+            &resolve::IndexUpkeep::PerTransaction
+        )
+        .unwrap(),
         0
     );
     assert_eq!(
-        write_test_rows(&tx, &gap, &gap.parse[0], 1, 5, None).unwrap(),
+        write_test_rows(
+            &tx,
+            &gap,
+            &gap.parse[0],
+            1,
+            5,
+            &resolve::IndexUpkeep::PerTransaction
+        )
+        .unwrap(),
         1
     );
     assert_eq!(
@@ -626,7 +675,15 @@ fn no_parser_metadata_waits_at_partial_eof_and_resumes_on_append() {
         at_end: partial.parse[0].progress.reached_end(),
     };
     partial.parse[0].parsed_upto = 40;
-    write_test_rows(&tx, &partial, &partial.parse[0], 1, 1, None).unwrap();
+    write_test_rows(
+        &tx,
+        &partial,
+        &partial.parse[0],
+        1,
+        1,
+        &resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     let state: (String, i64, String) = tx
         .query_row(
             "SELECT status,at_length,reading_version FROM parse_state",
@@ -639,7 +696,15 @@ fn no_parser_metadata_waits_at_partial_eof_and_resumes_on_append() {
     append.parse[0].progress = polylogue_model::batch::StepProgress::NoParserYet {
         at_end: append.parse[0].progress.reached_end(),
     };
-    write_test_rows(&tx, &append, &append.parse[0], 1, 2, None).unwrap();
+    write_test_rows(
+        &tx,
+        &append,
+        &append.parse[0],
+        1,
+        2,
+        &resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     let state: (String, i64, Option<i64>) = tx
         .query_row(
             "SELECT status,parsed_upto,at_length FROM parse_state",
@@ -680,7 +745,15 @@ fn imported_message_order_is_independent_of_local_byte_ranges() {
     );
     input.parse[0].order_from = Some(100);
     input.parse[0].output.message_order.extend([(0, 1), (1, 0)]);
-    write_test_rows(&tx, &input, &input.parse[0], 1, 1, None).unwrap();
+    write_test_rows(
+        &tx,
+        &input,
+        &input.parse[0],
+        1,
+        1,
+        &resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     let rows = tx
         .prepare("SELECT m.id,s.seq,m.source_start FROM message m JOIN message_source s ON s.message_pk=m.pk ORDER BY s.seq")
         .unwrap()
@@ -703,7 +776,17 @@ fn imported_message_order_is_independent_of_local_byte_ranges() {
     );
     let mut invalid = input.clone();
     invalid.parse[0].output.message_order.insert(0, u64::MAX);
-    assert!(write_test_rows(&tx, &invalid, &invalid.parse[0], 1, 2, None).is_err());
+    assert!(
+        write_test_rows(
+            &tx,
+            &invalid,
+            &invalid.parse[0],
+            1,
+            2,
+            &resolve::IndexUpkeep::PerTransaction
+        )
+        .is_err()
+    );
     tx.commit().unwrap();
 }
 
@@ -749,10 +832,15 @@ fn apply_source_batches(index: &mut Connection, batches: &[Batch]) -> Result<()>
                 batch,
                 step,
                 rows::ReadingWrite {
-                    texts: &crate::text_rows::TextIds::new(&tx, false).unwrap(),
+                    texts: &crate::text_rows::TextIds::new(
+                        &tx,
+                        false,
+                        crate::archive::MemoryBudget::default().keys() / 3,
+                    )
+                    .unwrap(),
                     resolution: step.resolution.as_ref().unwrap(),
                     counter: 1,
-                    first_build: None,
+                    upkeep: &resolve::IndexUpkeep::PerTransaction,
                     source_commit: Some(&fixture_commit()),
                     changes: &changes,
                     retraction: false,
@@ -771,7 +859,8 @@ fn batches_resolve_overlapping_source_chains_once() {
     let archive = Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
     let mut index = crate::archive::open_write(&archive.index_db(), 1).unwrap();
     crate::schema::ensure_primary_index(&index).unwrap();
-    let resolver = resolve::Resolver::new(&archive, &index, None).unwrap();
+    let resolver =
+        resolve::Resolver::new(&archive, &index, resolve::IndexUpkeep::PerTransaction).unwrap();
     let mut readings = overlapping_source_batches();
     resolver
         .batches(&mut readings.iter_mut().collect::<Vec<_>>())
@@ -828,7 +917,8 @@ fn a_refused_source_group_keeps_all_rows_and_positions_uncommitted() {
     let archive = Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
     let mut index = crate::archive::open_write(&archive.index_db(), 1).unwrap();
     crate::schema::ensure_primary_index(&index).unwrap();
-    let resolver = resolve::Resolver::new(&archive, &index, None).unwrap();
+    let resolver =
+        resolve::Resolver::new(&archive, &index, resolve::IndexUpkeep::PerTransaction).unwrap();
     let mut readings = overlapping_source_batches();
     resolver
         .batches(&mut readings.iter_mut().collect::<Vec<_>>())
@@ -873,7 +963,8 @@ fn source_retraction_reselects_remaining_sources() {
     let archive = Archive::on_sinex(directory.path(), &directory.path().join("bytes"));
     let mut index = crate::archive::open_write(&archive.index_db(), 1).unwrap();
     crate::schema::ensure_primary_index(&index).unwrap();
-    let resolver = resolve::Resolver::new(&archive, &index, None).unwrap();
+    let resolver =
+        resolve::Resolver::new(&archive, &index, resolve::IndexUpkeep::PerTransaction).unwrap();
     let mut sources = overlapping_source_batches();
     resolver
         .batches(&mut sources.iter_mut().collect::<Vec<_>>())
@@ -898,7 +989,12 @@ fn source_retraction_reselects_remaining_sources() {
         let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
         assert!(
             apply_source_retractions(
-                &crate::text_rows::TextIds::new(&tx, false).unwrap(),
+                &crate::text_rows::TextIds::new(
+                    &tx,
+                    false,
+                    crate::archive::MemoryBudget::default().keys() / 3
+                )
+                .unwrap(),
                 &tx,
                 &retractions,
                 2,
@@ -927,7 +1023,12 @@ fn source_retraction_reselects_remaining_sources() {
     let tx = index.transaction().unwrap();
     let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
     apply_source_retractions(
-        &crate::text_rows::TextIds::new(&tx, false).unwrap(),
+        &crate::text_rows::TextIds::new(
+            &tx,
+            false,
+            crate::archive::MemoryBudget::default().keys() / 3,
+        )
+        .unwrap(),
         &tx,
         &retractions,
         2,
@@ -937,8 +1038,13 @@ fn source_retraction_reselects_remaining_sources() {
     rows::finish(
         &tx,
         &changes,
-        None,
-        &crate::text_rows::TextIds::new(&tx, false).unwrap(),
+        &resolve::IndexUpkeep::PerTransaction,
+        &crate::text_rows::TextIds::new(
+            &tx,
+            false,
+            crate::archive::MemoryBudget::default().keys() / 3,
+        )
+        .unwrap(),
         2,
     )
     .unwrap();
@@ -1308,11 +1414,27 @@ fn remaining_event_keeps_its_identity_after_subset() {
     assert_ne!(ids[0], ids[1]);
     let mut conn = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
     let tx = conn.transaction().unwrap();
-    write_test_rows(&tx, &full, &full.parse[0], 1, 1, None).unwrap();
+    write_test_rows(
+        &tx,
+        &full,
+        &full.parse[0],
+        1,
+        1,
+        &resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     let mut subset = batch("native-source", Route::Live, 0, Vec::new(), &[]);
     subset.parse[0].output.events.push(event);
     subset.parse[0].output.event_ids.insert(0, ids[1].clone());
-    write_test_rows(&tx, &subset, &subset.parse[0], 1, 2, None).unwrap();
+    write_test_rows(
+        &tx,
+        &subset,
+        &subset.parse[0],
+        1,
+        2,
+        &resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     let remaining: String = tx
         .query_row("SELECT id FROM event", [], |row| row.get(0))
         .unwrap();
@@ -1330,7 +1452,17 @@ fn remaining_event_keeps_its_identity_after_subset() {
             }],
         },
     );
-    assert!(write_test_rows(&tx, &subset, &subset.parse[0], 1, 3, None).is_err());
+    assert!(
+        write_test_rows(
+            &tx,
+            &subset,
+            &subset.parse[0],
+            1,
+            3,
+            &resolve::IndexUpkeep::PerTransaction
+        )
+        .is_err()
+    );
     assert_eq!(
         tx.query_row("SELECT count(*) FROM event", [], |row| row.get::<_, i64>(0))
             .unwrap(),
@@ -1345,8 +1477,24 @@ fn checkpoint_commit_positions_survive_resets_and_rollback() {
     let mut conn = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
     let first = batch("checkpoint", Route::Live, 0, Vec::new(), &[]);
     let tx = conn.transaction().unwrap();
-    write_test_rows(&tx, &first, &first.parse[0], 1, 10, None).unwrap();
-    write_test_rows(&tx, &first, &first.parse[0], 1, 20, None).unwrap();
+    write_test_rows(
+        &tx,
+        &first,
+        &first.parse[0],
+        1,
+        10,
+        &resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
+    write_test_rows(
+        &tx,
+        &first,
+        &first.parse[0],
+        1,
+        20,
+        &resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     assert_eq!(
         tx.query_row("SELECT commit_seq FROM parse_state", [], |r| r
             .get::<_, i64>(0))
@@ -1356,7 +1504,15 @@ fn checkpoint_commit_positions_survive_resets_and_rollback() {
     tx.commit().unwrap();
     let continuation = batch("checkpoint", Route::Live, 100, Vec::new(), &[]);
     let tx = conn.transaction().unwrap();
-    write_test_rows(&tx, &continuation, &continuation.parse[0], 1, 25, None).unwrap();
+    write_test_rows(
+        &tx,
+        &continuation,
+        &continuation.parse[0],
+        1,
+        25,
+        &resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     assert_eq!(
         tx.query_row("SELECT commit_seq FROM parse_state", [], |r| r
             .get::<_, i64>(0))
@@ -1373,8 +1529,24 @@ fn checkpoint_commit_positions_survive_resets_and_rollback() {
     let mut waiting = batch("checkpoint", Route::Live, 100, Vec::new(), &[]);
     waiting.parse[0].parsed_upto = 100;
     let tx = conn.transaction().unwrap();
-    write_test_rows(&tx, &waiting, &waiting.parse[0], 1, 30, None).unwrap();
-    write_test_rows(&tx, &waiting, &waiting.parse[0], 1, 40, None).unwrap();
+    write_test_rows(
+        &tx,
+        &waiting,
+        &waiting.parse[0],
+        1,
+        30,
+        &resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
+    write_test_rows(
+        &tx,
+        &waiting,
+        &waiting.parse[0],
+        1,
+        40,
+        &resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     let state: (i64, String) = tx
         .query_row("SELECT commit_seq,status FROM parse_state", [], |r| {
             Ok((r.get(0)?, r.get(1)?))
@@ -1383,7 +1555,15 @@ fn checkpoint_commit_positions_survive_resets_and_rollback() {
     assert_eq!(state, (30, "waiting".into()));
     let mut upgraded = first;
     upgraded.parse[0].reading_version = "synthetic=2".into();
-    write_test_rows(&tx, &upgraded, &upgraded.parse[0], 1, 50, None).unwrap();
+    write_test_rows(
+        &tx,
+        &upgraded,
+        &upgraded.parse[0],
+        1,
+        50,
+        &resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     assert_eq!(
         tx.query_row("SELECT commit_seq FROM parse_state", [], |r| r
             .get::<_, i64>(0))

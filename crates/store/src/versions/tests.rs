@@ -1,4 +1,5 @@
 use super::*;
+use crate::{key_maps::KeyMaps, writer::resolve::IndexUpkeep};
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -34,7 +35,12 @@ fn database(unrelated: i64) -> Connection {
 }
 
 fn cleanup_steps(conn: &Connection) -> u64 {
-    let identities = crate::text_rows::TextIds::new(conn, true).unwrap();
+    let identities = crate::text_rows::TextIds::new(
+        conn,
+        true,
+        crate::archive::MemoryBudget::default().keys() / 3,
+    )
+    .unwrap();
     conn.flush_prepared_statement_cache();
     let steps = Arc::new(AtomicU64::new(0));
     let count = Arc::clone(&steps);
@@ -46,7 +52,12 @@ fn cleanup_steps(conn: &Connection) -> u64 {
         }),
     )
     .unwrap();
-    remove_unreferenced(conn, Some(&KeyMaps::default()), &identities).unwrap();
+    remove_unreferenced(
+        conn,
+        &IndexUpkeep::AtBuildEnd(Arc::new(KeyMaps::default())),
+        &identities,
+    )
+    .unwrap();
     conn.progress_handler(0, None::<fn() -> bool>).unwrap();
     steps.load(Ordering::Relaxed)
 }
@@ -239,8 +250,13 @@ fn removing_the_last_text_reference_and_its_cleanup_roll_back_together() {
     );
     remove_unreferenced(
         &conn,
-        Some(&KeyMaps::default()),
-        &crate::text_rows::TextIds::new(&conn, true).unwrap(),
+        &IndexUpkeep::AtBuildEnd(Arc::new(KeyMaps::default())),
+        &crate::text_rows::TextIds::new(
+            &conn,
+            true,
+            crate::archive::MemoryBudget::default().keys() / 3,
+        )
+        .unwrap(),
     )
     .unwrap();
     assert_eq!(
@@ -270,10 +286,15 @@ fn removing_the_last_text_reference_and_its_cleanup_roll_back_together() {
 }
 
 #[test]
-fn first_build_cleanup_keeps_text_and_forgets_deleted_ids() {
+fn build_cleanup_keeps_text_and_forgets_deleted_ids() {
     let mut conn = database(0);
-    let first = KeyMaps::load(&conn).unwrap();
-    let identities = crate::text_rows::TextIds::new(&conn, true).unwrap();
+    let upkeep = IndexUpkeep::AtBuildEnd(Arc::new(KeyMaps::load(&conn).unwrap()));
+    let identities = crate::text_rows::TextIds::new(
+        &conn,
+        true,
+        crate::archive::MemoryBudget::default().keys() / 3,
+    )
+    .unwrap();
     let hash = [17; 32];
     let version = [18; 32];
     let texts = identities.transaction();
@@ -300,14 +321,14 @@ fn first_build_cleanup_keeps_text_and_forgets_deleted_ids() {
         [id],
     )
     .unwrap();
-    remove_unreferenced(&tx, Some(&first), &identities).unwrap();
+    remove_unreferenced(&tx, &upkeep, &identities).unwrap();
     assert_eq!(identities.resolve(&tx, &hash, None, None).unwrap().id, id);
     tx.execute(
         "DELETE FROM message_version WHERE version_hash=?1",
         [version.as_slice()],
     )
     .unwrap();
-    remove_unreferenced(&tx, Some(&first), &identities).unwrap();
+    remove_unreferenced(&tx, &upkeep, &identities).unwrap();
     assert!(identities.resolve(&tx, &hash, None, None).is_err());
     let replacement = identities
         .resolve(
@@ -390,8 +411,18 @@ fn version_keys_and_payload_children_survive_failed_removal() {
     conn.execute_batch("SAVEPOINT change").unwrap();
     conn.execute("UPDATE message_source SET version_pk=?1", [keys[1]])
         .unwrap();
-    let ids = crate::text_rows::TextIds::new(&conn, true).unwrap();
-    remove_unreferenced(&conn, Some(&KeyMaps::default()), &ids).unwrap();
+    let ids = crate::text_rows::TextIds::new(
+        &conn,
+        true,
+        crate::archive::MemoryBudget::default().keys() / 3,
+    )
+    .unwrap();
+    remove_unreferenced(
+        &conn,
+        &IndexUpkeep::AtBuildEnd(Arc::new(KeyMaps::default())),
+        &ids,
+    )
+    .unwrap();
     assert_eq!(
         conn.query_row(
             "SELECT count(*) FROM message_version_body WHERE version_pk=?1",
@@ -404,7 +435,12 @@ fn version_keys_and_payload_children_survive_failed_removal() {
     );
     conn.execute_batch("DELETE FROM parser_context_response")
         .unwrap();
-    remove_unreferenced(&conn, Some(&KeyMaps::default()), &ids).unwrap();
+    remove_unreferenced(
+        &conn,
+        &IndexUpkeep::AtBuildEnd(Arc::new(KeyMaps::default())),
+        &ids,
+    )
+    .unwrap();
     for table in [
         "message_version_body",
         "message_block_selection",

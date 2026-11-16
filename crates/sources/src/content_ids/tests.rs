@@ -51,14 +51,21 @@ fn a_message_is_named_by_session_role_content_and_occurrence() {
 
 #[test]
 fn carried_counts_continue_after_a_resumed_parse() {
+    let context = polylogue_model::parser_context::Handle::default();
     let mut ids = ContentIds::default();
+    ids.bind_context(context.clone(), "fixture".into());
     let blocks = json!(["same"]);
     ids.next(&session("s"), Role::User, &blocks).unwrap();
     let carried: ContentIds = serde_json::from_slice(&serde_json::to_vec(&ids).unwrap()).unwrap();
     let mut resumed = carried;
+    resumed.bind_context(context, "fixture".into());
     assert_eq!(
-        resumed.next(&session("s"), Role::User, &blocks).unwrap(),
-        ids.next(&session("s"), Role::User, &blocks).unwrap()
+        resumed
+            .next(&session("s"), Role::User, &blocks)
+            .unwrap()
+            .native()
+            .as_str(),
+        expected("s", "user", r#"["user",["same"]]"#, 1)
     );
     assert_eq!(
         serde_json::to_string(&ContentIds::default()).unwrap(),

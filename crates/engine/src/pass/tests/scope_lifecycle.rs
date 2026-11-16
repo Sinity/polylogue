@@ -20,7 +20,6 @@ fn a_completed_scope_reset_reloads_confirmed_state_without_recapturing() {
     assert!(engine.run_pass().unwrap().errors.is_empty());
     let input = engine.inputs[&path].input_id.clone();
     let chain = engine.inputs[&path].chain.unwrap();
-    assert!(engine.inputs[&path].parser_state.is_some());
     let captured = source_rows(&engine, &input);
     let checkpoint = engine
         .reads
@@ -32,40 +31,13 @@ fn a_completed_scope_reset_reloads_confirmed_state_without_recapturing() {
             &engine.inputs[&path].origin.reading_version(),
         )
         .unwrap();
-    let mut committed_state = checkpoint
-        .as_ref()
-        .and_then(|stored| stored.checkpoint.as_ref())
-        .and_then(|checkpoint| checkpoint.parser_state.as_ref())
-        .expect("Claude continuation is committed with its cursor")
-        .clone();
-    // The kept state leaves out the keyed context's changes, which the
-    // index holds (docs/architecture.md, pipeline).
-    committed_state
-        .as_object_mut()
-        .unwrap()
-        .remove(polylogue_model::parser_context::FIELD);
-    assert_eq!(
-        engine.inputs[&path].parser_state.as_ref(),
-        Some(&committed_state)
-    );
-    // Fault only the process-local cache, leaving the committed continuation
-    // untouched. Exact equality after reset distinguishes restoration from reuse.
-    engine
-        .inputs
-        .get_mut(&path)
-        .unwrap()
-        .parser_state
-        .as_mut()
-        .unwrap()
-        .as_object_mut()
-        .unwrap()
-        .insert(
-            "_scope_test_stale_cache".into(),
-            Json::String("previous scope".into()),
-        );
-    assert_ne!(
-        engine.inputs[&path].parser_state.as_ref(),
-        Some(&committed_state)
+    assert!(
+        checkpoint
+            .as_ref()
+            .and_then(|stored| stored.checkpoint.as_ref())
+            .and_then(|checkpoint| checkpoint.parser_state.as_ref())
+            .is_some(),
+        "Claude continuation is committed with its cursor"
     );
     engine.archive.advance_generation_for_test().unwrap();
     let (resumed, _) = engine.one_pass(false, &Default::default()).unwrap();
@@ -75,11 +47,6 @@ fn a_completed_scope_reset_reloads_confirmed_state_without_recapturing() {
     assert_eq!(engine.inputs[&path].input_id, input);
     assert_eq!(engine.inputs[&path].chain, Some(chain));
     assert_eq!(engine.inputs[&path].parsed_upto, text.len() as u64);
-    assert_eq!(
-        engine.inputs[&path].parser_state.as_ref(),
-        Some(&committed_state),
-        "the new scope restores committed state instead of reusing the old cache"
-    );
     assert_eq!(source_rows(&engine, &input), captured);
     assert_eq!(
         engine
@@ -93,6 +60,25 @@ fn a_completed_scope_reset_reloads_confirmed_state_without_recapturing() {
             )
             .unwrap(),
         checkpoint
+    );
+    home.append(
+        "scope.jsonl",
+        &claude_user("two", "scope", "body after reset"),
+    );
+    assert!(engine.run_pass().unwrap().errors.is_empty());
+    let session = polylogue_model::SessionId::parse("claude-code:scope").unwrap();
+    let messages = engine
+        .reads
+        .reader()
+        .unwrap()
+        .messages(&session, false)
+        .unwrap();
+    assert_eq!(
+        messages
+            .iter()
+            .map(|message| message.text())
+            .collect::<Vec<_>>(),
+        ["original confirmed body", "body after reset"]
     );
 }
 
@@ -139,6 +125,9 @@ static CONTROL: Mutex<Option<Control>> = Mutex::new(None);
 static READS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 struct Held(Box<dyn StepParser>, PathBuf);
 impl StepParser for Held {
+    fn uses_context(&self) -> bool {
+        self.0.uses_context()
+    }
     fn step(
         &self,
         state: Option<&Json>,

@@ -543,6 +543,10 @@ pub(crate) fn parse_export(
     };
     let mut reader = Counted::new(|| chain.reader(Arc::clone(blobs)));
     let scanned = parser.scan(&plan.input.id, &mut reader, &mut ItemWriter(&mut scratch));
+    let context = polylogue_model::parser_context::Handle::new(
+        polylogue_store::parser_context::Overlay::temporary()?,
+    );
+    parser.bind_context(context.clone());
     let refusal = match scanned {
         Err(export::ScanError::Malformed(error)) => Some(error.to_string()),
         Err(error) => {
@@ -630,6 +634,7 @@ pub(crate) fn parse_export(
             failure: None,
         };
         let parsed = export::parse_item(parser, &bytes, range.clone(), &mut state);
+        context.check().map_err(EngineError::Parse)?;
         if let Some(failure) = state.failure {
             return Err(EngineError::Parse(failure));
         }

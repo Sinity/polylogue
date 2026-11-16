@@ -17,21 +17,8 @@
 //!
 //! [docs/archive.md]: ../../../docs/archive.md
 use crate::{Engine, EngineError, Pass, Plan};
-use polylogue_store::ChainLayout;
-use std::collections::HashMap;
-
-/// An older chain recorded from the planned chain's reading.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PrefixCopy {
-    /// The older chain.
-    pub chain: i64,
-    /// The planned chain's parse stops here for the copy: the end of its
-    /// last complete record before the two chains stop being alike or the
-    /// older chain ends.
-    pub stop: u64,
-    /// The copy reads the older chain to its end.
-    pub reaches_end: bool,
-}
+pub(crate) use polylogue_store::SharedPrefixes;
+use polylogue_store::{ChainLayout, ChainLayouts, PrefixCopies, PrefixCopy};
 
 /// Where an older chain of `length` bytes takes its reading from a newer
 /// chain of `newer` bytes when the two share their first `shared` bytes:
@@ -58,16 +45,11 @@ pub(crate) fn copy_point(
     }
 }
 
-/// Bytes two stored chains of an input share from their starts, by the
-/// input and each chain with the length it had: a chain that grows is
-/// compared again.
-pub(crate) type SharedPrefixes = HashMap<(String, (i64, u64), (i64, u64)), u64>;
-
 /// Bytes two chains of one input share from their starts.
 struct Shared<'a> {
     engine: &'a Engine,
     input: &'a str,
-    layouts: &'a [ChainLayout],
+    layouts: &'a ChainLayouts,
 }
 
 impl Shared<'_> {
@@ -76,41 +58,58 @@ impl Shared<'_> {
     /// after `a` decides most of it: if `a` shares a different number of
     /// bytes with it than it shares with `b`, `a` and `b` share the smaller
     /// number, and only where the two are equal are bytes read, from there.
-    /// So each chain is read against the next one at most once per pass,
-    /// however many newer chains it is compared with.
+    /// Cached adjacent comparisons avoid rereading prefixes while planning.
     fn between(&self, a: usize, b: usize) -> Result<u64, EngineError> {
-        let (x, y) = (&self.layouts[a], &self.layouts[b]);
-        let key = (
-            self.input.to_owned(),
+        let (x, y) = (self.layouts.get(a)?, self.layouts.get(b)?);
+        if let Some(n) = self.engine.shared_prefixes.borrow().get(
+            self.input,
             (x.chain, x.length),
             (y.chain, y.length),
-        );
-        if let Some(n) = self.engine.shared_prefixes.borrow().get(&key) {
-            return Ok(*n);
+        )? {
+            return Ok(n);
         }
-        let mut n = x.shared_extents(y);
-        if n < x.length.min(y.length) {
-            let mut from = n;
-            if b > a + 1 {
-                let (next, onward) = (self.between(a, a + 1)?, self.between(a + 1, b)?);
-                if next != onward {
-                    from = x.length.min(y.length);
-                    n = next.min(onward);
-                } else {
-                    from = from.max(next);
+        let mut onward = None;
+        // Work backwards with one onward value, rather than one stack frame
+        // for every historical chain between the two being compared.
+        for left in (a..b).rev() {
+            let (x, y) = (self.layouts.get(left)?, self.layouts.get(b)?);
+            if let Some(n) = self.engine.shared_prefixes.borrow().get(
+                self.input,
+                (x.chain, x.length),
+                (y.chain, y.length),
+            )? {
+                onward = Some(n);
+                continue;
+            }
+            let mut n = self.layouts.shared_extents(left, b)?;
+            if n < x.length.min(y.length) {
+                let mut from = n;
+                if b > left + 1 {
+                    let next = self.between(left, left + 1)?;
+                    let onward = onward.expect("the following chain was compared");
+                    if next != onward {
+                        from = x.length.min(y.length);
+                        n = next.min(onward);
+                    } else {
+                        from = from.max(next);
+                    }
+                }
+                if from < x.length.min(y.length) {
+                    let reader = self.engine.reads.reader()?;
+                    let mine = reader.stored_chain(self.input, x.chain, x.length)?;
+                    let theirs = reader.stored_chain(self.input, y.chain, y.length)?;
+                    n = mine.shared_prefix(&theirs, &self.engine.blobs, from)?;
                 }
             }
-            if from < x.length.min(y.length) {
-                // Bytes alike in different blobs: a chain rewritten as one
-                // new blob, or cut into other ranges.
-                let reader = self.engine.reads.reader()?;
-                let mine = reader.stored_chain(self.input, x.chain, x.length)?;
-                let theirs = reader.stored_chain(self.input, y.chain, y.length)?;
-                n = mine.shared_prefix(&theirs, &self.engine.blobs, from)?;
-            }
+            self.engine.shared_prefixes.borrow_mut().insert(
+                self.input,
+                (x.chain, x.length),
+                (y.chain, y.length),
+                n,
+            )?;
+            onward = Some(n);
         }
-        self.engine.shared_prefixes.borrow_mut().insert(key, n);
-        Ok(n)
+        Ok(onward.unwrap_or(0))
     }
 
     /// Whether newer chain `newer` can give an older chain its reading at
@@ -122,13 +121,18 @@ impl Shared<'_> {
         shared: u64,
         reading_version: &str,
         planned: Option<(usize, u64)>,
-    ) -> bool {
-        match planned {
+    ) -> Result<bool, EngineError> {
+        Ok(match planned {
             Some((chain, from)) if chain == newer => from <= shared,
-            _ => self.layouts[newer].reading.as_ref().is_none_or(|reading| {
-                reading.continues(reading_version) && reading.parsed_upto <= shared
-            }),
-        }
+            _ => self
+                .layouts
+                .get(newer)?
+                .reading
+                .as_ref()
+                .is_none_or(|reading| {
+                    reading.continues(reading_version) && reading.parsed_upto <= shared
+                }),
+        })
     }
 
     /// The chain older chain `older` takes its reading from, and the bytes
@@ -140,13 +144,13 @@ impl Shared<'_> {
         reading_version: &str,
         planned: Option<(usize, u64)>,
     ) -> Result<Option<(usize, u64)>, EngineError> {
-        let length = self.layouts[older].length;
+        let length = self.layouts.get(older)?.length;
         // A newer chain holding all its bytes in the same blobs is found
         // without reading; no chain shares more.
         for newer in (older + 1..self.layouts.len()).rev() {
-            if self.layouts[older].shared_extents(&self.layouts[newer]) >= length
+            if self.layouts.shared_extents(older, newer)? >= length
                 && length > 0
-                && self.can_stop_at(newer, length, reading_version, planned)
+                && self.can_stop_at(newer, length, reading_version, planned)?
             {
                 return Ok(Some((newer, length)));
             }
@@ -157,7 +161,7 @@ impl Shared<'_> {
             if best.is_some_and(|(_, most)| shared <= most) {
                 continue;
             }
-            if shared > 0 && self.can_stop_at(newer, shared, reading_version, planned) {
+            if shared > 0 && self.can_stop_at(newer, shared, reading_version, planned)? {
                 best = Some((newer, shared));
                 if shared >= length {
                     break;
@@ -200,18 +204,17 @@ impl Engine {
     /// Gives `plan` the older chains of its input to record from its reading
     /// as its parse passes their stops.
     pub(crate) fn plan_prefix_copies(&self, plan: &mut Plan) -> Result<(), EngineError> {
-        plan.prefix_copies.clear();
+        plan.prefix_copies = None;
         let Some(chain) = copies_from(self, plan) else {
             return Ok(());
         };
-        let layouts = self.reads.reader()?.chain_layouts(&plan.input.id)?;
-        let Some(planned) = layouts.iter().position(|layout| layout.chain == chain) else {
+        let Some(layouts) = self.reads.reader()?.chain_layouts(&plan.input.id)? else {
             return Ok(());
         };
-        if !layouts[..planned]
-            .iter()
-            .any(|layout| layout.reading.is_none())
-        {
+        let Some(planned) = layouts.find(chain)? else {
+            return Ok(());
+        };
+        if !layouts.unread_before(planned)? {
             return Ok(());
         }
         let version = plan.origin.reading_version();
@@ -220,8 +223,10 @@ impl Engine {
             input: &plan.input.id,
             layouts: &layouts,
         };
+        let planned_chain = layouts.get(planned)?;
         for older in 0..planned {
-            if layouts[older].reading.is_some() || layouts[older].length == 0 {
+            let older_chain = layouts.get(older)?;
+            if older_chain.reading.is_some() || older_chain.length == 0 {
                 continue;
             }
             let Some((source, bytes)) =
@@ -234,8 +239,8 @@ impl Engine {
             }
             let Some((point, reaches_end)) = copy_point(
                 bytes,
-                layouts[older].length,
-                layouts[planned].length,
+                older_chain.length,
+                planned_chain.length,
                 plan.input_finished,
             ) else {
                 continue;
@@ -244,16 +249,24 @@ impl Engine {
                 continue;
             }
             // The parse stops at a record's end, so it reads no byte twice.
-            let stop = self.last_record_end(plan, &layouts[planned], point)?;
+            let stop = self.last_record_end(plan, &planned_chain, point)?;
             if stop > 0 {
-                plan.prefix_copies.push(crate::prefix_copies::PrefixCopy {
-                    chain: layouts[older].chain,
-                    stop,
-                    reaches_end,
-                });
+                if plan.prefix_copies.is_none() {
+                    plan.prefix_copies = Some(PrefixCopies::new()?);
+                }
+                plan.prefix_copies
+                    .as_ref()
+                    .expect("copy plan")
+                    .push(PrefixCopy {
+                        chain: older_chain.chain,
+                        stop,
+                        reaches_end,
+                    })?;
             }
         }
-        plan.prefix_copies.sort_by_key(|copy| copy.stop);
+        if let Some(copies) = plan.prefix_copies.as_mut() {
+            copies.finish()?;
+        }
         Ok(())
     }
 
@@ -317,12 +330,21 @@ impl Engine {
         plan: &mut Plan,
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
-        while let Some(copy) = plan.prefix_copies.first() {
+        while let Some(copy) = plan
+            .prefix_copies
+            .as_ref()
+            .and_then(|copies| copies.first())
+        {
             let due = plan.failed || copy.stop <= plan.parse_pos || plan.read_to >= copy.stop;
             if !due {
                 break;
             }
-            let copy = plan.prefix_copies.remove(0);
+            let copy = plan
+                .prefix_copies
+                .as_mut()
+                .expect("copy plan")
+                .pop()?
+                .expect("first copy");
             let Some(from) = plan.parser_chain else {
                 continue;
             };
@@ -354,11 +376,14 @@ impl Engine {
         chain: i64,
         reading_version: &str,
     ) -> Result<Option<(ChainLayout, u64, u64)>, EngineError> {
-        let layouts = self.reads.reader()?.chain_layouts(input)?;
-        let Some(older) = layouts.iter().position(|layout| layout.chain == chain) else {
+        let Some(layouts) = self.reads.reader()?.chain_layouts(input)? else {
             return Ok(None);
         };
-        if layouts[older].reading.is_some() {
+        let Some(older) = layouts.find(chain)? else {
+            return Ok(None);
+        };
+        let older_chain = layouts.get(older)?;
+        if older_chain.reading.is_some() {
             return Ok(None);
         }
         let shared = Shared {
@@ -366,9 +391,10 @@ impl Engine {
             input,
             layouts: &layouts,
         };
-        Ok(shared
+        shared
             .source(older, reading_version, None)?
-            .map(|(newer, bytes)| (layouts[newer].clone(), bytes, layouts[older].length)))
+            .map(|(newer, bytes)| Ok((layouts.get(newer)?, bytes, older_chain.length)))
+            .transpose()
     }
 
     /// Whether an older chain not read yet is copied after this pass's

@@ -124,10 +124,6 @@ impl Engine {
             let id = self.inputs[path].input_id.clone();
             if let Some(progress) = self.reads.reader()?.input_progress(&id)? {
                 let state = self.inputs.get_mut(path).expect("known rollout");
-                if state.chain != Some(progress.chain) || state.stored != progress.length {
-                    state.parser_state = None;
-                    state.tail = None;
-                }
                 state.chain = Some(progress.chain);
                 state.stored = progress.length;
                 state.parsed_upto = progress.parsed_upto;
@@ -341,6 +337,17 @@ impl Engine {
         let progress = self.reads.reader()?.input_progress(&id)?.ok_or_else(|| {
             std::io::Error::other("captured rollout input has no current revision")
         })?;
+        if let Some(build) = self.archive.index_build() {
+            let bytes = build
+                .bytes
+                .saturating_sub(previous.as_ref().map_or(0, |p| p.length))
+                .saturating_add(progress.length);
+            let read = build
+                .bytes_read
+                .saturating_sub(previous.as_ref().map_or(0, |p| p.parsed_upto))
+                .saturating_add(progress.parsed_upto);
+            self.archive.record_build_bytes(bytes, read);
+        }
         self.inputs.insert(
             path.clone(),
             InputState {
@@ -351,8 +358,6 @@ impl Engine {
                 parsed_upto: progress.parsed_upto,
                 parsed: progress.parsed,
                 waiting: progress.waiting,
-                parser_state: None,
-                tail: None,
                 chain: Some(progress.chain),
                 unread: None,
                 working: None,

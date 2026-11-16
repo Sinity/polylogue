@@ -62,9 +62,30 @@ pub const EXIT_SCHEMA_REFUSED: u8 = 78;
 pub const EXIT_STORAGE_FAILED: u8 = 74;
 
 fn main() -> ExitCode {
-    polylogue_store::timing::set_workers_enabled(
-        std::env::var_os("POLYLOGUE_TIMING_WORKERS").is_some(),
-    );
+    let timing = std::env::var_os("POLYLOGUE_TIMING_WORKERS").is_some();
+    polylogue_store::timing::set_workers_enabled(timing);
+    let result = run();
+    if timing {
+        eprintln!(
+            "{}",
+            serde_json::json!({
+                "pipeline_timings": polylogue_store::timing::stage_seconds().into_iter()
+                    .map(|(stage, seconds)| (stage.name(), seconds))
+                    .collect::<std::collections::BTreeMap<_, _>>(),
+                "workers": polylogue_store::timing::workers(),
+                "sqlite_memory_peak_bytes": polylogue_store::timing::sqlite_memory_peak(),
+            })
+        );
+        // C codecs and SQLite use libc rather than Rust's global allocator.
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        unsafe {
+            libc::malloc_stats();
+        }
+    }
+    result
+}
+
+fn run() -> ExitCode {
     // A harness treats a non-zero hook exit as a refusal of its tool call, so
     // a hook that cannot start says why on stderr and exits 0.
     let hook = hook_invocation(&std::env::args_os().collect::<Vec<_>>());

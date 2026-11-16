@@ -24,7 +24,12 @@ fn current_blocks_reuse_stored_text_identities() {
         .collect();
     let mut b = batch("input", Route::Live, 0, rows, &["session"]);
     resolve::prepare_index(&tx, &mut b, 1, false).unwrap();
-    let texts = crate::text_rows::TextIds::new(&tx, false).unwrap();
+    let texts = crate::text_rows::TextIds::new(
+        &tx,
+        false,
+        crate::archive::MemoryBudget::default().keys() / 3,
+    )
+    .unwrap();
     tx.authorizer(Some(|context: AuthContext<'_>| match context.action {
         AuthAction::Read {
             table_name: "text",
@@ -42,7 +47,7 @@ fn current_blocks_reuse_stored_text_identities() {
                 texts: &texts,
                 resolution: b.parse[0].resolution.as_ref().unwrap(),
                 counter: 1,
-                first_build: None,
+                upkeep: &resolve::IndexUpkeep::PerTransaction,
                 source_commit: Some(&fixture_commit()),
                 changes: &crate::change_summary::ChangeSummary::start(&tx).unwrap(),
                 retraction: false,

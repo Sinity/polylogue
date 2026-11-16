@@ -53,7 +53,12 @@ fn connection() -> Connection {
 fn apply(tx: &Transaction<'_>, mut input: Batch, counter: i64) -> Work {
     resolve::prepare_index(tx, &mut input, 1, false).unwrap();
     let changes = crate::change_summary::ChangeSummary::start(tx).unwrap();
-    let texts = crate::text_rows::TextIds::new(tx, false).unwrap();
+    let texts = crate::text_rows::TextIds::new(
+        tx,
+        false,
+        crate::archive::MemoryBudget::default().keys() / 3,
+    )
+    .unwrap();
     WORK.with(|work| work.set(Work::default()));
     tx.trace_v2(TraceEventCodes::SQLITE_TRACE_PROFILE, Some(observe));
     write_rows(
@@ -64,7 +69,7 @@ fn apply(tx: &Transaction<'_>, mut input: Batch, counter: i64) -> Work {
             texts: &texts,
             resolution: input.parse[0].resolution.as_ref().unwrap(),
             counter,
-            first_build: None,
+            upkeep: &resolve::IndexUpkeep::PerTransaction,
             source_commit: Some(&fixture_commit()),
             changes: &changes,
             retraction: false,

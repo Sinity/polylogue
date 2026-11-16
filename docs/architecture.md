@@ -166,8 +166,8 @@ they reached the disk. Recovery starts with a reboot
 **Building `index.db`.** A build of the index, the first one or one that
 replaces an index from another schema, writes a private file,
 `index-build/index.db`, in a directory with copy-on-write (and so
-filesystem compression) off, with SQLite's
-rollback journal kept in memory and no syncs. A failed transaction still
+filesystem compression) off, with SQLite's rollback journal and temporary
+sorts on disk and no transaction syncs. A failed transaction still
 rolls back in the process; a lost process or boot may leave the file torn.
 Before the build's first unsynced write the writer creates and syncs the
 marker `index-build/unsynced`. A clean stop syncs the file and removes the
@@ -199,8 +199,9 @@ reply `index_building` with the build's progress
 
 Building the archive overlaps every stage:
 - read-ahead, bounded by memory;
-- workers on every core that hash, compress, parse, and resolve keys and
-  versions against a read snapshot and an in-memory key map; a new job
+- workers within the process's CPU and memory allowance that hash, compress,
+  parse, and resolve keys and versions against a read snapshot and bounded
+  key dictionaries backed by sorted spill files; a new job
   goes to the worker that went idle last, so the ranges of one large input
   run on one worker and reuse the memory its previous range freed, and the
   pass holds about one job's memory per job in flight rather than one per
@@ -219,9 +220,14 @@ Building the archive overlaps every stage:
   a worker for live ranges. A chain starts after any queued or running
   range plan of its path; readings of the same path may run together;
 - one writer that resolves text hashes to row identities, appends and commits;
-  one map the writer holds keeps text identities for the writer's lifetime,
-  including after the first build and while an unreferenced text has no row.
-  First builds preload hashes; other writes learn identities as needed.
+  a bounded dictionary with sorted spill files keeps text identities for the
+  writer's lifetime, including while an unreferenced text has no row.
+  Builds preload hashes by row order; other writes learn identities as needed.
+  Missing build keys skip database probes. A fixed-size Bloom filter skips
+  spill-file probes for unseen keys; possible matches still compare the stored
+  row's complete key. Session and required foreign-key indexes remain live.
+  The resolver switches to transaction upkeep after installation and releases
+  its build dictionaries.
   After a failed index transaction the writer reloads row presence without
   forgetting allocated identities. Workers prepare text hashes and compress
   each step's texts together in groups ([text bodies](archive.md#evolution))
@@ -248,19 +254,20 @@ Building the archive overlaps every stage:
 - consumers of committed positions: derived data (computed on a thread of
   its own and written by the writer only if its inputs are unchanged), the
   request-log view and the completion catalog;
-- at the end of an index build, both full-text indexes written from one
-  ordered scan of the text in one transaction, so each search segment is
-  written once rather than flushed small and merged again; then the trigram
-  index and the deferred secondary indexes, each from one sorted scan, and
-  the query planner's statistics gathered from a sample of each index,
-  so lookups by session are not mistaken for lookups by a column of few
-  values; then the build file is installed as `index.db`
-  ([durability](#durability));
+- at the end of an index build, two threads build the full-text indexes in
+  private disk files from one ordered scan, with 64 MiB of queued text shared
+  between them. Their declarations and configuration are the installed
+  schema's own statements. Meanwhile the writer builds the trigram and
+  deferred secondary indexes and samples their planner statistics. Once both
+  search files are finished, their configuration is checked and both tables
+  are copied into the main file in one transaction. A stop or error leaves the
+  previous search tables intact. The build file is then installed as
+  `index.db` ([durability](#durability));
 - live inputs ahead of bulk work.
 
 The writer's transactions are sized by the bytes and rows they cover, not
 by record or input boundaries: a growing file is read and committed in
-chunks (64 MiB by default), queued batches share a transaction up to a row and
+chunks (16 MiB by default), queued batches share a transaction up to a row and
 byte bound, and the items of an export or tool-database dump commit in
 batches of about one chunk of its bytes. Each record lies whole inside one
 transaction, together with the position it advances (a parser checkpoint, or
@@ -274,6 +281,33 @@ Between transactions the writer starts
 a write-ahead log over once it passes its checkpoint size (about 1 GB),
 waiting briefly for readers still reading it, so the log stays bounded while
 readers follow every commit. The pipeline's database connections do not checkpoint on close.
+
+**Build memory.** The binary captures CPU affinity, CPU quotas, physical memory
+and enclosing memory limits once. The pipeline's allowance is at most 3 GiB
+and at most three quarters of that process limit. At a 4 GiB limit this gives
+a 384 MiB index cache, 96 MiB register cache, at most 192 MiB each for readers,
+queued input and key dictionaries, and 48 MiB per search/derive connection.
+Workers take a 128 MiB share each from one third of the allowance, so there
+are at most eight, and never more than the CPU allowance or requested count.
+These shares include both raw range buffers and prepared parser work; one
+third is reserved for the worker working sets rather than added to the
+in-flight allowance. The two full-text builders also have 64 MiB hash buffers
+each, their page caches and one shared 64 MiB text queue. The remaining space
+covers parser context, planning caches, SQLite bookkeeping and allocator
+retention; the process limit leaves a further quarter outside the allowance.
+Memory maps are disabled and temporary sorts spill to disk.
+
+Build planning takes fixed pages of input IDs in input order, newest chain
+first. Historical layouts, extents, comparisons and copy stops live on disk
+with fixed page caches, so a large archive or one input's many revisions does
+not retain their complete plan in memory. Shared prefixes stay adjacent and
+are compared once. Progress reports committed parsed bytes out of the bytes
+to parse, including a partially read chain. Completed parser state is restored
+from its stored checkpoint when needed instead of kept for every recent file.
+A record or text is still processed whole; an oversized unit runs alone and
+can exceed a normal chunk or queue target. The budgets bound archive-count
+growth, while its largest individual processing unit determines that extra
+working space.
 
 **Stopping.** A process has one stop request, carried by the archive it
 opened; the daemon makes it on `SIGTERM`. Each request's cancellation is a

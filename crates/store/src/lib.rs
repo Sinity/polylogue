@@ -56,7 +56,9 @@ pub mod query_objects;
 pub mod read;
 pub mod reference;
 mod repo_lookup;
-pub use identical_chains::{ChainLayout, ChainReading, ReadingCopy, StoredExtent};
+pub use identical_chains::{
+    ChainLayout, ChainLayouts, ChainReading, PrefixCopies, PrefixCopy, ReadingCopy, SharedPrefixes,
+};
 pub mod schema;
 pub mod schema_inputs;
 pub mod scope_index;

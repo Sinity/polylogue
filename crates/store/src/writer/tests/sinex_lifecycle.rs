@@ -30,9 +30,15 @@ fn reading(text: &str) -> Batch {
 /// writer does after the parsed events are in the spool.
 fn write_local(index: &mut Connection, archive: &Archive, mut batch: Batch) {
     batch.parse[0].prepare();
-    let resolver = resolve::Resolver::new(archive, index, None).unwrap();
+    let resolver =
+        resolve::Resolver::new(archive, index, resolve::IndexUpkeep::PerTransaction).unwrap();
     resolver.batches(&mut [&mut batch]).unwrap();
-    let texts = crate::text_rows::TextIds::new(index, false).unwrap();
+    let texts = crate::text_rows::TextIds::new(
+        index,
+        false,
+        crate::archive::MemoryBudget::default().keys() / 3,
+    )
+    .unwrap();
     let text_transaction = texts.transaction();
     let tx = index.transaction().unwrap();
     let counter = bump_counter(&tx).unwrap();
@@ -46,7 +52,7 @@ fn write_local(index: &mut Connection, archive: &Archive, mut batch: Batch) {
             texts: &texts,
             resolution: step.resolution.as_ref().unwrap(),
             counter,
-            first_build: None,
+            upkeep: &resolve::IndexUpkeep::PerTransaction,
             source_commit: Some(&fixture_commit()),
             changes: &changes,
             retraction: false,
@@ -54,7 +60,14 @@ fn write_local(index: &mut Connection, archive: &Archive, mut batch: Batch) {
         },
     )
     .unwrap();
-    rows::finish(&tx, &changes, None, &texts, counter).unwrap();
+    rows::finish(
+        &tx,
+        &changes,
+        &resolve::IndexUpkeep::PerTransaction,
+        &texts,
+        counter,
+    )
+    .unwrap();
     tx.commit().unwrap();
     text_transaction.commit();
 }
@@ -66,7 +79,8 @@ fn apply_position(
     position: i64,
     changes: Vec<(String, ConfirmedChange)>,
 ) {
-    let resolver = resolve::Resolver::new(archive, index, None).unwrap();
+    let resolver =
+        resolve::Resolver::new(archive, index, resolve::IndexUpkeep::PerTransaction).unwrap();
     let mut events = changes
         .into_iter()
         .enumerate()
@@ -89,7 +103,12 @@ fn apply_position(
         })),
     });
     crate::primary::confirmed::apply(
-        &crate::text_rows::TextIds::new(index, false).unwrap(),
+        &crate::text_rows::TextIds::new(
+            index,
+            false,
+            crate::archive::MemoryBudget::default().keys() / 3,
+        )
+        .unwrap(),
         index,
         &resolver,
         &events,

@@ -173,8 +173,6 @@ fn sessions_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
     // Find the owning sessions from the hits, then their subagent ancestors.
     // A session's best own source suffices for every ancestor. UNION over
     // the session and kept score/source bounds cycles and shared descendants.
-    // A first build defers the child lookup index, so this query must also
-    // work without that index.
     let rows = if h.source {
         let own = crate::search::best_source("candidates", "hit_session");
         let inherited = crate::search::best_source("ancestors", "hit_session");
@@ -187,7 +185,7 @@ fn sessions_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
              ancestors(hit_session,block,at,message,rank) AS (\
                SELECT hit_session,block,at,message,rank FROM owned UNION \
                SELECT parent.pk,child.block,child.at,child.message,child.rank FROM ancestors child \
-               CROSS JOIN session_link l ON l.child_pk=child.hit_session AND l.kind='spawn' \
+               JOIN session_link l ON l.child_pk=child.hit_session AND l.kind='spawn' \
                CROSS JOIN session parent ON parent.id=l.parent_id) \
              SELECT hit_session AS session_pk,block,at,rank FROM ({inherited}))",
             h.block_kind("xb"),

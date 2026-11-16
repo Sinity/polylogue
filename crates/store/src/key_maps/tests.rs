@@ -26,7 +26,7 @@ fn a_key_finds_the_row_written_under_it() {
     let keys = KeyMaps::default();
     assert_eq!(keys.event(&conn, "first").unwrap(), None);
     let pk = insert_event(&conn, "first");
-    keys.add_event("first", pk);
+    keys.add_event("first", pk).unwrap();
     assert_eq!(keys.event(&conn, "first").unwrap(), Some(pk));
     assert_eq!(keys.event(&conn, "second").unwrap(), None);
 }
@@ -37,17 +37,17 @@ fn a_row_rolled_back_or_replaced_under_its_key_is_not_found() {
     let keys = KeyMaps::default();
     let tx = conn.transaction().unwrap();
     let pk = insert_event(&tx, "gone");
-    keys.add_event("gone", pk);
+    keys.add_event("gone", pk).unwrap();
     tx.rollback().unwrap();
     assert_eq!(keys.event(&conn, "gone").unwrap(), None);
     // The same row number, now holding another key.
     let reused = insert_event(&conn, "other");
     assert_eq!(reused, pk);
-    keys.add_event("other", reused);
+    keys.add_event("other", reused).unwrap();
     assert_eq!(keys.event(&conn, "gone").unwrap(), None);
     assert_eq!(keys.event(&conn, "other").unwrap(), Some(reused));
     let again = insert_event(&conn, "gone");
-    keys.add_event("gone", again);
+    keys.add_event("gone", again).unwrap();
     assert_eq!(keys.event(&conn, "gone").unwrap(), Some(again));
 }
 
@@ -57,12 +57,18 @@ fn keys_sharing_a_hash_each_find_their_own_row() {
     let first = insert_event(&conn, "one");
     let second = insert_event(&conn, "two");
     let mut rows = Rows::default();
-    rows.add(7, first);
-    rows.add(7, second);
+    rows.add([7; 32], first).unwrap();
+    rows.add([7; 32], second).unwrap();
     let check = "SELECT id FROM event WHERE pk = ?1";
-    assert_eq!(rows.find(&conn, check, 7, b"one").unwrap(), Some(first));
-    assert_eq!(rows.find(&conn, check, 7, b"two").unwrap(), Some(second));
-    assert_eq!(rows.find(&conn, check, 7, b"three").unwrap(), None);
+    assert_eq!(
+        rows.find(&conn, check, [7; 32], b"one").unwrap(),
+        Some(first)
+    );
+    assert_eq!(
+        rows.find(&conn, check, [7; 32], b"two").unwrap(),
+        Some(second)
+    );
+    assert_eq!(rows.find(&conn, check, [7; 32], b"three").unwrap(), None);
 }
 
 #[test]
@@ -71,7 +77,8 @@ fn texts_and_messages_are_found_by_their_keys() {
     let keys = KeyMaps::default();
     let hash = *blake3::hash(b"walrus").as_bytes();
     let id = crate::text_rows::insert_alone(&conn, None, &hash, &hash, "walrus", 0);
-    let texts = crate::text_rows::TextIds::new(&conn, true).unwrap();
+    let texts =
+        crate::text_rows::TextIds::new(&conn, true, MemoryBudget::default().keys() / 3).unwrap();
     assert_eq!(texts.text(&conn, &hash).unwrap(), Some(id));
     assert_eq!(
         texts
@@ -85,7 +92,8 @@ fn texts_and_messages_are_found_by_their_keys() {
         [],
     )
     .unwrap();
-    keys.add_message("claude-code:m", conn.last_insert_rowid());
+    keys.add_message("claude-code:m", conn.last_insert_rowid())
+        .unwrap();
     assert_eq!(
         keys.message(&conn, "claude-code:m").unwrap(),
         Some(conn.last_insert_rowid())
@@ -101,7 +109,8 @@ fn loading_committed_rows_restores_every_key_map() {
     crate::text_rows::insert_alone(&conn, None, &hash, &hash, "kept text", 0);
     conn.execute("INSERT INTO message(id,session_pk,session_order,role,written_by,input_pk) VALUES ('claude-code:message',1,'0','user','human',1)", []).unwrap();
     let keys = KeyMaps::load(&conn).unwrap();
-    let texts = crate::text_rows::TextIds::new(&conn, true).unwrap();
+    let texts =
+        crate::text_rows::TextIds::new(&conn, true, MemoryBudget::default().keys() / 3).unwrap();
     assert!(
         keys.message(&conn, "claude-code:message")
             .unwrap()
@@ -133,7 +142,33 @@ fn startup_key_snapshot_never_reads_payload_columns() {
     }))
     .unwrap();
     let keys = KeyMaps::load(&conn).unwrap();
-    let texts = crate::text_rows::TextIds::new(&conn, true).unwrap();
+    let texts =
+        crate::text_rows::TextIds::new(&conn, true, MemoryBudget::default().keys() / 3).unwrap();
     assert_eq!(keys.event(&conn, "kept").unwrap(), Some(pk));
     assert!(texts.text(&conn, &hash).unwrap().is_some());
+}
+
+#[test]
+fn spilled_candidates_still_compare_the_stored_row_keys() {
+    let conn = index();
+    let first = insert_event(&conn, "one");
+    let second = insert_event(&conn, "two");
+    let mut rows = Rows::new(64 * 1024).unwrap();
+    rows.add([7; 32], first).unwrap();
+    rows.add([7; 32], second).unwrap();
+    for n in 0..1_000u64 {
+        rows.add(hash_of(&n.to_le_bytes()), n as i64 + 100).unwrap();
+    }
+    conn.execute("UPDATE event SET id='replaced' WHERE pk=?1", [first])
+        .unwrap();
+    let check = "SELECT id FROM event WHERE pk=?1";
+    assert_eq!(rows.find(&conn, check, [7; 32], b"one").unwrap(), None);
+    assert_eq!(
+        rows.find(&conn, check, [7; 32], b"two").unwrap(),
+        Some(second)
+    );
+    assert_eq!(
+        rows.find(&conn, check, [7; 32], b"replaced").unwrap(),
+        Some(first)
+    );
 }

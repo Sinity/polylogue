@@ -60,7 +60,12 @@ fn scope_change_waits_for_a_new_completion_marker() {
     )
     .unwrap();
     confirmed::apply(
-        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &crate::text_rows::TextIds::new(
+            &index,
+            false,
+            crate::archive::MemoryBudget::default().keys() / 3,
+        )
+        .unwrap(),
         &mut index,
         &resolver,
         &[
@@ -125,7 +130,12 @@ fn scope_change_waits_for_a_new_completion_marker() {
     );
     assert!(!reset(&mut index, &archive, &resolver, "narrow", false).unwrap());
     confirmed::apply(
-        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &crate::text_rows::TextIds::new(
+            &index,
+            false,
+            crate::archive::MemoryBudget::default().keys() / 3,
+        )
+        .unwrap(),
         &mut index,
         &resolver,
         &[completion_marker(0)],
@@ -138,7 +148,12 @@ fn scope_change_waits_for_a_new_completion_marker() {
     assert!(reset(&mut index, &archive, &resolver, "wide", false).unwrap());
     assert_eq!(confirmed::checkpoint(&index).unwrap(), None);
     confirmed::apply(
-        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &crate::text_rows::TextIds::new(
+            &index,
+            false,
+            crate::archive::MemoryBudget::default().keys() / 3,
+        )
+        .unwrap(),
         &mut index,
         &resolver,
         &[input(1, "private"), completion_marker(1)],
@@ -168,7 +183,12 @@ fn a_failed_scope_transaction_keeps_readers_blocked_until_retry_commits() {
     let mut index = cache(&archive);
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
     confirmed::apply(
-        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &crate::text_rows::TextIds::new(
+            &index,
+            false,
+            crate::archive::MemoryBudget::default().keys() / 3,
+        )
+        .unwrap(),
         &mut index,
         &resolver,
         &[input(1, "private"), completion_marker(1)],
@@ -208,7 +228,12 @@ fn unsaved_sinex_control_blocks_current_reads() {
     let mut index = cache(&archive);
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
     confirmed::apply(
-        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &crate::text_rows::TextIds::new(
+            &index,
+            false,
+            crate::archive::MemoryBudget::default().keys() / 3,
+        )
+        .unwrap(),
         &mut index,
         &resolver,
         &[input(1, "private"), completion_marker(1)],
@@ -239,7 +264,12 @@ fn cache_clear_cannot_commit_until_registered_outputs_are_invalidated() {
     let mut index = cache(&archive);
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
     confirmed::apply(
-        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &crate::text_rows::TextIds::new(
+            &index,
+            false,
+            crate::archive::MemoryBudget::default().keys() / 3,
+        )
+        .unwrap(),
         &mut index,
         &resolver,
         &[input(1, "private"), completion_marker(1)],

@@ -81,6 +81,7 @@ fn authored_crash_child() {
         home: base.join("home"),
         tool_dirs: Default::default(),
         workers: 1,
+        memory_budget: Default::default(),
         reader_memory_bytes: 8 << 20,
         bytes_in_flight: 1 << 20,
         machine: "test-machine".into(),

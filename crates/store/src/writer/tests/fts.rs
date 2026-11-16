@@ -205,7 +205,7 @@ fn corruption() -> serde_json::Value {
     let conn = open_write(&w.archive.index_db(), cache::INDEX_WRITER).unwrap();
     let before = parsed(&conn);
     crate::text_rows::replace_group_body(&conn, 1000 + ROWS as i64 - 2, b"\0");
-    let failed = crate::text_rows::index_marked(&conn).is_err();
+    let failed = crate::text_rows::build_search_indexes(&conn, |_| Ok(())).is_err();
     let partial: i64 = conn
         .query_row("SELECT count(*) FROM text_fts", [], |r| r.get(0))
         .unwrap();
@@ -281,7 +281,7 @@ fn stopped() -> serde_json::Value {
         .unwrap();
         conn.progress_handler(1000, Some(move || stop_seen.is_cancelled()))
             .unwrap();
-        let result = crate::text_rows::index_marked(&conn);
+        let result = crate::text_rows::build_search_indexes(&conn, |_| Ok(()));
         conn.progress_handler(0, None::<fn() -> bool>).unwrap();
         result.map_err(|e| e.to_string())
     });

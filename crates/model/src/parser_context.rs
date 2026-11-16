@@ -18,6 +18,10 @@ pub enum Key {
         namespace: String,
         uuid: String,
     },
+    State {
+        namespace: String,
+        key: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,6 +29,7 @@ pub enum Key {
 pub enum Value {
     Response { row: Box<MessageRow> },
     Alias { target: Option<MessageId> },
+    State { value: Json },
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -86,6 +91,13 @@ impl Handle {
             access.error.get_or_insert(error);
         }
     }
+    pub fn fail(&self, error: impl Into<Error>) {
+        self.0
+            .lock()
+            .expect("parser context lock")
+            .error
+            .get_or_insert(error.into());
+    }
     pub fn is_cancelled(&self) -> bool {
         matches!(
             self.0.lock().expect("parser context lock").error.as_ref(),
@@ -145,6 +157,9 @@ pub enum Reference {
     },
     Alias {
         target: Option<MessageId>,
+    },
+    State {
+        value: Json,
     },
 }
 pub const FIELD: &str = "_polylogue_context";

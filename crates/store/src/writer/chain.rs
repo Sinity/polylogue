@@ -635,6 +635,7 @@ impl Inner {
             return Ok(0);
         }
         reader.rewind()?;
+        let upkeep = self.resolver.upkeep();
         let text_transaction = self.texts.transaction();
         let tx = self
             .index
@@ -691,7 +692,7 @@ impl Inner {
                     texts: &self.texts,
                     resolution: &resolution,
                     counter,
-                    first_build: self.first_build.as_deref(),
+                    upkeep: &upkeep,
                     source_commit: Some(&source_commit),
                     changes: &changes,
                     retraction: false,
@@ -705,13 +706,7 @@ impl Inner {
             ));
         }
         rows::prune_sessions(&tx, &batch.input.id, chain, counter)?;
-        self.report.item_units_read += rows::finish(
-            &tx,
-            &changes,
-            self.first_build.as_deref(),
-            &self.texts,
-            counter,
-        )?;
+        self.report.item_units_read += rows::finish(&tx, &changes, &upkeep, &self.texts, counter)?;
         batch.parse.clear();
         crate::fault::check("write.index_commit", "")?;
         crate::fault::check("reparse.commit", &batch.input.id)?;

@@ -17,7 +17,7 @@
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 6;
+pub const VERSION: u32 = 7;
 
 pub mod database;
 mod fields;
@@ -37,7 +37,7 @@ use polylogue_model::{
     TitleSource, ToolAction, ToolOutcome, Usage,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+
 use std::path::Path;
 
 pub const ROOT: Root = Root {
@@ -187,13 +187,15 @@ struct Call {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ParserState {
+    #[serde(skip)]
+    context: polylogue_model::parser_context::Handle,
     session: Option<Session>,
     /// The thread a subagent's copied history came from, and the outer record
     /// ordinal where the subagent's own records begin.
     copied_from: Option<String>,
     copied_until: Option<u64>,
     #[serde(default)]
-    prefix_copies: BTreeSet<(SessionId, SessionId)>,
+    prefix_copies: crate::parser_state::Set<(SessionId, SessionId)>,
     /// The explicit relation whose later context can supply its branch point.
     #[serde(default)]
     branch_relation: Option<Link>,
@@ -206,11 +208,11 @@ pub struct ParserState {
     usage: usage::Observer,
     #[serde(default)]
     scope_recorded: bool,
-    calls: BTreeMap<String, Call>,
+    calls: crate::parser_state::Map<Call>,
     /// Commands left running, by handle (`process 123`, `cell 4`), to the
     /// call that started them.
-    running: BTreeMap<String, String>,
-    links: BTreeSet<String>,
+    running: crate::parser_state::Map<String>,
+    links: crate::parser_state::Set<String>,
     last: Option<MessageId>,
     /// The last quota reading is a repeated snapshot.
     limits: Option<String>,
@@ -233,6 +235,18 @@ pub struct ParserState {
     /// Names the items that carry no `id`.
     #[serde(default)]
     ids: crate::content_ids::ContentIds,
+}
+
+impl ParserState {
+    fn bind(&mut self, context: polylogue_model::parser_context::Handle) {
+        self.context = context.clone();
+        self.ids.bind_context(context.clone(), "codex".into());
+        self.calls.bind(context.clone(), "codex/calls".into());
+        self.running.bind(context.clone(), "codex/running".into());
+        self.links.bind(context.clone(), "codex/links".into());
+        self.prefix_copies
+            .bind(context, "codex/prefix-copies".into());
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -809,7 +823,6 @@ impl Rollout {
     ) -> (ToolOutcome, Option<u64>) {
         let call = call_id
             .and_then(|id| parser_state.calls.get(id))
-            .cloned()
             .unwrap_or_default();
         let tool = if call.tool.is_empty() {
             "?"
@@ -868,7 +881,7 @@ impl Rollout {
             );
         }
         if let Some(id) = call_id
-            && let Some(c) = parser_state.calls.get_mut(id)
+            && let Some(mut c) = parser_state.calls.get_mut(id)
         {
             c.answered = true;
         }
@@ -900,7 +913,7 @@ impl Rollout {
                     );
                 };
                 let id = item.str("id").filter(|s| !s.is_empty()).unwrap_or("");
-                if let Some(call) = parser_state.calls.get_mut(id) {
+                if let Some(mut call) = parser_state.calls.get_mut(id) {
                     let Some(done) = items::completed(item) else {
                         return RecordOutcome::skipped("call item without a status");
                     };
@@ -1062,7 +1075,7 @@ impl Rollout {
             "exec_command_end" | "patch_apply_end" | "mcp_tool_call_end" => {
                 // Older rollouts: how a call ended, before item_completed.
                 let id = p.str("call_id").filter(|s| !s.is_empty()).unwrap_or("");
-                if let (Some(call), Some(done)) =
+                if let (Some(mut call), Some(done)) =
                     (parser_state.calls.get_mut(id), items::completed(p))
                 {
                     if call.answered
@@ -1188,7 +1201,20 @@ fn link(
 }
 
 impl Parser for Rollout {
+    fn uses_context(&self) -> bool {
+        true
+    }
     type ParserState = ParserState;
+    fn bind_context(
+        &self,
+        state: &mut ParserState,
+        context: polylogue_model::parser_context::Handle,
+    ) {
+        state.bind(context);
+    }
+    fn check_context(&self, state: &ParserState) -> Result<(), crate::ParseError> {
+        state.context.check().map_err(crate::ParseError::Context)
+    }
 
     fn kind(&self, v: &Json) -> String {
         let rec = unwrap(v);
@@ -1215,6 +1241,9 @@ impl Parser for Rollout {
         out: &mut Output,
         records: &mut Records,
     ) -> RecordOutcome {
+        if !parser_state.calls.is_bound() {
+            parser_state.bind(parser_state.context.clone());
+        }
         if !v.is_object() {
             return RecordOutcome::unreadable("record is not a JSON object");
         }

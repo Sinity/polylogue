@@ -68,7 +68,7 @@ pub(crate) fn apply_source_retractions(
                     texts,
                     resolution,
                     counter,
-                    first_build: None,
+                    upkeep: &resolve::IndexUpkeep::PerTransaction,
                     source_commit: None,
                     changes,
                     retraction: false,

@@ -32,11 +32,13 @@ impl DeriveThread {
         index_db: std::path::PathBuf,
         queue: WriterQueue,
         stopping: crate::cancellation::Cancellation,
+        cache_mib: i64,
     ) -> Result<Self> {
         let (requests, rx) = channel::<Waiting>();
         let interrupt = Arc::new(Mutex::new(None));
         let thread = Worker {
             index_db,
+            cache_mib,
             queue,
             stopping: stopping.clone(),
             interrupt: Arc::clone(&interrupt),
@@ -92,6 +94,7 @@ impl Drop for DeriveThread {
 
 struct Worker {
     index_db: std::path::PathBuf,
+    cache_mib: i64,
     queue: WriterQueue,
     stopping: crate::cancellation::Cancellation,
     interrupt: Arc<Mutex<Option<rusqlite::InterruptHandle>>>,
@@ -139,7 +142,7 @@ impl Worker {
     fn pass(&mut self) -> Result<u64> {
         if self.conn.is_none() {
             let conn = crate::archive::open_read(&self.index_db)?;
-            conn.pragma_update(None, "cache_size", -(crate::archive::cache::DERIVE * 1024))?;
+            conn.pragma_update(None, "cache_size", -(self.cache_mib * 1024))?;
             let stopping = self.stopping.clone();
             conn.progress_handler(10_000, Some(move || stopping.is_cancelled()))?;
             *self.interrupt.lock().map_err(|_| StoreError::WriterGone)? =

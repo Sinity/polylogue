@@ -10,7 +10,7 @@ fn preparations(messages: usize, tools: bool) -> u64 {
     let dir = tempfile::tempdir().unwrap();
     let mut conn = open_write(&dir.path().join("index.db"), 1).unwrap();
     crate::schema::create_index(&conn).unwrap();
-    let first_build = crate::key_maps::KeyMaps::default();
+    let build = resolve::IndexUpkeep::AtBuildEnd(Arc::new(crate::key_maps::KeyMaps::default()));
     let tx = conn.transaction().unwrap();
     let observed = Arc::new(AtomicU64::new(0));
     let count = observed.clone();
@@ -65,7 +65,7 @@ fn preparations(messages: usize, tools: bool) -> u64 {
         .collect();
     let batch = batch("input1", Route::Live, 0, rows, &["session1"]);
     assert_eq!(
-        write_test_rows(&tx, &batch, &batch.parse[0], 1, 1, Some(&first_build)).unwrap(),
+        write_test_rows(&tx, &batch, &batch.parse[0], 1, 1, &build).unwrap(),
         messages as u64
     );
     tx.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)

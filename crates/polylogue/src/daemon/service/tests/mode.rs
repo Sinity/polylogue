@@ -22,6 +22,7 @@ fn startup(home: &ClaudeHome) -> crate::config::Startup {
                 machine: "synthetic-machine".into(),
                 host: "synthetic-host".into(),
             }),
+            memory_bytes: Some(4 << 30),
             workers: Some(1),
             cwd: Some(home.dir.path().into()),
         },

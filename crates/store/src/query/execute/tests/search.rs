@@ -270,10 +270,10 @@ fn rare_ranked_pages_skip_a_catalog_sized_scope_probe() {
 }
 
 #[test]
-fn session_text_search_remains_readable_with_first_build_indexes_deferred() {
+fn session_text_search_remains_readable_with_build_indexes_deferred() {
     let (_dir, fixture) = archive(20, true);
     let write = crate::archive::open_write(&fixture.archive.index_db(), 1024).unwrap();
-    for index in crate::writer::deferred_index_names() {
+    for index in crate::schema::BUILT_AT_END.iter().copied() {
         write
             .execute_batch(&format!("DROP INDEX IF EXISTS {index}"))
             .unwrap();

@@ -104,14 +104,14 @@ fn a_same_boot_build_keeps_its_rows_and_resumes() {
 /// that build defers to its end; building them at open would read whole
 /// tables at every restart.
 #[test]
-fn reopening_a_first_build_does_not_build_its_deferred_indexes() {
+fn reopening_a_build_does_not_build_its_deferred_indexes() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("a");
     let (archive, lock) = Archive::open_or_create(&root).unwrap();
     assert!(archive.index_build().is_some());
     let index = rusqlite::Connection::open(archive.index_db()).unwrap();
     // As the writer leaves them while the build runs.
-    for name in crate::writer::deferred_index_names() {
+    for name in crate::schema::BUILT_AT_END.iter().copied() {
         index
             .execute_batch(&format!("DROP INDEX IF EXISTS {name}"))
             .unwrap();
@@ -131,7 +131,9 @@ fn reopening_a_first_build_does_not_build_its_deferred_indexes() {
         .unwrap()
         .collect::<rusqlite::Result<_>>()
         .unwrap();
-    let rebuilt: Vec<&str> = crate::writer::deferred_index_names()
+    let rebuilt: Vec<&str> = crate::schema::BUILT_AT_END
+        .iter()
+        .copied()
         .filter(|name| present.iter().any(|p| p == name))
         .collect();
     assert_eq!(rebuilt, Vec::<&str>::new());

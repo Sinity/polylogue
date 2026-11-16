@@ -11,6 +11,9 @@ static CONTROL: Mutex<Option<Control>> = Mutex::new(None);
 
 struct Held;
 impl StepParser for Held {
+    fn uses_context(&self) -> bool {
+        false
+    }
     fn step(
         &self,
         _: Option<&Json>,

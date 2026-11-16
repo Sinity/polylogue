@@ -50,15 +50,52 @@ pub(crate) const QUERY_OBJECTS: &str = concat!(
     "\n",
     include_str!("schema/query_runs.sql")
 );
-/// Indexes created at open; the writer defers only its query-only subset.
+/// Read indexes added at open, or once the private build ends.
 pub(crate) const OPEN_INDEXES: &str = include_str!("schema/open_indexes.sql");
+
+/// Indexes written once from sorted rows when a private build ends. Natural
+/// keys come first, before the query indexes that depend on their uniqueness.
+pub(crate) const BUILT_AT_END: &[&str] = &[
+    "message_id",
+    "event_id",
+    "text_hash",
+    "message_version_hash",
+    "event_value_hash",
+    "link_value_hash",
+    "text_normalized",
+    "message_order",
+    "tool_call_order",
+    "event_order",
+    "message_at",
+    "message_recent",
+    "message_session_at",
+    "message_model_at",
+    "message_session_model_at",
+    "event_at",
+    "session_order",
+    "session_activity",
+    "session_recent",
+    "session_started",
+    "session_cwd",
+    "session_repo",
+    "session_live",
+    "message_prose",
+    "message_branch",
+    "tool_call_tool",
+    "tool_call_action",
+    "tool_call_path",
+    "tool_call_repo_command",
+    "event_kind",
+    "commit_link_hash",
+    "pr_link_number",
+    "removed_session_changed",
+];
 #[cfg(test)]
 pub(crate) const INDEX_SCHEMA: &[&str] = &[
     INDEX,
     crate::coverage::SCHEMA,
     crate::variants::SCHEMA,
     crate::parser_context::SCHEMA,
-    crate::parser_context::VERSION_INDEX,
     OPEN_INDEXES,
 ];
 /// The vectors and failures tables of `embeddings.db`, as the first build at
@@ -79,9 +116,9 @@ const EMBEDDINGS_ADDITIONS: &[&str] = &[
 pub const ARCHIVE_VERSION: u32 = 3;
 
 /// The index schema and row encoding version. Reading versions are independent.
-pub const INDEX_VERSION: u32 = 6;
+pub const INDEX_VERSION: u32 = 7;
 /// The primary cache's schema and row encoding version.
-pub const PRIMARY_INDEX_VERSION: u32 = 8;
+pub const PRIMARY_INDEX_VERSION: u32 = 9;
 
 pub const fn index_version(primary: bool) -> u32 {
     if primary {
@@ -124,8 +161,81 @@ fn set_version(conn: &Connection, v: u32) -> Result<()> {
     Ok(())
 }
 
+/// Executes complete SQLite statements, leaving only the declared build
+/// indexes out. SQLite splits triggers and quoted SQL without another parser.
+fn execute_index_sql(conn: &Connection, sql: &str, build: bool) -> Result<()> {
+    if !build {
+        conn.execute_batch(sql)?;
+        return Ok(());
+    }
+    let mut batch = rusqlite::Batch::new(conn, sql);
+    while let Some(mut prepared) = batch.next()? {
+        let sql = prepared
+            .expanded_sql()
+            .ok_or_else(|| StoreError::Invalid("a schema statement has no SQL".into()))?;
+        let normalized = statement(&sql);
+        let index = normalized
+            .strip_prefix("CREATE UNIQUE INDEX ")
+            .or_else(|| normalized.strip_prefix("CREATE INDEX "))
+            .map(|tail| tail.strip_prefix("IF NOT EXISTS ").unwrap_or(tail))
+            .and_then(|tail| tail.split_whitespace().next());
+        if !index.is_some_and(|name| BUILT_AT_END.contains(&name)) {
+            prepared.execute([])?;
+        }
+    }
+    Ok(())
+}
+
+/// The exact declared index statements, in the order a build writes them.
+pub(crate) fn built_at_end_sql() -> Result<Vec<String>> {
+    let expected = Connection::open_in_memory()?;
+    base_index(&expected)?;
+    expected.execute_batch(OPEN_INDEXES)?;
+    BUILT_AT_END
+        .iter()
+        .map(|name| {
+            let sql: String = expected.query_row(
+                "SELECT sql FROM sqlite_schema WHERE type='index' AND name=?1",
+                [name],
+                |row| row.get(0),
+            )?;
+            Ok(sql
+                .replacen(
+                    "CREATE UNIQUE INDEX ",
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ",
+                    1,
+                )
+                .replacen("CREATE INDEX ", "CREATE INDEX IF NOT EXISTS ", 1))
+        })
+        .collect()
+}
+
+/// The same table declaration and configuration statements the installed
+/// schema uses, for a search table built in a private database.
+pub(crate) fn search_index_sql(table: &str) -> Result<Vec<String>> {
+    let expected = Connection::open_in_memory()?;
+    let mut batch = rusqlite::Batch::new(&expected, INDEX);
+    let create = format!("CREATE VIRTUAL TABLE {table} ");
+    let configure = format!("INSERT INTO {table}(");
+    let mut selected = Vec::new();
+    while let Some(mut prepared) = batch.next()? {
+        let sql = prepared
+            .expanded_sql()
+            .ok_or_else(|| StoreError::Invalid("a search schema statement has no SQL".into()))?;
+        let normalized = statement(&sql);
+        if normalized.starts_with(&create) || normalized.starts_with(&configure) {
+            selected.push(sql);
+        }
+        prepared.execute([])?;
+    }
+    if selected.is_empty() {
+        return Err(StoreError::Invalid("search table is not declared".into()));
+    }
+    Ok(selected)
+}
+
 pub fn create_index(conn: &Connection) -> Result<()> {
-    create_index_in(conn, false)
+    create_index_in(conn, false, false)
 }
 
 fn add_primary(conn: &Connection) -> Result<()> {
@@ -135,17 +245,20 @@ fn add_primary(conn: &Connection) -> Result<()> {
 }
 
 fn base_index(conn: &Connection) -> Result<()> {
-    conn.execute_batch(INDEX)?;
+    base_index_in(conn, false)
+}
+
+fn base_index_in(conn: &Connection, build: bool) -> Result<()> {
+    execute_index_sql(conn, INDEX, build)?;
     conn.execute_batch(crate::coverage::SCHEMA)?;
     conn.execute_batch(crate::variants::SCHEMA)?;
     conn.execute_batch(crate::parser_context::SCHEMA)?;
-    conn.execute_batch(crate::parser_context::VERSION_INDEX)?;
     Ok(())
 }
 
-fn create_index_in(conn: &Connection, primary: bool) -> Result<()> {
-    base_index(conn)?;
-    conn.execute_batch(OPEN_INDEXES)?;
+fn create_index_in(conn: &Connection, primary: bool, build: bool) -> Result<()> {
+    base_index_in(conn, build)?;
+    execute_index_sql(conn, OPEN_INDEXES, build)?;
     if primary {
         add_primary(conn)?;
         conn.execute(
@@ -185,30 +298,14 @@ fn ensure_index_in(conn: &Connection, primary: bool, deferring: bool) -> Result<
     }
     let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
     if found == 0 {
-        create_index_in(&tx, primary)?;
+        create_index_in(&tx, primary, deferring)?;
     } else {
         // Read indexes are added before the shape check, so an index missing
         // only those is completed rather than refused. A build still in
         // progress leaves out the ones it defers: it builds each once from a
         // sorted scan when it ends, and building one here would read the
         // whole table at every restart.
-        let statements = OPEN_INDEXES
-            .lines()
-            .filter(|line| !line.trim_start().starts_with("--"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        for statement in statements.split(';').map(str::trim) {
-            // `CREATE INDEX IF NOT EXISTS <name> ON ...`
-            let name = statement.split_whitespace().nth(5);
-            if !statement.is_empty()
-                && !(deferring
-                    && name.is_some_and(|name| {
-                        crate::writer::deferred_index_names().any(|deferred| deferred == name)
-                    }))
-            {
-                tx.execute_batch(statement)?;
-            }
-        }
+        execute_index_sql(&tx, OPEN_INDEXES, deferring)?;
         if primary {
             tx.execute_batch(include_str!("primary/confirmed/read_indexes.sql"))?;
         }
@@ -432,7 +529,7 @@ fn same_build_schema_in(conn: &Connection, primary: bool) -> Result<bool> {
     let mut wanted = shape(&expected)?;
     wanted.retain(|(kind, name, _)| {
         kind != "index"
-            || !crate::writer::deferred_index_names().any(|deferred| deferred == name)
+            || !BUILT_AT_END.contains(&name.as_str())
             || found.iter().any(|(_, present, _)| present == name)
     });
     Ok(found == wanted)

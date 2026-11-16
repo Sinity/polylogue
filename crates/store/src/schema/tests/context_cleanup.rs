@@ -42,7 +42,12 @@ fn repeated_source_upserts_keep_context_bodies_until_the_context_goes() {
         crate::versions::remove_unreferenced(
             &conn,
             None,
-            &crate::text_rows::TextIds::new(&conn, false).unwrap(),
+            &crate::text_rows::TextIds::new(
+                &conn,
+                false,
+                crate::archive::MemoryBudget::default().keys() / 3,
+            )
+            .unwrap(),
         )
         .unwrap();
         assert_eq!(snapshot(&conn), kept);
@@ -55,7 +60,12 @@ fn repeated_source_upserts_keep_context_bodies_until_the_context_goes() {
         crate::versions::remove_unreferenced(
             &conn,
             None,
-            &crate::text_rows::TextIds::new(&conn, false).unwrap(),
+            &crate::text_rows::TextIds::new(
+                &conn,
+                false,
+                crate::archive::MemoryBudget::default().keys() / 3,
+            )
+            .unwrap(),
         )
         .unwrap();
         assert_eq!(versions(&conn), ["02"]);

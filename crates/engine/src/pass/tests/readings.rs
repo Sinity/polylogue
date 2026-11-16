@@ -13,6 +13,9 @@ static PARSED: Mutex<Option<Sender<()>>> = Mutex::new(None);
 
 struct Together(Box<dyn StepParser>);
 impl StepParser for Together {
+    fn uses_context(&self) -> bool {
+        self.0.uses_context()
+    }
     fn step(
         &self,
         state: Option<&polylogue_model::Json>,
@@ -76,6 +79,7 @@ fn engine(w: &ClaudeHome) -> (Engine, polylogue_store::ArchiveLock) {
         home: w.home.clone(),
         tool_dirs: Default::default(),
         workers: 3,
+        memory_budget: Default::default(),
         reader_memory_bytes: 128 << 20,
         bytes_in_flight: 1 << 20,
         machine: "test-machine".into(),
@@ -215,6 +219,9 @@ struct LiveParser {
 }
 
 impl StepParser for LiveParser {
+    fn uses_context(&self) -> bool {
+        self.parser.uses_context()
+    }
     fn step(
         &self,
         state: Option<&polylogue_model::Json>,
@@ -345,6 +352,9 @@ struct ChainPause {
 static CHAIN_PAUSE: Mutex<Option<ChainPause>> = Mutex::new(None);
 
 impl StepParser for PausedChain {
+    fn uses_context(&self) -> bool {
+        self.0.uses_context()
+    }
     fn step(
         &self,
         state: Option<&polylogue_model::Json>,

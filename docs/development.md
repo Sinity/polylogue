@@ -171,3 +171,9 @@ completion with its Alt-p key. Each is the output of
 `polylogue install TARGET --dry-run` for that command
 ([installing](installing.md#installing)), so the module writes exactly what
 `install` would.
+
+The `POLYLOGUE_TIMING_WORKERS` profiling environment variable records pipeline
+stage times and completed worker CPU times. The daemon prints them at exit
+with SQLite's peak allocation count and, on GNU/Linux, the C allocator's
+statistics. `MIMALLOC_SHOW_STATS=1` separately prints Rust allocator statistics;
+allocation totals require building mimalloc with `MI_STAT` enabled.

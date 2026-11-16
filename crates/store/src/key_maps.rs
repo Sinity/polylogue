@@ -1,153 +1,141 @@
-//! What a first build keeps in memory in place of the unique indexes on
-//! natural keys: message IDs and event IDs. Text identities belong to the
-//! serial writer ([`crate::text_rows::TextIds`]). A first build drops
-//! those indexes and builds each once from a sorted scan when it ends
-//! ([`crate::writer`]); inserting random keys into them rewrote pages all
-//! over each index in every transaction, which grew with the archive.
-//!
-//! Message and event keys map to rows through the first eight bytes of
-//! a BLAKE3 hash of the key. Every row found this way is read back and
-//! compared with the key, so an entry left by a transaction that rolled back,
-//! a row deleted since, or two keys sharing those bytes never yield a wrong
-//! row.
-
-use crate::Result;
+//! Row lookups by natural key while their unique indexes are absent.
+//! Candidate rows are read back and compared, including after rollback or removal.
+use crate::{Result, archive::MemoryBudget};
 use rusqlite::types::ValueRef;
 use rusqlite::{Connection, OptionalExtension};
-use std::collections::HashMap;
-use std::hash::{BuildHasherDefault, Hasher};
+use std::ops::ControlFlow;
 use std::sync::RwLock;
+mod rows;
+pub(crate) use rows::KeyRows;
 
-#[derive(Default)]
 pub(crate) struct KeyMaps {
     messages: RwLock<Rows>,
     events: RwLock<Rows>,
+    versions: RwLock<Rows>,
 }
-
-/// The rows a table's keys were written as, by key hash.
-#[derive(Default)]
-struct Rows {
-    /// The first row written under each hash.
-    first: HashMap<u64, i64, BuildHasherDefault<Spread>>,
-    /// Further rows under a hash already taken: a rewritten row, or another
-    /// key with the same hash. Rare.
-    more: HashMap<u64, Vec<i64>, BuildHasherDefault<Spread>>,
+struct Rows(KeyRows);
+fn hash_of(key: &[u8]) -> [u8; 32] {
+    *blake3::hash(key).as_bytes()
 }
-
-/// Hashes the map's keys, which are already uniformly spread hash bytes, as
-/// themselves.
-#[derive(Default)]
-struct Spread(u64);
-
-impl Hasher for Spread {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-    fn write(&mut self, bytes: &[u8]) {
-        for &b in bytes {
-            self.0 = self.0.rotate_left(8) ^ u64::from(b);
-        }
-    }
-    fn write_u64(&mut self, n: u64) {
-        self.0 = n;
-    }
-}
-
-fn hash_of(key: &[u8]) -> u64 {
-    let digest = blake3::hash(key);
-    u64::from_le_bytes(digest.as_bytes()[..8].try_into().expect("eight bytes"))
-}
-
 impl Rows {
-    fn add(&mut self, hash: u64, pk: i64) {
-        match self.first.entry(hash) {
-            std::collections::hash_map::Entry::Vacant(slot) => {
-                slot.insert(pk);
-            }
-            std::collections::hash_map::Entry::Occupied(slot) if *slot.get() == pk => {}
-            std::collections::hash_map::Entry::Occupied(_) => {
-                let more = self.more.entry(hash).or_default();
-                if !more.contains(&pk) {
-                    more.push(pk);
-                }
-            }
-        }
+    fn new(bytes: u64) -> Result<Self> {
+        KeyRows::new(bytes).map(Self)
     }
-
-    /// The row written under `hash` whose key, read by `check` (`?1` is the
-    /// row's primary key), equals `key`.
-    fn find(&self, conn: &Connection, check: &str, hash: u64, key: &[u8]) -> Result<Option<i64>> {
-        let Some(first) = self.first.get(&hash) else {
-            return Ok(None);
-        };
+    fn add(&mut self, hash: [u8; 32], pk: i64) -> Result<()> {
+        self.0.set(hash, pk)
+    }
+    fn find(
+        &self,
+        conn: &Connection,
+        check: &str,
+        hash: [u8; 32],
+        key: &[u8],
+    ) -> Result<Option<i64>> {
         let mut statement = conn.prepare_cached(check)?;
-        for pk in std::iter::once(first).chain(self.more.get(&hash).into_iter().flatten()) {
+        let mut found = None;
+        self.0.visit(&hash, |pk| {
             let same = statement
                 .query_row([pk], |r| {
                     Ok(match r.get_ref(0)? {
-                        ValueRef::Text(found) | ValueRef::Blob(found) => found == key,
+                        ValueRef::Text(value) | ValueRef::Blob(value) => value == key,
                         _ => false,
                     })
                 })
                 .optional()?;
             if same == Some(true) {
-                return Ok(Some(*pk));
+                found = Some(pk);
+                Ok(ControlFlow::Break(()))
+            } else {
+                Ok(ControlFlow::Continue(()))
             }
-        }
-        Ok(None)
+        })?;
+        Ok(found)
     }
 }
-
+impl Default for Rows {
+    fn default() -> Self {
+        Self::new(MemoryBudget::default().keys() / 9).expect("key rows")
+    }
+}
+impl Default for KeyMaps {
+    fn default() -> Self {
+        Self {
+            messages: RwLock::new(Rows::default()),
+            events: RwLock::new(Rows::default()),
+            versions: RwLock::new(Rows::default()),
+        }
+    }
+}
 impl KeyMaps {
+    #[cfg(test)]
     pub(crate) fn load(index: &Connection) -> Result<Self> {
-        let keys = Self::default();
-        for (table, key, pk, rows) in [
-            ("message", "id", "pk", &keys.messages),
-            ("event", "id", "pk", &keys.events),
-        ] {
-            let mut statement = index.prepare(&format!("SELECT {key},{pk} FROM {table}"))?;
-            let mut values = statement.query([])?;
-            while let Some(row) = values.next()? {
-                let value: String = row.get(0)?;
-                let hash = hash_of(value.as_bytes());
-                rows.write().expect("key map lock").add(hash, row.get(1)?);
+        Self::load_with_budget(index, MemoryBudget::default().keys() / 3)
+    }
+    pub(crate) fn load_with_budget(index: &Connection, bytes: u64) -> Result<Self> {
+        let keys = Self {
+            messages: RwLock::new(Rows::new(bytes / 3)?),
+            events: RwLock::new(Rows::new(bytes / 3)?),
+            versions: RwLock::new(Rows::new(bytes / 3)?),
+        };
+        for (table, values) in [("message", &keys.messages), ("event", &keys.events)] {
+            let mut statement = index.prepare(&format!("SELECT id,pk FROM {table}"))?;
+            let mut rows = statement.query([])?;
+            let mut values = values.write().expect("key map lock");
+            while let Some(row) = rows.next()? {
+                let key: String = row.get(0)?;
+                values.add(hash_of(key.as_bytes()), row.get(1)?)?;
             }
+        }
+        let mut statement = index.prepare("SELECT version_hash,pk FROM message_version")?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let hash: Vec<u8> = row.get(0)?;
+            keys.add_message_version(&hash, row.get(1)?)?;
         }
         Ok(keys)
     }
-
+    pub(crate) fn message_version(&self, conn: &Connection, hash: &[u8]) -> Result<Option<i64>> {
+        self.versions.read().expect("key map lock").find(
+            conn,
+            "SELECT version_hash FROM message_version WHERE pk=?1",
+            hash_of(hash),
+            hash,
+        )
+    }
+    pub(crate) fn add_message_version(&self, hash: &[u8], pk: i64) -> Result<()> {
+        self.versions
+            .write()
+            .expect("key map lock")
+            .add(hash_of(hash), pk)
+    }
     pub(crate) fn message(&self, conn: &Connection, id: &str) -> Result<Option<i64>> {
         self.messages.read().expect("key map lock").find(
             conn,
-            "SELECT id FROM message WHERE pk = ?1",
+            "SELECT id FROM message WHERE pk=?1",
             hash_of(id.as_bytes()),
             id.as_bytes(),
         )
     }
-
-    pub(crate) fn add_message(&self, id: &str, pk: i64) {
+    pub(crate) fn add_message(&self, id: &str, pk: i64) -> Result<()> {
         self.messages
             .write()
             .expect("key map lock")
-            .add(hash_of(id.as_bytes()), pk);
+            .add(hash_of(id.as_bytes()), pk)
     }
-
     pub(crate) fn event(&self, conn: &Connection, id: &str) -> Result<Option<i64>> {
         self.events.read().expect("key map lock").find(
             conn,
-            "SELECT id FROM event WHERE pk = ?1",
+            "SELECT id FROM event WHERE pk=?1",
             hash_of(id.as_bytes()),
             id.as_bytes(),
         )
     }
-
-    pub(crate) fn add_event(&self, id: &str, pk: i64) {
+    pub(crate) fn add_event(&self, id: &str, pk: i64) -> Result<()> {
         self.events
             .write()
             .expect("key map lock")
-            .add(hash_of(id.as_bytes()), pk);
+            .add(hash_of(id.as_bytes()), pk)
     }
 }
-
 #[cfg(test)]
 mod tests;

@@ -93,6 +93,7 @@ fn config(home: &Path) -> Config {
         home: home.to_owned(),
         tool_dirs: Default::default(),
         workers: 1,
+        memory_budget: Default::default(),
         reader_memory_bytes: 128 << 20,
         bytes_in_flight: 1 << 20,
         machine: "m".into(),

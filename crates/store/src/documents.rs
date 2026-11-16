@@ -18,8 +18,8 @@ pub(crate) struct Source<'a> {
     pub counter: i64,
     pub packed: &'a crate::text_rows::PreparedTexts,
     pub texts: &'a crate::text_rows::TextIds,
-    /// Set during a first build ([`crate::key_maps`]).
-    pub first_build: Option<&'a crate::key_maps::KeyMaps>,
+    /// The writer's index upkeep for this transaction.
+    pub upkeep: &'a crate::writer::resolve::IndexUpkeep,
     pub keys: &'a crate::writer::resolve::ResolvedKeys,
 }
 
@@ -56,6 +56,7 @@ pub(crate) fn write(
             packed: source.packed,
             texts: source.texts,
             membership: None,
+            upkeep: source.upkeep,
         },
     )?;
     let pk = match existing {
@@ -75,7 +76,7 @@ pub(crate) fn apply_choice(
     pk: i64,
     choice: Option<&crate::writer::resolve::membership::DocumentChoice>,
     counter: i64,
-    first_build: Option<&crate::key_maps::KeyMaps>,
+    upkeep: &crate::writer::resolve::IndexUpkeep,
     texts: &crate::text_rows::TextIds,
     keys: &crate::writer::resolve::ResolvedKeys,
 ) -> Result<()> {
@@ -83,7 +84,7 @@ pub(crate) fn apply_choice(
         let old=tx.prepare("SELECT DISTINCT text_id FROM document_block WHERE document_pk=?1 AND text_id IS NOT NULL")?.query_map([pk],|r|r.get::<_,i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
         tx.execute("DELETE FROM document WHERE pk=?1", [pk])?;
         for text in old {
-            crate::text_rows::unindex_unused(tx, texts, text, first_build.is_some())?;
+            crate::text_rows::unindex_unused(tx, texts, text, upkeep.at_build_end())?;
         }
         return Ok(());
     };
@@ -94,7 +95,7 @@ pub(crate) fn apply_choice(
         route: choice.route,
         counter,
         packed: &packed,
-        first_build,
+        upkeep,
         texts,
         keys,
     };
@@ -155,7 +156,7 @@ fn show(
     tx.execute("DELETE FROM document_block WHERE document_pk=?1", [pk])?;
     insert_blocks(tx, pk, source, document, prepared)?;
     for text in old {
-        crate::text_rows::unindex_unused(tx, source.texts, text, source.first_build.is_some())?;
+        crate::text_rows::unindex_unused(tx, source.texts, text, source.upkeep.at_build_end())?;
     }
     Ok(())
 }
@@ -184,7 +185,7 @@ fn insert_blocks(
             })
             .transpose()?;
         if let Some(id) = text {
-            crate::text_rows::activate(tx, source.texts, id, 1, source.first_build.is_some())?;
+            crate::text_rows::activate(tx, source.texts, id, 1, source.upkeep.at_build_end())?;
         }
         let blob = match block {
             Block::Image(a) | Block::File(a) => a.blob.map(|h| h.0.to_vec()),

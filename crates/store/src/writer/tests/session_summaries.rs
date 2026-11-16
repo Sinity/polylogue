@@ -18,10 +18,15 @@ fn apply(tx: &Transaction<'_>, mut b: Batch) {
         &b,
         &b.parse[0],
         rows::ReadingWrite {
-            texts: &crate::text_rows::TextIds::new(tx, false).unwrap(),
+            texts: &crate::text_rows::TextIds::new(
+                tx,
+                false,
+                crate::archive::MemoryBudget::default().keys() / 3,
+            )
+            .unwrap(),
             resolution: b.parse[0].resolution.as_ref().unwrap(),
             counter: 1,
-            first_build: None,
+            upkeep: &resolve::IndexUpkeep::PerTransaction,
             source_commit: Some(&fixture_commit()),
             changes: &changes,
             retraction: false,
@@ -126,10 +131,15 @@ fn fresh_message_counts_update_each_session_once_per_transaction() {
             &b,
             &b.parse[0],
             rows::ReadingWrite {
-                texts: &crate::text_rows::TextIds::new(&tx, false).unwrap(),
+                texts: &crate::text_rows::TextIds::new(
+                    &tx,
+                    false,
+                    crate::archive::MemoryBudget::default().keys() / 3,
+                )
+                .unwrap(),
                 resolution: b.parse[0].resolution.as_ref().unwrap(),
                 counter: 1,
-                first_build: None,
+                upkeep: &resolve::IndexUpkeep::PerTransaction,
                 source_commit: Some(&fixture_commit()),
                 changes: &changes,
                 retraction: false,
@@ -342,10 +352,15 @@ fn fresh_installed_counts_are_invalidated_by_same_transaction_visibility_or_sess
             &b,
             &b.parse[0],
             rows::ReadingWrite {
-                texts: &crate::text_rows::TextIds::new(&tx, false).unwrap(),
+                texts: &crate::text_rows::TextIds::new(
+                    &tx,
+                    false,
+                    crate::archive::MemoryBudget::default().keys() / 3,
+                )
+                .unwrap(),
                 resolution: b.parse[0].resolution.as_ref().unwrap(),
                 counter: 1,
-                first_build: None,
+                upkeep: &resolve::IndexUpkeep::PerTransaction,
                 source_commit: Some(&fixture_commit()),
                 changes: &changes,
                 retraction: false,

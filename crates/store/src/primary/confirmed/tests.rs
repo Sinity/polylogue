@@ -48,7 +48,12 @@ fn completion_marker_commits_staged_pages_atomically() {
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
     assert_eq!(
         apply(
-            &crate::text_rows::TextIds::new(&index, false).unwrap(),
+            &crate::text_rows::TextIds::new(
+                &index,
+                false,
+                crate::archive::MemoryBudget::default().keys() / 3
+            )
+            .unwrap(),
             &mut index,
             &resolver,
             &[input(2, "first")]
@@ -69,7 +74,12 @@ fn completion_marker_commits_staged_pages_atomically() {
     index.execute_batch("CREATE TRIGGER stop_confirmed_apply BEFORE INSERT ON source_input WHEN new.id='second' BEGIN SELECT raise(ABORT,'stop'); END").unwrap();
     assert!(
         apply(
-            &crate::text_rows::TextIds::new(&index, false).unwrap(),
+            &crate::text_rows::TextIds::new(
+                &index,
+                false,
+                crate::archive::MemoryBudget::default().keys() / 3
+            )
+            .unwrap(),
             &mut index,
             &resolver,
             &[input(4, "second"), complete_at(5)]
@@ -96,7 +106,12 @@ fn completion_marker_commits_staged_pages_atomically() {
         .unwrap();
     assert_eq!(
         apply(
-            &crate::text_rows::TextIds::new(&index, false).unwrap(),
+            &crate::text_rows::TextIds::new(
+                &index,
+                false,
+                crate::archive::MemoryBudget::default().keys() / 3
+            )
+            .unwrap(),
             &mut index,
             &resolver,
             &[]
@@ -113,7 +128,12 @@ fn completion_marker_commits_staged_pages_atomically() {
     );
     assert_eq!(
         apply(
-            &crate::text_rows::TextIds::new(&index, false).unwrap(),
+            &crate::text_rows::TextIds::new(
+                &index,
+                false,
+                crate::archive::MemoryBudget::default().keys() / 3
+            )
+            .unwrap(),
             &mut index,
             &resolver,
             &[input(2, "first"), complete_at(5)]
@@ -139,7 +159,12 @@ fn an_empty_confirmed_database_is_known_and_zero_data_is_refused() {
     let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
     let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
     apply(
-        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &crate::text_rows::TextIds::new(
+            &index,
+            false,
+            crate::archive::MemoryBudget::default().keys() / 3,
+        )
+        .unwrap(),
         &mut index,
         &resolver,
         &[complete_at(0)],
@@ -148,7 +173,12 @@ fn an_empty_confirmed_database_is_known_and_zero_data_is_refused() {
     assert_eq!(checkpoint(&index).unwrap(), Some(0));
     assert!(
         apply(
-            &crate::text_rows::TextIds::new(&index, false).unwrap(),
+            &crate::text_rows::TextIds::new(
+                &index,
+                false,
+                crate::archive::MemoryBudget::default().keys() / 3
+            )
+            .unwrap(),
             &mut index,
             &resolver,
             &[input(0, "invalid")]
@@ -183,7 +213,12 @@ fn source_lifecycle_keeps_recorded_authored_effects() {
         crate::primary::authored::prepare(&index, &request, None, None, |_| Ok(()), |_| Ok(()))
             .unwrap();
     apply(
-        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &crate::text_rows::TextIds::new(
+            &index,
+            false,
+            crate::archive::MemoryBudget::default().keys() / 3,
+        )
+        .unwrap(),
         &mut index,
         &resolver,
         &[
@@ -205,7 +240,12 @@ fn source_lifecycle_keeps_recorded_authored_effects() {
         (5, ConfirmedChange::Tombstoned, 0),
     ] {
         apply(
-            &crate::text_rows::TextIds::new(&index, false).unwrap(),
+            &crate::text_rows::TextIds::new(
+                &index,
+                false,
+                crate::archive::MemoryBudget::default().keys() / 3,
+            )
+            .unwrap(),
             &mut index,
             &resolver,
             &[
@@ -240,7 +280,12 @@ fn source_lifecycle_keeps_recorded_authored_effects() {
     }
     assert!(
         apply(
-            &crate::text_rows::TextIds::new(&index, false).unwrap(),
+            &crate::text_rows::TextIds::new(
+                &index,
+                false,
+                crate::archive::MemoryBudget::default().keys() / 3
+            )
+            .unwrap(),
             &mut index,
             &resolver,
             &[
@@ -313,7 +358,12 @@ fn new_requests_apply_after_the_applied_ones_and_a_lifecycle_change_rebuilds_aut
     };
     let first = setting(&index, "first-request", "browser.actions");
     apply(
-        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &crate::text_rows::TextIds::new(
+            &index,
+            false,
+            crate::archive::MemoryBudget::default().keys() / 3,
+        )
+        .unwrap(),
         &mut index,
         &resolver,
         &[live(2, "first", first), complete_at(2)],
@@ -322,7 +372,12 @@ fn new_requests_apply_after_the_applied_ones_and_a_lifecycle_change_rebuilds_aut
     assert_eq!(settings(&index), ["browser.actions"]);
     let second = setting(&index, "second-request", "drive.ai-studio");
     apply(
-        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &crate::text_rows::TextIds::new(
+            &index,
+            false,
+            crate::archive::MemoryBudget::default().keys() / 3,
+        )
+        .unwrap(),
         &mut index,
         &resolver,
         &[live(3, "second", second), complete_at(3)],
@@ -330,7 +385,12 @@ fn new_requests_apply_after_the_applied_ones_and_a_lifecycle_change_rebuilds_aut
     .unwrap();
     assert_eq!(settings(&index), ["browser.actions", "drive.ai-studio"]);
     apply(
-        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &crate::text_rows::TextIds::new(
+            &index,
+            false,
+            crate::archive::MemoryBudget::default().keys() / 3,
+        )
+        .unwrap(),
         &mut index,
         &resolver,
         &[
@@ -347,7 +407,12 @@ fn new_requests_apply_after_the_applied_ones_and_a_lifecycle_change_rebuilds_aut
     .unwrap();
     assert_eq!(settings(&index), ["drive.ai-studio"]);
     apply(
-        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &crate::text_rows::TextIds::new(
+            &index,
+            false,
+            crate::archive::MemoryBudget::default().keys() / 3,
+        )
+        .unwrap(),
         &mut index,
         &resolver,
         &[
@@ -418,7 +483,12 @@ fn confirmed_slices_keep_full_material_descriptors_without_opening_source_bytes(
         })),
     };
     apply(
-        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &crate::text_rows::TextIds::new(
+            &index,
+            false,
+            crate::archive::MemoryBudget::default().keys() / 3,
+        )
+        .unwrap(),
         &mut index,
         &resolver,
         &[
@@ -478,7 +548,12 @@ fn has_confirmed_event_follows_positions_and_early_erasures() {
     };
     // Staged but not yet complete: not in index.db.
     apply(
-        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &crate::text_rows::TextIds::new(
+            &index,
+            false,
+            crate::archive::MemoryBudget::default().keys() / 3,
+        )
+        .unwrap(),
         &mut index,
         &resolver,
         &[input(2, "staged"), erased],
@@ -486,7 +561,12 @@ fn has_confirmed_event_follows_positions_and_early_erasures() {
     .unwrap();
     assert!(!has_confirmed_event(&index, "event-staged").unwrap());
     apply(
-        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &crate::text_rows::TextIds::new(
+            &index,
+            false,
+            crate::archive::MemoryBudget::default().keys() / 3,
+        )
+        .unwrap(),
         &mut index,
         &resolver,
         &[complete_at(4)],
@@ -512,7 +592,12 @@ fn prepared_position_cannot_skip_new_sinex_events() {
     stage_next(&mut index, &[input(4, "second")]).unwrap();
     assert!(matches!(
         apply_prepared(
-            &crate::text_rows::TextIds::new(&index, false).unwrap(),
+            &crate::text_rows::TextIds::new(
+                &index,
+                false,
+                crate::archive::MemoryBudget::default().keys() / 3
+            )
+            .unwrap(),
             &mut index,
             *prepared
         ),
@@ -528,7 +613,12 @@ fn prepared_position_cannot_skip_new_sinex_events() {
     );
     assert_eq!(
         apply(
-            &crate::text_rows::TextIds::new(&index, false).unwrap(),
+            &crate::text_rows::TextIds::new(
+                &index,
+                false,
+                crate::archive::MemoryBudget::default().keys() / 3
+            )
+            .unwrap(),
             &mut index,
             &resolver,
             &[]
@@ -564,7 +654,12 @@ fn prepared_application_respects_a_failed_scope_reset_fence() {
         .unwrap();
     assert!(matches!(
         apply_prepared(
-            &crate::text_rows::TextIds::new(&index, false).unwrap(),
+            &crate::text_rows::TextIds::new(
+                &index,
+                false,
+                crate::archive::MemoryBudget::default().keys() / 3
+            )
+            .unwrap(),
             &mut index,
             *prepared
         ),
@@ -583,7 +678,12 @@ fn prepared_application_respects_a_failed_scope_reset_fence() {
         .unwrap();
     assert_eq!(
         apply(
-            &crate::text_rows::TextIds::new(&index, false).unwrap(),
+            &crate::text_rows::TextIds::new(
+                &index,
+                false,
+                crate::archive::MemoryBudget::default().keys() / 3
+            )
+            .unwrap(),
             &mut index,
             &resolver,
             &[]

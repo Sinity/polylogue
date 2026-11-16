@@ -17,8 +17,8 @@ fn every_schema_applies_to_an_empty_database() {
 #[test]
 fn every_database_starts_at_its_current_version() {
     assert_eq!(ARCHIVE_VERSION, 3);
-    assert_eq!(INDEX_VERSION, 6);
-    assert_eq!(PRIMARY_INDEX_VERSION, 8);
+    assert_eq!(INDEX_VERSION, 7);
+    assert_eq!(PRIMARY_INDEX_VERSION, 9);
     for (create, expected) in [
         (
             ensure_archive as fn(&Connection) -> Result<()>,
@@ -182,7 +182,7 @@ fn open_indexes_are_added_in_place_and_survive_reopen() {
 }
 
 #[test]
-fn recent_read_indexes_wait_for_first_build_completion_on_reopen() {
+fn recent_read_indexes_wait_for_build_completion_on_reopen() {
     let conn = Connection::open_in_memory().unwrap();
     create_index(&conn).unwrap();
     conn.execute_batch("DROP INDEX session_recent; DROP INDEX message_recent;")

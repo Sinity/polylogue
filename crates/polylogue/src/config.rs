@@ -163,11 +163,13 @@ pub struct ProcessInputs {
     pub clock: WallClock,
     pub identity: Option<Identity>,
     pub workers: Option<usize>,
+    pub memory_bytes: Option<u64>,
     pub cwd: Option<PathBuf>,
 }
 impl ProcessInputs {
     pub fn capture() -> Result<Self, Error> {
         let environment = EnvSnapshot::capture();
+        let (workers, memory_bytes) = process_allowance();
         let output = OutputConfig::new(
             std::io::stdout().is_terminal(),
             std::io::stderr().is_terminal(),
@@ -179,11 +181,55 @@ impl ProcessInputs {
             output,
             clock: WallClock::new(jiff::Timestamp::now),
             identity: None,
-            workers: std::thread::available_parallelism().ok().map(usize::from),
+            workers,
+            memory_bytes,
             cwd: std::env::current_dir().ok(),
         })
     }
 }
+/// CPU affinity, physical memory and enclosing cgroup ceilings constrain this process.
+fn process_allowance() -> (Option<usize>, Option<u64>) {
+    let mut workers = std::thread::available_parallelism().ok().map(usize::from);
+    let mut bytes = std::fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|memory| {
+            memory.lines().find_map(|line| {
+                let mut fields = line.split_whitespace();
+                if fields.next()? != "MemTotal:" {
+                    return None;
+                }
+                fields.next()?.parse::<u64>().ok()?.checked_mul(1024)
+            })
+        });
+    if let Ok(groups) = std::fs::read_to_string("/proc/self/cgroup")
+        && let Some(group) = groups.lines().find_map(|line| line.strip_prefix("0::"))
+    {
+        let root = Path::new("/sys/fs/cgroup");
+        let path = root.join(group.trim_start_matches('/'));
+        for parent in path
+            .ancestors()
+            .take_while(|parent| parent.starts_with(root))
+        {
+            if let Ok(limit) = std::fs::read_to_string(parent.join("memory.max"))
+                && let Ok(limit) = limit.trim().parse::<u64>()
+            {
+                bytes = Some(bytes.map_or(limit, |bytes| bytes.min(limit)));
+            }
+            if let Ok(limit) = std::fs::read_to_string(parent.join("cpu.max")) {
+                let mut fields = limit.split_whitespace();
+                if let (Some(quota), Some(period)) = (fields.next(), fields.next())
+                    && let (Ok(quota), Ok(period)) = (quota.parse::<u64>(), period.parse::<u64>())
+                    && period > 0
+                {
+                    let cpus = (quota / period).max(1) as usize;
+                    workers = Some(workers.map_or(cpus, |workers| workers.min(cpus)));
+                }
+            }
+        }
+    }
+    (workers, bytes)
+}
+
 #[derive(Debug, Clone)]
 pub struct Paths {
     pub home: PathBuf,
@@ -603,7 +649,10 @@ impl Startup {
             workers,
             process.clock.clone(),
         )
-        .map_err(|error| Error::Invalid(error.to_string()))?;
+        .map_err(|error| Error::Invalid(error.to_string()))?
+        .with_memory_budget(polylogue_store::archive::MemoryBudget::from_allowance(
+            process.memory_bytes.unwrap_or(4 << 30),
+        ));
         let config = Arc::new(Config {
             paths,
             archive,

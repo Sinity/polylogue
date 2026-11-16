@@ -28,10 +28,15 @@ fn apply(
         batch,
         step,
         rows::ReadingWrite {
-            texts: &crate::text_rows::TextIds::new(tx, false).unwrap(),
+            texts: &crate::text_rows::TextIds::new(
+                tx,
+                false,
+                crate::archive::MemoryBudget::default().keys() / 3,
+            )
+            .unwrap(),
             resolution: step.resolution.as_ref().unwrap(),
             counter: 1,
-            first_build: None,
+            upkeep: &resolve::IndexUpkeep::PerTransaction,
             source_commit: Some(&fixture_commit()),
             changes,
             retraction: false,
@@ -258,7 +263,15 @@ fn fresh_tool_pairs_and_earlier_event_placements_keep_order() {
             range: None,
             data: serde_json::json!({}),
         });
-        write_test_rows(&tx, &events, &events.parse[0], 1, 1, None).unwrap();
+        write_test_rows(
+            &tx,
+            &events,
+            &events.parse[0],
+            1,
+            1,
+            &resolve::IndexUpkeep::PerTransaction,
+        )
+        .unwrap();
         let mut call = text_message("call", "s", Role::Assistant, "call text", Some("tool_use"));
         call.blocks.push(serde_json::from_value(serde_json::json!({"type":"tool_call","call_id":"tool","tool":"shell","input":{"command":"true"},"command":"true"})).unwrap());
         let mut result = text_message("result", "s", Role::User, "result text", None);

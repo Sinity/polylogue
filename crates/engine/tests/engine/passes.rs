@@ -22,7 +22,7 @@ mod rewritten_documents;
 mod started_inputs;
 
 #[test]
-fn a_first_build_stores_and_parses_and_a_second_pass_reads_nothing() {
+fn a_build_stores_and_parses_and_a_second_pass_reads_nothing() {
     let w = ClaudeHome::new();
     w.append(
         "s1.jsonl",

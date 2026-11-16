@@ -56,7 +56,7 @@ fn journal_mode(path: &std::path::Path) -> String {
 }
 
 #[test]
-fn a_first_build_is_private_until_installed_and_reads_answer_its_progress() {
+fn a_build_is_private_until_installed_and_reads_answer_its_progress() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     let paths = Paths::of(dir.path());
@@ -73,11 +73,13 @@ fn a_first_build_is_private_until_installed_and_reads_answer_its_progress() {
                 serving_previous: false,
                 chains: 1,
                 chains_read: 1,
+                bytes: 0,
+                bytes_read: 0,
             }
         ),
         other => panic!("expected an index build, got {:?}", other.err()),
     }
-    // The build pipeline reads what it wrote, in no journal and no sync.
+    // The build pipeline reads its private rows before any install or sync.
     let pipeline = ReadPool::open(&archive).unwrap();
     assert_eq!(messages(&pipeline), 1);
     assert_eq!(journal_mode(&paths.build), "delete");
@@ -136,6 +138,8 @@ fn a_rebuild_keeps_serving_a_same_schema_index_until_it_is_installed() {
             serving_previous: true,
             chains: 0,
             chains_read: 0,
+            bytes: 0,
+            bytes_read: 0,
         })
     );
     let pool = serving(&archive);
