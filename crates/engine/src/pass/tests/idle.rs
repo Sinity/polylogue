@@ -101,7 +101,7 @@ fn idle_passes_need_no_chain_planning_query() {
             engine.config.reads_sources = sources;
             assert!(engine.run_pass().unwrap().errors.is_empty());
             fault::arm("read.chains_behind_index", "", Action::Fail, 0, 1);
-            let first = engine.one_pass(false, &Default::default());
+            let first = engine.run_pass();
             let second = engine.one_pass(false, &Default::default());
             fault::clear();
             assert!(

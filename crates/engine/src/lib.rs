@@ -530,7 +530,7 @@ impl Engine {
             reparsing: HashMap::new(),
             stopped_attempt,
             watched_loaded: false,
-            readings_pending: true,
+            readings_pending: false,
             captures: Databases::default(),
             wake: None,
             watcher: None,

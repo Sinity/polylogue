@@ -858,7 +858,7 @@ impl Fixture {
 }
 
 /// Marks one origin's readings as older, in an isolated test or benchmark archive.
-/// The caller stops its writer first and keeps the archive lock.
+/// The caller serializes writes and keeps the archive lock.
 pub fn older_reading(archive: &Archive, origin: &str) -> Result<(u64, u64)> {
     let conn = open_write(&archive.index_db(), crate::archive::cache::SETUP)?;
     conn.execute(

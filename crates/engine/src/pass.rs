@@ -324,7 +324,7 @@ impl Engine {
         let result = (|| {
             let scope = self.cached_scope()?;
             let result = self.read_turn(
-                self.config.reads_sources && (discover || !self.watched_loaded),
+                discover || (self.config.reads_sources && !self.watched_loaded),
                 paths,
             )?;
             // A completed reset can race the last SQL read. Its cached progress
@@ -389,6 +389,26 @@ impl Engine {
         let continuing = self.pass_open;
         let started = Instant::now();
         self.load()?;
+        if discover && !self.readings_pending {
+            use polylogue_model::freshness::{CompletenessDimension, CompletenessReason};
+            self.readings_pending = match self
+                .reads
+                .reader()?
+                .completeness(&crate::reading_contracts())?
+                .parsing
+            {
+                CompletenessDimension::Incomplete(reasons)
+                | CompletenessDimension::Unknown(reasons) => reasons.into_iter().any(|reason| {
+                    matches!(
+                        reason,
+                        CompletenessReason::MissingCheckpoint
+                            | CompletenessReason::ReadingVersionChanged
+                            | CompletenessReason::ParserBehind
+                    )
+                }),
+                CompletenessDimension::Complete | CompletenessDimension::NotApplicable => false,
+            };
+        }
         let collectors_due = self
             .collectors_at
             .is_none_or(|at| at.elapsed() >= Duration::from_secs(60));
@@ -482,6 +502,7 @@ impl Engine {
         // after an index rebuild it is in place before any message that
         // names an asset is parsed. The import operation refreshes its new members.
         if !continuing {
+            self.shared_prefixes.get_mut().clear();
             self.refresh_import_assets(&mut pass)?;
         }
         if self.readings_pending {
