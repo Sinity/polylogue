@@ -514,7 +514,7 @@ fn assertion_item(
             not_inlined.len(),
             not_inlined
                 .iter()
-                .map(|reference| format!("`polylogue read {reference}`"))
+                .map(|reference| format!("`polylogue {reference} read`"))
                 .collect::<Vec<_>>()
                 .join(", ")
         );
@@ -1168,13 +1168,13 @@ fn session_start(
         .collect::<Vec<_>>()
         .join(" OR ");
     let operator_notes_command = format!(
-        "polylogue query {}",
+        "polylogue {}",
         polylogue_render::shell_quote(&format!(
             "assertions where author:operator ({assertion_scope})"
         ))
     );
     let other_assertions_command = format!(
-        "polylogue query {}",
+        "polylogue {}",
         polylogue_render::shell_quote(&format!(
             "assertions where NOT author:operator judged:unknown ({assertion_scope})"
         ))
@@ -1346,7 +1346,7 @@ fn session_start(
     let closing = if no_candidates && previous.is_some() {
         "Nothing changed."
     } else {
-        "Earlier work on a topic: `polylogue recall WORDS`."
+        "Earlier work on a topic: `polylogue 'WORDS' brief`."
     };
     let (text, refs, left_out) = fit.finish(closing, |item| {
         if let Some(Expansion::Assertion(reference)) = &item.expansion {
@@ -1395,7 +1395,7 @@ fn session_start(
             text.push_str("\n\nStored session/model record:\n");
             expanded.refs.push(format!("message:{}", prompt.message_id));
             let attribution = expanded.attribution.get_or_insert_with(String::new);
-            let _ = write!(attribution, "; latest observed request recorded written_by:{} message:{}; older prompts: `polylogue read session:{} --view dialogue`", prompt.written_by, prompt.message_id, session.session.id);
+            let _ = write!(attribution, "; latest observed request recorded written_by:{} message:{}; older prompts: `polylogue session:{} read --view dialogue`", prompt.written_by, prompt.message_id, session.session.id);
         }
         text.push_str(&expanded.text);
         expanded.text = text;
@@ -1479,7 +1479,7 @@ fn takeover(
     if other_assertions > 0 {
         let _ = writeln!(
             text,
-            "Assertions by other authors, not yet accepted: {other_assertions}; list them with `polylogue query {}`.",
+            "Assertions by other authors, not yet accepted: {other_assertions}; list them with `polylogue {}`.",
             polylogue_render::shell_quote(&format!(
                 "assertions where NOT author:operator judged:unknown about:{}",
                 serde_json::to_string(&session_reference.to_string())
@@ -1535,7 +1535,7 @@ fn takeover(
     let mut fit = Fitter::new(budget, text)?;
     fit.refs.append(&mut refs);
     fit.left_out.append(&mut left_out);
-    let pull = format!("polylogue read {id}");
+    let pull = format!("polylogue {id} read");
     fit.section(
         "Notes from the operator on it:",
         note_items,
@@ -1858,7 +1858,10 @@ fn recall(
         search_summary.hits,
         search_summary.sessions,
         match &next {
-            Some(c) => format!("; more: `polylogue recall --cursor {c} {}`", text_in.trim()),
+            Some(c) => format!(
+                "; more: `polylogue {} brief --cursor {c}`",
+                polylogue_render::shell_quote(text_in.trim())
+            ),
             None => String::new(),
         }
     );
@@ -1867,10 +1870,7 @@ fn recall(
         "Stored context:",
         items,
         "matching sessions",
-        &format!(
-            "polylogue recall {}",
-            polylogue_render::shell_quote(text_in)
-        ),
+        &format!("polylogue {} brief", polylogue_render::shell_quote(text_in)),
     );
     let (out, refs, left_out) = fit.finish(&closing, |_| Ok(None))?;
     Ok(Prepared {

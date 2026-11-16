@@ -30,7 +30,7 @@ fn completion_route_uses_full_query_cursor_and_preserves_the_suffix() {
     let (_, direct, failed) = run(
         archive,
         command_surface::RunnableRequest::new(
-            "complete",
+            "internal complete",
             json!({"text":"live: | measure count","position":5}),
             "complete-parity",
         ),

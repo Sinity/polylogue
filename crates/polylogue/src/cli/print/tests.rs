@@ -156,13 +156,13 @@ fn continue_plan_prints_the_harness_command_line() {
         }),
         context_assisted: Command {
             program: "polylogue".into(),
-            args: vec!["takeover".into(), "codex:print-test".into()],
+            args: vec!["codex:print-test".into(), "brief".into()],
             cwd: None,
         },
     });
     assert_eq!(
         resume(&answer, TextStyle::Plain),
         "harness command:    cd /work/project && codex resume print-test\n\
-         with context:       polylogue takeover codex:print-test\n"
+         with context:       polylogue codex:print-test brief\n"
     );
 }

@@ -166,7 +166,7 @@ pub(crate) struct Role {
 }
 
 /// The current revision of the role `name`.
-fn role(d: &Daemon, invocation: &Invocation, name: &str) -> Result<Role, Failure> {
+pub(crate) fn role(d: &Daemon, invocation: &Invocation, name: &str) -> Result<Role, Failure> {
     use polylogue_model::assertion::values;
     let operation = d.resolve_operation_context(invocation.clone())?;
     let reader = d.reads.reader()?;
@@ -198,7 +198,11 @@ fn role_reference(name: &str) -> String {
 
 /// The newest running instance of a role: the newest session Polylogue
 /// started for it that it still hosts or whose live state is running.
-fn role_instance(d: &Daemon, name: &str, now: i64) -> Result<Option<SessionId>, Failure> {
+pub(crate) fn role_instance(
+    d: &Daemon,
+    name: &str,
+    now: i64,
+) -> Result<Option<SessionId>, Failure> {
     let reader = d.reads.reader()?;
     for (session, _, _) in reader.sessions_started_with(&role_reference(name))? {
         let Ok(id) = SessionId::parse(&session) else {
@@ -264,7 +268,7 @@ fn recipients(
 /// A session's live state, live facts and directory for an act: from the
 /// archive, or, for a session Polylogue just started and still hosts, no
 /// live events yet and state `unknown`.
-fn session_state(
+pub(crate) fn session_state(
     d: &Daemon,
     session: &SessionId,
     now: i64,

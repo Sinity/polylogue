@@ -28,7 +28,7 @@ fn gemini_hooks_install_and_uninstall_through_the_public_command() {
             assert_eq!(value["model"], "synthetic");
             assert_eq!(
                 value["hooks"]["SessionStart"][0]["hooks"][0]["command"],
-                "polylogue hook SessionStart --harness gemini-cli"
+                "polylogue internal hook SessionStart --harness gemini-cli"
             );
             assert_eq!(
                 value["hooks"]["SessionStart"][0]["hooks"][0]["timeout"],
@@ -74,18 +74,18 @@ fn manual_runs_offline_as_text_and_json() {
 
 #[test]
 fn gemini_start_and_prompt_events_request_context_through_respond() {
-    for (event, payload, operation, expected) in [
+    for (event, payload, delivery_event, expected) in [
         (
             "SessionStart",
             json!({"session_id":"current","cwd":"/synthetic/project","source":"resume"}),
-            "brief",
-            json!({"cwd":"/synthetic/project","session":"gemini-cli:current","source":"resume"}),
+            "resume",
+            json!({"steps":[{"verb":"brief", "cwd":"/synthetic/project","for":"gemini-cli:current","source":"resume"}]}),
         ),
         (
             "BeforeAgent",
             json!({"session_id":"current","prompt":"Continue https://chatgpt.com/c/previous and inspect src/parser.rs"}),
             "takeover",
-            json!({"session":"chatgpt:previous","for_session":"gemini-cli:current"}),
+            json!({"selection":"session:chatgpt:previous", "steps":[{"verb":"brief", "for":"gemini-cli:current"}]}),
         ),
     ] {
         let dir = tempfile::tempdir().unwrap();
@@ -97,7 +97,7 @@ fn gemini_start_and_prompt_events_request_context_through_respond() {
             let mut line = String::new();
             BufReader::new(&stream).read_line(&mut line).unwrap();
             let request: Value = serde_json::from_str(&line).unwrap();
-            assert_eq!(request["operation"], operation);
+            assert_eq!(request["operation"], "rows");
             assert_eq!(request["arguments"], expected);
             assert!(
                 request["request_id"]
@@ -106,24 +106,28 @@ fn gemini_start_and_prompt_events_request_context_through_respond() {
             );
             assert_eq!(request["deadline"], 1500);
             assert!(request.get("op").is_none());
-            let delivery = request["request_id"].as_str().unwrap().to_owned();
+            let delivery = format!("{}-1", request["request_id"].as_str().unwrap());
             let prepared = json!({
-                "event": if operation == "brief" { "resume" } else { "takeover" },
+                "event": delivery_event,
                 "empty": false,
                 "text": "Synthetic context",
                 "refs": [],
                 "left_out": [],
             });
             let answer = command_surface::Answer::ok(json!({
-                "delivery": delivery,
-                "prepared": prepared,
+                "kind":"steps", "reply":{"resolved":null, "steps":[{
+                    "verb":"brief", "request_id":delivery,
+                    "outcome":{"status":"done", "reply":{"kind":"brief", "reply":{
+                        "delivery":delivery, "prepared":prepared
+                    }}}
+                }]}
             }));
             writeln!(stream, "{}", serde_json::to_string(&answer).unwrap()).unwrap();
             let (mut stream, _) = listener.accept().unwrap();
             line.clear();
             BufReader::new(&stream).read_line(&mut line).unwrap();
             let request: Value = serde_json::from_str(&line).unwrap();
-            assert_eq!(request["operation"], "delivery-event");
+            assert_eq!(request["operation"], "internal delivery-event");
             assert_eq!(request["arguments"]["delivery"], delivery);
             assert_eq!(request["arguments"]["what"], "delivered");
             writeln!(
@@ -134,7 +138,7 @@ fn gemini_start_and_prompt_events_request_context_through_respond() {
             .unwrap();
         });
         let mut child = crate::command(dir.path())
-            .args(["hook", event, "--harness", "gemini-cli"])
+            .args(["internal", "hook", event, "--harness", "gemini-cli"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

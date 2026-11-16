@@ -1,4 +1,4 @@
-//! `polylogue browser-host`: the extension's native messaging host. Chrome
+//! `polylogue internal browser-host`: the extension's native messaging host. Chrome
 //! starts one process per request and talks to it in native messaging
 //! frames (a 32-bit native-endian length, then JSON) on stdin and stdout.
 //!
@@ -174,14 +174,14 @@ pub fn run(
         Ok(c) => Arc::new(c),
         Err(e) => {
             let _ = fail(&mut io::stdout().lock(), "host_storage_unavailable");
-            eprintln!("polylogue browser-host: {e}");
+            eprintln!("polylogue internal browser-host: {e}");
             return ExitCode::FAILURE;
         }
     };
     match serve(host, &mut io::stdin().lock(), &mut io::stdout().lock()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("polylogue browser-host: {e}");
+            eprintln!("polylogue internal browser-host: {e}");
             ExitCode::FAILURE
         }
     }

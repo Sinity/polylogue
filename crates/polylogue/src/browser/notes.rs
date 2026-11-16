@@ -38,7 +38,7 @@ pub(super) fn save(host: &BrowserHost, input: SelectionNote) -> Answer<Value> {
         "page_url": input.source.page_url,
         "selected_at": input.source.selected_at,
     });
-    host.ask_as("selection-note", arguments, input.request_id)
+    host.ask_as("internal selection-note", arguments, input.request_id)
         .unwrap_or_else(|| {
             crate::daemon::service::error(
                 polylogue_model::Code::DaemonRequired,

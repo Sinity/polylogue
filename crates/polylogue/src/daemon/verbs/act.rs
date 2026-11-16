@@ -8,11 +8,15 @@ use crate::daemon::Failure;
 use crate::daemon::handler::{Call, Handler};
 use crate::daemon::service::acts;
 use crate::protocol::act;
-use crate::protocol::line::{SendReport, StepAnswer};
+use crate::protocol::line::{SendReport, Skipped, StepAnswer};
 use crate::protocol::steps::{AnswerStep, InterruptStep, SendStep};
 use command_surface::Envelope;
-use polylogue_model::SessionId;
+use polylogue_model::live::channel::{Act, Channel, channel};
+use polylogue_model::{Reference, SessionId};
 use serde_json::Value;
+
+#[cfg(test)]
+mod tests;
 
 pub(crate) struct Send;
 impl Verb for Send {
@@ -24,33 +28,119 @@ impl Verb for Send {
         selection: &Selection,
         call: &StepCall<'_>,
     ) -> Result<StepDone, Failure> {
-        let session = recipient(&step, selection)?;
-        delegated(
-            acts::Ping::run(
-                act::Ping {
-                    target: session.to_string(),
-                    text: step.text,
-                    live: false,
-                    about: step.about,
+        let targets = recipients(&step, selection)?;
+        let several = targets.len() > 1;
+        let mut report = SendReport {
+            reached: Vec::new(),
+            skipped: Vec::new(),
+        };
+        let mut envelope = Envelope::default();
+        for (n, target) in targets.into_iter().enumerate() {
+            if several {
+                let running = call
+                    .call
+                    .reader()?
+                    .live_state(&target, call.call.daemon.config.requests.now().unix_ms())?
+                    .is_some_and(|state| state.view.state.running());
+                if !running {
+                    report.skipped.push(Skipped {
+                        session: target.clone(),
+                        line: format!(
+                            "polylogue {} send {}",
+                            target,
+                            polylogue_render::shell_quote(&step.text)
+                        ),
+                    });
+                    continue;
+                }
+            }
+            let request_id = format!("{}-{}", call.call.request_id, n + 1);
+            let child = Call {
+                request_id: &request_id,
+                ..call.call.copy()
+            };
+            let done = delegated(
+                acts::Ping::run(
+                    act::Ping {
+                        target,
+                        text: step.text.clone(),
+                        live: several,
+                        about: step.about.clone(),
+                    },
+                    if several { &child } else { &call.call },
+                )?,
+                |reached| {
+                    StepAnswer::Sent(SendReport {
+                        reached: vec![reached],
+                        skipped: Vec::new(),
+                    })
                 },
-                &call.call,
-            )?,
-            |reached| {
-                StepAnswer::Sent(SendReport {
-                    reached: vec![reached],
-                    skipped: Vec::new(),
-                })
-            },
-        )
+            )?;
+            envelope.notes.extend(done.envelope.notes);
+            envelope.next.extend(done.envelope.next);
+            if let StepAnswer::Sent(sent) = done.reply {
+                report.reached.extend(sent.reached);
+            }
+        }
+        Ok(StepDone {
+            reply: StepAnswer::Sent(report),
+            undo: Vec::new(),
+            envelope,
+        })
     }
-    fn would(step: &SendStep, selection: &Selection, _: &StepCall<'_>) -> Result<String, Failure> {
-        let session = recipient(step, selection)?;
-        Ok(format!("would send {:?} to {session}", step.text))
+    fn would(
+        step: &SendStep,
+        selection: &Selection,
+        call: &StepCall<'_>,
+    ) -> Result<String, Failure> {
+        let targets = recipients(step, selection)?;
+        let several = targets.len() > 1;
+        targets
+            .iter()
+            .map(|target| {
+                let d = call.call.daemon;
+                let now = d.config.requests.now().unix_ms();
+                let session = if let Some(name) = target.strip_prefix("role:") {
+                    acts::role(d, call.call.invocation, name)?;
+                    match acts::role_instance(d, name, now)? {
+                        Some(session) => session,
+                        None => {
+                            return Ok(format!("would send {:?} to {target}: hosted", step.text));
+                        }
+                    }
+                } else {
+                    SessionId::parse(target).map_err(Failure::bad_value)?
+                };
+                let state = acts::session_state(d, &session, now)?;
+                let delivery = match state {
+                    Some((state, _, _)) if several && !state.running() => {
+                        "skipped: ended".to_owned()
+                    }
+                    Some((state, facts, _)) => match channel(
+                        Act::Ping { live: several },
+                        state,
+                        &crate::live_acts::probe(&d.acts, &session, &facts),
+                    ) {
+                        Ok(Channel::Protocol) => "hosted".to_owned(),
+                        Ok(Channel::Hook) => "mailbox".to_owned(),
+                        Ok(Channel::Resume) => "resumed headlessly".to_owned(),
+                        Err(reason) => format!("refused: {}: {}", reason.reason, reason.detail),
+                    },
+                    None if several => "skipped: ended".to_owned(),
+                    None => "refused: session missing".to_owned(),
+                };
+                Ok(format!(
+                    "would send {:?} to {target}: {delivery}",
+                    step.text
+                ))
+            })
+            .collect::<Result<Vec<_>, Failure>>()
+            .map(|lines| lines.join("\n"))
     }
 }
 
-/// The one session a send reaches.
-fn recipient(step: &SendStep, selection: &Selection) -> Result<SessionId, Failure> {
+/// Sessions or one role, preserving its send-time resolution.
+fn recipients(step: &SendStep, selection: &Selection) -> Result<Vec<String>, Failure> {
     for (given, option) in [
         (!step.attach.is_empty(), "attach"),
         (step.page.is_some(), "page"),
@@ -60,10 +150,17 @@ fn recipient(step: &SendStep, selection: &Selection) -> Result<SessionId, Failur
             return Err(not_built("send", option));
         }
     }
-    match sessions("send", selection)?.as_slice() {
-        [session] => Ok(session.clone()),
-        _ => Err(not_built_use("send", "to several sessions")),
-    }
+    let references = selection.references()?;
+    references
+        .iter()
+        .map(|reference| match reference {
+            Reference::Session(session) => Ok(session.to_string()),
+            Reference::Role(name) if references.len() == 1 => Ok(format!("role:{name}")),
+            other => Err(Failure::bad_request(format!(
+                "send acts on sessions; {other} is not one"
+            ))),
+        })
+        .collect()
 }
 
 pub(crate) struct Answer;
@@ -92,15 +189,31 @@ impl Verb for Answer {
     fn would(
         step: &AnswerStep,
         selection: &Selection,
-        _: &StepCall<'_>,
+        call: &StepCall<'_>,
     ) -> Result<String, Failure> {
         decision(step)?;
-        sessions("answer", selection)?;
-        Ok(format!(
-            "would answer {} for {}",
-            step.value,
-            selection.described()
-        ))
+        sessions("answer", selection)?
+            .iter()
+            .map(|session| {
+                let state = acts::session_state(
+                    call.call.daemon,
+                    session,
+                    call.call.daemon.config.requests.now().unix_ms(),
+                )?;
+                let waiting = call.call.daemon.acts.host_request(session).is_some()
+                    || state.is_some_and(|(_, facts, _)| facts.pending_request.is_some());
+                Ok(format!(
+                    "would answer {} for {session}: {}",
+                    step.value,
+                    if waiting {
+                        "waiting on a permission"
+                    } else {
+                        "not waiting on a permission"
+                    }
+                ))
+            })
+            .collect::<Result<Vec<_>, Failure>>()
+            .map(|lines| lines.join("\n"))
     }
 }
 
@@ -129,10 +242,31 @@ impl Verb for Interrupt {
     fn would(
         _: &InterruptStep,
         selection: &Selection,
-        _: &StepCall<'_>,
+        call: &StepCall<'_>,
     ) -> Result<String, Failure> {
-        sessions("interrupt", selection)?;
-        Ok(format!("would interrupt {}", selection.described()))
+        sessions("interrupt", selection)?
+            .iter()
+            .map(|session| {
+                let state = acts::session_state(
+                    call.call.daemon,
+                    session,
+                    call.call.daemon.config.requests.now().unix_ms(),
+                )?;
+                let result = match state {
+                    Some((state, facts, _)) => match channel(
+                        Act::Interrupt,
+                        state,
+                        &crate::live_acts::probe(&call.call.daemon.acts, session, &facts),
+                    ) {
+                        Ok(_) => "hosted".to_owned(),
+                        Err(reason) => format!("refused: {}: {}", reason.reason, reason.detail),
+                    },
+                    None => "refused: session missing".to_owned(),
+                };
+                Ok(format!("would interrupt {session}: {result}"))
+            })
+            .collect::<Result<Vec<_>, Failure>>()
+            .map(|lines| lines.join("\n"))
     }
 }
 

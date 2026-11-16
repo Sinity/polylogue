@@ -221,10 +221,11 @@ fn attempt_from_executable(
     })
 }
 
-/// The daemon and `polylogue host` write to peers that may go away, so a
+/// The daemon and `polylogue internal host` write to peers that may go away, so a
 /// closed pipe is an error to them, never a reason to die.
 fn daemon_command(matches: &clap::ArgMatches) -> bool {
-    matches!(matches.subcommand_name(), Some("daemon" | "host"))
+    matches!(matches.subcommand_name(), Some("daemon"))
+        || matches!(matches.subcommand(), Some(("internal", internal)) if internal.subcommand_name() == Some("host"))
 }
 
 fn native_host(matches: &clap::ArgMatches) -> bool {
@@ -273,7 +274,7 @@ fn hook_startup_error(error: impl std::fmt::Display) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Whether the command line names the `hook` command: its first word that is
+/// Whether the command line names `internal hook`: its first words that are
 /// neither a global option nor that option's value.
 fn hook_invocation(arguments: &[std::ffi::OsString]) -> bool {
     const VALUED: [&str; 8] = [
@@ -291,7 +292,7 @@ fn hook_invocation(arguments: &[std::ffi::OsString]) -> bool {
         if VALUED.contains(&word) {
             words.next();
         } else if !word.starts_with('-') {
-            return word == "hook";
+            return word == "internal" && words.next() == Some("hook");
         }
     }
     false

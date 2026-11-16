@@ -1,4 +1,4 @@
-//! The hook command a harness calls on its events (`polylogue hook
+//! The hook command a harness calls on its events (`polylogue internal hook
 //! <Event> [--harness NAME]`, the event's JSON on stdin), for Claude Code
 //! (the default), Codex, Gemini CLI and Hermes.
 //!
@@ -411,8 +411,8 @@ fn context(startup: &Startup, ask: Ask, budget_tokens: Option<u32>) -> Option<(S
             session,
             source,
         } => (
-            "brief",
-            json!({ "cwd": cwd, "session": session, "source": source }),
+            "rows",
+            json!({"steps": [{"verb": "brief", "cwd": cwd, "for": session, "source": source}]}),
             None,
         ),
         Ask::Advisory {
@@ -420,7 +420,7 @@ fn context(startup: &Startup, ask: Ask, budget_tokens: Option<u32>) -> Option<(S
             cwd,
             session,
         } => (
-            "advisory",
+            "internal advisory",
             json!({"prompt":prompt,"cwd":cwd,"session":session}),
             None,
         ),
@@ -428,8 +428,8 @@ fn context(startup: &Startup, ask: Ask, budget_tokens: Option<u32>) -> Option<(S
             session,
             for_session,
         } => (
-            "takeover",
-            json!({ "session": session, "for_session": for_session }),
+            "rows",
+            json!({"selection": format!("session:{session}"), "steps": [{"verb": "brief", "for": for_session}]}),
             None,
         ),
         Ask::Recall {
@@ -438,9 +438,9 @@ fn context(startup: &Startup, ask: Ask, budget_tokens: Option<u32>) -> Option<(S
             for_session,
             cursor,
         } => (
-            "recall",
-            json!({ "query": text, "cwd": cwd, "for_session": for_session }),
-            cursor,
+            "rows",
+            json!({"selection": text, "steps": [{"verb": "brief", "cwd": cwd, "for": for_session, "cursor": cursor}]}),
+            None,
         ),
     };
     let request = command_surface::Request {
@@ -461,12 +461,34 @@ fn context(startup: &Startup, ask: Ask, budget_tokens: Option<u32>) -> Option<(S
         &request,
         allowance,
     );
+    let line_answer = if advisory {
+        None
+    } else {
+        reply
+            .as_ref()
+            .ok()
+            .and_then(|reply| reply.value())
+            .and_then(|data| {
+                serde_json::from_value::<crate::protocol::line::LineAnswer>(data.clone()).ok()
+            })
+    };
     let timed_out = match &reply {
         Err(error) => error.kind() == std::io::ErrorKind::TimedOut,
-        Ok(reply) => reply.failure().is_some_and(|error| {
-            error.code.as_deref() == Some("deadline_exceeded")
-                || error.kind == command_surface::FailureKind::Timeout
-        }),
+        Ok(reply) => {
+            let step_error = match &line_answer {
+                Some(crate::protocol::line::LineAnswer::Steps(answer)) => {
+                    answer.steps.first().and_then(|step| match &step.outcome {
+                        crate::protocol::line::StepOutcome::Failed { error } => Some(error),
+                        _ => None,
+                    })
+                }
+                _ => None,
+            };
+            reply.failure().or(step_error).is_some_and(|error| {
+                error.code.as_deref() == Some("deadline_exceeded")
+                    || error.kind == command_surface::FailureKind::Timeout
+            })
+        }
     };
     if timed_out && advisory {
         return None;
@@ -476,9 +498,9 @@ fn context(startup: &Startup, ask: Ask, budget_tokens: Option<u32>) -> Option<(S
         // may confirm preparation; without it, acceptance stays unresolved.
         let _ = ask_daemon(
             startup,
-            "delivery-event",
+            "internal delivery-event",
             json!({
-                "delivery": request_id,
+                "delivery": format!("{request_id}-1"),
                 "what": DeliveryOutcome::NotSent,
                 "detail": "timeout",
             }),
@@ -491,8 +513,23 @@ fn context(startup: &Startup, ask: Ask, budget_tokens: Option<u32>) -> Option<(S
                 .into(),
         ));
     }
-    let data = crate::protocol::into_value(reply.ok()?).ok()?;
-    let answer: crate::protocol::context::Answer = serde_json::from_value(data).ok()?;
+    let answer = if advisory {
+        let data = crate::protocol::into_value(reply.ok()?).ok()?;
+        serde_json::from_value::<crate::protocol::context::Answer>(data).ok()?
+    } else {
+        use crate::protocol::line::{LineAnswer, StepAnswer, StepOutcome};
+        let LineAnswer::Steps(mut answer) = line_answer? else {
+            return None;
+        };
+        let StepOutcome::Done {
+            reply: StepAnswer::Brief(prepared),
+            ..
+        } = answer.steps.pop()?.outcome
+        else {
+            return None;
+        };
+        *prepared
+    };
     if answer.prepared.empty {
         return None;
     }
@@ -505,7 +542,7 @@ fn delivered(startup: &Startup, delivery: &str, budget: Duration) {
     };
     let _ = ask_daemon(
         startup,
-        "delivery-event",
+        "internal delivery-event",
         json!({
             "delivery": delivery,
             "what": DeliveryOutcome::Delivered,
@@ -754,7 +791,7 @@ pub fn accepts_mail(harness: Harness, event: &str) -> bool {
 fn claim(startup: &Startup, session: &SessionId, event: &str) -> Option<(Vec<String>, String)> {
     let reply = ask_daemon(
         startup,
-        "mail-claim",
+        "internal mail-claim",
         json!({ "session": session, "event": event }),
         polylogue_store::user_writes::new_request_id(),
         CONTEXT_BUDGET,
@@ -775,7 +812,7 @@ fn claim(startup: &Startup, session: &SessionId, event: &str) -> Option<(Vec<Str
 fn permission(startup: &Startup, session: &SessionId, payload: &Value) {
     let Some(reply) = ask_daemon(
         startup,
-        "permission",
+        "internal permission",
         json!({
             "session": session,
             "tool": payload["tool_name"].as_str().unwrap_or(""),

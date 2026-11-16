@@ -23,7 +23,7 @@ fn malformed_or_conflicting_settings_refuse_without_changing_bytes_or_permission
         r#"{"hooks":{},"hooks":{"Stop":[]}}"#,
         r#"{"hooks":{"Stop":[],"Stop":[]}}"#,
         r#"{"future":{"keep":1,"keep":2},"hooks":{}}"#,
-        r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo keep","command":"polylogue hook Stop"}]}]}}"#,
+        r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo keep","command":"polylogue internal hook Stop"}]}]}}"#,
         r#"{"hooks":{},"\u0068ooks":{"Stop":[]}}"#,
     ] {
         for on in [true, false] {
@@ -57,7 +57,7 @@ fn mixed_hook_entries_keep_other_commands_matchers_and_unknown_fields() {
         let other = json!({"type":"command","command":"notify-send done","timeout":7});
         let prompt = json!({"type":"prompt","prompt":"synthetic prompt","future":{"value":7}});
         let entry = json!({"matcher":"Bash|Read","future":{"keep":true},"hooks":[
-            {"type":"command","command":"polylogue hook Stop","timeout":2},other.clone(),prompt.clone()
+            {"type":"command","command":"polylogue internal hook Stop","timeout":2},other.clone(),prompt.clone()
         ]});
         let original = json!({"model":"example","hooks":{"Stop":[entry],"UnknownFutureEvent":[]},"future":{"a":[{"key":1},{"key":2}]}});
         std::fs::write(&path, serde_json::to_vec(&original).unwrap()).unwrap();
@@ -80,7 +80,7 @@ fn mixed_hook_entries_keep_other_commands_matchers_and_unknown_fields() {
 fn unknown_hook_kinds_and_json_numbers_survive_setup() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("settings.json");
-    let original = r#"{"large":900719925474099312345,"real":1.23456789012345,"hooks":{"Stop":[{"hooks":[{"type":"future","command":"polylogue hook Stop","opaque":null}]}]}}"#;
+    let original = r#"{"large":900719925474099312345,"real":1.23456789012345,"hooks":{"Stop":[{"hooks":[{"type":"future","command":"polylogue internal hook Stop","opaque":null}]}]}}"#;
     std::fs::write(&path, original).unwrap();
     let expected: Value = serde_json::from_str(original).unwrap();
     install(&path, Harness::ClaudeCode, || None, true).unwrap();
@@ -95,7 +95,7 @@ fn uninstall_preserves_empty_containers_and_shell_programs_it_did_not_install() 
         json!({"model":"example"}),
         json!({"hooks":{"Stop":[]}}),
         json!({"hooks":{"Stop":[{"hooks":[]}]}}),
-        json!({"hooks":{"Stop":[{"hooks":[{"type":"command","command":"polylogue hook Stop && notify-send done"}]}]}}),
+        json!({"hooks":{"Stop":[{"hooks":[{"type":"command","command":"polylogue internal hook Stop && notify-send done"}]}]}}),
     ] {
         assert_eq!(
             merge_hooks(original.clone(), Harness::ClaudeCode, None, false).unwrap(),
@@ -170,11 +170,11 @@ fn install_keeps_other_entries_byte_for_byte() {
     let value: Value = serde_json::from_str(&installed).unwrap();
     assert_eq!(
         value["hooks"]["Stop"][1]["hooks"][0]["command"],
-        "polylogue hook Stop"
+        "polylogue internal hook Stop"
     );
     assert_eq!(
         value["hooks"]["SessionStart"][0]["hooks"][0]["command"],
-        "polylogue hook SessionStart"
+        "polylogue internal hook SessionStart"
     );
     // Installing again rewrites Polylogue's entries to the same bytes.
     install(&path, Harness::ClaudeCode, || None, true).unwrap();

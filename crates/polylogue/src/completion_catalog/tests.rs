@@ -248,7 +248,7 @@ fn completion_handler_uses_the_catalog_when_archive_reader_slots_are_closed() {
     daemon.daemon.reads.close();
     let text = "tool_calls where outcome:err";
     let response = crate::test_daemon::Call::new(
-        "complete",
+        "internal complete",
         serde_json::json!({"text": text, "position": text.len()}),
     )
     .answer(&daemon.daemon);

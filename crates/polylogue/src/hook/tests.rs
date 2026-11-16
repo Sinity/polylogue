@@ -136,14 +136,17 @@ fn context_uses_the_configured_archive_socket_and_clock() {
         let mut request = String::new();
         BufReader::new(&stream).read_line(&mut request).unwrap();
         let request: Value = serde_json::from_str(&request).unwrap();
-        assert_eq!(request["operation"], "brief");
-        assert_eq!(request["arguments"]["cwd"], "/synthetic/project");
+        assert_eq!(request["operation"], "rows");
+        assert_eq!(
+            request["arguments"],
+            json!({"steps": [{"verb":"brief", "cwd":"/synthetic/project", "for":"codex:turn-1", "source":"startup"}]})
+        );
         assert_eq!(request["deadline"], 1500);
         assert!(request.get("budget_tokens").is_none());
         let id = uuid::Uuid::parse_str(request["request_id"].as_str().unwrap()).unwrap();
         assert_eq!(id.get_timestamp().unwrap().to_unix().0, 1767225600);
         let response = command_surface::Answer::ok(
-            json!({"delivery":"context-1", "prepared":{"event":"session_start","empty":false,"text":"configured archive","refs":[],"left_out":[]}}),
+            json!({"kind":"steps", "reply":{"resolved":null, "steps":[{"verb":"brief", "request_id":format!("{}-1", request["request_id"].as_str().unwrap()), "outcome":{"status":"done", "reply":{"kind":"brief", "reply":{"delivery":"context-1", "prepared":{"event":"session_start","empty":false,"text":"configured archive","refs":[],"left_out":[]}}}}}]}}),
         );
         writeln!(stream, "{}", serde_json::to_string(&response).unwrap()).unwrap();
     });
@@ -158,6 +161,72 @@ fn context_uses_the_configured_archive_socket_and_clock() {
         reply,
         Some(("context-1".into(), "configured archive".into()))
     );
+}
+
+#[test]
+fn pasted_and_search_briefs_use_rows() {
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::net::UnixListener;
+    let recipient = SessionId::parse("codex:receiving-session").unwrap();
+    for (ask, expected) in [
+        (
+            Ask::Takeover {
+                session: SessionId::parse("claude-code:parser-session").unwrap(),
+                for_session: Some(recipient.clone()),
+            },
+            json!({"selection":"session:claude-code:parser-session", "steps":[{"verb":"brief", "for":"codex:receiving-session"}]}),
+        ),
+        (
+            Ask::Recall {
+                text: "date parser".into(),
+                cwd: Some("/synthetic/project".into()),
+                for_session: Some(recipient.clone()),
+                cursor: Some("next-page".into()),
+            },
+            json!({"selection":"date parser", "steps":[{"verb":"brief", "cwd":"/synthetic/project", "for":"codex:receiving-session", "cursor":"next-page"}]}),
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let startup = Startup::for_test(startup().engine, dir.path());
+        let listener = UnixListener::bind(Archive::at(dir.path()).socket()).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let peer = std::thread::spawn(move || {
+            let until = std::time::Instant::now() + Duration::from_secs(2);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && std::time::Instant::now() < until =>
+                    {
+                        std::thread::sleep(Duration::from_millis(1))
+                    }
+                    Err(error) => panic!("brief exchange was not contacted: {error}"),
+                }
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut line = String::new();
+            BufReader::new(&stream).read_line(&mut line).unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["operation"], "rows");
+            assert_eq!(request["arguments"], expected);
+            assert_eq!(request["budget_tokens"], 1000);
+            let response = command_surface::Answer::ok(json!({
+                "kind":"steps", "reply":{"resolved":null, "steps":[{
+                    "verb":"brief", "request_id":format!("{}-1", request["request_id"].as_str().unwrap()),
+                    "outcome":{"status":"done", "reply":{"kind":"brief", "reply":{
+                        "delivery":"brief-1", "prepared":{"event":"takeover", "empty":false, "text":"prepared context", "refs":[], "left_out":[]}
+                    }}}
+                }]}
+            }));
+            writeln!(stream, "{}", serde_json::to_string(&response).unwrap()).unwrap();
+        });
+        let reply = context(&startup, ask, Some(1000));
+        peer.join().unwrap();
+        assert_eq!(reply, Some(("brief-1".into(), "prepared context".into())));
+    }
 }
 
 #[test]
@@ -212,17 +281,44 @@ fn install_writes_a_file_and_refuses_symlinks() {
     let path = dir.path().join("settings.json");
     install(&path, Harness::ClaudeCode, || None, true).unwrap();
     let text = std::fs::read_to_string(&path).unwrap();
-    assert!(text.contains("polylogue hook SessionStart"));
+    assert!(text.contains("polylogue internal hook SessionStart"));
     let link = dir.path().join("linked.json");
     std::os::unix::fs::symlink(&path, &link).unwrap();
     assert!(install(&link, Harness::ClaudeCode, || None, true).is_err());
 }
 
 #[test]
+fn hook_entries_call_internal_hook() {
+    for (harness, event, expected) in [
+        (
+            Harness::ClaudeCode,
+            "SessionStart",
+            "polylogue internal hook SessionStart",
+        ),
+        (
+            Harness::Codex,
+            "SessionStart",
+            "polylogue internal hook SessionStart --harness codex",
+        ),
+        (
+            Harness::GeminiCli,
+            "BeforeAgent",
+            "polylogue internal hook BeforeAgent --harness gemini-cli",
+        ),
+    ] {
+        let settings = merge_hooks(json!({}), harness, None, true).unwrap();
+        assert_eq!(settings["hooks"][event][0]["hooks"][0]["command"], expected);
+    }
+}
+
+#[test]
 fn codex_hooks_name_the_harness_and_replace_their_own() {
     let once = merge_hooks(json!({}), Harness::Codex, None, true).unwrap();
     let start = &once["hooks"]["SessionStart"][0]["hooks"][0]["command"];
-    assert_eq!(start, "polylogue hook SessionStart --harness codex");
+    assert_eq!(
+        start,
+        "polylogue internal hook SessionStart --harness codex"
+    );
     assert!(
         once["hooks"].get("Notification").is_none(),
         "Codex has no such event"
@@ -344,7 +440,7 @@ fn gemini_hooks_use_the_documented_events_and_millisecond_timeouts() {
     assert_eq!(once["hooks"]["BeforeTool"][0]["hooks"][0]["timeout"], 2000);
     assert_eq!(
         once["hooks"]["BeforeAgent"][1]["hooks"][0]["command"],
-        "polylogue hook BeforeAgent --harness gemini-cli"
+        "polylogue internal hook BeforeAgent --harness gemini-cli"
     );
     assert_eq!(
         merge_hooks(once, Harness::GeminiCli, None, false).unwrap(),
@@ -515,7 +611,7 @@ fn newer_events_are_registered_only_for_a_confirmed_version() {
     assert_eq!(newer(&new), 4);
     assert_eq!(
         new["hooks"]["PermissionRequest"][0]["hooks"][0]["command"],
-        "polylogue hook PermissionRequest"
+        "polylogue internal hook PermissionRequest"
     );
     // Installing again for an older version takes the newer events out.
     let downgraded = merge_hooks(new.clone(), Harness::ClaudeCode, Some(&older), true).unwrap();
@@ -593,10 +689,12 @@ fn a_context_timeout_emits_an_unreferenced_notice_and_names_only_the_original_pr
         let mut line = String::new();
         BufReader::new(&stream).read_line(&mut line).unwrap();
         let prepare: Value = serde_json::from_str(&line).unwrap();
-        let failure = command_surface::Answer::<Value>::error(crate::protocol::failure(
-            polylogue_model::Code::DeadlineExceeded,
-            "fixture timeout",
-        ));
+        let failure = command_surface::Answer::ok(json!({
+            "kind":"steps", "reply":{"resolved":null, "steps":[{
+                "verb":"brief", "request_id":format!("{}-1", prepare["request_id"].as_str().unwrap()),
+                "outcome":{"status":"failed", "error":crate::protocol::failure(polylogue_model::Code::DeadlineExceeded, "fixture timeout")}
+            }]}
+        }));
         writeln!(stream, "{}", serde_json::to_string(&failure).unwrap()).unwrap();
         let mut stream = accept();
         stream
@@ -605,8 +703,11 @@ fn a_context_timeout_emits_an_unreferenced_notice_and_names_only_the_original_pr
         line.clear();
         BufReader::new(&stream).read_line(&mut line).unwrap();
         let outcome: Value = serde_json::from_str(&line).unwrap();
-        assert_eq!(outcome["operation"], "delivery-event");
-        assert_eq!(outcome["arguments"]["delivery"], prepare["request_id"]);
+        assert_eq!(outcome["operation"], "internal delivery-event");
+        assert_eq!(
+            outcome["arguments"]["delivery"],
+            format!("{}-1", prepare["request_id"].as_str().unwrap())
+        );
         assert_eq!(outcome["arguments"]["what"], "not_sent");
         assert_eq!(outcome["arguments"]["detail"], "timeout");
         writeln!(
@@ -653,7 +754,7 @@ fn file_advisory_hook_uses_the_shared_request_and_silences_timeout() {
             let mut line = String::new();
             BufReader::new(&stream).read_line(&mut line).unwrap();
             let request: Value = serde_json::from_str(&line).unwrap();
-            assert_eq!(request["operation"], "advisory");
+            assert_eq!(request["operation"], "internal advisory");
             assert_eq!(
                 request["arguments"],
                 json!({"prompt":"Inspect src/parser.rs", "cwd":"/synthetic/project", "session":"codex:turn-1"})

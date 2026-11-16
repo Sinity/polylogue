@@ -38,7 +38,7 @@ pub(super) fn answer(
         )
     });
     let mut request = command_surface::RunnableRequest::new(
-        "complete",
+        "internal complete",
         serde_json::to_value(&arguments).expect("completion arguments serialize"),
         uuid::Uuid::now_v7().to_string(),
     );

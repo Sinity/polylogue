@@ -217,3 +217,136 @@ fn retried_line_writes_once() {
     assert_eq!(second[0]["outcome"]["reply"]["reply"]["repeat"], true);
     assert_eq!(count(&d, "assertions where kind:note"), 1);
 }
+
+#[test]
+fn daemon_refuses_row_numbers() {
+    let d = test_daemon::start("first prompt");
+    for selection in ["@1", "@1.2", "@2-5", "@1,4", "@all", "@last"] {
+        let failure = refusal(line(&d, "row", json!({"selection": selection})));
+        assert_eq!(failure.code.as_deref(), Some("row_numbers_off_terminal"));
+        assert_eq!(
+            failure.message,
+            "row numbers are resolved by the command line; use the references printed above"
+        );
+    }
+    let failure = refusal(line(
+        &d,
+        "references",
+        json!({"references": ["@1"], "steps": [{"verb": "read"}]}),
+    ));
+    assert_eq!(failure.code.as_deref(), Some("row_numbers_off_terminal"));
+}
+
+#[test]
+fn answer_reference_refused_with_run_line() {
+    let d = test_daemon::start("first prompt");
+    let answer = line(
+        &d,
+        "answer-reference",
+        json!({"selection": "answer:sample:run"}),
+    );
+    let failure = refusal(answer.clone());
+    assert_eq!(failure.kind, command_surface::FailureKind::BadRequest);
+    assert_eq!(
+        failure.message,
+        "answer references are query runs; use polylogue run:sample:run read"
+    );
+    let next = &answer.envelope.next[0].request;
+    assert_eq!(next.operation, "rows");
+    assert_eq!(
+        next.arguments,
+        json!({"selection": "run:sample:run", "steps": [{"verb": "read", "view": "transcript"}]})
+    );
+    assert_eq!(
+        failure.suggestion(),
+        Some(&command_surface::Suggestion::Request(next.clone()))
+    );
+}
+
+#[test]
+fn mcp_follow_refused_with_read_call() {
+    let d = test_daemon::start("first prompt");
+    let rows = json!({"selection": "session:claude-code:s1", "steps": [{"verb": "read", "follow": true, "view": "dialogue"}]});
+    let answer = Call::new("rows", rows)
+        .surface(crate::commands::Surface::Mcp)
+        .answer(&d.daemon);
+    assert_eq!(
+        refusal(answer.clone()).message,
+        "a model cannot hold a stream; read again to continue"
+    );
+    let next = &answer.envelope.next[0].request;
+    assert_eq!(next.operation, "rows");
+    assert_eq!(
+        next.arguments,
+        json!({"selection": "session:claude-code:s1", "steps": [{"verb": "read", "view": "dialogue"}]})
+    );
+    let read = crate::test_answers::ok(
+        Call::from_request(next)
+            .surface(crate::commands::Surface::Mcp)
+            .answer(&d.daemon),
+    );
+    assert_eq!(read["reply"]["steps"][0]["outcome"]["status"], "done");
+}
+
+#[test]
+fn listing_wait_returns_when_rows_match() {
+    let d = test_daemon::start("first prompt");
+    let reads = d.watch_reads();
+    std::thread::scope(|scope| {
+        let waiting = scope.spawn(|| {
+            line(
+                &d,
+                "wait",
+                json!({"selection": "sessions where tag:ready", "wait": "1m"}),
+            )
+        });
+        let read = reads
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        while read.limit.stage() != Some("listing wait") {
+            read.limit.check().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let tagged = steps(
+            &d,
+            "ready",
+            json!({"selection": "session:claude-code:s1", "steps": [{"verb": "tag", "name": "ready"}]}),
+        );
+        assert_eq!(tagged[0]["outcome"]["status"], "done");
+        let answer = crate::test_answers::ok(waiting.join().unwrap());
+        assert_eq!(answer["reply"]["rows"].as_array().unwrap().len(), 1);
+        assert_eq!(answer["reply"]["rows"][0]["id"], "claude-code:s1");
+    });
+}
+
+#[test]
+fn mcp_wait_returns_empty_with_same_call_after_cap() {
+    let d = test_daemon::start("first prompt");
+    let request = command_surface::RunnableRequest {
+        operation: "rows".into(),
+        arguments: json!({"selection": "sessions where tag:later", "wait": "1h"}),
+        request_id: "wait-cap".into(),
+        deadline: command_surface::Deadline::None,
+        budget_tokens: Default::default(),
+        cursor: None,
+        fresh: true,
+        format: Default::default(),
+    };
+    let call = Call::from_request(&request);
+    let invocation = d
+        .daemon
+        .invocation(&call.authorship)
+        .with_accepted_request(Some(std::sync::Arc::new(request.clone())));
+    let answer = call
+        .surface(crate::commands::Surface::Mcp)
+        .limit(polylogue_store::read::limit::ReadLimit::without_deadline(
+            Default::default(),
+        ))
+        .answer_with(&d.daemon, &invocation);
+    assert!(
+        matches!(answer.outcome, command_surface::Outcome::Empty(_)),
+        "{answer:?}"
+    );
+    assert_eq!(answer.envelope.next.len(), 1);
+    assert_eq!(answer.envelope.next[0].request, request);
+}

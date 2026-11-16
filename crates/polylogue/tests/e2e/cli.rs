@@ -690,7 +690,7 @@ fn the_hook_spools_in_the_captured_xdg_state_directory() {
     let home = dir.path().join("home");
     let elsewhere = dir.path().join("xdg");
     let mut child = crate::command(dir.path())
-        .args(["hook", "Stop"])
+        .args(["internal", "hook", "Stop"])
         .env("XDG_STATE_HOME", &elsewhere)
         .stdin(Stdio::piped())
         .spawn()
