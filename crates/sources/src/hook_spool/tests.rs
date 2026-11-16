@@ -107,7 +107,7 @@ fn each_invocation_carries_its_own_time_and_process() {
     };
     assert_ne!(
         first.at, second.at,
-        "native nanosecond observations remain distinct"
+        "source nanosecond observations remain distinct"
     );
     assert_eq!(first.at.unwrap().unix_ms(), second.at.unwrap().unix_ms());
     assert_eq!(first.data["at_ns"], "1792400000123456789");
@@ -118,7 +118,7 @@ fn each_invocation_carries_its_own_time_and_process() {
 }
 
 #[test]
-fn native_work_evidence_keeps_its_exact_hook_record_range_and_unknowns() {
+fn work_live_events_keep_their_hook_record_range() {
     let git =
         json!({"common_dir":"/synthetic/.git","root_commits":["abc"],"head":"def","branch":null});
     let terminal = json!({"host":"synthetic","adapter":"kitty","process_id":22,"window_id":"4","parent_process_id":1,"boot_id":"boot"});
@@ -143,7 +143,7 @@ fn native_work_evidence_keeps_its_exact_hook_record_range_and_unknowns() {
 }
 
 #[test]
-fn native_nanosecond_observation_keeps_quality_and_missing_clock_stays_unknown() {
+fn nanosecond_times_keep_quality_and_unknown_clock() {
     use polylogue_model::{Precision, TimeQuality};
     let input = lines(&[
         json!({"event_type":"Stop","provider":"codex","session_id":"s","at_ns":"1792400000123456789"}),
@@ -167,25 +167,28 @@ fn emission_line() -> Json {
 }
 
 #[test]
-fn hook_emission_claim_retains_exact_producer_references_without_attributing_messages() {
-    let native = emission_line();
-    let bytes = lines(&[native]);
+fn hook_emission_keeps_producer_references() {
+    let line = emission_line();
+    let bytes = lines(&[line]);
     let step = run(&HookSpool, &mut ParserState::default(), &bytes, 0).unwrap();
     let [event] = &step.output.events[..] else {
-        panic!("one receipt")
+        panic!("one emission event")
     };
-    let claim = context_emission(event).unwrap();
-    assert_eq!(claim.invocation, "invocation1");
-    assert_eq!(claim.session.to_string(), "claude-code:s1");
-    assert_eq!(claim.hook_event, "SessionStart");
-    assert_eq!(claim.deliveries, ["delivery:receipt1", "delivery:receipt2"]);
+    let emission = context_emission(event).unwrap();
+    assert_eq!(emission.invocation, "invocation1");
+    assert_eq!(emission.session.to_string(), "claude-code:s1");
+    assert_eq!(emission.hook_event, "SessionStart");
+    assert_eq!(
+        emission.deliveries,
+        ["delivery:receipt1", "delivery:receipt2"]
+    );
     assert_eq!(event.data["event_id"], "emission1");
     assert!(step.output.messages.is_empty());
-    assert!(step.output.native_hook_fields.is_empty());
+    assert!(step.output.hook_fields.is_empty());
 }
 
 #[test]
-fn hook_emission_claim_requires_an_exact_typed_receipt_and_never_trusts_a_payload_flag() {
+fn hook_emission_requires_a_typed_receipt() {
     let mut cases = Vec::new();
     for deliveries in [
         json!([]),
@@ -212,9 +215,9 @@ fn hook_emission_claim_requires_an_exact_typed_receipt_and_never_trusts_a_payloa
     let mut invocation = emission_line();
     invocation["event"] = json!("SessionStart");
     cases.push(invocation);
-    let mut missing_receipt = emission_line();
-    missing_receipt.as_object_mut().unwrap().remove("event_id");
-    cases.push(missing_receipt);
+    let mut missing_event_id = emission_line();
+    missing_event_id.as_object_mut().unwrap().remove("event_id");
+    cases.push(missing_event_id);
     for value in cases {
         let step = run(
             &HookSpool,
@@ -227,7 +230,7 @@ fn hook_emission_claim_requires_an_exact_typed_receipt_and_never_trusts_a_payloa
             context_emission(&step.output.events[0]).is_none(),
             "{value}"
         );
-        assert!(step.output.native_hook_fields.is_empty());
+        assert!(step.output.hook_fields.is_empty());
     }
 }
 
@@ -293,7 +296,7 @@ fn rollback_lines_from_the_next_build_are_read() {
 }
 
 #[test]
-fn process_and_registry_lines_are_live_evidence_of_their_route() {
+fn process_and_registry_lines_are_live_events() {
     let input = lines(&[
         json!({"at_ns": "1790531444000000000", "route": "process", "event": "RootGone",
                "provider": "claude-code", "session_id": "s1",
@@ -318,5 +321,5 @@ fn process_and_registry_lines_are_live_evidence_of_their_route() {
     // The hook line keeps the whole process identity.
     assert_eq!(step.output.events[2].data["harness_start"], 901);
     assert_eq!(step.counts.records, 4);
-    assert!(polylogue_model::live::is_evidence(kinds[0]));
+    assert!(polylogue_model::live::is_live_event(kinds[0]));
 }

@@ -5,7 +5,7 @@
 //!
 //! An argument has one name everywhere: `--name` on the command line (with
 //! `-` for `_`), the property of an MCP tool's input, the field of an HTTP
-//! request. Ordinary arguments become one checked JSON object by the shared parser.
+//! request. Arguments become one checked JSON object by the shared parser.
 //! HTTP-only structured bodies use their owning request type; binary inputs
 //! reach the daemon directly as bytes.
 
@@ -751,12 +751,12 @@ const WRITTEN: &[Command] = &[
             pos(
                 "paths",
                 ArgumentForm::Repeated,
-                "Files or directories on the daemon host; relative paths require a native caller working directory",
+                "Files or directories on the daemon host; relative paths need the caller's working directory",
             ),
             opt(
                 "format",
                 ArgumentForm::Named,
-                "Read the paths as this declared structure (an origin name), or as one of the predecessor's stores: predecessor-archive (a folder with source.db and blob/), predecessor-user-db (its user.db) or predecessor-vectors (one of its vector stores)",
+                "Read the paths as this declared structure (an origin name), or as one of Python Polylogue's stores: python-archive (a folder with source.db and blob/), python-user-db (its user.db) or python-vectors (one of its vector stores)",
             ),
             opt(
                 "from_archive",
@@ -826,7 +826,7 @@ const WRITTEN: &[Command] = &[
             unlisted(opt(
                 "show",
                 ArgumentForm::Repeated,
-                polylogue_model::read::FoldKind::HELP,
+                polylogue_model::read::ShowKind::HELP,
             )),
             unlisted(opt(
                 "hide",
@@ -938,7 +938,7 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "assert",
-        help: "Publish checked assertions; the accepting transport supplies authorship",
+        help: "Record checked assertions; the accepting transport supplies authorship",
         reason: "Record an authored assertion through the writer",
         latency: command_surface::LatencyClass::Local,
         failures: &[
@@ -970,7 +970,7 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "assert-query",
-        help: "Publish one checked assertion about each selected query row",
+        help: "Record one checked assertion about each selected query row",
         reason: "Record an authored assertion through the writer",
         latency: command_surface::LatencyClass::Search,
         failures: &[
@@ -1009,7 +1009,7 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "revise",
-        help: "Revise exact assertion heads with one checked patch",
+        help: "Revise assertion heads with one checked patch",
         reason: "Record an authored assertion through the writer",
         latency: command_surface::LatencyClass::Local,
         failures: &[
@@ -1032,7 +1032,7 @@ const WRITTEN: &[Command] = &[
             pos(
                 "bases",
                 ArgumentForm::Repeated,
-                "Exact assertion:<root>@<revision> references",
+                "assertion:<root>@<revision> references",
             ),
             opt("patch", ArgumentForm::Named, "Assertion patch JSON"),
         ],
@@ -1145,7 +1145,7 @@ const WRITTEN: &[Command] = &[
                 ..opt(
                     "exec",
                     ArgumentForm::Flag,
-                    "Run the native resume command instead of printing it",
+                    "Run the harness resume command instead of printing it",
                 )
             },
             CWD,
@@ -1180,7 +1180,7 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "setting",
-        help: "List the typed runtime settings catalog, read KEY, or write KEY VALUE. Includes reading.variants, browser.actions, embed.* and plan.*. Standalone attention settings are local; primary attention names its Sinex owner",
+        help: "List the typed runtime settings catalog, read KEY, or write KEY VALUE. Includes reading.variants, browser.actions, embed.* and plan.*. Standalone attention settings are local; in primary mode Sinex holds attention settings",
         reason: "Inspect declared runtime settings and author changes at their declared scope",
         latency: command_surface::LatencyClass::Local,
         args: &[
@@ -1267,7 +1267,7 @@ const WRITTEN: &[Command] = &[
                 ..opt(
                     "show",
                     ArgumentForm::Repeated,
-                    polylogue_model::read::FoldKind::HELP,
+                    polylogue_model::read::ShowKind::HELP,
                 )
             },
             Arg {
@@ -1776,7 +1776,7 @@ const WRITTEN: &[Command] = &[
     Command {
         name: "cost",
         reason: "Total usage and price of selected sessions with response details",
-        help: "Usage of selected sessions, optionally during one logical day, and paged physical response records",
+        help: "Usage of selected sessions, optionally during one logical day, and paged per-response records",
         args: &[
             opt(
                 "query",
@@ -1818,7 +1818,7 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "complete",
-        reason: "Complete an unfinished query at its actual cursor position",
+        reason: "Complete an unfinished query at its cursor position",
         latency: command_surface::LatencyClass::Completion,
         help: "Complete a query at a UTF-8 byte offset using its full scope and suffix",
         args: &[

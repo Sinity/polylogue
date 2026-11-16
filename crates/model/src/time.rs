@@ -75,7 +75,7 @@ impl TimeEvidence {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum TimeEvidenceError {
-    #[error("time evidence requires a timestamp")]
+    #[error("time accuracy requires a timestamp")]
     MissingTime,
     #[error("a known timestamp requires known quality")]
     UnknownQuality,

@@ -105,7 +105,7 @@ fn zero_transfer_size_is_a_typed_refusal() {
 }
 
 #[test]
-fn native_run_namespace_never_falls_back_to_a_provider_origin() {
+fn run_namespace_never_falls_back_to_an_origin() {
     let mut options = options();
     options.origins.push("run".into());
     assert_eq!(
@@ -123,7 +123,7 @@ fn native_run_namespace_never_falls_back_to_a_provider_origin() {
 }
 
 #[test]
-fn native_time_predicates_accept_a_declared_fixture_event_instant() {
+fn source_time_tests_accept_a_fixture_event_instant() {
     let dir = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(dir.path()).unwrap();
     let session = fixture
@@ -145,7 +145,7 @@ fn native_time_predicates_accept_a_declared_fixture_event_instant() {
 }
 
 #[test]
-fn native_time_missing_related_metadata_keeps_unknown_truth() {
+fn source_time_without_metadata_stays_unknown() {
     let dir = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(dir.path()).unwrap();
     fixture
@@ -300,7 +300,7 @@ fn cached_counts_follow_the_resolved_calendar() {
                 after.as_millisecond()
             );
         }
-        _ => panic!("native session selection"),
+        _ => panic!("session selection"),
     }
     assert_eq!(reader.query_count(&program).unwrap(), Some((2, 0)));
     program.clock.day = query_language::time::DaySetting::new(
@@ -327,7 +327,7 @@ fn slow_count_still_returns_rows() {
     let mut program = crate::query::compile("sessions", &options).unwrap();
     match &mut program.statements {
         crate::query::Statements::Keyed(rows) => rows.count = "WITH RECURSIVE slow(n) AS (SELECT 0 UNION ALL SELECT n+1 FROM slow WHERE n<1000000000) SELECT count(*), 0 FROM slow".into(),
-        _ => panic!("native session selection"),
+        _ => panic!("session selection"),
     }
     let pool = fixture.reads().unwrap();
     let limit = ReadLimit::new(std::time::Duration::from_secs(1), Cancellation::default());
@@ -373,7 +373,7 @@ fn cancellation_is_not_a_deferred_count() {
 }
 
 #[test]
-fn cached_counts_follow_the_actual_vector_snapshot() {
+fn cached_counts_follow_the_vector_snapshot() {
     use std::sync::Arc;
     let dir = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(dir.path()).unwrap();
@@ -390,7 +390,7 @@ fn cached_counts_follow_the_actual_vector_snapshot() {
                 id: "test:message",
                 role: "user",
                 written_by: "human",
-                text: Some("synthetic retained text"),
+                text: Some("synthetic stored text"),
                 ..Default::default()
             },
         )
@@ -434,7 +434,7 @@ fn cached_counts_follow_the_actual_vector_snapshot() {
                 "SELECT count(*), count(*) FILTER (WHERE pl_similarity(hash) IS NULL) FROM text WHERE hash=x'{hex}'"
             )
         }
-        _ => panic!("native message selection"),
+        _ => panic!("message selection"),
     }
     // Both counts run after the write notification, but their vectors differ.
     assert_eq!(

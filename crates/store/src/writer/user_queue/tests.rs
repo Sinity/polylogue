@@ -20,7 +20,7 @@ fn message() -> UserMsg {
     )
 }
 
-fn wait_for_admission(queue: &UserQueue) {
+fn wait_for_enqueue(queue: &UserQueue) {
     let mut state = queue.state.lock().unwrap();
     while state.waiters == 0 {
         state = queue.blocked.wait(state).unwrap();
@@ -36,7 +36,7 @@ fn unfinished_reads_allow_user_writes_and_their_completed_handoff_has_room() {
     for _ in 0..USER_QUEUE {
         queue
             .try_push(message())
-            .unwrap_or_else(|_| panic!("ordinary write capacity"));
+            .unwrap_or_else(|_| panic!("user write capacity"));
     }
     assert!(matches!(queue.try_push(message()), Err(Some(_))));
     let history = reservations.pop().unwrap();
@@ -45,7 +45,7 @@ fn unfinished_reads_allow_user_writes_and_their_completed_handoff_has_room() {
 }
 
 #[test]
-fn cancelled_admission_wakes_without_a_deadline() {
+fn cancelled_enqueue_wakes_without_a_deadline() {
     let queue = Arc::new(UserQueue::default());
     let _reservations = (0..USER_QUEUE)
         .map(|_| queue.reserve(None).unwrap())
@@ -54,7 +54,7 @@ fn cancelled_admission_wakes_without_a_deadline() {
     let limit = ReadLimit::without_deadline(cancellation.clone());
     let waiting = Arc::clone(&queue);
     let thread = std::thread::spawn(move || waiting.reserve(Some(&limit)));
-    wait_for_admission(&queue);
+    wait_for_enqueue(&queue);
     cancellation.cancel();
     assert!(matches!(
         thread.join().unwrap(),
@@ -63,7 +63,7 @@ fn cancelled_admission_wakes_without_a_deadline() {
 }
 
 #[test]
-fn admission_uses_the_original_deadline() {
+fn enqueue_uses_the_original_deadline() {
     let queue = Arc::new(UserQueue::default());
     let _reservations = (0..USER_QUEUE)
         .map(|_| queue.reserve(None).unwrap())
@@ -76,7 +76,7 @@ fn admission_uses_the_original_deadline() {
 }
 
 #[test]
-fn closing_wakes_admission_and_retains_queued_writes() {
+fn closing_wakes_enqueue_and_keeps_queued_writes() {
     let queue = Arc::new(UserQueue::default());
     queue
         .try_push(message())
@@ -86,7 +86,7 @@ fn closing_wakes_admission_and_retains_queued_writes() {
         .collect::<Vec<_>>();
     let waiting = Arc::clone(&queue);
     let thread = std::thread::spawn(move || waiting.reserve(None));
-    wait_for_admission(&queue);
+    wait_for_enqueue(&queue);
     queue.close();
     assert!(matches!(
         thread.join().unwrap(),
@@ -97,7 +97,7 @@ fn closing_wakes_admission_and_retains_queued_writes() {
 }
 
 #[test]
-fn receiver_exit_drops_replies_and_refuses_new_admission() {
+fn receiver_exit_drops_replies_and_refuses_new_writes() {
     let queue = Arc::new(UserQueue::default());
     let (reply, received) = std::sync::mpsc::sync_channel(1);
     let object =

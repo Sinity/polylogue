@@ -1,4 +1,4 @@
-//! Requests a bundle carried are restored with their frozen effects; nothing
+//! Requests a bundle carried are restored with their recorded effects; nothing
 //! in them is resolved or run again.
 use super::*;
 use polylogue_model::authored::PreparedRequest;
@@ -20,7 +20,7 @@ pub(super) fn restore_via(queue: &WriterQueue, restoration: Restoration) -> Resu
 /// is a conflict.
 fn stored(conn: &Connection, restoration: &Restoration) -> Result<bool> {
     let Some(known) =
-        crate::primary::authored::frozen_request(conn, &restoration.prepared.request.id)?
+        crate::primary::authored::stored_request(conn, &restoration.prepared.request.id)?
     else {
         return Ok(false);
     };

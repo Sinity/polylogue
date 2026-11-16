@@ -56,7 +56,7 @@ fn every_spec_example_parses_through_the_product_catalog() {
 }
 
 #[test]
-fn shared_tree_retains_boolean_modes_values_and_spans() {
+fn shared_tree_keeps_boolean_modes_values_and_spans() {
     let ConditionKind::And { conditions } = &cond("repo:x \"a b\" refactor*") else {
         panic!()
     };
@@ -244,7 +244,7 @@ fn saved_arguments_are_values_and_literals_do_not_bind_namespaces() {
 }
 
 #[test]
-fn former_semantic_spelling_refuses_with_the_canonical_correction() {
+fn former_near_spelling_suggests_similar() {
     let error = parse("near:dates").unwrap_err();
     assert_eq!(error.kind(), "unknown_field");
     assert_eq!(error.suggestion(), Some("similar:dates"));
@@ -291,7 +291,7 @@ fn product_namespace_spelling_binds_to_the_same_declared_unit() {
 }
 
 #[test]
-fn native_time_companion_catalog_keeps_closed_precision_and_literal_unknown_distinct() {
+fn time_companion_catalog_keeps_precision_and_unknown() {
     for text in [
         "messages where at.time_quality:operator at.precision:bounded",
         "events where time_quality:\"unknown\" precision:unknown",
@@ -328,7 +328,7 @@ fn native_time_companion_catalog_keeps_closed_precision_and_literal_unknown_dist
     let literal = completions
         .iter()
         .find(|candidate| candidate.value == "\"unknown\"")
-        .expect("native unknown quality is a quoted literal completion");
+        .expect("stored unknown quality is a quoted literal completion");
     let completed = format!(
         "{}{}{}",
         &text[..literal.replace.start],

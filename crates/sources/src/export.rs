@@ -282,7 +282,7 @@ pub fn number_order(value: Option<f64>) -> Vec<u8> {
     key
 }
 
-/// Stages original record bytes and their physical spans. Order keys compare
+/// Stages original record bytes and their byte spans. Order keys compare
 /// lexicographically. Reusing a source key replaces a prior value only for
 /// formats whose object entries have last-value semantics.
 pub trait ItemSink {
@@ -360,7 +360,7 @@ pub trait ExportParser: Send {
     ) -> Result<Option<crate::parse::Step>, String> {
         Ok(None)
     }
-    /// Physical record order unless the format defines another ordering.
+    /// File order unless the format defines another ordering.
     fn order_key(&self, _raw: &RawValue) -> Vec<u8> {
         Vec::new()
     }
@@ -368,7 +368,7 @@ pub trait ExportParser: Send {
         &mut self,
         bytes: &[u8],
         sink: &mut crate::document::Sink<'_>,
-        owners: &mut dyn ExportState,
+        first_sessions: &mut dyn ExportState,
     ) -> Result<(), String>;
 
     /// A message outside its chunk, such as a document's system header.
@@ -378,8 +378,9 @@ pub trait ExportParser: Send {
     }
 }
 
-/// Conversation scan_state within one export operation. A new ownership key returns
-/// None; an existing key returns its first owner. Previous-message links are
+/// Conversation scan state within one export operation. A native ID seen
+/// for the first time returns None; a repeated one returns the session that
+/// first used it. Previous-message links are
 /// stored separately so chronological records can interleave conversations.
 pub trait ExportState {
     fn record_first_session(
@@ -402,14 +403,14 @@ pub fn parse_item(
     parser: &mut dyn ExportParser,
     bytes: &[u8],
     range: Range<u64>,
-    owners: &mut dyn ExportState,
+    first_sessions: &mut dyn ExportState,
 ) -> Result<crate::parse::Step, String> {
     let mut output = crate::parse::Output::default();
     let mut records = crate::Records::default();
     parser.item(
         bytes,
         &mut crate::document::Sink::new(&mut output, &mut records),
-        owners,
+        first_sessions,
     )?;
     if let Some(path) = first_repeated_key(bytes) {
         records.repeated_key("export item", &path);

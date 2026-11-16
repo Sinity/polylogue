@@ -66,7 +66,7 @@ fn database() -> Connection {
 }
 
 #[test]
-fn fragment_preparation_binds_actual_ranges_and_never_uses_sender_commit() {
+fn fragment_preparation_binds_ranges_and_never_uses_sender_commit() {
     let mut conn = database();
     let mut output = output(record(
         0,
@@ -90,14 +90,14 @@ fn fragment_preparation_binds_actual_ranges_and_never_uses_sender_commit() {
     for _ in 0..2 {
         prepared.apply(&conn, 1, 1, 9, |_| Ok(Some(130))).unwrap();
     }
-    let actual: (i64, i64, i64, i64) = conn
+    let stored: (i64, i64, i64, i64) = conn
         .query_row(
-            "SELECT chain,start,end,admitted FROM text_fragment_source",
+            "SELECT chain,start,end,committed FROM text_fragment_source",
             [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .unwrap();
-    assert_eq!(actual, (1, 2, 9, 130));
+    assert_eq!(stored, (1, 2, 9, 130));
     assert_eq!(
         conn.query_row("SELECT count(*) FROM text_fragment", [], |r| r
             .get::<_, i64>(0))
@@ -112,7 +112,7 @@ fn fragment_preparation_binds_actual_ranges_and_never_uses_sender_commit() {
 }
 
 #[test]
-fn fragment_conflicts_remain_distinct_claims_and_retraction_is_per_source() {
+fn fragment_conflicts_stay_distinct_per_source() {
     let conn = database();
     conn.execute(
         "INSERT INTO input_ref VALUES(2,'other-input','polylogue-bundle')",
@@ -185,8 +185,8 @@ fn malformed_fragments_fail_before_writer_apply() {
         }
         assert!(PreparedFragments::prepare(&bad).is_err(), "case {case}");
     }
-    // Foreign UTF-8 coordinates retain their full u64 domain independently of
-    // actual local byte positions, which use SQLite's checked integer domain.
+    // The sender's UTF-8 coordinates keep their full u64 domain, independently
+    // of local byte positions, which use SQLite's checked integer domain.
     let high = output(record(
         u64::MAX - 5,
         "valid",
@@ -205,7 +205,7 @@ fn malformed_fragments_fail_before_writer_apply() {
 }
 
 #[test]
-fn streamed_chain_scratch_preserves_prepared_fragment_claims() {
+fn streamed_chain_scratch_keeps_stated_fragments() {
     let output = output(record(
         0,
         "selected",

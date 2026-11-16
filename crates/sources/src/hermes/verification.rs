@@ -44,8 +44,8 @@ impl ExportParser for Verification {
         }
         let deletion = value.get("gone") == Some(&Json::Bool(true));
         if deletion && table == "meta" {
-            // Native schema 1 has only its schema-version meta row. A deleted
-            // or opaque meta key cannot certify the schema of later rows.
+            // Hermes schema 1 has only its schema-version meta row. A deleted
+            // or opaque meta key cannot show the schema of later rows.
             self.version = None;
         }
         let (kind, time) = if deletion {

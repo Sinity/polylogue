@@ -149,7 +149,7 @@ export async function chatActionInPage(action, runId) {
   // effort chip near the composer opens a combined model/effort menu. Free
   // accounts instead expose one flat top-level model switcher with no effort
   // dimension at all -- there is no composer pill to find, ever. Distinguish
-  // the two by which control actually exists rather than by presentation
+  // the two by which control exists rather than by presentation
   // fields, so a plan upgrade/downgrade is handled by whichever DOM shows up.
   // Without an effort to pick, any composer pill opens the model menu.
   const composerPill = () => [...document.querySelectorAll("button")]

@@ -7,33 +7,33 @@ use serde_json::{Value, json};
 pub fn layout_record(
     record: &Record,
     options: &ReadOptions,
-    evidence: &ProjectionEvidence,
+    facts: &LayoutFacts,
 ) -> Result<Vec<ReadPart>, ReadError> {
     let mut parts = Vec::new();
-    visit_record(record, options, evidence, |item| {
+    visit_record(record, options, facts, |item| {
         parts.push(ReadPart::Item(item));
         true
     })?;
     Ok(parts)
 }
-/// Lay out one exact original block supplied by the service, including an
+/// Lay out one original block supplied by the service, including an
 /// off-page tool pair. The caller releases each pair after its callback ends.
 pub fn visit_source_block(
     block: &SourceBlock,
     options: &ReadOptions,
-    evidence: &ProjectionEvidence,
+    facts: &LayoutFacts,
     mut visit: impl FnMut(ReadItem) -> bool,
 ) -> Result<(), ReadError> {
     options.validate()?;
     let ordinal = block.source.block.ok_or_else(|| {
-        ReadError::InvalidEvidence("source block needs its original ordinal".into())
+        ReadError::InvalidPreparedData("source block needs its original ordinal".into())
     })?;
     block_items(
         &block.block,
         block.source.clone(),
         ordinal,
         options,
-        evidence,
+        facts,
         &mut visit,
     )?;
     Ok(())
@@ -44,7 +44,7 @@ pub fn visit_source_block(
 pub fn visit_document_root(
     reference: &str,
     options: &ReadOptions,
-    evidence: &ProjectionEvidence,
+    facts: &LayoutFacts,
     mut visit: impl FnMut(ReadItem) -> bool,
 ) -> Result<(), ReadError> {
     options.validate()?;
@@ -56,14 +56,14 @@ pub fn visit_document_root(
         });
     }
     if options.view == View::Raw {
-        if evidence.raw.is_empty() {
-            return Err(ReadError::MissingEvidence {
+        if facts.raw.is_empty() {
+            return Err(ReadError::MissingPreparedData {
                 view: View::Raw,
-                evidence: "original input bytes".into(),
+                facts: "original input bytes".into(),
                 reference: reference.into(),
             });
         }
-        for raw in &evidence.raw {
+        for raw in &facts.raw {
             if !visit(ReadItem {
                 source: Source::record(&raw.reference),
                 kind: ItemKind::Raw {
@@ -75,29 +75,29 @@ pub fn visit_document_root(
         }
         return Ok(());
     }
-    root_text(&Source::record(reference), options, evidence, &mut visit)?;
+    root_text(&Source::record(reference), options, facts, &mut visit)?;
     Ok(())
 }
-/// Visit one projected canonical record. Returning false stops layout without
+/// Visit one projected source record. Returning false stops layout without
 /// visiting another block. There is no archive-sized collection or recursion.
 pub fn visit_record(
     record: &Record,
     options: &ReadOptions,
-    evidence: &ProjectionEvidence,
+    facts: &LayoutFacts,
     mut visit: impl FnMut(ReadItem) -> bool,
 ) -> Result<(), ReadError> {
     options.validate()?;
     let reference = record.reference().unwrap_or("manifest");
     let source = Source::record(reference);
     if options.view == View::Raw {
-        if evidence.raw.is_empty() {
-            return Err(ReadError::MissingEvidence {
+        if facts.raw.is_empty() {
+            return Err(ReadError::MissingPreparedData {
                 view: View::Raw,
-                evidence: "original input bytes".into(),
+                facts: "original input bytes".into(),
                 reference: reference.into(),
             });
         }
-        for raw in &evidence.raw {
+        for raw in &facts.raw {
             if !visit(ReadItem {
                 source: Source::record(&raw.reference),
                 kind: ItemKind::Raw {
@@ -109,12 +109,12 @@ pub fn visit_record(
         }
         return Ok(());
     }
-    for indicator in &evidence.before {
+    for indicator in &facts.before {
         if !visit(indicator_item(indicator)) {
             return Ok(());
         }
     }
-    if let Some(context) = &evidence.context {
+    if let Some(context) = &facts.context {
         for reference in &context.not_recorded {
             if !visit(ReadItem {
                 source: source.clone(),
@@ -160,7 +160,7 @@ pub fn visit_record(
             return Ok(());
         }
     }
-    for card in &evidence.cards {
+    for card in &facts.cards {
         if !visit(ReadItem {
             source: source.clone(),
             kind: ItemKind::Card {
@@ -178,7 +178,7 @@ pub fn visit_record(
                     kind: ItemKind::Card {
                         card: Box::new(Card::Session {
                             session: Box::new(row.session.clone()),
-                            lineage_complete: evidence.lineage_complete.clone(),
+                            lineage_complete: facts.lineage_complete.clone(),
                             open: None,
                         }),
                     },
@@ -187,10 +187,10 @@ pub fn visit_record(
             return Ok(());
         }
         View::Live => {
-            if evidence.cards.is_empty() {
-                return Err(ReadError::MissingEvidence {
+            if facts.cards.is_empty() {
+                return Err(ReadError::MissingPreparedData {
                     view: options.view,
-                    evidence: "live observation".into(),
+                    facts: "live observation".into(),
                     reference: reference.into(),
                 });
             }
@@ -222,7 +222,7 @@ pub fn visit_record(
     match record {
         Record::Message(row) => {
             row.validate()
-                .map_err(|e| ReadError::InvalidEvidence(e.to_string()))?;
+                .map_err(|e| ReadError::InvalidPreparedData(e.to_string()))?;
             let message = &row.message;
             let by = WrittenBy::of(message);
             let author =
@@ -252,9 +252,9 @@ pub fn visit_record(
                 .zip(&message.blocks)
                 .find_map(|(ordinal, block)| {
                     let source =
-                        Source::block(&message.id, &message.session, *ordinal, evidence.inherited);
+                        Source::block(&message.id, &message.session, *ordinal, facts.inherited);
                     if matches!(block, Block::ToolCall { .. } | Block::ToolResult { .. })
-                        && let Some(pair) = evidence.tool_pairs.get(ordinal)
+                        && let Some(pair) = facts.tool_pairs.get(ordinal)
                     {
                         if pair.emit_at != source.reference || options.tools() != Expansion::Full {
                             return None;
@@ -263,19 +263,19 @@ pub fn visit_record(
                             .result
                             .as_ref()
                             .filter(|result| presentation_text_visible(&result.block, options))
-                            .and_then(|result| evidence.variants.mark_for(&result.source, options))
+                            .and_then(|result| facts.variants.mark_for(&result.source, options))
                             .cloned();
                     }
                     if !presentation_text_visible(block, options) {
                         return None;
                     }
-                    evidence.variants.mark_for(&source, options).cloned()
+                    facts.variants.mark_for(&source, options).cloned()
                 })
                 .or_else(|| {
                     if by == WrittenBy::Harness && options.harness() != Expansion::Full {
                         return None;
                     }
-                    evidence.variants.mark_for(&source, options).cloned()
+                    facts.variants.mark_for(&source, options).cloned()
                 });
             if !visit(ReadItem {
                 source: source.clone(),
@@ -292,13 +292,13 @@ pub fn visit_record(
                             .map(ValueState::known)
                             .unwrap_or(ValueState::NotRecorded),
                         assertions: if options.assertions {
-                            evidence.assertions.clone()
+                            facts.assertions.clone()
                         } else {
                             vec![]
                         },
                         variant: mark,
-                        inherited: evidence.inherited,
-                        branch: evidence.branch.clone(),
+                        inherited: facts.inherited,
+                        branch: facts.branch.clone(),
                         context: None,
                     }),
                 },
@@ -306,7 +306,7 @@ pub fn visit_record(
                 return Ok(());
             }
             if (by != WrittenBy::Harness || options.harness() == Expansion::Full)
-                && !root_text(&source, options, evidence, &mut visit)?
+                && !root_text(&source, options, facts, &mut visit)?
             {
                 return Ok(());
             }
@@ -328,7 +328,7 @@ pub fn visit_record(
                             .chars()
                             .take(80)
                             .collect(),
-                        expand: evidence.expand_inherited.clone().map(Box::new),
+                        expand: facts.expand_inherited.clone().map(Box::new),
                     },
                 });
                 return Ok(());
@@ -336,7 +336,7 @@ pub fn visit_record(
             let mut absent: Option<(Source, u64)> = None;
             for (ordinal, block) in row.block_ordinals.iter().zip(&message.blocks) {
                 let source =
-                    Source::block(&message.id, &message.session, *ordinal, evidence.inherited);
+                    Source::block(&message.id, &message.session, *ordinal, facts.inherited);
                 let empty = matches!(
                     block,
                     Block::Thinking {
@@ -365,7 +365,7 @@ pub fn visit_record(
                 {
                     return Ok(());
                 }
-                if !block_items(block, source, *ordinal, options, evidence, &mut visit)? {
+                if !block_items(block, source, *ordinal, options, facts, &mut visit)? {
                     return Ok(());
                 }
             }
@@ -377,7 +377,7 @@ pub fn visit_record(
         }
         Record::Document(row) => {
             let mut continuing = true;
-            visit_document_root(&row.reference, options, evidence, |item| {
+            visit_document_root(&row.reference, options, facts, |item| {
                 continuing = visit(item);
                 continuing
             })?;
@@ -390,7 +390,7 @@ pub fn visit_record(
                     block: Some(ordinal as u64),
                     ..source.clone()
                 };
-                if !block_items(block, source, ordinal as u64, options, evidence, &mut visit)? {
+                if !block_items(block, source, ordinal as u64, options, facts, &mut visit)? {
                     return Ok(());
                 }
             }
@@ -416,7 +416,7 @@ pub fn visit_record(
                 source,
                 kind: ItemKind::TextFragment {
                     record: row.clone(),
-                    origin: evidence.fragment_origin.clone(),
+                    origin: facts.fragment_origin.clone(),
                 },
             }) {
                 return Ok(());
@@ -438,7 +438,7 @@ pub fn visit_record(
                 source,
                 kind: ItemKind::Other {
                     type_name: "authored".into(),
-                    data: json!({"record":row,"selection":evidence.authored}),
+                    data: json!({"record":row,"selection":facts.authored}),
                 },
             }) {
                 return Ok(());
@@ -450,18 +450,18 @@ pub fn visit_record(
                 kind: ItemKind::Card {
                     card: Box::new(Card::Session {
                         session: Box::new(row.session.clone()),
-                        lineage_complete: evidence.lineage_complete.clone(),
+                        lineage_complete: facts.lineage_complete.clone(),
                         open: None,
                     }),
                 },
             });
-            if !accepted || !root_text(&source, options, evidence, &mut visit)? {
+            if !accepted || !root_text(&source, options, facts, &mut visit)? {
                 return Ok(());
             }
         }
         _ => {}
     }
-    for indicator in &evidence.after {
+    for indicator in &facts.after {
         if !visit(indicator_item(indicator)) {
             break;
         }
@@ -483,19 +483,19 @@ fn block_items(
     source: Source,
     ordinal: u64,
     options: &ReadOptions,
-    evidence: &ProjectionEvidence,
+    facts: &LayoutFacts,
     visit: &mut impl FnMut(ReadItem) -> bool,
 ) -> Result<bool, ReadError> {
     if !options.view.block_kinds().contains(&block.kind()) {
         return Ok(true);
     }
-    if !evidence.tool_pairs.contains_key(&ordinal)
+    if !facts.tool_pairs.contains_key(&ordinal)
         && presentation_text_visible(block, options)
-        && !variant_indicator(&source, options, evidence, visit)
+        && !variant_indicator(&source, options, facts, visit)
     {
         return Ok(false);
     }
-    let presented = presentation_block(block, &source, options, evidence)?;
+    let presented = presentation_block(block, &source, options, facts)?;
     let block = presented.as_ref();
     let kind = match block {
         Block::Text { text } => ItemKind::Text { text: text.clone() },
@@ -528,7 +528,7 @@ fn block_items(
             if options.tools() == Expansion::None {
                 return Ok(true);
             }
-            if let Some(pair) = evidence.tool_pairs.get(&ordinal) {
+            if let Some(pair) = facts.tool_pairs.get(&ordinal) {
                 pair.validate()?;
                 if pair.emit_at != source.reference {
                     return Ok(true);
@@ -536,13 +536,11 @@ fn block_items(
                 let result = pair
                     .result
                     .as_ref()
-                    .map(|result| {
-                        presentation_block(&result.block, &result.source, options, evidence)
-                    })
+                    .map(|result| presentation_block(&result.block, &result.source, options, facts))
                     .transpose()?;
                 if options.tools() == Expansion::Full
                     && let Some(result) = &pair.result
-                    && !variant_indicator(&result.source, options, evidence, visit)
+                    && !variant_indicator(&result.source, options, facts, visit)
                 {
                     return Ok(false);
                 }
@@ -562,7 +560,7 @@ fn block_items(
                 excerpt_output(
                     &mut call,
                     options.output_lines,
-                    evidence.output_calls.get(&ordinal),
+                    facts.output_calls.get(&ordinal),
                 );
                 if !visit(ReadItem {
                     source: pair.call.source.clone(),
@@ -573,7 +571,7 @@ fn block_items(
                     return Ok(false);
                 }
                 if let Some(result) = &pair.result {
-                    return result_extras(&result.block, &result.source, options, evidence, visit);
+                    return result_extras(&result.block, &result.source, options, facts, visit);
                 }
                 return Ok(true);
             }
@@ -601,7 +599,7 @@ fn block_items(
             excerpt_output(
                 &mut call,
                 options.output_lines,
-                evidence.output_calls.get(&ordinal),
+                facts.output_calls.get(&ordinal),
             );
             if !visit(ReadItem {
                 source: source.clone(),
@@ -611,10 +609,10 @@ fn block_items(
             }) {
                 return Ok(false);
             }
-            return result_extras(block, &source, options, evidence, visit);
+            return result_extras(block, &source, options, facts, visit);
         }
         Block::Image(attachment) | Block::File(attachment) => {
-            attachment_kind(attachment, &source, 0, evidence)?
+            attachment_kind(attachment, &source, 0, facts)?
         }
         Block::Other { type_name, data } => ItemKind::Other {
             type_name: type_name.clone(),
@@ -627,9 +625,9 @@ fn attachment_kind(
     attachment: &polylogue_model::Attachment,
     source: &Source,
     index: usize,
-    evidence: &ProjectionEvidence,
+    facts: &LayoutFacts,
 ) -> Result<ItemKind, ReadError> {
-    let prepared = evidence
+    let prepared = facts
         .attachments
         .get(&source.reference)
         .and_then(|blocks| source.block.and_then(|ordinal| blocks.get(&ordinal)))
@@ -641,15 +639,15 @@ fn attachment_kind(
         .zip(verified_hash)
         .is_some_and(|(source, verified)| source != verified)
     {
-        return Err(ReadError::InvalidEvidence(
-            "verified attachment hash disagrees with its canonical blob hash".into(),
+        return Err(ReadError::InvalidPreparedData(
+            "verified attachment hash disagrees with its stored blob hash".into(),
         ));
     }
     if let Some(bytes) = &inline_bytes
         && attachment.blob.or(verified_hash) != Some(polylogue_model::BlobHash::of(bytes))
     {
-        return Err(ReadError::InvalidEvidence(
-            "attachment inline bytes do not match a canonical or verified content hash".into(),
+        return Err(ReadError::InvalidPreparedData(
+            "attachment inline bytes do not match the stored or verified content hash".into(),
         ));
     }
     Ok(ItemKind::Attachment {
@@ -667,7 +665,7 @@ fn result_extras(
     block: &Block,
     source: &Source,
     options: &ReadOptions,
-    evidence: &ProjectionEvidence,
+    facts: &LayoutFacts,
     visit: &mut impl FnMut(ReadItem) -> bool,
 ) -> Result<bool, ReadError> {
     if let Block::ToolResult {
@@ -689,7 +687,7 @@ fn result_extras(
         for (index, attachment) in attachments.iter().enumerate() {
             if !visit(ReadItem {
                 source: source.clone(),
-                kind: attachment_kind(attachment, source, index, evidence)?,
+                kind: attachment_kind(attachment, source, index, facts)?,
             }) {
                 return Ok(false);
             }
@@ -803,8 +801,8 @@ fn call_item(call: &Block, result: Option<&Block>, full: bool, running: bool) ->
     }
 }
 
-/// Retained lines and each long line's retained ends remain exact substrings.
-/// Every omitted interval names original Unicode offsets and exact counts.
+/// Kept lines and each long line's kept ends remain substrings of the original.
+/// Every omitted interval names original Unicode offsets and counts.
 fn excerpt_output(call: &mut CallItem, lines: u64, open: Option<&ReadyCall>) {
     if lines == 0 {
         return;
@@ -909,8 +907,8 @@ fn absent_thinking(source: Source, blocks: u64) -> ReadItem {
     }
 }
 
-/// Whether a text body is visible after record projection. Record membership,
-/// harness authorship and branch eligibility remain owned by projection.
+/// Whether a text body is visible after the view filter. Record membership,
+/// harness authorship and branch visibility remain decided by the view filter.
 pub fn presentation_text_visible(block: &Block, options: &ReadOptions) -> bool {
     options.text_kind_visible(block.kind())
         && matches!(
@@ -927,7 +925,7 @@ fn presentation_block<'a>(
     block: &'a Block,
     source: &Source,
     options: &ReadOptions,
-    evidence: &ProjectionEvidence,
+    facts: &LayoutFacts,
 ) -> Result<std::borrow::Cow<'a, Block>, ReadError> {
     use std::borrow::Cow;
     if !presentation_text_visible(block, options) {
@@ -943,7 +941,7 @@ fn presentation_block<'a>(
         } => text,
         _ => return Ok(Cow::Borrowed(block)),
     };
-    match evidence.variants.apply(source, text, options)? {
+    match facts.variants.apply(source, text, options)? {
         Cow::Borrowed(_) => Ok(Cow::Borrowed(block)),
         Cow::Owned(text) => {
             let mut presented = block.clone();
@@ -965,11 +963,11 @@ fn presentation_block<'a>(
 fn variant_indicator(
     source: &Source,
     options: &ReadOptions,
-    evidence: &ProjectionEvidence,
+    facts: &LayoutFacts,
     visit: &mut impl FnMut(ReadItem) -> bool,
 ) -> bool {
     let mut shown = std::collections::BTreeSet::new();
-    for (original, variant) in evidence.variants.for_source(source) {
+    for (original, variant) in facts.variants.for_source(source) {
         if !shown.insert(original)
             || variant.mark.stale && !options.variants.contains(&variant.mark.key)
         {
@@ -1012,12 +1010,13 @@ fn variant_indicator(
     true
 }
 
-/// The service supplies this anchor only after proving accessible-empty source
-/// text. It represents no canonical block and never resolves source access.
+/// The service supplies this placeholder only after checking that the source
+/// text is accessible and empty. It represents no stored block and never
+/// resolves source access.
 fn root_text(
     source: &Source,
     options: &ReadOptions,
-    evidence: &ProjectionEvidence,
+    facts: &LayoutFacts,
     visit: &mut impl FnMut(ReadItem) -> bool,
 ) -> Result<bool, ReadError> {
     if !options
@@ -1027,11 +1026,11 @@ fn root_text(
     {
         return Ok(true);
     }
-    let text = evidence.variants.apply(source, "", options)?;
+    let text = facts.variants.apply(source, "", options)?;
     if matches!(text, std::borrow::Cow::Borrowed(_)) {
         return Ok(true);
     }
-    if !variant_indicator(source, options, evidence, visit) {
+    if !variant_indicator(source, options, facts, visit) {
         return Ok(false);
     }
     Ok(visit(ReadItem {

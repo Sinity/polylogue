@@ -73,7 +73,7 @@ fn assertion_operations_take_typed_arguments_and_keep_identity_beside_them() {
 }
 
 #[test]
-fn structured_cli_and_http_values_retain_assertion_data_without_string_wrappers() {
+fn cli_and_http_values_keep_assertion_data_unwrapped() {
     let args = json!({"assertions":[statement()]});
     let encoded = args["assertions"].to_string();
     let (_, _, cli) = crate::cli::request_arguments(
@@ -147,20 +147,20 @@ fn assertion_operations_are_registered_on_every_surface() {
 }
 
 #[test]
-fn assertion_operation_schemas_expose_closed_domain_arguments_and_writer_receipts() {
+fn assertion_schemas_show_closed_arguments_and_results() {
     for name in ["assert", "assert-query", "revise", "withdraw"] {
         let (arguments, answer) = schemas(name);
         assert_eq!(arguments["additionalProperties"], false, "{name}");
         assert!(arguments["properties"].get("request_id").is_none());
         assert!(arguments["properties"].get("author").is_none());
         let wire = answer.to_string();
-        let receipt = if name == "assert-query" {
+        let outcome = if name == "assert-query" {
             "AssertQueryOutcome"
         } else {
             "UserOutcome"
         };
         assert!(
-            wire.contains(receipt) && wire.contains("repeat") && wire.contains("pending"),
+            wire.contains(outcome) && wire.contains("repeat") && wire.contains("pending"),
             "{name}: {answer}"
         );
     }
@@ -171,7 +171,7 @@ fn assertion_operation_schemas_expose_closed_domain_arguments_and_writer_receipt
 }
 
 #[test]
-fn the_bulk_assertion_answer_declares_its_exact_population_count() {
+fn bulk_assertion_answer_declares_its_population_count() {
     type BulkAnswer = polylogue_model::user::AssertQueryOutcome;
     let (_, schema) = schemas("assert-query");
     assert!(

@@ -254,7 +254,7 @@ describe("a capture", () => {
     changed = true;
     files.push({ id: "second", message: "m1", inline: false });
     const successor = extension.captureTab(1, "changed");
-    // The newer observation invalidates the in-flight generation before its
+    // The newer observation cancels the capture in flight before its
     // provider request can acquire the shared lane. Release that lane first.
     release();
     await successor;
@@ -520,7 +520,7 @@ it.each(["missing", "unknown"])("captures cached content when the daemon reports
   expect(host.stored).toHaveLength(1);
 });
 
-it("confirms a submitted turn only from the exact durably stored provider snapshot", async () => {
+it("confirms a submitted turn only from a stored provider snapshot", async () => {
   const host = storingHost();
   const page = chatgptPage();
   const chrome = fakeChrome({ routes: host.routes, pages: { 1: page.answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });

@@ -14,7 +14,7 @@ fn completed_records_wake_the_loop_and_unchanged_sources_need_no_archive_read() 
             format: "codex-database".into(),
             route: polylogue_model::Route::Live,
         },
-        acquisition: crate::acquisition::AcquisitionContext {
+        source_read: crate::source_read::SourceReadContext {
             source: polylogue_store::primary::SourceSelector {
                 origin: "codex-database".into(),
                 machine: "test-machine".into(),
@@ -23,8 +23,8 @@ fn completed_records_wake_the_loop_and_unchanged_sources_need_no_archive_read() 
             route: polylogue_store::primary::AcquisitionRoute::NativeCapture,
             basis: None,
             facts: None,
-            raw_predecessor: None,
-            required_disposition: None,
+            previous_body: None,
+            required_outcome: None,
             clock: polylogue_model::WallClock::fixed(jiff::Timestamp::from_millisecond(1).unwrap()),
         },
         observation: Observation {
@@ -90,7 +90,7 @@ fn completed_records_wake_the_loop_and_unchanged_sources_need_no_archive_read() 
 }
 
 #[test]
-fn native_capture_continues_the_input_at_the_observed_byte_path() {
+fn capture_continues_the_input_at_the_observed_path() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
     let db = home.join(".codex/state_5.sqlite");
@@ -115,7 +115,7 @@ fn native_capture_continues_the_input_at_the_observed_byte_path() {
             .store_bytes(
                 archive.prepare_bytes(bytes.as_slice()).unwrap(),
                 Batch {
-                    required_disposition: None,
+                    required_outcome: None,
                     input: InputKey {
                         id: "stored-database".into(),
                         format: "codex-database".into(),
@@ -220,14 +220,14 @@ fn native_capture_continues_the_input_at_the_observed_byte_path() {
             .unwrap()[0]["n"],
         1
     );
-    let admission = reader.query("SELECT s.id,r.chain,r.admitted FROM session_record r JOIN session s ON s.pk=r.session_pk JOIN input_ref i ON i.pk=r.input_pk WHERE i.id='stored-database'", &[]).unwrap();
-    assert_eq!(admission.len(), 1);
+    let commit = reader.query("SELECT s.id,r.chain,r.committed FROM session_record r JOIN session s ON s.pk=r.session_pk JOIN input_ref i ON i.pk=r.input_pk WHERE i.id='stored-database'", &[]).unwrap();
+    assert_eq!(commit.len(), 1);
     assert_eq!(
-        admission[0]["id"],
+        commit[0]["id"],
         "codex:00000000-0000-4000-8000-000000000042"
     );
-    assert_eq!(admission[0]["chain"], initial_chain);
-    assert!(admission[0]["admitted"].as_u64().unwrap() > 0);
+    assert_eq!(commit[0]["chain"], initial_chain);
+    assert!(commit[0]["committed"].as_u64().unwrap() > 0);
     drop(reader);
     engine.refresh_database_progress().unwrap();
     let state = engine.inputs.get_mut(&db).unwrap();
@@ -254,7 +254,7 @@ fn native_capture_continues_the_input_at_the_observed_byte_path() {
             .length,
         progress.length
     );
-    assert_eq!(reader.query("SELECT s.id,r.chain,r.admitted FROM session_record r JOIN session s ON s.pk=r.session_pk JOIN input_ref i ON i.pk=r.input_pk WHERE i.id='stored-database'", &[]).unwrap(), admission);
+    assert_eq!(reader.query("SELECT s.id,r.chain,r.committed FROM session_record r JOIN session s ON s.pk=r.session_pk JOIN input_ref i ON i.pk=r.input_pk WHERE i.id='stored-database'", &[]).unwrap(), commit);
 }
 
 #[test]
@@ -274,7 +274,7 @@ fn a_database_pass_yields_when_its_waiting_parser_has_no_local_work() {
         .store_bytes(
             engine.archive.prepare_bytes(bytes.as_slice()).unwrap(),
             Batch {
-                required_disposition: None,
+                required_outcome: None,
                 input: InputKey {
                     id: input.clone(),
                     format: "codex-database".into(),

@@ -1,5 +1,5 @@
 //! Request deadlines and transport cancellation. Only read work is interrupted;
-//! a committed write keeps its ordinary result.
+//! a committed write keeps its result.
 use command_surface::Answer;
 use polylogue_store::{cancellation::Cancellation, read::limit::ReadLimit};
 use std::time::Duration;

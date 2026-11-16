@@ -30,7 +30,7 @@ fn item(o: u64, id: &str, ty: &str) -> Json {
 #[test]
 fn identical_rollouts_cannot_distinguish_one_response_from_a_retry() {
     // Producer OutputItemDone persists rA before a stream can fail. A retry
-    // can persist rB+cB; the durable success trace is identical to one response.
+    // can persist rB+cB; the saved success trace is identical to one response.
     let trace = vec![
         meta(json!({})),
         item(2, "rA", "reasoning"),
@@ -168,7 +168,7 @@ fn unreported_reasoning_keeps_output_and_leaves_reasoning_unknown() {
 }
 
 #[test]
-fn native_child_tools_are_harness_observations_without_a_model() {
+fn child_tools_are_harness_observations_without_model() {
     let trace = vec![
         meta(json!({})),
         env(2, "turn_context", json!({"model":"gpt-6.1-sol"})),
@@ -276,7 +276,7 @@ fn copied_token_records_keep_their_parent_scope_and_original_observation_identit
 }
 
 #[test]
-fn header_only_and_rate_only_rollouts_keep_the_unknown_boundary_scope_fact() {
+fn header_or_rate_only_rollouts_report_unknown_boundaries() {
     for rows in [
         vec![meta(json!({}))],
         vec![
@@ -291,16 +291,16 @@ fn header_only_and_rate_only_rollouts_keep_the_unknown_boundary_scope_fact() {
     ] {
         let step = run(&rollout(), &mut ParserState::default(), &jsonl(&rows), 0).unwrap();
         assert!(step.output.messages.is_empty());
-        let fact = step
+        let event = step
             .output
             .events
             .iter()
             .find(|e| e.kind == "response_boundaries_unknown")
             .unwrap();
-        assert_eq!(fact.data, json!({}));
-        assert_eq!(fact.at, None);
-        assert_eq!(fact.after, None);
-        assert_eq!(fact.range, None);
+        assert_eq!(event.data, json!({}));
+        assert_eq!(event.at, None);
+        assert_eq!(event.after, None);
+        assert_eq!(event.range, None);
     }
 }
 

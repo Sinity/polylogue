@@ -56,7 +56,7 @@ fn rapid_captures_show_the_latest_and_keep_retry_identity() {
     )
     .unwrap();
     let pass = engine.run_pass().unwrap();
-    assert_eq!(pass.bytes_read, 0, "restart must use durable progress");
+    assert_eq!(pass.bytes_read, 0, "restart must use stored progress");
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
     let pool = ReadPool::open(&archive).unwrap();
     assert_eq!(
@@ -64,7 +64,7 @@ fn rapid_captures_show_the_latest_and_keep_retry_identity() {
         ["second current version"]
     );
     drop(pool);
-    // A new observation can revert to earlier content. Its provenance makes
+    // A new observation can revert to earlier content. Its `provenance` capture time makes
     // it distinct from a resend of the older capture.
     let mut reversion: Value = serde_json::from_slice(&first).unwrap();
     reversion["provenance"]["captured_at"] = json!("2026-03-01T11:00:00Z");

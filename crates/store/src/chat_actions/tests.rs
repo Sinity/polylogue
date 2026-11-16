@@ -314,7 +314,7 @@ fn an_expired_presend_chat_claim_can_be_reclaimed_without_accepting_stale_report
 }
 
 #[test]
-fn only_the_original_sending_owner_can_late_confirm_the_captured_turn() {
+fn only_the_sending_tab_can_confirm_the_turn_late() {
     let (_dir, _archive, _lock, writer, reads) = setup();
     let mut action = new("late", "late-key", true);
     action.request["conversation"] = serde_json::json!("conversation-1");

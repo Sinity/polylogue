@@ -7,7 +7,7 @@ fn argv(c: &Command) -> Vec<&'static str> {
     if c.cli != Cli::NoSubcommand {
         argv.extend(c.name.split(' '));
     }
-    for a in crate::cli::projections(c).into_iter().filter(|argument| {
+    for a in crate::cli::arguments_of(c).into_iter().filter(|argument| {
         argument.required
             && c.args
                 .iter()

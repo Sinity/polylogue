@@ -1,5 +1,5 @@
-//! Public read arguments. Folds are the `show` and `hide` words of one
-//! table (`FoldKind`); the daemon reads them into one `ReadOptions`.
+//! Public read arguments. Show and hide options are the `show` and `hide` words of one
+//! table (`ShowKind`); the daemon reads them into one `ReadOptions`.
 use polylogue_model::read::{Format, ReadDelivery, View};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -64,7 +64,7 @@ impl Arguments {
             with_blobs,
             cursor: _,
         } = request;
-        let (show, hide) = options.fold_words();
+        let (show, hide) = options.show_hide_words();
         Ok(Self {
             target: target.clone(),
             view: options.view,

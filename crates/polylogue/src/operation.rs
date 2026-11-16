@@ -3,7 +3,7 @@ use crate::daemon::Failure;
 use polylogue_model::{
     Timestamp,
     authorship::{Authorship, Channel},
-    context::{Owner, Provenance},
+    context::{RunContext, SinexContext},
     user::{UserRequest, UserWrite},
 };
 use query_language::time::{Clock, DaySetting};
@@ -18,7 +18,7 @@ pub(crate) fn new_run_id() -> polylogue_model::RunId {
 
 pub(crate) use polylogue_store::writer::ParentLifetime;
 
-/// Clock-free writes capture this once without requiring an owner's logical day.
+/// Clock-free writes capture this once without requiring Sinex's logical day.
 #[derive(Clone)]
 pub struct Invocation {
     pub at: Timestamp,
@@ -96,7 +96,7 @@ pub struct Context {
     pub clock: Clock,
     pub machine: String,
     pub authorship: Authorship,
-    owner: Owner,
+    sinex: SinexContext,
     accepted_request: Option<Arc<command_surface::RunnableRequest>>,
     parent: Option<Arc<ParentLifetime>>,
 }
@@ -104,7 +104,7 @@ impl std::fmt::Debug for Context {
     fn fmt(&self, format: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         format
             .debug_struct("Context")
-            .field("provenance", &self.provenance())
+            .field("run_context", &self.run_context())
             .finish()
     }
 }
@@ -115,7 +115,7 @@ impl Context {
             clock: Clock::new(invocation.at.into(), day),
             machine: invocation.machine,
             authorship: invocation.authorship,
-            owner: Owner::Standalone,
+            sinex: SinexContext::Standalone,
             accepted_request: invocation.accepted_request,
             parent: invocation.parent,
         }
@@ -129,12 +129,12 @@ impl Context {
             Timestamp::from_unix_ns(policy.observed_at.unix_ns()).ok_or_else(|| {
                 Failure::new(
                     "primary_context_invalid",
-                    "the owner observation time is outside the supported range",
+                    "the Sinex observation time is outside the supported range",
                 )
             })?;
-        let owner = Owner::Primary {
+        let sinex = SinexContext::Primary {
             settings_identity: policy.settings_identity.clone(),
-            owner_revision: policy.owner_revision,
+            settings_revision: policy.settings_revision,
             observed_at,
             received_seconds_ago: policy.received_seconds_ago,
         };
@@ -143,7 +143,7 @@ impl Context {
             clock: Clock::new(invocation.at.into(), policy.day.clone()),
             machine: invocation.machine,
             authorship: invocation.authorship,
-            owner,
+            sinex,
             accepted_request: invocation.accepted_request,
             parent: invocation.parent,
         })
@@ -169,28 +169,28 @@ impl Context {
     pub fn request(&self, id: String, write: UserWrite) -> UserRequest {
         self.invocation().request(id, write)
     }
-    pub fn provenance(&self) -> Provenance {
-        Provenance {
+    pub fn run_context(&self) -> RunContext {
+        RunContext {
             ran_at: self.ran_at,
             clock: self.clock.wire(),
             machine: self.machine.clone(),
             authorship: self.authorship.clone(),
-            owner: self.owner.clone(),
+            sinex: self.sinex.clone(),
         }
     }
     /// Callers authenticate the cursor and compare these versions before replay.
     pub fn cursor_versions(&self) -> BTreeMap<String, String> {
-        let owner = match &self.owner {
-            Owner::Standalone => serde_json::json!({"mode":"standalone"}),
-            Owner::Primary {
+        let sinex = match &self.sinex {
+            SinexContext::Standalone => serde_json::json!({"mode":"standalone"}),
+            SinexContext::Primary {
                 settings_identity,
-                owner_revision,
+                settings_revision,
                 ..
             } => {
-                serde_json::json!({"mode":"primary","settings_identity":settings_identity,"owner_revision":owner_revision})
+                serde_json::json!({"mode":"primary","settings_identity":settings_identity,"settings_revision":settings_revision})
             }
         };
-        let value = serde_json::json!({"owner":owner,"day":self.clock.day.wire()});
+        let value = serde_json::json!({"sinex":sinex,"day":self.clock.day.wire()});
         [(
             "operation_context".into(),
             canonical_json::canonical_hash("polylogue-operation-context", &value)

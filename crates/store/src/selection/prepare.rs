@@ -4,8 +4,8 @@ use polylogue_query::{Bindings, SavedQuery, SavedQueryBody};
 use rusqlite::Connection;
 use std::collections::BTreeSet;
 
-/// Semantic objects prepared by the owner's one ordered preflight. This is
-/// neither canonical nor queued custody; final acceptance never supplies it.
+/// Query objects prepared by the writer's one ordered preflight. They are
+/// neither confirmed nor queued; final acceptance never supplies them.
 #[derive(Default)]
 pub(crate) struct ProvisionalQueries {
     objects: BTreeMap<String, polylogue_model::query_objects::QueryObject>,
@@ -23,7 +23,7 @@ impl ProvisionalQueries {
         self.objects.entry(object.id.to_string()).or_insert(object);
         Ok(())
     }
-    /// Prepared semantic body only. This does not establish retained custody.
+    /// Prepared query body only. It is not stored by this.
     pub(crate) fn object(
         &self,
         id: QuestionId,
@@ -37,14 +37,14 @@ impl ProvisionalQueries {
     }
 }
 
-/// The caller owns both pinned snapshots and their source/scope guards. Native
+/// The caller owns both pinned snapshots and their source/scope guards. Typed
 /// references resolve only in `original`; authored metadata comes only from
 /// `authored`, including pending scratch effects. No execution clock is needed.
 pub(crate) fn prepare_query_plan_on(
     original: &Connection,
     authored: &Connection,
     text: &str,
-    native: &Bindings,
+    supplied: &Bindings,
     self_session: Option<&str>,
     pending: Option<&dyn crate::primary::Sinex>,
     provisional: Option<&ProvisionalQueries>,
@@ -59,7 +59,7 @@ pub(crate) fn prepare_query_plan_on(
         original,
         authored,
         text,
-        &native.origins,
+        &supplied.origins,
         pending,
         provisional,
     )?;
@@ -83,7 +83,7 @@ fn spelled_kept_results(text: &str) -> impl Iterator<Item = &str> {
 }
 
 /// The definitions a query names, and only those: its saved names with
-/// their frozen closures, the retained questions it names by hash or by
+/// their saved dependencies, the saved questions it names by hash or by
 /// prefix, and the kept results it or those definitions read. Other saved
 /// queries and kept bodies are never read, so an unrelated query costs the
 /// same however many of them are stored.
@@ -126,7 +126,7 @@ pub(crate) fn named_definitions(
             .definitions;
     bindings.saved = saved_queries_from(original, authored, pending, provisional, definitions)?;
     // `query:<prefix>`: a unique prefix of 12 or more hex characters names the
-    // retained question it starts. Saved names are never all hex, so a prefix
+    // saved question it starts. Saved names are never all hex, so a prefix
     // cannot shadow one.
     for name in polylogue_query::plan::referenced_saved_names(&parsed) {
         let prefix = (12..64).contains(&name.len())
@@ -153,15 +153,15 @@ pub(crate) fn named_definitions(
             })
         })
         .ok_or_else(|| QueryError::Unavailable {
-            what: format!("retained query:{name}"),
+            what: format!("saved query:{name}"),
         })?;
-        let mut frozen = retained_bindings(original, authored, pending, provisional, found)?
+        let mut saved_nodes = stored_bindings(original, authored, pending, provisional, found)?
             .ok_or_else(|| QueryError::Unavailable {
-                what: format!("retained query:{found} custody"),
+                what: format!("saved query:{found} stored body"),
             })?;
-        let definition = frozen[&found.to_string()].clone();
-        frozen.insert(name, definition);
-        for (id, nodes) in frozen {
+        let definition = saved_nodes[&found.to_string()].clone();
+        saved_nodes.insert(name, definition);
+        for (id, nodes) in saved_nodes {
             bindings.saved.entry(id).or_insert(nodes);
         }
     }
@@ -169,13 +169,11 @@ pub(crate) fn named_definitions(
         if bindings.saved.contains_key(&id.to_string()) {
             continue;
         }
-        let frozen =
-            retained_bindings(original, authored, pending, provisional, id)?.ok_or_else(|| {
-                QueryError::Unavailable {
-                    what: format!("retained query:{id} custody"),
-                }
+        let saved_nodes = stored_bindings(original, authored, pending, provisional, id)?
+            .ok_or_else(|| QueryError::Unavailable {
+                what: format!("saved query:{id} stored body"),
             })?;
-        for (id, nodes) in frozen {
+        for (id, nodes) in saved_nodes {
             bindings.saved.entry(id).or_insert(nodes);
         }
     }
@@ -183,7 +181,7 @@ pub(crate) fn named_definitions(
         .into_iter()
         .collect();
     for definition in bindings.saved.values().flatten() {
-        if let SavedQueryBody::Frozen { syntax, .. } = &definition.body {
+        if let SavedQueryBody::Available { syntax, .. } = &definition.body {
             match polylogue_query::parse::with_catalog(syntax, &bindings.catalog()) {
                 Ok(saved) => kept.extend(polylogue_query::plan::referenced_kept_results(&saved)),
                 // Text whose syntax needs a kept result's columns names them.
@@ -238,21 +236,21 @@ fn saved_queries_from(
                 SavedQuery {
                     text: definition.value.text,
                     revision: definition.reference.revision.clone().ok_or_else(|| {
-                        invalid("store", "saved definition is not an exact revision")
+                        invalid("store", "saved definition does not name a revision")
                     })?,
                     root: definition.reference.root,
                     hash,
                     denominator,
                     conflicts: definition.conflicts,
                     body: SavedQueryBody::Unavailable {
-                        reason: format!("retained query:{hash} custody"),
+                        reason: format!("saved query:{hash} stored body"),
                     },
                 };
             if value.conflicts.is_empty() {
-                match retained_bindings(original, conn, pending, provisional, hash) {
-                    Ok(Some(frozen)) => {
-                        value.body = frozen[&hash.to_string()][0].body.clone();
-                        for (hash, nodes) in frozen {
+                match stored_bindings(original, conn, pending, provisional, hash) {
+                    Ok(Some(saved_nodes)) => {
+                        value.body = saved_nodes[&hash.to_string()][0].body.clone();
+                        for (hash, nodes) in saved_nodes {
                             saved.entry(hash).or_insert(nodes);
                         }
                     }
@@ -282,9 +280,9 @@ fn saved_queries_from(
     Ok(saved)
 }
 
-/// Shared custody/body resolver for named assertions and explicit typed hashes.
-/// Provisional input remains an owner-private preflight facility.
-fn retained_bindings(
+/// Shared stored-body resolver for named assertions and explicit typed hashes.
+/// Provisional input stays private to the writer's preflight.
+fn stored_bindings(
     original: &Connection,
     authored: &Connection,
     pending: Option<&dyn crate::primary::Sinex>,

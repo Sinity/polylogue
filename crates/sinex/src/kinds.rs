@@ -1,4 +1,4 @@
-//! Polylogue's kind declarations and native record references.
+//! Polylogue's kind declarations and references to records in Sinex materials.
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sinex_model::MaterialId;
@@ -70,7 +70,7 @@ pub fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> {
     declarations
 }
 
-/// The adapter declaration the owner installs; the producer never registers
+/// The adapter declaration the operator installs; the producer never registers
 /// it from its own requested permissions.
 pub fn source_declaration() -> sinex_model::SourceDeclaration {
     sinex_model::SourceDeclaration {

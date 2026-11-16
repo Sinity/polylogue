@@ -1,4 +1,4 @@
-//! Scalar query values and numeric aggregates preserve unknowns and validate physical values.
+//! Scalar query values and numeric aggregates preserve unknowns and validate stored values.
 use super::{Connection, Context, FLAGS};
 use rusqlite::{
     functions::Aggregate,
@@ -149,15 +149,15 @@ pub(super) fn register(conn: &Connection) -> rusqlite::Result<()> {
     })?;
     conn.create_scalar_function("pl_kept_identity", 3, FLAGS, |ctx| {
         let keys: Option<String> = ctx.get(0)?;
-        let keys = keys.ok_or_else(|| invalid("the kept row has no captured native identity"))?;
+        let keys = keys.ok_or_else(|| invalid("the kept row has no captured row identity"))?;
         let keys: Vec<serde_json::Value> = serde_json::from_str(&keys)
-            .map_err(|_| invalid("a kept native identity must be a scalar tuple"))?;
+            .map_err(|_| invalid("a kept row identity must be a scalar tuple"))?;
         let index = usize::try_from(ctx.get::<i64>(1)?)
-            .map_err(|_| invalid("a kept native identity index must be nonnegative"))?;
+            .map_err(|_| invalid("a kept row identity index must be nonnegative"))?;
         let count = usize::try_from(ctx.get::<i64>(2)?)
-            .map_err(|_| invalid("a kept native identity size must be nonnegative"))?;
+            .map_err(|_| invalid("a kept row identity size must be nonnegative"))?;
         if keys.len() != count {
-            return Err(invalid("the kept native identity has the wrong tuple size"));
+            return Err(invalid("the kept row identity has the wrong tuple size"));
         }
         match keys.get(index) {
             Some(serde_json::Value::String(value)) => Ok(Value::Text(value.clone())),
@@ -168,13 +168,11 @@ pub(super) fn register(conn: &Connection) -> rusqlite::Result<()> {
                 } else if value.is_f64() {
                     Ok(Value::Real(finite(value.as_f64().expect("JSON float"))?))
                 } else {
-                    Err(invalid(
-                        "the kept native identity integer is out of SQL range",
-                    ))
+                    Err(invalid("the kept row identity integer is out of SQL range"))
                 }
             }
             _ => Err(invalid(
-                "a kept native identity must contain known scalar keys",
+                "a kept row identity must contain known scalar keys",
             )),
         }
     })?;

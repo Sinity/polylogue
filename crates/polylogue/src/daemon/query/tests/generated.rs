@@ -10,7 +10,7 @@ use proptest::strategy::Union;
 use proptest::test_runner::FileFailurePersistence;
 use reference::{
     COMMANDS, COSTS, CallRow, Cond, FIRST_DAY, HOUR, Leaf, MODELS, MessageRow, ORIGINS, OUTCOMES,
-    REPO_NAMES, REPOS, Row, Rows, SPEAKERS, SessionRow, THRESHOLDS, TOOLS, Truth, Unit, WORDS,
+    REPO_NAMES, REPOS, Row, Rows, SPEAKERS, SessionRow, THRESHOLDS, TOOLS, TriState, Unit, WORDS,
 };
 use std::collections::BTreeSet;
 
@@ -344,7 +344,7 @@ fn generated_call_keys_preserve_distinct_time_conditions() {
                 msg(&format!("call-times-{index}"), "assistant", "model", "", at),
             )
             .unwrap();
-        // Make the cache disagree with native evidence so it cannot be substituted.
+        // Make the cache disagree with the source data so it cannot be substituted.
         let cached_at = if at.is_some() { None } else { Some(FIRST_DAY) };
         w.fx.tool_call(
             session,
@@ -373,7 +373,7 @@ fn generated_call_keys_preserve_distinct_time_conditions() {
         assert_eq!(
             key_set(Unit::ToolCalls, &all(&w, &format!("{query} {condition}"))),
             known,
-            "{condition}: the native point survives a null call cache"
+            "{condition}: the source's point time survives a null call cache"
         );
     }
     let message =
@@ -415,7 +415,7 @@ fn generated_call_keys_preserve_distinct_time_conditions() {
             .and_then(polylogue_model::Timestamp::parse_rfc3339)
             .map(polylogue_model::Timestamp::unix_ms),
         Some(cached_at),
-        "displayed cached time remains distinct from predicate evidence"
+        "displayed cached time stays distinct from the time the predicate tests"
     );
 }
 
@@ -489,7 +489,7 @@ fn harness_without_prompt_kind_is_false_for_prose_beside_unknown_fields() {
             "{condition} is false for this harness message"
         );
     }
-    // A missing model still has ordinary three-valued field semantics.
+    // A missing model still has the usual three-valued field logic.
     for condition in ["model:model-a", "NOT model:model-a"] {
         assert!(key_set(Unit::Messages, &all(&w, &over(Unit::Messages, condition))).is_empty());
     }
@@ -595,7 +595,7 @@ proptest! {
                 .filter(|(_, row)| {
                     let Row::Call(i, _, _) = row else { unreachable!() };
                     matched.contains(&reference::session_id(&rows, *i))
-                        && reference::truth(&rows, &c, *row) == Truth::Yes
+                        && reference::evaluate(&rows, &c, *row) == TriState::Yes
                 })
                 .map(|(key, _)| key)
                 .collect(),
@@ -620,7 +620,7 @@ proptest! {
         let by_key: std::collections::BTreeMap<String, Row> = every_row(&rows, unit).into_iter().collect();
         let filtered: Vec<String> = keys(unit, &all(&w, &over(unit, &format!("({at})"))))
             .into_iter()
-            .filter(|k| reference::truth(&rows, &b, by_key[k]) == Truth::Yes)
+            .filter(|k| reference::evaluate(&rows, &b, by_key[k]) == TriState::Yes)
             .collect();
         prop_assert_eq!(&joined, &staged, "{} | where {}", at, bt);
         if b.ranks() {
@@ -647,7 +647,7 @@ proptest! {
         let neither: BTreeSet<String> = everything.difference(&yes).filter(|k| !no.contains(*k)).cloned().collect();
         let unknown: BTreeSet<String> = every_row(&rows, unit)
             .into_iter()
-            .filter(|(_, row)| reference::truth(&rows, &c, *row) == Truth::Unknown)
+            .filter(|(_, row)| reference::evaluate(&rows, &c, *row) == TriState::Unknown)
             .map(|(key, _)| key)
             .collect();
         prop_assert_eq!(&neither, &unknown, "{}", text);

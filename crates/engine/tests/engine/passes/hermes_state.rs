@@ -34,7 +34,7 @@ fn hermes_ids(w: &ClaudeHome) -> Vec<SessionId> {
 }
 
 #[test]
-fn hermes_native_capture_reads_roles_reasoning_and_zero_nonzero_tool_outcomes() {
+fn hermes_state_reads_roles_reasoning_and_outcomes() {
     let w = ClaudeHome::new();
     tool_database(
         &w.home.join(".hermes/state.db"),
@@ -48,7 +48,7 @@ fn hermes_native_capture_reads_roles_reasoning_and_zero_nonzero_tool_outcomes() 
     assert_eq!(
         ids.len(),
         1,
-        "stored native Hermes rows must become a conversation"
+        "stored Hermes rows must become a conversation"
     );
     assert!(
         ids[0]

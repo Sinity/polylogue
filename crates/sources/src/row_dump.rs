@@ -1,4 +1,4 @@
-//! Metadata for native tool-database row dumps whose origin has no domain parser.
+//! Metadata for tool-database row dumps whose origin has no domain parser.
 //! The archive owns original rows. This parser emits only counts and wire shapes.
 use crate::fields::{ExpectedType as T, Fields, Rule};
 use crate::parse::{Output, Parse, Parser};

@@ -52,7 +52,7 @@ fn a_stopped_parse_recovers_stored_database_rows_before_reading_the_source() {
     fault::clear();
     let w = Morrow::lay_out(Set::Main);
     let db = database(&w);
-    // Raw bytes commit first. A failed parse must finish through the ordinary
+    // Original bytes commit first. A failed parse must finish through the
     // stored-input path before another source read compares the same rows.
     fault::arm(
         "tool_database.comparison_commit",

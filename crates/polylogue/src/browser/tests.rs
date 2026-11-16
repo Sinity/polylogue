@@ -592,7 +592,7 @@ fn grok_file_blobs(
 }
 
 #[test]
-fn a_grok_capture_with_fetched_file_bytes_reaches_an_ordinary_archive_read() {
+fn grok_capture_with_fetched_file_bytes_reaches_an_archive_read() {
     let w = test_daemon::start("fixture");
     let host = host(&w);
     let body = serde_json::to_vec(&grok_capture()).unwrap();
@@ -699,7 +699,7 @@ mod notes;
 mod repeated_captures;
 
 #[test]
-fn an_expired_sending_action_accepts_only_its_owners_late_confirmation() {
+fn expired_sending_action_accepts_only_its_holders_late_confirmation() {
     use std::sync::atomic::{AtomicI64, Ordering};
     let now = Arc::new(AtomicI64::new(1_800_000_000_000));
     let clock = Arc::clone(&now);

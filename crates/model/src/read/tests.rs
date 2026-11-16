@@ -65,13 +65,11 @@ fn dialogue_is_dialogue_and_original_positions_survive() {
         view: View::Dialogue,
         ..Default::default()
     };
-    let evidence = ProjectionEvidence {
+    let facts = LayoutFacts {
         branch: BranchState::Active,
         ..Default::default()
     };
-    let Record::Message(after) = project_record(original, &options, &evidence)
-        .unwrap()
-        .unwrap()
+    let Record::Message(after) = project_record(original, &options, &facts).unwrap().unwrap()
     else {
         unreachable!()
     };
@@ -85,14 +83,14 @@ fn dialogue_is_dialogue_and_original_positions_survive() {
         project_record(
             record(message(Role::User, Some(PromptKind::Harness))),
             &options,
-            &evidence
+            &facts
         )
         .unwrap()
         .is_none()
     );
 }
 #[test]
-fn context_requires_prepared_membership_and_does_not_inherit_current_branch_filter() {
+fn context_view_needs_prepared_membership() {
     let options = ReadOptions {
         view: View::Context,
         ..Default::default()
@@ -101,17 +99,17 @@ fn context_requires_prepared_membership_and_does_not_inherit_current_branch_filt
         project_record(
             record(message(Role::Assistant, None)),
             &options,
-            &ProjectionEvidence::default()
+            &LayoutFacts::default()
         ),
-        Err(ReadError::MissingEvidence { .. })
+        Err(ReadError::MissingPreparedData { .. })
     ));
-    let evidence = ProjectionEvidence {
+    let facts = LayoutFacts {
         inherited: true,
         branch: BranchState::Abandoned {
             n: Some(1),
             total: Some(2),
         },
-        context: Some(ContextEvidence {
+        context: Some(ContextState {
             selected: true,
             complete: false,
             reason: Some("latest summary absent".into()),
@@ -121,7 +119,7 @@ fn context_requires_prepared_membership_and_does_not_inherit_current_branch_filt
         ..Default::default()
     };
     assert!(
-        project_record(record(message(Role::Assistant, None)), &options, &evidence)
+        project_record(record(message(Role::Assistant, None)), &options, &facts)
             .unwrap()
             .is_some()
     );
@@ -164,7 +162,7 @@ fn estimator_uses_utf8_and_long_runs_consistently() {
 }
 
 #[test]
-fn encrypted_only_thinking_is_omitted_without_rewriting_its_source_identity() {
+fn encrypted_only_thinking_is_omitted() {
     let mut source = message(Role::Assistant, None);
     source.blocks.push(Block::Thinking {
         text: None,
@@ -178,7 +176,7 @@ fn encrypted_only_thinking_is_omitted_without_rewriting_its_source_identity() {
     let after = project_record(
         source,
         &ReadOptions::default(),
-        &ProjectionEvidence {
+        &LayoutFacts {
             branch: BranchState::Active,
             ..Default::default()
         },
@@ -217,7 +215,7 @@ fn document_dialogue_refuses_by_target_without_projecting_its_positions() {
             view: View::Dialogue,
             ..Default::default()
         },
-        &ProjectionEvidence::default(),
+        &LayoutFacts::default(),
     )
     .unwrap_err();
     assert!(
@@ -239,13 +237,13 @@ fn expansion_headers_is_the_only_public_collapsed_spelling() {
 }
 
 #[test]
-fn projection_keeps_only_selected_injection_evidence_without_promoting_claims() {
+fn layout_keeps_selected_hook_injections_only() {
     use crate::injection::{InjectionEvidence, NativeHookField};
     let mut original = record(message(Role::Assistant, None));
     let Record::Message(row) = &mut original else {
         unreachable!()
     };
-    let claim = |n: u64| NativeHookField {
+    let field = |n: u64| NativeHookField {
         input: format!("synthetic-input-{n}"),
         chain: 1,
         start: n + 1,
@@ -257,8 +255,8 @@ fn projection_keeps_only_selected_injection_evidence_without_promoting_claims() 
             message: row.message.id.clone(),
             source_version: row.source_version,
             block,
-            observed: Some(claim(block)),
-            declared: vec![claim(block + 4)],
+            observed: Some(field(block)),
+            declared: vec![field(block + 4)],
         })
         .collect();
     let before = row.clone();
@@ -268,7 +266,7 @@ fn projection_keeps_only_selected_injection_evidence_without_promoting_claims() 
             view: View::Dialogue,
             ..Default::default()
         },
-        &ProjectionEvidence::default(),
+        &LayoutFacts::default(),
     )
     .unwrap()
     .unwrap();
@@ -294,7 +292,7 @@ fn projection_keeps_only_selected_injection_evidence_without_promoting_claims() 
 }
 
 #[test]
-fn projection_preserves_exact_attachment_slots_and_ambiguous_same_hash_claims() {
+fn layout_keeps_slots_and_ambiguous_same_hash_sources() {
     use crate::attachment_binding::{
         AttachmentBinding, AttachmentCandidate, AttachmentSourceClaim,
     };
@@ -368,7 +366,7 @@ fn projection_preserves_exact_attachment_slots_and_ambiguous_same_hash_claims() 
             tools: Some(Expansion::None),
             ..Default::default()
         },
-        &ProjectionEvidence::default(),
+        &LayoutFacts::default(),
     )
     .unwrap()
     .unwrap();
@@ -394,7 +392,7 @@ fn projection_preserves_exact_attachment_slots_and_ambiguous_same_hash_claims() 
             view: View::Dialogue,
             ..Default::default()
         },
-        &ProjectionEvidence::default(),
+        &LayoutFacts::default(),
     )
     .unwrap()
     .unwrap();
@@ -407,10 +405,10 @@ fn projection_preserves_exact_attachment_slots_and_ambiguous_same_hash_claims() 
 }
 
 #[test]
-fn fold_words_and_options_round_trip_through_one_table() {
+fn show_hide_words_round_trip_through_one_table() {
     let mut options = ReadOptions::default();
     options
-        .apply_fold(
+        .apply_show_hide(
             &[
                 "tools:full".into(),
                 "thinking".into(),
@@ -425,25 +423,25 @@ fn fold_words_and_options_round_trip_through_one_table() {
     assert_eq!(options.thinking, Some(Expansion::Full));
     assert!(options.inherited && options.turns && options.context_meter);
     assert!(!options.assertions && options.spawns == SpawnFold::Hidden);
-    let (show, hide) = options.fold_words();
+    let (show, hide) = options.show_hide_words();
     let mut again = ReadOptions::default();
-    again.apply_fold(&show, &hide).unwrap();
+    again.apply_show_hide(&show, &hide).unwrap();
     assert_eq!(again, options);
-    for kind in FoldKind::ALL {
-        assert_eq!(FoldKind::parse(kind.name()), Some(kind));
+    for kind in ShowKind::ALL {
+        assert_eq!(ShowKind::parse(kind.name()), Some(kind));
     }
     assert!(matches!(
-        ReadOptions::default().apply_fold(&["tools:loud".into()], &[]),
-        Err(ReadError::UnknownFold { .. })
+        ReadOptions::default().apply_show_hide(&["tools:loud".into()], &[]),
+        Err(ReadError::UnknownShowWord { .. })
     ));
     assert!(matches!(
-        ReadOptions::default().apply_fold(&[], &["nothing".into()]),
-        Err(ReadError::UnknownFold { .. })
+        ReadOptions::default().apply_show_hide(&[], &["nothing".into()]),
+        Err(ReadError::UnknownShowWord { .. })
     ));
 }
 
 #[test]
-fn spawn_levels_and_the_help_come_from_the_fold_table() {
+fn spawn_levels_and_help_come_from_the_show_table() {
     for (word, expected) in [
         ("spawns", SpawnFold::Inline { depth: None }),
         ("spawns:full", SpawnFold::Inline { depth: None }),
@@ -451,23 +449,23 @@ fn spawn_levels_and_the_help_come_from_the_fold_table() {
         ("spawns:2", SpawnFold::Inline { depth: Some(2) }),
     ] {
         let mut options = ReadOptions::default();
-        options.apply_fold(&[word.into()], &[]).unwrap();
+        options.apply_show_hide(&[word.into()], &[]).unwrap();
         assert_eq!(options.spawns, expected, "{word}");
-        let (show, hide) = options.fold_words();
+        let (show, hide) = options.show_hide_words();
         let mut again = ReadOptions::default();
-        again.apply_fold(&show, &hide).unwrap();
+        again.apply_show_hide(&show, &hide).unwrap();
         assert_eq!(again, options, "{word}");
     }
     for refused in ["spawns:N", "spawns:0", "spawns:deep", "tools:2"] {
         assert!(
             matches!(
-                ReadOptions::default().apply_fold(&[refused.into()], &[]),
-                Err(ReadError::UnknownFold { .. })
+                ReadOptions::default().apply_show_hide(&[refused.into()], &[]),
+                Err(ReadError::UnknownShowWord { .. })
             ),
             "{refused}"
         );
     }
-    for kind in FoldKind::ALL {
+    for kind in ShowKind::ALL {
         let entry = format!(
             "{}[:{}{}]",
             kind.name(),
@@ -475,9 +473,9 @@ fn spawn_levels_and_the_help_come_from_the_fold_table() {
             if kind.takes_depth() { "|N" } else { "" }
         );
         assert!(
-            FoldKind::HELP.contains(&entry),
+            ShowKind::HELP.contains(&entry),
             "{entry} in {}",
-            FoldKind::HELP
+            ShowKind::HELP
         );
     }
     let inline_context = ReadOptions {

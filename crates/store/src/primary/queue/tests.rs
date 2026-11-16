@@ -130,7 +130,7 @@ fn backup_snapshot_keeps_its_queue_boundary_while_preparation_continues() {
 }
 
 #[test]
-fn confirmed_candidates_keep_event_identity_and_respect_applied_position() {
+fn confirmed_operations_keep_event_ids_up_to_applied_position() {
     let home = tempfile::tempdir().unwrap();
     let queue = Queue::open(&home.path().join("queue.db")).unwrap();
     let mut member = operation("member");
@@ -190,19 +190,19 @@ fn confirmed_candidates_keep_event_identity_and_respect_applied_position() {
 }
 
 #[test]
-fn acquisition_publication_keeps_member_order_and_is_atomic_on_collision() {
+fn capture_group_keeps_member_order_and_is_atomic() {
     let home = tempfile::tempdir().unwrap();
     let queue = Queue::open(&home.path().join("queue.db")).unwrap();
     queue.prepare(&operation("existing"), None, &[]).unwrap();
     let staged = Queue::open(&home.path().join("staged.db")).unwrap();
     staged.prepare(&operation("first"), None, &[]).unwrap();
     staged.prepare(&operation("second"), None, &[]).unwrap();
-    let mut header = operation("acquisition");
-    header.kind = Kind::Acquisition;
-    queue.publish_acquisition(&staged, &header).unwrap();
+    let mut header = operation("group");
+    header.kind = Kind::CaptureGroupHeader;
+    queue.publish_capture_group(&staged, &header).unwrap();
     let members = queue
         .lookup(
-            Lookup::Acquisition("acquisition"),
+            Lookup::CaptureGroupHeader("group"),
             None,
             None,
             Order::OldestFirst,
@@ -216,12 +216,12 @@ fn acquisition_publication_keeps_member_order_and_is_atomic_on_collision() {
             .collect::<Vec<_>>(),
         ["first", "second"]
     );
-    assert_eq!(members[0].directory, "acquisition/first");
+    assert_eq!(members[0].directory, "group/first");
     assert!(members[0].order > queue.get("existing").unwrap().unwrap().order);
-    let mut colliding = operation("invalid-acquisition");
-    colliding.kind = Kind::Acquisition;
-    assert!(queue.publish_acquisition(&staged, &colliding).is_err());
-    assert!(queue.get("invalid-acquisition").unwrap().is_none());
+    let mut colliding = operation("invalid-group");
+    colliding.kind = Kind::CaptureGroupHeader;
+    assert!(queue.publish_capture_group(&staged, &colliding).is_err());
+    assert!(queue.get("invalid-group").unwrap().is_none());
     assert_eq!(queue.len().unwrap(), 3);
     // An unsuccessful attached transaction leaves the connection usable.
     queue.prepare(&operation("later"), None, &[]).unwrap();

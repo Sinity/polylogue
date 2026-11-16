@@ -94,15 +94,15 @@ fn seed(root: &Path, cache: &Path, model: &str) {
                 writer.put_setting(&Setting {
                     key: key.into(),
                     value: {
-                        use polylogue_model::settings::{self, Current, Owner};
+                        use polylogue_model::settings::{self, Current, SettingMode};
                         let declaration = settings::declaration(key).unwrap();
-                        let value = settings::current(key, None, Owner::Standalone).unwrap();
+                        let value = settings::current(key, None, SettingMode::Standalone).unwrap();
                         Current {
                             key: key.into(),
                             kind: declaration.kind,
                             default: value.clone(),
                             scope: declaration.scope,
-                            owner: "polylogue".into(),
+                            supplier: "polylogue".into(),
                             value,
                             authored: None,
                             conflicts: vec![],
@@ -464,7 +464,7 @@ fn completion_latency_reports_real_shell_callbacks_with_daemon_up_and_down() {
         }
         assert!(
             ready.elapsed() < Duration::from_secs(10),
-            "startup catalog did not publish the committed repository"
+            "startup catalog did not write the committed repository"
         );
         std::thread::sleep(Duration::from_millis(2));
     }

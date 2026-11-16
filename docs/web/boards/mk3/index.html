@@ -1581,7 +1581,7 @@ html, body {
 
 <section class="board-intro">
   <h1><span class="wm">polylogue</span><span style="color:var(--ansi-cyan)">.</span> mk3.1 <span class="dim">— archive workbench design pass</span></h1>
-  <p>MK3.1 expands the MK3 evidence-cockpit direction into a complete view set. Every artboard is implementation-shaped: target refs, paste spans, attachment derivatives, topology edges, and user-state writes are drawn as durable contracts, not animations. Advanced/derived panels are still visible, but as partial/disabled modules with the missing contract named on screen. Local-first; daemon-first; desktop primary.</p>
+  <p>MK3.1 expands the MK3 cockpit direction into a complete view set. Every artboard is implementation-shaped: target refs, paste spans, attachment derivatives, topology edges, and user-state writes are drawn as stored contracts, not animations. Advanced/derived panels are still visible, but as partial/disabled modules with the missing contract named on screen. Local-first; daemon-first; desktop primary.</p>
   <p class="dim" style="font-size:12px">Static design board. No remote dependencies. Fixture data labelled with <code>fix:</code> prefixes. Disabled modules name the missing contract on screen.</p>
   <div class="meta-row">
     <span>pack <b>mk3.1</b></span>
@@ -1601,7 +1601,7 @@ html, body {
   <a href="#a05"><span class="n">05</span><span class="t">Message card variants · copy menu</span></a>
   <a href="#a06"><span class="n">06</span><span class="t">Paste rendering matrix</span></a>
   <a href="#a07"><span class="n">07</span><span class="t">Attachment rendering matrix</span></a>
-  <a href="#a08"><span class="n">08</span><span class="t">Inspector / provenance</span></a>
+  <a href="#a08"><span class="n">08</span><span class="t">Inspector / source</span></a>
   <a href="#a09"><span class="n">09</span><span class="t">Topology explorer</span></a>
   <a href="#a10"><span class="n">10</span><span class="t">Continue / fork / recall pack</span></a>
   <a href="#a11"><span class="n">11</span><span class="t">Multi-chat · tabs mode</span></a>
@@ -2100,7 +2100,7 @@ filter.match   1.00  ▓▓▓▓▓▓▓▓</pre>
               <div class="msg-head">
                 <span class="chip paste">paste · explicit</span>
                 <span class="chip">UserPromptSubmit hook</span>
-                <span class="chip ok">canonical</span>
+                <span class="chip ok">shown</span>
                 <div class="actions">
                   <button class="iconbtn primary">copy ▾</button>
                   <button class="iconbtn">mark</button>
@@ -2148,7 +2148,7 @@ filter.match   1.00  ▓▓▓▓▓▓▓▓</pre>
                 <span class="chip">fable 5.1</span>
                 <span class="chip warn">tokens estimated · 4.1k</span>
                 <span class="chip topo">references msg 38</span>
-                <span class="chip ok">canonical</span>
+                <span class="chip ok">shown</span>
                 <div class="actions">
                   <button class="iconbtn primary">copy ▾</button>
                   <button class="iconbtn">pin</button>
@@ -2207,7 +2207,7 @@ The pasted diff implements only slice 1. Slice 2 is what your earlier attempt mi
             <div class="msg-body">
               <div class="msg-head">
                 <span class="chip attach">attachment</span>
-                <span class="chip ok">canonical</span>
+                <span class="chip ok">shown</span>
               </div>
               <div class="msg-text">Also see this screenshot of the failing run — next friday came back as today.</div>
               <div class="attach-inline">
@@ -2241,7 +2241,7 @@ The pasted diff implements only slice 1. Slice 2 is what your earlier attempt mi
             <dt>target_type</dt><dd>message</dd>
             <dt>target_id</dt><dd class="cyan">msg:7f3a2c10-0004/42</dd>
             <dt>identity_key</dt><dd>cc:msg/7f3a2c10-0004/42</dd>
-            <dt>provenance</dt><dd>raw:cc:5a2 · hook</dd>
+            <dt>source</dt><dd>raw:cc:5a2 · hook</dd>
             <dt>paste boundaries</dt><dd>explicit · 1 span</dd>
             <dt>copy default</dt><dd>markdown</dd>
           </dl>
@@ -2260,7 +2260,7 @@ The pasted diff implements only slice 1. Slice 2 is what your earlier attempt mi
         <div class="ins-card">
           <h4>Data quality</h4>
           <div class="chip-row">
-            <span class="chip ok">canonical message</span>
+            <span class="chip ok">shown message</span>
             <span class="chip paste">explicit paste · hook</span>
             <span class="chip warn">cost estimated</span>
             <span class="chip">parser claude-code</span>
@@ -2336,7 +2336,7 @@ The pasted diff implements only slice 1. Slice 2 is what your earlier attempt mi
             <div class="dim" style="font-size:11px">8 412 messages · 142 tool runs · 38 pastes · 12 attach · 4 forks</div>
           </div>
           <div class="chip-row">
-            <span class="chip ok">canonical</span>
+            <span class="chip ok">shown</span>
             <span class="chip">claude-code</span>
             <span class="chip topo">root of 7-conv cluster</span>
             <span class="chip warn">huge · virtualized</span>
@@ -2565,7 +2565,7 @@ Cargo.toml                       2</pre>
       <div class="msg" style="border:1px solid var(--plg-border);margin-bottom:8px;border-radius:0">
         <div class="msg-gutter"><span class="role-chip user">USER</span><span class="ord">12</span><span class="time">14:01</span></div>
         <div class="msg-body">
-          <div class="msg-head"><span class="chip ok">canonical · typed-only</span></div>
+          <div class="msg-head"><span class="chip ok">shown · typed-only</span></div>
           <div class="msg-text">A short typed-only user prompt. No paste, no attachments. Default copy = plain text.</div>
         </div>
       </div>
@@ -2646,12 +2646,12 @@ Cargo.toml                       2</pre>
         </div>
       </div>
 
-      <!-- unresolved provenance / raw-only -->
+      <!-- unresolved source / raw-only -->
       <div class="msg" style="border:1px solid var(--plg-border);margin-bottom:8px;border-color:color-mix(in srgb, var(--ansi-red) 35%, var(--plg-border))">
         <div class="msg-gutter"><span class="role-chip user">USER</span><span class="ord">44</span><span class="time">14:10</span></div>
         <div class="msg-body">
           <div class="msg-head"><span class="chip err">raw-only · parse failed</span><span class="chip dim">raw:cc:badblob</span></div>
-          <div class="msg-text dim" style="font-size:11px">message content unavailable; raw artifact retained · <a href="#" style="color:var(--ansi-cyan)">open raw text</a></div>
+          <div class="msg-text dim" style="font-size:11px">message content unavailable; raw artifact kept · <a href="#" style="color:var(--ansi-cyan)">open raw text</a></div>
         </div>
       </div>
 
@@ -2962,7 +2962,7 @@ test parse_dates::tomorrow_at_noon ... ok
       <div class="card-preview quarantined"><span style="font-size:32px">⚠</span><span class="chip err badge">quarantined</span></div>
       <div class="card-body">
         <div class="name">incoming-paste-blob.html</div>
-        <div class="desc">text/html · sanitizer blocked &lt;script&gt; · raw retained for inspection only</div>
+        <div class="desc">text/html · sanitizer blocked &lt;script&gt; · raw kept for inspection only</div>
       </div>
       <div class="card-foot"><span class="chip err">quarantined</span><span class="chip">raw text · safe iframe</span></div>
     </div>
@@ -3031,10 +3031,10 @@ test parse_dates::tomorrow_at_noon ... ok
 </section>
 
 <!-- ============================================================ -->
-<!--  08 · INSPECTOR / PROVENANCE                                  -->
+<!--  08 · INSPECTOR / SOURCE                                      -->
 <!-- ============================================================ -->
 
-<section class="artboard" id="a08" data-screen-label="08 Inspector / provenance panel">
+<section class="artboard" id="a08" data-screen-label="08 Inspector / source panel">
   <div class="artboard-header">
     <span class="ix">08</span>
     <h2>Inspector · 5 selection contexts side by side</h2>
@@ -3096,20 +3096,20 @@ test parse_dates::tomorrow_at_noon ... ok
         </dl>
       </div>
       <div class="ins-card">
-        <h4>Render envelope</h4>
+        <h4>Render metadata</h4>
         <dl class="kv">
           <dt>role</dt><dd>user</dd>
           <dt>message_type</dt><dd>message</dd>
           <dt>content_blocks</dt><dd>2 (text + paste)</dd>
           <dt>paste_spans</dt><dd>1 · explicit</dd>
           <dt>attachments</dt><dd>0</dd>
-          <dt>provenance</dt><dd>raw:cc:5a2 · hook</dd>
+          <dt>source</dt><dd>raw:cc:5a2 · hook</dd>
         </dl>
       </div>
       <div class="ins-card">
         <h4>Data quality</h4>
         <div class="chip-row">
-          <span class="chip ok">canonical</span>
+          <span class="chip ok">shown</span>
           <span class="chip paste">explicit paste · hook</span>
           <span class="chip warn">tokens estimated</span>
         </div>
@@ -3236,7 +3236,7 @@ test parse_dates::tomorrow_at_noon ... ok
         </dl>
       </div>
       <div class="ins-card">
-        <h4>Evidence JSON</h4>
+        <h4>Layout facts JSON</h4>
         <pre style="background:var(--bg-0);border:1px solid var(--plg-border);padding:8px;margin:0;font-size:10px;color:var(--fg-1)">{"native_parent_id":
   "cc:7f3a2c10-0004",
  "matched_via":
@@ -3304,7 +3304,7 @@ test parse_dates::tomorrow_at_noon ... ok
           <div class="topo-tree">
 
             <!-- root -->
-            <div><div class="topo-node root"><span class="tn-title">Root · parser refactor</span><span class="chip ok">resolved · canonical</span><span class="tn-id">conv:7f3a2c10-0012 · 11d</span></div></div>
+            <div><div class="topo-node root"><span class="tn-title">Root · parser refactor</span><span class="chip ok">resolved · shown</span><span class="tn-id">conv:7f3a2c10-0012 · 11d</span></div></div>
 
             <div class="topo-children">
               <span class="edge-label">continuation</span>
@@ -3385,14 +3385,14 @@ test parse_dates::tomorrow_at_noon ... ok
   <div class="artboard-header">
     <span class="ix">10</span>
     <h2>Flow · continue from here · fork from this message · create recall pack</h2>
-    <span class="sub">Three flows from a single message anchor · explicit provenance · no auto-continuation</span>
+    <span class="sub">Three flows from a single starting message · explicit source · no auto-continuation</span>
   </div>
   <div style="display:grid;grid-template-columns:1.1fr 1fr 1fr;gap:1px;background:var(--plg-border);min-height:720px">
 
-    <!-- LEFT: anchor msg -->
+    <!-- LEFT: starting msg -->
     <div style="background:var(--plg-bg);padding:0">
       <div style="padding:14px 18px;border-bottom:1px solid var(--plg-border);background:var(--plg-panel-raised)">
-        <div style="font-size:10px;text-transform:uppercase;letter-spacing:var(--tracking-caps);color:var(--fg-2)">anchor</div>
+        <div style="font-size:10px;text-transform:uppercase;letter-spacing:var(--tracking-caps);color:var(--fg-2)">starting message</div>
         <div style="font-size:13px;color:var(--fg-bold)">msg 42 · conv 7f3a2c10-0004 · "inspect this failing test…"</div>
       </div>
       <div style="padding:16px 18px">
@@ -3427,7 +3427,7 @@ test parse_dates::tomorrow_at_noon ... ok
     <div style="background:var(--plg-bg);padding:0">
       <div style="padding:14px 18px;border-bottom:1px solid var(--plg-border);background:var(--plg-panel-raised)">
         <div style="font-size:10px;text-transform:uppercase;letter-spacing:var(--tracking-caps);color:var(--fg-2)">flow</div>
-        <div style="font-size:13px;color:var(--fg-bold)">continue from here · explicit provenance</div>
+        <div style="font-size:13px;color:var(--fg-bold)">continue from here · explicit source</div>
       </div>
       <div style="padding:16px 18px">
         <div style="border:1px solid var(--plg-border);background:var(--plg-panel);padding:14px">
@@ -3442,7 +3442,7 @@ test parse_dates::tomorrow_at_noon ... ok
           <table class="table">
             <tbody>
               <tr><td>parent chain (auto)</td><td>3 msgs · 2.1 k tok</td><td><span class="chip ok">on</span></td></tr>
-              <tr><td>anchor msg + 5 prior</td><td>6 msgs · 4.4 k tok</td><td><span class="chip ok">on</span></td></tr>
+              <tr><td>starting msg + 5 prior</td><td>6 msgs · 4.4 k tok</td><td><span class="chip ok">on</span></td></tr>
               <tr><td>resolved paste hashes</td><td>1 paste (A72F)</td><td><span class="chip ok">on</span></td></tr>
               <tr><td>attachments referenced</td><td>1 file · 312 kB</td><td><span class="chip warn">link only</span></td></tr>
               <tr><td>notes &amp; marks</td><td>1 note</td><td><span class="chip ok">on</span></td></tr>
@@ -3614,7 +3614,7 @@ next_weekday returned today for "next friday" on a Friday…
           <div class="msg">
             <div class="msg-gutter"><span class="role-chip user">USER</span><span class="ord">88</span><span class="time">14:11</span></div>
             <div class="msg-body">
-              <div class="msg-head"><span class="chip ok">canonical</span></div>
+              <div class="msg-head"><span class="chip ok">shown</span></div>
               <div class="msg-text">How many formats can parse_relative try before it gets slow?</div>
             </div>
           </div>
@@ -3790,7 +3790,7 @@ next_weekday returned today for "next friday" on a Friday…
           <p class="body">Locked to <b style="color:var(--fg-bold)">current</b> lane. Click another lane to switch. <span class="kbd" style="font-size:9px">⌥1–4</span> jumps.</p>
         </div>
         <div class="ins-card">
-          <h4>Shared evidence</h4>
+          <h4>Shared items</h4>
           <div class="chip-row">
             <span class="chip paste">paste #A72F · 3 lanes</span>
             <span class="chip attach">3 files in common</span>
@@ -3863,12 +3863,12 @@ next_weekday returned today for "next friday" on a Friday…
 
       <div class="compare-row">
         <div class="side left">
-          <div class="msg-head" style="margin-bottom:6px"><span class="role-chip user">USER</span><span class="chip ok">canonical</span></div>
+          <div class="msg-head" style="margin-bottom:6px"><span class="role-chip user">USER</span><span class="chip ok">shown</span></div>
           <div class="msg-text" style="font-size:12px">Continue from the previous attempt — fix next friday.</div>
         </div>
         <div class="anchor same">same · 0.94</div>
         <div class="side">
-          <div class="msg-head" style="margin-bottom:6px"><span class="role-chip user">USER</span><span class="chip ok">canonical</span></div>
+          <div class="msg-head" style="margin-bottom:6px"><span class="role-chip user">USER</span><span class="chip ok">shown</span></div>
           <div class="msg-text" style="font-size:12px">Continue from the previous attempt — but try a strict mode.</div>
         </div>
       </div>
@@ -4314,7 +4314,7 @@ next_weekday returned today for "next friday" on a Friday…
               <tr><td><span class="kbd">[</span> <span class="kbd">]</span></td><td>prev / next search match</td></tr>
               <tr><td><span class="kbd">f</span></td><td>fold / unfold current</td></tr>
               <tr><td><span class="kbd">F</span></td><td>fold / unfold all</td></tr>
-              <tr><td><span class="kbd">r</span></td><td>open raw / provenance</td></tr>
+              <tr><td><span class="kbd">r</span></td><td>open raw / source</td></tr>
               <tr><td><span class="kbd">l</span></td><td>open lineage context</td></tr>
               <tr><td><span class="kbd">o</span></td><td>toggle outline</td></tr>
             </tbody>
@@ -4417,7 +4417,7 @@ next_weekday returned today for "next friday" on a Friday…
     </div>
     <div class="state-cell">
       <h5><span class="chip attach">attach</span> missing</h5>
-      <p>Provider IDs &amp; refs visible; preview/open disabled w/ exact reason.</p>
+      <p>Provider IDs &amp; refs visible; preview/open disabled w/ the reason.</p>
       <div class="micro-vis">12 attachments · 12 missing local</div>
     </div>
     <div class="state-cell">

@@ -166,7 +166,7 @@ fn serve_client(stream: UnixStream, shared: &Shared) {
             caller,
             parent_deadline_ms,
         } = incoming;
-        let (evidence, channel) =
+        let (details, channel) =
             crate::protocol::caller::peer(&out, &caller).unwrap_or_else(|_| {
                 (
                     Default::default(),
@@ -174,7 +174,7 @@ fn serve_client(stream: UnixStream, shared: &Shared) {
                 )
             });
         let mut accepted =
-            crate::protocol::caller::accept(&d.callers, &evidence, channel, cancellation.clone());
+            crate::protocol::caller::accept(&d.callers, &details, channel, cancellation.clone());
         accepted.parent = parent_deadline_ms.map(|deadline| {
             crate::operation::ParentLifetime::capture(
                 super::execution::limit(Some(deadline), cancellation.clone()).deadline(),
@@ -310,9 +310,9 @@ fn serve_client(stream: UnixStream, shared: &Shared) {
             trusted,
             Default::default(),
         ));
-        let publication = crate::protocol::ReadScopes::single(read_scope);
-        let answer = crate::protocol::scope_answer(answer, &publication);
-        if send_answer(&mut out, &answer, &publication, deadline).is_err() {
+        let scopes = crate::protocol::ReadScopes::single(read_scope);
+        let answer = crate::protocol::scope_answer(answer, &scopes);
+        if send_answer(&mut out, &answer, &scopes, deadline).is_err() {
             return;
         }
     }
@@ -475,7 +475,7 @@ pub struct Server {
     stop: Option<UnixStream>,
     thread: Option<JoinHandle<std::io::Result<()>>>,
     socket: Option<PathBuf>,
-    quiescing: Option<tokio::sync::oneshot::Receiver<()>>,
+    listener_stopped: Option<tokio::sync::oneshot::Receiver<()>>,
     #[cfg(test)]
     wakeups: Arc<std::sync::atomic::AtomicU64>,
 }
@@ -487,7 +487,7 @@ impl Server {
     ) -> std::io::Result<Self> {
         let listener = bind(&daemon)?;
         let (stop, stopped) = UnixStream::pair()?;
-        let (quiesce, quiescing) = tokio::sync::oneshot::channel();
+        let (stopped_sender, listener_stopped) = tokio::sync::oneshot::channel();
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .thread_name("polylogue-socket-timers")
@@ -506,7 +506,7 @@ impl Server {
             stop: Some(stop),
             thread: None,
             socket: Some(daemon.archive.socket()),
-            quiescing: Some(quiescing),
+            listener_stopped: Some(listener_stopped),
             #[cfg(test)]
             wakeups: Arc::clone(&wakeups),
         };
@@ -519,7 +519,7 @@ impl Server {
         server.thread = Some(
             std::thread::Builder::new()
                 .name("polylogue-socket".into())
-                .spawn(move || listen(accept, shared, quiesce))?,
+                .spawn(move || listen(accept, shared, stopped_sender))?,
         );
         Ok(server)
     }
@@ -552,8 +552,10 @@ impl Server {
         result.and(cleanup)
     }
 
-    pub(crate) fn take_quiescing(&mut self) -> std::io::Result<tokio::sync::oneshot::Receiver<()>> {
-        self.quiescing
+    pub(crate) fn take_listener_stopped(
+        &mut self,
+    ) -> std::io::Result<tokio::sync::oneshot::Receiver<()>> {
+        self.listener_stopped
             .take()
             .ok_or_else(|| std::io::Error::other("socket lifecycle already observed"))
     }
@@ -629,7 +631,7 @@ impl Accept {
 fn listen(
     accept: Accept,
     shared: Arc<Shared>,
-    quiesce: tokio::sync::oneshot::Sender<()>,
+    stopped_sender: tokio::sync::oneshot::Sender<()>,
 ) -> std::io::Result<()> {
     let mut failure = None;
     if let Err(error) = accept.listener.set_nonblocking(true) {
@@ -649,9 +651,9 @@ fn listen(
         }
     }
     drop(accept);
-    let _ = quiesce.send(());
+    let _ = stopped_sender.send(());
     // Stop receiving new input while complete queued requests can still receive
-    // their refusal and an accepted write can publish its durable receipt.
+    // their refusal and an accepted write can send its stored result.
     let clients = &shared.clients;
     for (_, stream) in clients.lock().iter() {
         let _ = stream.shutdown(Shutdown::Read);

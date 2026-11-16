@@ -1,9 +1,9 @@
-//! Pure layout and streaming encoders over canonical projected read records.
+//! Pure layout and streaming encoders over projected read records.
 //! The service selects records and prepares relationships; this crate never
 //! reads sources, probes a terminal, or changes archived text.
 //!
-//! The service selects canonical `bundle::Record` values, calls
-//! `model::read::project_record`, and supplies `ProjectionEvidence`.
+//! The service selects the shown `bundle::Record` values, calls
+//! `model::read::project_record`, and supplies `LayoutFacts`.
 //! `visit_record` emits `ReadItem` values to a callback; `layout_record`
 //! collects the same items for one record. Selection, source access, context
 //! membership, grants and tool relationship lookup belong to the service and
@@ -14,9 +14,9 @@
 //! items. There are no filesystem, environment, clock or terminal probes. A
 //! full export releases each source record after writing it. JSON bundle
 //! records pass directly to the bundle writer; layout substitutions never
-//! become canonical source records.
+//! become source records.
 //!
-//! `PageBuilder` holds one bounded page. `push_at` receives the canonical
+//! `PageBuilder` holds one bounded page. `push_at` receives the
 //! record reference and item ordinal separately from the item's displayed
 //! source, because a paired tool call can originate outside the current record.
 //! Its `ItemPlace` is the next unread item or Unicode character position. The
@@ -27,28 +27,28 @@
 //! structured item becomes `read_item_json` fragments. Concatenating their
 //! `text` values reconstructs the complete original text or serialized
 //! `ReadItem`; `from`, `until` and `total` count Unicode characters. Fragment
-//! positions never change a canonical block ordinal. The byte budget includes
+//! positions never change a stored block ordinal. The byte budget includes
 //! the page document. `finish_with` regenerates the footer from the final
 //! unread position, removing trailing items or shortening the first fragment
-//! when follow-up metadata needs more room. The service reserves the outer
-//! transport envelope. A one-token budget still advances by a minimum source
-//! fragment; accessible-empty text remains an item. Mandatory metadata that
+//! when follow-up metadata needs more room. The service reserves room for the
+//! transport's answer metadata. A one-token budget still advances by a minimum
+//! source fragment; accessible-empty text remains an item. Mandatory metadata that
 //! cannot fit without any source content is reported explicitly.
 //!
 //! Expanded tool output keeps its first and last `output_lines` lines (100 by
-//! default), with exact counts for the omitted middle. A line over 4,000
-//! characters is bounded by retained ends. `output_lines: 0` keeps the complete
-//! value. The canonical record always retains the complete result.
-//! Availability, assertions, context omissions, branches and variants retain
+//! default), with counts for the omitted middle. A line over 4,000
+//! characters is bounded by kept ends. `output_lines: 0` keeps the complete
+//! value. The source record always keeps the complete result.
+//! Availability, assertions, context omissions, branches and variants keep
 //! typed value states instead of inventing zero or success.
 //!
 //! Web routes embed `html::document` in the common `web_shell::Frame`.
 //! Standalone HTML exports embed the same shared visual tokens, use system
 //! fonts and contain no scripts. Archived Markdown has raw HTML disabled and
 //! checked link schemes. Store-prepared image bytes are verified against the
-//! canonical blob hash; only supported raster MIME types within the configured
+//! stored blob hash; only supported raster MIME types within the configured
 //! limit are embedded. SVG and HTML remain links. Multiple tool-result
-//! attachments have separate evidence keyed by canonical source reference,
+//! attachments have separate prepared data keyed by source reference,
 //! original block ordinal and attachment position.
 mod encode;
 pub mod html;

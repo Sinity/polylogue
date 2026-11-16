@@ -44,9 +44,9 @@ fn page() -> ReadPage {
                 index: 4,
                 archive: 7,
             },
-            freshness: polylogue_model::currency::ReadFreshness {
-                local: polylogue_model::currency::ReadCompleteness::empty(),
-                owner: IndexCurrency::primary(Some(4), Some(7), Some(1.), Some(true), None),
+            freshness: polylogue_model::freshness::ReadFreshness {
+                local: polylogue_model::freshness::ReadCompleteness::empty(),
+                sinex: IndexFreshness::primary(Some(4), Some(7), Some(1.), Some(true), None),
             },
         },
         records: vec![],
@@ -72,7 +72,7 @@ fn page() -> ReadPage {
     }
 }
 #[test]
-fn typed_page_uses_one_common_frame_and_keeps_read_currency_visible() {
+fn typed_page_shares_the_frame_and_shows_freshness() {
     let table = read_table();
     let request = RunnableRequest::new(
         "read",
@@ -89,7 +89,7 @@ fn typed_page_uses_one_common_frame_and_keeps_read_currency_visible() {
     assert!(output.contains("data-row=\"\""));
     assert!(output.contains("data-state=\"behind\""));
     assert!(output.contains("applied 4"));
-    assert!(output.contains("owner 7"));
+    assert!(output.contains("Sinex 7"));
     assert!(output.contains("polylogue read --request"));
     assert!(output.contains("Read view"));
 }
@@ -129,7 +129,7 @@ fn continuation_links_use_service_calls_instead_of_template_cursor_state() {
 }
 
 #[test]
-fn typed_lineage_issues_keep_unknowns_and_exact_evidence_in_every_encoder() {
+fn typed_lineage_issues_keep_unknowns_and_evidence_in_every_encoder() {
     let mut page = page();
     page.document.items =
         vec![
@@ -138,7 +138,7 @@ fn typed_lineage_issues_keep_unknowns_and_exact_evidence_in_every_encoder() {
             kind: ItemKind::Indicator {
                 indicator: IndicatorKind::LinkIssue,
                 text:
-                    "missing_anchor · parent codex:p · child codex:c · native.<field> · <unknown>"
+                    "missing_branch_point · parent codex:p · child codex:c · native.<field> · <unknown>"
                         .into(),
                 expand: None,
             },
@@ -161,7 +161,7 @@ fn typed_lineage_issues_keep_unknowns_and_exact_evidence_in_every_encoder() {
                     parents: vec![],
                     own_messages: ValueState::known(0),
                     inherited_messages: ValueState::Unknown {
-                        reason: Some("missing anchor".into()),
+                        reason: Some("missing branch point".into()),
                     },
                     own_cost: ValueState::NotRecorded,
                     tree_cost: ValueState::default(),
@@ -194,11 +194,11 @@ fn typed_lineage_issues_keep_unknowns_and_exact_evidence_in_every_encoder() {
     assert!(html.contains("root pending"));
     assert!(html.contains("codex:&lt;missing&gt;"));
     assert!(!html.contains("codex:<missing>"));
-    assert!(html.contains("missing_anchor"));
+    assert!(html.contains("missing_branch_point"));
     assert!(html.contains("native.&lt;field&gt;"));
     assert!(!html.contains("native.<field>"));
     assert!(html.contains("not stored"));
-    assert!(html.contains("missing anchor"));
+    assert!(html.contains("missing branch point"));
     assert!(html.contains("data-state=\"measured\">0</span> own"));
 }
 
@@ -230,7 +230,7 @@ fn url_parameters(url: &str) -> std::collections::BTreeMap<String, String> {
 fn view_switches_use_model_option_acceptance_and_preserve_request_metadata() {
     let request = RunnableRequest {
         deadline: Deadline::Milliseconds(1234),
-        cursor: Some("envelope-old-cursor".into()),
+        cursor: Some("request-old-cursor".into()),
         ..RunnableRequest::new(
             "read",
             json!({"target":"session:test:session","view":"transcript","tools":"headers","harness":"headers","thinking":"full","inherited":true,"branches":true,"cursor":"sealed-old"}),

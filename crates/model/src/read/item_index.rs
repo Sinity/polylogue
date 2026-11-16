@@ -101,7 +101,7 @@ pub struct IndexEntry {
     pub tokens_line: u64,
     /// Estimated tokens of the full form.
     pub tokens_full: u64,
-    /// Lines of a tool result's output, which the head-and-tail fold cuts.
+    /// Lines of a tool result's output, which the head-and-tail cut removes.
     #[serde(default)]
     pub output_lines: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -381,7 +381,7 @@ fn first_string(input: &serde_json::Value) -> String {
 /// the expansion options, and the one rule the pager, the index sums and
 /// layout agree on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FoldProfile {
+pub struct ShowProfile {
     pub view: View,
     pub tools: Expansion,
     pub thinking: Expansion,
@@ -389,7 +389,7 @@ pub struct FoldProfile {
     pub branches: bool,
     pub output_lines: u64,
 }
-impl FoldProfile {
+impl ShowProfile {
     pub fn of(options: &ReadOptions) -> Self {
         Self {
             view: options.view,
@@ -566,7 +566,7 @@ pub struct Segment<'a> {
 /// The shown entries of a composition under one profile. A header counts
 /// only when the profile shows at least one of the message's blocks, or the
 /// view shows headers without blocks (transcript and context).
-pub fn visible_entries(segments: &[Segment<'_>], profile: &FoldProfile) -> RunningSums {
+pub fn visible_entries(segments: &[Segment<'_>], profile: &ShowProfile) -> RunningSums {
     let mut out = RunningSums {
         shown: Vec::new(),
         sums: vec![0],

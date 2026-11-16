@@ -114,7 +114,7 @@ pub(super) fn expression(
 }
 
 impl Compiler<'_> {
-    /// Expressions retain native units: nanodollars and milliseconds.
+    /// Expressions keep stored units: nanodollars and milliseconds.
     pub(super) fn sql_expression(
         &mut self,
         value: &Expression,
@@ -126,7 +126,7 @@ impl Compiler<'_> {
         })
     }
 
-    /// The same expression rules apply to native rows and derived columns.
+    /// The same expression rules apply to unit rows and derived columns.
     pub(super) fn sql_expression_with<F>(
         &mut self,
         value: &Expression,
@@ -461,7 +461,7 @@ impl Compiler<'_> {
             }
             NaturalMatch::Period => {
                 return Err(not_built(
-                    "period matching on derived time values without native period evidence",
+                    "period matching on derived time values without a stored source period",
                 ));
             }
             _ => {}

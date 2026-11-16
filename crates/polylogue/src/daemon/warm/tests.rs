@@ -684,7 +684,7 @@ fn restore_without_vector_demand_never_starts_a_model_reload_per_commit() {
     assert_eq!(
         (loaded.vectors(), loaded.rows_read),
         (7, 7),
-        "one initial demand reads only the final authoritative rows"
+        "one initial demand reads only the final rows"
     );
     assert_eq!(warm.summary().vector_loads, 1);
     let revision = loaded.revision;

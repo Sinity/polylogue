@@ -5,7 +5,7 @@ use polylogue_query::stages::{Stage, StageKind};
 mod order;
 
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct NativeSource {
+pub(super) struct RowSource {
     pub prefix: String,
     pub unit: Unit,
     pub key: String,
@@ -14,7 +14,7 @@ pub(super) struct NativeSource {
 #[derive(Clone)]
 pub(super) struct Relation {
     pub program: Program,
-    pub sources: Vec<NativeSource>,
+    pub sources: Vec<RowSource>,
     pub open_fields: bool,
     /// The step holding the rows, once a stage has read them.
     step: Option<String>,
@@ -28,9 +28,9 @@ struct ConditionScope<'a> {
 
 impl Relation {
     pub fn new(program: Program) -> Self {
-        let sources = program.native_sources.clone().unwrap_or_else(|| {
-            if matches!(program.row_basis, RowBasis::Native { .. }) {
-                vec![NativeSource {
+        let sources = program.row_sources.clone().unwrap_or_else(|| {
+            if matches!(program.row_kind, RowKind::UnitRows { .. }) {
+                vec![RowSource {
                     prefix: String::new(),
                     unit: program.unit,
                     key: "_pk".into(),
@@ -120,7 +120,7 @@ impl Relation {
                 column_sql(self.program.column_slot(&column.name))
             ));
         }
-        // The bound declarations already agree. Convert the captured physical
+        // The bound declarations already agree. Convert the captured stored
         // representation through the existing expression and display units.
         let (value, _) = self.field_on(compiler, &column.name, at, alias)?;
         Ok(Compiler::display_value(&value, output_kind))
@@ -158,7 +158,7 @@ impl Relation {
 struct RelationOutput {
     columns: Vec<Column>,
     slots: std::collections::BTreeMap<String, String>,
-    sources: Vec<NativeSource>,
+    sources: Vec<RowSource>,
     time_text_columns: std::collections::BTreeSet<String>,
 }
 
@@ -185,7 +185,7 @@ type GroupKey = (Column, String, String);
 
 pub(super) fn as_of_unavailable() -> QueryError {
     QueryError::Unavailable {
-        what: "Polylogue does not retain historical query membership at earlier read positions; use evidence_until:TIME to select evidence received by then, read with current parsers and prices".into(),
+        what: "Polylogue does not retain historical query membership at earlier read positions; use seen_by:TIME to select evidence received by then, read with current parsers and prices".into(),
     }
 }
 
@@ -200,14 +200,14 @@ impl<'a> Compiler<'a> {
         };
         let Some(first) = selection.relations_from else {
             let stages = &query.transforms[selection.stages_from..];
-            return self.native_program_with(&selection, stages, preset);
+            return self.unit_rows_program_with(&selection, stages, preset);
         };
         if self.answer
             && selection.stages_from == first
             && !selection.written.iter().any(contains_order)
             && super::search::recent_sort(selection.unit, &query.transforms[first..])
         {
-            return self.native_program_with(&selection, &query.transforms[first..], preset);
+            return self.unit_rows_program_with(&selection, &query.transforms[first..], preset);
         }
         let source_order = match &query.source {
             Source::Unit {
@@ -222,8 +222,8 @@ impl<'a> Compiler<'a> {
         compiler.source_near_allowed = self.source_near_allowed;
         // The stages read the selection's rows whole.
         self.answer = false;
-        let native = &query.transforms[selection.stages_from.min(first)..first];
-        let mut program = self.native_program_with(&selection, native, preset)?;
+        let unit_stages = &query.transforms[selection.stages_from.min(first)..first];
+        let mut program = self.unit_rows_program_with(&selection, unit_stages, preset)?;
         compiler.params = std::mem::take(&mut program.params);
         compiler.near = program.near.clone();
         let relation = Relation::new(program);
@@ -355,7 +355,7 @@ impl<'a> Compiler<'a> {
             .resolved_times
             .extend(self.resolved_times.into_inner());
         relation.program.near = self.near.or(relation.program.near);
-        relation.program.native_sources = Some(relation.sources.clone());
+        relation.program.row_sources = Some(relation.sources.clone());
         Ok(relation.program)
     }
 
@@ -492,7 +492,7 @@ impl<'a> Compiler<'a> {
                         descending: key.descending,
                     });
                 }
-                // An explicit sort is tied by semantic identity, never by an earlier time order.
+                // An explicit sort is tied by row identity, never by an earlier time order.
                 order.extend(relation.identity_order());
                 let sql = format!(
                     "SELECT {} FROM {input} r ORDER BY {}",
@@ -527,7 +527,7 @@ impl<'a> Compiler<'a> {
             TransformKind::Scope { unit, condition } => {
                 self.relation_scope(relation, unit, condition.as_ref(), at)?
             }
-            _ => self.relation_native_stage(relation, stage, query)?,
+            _ => self.relation_unit_rows_stage(relation, stage, query)?,
         }
         if !matches!(
             stage.kind,
@@ -818,7 +818,7 @@ impl Compiler<'_> {
             .iter()
             .map(|key| column_sql(&key.column))
             .collect::<std::collections::BTreeSet<_>>();
-        let projection = columns
+        let select_list = columns
             .iter()
             .map(|column| {
                 let source = if order_columns.contains(column) {
@@ -831,7 +831,7 @@ impl Compiler<'_> {
             .collect::<Vec<_>>()
             .join(", ");
         let sql = format!(
-            "SELECT {projection} FROM ({selected}) selected JOIN {input} r ON {same} ORDER BY {}",
+            "SELECT {select_list} FROM ({selected}) selected JOIN {input} r ON {same} ORDER BY {}",
             relation
                 .program
                 .order
@@ -861,17 +861,17 @@ impl Relation {
             names.insert("_rank".into());
         }
         if self.sources.iter().any(|source| source.prefix.is_empty())
-            && matches!(self.program.row_basis, RowBasis::Native { .. })
+            && matches!(self.program.row_kind, RowKind::UnitRows { .. })
         {
             names.insert("_near".into());
             names.insert("_recency".into());
         }
         names.extend(self.program.order.iter().map(|k| k.column.clone()));
         names.extend(self.sources.iter().map(|s| s.key.clone()));
-        match &self.program.row_basis {
-            RowBasis::Native { columns, .. }
-            | RowBasis::Group { columns }
-            | RowBasis::Distinct { columns } => names.extend(columns.iter().cloned()),
+        match &self.program.row_kind {
+            RowKind::UnitRows { columns, .. }
+            | RowKind::Group { columns }
+            | RowKind::Distinct { columns } => names.extend(columns.iter().cloned()),
             _ => {}
         }
         names
@@ -880,10 +880,10 @@ impl Relation {
             .collect()
     }
     pub(super) fn identity_order(&self) -> Vec<OrderKey> {
-        match &self.program.row_basis {
-            RowBasis::Native { columns, .. }
-            | RowBasis::Group { columns }
-            | RowBasis::Distinct { columns } => columns
+        match &self.program.row_kind {
+            RowKind::UnitRows { columns, .. }
+            | RowKind::Group { columns }
+            | RowKind::Distinct { columns } => columns
                 .iter()
                 .map(|name| OrderKey::ascending(name))
                 .collect(),
@@ -975,7 +975,7 @@ impl Compiler<'_> {
         relation.program.column_slots = slots;
         relation.program.time_text_columns.clear();
         relation.program.order = order;
-        relation.program.row_basis = RowBasis::Group { columns: key_slots };
+        relation.program.row_kind = RowKind::Group { columns: key_slots };
         relation.program.shape = Shape::Groups;
         relation.program.counts_near = false;
         relation.program.ranked = false;
@@ -1020,7 +1020,7 @@ impl Compiler<'_> {
     ) -> Result<(), QueryError> {
         let step = self.input(relation);
         let input = relation.clone();
-        let native = if input.open_fields
+        let unit_rows = if input.open_fields
             && input.sources.len() == 1
             && input.sources[0].prefix.is_empty()
         {
@@ -1031,7 +1031,7 @@ impl Compiler<'_> {
         } else {
             None
         };
-        let input_from = if let Some(context) = &native {
+        let input_from = if let Some(context) = &unit_rows {
             let key = context.a.expand(units::spec(context.unit).key);
             format!(
                 "{} JOIN {step} r ON {key}=r.{}",
@@ -1075,7 +1075,7 @@ impl Compiler<'_> {
             } else {
                 None
             };
-            let values_for_aggregate = if let Some(context) = &native
+            let values_for_aggregate = if let Some(context) = &unit_rows
                 && !aggregate
                     .arguments
                     .iter()
@@ -1136,10 +1136,10 @@ impl Compiler<'_> {
         } else {
             Shape::Summary
         };
-        relation.program.row_basis = if group.is_some() {
-            RowBasis::Group { columns: keys }
+        relation.program.row_kind = if group.is_some() {
+            RowKind::Group { columns: keys }
         } else {
-            RowBasis::Summary
+            RowKind::Summary
         };
         relation.program.counts_near = false;
         relation.program.ranked = false;
@@ -1172,19 +1172,19 @@ impl Compiler<'_> {
 }
 
 impl Compiler<'_> {
-    fn relation_native_stage(
+    fn relation_unit_rows_stage(
         &mut self,
         relation: &mut Relation,
         stage: &Transform,
         _original: &Query,
     ) -> Result<(), QueryError> {
-        if !matches!(relation.program.row_basis, RowBasis::Native { .. })
+        if !matches!(relation.program.row_kind, RowKind::UnitRows { .. })
             || !relation
                 .sources
                 .iter()
                 .any(|source| source.prefix.is_empty())
         {
-            return Err(not_built("this native stage after a change of row grain"));
+            return Err(not_built("this unit stage after a change of row grain"));
         }
         if let TransformKind::Combine {
             how: Combination::Intersect | Combination::Except,
@@ -1229,7 +1229,7 @@ impl Compiler<'_> {
                 _ => None,
             });
         let parent_unit = relation.program.unit;
-        let native = Query {
+        let unit_query = Query {
             source: Source::Unit {
                 unit: relation.program.unit.name().into(),
                 implicit: false,
@@ -1250,12 +1250,13 @@ impl Compiler<'_> {
         compiler.params = std::mem::take(&mut self.params);
         compiler.input_rows = Some(parent_input.rows().to_owned());
         compiler.near = self.near.clone().or(relation.program.near.clone());
-        let Some(selection) = Selection::of(&native, &compiler.binder(), &self.opts.fields)? else {
+        let Some(selection) = Selection::of(&unit_query, &compiler.binder(), &self.opts.fields)?
+        else {
             unreachable!("a unit source");
         };
-        let mut result = compiler.native_program_with(
+        let mut result = compiler.unit_rows_program_with(
             &selection,
-            &native.transforms[selection.stages_from..],
+            &unit_query.transforms[selection.stages_from..],
             None,
         )?;
         if matches!(stage.kind, TransformKind::Matches) {
@@ -1264,7 +1265,7 @@ impl Compiler<'_> {
         self.near = result.near.clone();
         self.params = std::mem::take(&mut result.params);
         if let Some(mut measure) = result.measure.take() {
-            // The preceding relation owns membership and order. The native
+            // The preceding relation decides membership and order. The unit
             // descriptor contributes only the default comparison population.
             measure.selection_sql = relation.program.rows().to_owned();
             measure.everything = false;
@@ -1289,18 +1290,18 @@ impl Compiler<'_> {
         *relation = Relation::new(result);
         if matches!(stage.kind, TransformKind::Matches) {
             if let Some(unit) = pattern_unit {
-                relation.sources.push(NativeSource {
+                relation.sources.push(RowSource {
                     prefix: "step.".into(),
                     unit,
                     key: "_pk".into(),
                 });
-                relation.sources.push(NativeSource {
+                relation.sources.push(RowSource {
                     prefix: "parent.".into(),
                     unit: parent_unit,
                     key: "_match_parent_pk".into(),
                 });
             }
-            relation.program.row_basis = RowBasis::Group {
+            relation.program.row_kind = RowKind::Group {
                 columns: vec!["parent".into(), "match".into(), "position".into()],
             };
             relation.open_fields = true;
@@ -1321,7 +1322,7 @@ impl Compiler<'_> {
         let right_keys = before.identity_order();
         if left_keys.len() != right_keys.len() || left_keys.is_empty() {
             return Err(QueryError::Invalid {
-                message: "diff requires the same semantic row identity on both sides".into(),
+                message: "diff requires the same row identity on both sides".into(),
                 position: at,
             });
         }
@@ -1432,7 +1433,7 @@ impl Compiler<'_> {
             .cloned()
         else {
             return Err(QueryError::Invalid {
-                message: "a related unit requires native source row identity".into(),
+                message: "a related unit requires source row identity".into(),
                 position: at,
             });
         };
@@ -1479,7 +1480,7 @@ impl Compiler<'_> {
         } else {
             return Err(QueryError::Invalid {
                 message: format!(
-                    "{} has no native relation to {}; there is no implicit session association",
+                    "{} has no direct relation to {}; there is no implicit session association",
                     source.unit.name(),
                     target.name()
                 ),

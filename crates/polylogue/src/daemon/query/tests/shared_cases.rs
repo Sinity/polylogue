@@ -51,10 +51,10 @@ impl compiler_cases::Compiler for Product {
         compile_case(&value, vec![])
     }
 }
-/// The fixture's columns asked for as `--fields`, so the native rows stay
+/// The fixture's columns asked for as `--fields`, so the rows stay
 /// the unit's own and page key first.
-struct NativeProduct;
-impl compiler_cases::Compiler for NativeProduct {
+struct PolylogueCompiler;
+impl compiler_cases::Compiler for PolylogueCompiler {
     type Plan = Plan;
     fn compile(&self, value: &Query) -> Result<Plan, Error> {
         compile_case(
@@ -65,7 +65,7 @@ impl compiler_cases::Compiler for NativeProduct {
 }
 fn compile_case(value: &Query, display: Vec<String>) -> Result<Plan, Error> {
     let Source::Unit { unit, .. } = &value.source else {
-        return Err(error("case fixture has no native source unit"));
+        return Err(error("case fixture has no source unit"));
     };
     let options = options(display.clone());
     let catalog = polylogue_query::catalog::catalog(&options.origins);
@@ -105,9 +105,9 @@ fn compile_case(value: &Query, display: Vec<String>) -> Result<Plan, Error> {
         display,
     })
 }
-/// Give each native source the fixture's declared columns through the real
-/// projection stage. Display options belong to the final answer and cannot
-/// request generated matched-row/diff columns from an earlier native source.
+/// Give each source unit the fixture's declared columns through the real
+/// field-selection stage. Display options belong to the final answer and cannot
+/// request generated matched-row/diff columns from an earlier source unit.
 fn project_fixture_sources(
     query: &mut Query,
     catalog: &query_language::catalog::Catalog,
@@ -149,7 +149,7 @@ fn project_fixture_sources(
         ..
     } = &mut query.source
     else {
-        return Err(error("case fixture has no native source unit"));
+        return Err(error("case fixture has no source unit"));
     };
     let requested = if unit == "tool_calls" {
         CHILD_FIELDS
@@ -204,7 +204,7 @@ fn project_fixture_sources(
 }
 
 /// Presence belongs to the fixture schema. Values below always come from the
-/// real query page; clock evidence and order come back through native storage.
+/// real query page; time accuracy and order come back through the fixture store.
 struct Metadata {
     fields: BTreeSet<String>,
     order: i64,
@@ -269,30 +269,27 @@ fn scalar(value: &Value) -> Result<Scalar, Error> {
     } else if value.is_null() {
         Ok(Scalar::Unknown)
     } else {
-        Err(error("native fixture column is not a scalar"))
+        Err(error("fixture store column is not a scalar"))
     }
 }
 
 fn native_id(value: &Value) -> Result<String, Error> {
-    let text = value
-        .as_str()
-        .ok_or_else(|| error("native row has no identity"))?;
-    let native = match polylogue_model::Reference::parse(text) {
+    let text = value.as_str().ok_or_else(|| error("row has no identity"))?;
+    let id = match polylogue_model::Reference::parse(text) {
         Ok(polylogue_model::Reference::Session(session)) => session.to_string(),
         Ok(polylogue_model::Reference::Message(message))
         | Ok(polylogue_model::Reference::Block { message, .. }) => message.to_string(),
         _ => text.to_owned(),
     };
-    native
-        .strip_prefix("claude-code:")
+    id.strip_prefix("claude-code:")
         .map(str::to_owned)
         .ok_or_else(|| error(format!("unexpected fixture identity {text}")))
 }
-/// One reference tick is one second. The native store's clock uses milliseconds.
+/// One reference tick is one second. The fixture store's clock uses milliseconds.
 fn timestamp(tick: i64) -> Result<Timestamp, Error> {
     tick.checked_mul(1000)
         .and_then(Timestamp::from_unix_ms)
-        .ok_or_else(|| error("fixture time is outside the native timestamp range"))
+        .ok_or_else(|| error("fixture time is outside the stored timestamp range"))
 }
 fn time(extent: Option<Extent>) -> Result<(Option<Timestamp>, TimeEvidence), Error> {
     let Some(extent) = extent else {
@@ -311,11 +308,11 @@ fn time(extent: Option<Extent>) -> Result<(Option<Timestamp>, TimeEvidence), Err
         },
     ))
 }
-fn extent(at: Option<Timestamp>, evidence: TimeEvidence) -> Option<Extent> {
+fn extent(at: Option<Timestamp>, accuracy: TimeEvidence) -> Option<Extent> {
     at.map(|at| Extent {
         start: at.unix_ms() / 1000,
-        end: evidence.until.unwrap_or(at).unix_ms() / 1000,
-        coarse: evidence.precision != Some(Precision::Instant),
+        end: accuracy.until.unwrap_or(at).unix_ms() / 1000,
+        coarse: accuracy.precision != Some(Precision::Instant),
     })
 }
 impl Execution {
@@ -326,7 +323,7 @@ impl Execution {
         let mut message_keys = BTreeMap::new();
         for row in &dataset["sessions"] {
             let name = format!("claude-code:{}", row.id);
-            let (at, evidence) = time(row.time)?;
+            let (at, accuracy) = time(row.time)?;
             let session = fixture
                 .session(SessionFacts {
                     id: &name,
@@ -337,7 +334,7 @@ impl Execution {
                     ..Default::default()
                 })
                 .map_err(error)?;
-            fixture.session_time(session, at, evidence).map_err(error)?;
+            fixture.session_time(session, at, accuracy).map_err(error)?;
             sessions.insert(row.id.clone(), session);
             let message = fixture
                 .message(
@@ -353,7 +350,7 @@ impl Execution {
                     },
                 )
                 .map_err(error)?;
-            fixture.message_time(message, at, evidence).map_err(error)?;
+            fixture.message_time(message, at, accuracy).map_err(error)?;
             fixture
                 .usage(
                     message,
@@ -370,7 +367,7 @@ impl Execution {
             let session = if let Some(parent) = &row.parent {
                 sessions[parent]
             } else {
-                // Tool calls still have native custody when the abstract relation
+                // Tool calls still belong to a session when the abstract relation
                 // has no parent. Separate subagents cannot become order neighbours
                 // or extra rows of the outer main-session relation.
                 fixture
@@ -381,7 +378,7 @@ impl Execution {
                     })
                     .map_err(error)?
             };
-            let (at, evidence) = time(row.time)?;
+            let (at, accuracy) = time(row.time)?;
             let message = fixture
                 .message(
                     session,
@@ -395,7 +392,7 @@ impl Execution {
                     },
                 )
                 .map_err(error)?;
-            fixture.message_time(message, at, evidence).map_err(error)?;
+            fixture.message_time(message, at, accuracy).map_err(error)?;
             if let Some(parent) = row
                 .parent
                 .as_ref()
@@ -474,7 +471,7 @@ impl Execution {
                             fields: row.fields.keys().cloned().collect(),
                             order,
                             // No declared clock means no clock in this fixture's
-                            // abstract projection, even if native derivations know more.
+                            // abstract rows, even if Polylogue's derivations know more.
                             time: row.time.and(recorded_time),
                         },
                     );
@@ -562,7 +559,7 @@ impl compiler_cases::Executor<Plan> for Execution {
         fixture: &Dataset,
         request: &PageRequest,
     ) -> Result<compiler_cases::Page, Error> {
-        // Each changed enumeration is installed through the native fixture.
+        // Each changed enumeration is installed through the fixture store.
         // The three page sizes read that same immutable installation.
         if request.cursor.is_none()
             && self
@@ -611,9 +608,9 @@ impl compiler_cases::Executor<Plan> for Execution {
                         .fields
                         .iter()
                         .map(|field| {
-                            let value = value.get(field).ok_or_else(|| {
-                                error(format!("query omitted semantic column {field}"))
-                            })?;
+                            let value = value
+                                .get(field)
+                                .ok_or_else(|| error(format!("query omitted column {field}")))?;
                             Ok((field.clone(), scalar(value)?))
                         })
                         .collect::<Result<_, Error>>()?;
@@ -707,7 +704,7 @@ fn lowering_equals_reference() {
     }
     let mut failures = compiler_cases::check(&Product, &mut Execution::default(), &cases);
     failures.extend(compiler_cases::check(
-        &NativeProduct,
+        &PolylogueCompiler,
         &mut Execution::default(),
         &cases,
     ));

@@ -23,7 +23,7 @@ fn first_key(line: &str) -> &str {
 fn the_hook_writes_exactly_the_line_shapes_the_rollback_fixture_holds() {
     let dir = tempfile::tempdir().unwrap();
     let startup = startup();
-    let native = json!({
+    let observed = json!({
         "boot_id": "synthetic-boot",
         "git_identity": {
             "branch": null,
@@ -47,11 +47,11 @@ fn the_hook_writes_exactly_the_line_shapes_the_rollback_fixture_holds() {
         Harness::ClaudeCode,
         "SessionStart",
         &start,
-        &native,
+        &observed,
         &startup,
     )
     .unwrap();
-    for (harness, event, payload, native) in [
+    for (harness, event, payload, observed) in [
         (
             Harness::Codex,
             "PreToolUse",
@@ -79,7 +79,7 @@ fn the_hook_writes_exactly_the_line_shapes_the_rollback_fixture_holds() {
             json!({}),
         ),
     ] {
-        append_to_spool(dir.path(), harness, event, &payload, &native, &startup).unwrap();
+        append_to_spool(dir.path(), harness, event, &payload, &observed, &startup).unwrap();
     }
     let recorder = EmissionRecorder {
         dir: dir.path(),
@@ -87,7 +87,7 @@ fn the_hook_writes_exactly_the_line_shapes_the_rollback_fixture_holds() {
         event: "SessionStart",
         invocation: Some(&invocation),
         session: session_of(Harness::ClaudeCode, &start, &startup),
-        native: &native,
+        observed: &observed,
         startup: &startup,
     };
     assert!(recorder.emit(&["rollback-delivery".into()], "context", |_, _, _| true));
@@ -120,9 +120,9 @@ fn the_hook_writes_exactly_the_line_shapes_the_rollback_fixture_holds() {
             assert!(value["harness_start"].is_null() || value["harness_start"].is_u64());
             value["harness_start"] = fixture["harness_start"].clone();
         }
-        if let Some(receipt) = value["payload"].get_mut("invocation") {
-            assert_eq!(receipt.as_str(), Some(invocation.as_str()));
-            *receipt = fixture["payload"]["invocation"].clone();
+        if let Some(invocation_value) = value["payload"].get_mut("invocation") {
+            assert_eq!(invocation_value.as_str(), Some(invocation.as_str()));
+            *invocation_value = fixture["payload"]["invocation"].clone();
         }
         assert_eq!(&value, fixture);
     }

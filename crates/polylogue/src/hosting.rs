@@ -13,7 +13,7 @@
 //! connection, after a first line stating the session's status. The host
 //! also writes the session's status changes to the registry spool
 //! (`HostedStatus`, and `HostedEnded` when the agent exits), naming the
-//! agent process it started, which is how the live fold knows the
+//! agent process it started, which is how the live-state update knows the
 //! session's root. It reads no archive and keeps no other state; it exits
 //! when the agent exits, removing its socket and its record.
 //!
@@ -169,7 +169,7 @@ impl Tracker {
         self.word
     }
 
-    fn settle(&mut self) -> Option<&'static str> {
+    fn update_word(&mut self) -> Option<&'static str> {
         let word = if !self.open.is_empty() {
             "blocked"
         } else if self.busy() {
@@ -211,7 +211,7 @@ impl Tracker {
                 }
             }
         }
-        self.settle()
+        self.update_word()
     }
 
     /// A line the agent sent; the new status word if it changed.
@@ -252,7 +252,7 @@ impl Tracker {
                 }
             }
         }
-        self.settle()
+        self.update_word()
     }
 
     /// The agent's requests nobody has answered, oldest first.
@@ -311,9 +311,9 @@ fn status_line(
         payload["boot_id"] = json!(identity.boot);
     }
     let line =
-        crate::live_evidence::line("registry", event, session, jiff::Timestamp::now(), payload);
-    let boot = crate::live_evidence::boot_id().unwrap_or_else(|| "unknown".into());
-    let _ = crate::live_evidence::append(&config.spool, "registry", &boot, &[line]);
+        crate::live_events::line("registry", event, session, jiff::Timestamp::now(), payload);
+    let boot = crate::live_events::boot_id().unwrap_or_else(|| "unknown".into());
+    let _ = crate::live_events::append(&config.spool, "registry", &boot, &[line]);
 }
 
 /// The session a protocol line names, once the agent has said it.
@@ -344,7 +344,7 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()?;
-    let identity = crate::live_evidence::identity(child.id());
+    let identity = crate::live_events::identity(child.id());
     let input = Arc::new(Mutex::new(child.stdin.take().expect("piped stdin")));
     let output = child.stdout.take().expect("piped stdout");
     let relay = Arc::new(Mutex::new(Relay {

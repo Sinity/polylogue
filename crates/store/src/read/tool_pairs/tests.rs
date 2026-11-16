@@ -114,7 +114,7 @@ fn missing_and_orphan_results_never_pair_by_recency_or_cross_session_ids() {
     );
 }
 #[test]
-fn metadata_and_collapsed_evidence_never_read_remote_output_or_structured_data() {
+fn metadata_and_collapsed_view_skip_remote_output_and_data() {
     let mut archive = WriterArchive::new();
     let (call, mut result) = pair("s", 1, "remote output");
     if let Block::ToolResult {
@@ -219,7 +219,7 @@ fn metadata_and_collapsed_evidence_never_read_remote_output_or_structured_data()
     );
 }
 #[test]
-fn exact_call_coordinate_never_hydrates_other_calls_or_their_results() {
+fn call_coordinate_never_hydrates_other_calls_or_their_results() {
     let mut archive = WriterArchive::new();
     let (mut first, result) = pair("s", 1, "selected");
     let (second, other_result) = pair("s", 2, "not selected");
@@ -237,7 +237,7 @@ fn exact_call_coordinate_never_hydrates_other_calls_or_their_results() {
     assert!(reader.message_tool_pair(&first.id, 1).is_err());
 }
 #[test]
-fn sparse_original_ordinals_and_hidden_current_projection_never_fall_back_to_old_bodies() {
+fn hidden_current_blocks_never_fall_back_to_old_bodies() {
     use polylogue_model::{MessageRow, Output, Session, SessionKind, bundle::MessageProjection};
     let mut archive = WriterArchive::new();
     let (call, result) = pair("s", 1, "known fragment");
@@ -262,7 +262,7 @@ fn sparse_original_ordinals_and_hidden_current_projection_never_fall_back_to_old
         ],
         ..Default::default()
     };
-    output.message_projections.insert(
+    output.block_selections.insert(
         0,
         MessageProjection {
             source_version: BlobHash::of(b"partial original call"),
@@ -270,7 +270,7 @@ fn sparse_original_ordinals_and_hidden_current_projection_never_fall_back_to_old
             block_ordinals: vec![call_ordinal],
         },
     );
-    output.message_projections.insert(
+    output.block_selections.insert(
         1,
         MessageProjection {
             source_version: BlobHash::of(b"partial original result"),
@@ -289,7 +289,7 @@ fn sparse_original_ordinals_and_hidden_current_projection_never_fall_back_to_old
     assert_eq!(pair.result.as_ref().unwrap().source.block, Some(7));
     drop(reader);
     let conn = index(&archive);
-    conn.execute("UPDATE message_projection SET layout=?1 WHERE version_pk=(SELECT s.version_pk FROM message_source s JOIN message m ON m.pk=s.message_pk WHERE m.id=?2 AND s.input_pk=m.input_pk AND s.chain=m.source_chain)", params![serde_json::to_vec(&(8u64, vec![6u64])).unwrap(), result.id.to_string()]).unwrap();
+    conn.execute("UPDATE message_block_selection SET layout=?1 WHERE version_pk=(SELECT s.version_pk FROM message_source s JOIN message m ON m.pk=s.message_pk WHERE m.id=?2 AND s.input_pk=m.input_pk AND s.chain=m.source_chain)", params![serde_json::to_vec(&(8u64, vec![6u64])).unwrap(), result.id.to_string()]).unwrap();
     conn.execute(
         "UPDATE block SET body=?1 WHERE message_pk=(SELECT pk FROM message WHERE id=?2)",
         params![vec![255u8], result.id.to_string()],

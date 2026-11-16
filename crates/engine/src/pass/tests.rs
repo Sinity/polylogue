@@ -1,6 +1,6 @@
 mod coverage;
 mod no_sources;
-mod parent_admission;
+mod parent_check;
 mod returning;
 mod scope_lifecycle;
 use super::*;
@@ -9,14 +9,14 @@ use std::io::Read;
 use std::os::unix::fs::{FileExt, MetadataExt};
 
 #[cfg(feature = "faults")]
-mod live_queue;
+mod identical_chains;
 #[cfg(feature = "faults")]
-mod same_bytes;
+mod live_queue;
 #[cfg(feature = "faults")]
 mod standings;
 
 #[test]
-fn confirmed_capture_resumes_in_the_same_engine_without_reacquiring_provider_bytes() {
+fn confirmed_capture_resumes_without_rereading_provider_bytes() {
     for codex in [false, true] {
         let home = ClaudeHome::new();
         let (path, origin, bytes, session) = if codex {
@@ -54,14 +54,14 @@ fn confirmed_capture_resumes_in_the_same_engine_without_reacquiring_provider_byt
         job.at_end = false;
         let mut context = engine.sampling_context(&path, origin.name).unwrap();
         context.facts = Some(now);
-        job.acquisition = Some(context);
+        job.source_read = Some(context);
         let (prepared, done) = crate::pool::run(job, &engine.archive, &engine.blobs, true);
         assert!(done.error.is_none(), "{:?}", done.error);
-        // A cursorless raw attempt is still unsupported before confirmation.
-        engine.apply_raw_result(&mut plan, &done).unwrap();
+        // A byte read without a cursor is still unsupported before confirmation.
+        engine.apply_byte_read_result(&mut plan, &done).unwrap();
         let mut unconfirmed = Pass::default();
         engine
-            .record_raw_status(&plan, done.raw_acquisition.as_ref(), &mut unconfirmed)
+            .record_byte_read_status(&plan, done.source_read.as_ref(), &mut unconfirmed)
             .unwrap();
         assert_eq!(unconfirmed.errors.len(), 1);
         let results = engine
@@ -82,9 +82,9 @@ fn confirmed_capture_resumes_in_the_same_engine_without_reacquiring_provider_byt
                 .get(&path)
                 .is_none_or(|state| state.chain.is_none())
         );
-        // A retired producer cursor is unavailable, while the exact captured
-        // input is now confirmed. Mismatched identity, coordinates and file
-        // evidence must still report the missing continuation proof.
+        // A removed spool cursor is unavailable, while the captured input is
+        // now confirmed. Mismatched identity, coordinates and file facts
+        // must still report the missing continuation check.
         let original_id = plan.input.id.clone();
         let captured_source = |engine: &Engine| {
             let reader = engine.reads.reader().unwrap();
@@ -130,18 +130,18 @@ fn confirmed_capture_resumes_in_the_same_engine_without_reacquiring_provider_byt
         let original_format = plan.input.format.clone();
         let original_facts = plan.facts;
         let original_size = plan.size;
-        let mut not_covered = done.raw_acquisition.clone().unwrap();
+        let mut not_covered = done.source_read.clone().unwrap();
         not_covered.range.end += 1;
         let mut refused = Pass::default();
         engine
-            .record_raw_status(&plan, Some(&not_covered), &mut refused)
+            .record_byte_read_status(&plan, Some(&not_covered), &mut refused)
             .unwrap();
         assert_eq!(refused.errors.len(), 1);
-        let mut no_receipt = Pass::default();
+        let mut no_source_read = Pass::default();
         engine
-            .record_raw_status(&plan, None, &mut no_receipt)
+            .record_byte_read_status(&plan, None, &mut no_source_read)
             .unwrap();
-        assert_eq!(no_receipt.errors.len(), 1);
+        assert_eq!(no_source_read.errors.len(), 1);
         for mismatch in 0..4 {
             match mismatch {
                 0 => plan.input.id = "another-input".into(),
@@ -151,7 +151,7 @@ fn confirmed_capture_resumes_in_the_same_engine_without_reacquiring_provider_byt
             }
             let mut refused = Pass::default();
             engine
-                .record_raw_status(&plan, done.raw_acquisition.as_ref(), &mut refused)
+                .record_byte_read_status(&plan, done.source_read.as_ref(), &mut refused)
                 .unwrap();
             assert_eq!(refused.errors.len(), 1, "{refused:?}");
             plan.input.id = original_id.clone();
@@ -159,30 +159,30 @@ fn confirmed_capture_resumes_in_the_same_engine_without_reacquiring_provider_byt
             plan.facts = original_facts;
             plan.size = original_size;
         }
-        plan.raw.as_mut().unwrap().custody = Some(polylogue_store::primary::RawCustodyReceipt {
-            identity: "unresolved-acquisition".into(),
+        plan.byte_read.as_mut().unwrap().spooled = Some(polylogue_store::primary::SpooledGroup {
+            identity: "unresolved-capture-read".into(),
             count: 1,
         });
         let mut unresolved = Pass::default();
         engine
-            .record_raw_status(&plan, done.raw_acquisition.as_ref(), &mut unresolved)
+            .record_byte_read_status(&plan, done.source_read.as_ref(), &mut unresolved)
             .unwrap();
         assert_eq!(unresolved.errors.len(), 1);
-        plan.raw.as_mut().unwrap().custody = None;
+        plan.byte_read.as_mut().unwrap().spooled = None;
         let mut confirmed = Pass::default();
         engine
-            .record_raw_status(&plan, done.raw_acquisition.as_ref(), &mut confirmed)
+            .record_byte_read_status(&plan, done.source_read.as_ref(), &mut confirmed)
             .unwrap();
         assert!(confirmed.errors.is_empty(), "{confirmed:?}");
         assert!(
             confirmed.capture_pending,
             "confirmed bytes still need their reading"
         );
-        assert!(plan.raw.as_ref().unwrap().cursor.is_none());
+        assert!(plan.byte_read.as_ref().unwrap().cursor.is_none());
         assert_eq!(engine.inputs[&path].stored, done.end);
         assert!(engine.inputs[&path].stored < bytes.len() as u64);
-        // The next ordinary plan reads only the missing suffix from the exact
-        // confirmed prefix. No retired private cursor is fabricated.
+        // The next plan reads only the missing suffix from the confirmed
+        // prefix. No removed spool cursor is made up.
         let mut tail = engine.plan(&path, now).unwrap().unwrap();
         assert_eq!(tail.stored_upto, done.end);
         assert!(matches!(tail.change, Change::Appended { from } if from == done.end));
@@ -190,7 +190,7 @@ fn confirmed_capture_resumes_in_the_same_engine_without_reacquiring_provider_byt
         assert_eq!(job.start, done.end);
         let mut context = engine.sampling_context(&path, origin.name).unwrap();
         context.facts = Some(now);
-        job.acquisition = Some(context);
+        job.source_read = Some(context);
         let (prepared, last) = crate::pool::run(job, &engine.archive, &engine.blobs, true);
         assert!(last.error.is_none(), "{:?}", last.error);
         let results = engine
@@ -200,9 +200,9 @@ fn confirmed_capture_resumes_in_the_same_engine_without_reacquiring_provider_byt
             .store_group(vec![prepared.unwrap()], Arc::clone(&engine.blobs))
             .unwrap();
         assert!(results.into_iter().all(|result| result.is_ok()));
-        // This is a new acquisition after the prefix committed, rather than
+        // This is a new capture read after the prefix committed, rather than
         // another chunk of the original plan. It adds an appended revision in
-        // the same chain, retaining both exact acquired byte ranges.
+        // the same chain, keeping both byte ranges that were read.
         let complete_capture = captured_source(&engine);
         assert_eq!(
             complete_capture,
@@ -245,13 +245,13 @@ fn confirmed_capture_resumes_in_the_same_engine_without_reacquiring_provider_byt
             .messages(&session, false)
             .unwrap();
         assert_eq!(messages.len(), 1);
-        let mut settled = Pass::default();
+        let mut finished = Pass::default();
         engine
-            .record_raw_status(&plan, done.raw_acquisition.as_ref(), &mut settled)
+            .record_byte_read_status(&plan, done.source_read.as_ref(), &mut finished)
             .unwrap();
-        assert!(settled.errors.is_empty(), "{settled:?}");
+        assert!(finished.errors.is_empty(), "{finished:?}");
         assert!(
-            !settled.capture_pending,
+            !finished.capture_pending,
             "a confirmed reading needs no extra pass"
         );
         engine.finish_plan(plan);
@@ -289,7 +289,7 @@ fn confirmed_capture_resumes_in_the_same_engine_without_reacquiring_provider_byt
         assert_eq!(state.unread, facts);
         assert!(
             state.working.is_some(),
-            "later custody is still unconfirmed"
+            "later spooled bytes are still unconfirmed"
         );
         engine
             .inputs
@@ -320,7 +320,7 @@ fn confirmed_capture_resumes_in_the_same_engine_without_reacquiring_provider_byt
         assert_eq!(
             captured_source(&engine),
             complete_capture,
-            "stored parsing and cache refresh cannot acquire another revision or extent"
+            "stored parsing and cache refresh cannot read another revision or extent"
         );
     }
 }
@@ -364,7 +364,7 @@ fn failed_rewrite_then_growth(edit_tail: bool) {
     assert_eq!(
         cached_chain,
         Some(selected),
-        "the next append retains the acknowledged source chain"
+        "the next append keeps the acknowledged source chain"
     );
     let inode = std::fs::metadata(&path).unwrap().ino();
     // Change a stored byte in place so planning selects a rewrite (a touch
@@ -559,7 +559,7 @@ mod capture_only;
 mod live_inputs;
 
 #[test]
-fn confirmed_stopped_readings_settle_only_their_exact_bytes_and_reader() {
+fn confirmed_stop_finishes_only_its_bytes_and_reader() {
     use polylogue_model::batch::StepProgress;
     for progress in [
         StepProgress::Refused {
@@ -615,7 +615,7 @@ fn confirmed_stopped_readings_settle_only_their_exact_bytes_and_reader() {
         engine
             .writer
             .send(polylogue_store::Batch {
-                required_disposition: None,
+                required_outcome: None,
                 input,
                 change: Change::Reparse { chain },
                 observation: None,
@@ -632,7 +632,7 @@ fn confirmed_stopped_readings_settle_only_their_exact_bytes_and_reader() {
         assert!(engine.writer.flush().unwrap().errors.is_empty());
         assert!(
             engine.confirmed_reading(&expected).unwrap(),
-            "confirmed stops settle without reaching source EOF"
+            "confirmed stops finish without reaching source EOF"
         );
         let recorded_attempt = engine.stopped_attempt;
         engine.stopped_attempt.executable = polylogue_model::BlobHash::of(b"changed executable");
@@ -683,7 +683,7 @@ fn idle_loop_turns_do_not_repeat_the_startup_discovery_walk() {
 }
 
 #[test]
-fn a_first_byte_acquisition_failure_has_no_durable_stop_and_retries_after_restart() {
+fn first_byte_read_failure_retries_after_restart() {
     let home = ClaudeHome::new();
     home.append(
         "first-byte.jsonl",
@@ -778,7 +778,7 @@ fn unparseable_stored_input_refused_and_pass_continues() {
     let again = engine.run_pass().unwrap();
     assert!(
         again.errors.is_empty(),
-        "a recorded refusal settles: {again:?}"
+        "a recorded refusal finishes: {again:?}"
     );
 }
 
@@ -786,9 +786,9 @@ fn unparseable_stored_input_refused_and_pass_continues() {
 /// earlier build captured a file this build's declaration no longer lists)
 /// is refused with its reason at its stored length when the index is built
 /// again; it is not read range by range with nothing recorded, and the
-/// refusal settles.
+/// refusal finishes.
 #[test]
-fn a_watched_input_no_parser_reads_is_refused_and_settles() {
+fn unparsed_watched_input_is_refused_and_finishes() {
     let home = ClaudeHome::new();
     home.append("kept.jsonl", &claude_user("k1", "kept", "still indexed"));
     let odd_text = claude_user("o1", "odd", "refused");
@@ -837,7 +837,7 @@ fn a_watched_input_no_parser_reads_is_refused_and_settles() {
     let again = engine.run_pass().unwrap();
     assert!(
         again.errors.is_empty(),
-        "a recorded refusal settles: {again:?}"
+        "a recorded refusal finishes: {again:?}"
     );
     assert_eq!(again.bytes_read, 0);
 }

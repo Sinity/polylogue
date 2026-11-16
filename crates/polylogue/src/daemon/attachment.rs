@@ -1,4 +1,4 @@
-//! Checked attachment bytes through the ordinary application operation.
+//! Checked attachment bytes through the usual application operation.
 use super::service::{Daemon, error, store_error};
 use base64::Engine as _;
 use command_surface::Answer;
@@ -229,10 +229,7 @@ fn inline_page(
     use std::io::{Read, Seek, SeekFrom};
     let result = (|| -> polylogue_store::Result<BytePage> {
         reader.check()?;
-        let hash = resolution
-            .source
-            .blob
-            .expect("selected canonical inline attachment");
+        let hash = resolution.source.blob.expect("selected inline attachment");
         let blobs = reader.blob_reader()?;
         let extent = blobs.extent(&hashed_blobs::Hash(hash.0))?;
         let size = extent.decoded_len;
@@ -251,8 +248,8 @@ fn inline_page(
                 "inline attachment cursor is outside its bytes".into(),
             ));
         }
-        // Initial availability requires the complete physical body, including
-        // an encoded empty body. Continuations retain the exact source/hash;
+        // Initial availability requires the complete stored body, including
+        // an encoded empty body. Continuations keep the same source and hash;
         // each selected range still passes the blob reader's integrity checks.
         if cursor.is_none() || size == 0 {
             blobs.verify_plain::<polylogue_store::StoreError>(

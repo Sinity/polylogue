@@ -182,7 +182,7 @@ fn distinct_near_counts_the_answer_rows_without_vectors() {
     request.embeddings = true;
     request.near = Some(&near);
     let answer = run_q(&w, request).unwrap();
-    // Displaying only origin keeps the eight native session identities.
+    // Displaying only origin keeps the eight session identities.
     assert_eq!(answer["count"], 8, "{answer}");
     assert_eq!(answer["unknown"]["near"], answer["count"], "{answer}");
     let mut limited = ask("kind:* similar:dates | distinct | limit 2");

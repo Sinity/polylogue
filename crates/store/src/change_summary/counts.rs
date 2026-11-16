@@ -1,5 +1,5 @@
 //! The transaction's count and change-stamp contributions, applied once after
-//! selected rows, tool pairing and source claims agree.
+//! selected rows, tool pairing and stated sources agree.
 use super::*;
 use crate::derive::counts::{self, Counts};
 
@@ -33,7 +33,9 @@ impl ChangeSummary {
         };
         let mut changed = self.changed.borrow_mut();
         let change = changed.messages.get_mut(&pk).ok_or_else(|| {
-            crate::StoreError::Invalid("installed message has no transaction owner".into())
+            crate::StoreError::Invalid(
+                "installed message is not in the transaction's changes".into(),
+            )
         })?;
         change.installed = Some(Installed {
             session,
@@ -50,7 +52,7 @@ impl ChangeSummary {
     pub(crate) fn replaced_message(&self, pk: i64) -> Result<()> {
         let mut changed = self.changed.borrow_mut();
         let change = changed.messages.get_mut(&pk).ok_or_else(|| {
-            crate::StoreError::Invalid("changed message has no transaction owner".into())
+            crate::StoreError::Invalid("changed message is not in the transaction's changes".into())
         })?;
         change.installed = None;
         Ok(())
@@ -172,7 +174,7 @@ impl ChangeSummary {
                     .is_some_and(|before| !before.counts_known)
             {
                 // A caller explicitly replaced an unenumerated session. Its
-                // existing whole-session boundary owns the complete fold.
+                // counts are recomputed for the whole session.
                 counts::apply_values(conn, session, &counts::compute(conn, session)?, counter)?;
                 continue;
             }

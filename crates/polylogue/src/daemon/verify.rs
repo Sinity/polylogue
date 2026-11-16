@@ -8,15 +8,15 @@ use std::path::Path;
 use std::sync::Arc;
 
 pub(super) fn run(d: &Daemon, manifest: Option<&Path>) -> Answer<crate::protocol::verify::Answer> {
-    let _lease = match d.idle_admission.background() {
-        Ok(lease) => lease,
+    let _turn = match d.idle_gate.background() {
+        Ok(turn) => turn,
         Err(e) => return store_error(&e),
     };
     let blobs = match d.archive.blobs() {
         Ok(blobs) => Arc::new(blobs),
         Err(e) => return store_error(&e),
     };
-    let mut pace = |release: &dyn Fn()| d.idle_admission.idle_releasing(release);
+    let mut pace = |release: &dyn Fn()| d.idle_gate.idle_releasing(release);
     let found = match manifest {
         None => polylogue_store::verify::verify(&d.reads, &blobs, None, &mut pace),
         Some(path) => {

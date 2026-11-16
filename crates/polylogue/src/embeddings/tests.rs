@@ -15,7 +15,7 @@ mod proxy;
 
 #[test]
 fn provider_consumes_typed_settings_and_captured_credentials() {
-    use polylogue_model::settings::{self, Current, Owner, Snapshot};
+    use polylogue_model::settings::{self, Current, SettingMode, Snapshot};
     let snapshot_with = |provider: &str, endpoint: Option<&str>| {
         Snapshot::new(
             settings::CATALOG
@@ -26,7 +26,7 @@ fn provider_consumes_typed_settings_and_captured_credentials() {
                     kind: spec.kind,
                     default: None,
                     scope: spec.scope,
-                    owner: "polylogue".into(),
+                    supplier: "polylogue".into(),
                     value: settings::current(
                         spec.key,
                         match spec.key {
@@ -34,7 +34,7 @@ fn provider_consumes_typed_settings_and_captured_credentials() {
                             "embed.endpoint" => endpoint,
                             _ => None,
                         },
-                        Owner::Standalone,
+                        SettingMode::Standalone,
                     )
                     .unwrap(),
                     authored: None,

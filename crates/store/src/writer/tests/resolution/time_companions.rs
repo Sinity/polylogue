@@ -1,4 +1,4 @@
-//! Canonical metadata remains distinct from absent and derived clock evidence.
+//! Stored metadata stays distinct from absent and derived clock values.
 use super::*;
 use polylogue_model::{Precision, TimeEvidence, TimeQuality};
 
@@ -46,7 +46,7 @@ fn query_result(
 }
 
 #[test]
-fn native_time_companions_use_evidence_and_keep_missing_relations_distinct() {
+fn time_companions_keep_missing_relations_distinct() {
     let w = test_archive();
     let mut call = text_message(
         "metadata-call",
@@ -107,7 +107,7 @@ fn native_time_companions_use_evidence_and_keep_missing_relations_distinct() {
             },
         )
         .unwrap();
-    for (index, (kind, time, evidence)) in [
+    for (index, (kind, time, accuracy)) in [
         (
             "captured",
             Some(at("2026-10-29T10:30:00Z")),
@@ -151,7 +151,7 @@ fn native_time_companions_use_evidence_and_keep_missing_relations_distinct() {
             range: Some((index as u64 + 3, index as u64 + 4)),
             data: serde_json::json!({"synthetic":kind}),
         };
-        event.set_time(time, evidence).unwrap();
+        event.set_time(time, accuracy).unwrap();
         input.parse[0].output.events.push(event);
     }
     let mut document = polylogue_model::Document::new(
@@ -356,7 +356,7 @@ fn native_time_companions_use_evidence_and_keep_missing_relations_distinct() {
         })),
         "{groups:?}"
     );
-    // Metadata columns use canonical envelopes, independently of body decoders.
+    // Metadata columns use their own stored encoding, independently of body decoders.
     drop(reader);
     drop(pool);
     let connection = crate::archive::open_write(&w.archive.index_db(), 64).unwrap();

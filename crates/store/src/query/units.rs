@@ -98,7 +98,7 @@ impl Hits<'_> {
         format!("{b}.kind IN ({kinds})")
     }
 
-    /// Scope execution starts from eligible block keys, rather than expanding
+    /// Scope execution starts from in-scope block keys, rather than expanding
     /// every global reference to a shared matching text and filtering later.
     fn blocks(&self) -> (Vec<String>, String) {
         let Some((mode, scope)) = self.scope else {
@@ -172,24 +172,24 @@ fn sessions_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
     let (mut ctes, blocks) = h.blocks();
     // Find the owning sessions from the hits, then their subagent ancestors.
     // A session's best own source suffices for every ancestor. UNION over
-    // the owner and retained score/source bounds cycles and shared descendants.
+    // the session and kept score/source bounds cycles and shared descendants.
     // A first build defers the child lookup index, so this query must also
     // work without that index.
     let rows = if h.source {
-        let own = crate::search::best_source("candidates", "owner");
-        let inherited = crate::search::best_source("ancestors", "owner");
+        let own = crate::search::best_source("candidates", "hit_session");
+        let inherited = crate::search::best_source("ancestors", "hit_session");
         format!(
             "{sessions} AS MATERIALIZED (WITH RECURSIVE \
-             candidates AS MATERIALIZED (SELECT xm.session_pk AS owner,xb.pk AS block,xm.at,xm.id AS message,h.rank \
+             candidates AS MATERIALIZED (SELECT xm.session_pk AS hit_session,xb.pk AS block,xm.at,xm.id AS message,h.rank \
                {blocks} \
                CROSS JOIN message xm ON xm.pk=xb.message_pk WHERE {}{} AND {}), \
              owned AS MATERIALIZED ({own}), \
-             ancestors(owner,block,at,message,rank) AS (\
-               SELECT owner,block,at,message,rank FROM owned UNION \
+             ancestors(hit_session,block,at,message,rank) AS (\
+               SELECT hit_session,block,at,message,rank FROM owned UNION \
                SELECT parent.pk,child.block,child.at,child.message,child.rank FROM ancestors child \
-               CROSS JOIN session_link l ON l.child_pk=child.owner AND l.kind='spawn' \
+               CROSS JOIN session_link l ON l.child_pk=child.hit_session AND l.kind='spawn' \
                CROSS JOIN session parent ON parent.id=l.parent_id) \
-             SELECT owner AS session_pk,block,at,rank FROM ({inherited}))",
+             SELECT hit_session AS session_pk,block,at,rank FROM ({inherited}))",
             h.block_kind("xb"),
             h.writer("xm"),
             fields::own_messages("xm", None),
@@ -244,10 +244,10 @@ fn messages_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
         let (mut ctes, blocks) = h.blocks();
         let found = format!("{}_messages", h.cte);
         let sources = format!("{found}_sources");
-        let best = crate::search::best_source(&found, "owner");
+        let best = crate::search::best_source(&found, "hit_message");
         let rows = format!(
             "{found} AS MATERIALIZED (\
-              SELECT xm.pk AS owner,xb.pk AS block,xm.at,xm.id AS message,h.rank \
+              SELECT xm.pk AS hit_message,xb.pk AS block,xm.at,xm.id AS message,h.rank \
               {blocks} \
               CROSS JOIN message xm ON xm.pk=xb.message_pk WHERE {}{})",
             h.block_kind("xb"),
@@ -258,11 +258,20 @@ fn messages_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
             // Membership reads candidates directly. Only ranked answers read
             // the winner window; SQLite can omit it from counts and set stages.
             ctes,
-            condition: format!("{}.pk IN (SELECT owner FROM {found})", a.m),
-            rank: format!("(SELECT rank FROM {sources} h WHERE h.owner={}.pk)", a.m),
+            condition: format!("{}.pk IN (SELECT hit_message FROM {found})", a.m),
+            rank: format!(
+                "(SELECT rank FROM {sources} h WHERE h.hit_message={}.pk)",
+                a.m
+            ),
             source: Some(HitSource {
-                block: format!("(SELECT block FROM {sources} h WHERE h.owner={}.pk)", a.m),
-                at: format!("(SELECT at FROM {sources} h WHERE h.owner={}.pk)", a.m),
+                block: format!(
+                    "(SELECT block FROM {sources} h WHERE h.hit_message={}.pk)",
+                    a.m
+                ),
+                at: format!(
+                    "(SELECT at FROM {sources} h WHERE h.hit_message={}.pk)",
+                    a.m
+                ),
             }),
         });
     }

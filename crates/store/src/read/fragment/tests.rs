@@ -33,7 +33,7 @@ fn record(start: u64, text: &str, total: Option<u64>, version: BlobHash) -> Text
                 end,
             }],
             sources: vec![polylogue_model::bundle::SourceClaim {
-                input: "foreign-input".into(),
+                input: "other-input".into(),
                 source: "provider".into(),
                 source_chain: 7,
                 source_start: Some(400),
@@ -49,15 +49,15 @@ fn record(start: u64, text: &str, total: Option<u64>, version: BlobHash) -> Text
     }
 }
 
-fn capture(w: &mut WriterArchive, input: &str, record: TextFragmentRecord, admitted: Option<u64>) {
-    capture_rows(w, input, record, admitted, false);
+fn capture(w: &mut WriterArchive, input: &str, record: TextFragmentRecord, committed: Option<u64>) {
+    capture_rows(w, input, record, committed, false);
 }
 
 fn capture_rows(
     w: &mut WriterArchive,
     input: &str,
     record: TextFragmentRecord,
-    admitted: Option<u64>,
+    committed: Option<u64>,
     historical: bool,
 ) {
     let mut bytes = serde_json::to_vec(&record).unwrap();
@@ -79,14 +79,14 @@ fn capture_rows(
     raw.parse.clear();
     let blob = w.archive.prepare_bytes(bytes.as_slice()).unwrap();
     let stored = w.writer.store_bytes(blob, raw).unwrap();
-    assert!(!historical || admitted.is_none());
+    assert!(!historical || committed.is_none());
     batch.change = crate::Change::Reparse {
         chain: stored.chain,
     };
     batch.observation = None;
     w.writer.send(batch).unwrap();
     assert!(w.writer.flush().unwrap().errors.is_empty());
-    // Reader fixtures vary retained admission evidence after the ordinary
+    // Reader fixtures vary the kept commit record after the
     // writer has allocated the input and committed its fragment membership.
     if historical {
         crate::archive::open_write(&w.archive.archive_db(), 1)
@@ -94,11 +94,11 @@ fn capture_rows(
             .execute("DELETE FROM extent WHERE input=?1", [input])
             .unwrap();
     }
-    if historical || admitted.is_some() {
+    if historical || committed.is_some() {
         let index = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
         let changed = index.execute(
-            "UPDATE text_fragment_source SET admitted=?2 WHERE input_pk=(SELECT pk FROM input_ref WHERE id=?1)",
-            rusqlite::params![input, admitted.map(|n| i64::try_from(n).unwrap())],
+            "UPDATE text_fragment_source SET committed=?2 WHERE input_pk=(SELECT pk FROM input_ref WHERE id=?1)",
+            rusqlite::params![input, committed.map(|n| i64::try_from(n).unwrap())],
         ).unwrap();
         assert_eq!(changed, 1);
     }
@@ -178,10 +178,10 @@ fn fragment_only_utf8_union_preserves_unknown_outside_and_never_attests_a_full_h
             total_bytes: Some(6)
         }
     );
-    assert_eq!(selected.admitted, Some(150));
+    assert_eq!(selected.committed, Some(150));
     assert!(
         reader
-            .message_with_projection(&source().id)
+            .message_with_block_selection(&source().id)
             .unwrap()
             .is_none()
     );
@@ -207,11 +207,11 @@ fn fragment_only_utf8_union_preserves_unknown_outside_and_never_attests_a_full_h
     assert!(!emitted);
     let mut sources = Vec::new();
     reader
-        .visit_fragment_claims(
+        .visit_stated_fragments(
             &Reference::parse("message:claude-code:s-m").unwrap(),
             None,
-            |claim| {
-                sources.push((claim.input, claim.admitted, claim.record.commit));
+            |fragment| {
+                sources.push((fragment.input, fragment.committed, fragment.record.commit));
                 ControlFlow::Continue(())
             },
         )
@@ -228,7 +228,7 @@ fn fragment_only_utf8_union_preserves_unknown_outside_and_never_attests_a_full_h
 }
 
 #[test]
-fn contradictory_claims_and_versions_remain_exportable_without_selecting_an_arrival_winner() {
+fn contradictory_fragments_stay_exportable() {
     let mut w = WriterArchive::new();
     let version = BlobHash::of(b"version one");
     capture(&mut w, "first", record(0, "hello", Some(5), version), None);
@@ -241,9 +241,9 @@ fn contradictory_claims_and_versions_remain_exportable_without_selecting_an_arri
         read(&reader, None, 0, 5),
         (FragmentAvailability::Ambiguous, String::new())
     );
-    let owner = Reference::parse("message:claude-code:s-m").unwrap();
+    let message = Reference::parse("message:claude-code:s-m").unwrap();
     let first = TextSourceVersion::ContentHash {
-        record: owner.clone(),
+        record: message.clone(),
         hash: version,
     };
     let (availability, text) = read(&reader, Some(&first), 0, 5);
@@ -256,7 +256,7 @@ fn contradictory_claims_and_versions_remain_exportable_without_selecting_an_arri
     );
     assert!(text.is_empty());
     let second = TextSourceVersion::ContentHash {
-        record: owner.clone(),
+        record: message.clone(),
         hash: other,
     };
     assert_eq!(
@@ -266,35 +266,35 @@ fn contradictory_claims_and_versions_remain_exportable_without_selecting_an_arri
             "newer".into()
         )
     );
-    let mut claims = 0;
+    let mut count = 0;
     reader
-        .visit_fragment_claims(&owner, None, |_| {
-            claims += 1;
+        .visit_stated_fragments(&message, None, |_| {
+            count += 1;
             ControlFlow::Continue(())
         })
         .unwrap();
-    assert_eq!(claims, 3);
+    assert_eq!(count, 3);
 }
 
 #[test]
-fn complete_canonical_source_refutes_foreign_claim_without_losing_it_or_its_receipt() {
+fn complete_source_contradicts_a_fragment_and_keeps_it() {
     let mut w = WriterArchive::new();
     let source = source();
     let version = source.content_hash().unwrap();
     capture(
         &mut w,
-        "foreign-fragment",
+        "other-fragment",
         record(0, "WRONG!", Some(6), version),
         Some(130),
     );
     w.write("s", vec![source.clone()]);
-    let owner = Reference::Message(source.id.clone());
-    let expected = FragmentAvailability::Canonical {
+    let message = Reference::Message(source.id.clone());
+    let expected = FragmentAvailability::Shown {
         version: TextSourceVersion::ContentHash {
-            record: owner.clone(),
+            record: message.clone(),
             hash: version,
         },
-        claims: FragmentClaims::Conflict(FragmentConflict::CanonicalSource),
+        agreement: FragmentAgreement::Conflict(FragmentConflict::ShownSource),
     };
     let pool = crate::ReadPool::open(&w.archive).unwrap();
     {
@@ -305,7 +305,7 @@ fn complete_canonical_source_refutes_foreign_claim_without_losing_it_or_its_rece
         );
         assert_eq!(
             reader
-                .message_with_projection(&source.id)
+                .message_with_block_selection(&source.id)
                 .unwrap()
                 .unwrap()
                 .0,
@@ -314,28 +314,28 @@ fn complete_canonical_source_refutes_foreign_claim_without_losing_it_or_its_rece
     }
     crate::archive::open_write(&w.archive.archive_db(), 1)
         .unwrap()
-        .execute("DELETE FROM extent WHERE input='foreign-fragment'", [])
+        .execute("DELETE FROM extent WHERE input='other-fragment'", [])
         .unwrap();
     let reader = pool.reader().unwrap();
     assert_eq!(read(&reader, None, 0, 6), (expected, "héllo".into()));
-    let mut retained = Vec::new();
+    let mut kept = Vec::new();
     reader
-        .visit_fragment_claims(&owner, None, |claim| {
-            retained.push(claim);
+        .visit_stated_fragments(&message, None, |fragment| {
+            kept.push(fragment);
             ControlFlow::Continue(())
         })
         .unwrap();
-    assert_eq!(retained.len(), 1);
-    assert_eq!(retained[0].admitted, Some(130));
-    assert_eq!(retained[0].record.fragment.text, "WRONG!");
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].committed, Some(130));
+    assert_eq!(kept[0].record.fragment.text, "WRONG!");
     assert_eq!(
-        retained[0].record.fragment.provenance.sources[0].input,
-        "foreign-input"
+        kept[0].record.fragment.provenance.sources[0].input,
+        "other-input"
     );
 }
 
 #[test]
-fn sparse_message_metadata_and_complete_text_coverage_do_not_grant_canonical_attestation() {
+fn sparse_metadata_and_full_text_do_not_attest_the_source() {
     let mut w = WriterArchive::new();
     let mut full = source();
     full.blocks.push(Block::ToolCall {
@@ -362,7 +362,7 @@ fn sparse_message_metadata_and_complete_text_coverage_do_not_grant_canonical_att
         }],
         ..Output::default()
     };
-    output.message_projections.insert(
+    output.block_selections.insert(
         0,
         polylogue_model::bundle::MessageProjection {
             source_version: version,
@@ -391,7 +391,7 @@ fn sparse_message_metadata_and_complete_text_coverage_do_not_grant_canonical_att
     ));
     assert_eq!(
         reader
-            .message_with_projection(&full.id)
+            .message_with_block_selection(&full.id)
             .unwrap()
             .unwrap()
             .1
@@ -401,7 +401,7 @@ fn sparse_message_metadata_and_complete_text_coverage_do_not_grant_canonical_att
 }
 
 #[test]
-fn contradictory_totals_conflict_even_when_claim_intervals_are_disjoint() {
+fn contradictory_totals_conflict_for_disjoint_ranges() {
     let mut w = WriterArchive::new();
     let version = BlobHash::of(b"same complete value");
     capture(
@@ -434,24 +434,24 @@ fn complete_source_checks_original_normalization_before_attesting_matching_selec
     let mut w = WriterArchive::new();
     let source = source();
     let version = source.content_hash().unwrap();
-    let mut claim = record(0, "hé", Some(6), version);
-    claim.fragment.provenance.spans[0].reference = Reference::Span {
+    let mut stated = record(0, "hé", Some(6), version);
+    stated.fragment.provenance.spans[0].reference = Reference::Span {
         container: Box::new(Reference::Message(source.id.clone())),
         unit: SpanUnit::CodePoints,
         start: 0,
         end: 3,
     };
-    // The sender claims these three characters normalize to bytes 0..3;
-    // complete text proves they cover bytes 0..4 instead.
-    capture(&mut w, "wrong-normalization", claim, None);
+    // The sender states these three characters normalize to bytes 0..3;
+    // the complete text shows they cover bytes 0..4 instead.
+    capture(&mut w, "wrong-normalization", stated, None);
     w.write("s", vec![source]);
     let pool = crate::ReadPool::open(&w.archive).unwrap();
     let reader = pool.reader().unwrap();
     let (availability, text) = read(&reader, None, 0, 3);
     assert!(matches!(
         availability,
-        FragmentAvailability::Canonical {
-            claims: FragmentClaims::Conflict(FragmentConflict::CanonicalSource),
+        FragmentAvailability::Shown {
+            agreement: FragmentAgreement::Conflict(FragmentConflict::ShownSource),
             ..
         }
     ));
@@ -484,22 +484,22 @@ fn matching_full_document_attests_fragments_without_using_a_message_container() 
             .hash,
     );
     let container = Reference::Document(document.id.clone());
-    let mut claim = record(0, "hé", Some(6), version);
-    claim.fragment.container = container.clone();
-    claim.fragment.source_version = TextSourceVersion::ContentHash {
+    let mut stated = record(0, "hé", Some(6), version);
+    stated.fragment.container = container.clone();
+    stated.fragment.source_version = TextSourceVersion::ContentHash {
         record: container.clone(),
         hash: version,
     };
-    claim.fragment.provenance.spans[0].reference = Reference::Span {
+    stated.fragment.provenance.spans[0].reference = Reference::Span {
         container: Box::new(container.clone()),
         unit: SpanUnit::Bytes,
         start: 0,
         end: 3,
     };
-    claim.reference = claim.fragment.reference().to_string();
-    capture(&mut w, "document-fragment", claim, None);
+    stated.reference = stated.fragment.reference().to_string();
+    capture(&mut w, "document-fragment", stated, None);
     w.write_output(
-        "native-document",
+        "document-input",
         "synthetic-provider",
         "/p/document",
         Output {
@@ -523,8 +523,8 @@ fn matching_full_document_attests_fragments_without_using_a_message_container() 
         .unwrap();
     assert!(matches!(
         available,
-        FragmentAvailability::Canonical {
-            claims: FragmentClaims::Compatible,
+        FragmentAvailability::Shown {
+            agreement: FragmentAgreement::Compatible,
             ..
         }
     ));
@@ -533,12 +533,12 @@ fn matching_full_document_attests_fragments_without_using_a_message_container() 
     let Reference::Document(id) = &container else {
         unreachable!()
     };
-    assert_eq!(selected.admitted, reader.document_commit(id).unwrap());
+    assert_eq!(selected.committed, reader.document_commit(id).unwrap());
     assert_eq!(selected.coverage.total_bytes, Some(6));
 }
 
 #[test]
-fn fragment_selection_keeps_unknown_receipt_instead_of_using_sender_or_read_position() {
+fn unknown_fragment_commit_is_not_guessed() {
     let mut w = WriterArchive::new();
     let version = BlobHash::of(b"unavailable complete source");
     capture(
@@ -569,12 +569,12 @@ fn fragment_selection_keeps_unknown_receipt_instead_of_using_sender_or_read_posi
         FragmentAvailability::Declared { .. }
     ));
     assert_eq!(selected.coverage.total_bytes, Some(5));
-    assert_eq!(selected.admitted, None);
+    assert_eq!(selected.committed, None);
     assert_eq!(read(&reader, None, 0, 5).1, "hello");
 }
 
 #[test]
-fn exact_variant_part_bytes_do_not_borrow_the_earlier_header_admission() {
+fn variant_part_bytes_do_not_borrow_the_header_commit() {
     use polylogue_model::{Variant, VariantEffect, VariantKind, VariantPart, VariantRelation};
     let w = WriterArchive::new();
     let conn = crate::archive::open_write(&w.archive.archive_db(), 1).unwrap();
@@ -635,14 +635,14 @@ fn exact_variant_part_bytes_do_not_borrow_the_earlier_header_admission() {
         .unwrap();
     assert!(matches!(
         selected.availability,
-        FragmentAvailability::Canonical { .. }
+        FragmentAvailability::Shown { .. }
     ));
     assert_eq!(selected.coverage.total_bytes, Some(4));
-    assert_eq!(selected.admitted, None);
+    assert_eq!(selected.committed, None);
 }
 
 #[test]
-fn fragment_claim_ordinal_skips_poisoned_prefix_before_decoding() {
+fn fragment_ordinal_skips_poisoned_prefix() {
     let mut w = WriterArchive::new();
     let version = BlobHash::of(b"complete value");
     capture(
@@ -665,23 +665,25 @@ fn fragment_claim_ordinal_skips_poisoned_prefix_before_decoding() {
     .unwrap();
     let pool = crate::ReadPool::open(&w.archive).unwrap();
     let reader = pool.reader().unwrap();
-    let owner = Reference::parse("message:claude-code:s-m").unwrap();
+    let message = Reference::parse("message:claude-code:s-m").unwrap();
     assert!(
         reader
-            .visit_fragment_claims(&owner, None, |_| ControlFlow::Continue(()))
+            .visit_stated_fragments(&message, None, |_| ControlFlow::Continue(()))
             .is_err()
     );
     let mut found = Vec::new();
     reader
-        .visit_fragment_claims_from_ordinal(&owner, None, 1, |claim| {
-            found.push(claim.record.fragment.text);
+        .visit_stated_fragments_from_ordinal(&message, None, 1, |fragment| {
+            found.push(fragment.record.fragment.text);
             ControlFlow::Break(())
         })
         .unwrap();
     assert_eq!(found, vec!["cd"]);
     for ordinal in [2, u64::MAX] {
         reader
-            .visit_fragment_claims_from_ordinal(&owner, None, ordinal, |_| panic!("past claim end"))
+            .visit_stated_fragments_from_ordinal(&message, None, ordinal, |_| {
+                panic!("past the last fragment")
+            })
             .unwrap();
     }
 }
@@ -697,13 +699,13 @@ fn fragment_text_delivery_stops_successfully_and_preserves_consumer_errors() {
         record(3, "llo", Some(6), version),
         Some(140),
     );
-    let owner = Reference::parse("message:claude-code:s-m").unwrap();
+    let message = Reference::parse("message:claude-code:s-m").unwrap();
     let pool = crate::ReadPool::open(&w.archive).unwrap();
     {
         let reader = pool.reader().unwrap();
         let mut pieces = Vec::new();
         let available = reader
-            .visit_fragment_text(&owner, None, 0, 6, |text| {
+            .visit_fragment_text(&message, None, 0, 6, |text| {
                 pieces.push(text.to_string());
                 Ok(ControlFlow::Break(()))
             })
@@ -711,7 +713,7 @@ fn fragment_text_delivery_stops_successfully_and_preserves_consumer_errors() {
         assert!(matches!(available, FragmentAvailability::Declared { .. }));
         assert_eq!(pieces, vec!["hé"]);
         assert!(
-            matches!(reader.visit_fragment_text(&owner,None,0,6,|_|Err(StoreError::Invalid("consumer refusal".into()))),Err(StoreError::Invalid(reason)) if reason=="consumer refusal")
+            matches!(reader.visit_fragment_text(&message,None,0,6,|_|Err(StoreError::Invalid("consumer refusal".into()))),Err(StoreError::Invalid(reason)) if reason=="consumer refusal")
         );
     }
     let mut full = source();
@@ -723,11 +725,11 @@ fn fragment_text_delivery_stops_successfully_and_preserves_consumer_errors() {
     let reader = pool.reader().unwrap();
     let mut pieces = Vec::new();
     let available = reader
-        .visit_fragment_text(&owner, None, 0, 8, |text| {
+        .visit_fragment_text(&message, None, 0, 8, |text| {
             pieces.push(text.to_string());
             Ok(ControlFlow::Break(()))
         })
         .unwrap();
-    assert!(matches!(available, FragmentAvailability::Canonical { .. }));
+    assert!(matches!(available, FragmentAvailability::Shown { .. }));
     assert_eq!(pieces, vec!["hé"]);
 }

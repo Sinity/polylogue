@@ -372,8 +372,8 @@ fn the_last_page_follows_what_the_session_appends() {
             && status["store"]["search_pending"] == 0
     });
     let envelope: command_surface::RunnableRequest = follow.request;
-    let native = crate::test_daemon::Call::from_request(&envelope);
-    let response = (native).answer(&d.daemon);
+    let call = crate::test_daemon::Call::from_request(&envelope);
+    let response = call.answer(&d.daemon);
     let page: ReadPage = serde_json::from_value(response.value().cloned().unwrap()).unwrap();
     let texts = texts(&page);
     assert_eq!(

@@ -1,11 +1,11 @@
-//! Exact object preparation uses pinned retained evidence.
+//! Object preparation reads pinned stored rows.
 use super::Reader;
 use crate::{ReadScopeToken, Result, StoreError};
 use polylogue_model::{BlobHash, Reference, bundle::Record};
 use std::{io::Write, marker::PhantomData};
 
-/// Store-derived object content and provenance, bound to the preparing Reader.
-/// No wire decoder or public constructor can certify a caller's digest.
+/// Store-derived object content and its source, bound to the preparing Reader.
+/// No wire decoder or public constructor can vouch for a caller's digest.
 pub struct ObjectRead<'read> {
     record: Record,
     digest: BlobHash,
@@ -59,10 +59,10 @@ impl Reader<'_> {
     ) -> Result<ObjectRead<'read>> {
         let record = match reference {
             Reference::Request(id) if !id.is_empty() => match self.authored_record(reference)? {
-                Some(super::authored_evidence::AuthoredReadEvidence::Local { record, .. }) => {
+                Some(super::authored_read::AuthoredRead::Local { record, .. }) => {
                     Record::Authored(record)
                 }
-                Some(super::authored_evidence::AuthoredReadEvidence::Incomplete { issue }) => {
+                Some(super::authored_read::AuthoredRead::Incomplete { issue }) => {
                     return Err(StoreError::ReferenceUnavailable {
                         reference: reference.to_string(),
                         reason: issue.to_string(),
@@ -72,7 +72,7 @@ impl Reader<'_> {
             },
             _ => {
                 return Err(StoreError::Invalid(
-                    "exact object preparation requires a request reference".into(),
+                    "object preparation requires a request reference".into(),
                 ));
             }
         };

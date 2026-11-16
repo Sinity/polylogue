@@ -117,7 +117,7 @@ fn honest_author_forms_round_trip_without_turning_unknowns_into_operator() {
 }
 
 #[test]
-fn conflicting_harness_identity_is_never_promoted_to_operator_or_script() {
+fn conflicting_harness_identity_is_not_operator_or_script() {
     let caller = CallerEvidence {
         ambiguous_harness: true,
         controlling_terminal: true,

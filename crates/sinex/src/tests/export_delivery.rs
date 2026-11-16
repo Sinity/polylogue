@@ -74,7 +74,7 @@ fn prefix(writes: &[ProductWrite]) -> BlobHash {
 }
 
 #[test]
-fn unbound_export_products_are_refused_before_semantic_custody() {
+fn unbound_export_products_are_refused_before_spooling() {
     let root = tempfile::tempdir().unwrap();
     let sinex = client(root.path());
     let key = key(12);
@@ -89,7 +89,7 @@ fn unbound_export_products_are_refused_before_semantic_custody() {
 }
 
 #[test]
-fn export_source_length_and_callback_coordinate_distinguish_native_keys() {
+fn length_and_callback_coordinate_keep_keys_apart() {
     let key = key(12);
     let header = callback(&key, 0, ExportDelivery::seed(), false);
     let item = callback(&key, 1, prefix(&header), false);

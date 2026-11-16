@@ -59,11 +59,11 @@ pub(crate) fn read(id: SessionId, r: &Row<'_>) -> rusqlite::Result<Session> {
     s.git_branch = r.get(4)?;
     s.repo = r.get(5)?;
     s.tool_version = r.get(6)?;
-    let (at, evidence) = crate::encoding::read_time(r, 7)?;
+    let (at, accuracy) = crate::encoding::read_time(r, 7)?;
     s.started = at;
-    s.started_quality = evidence.quality;
-    s.started_precision = evidence.precision;
-    s.started_until = evidence.until;
+    s.started_quality = accuracy.quality;
+    s.started_precision = accuracy.precision;
+    s.started_until = accuracy.until;
     s.mode = r.get(8)?;
     s.git_commit = r.get(9)?;
     s.model_provider = r.get(10)?;

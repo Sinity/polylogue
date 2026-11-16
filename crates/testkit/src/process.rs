@@ -4,7 +4,7 @@ use std::io;
 use std::process::{Child, Command};
 
 /// Spawns a test daemon. On Linux, a forced parent exit also kills the child;
-/// ordinary shutdown still belongs to the caller's kill-and-wait guard.
+/// normal shutdown still belongs to the caller's kill-and-wait guard.
 pub fn spawn_daemon(command: &mut Command) -> io::Result<Child> {
     #[cfg(target_os = "linux")]
     {

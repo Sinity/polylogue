@@ -1,4 +1,4 @@
-//! Bounded user-write admission, with space reserved before a read starts.
+//! Bounded user-write queue, with space reserved before a read starts.
 use super::{USER_QUEUE, UserMsg};
 use crate::read::limit::ReadLimit;
 use crate::{Result, StoreError};
@@ -82,7 +82,7 @@ impl UserQueue {
             return Err(None);
         }
         // Unfinished reads reserve their eventual handoff, not the capacity
-        // ordinary user writes need while those reads are still running.
+        // other user writes need while those reads are still running.
         if state.waiting.len() >= USER_QUEUE {
             return Err(Some(message));
         }
@@ -124,7 +124,7 @@ impl UserQueue {
         next
     }
 
-    /// Closing admission retains every already queued write for the final turn.
+    /// Closing the queue keeps every already queued write for the final turn.
     pub(super) fn close(&self) {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         state.closed = true;

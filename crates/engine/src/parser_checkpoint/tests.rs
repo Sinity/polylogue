@@ -9,7 +9,7 @@ fn fragment(uuid: &str, text: &str) -> String {
 }
 
 #[test]
-fn ordinary_restart_resumes_response_assembly_without_rereading_provider_prefix() {
+fn restart_resumes_response_assembly_without_rereading_provider_prefix() {
     let home = ClaudeHome::new();
     home.append(
         "continuation.jsonl",
@@ -66,7 +66,7 @@ fn job(
     size: u64,
 ) -> crate::pool::Job {
     crate::pool::Job {
-        acquisition: None,
+        source_read: None,
         path: path.to_path_buf(),
         origin,
         input: polylogue_store::InputKey {
@@ -116,7 +116,7 @@ fn missing_same_version_state_defers_parse_while_every_raw_suffix_chunk_commits(
         let (batch, done) = crate::pool::run(first, &engine.archive, &engine.blobs, true);
         assert!(done.error.is_none());
         let mut batch = batch.unwrap();
-        // A retained source reading whose parser control is unavailable.
+        // A stored source reading whose parser control is unavailable.
         batch.batch.parse.last_mut().unwrap().checkpoint = None;
         let result = engine
             .writer
@@ -225,7 +225,7 @@ fn raw_only_capture_keeps_bytes_without_inventing_a_parser_checkpoint_or_replayi
         assert_eq!(rows[0]["n"], 0);
         let completeness = reader.completeness(&crate::reading_contracts()).unwrap();
         assert!(
-            matches!(completeness.parsing, polylogue_model::currency::CompletenessDimension::Incomplete(ref reasons) if reasons.contains(&polylogue_model::currency::CompletenessReason::KnownRawOnly))
+            matches!(completeness.parsing, polylogue_model::freshness::CompletenessDimension::Incomplete(ref reasons) if reasons.contains(&polylogue_model::freshness::CompletenessReason::KnownRawOnly))
         );
         assert_eq!(completeness.raw_only_chains, 1);
         assert!(!completeness.caught_up());
@@ -234,7 +234,7 @@ fn raw_only_capture_keeps_bytes_without_inventing_a_parser_checkpoint_or_replayi
 
 #[test]
 fn declared_registry_keeps_absent_raw_only_origins_valid_and_real_row_dump_versions() {
-    use polylogue_model::currency::CompletenessDimension;
+    use polylogue_model::freshness::CompletenessDimension;
     use polylogue_store::ReadingContract;
     let home = ClaudeHome::new();
     let (engine, _lock) = crate::import::tests::engine(&home, 1024);
@@ -345,7 +345,7 @@ fn a_response_growing_across_resumed_appends_keeps_only_its_latest_context() {
 }
 
 #[test]
-fn restart_reopens_an_evicted_response_and_resolves_its_native_record_alias() {
+fn restart_reopens_evicted_response_and_resolves_its_alias() {
     let home = ClaudeHome::new();
     home.append(
         "keyed.jsonl",
@@ -368,7 +368,7 @@ fn restart_reopens_an_evicted_response_and_resolves_its_native_record_alias() {
     assert!(pass.errors.is_empty(), "{pass:?}");
     assert!(
         pass.bytes_read < prefix,
-        "ordinary restart reread the prefix: {pass:?}"
+        "restart reread the prefix: {pass:?}"
     );
     let reader = engine.reads.reader().unwrap();
     let messages = reader
@@ -386,15 +386,15 @@ fn restart_reopens_an_evicted_response_and_resolves_its_native_record_alias() {
             .text(),
         "first\n\nlast"
     );
-    let native_reference = polylogue_model::Reference::Message(
+    let message_reference = polylogue_model::Reference::Message(
         polylogue_model::MessageId::parse("claude-code:late").unwrap(),
     );
-    let polylogue_model::Reference::Message(id) = &native_reference else {
+    let polylogue_model::Reference::Message(id) = &message_reference else {
         unreachable!()
     };
-    let resolved = reader.message_with_projection(id).unwrap().unwrap().0;
+    let resolved = reader.message_with_block_selection(id).unwrap().unwrap().0;
     assert_eq!(resolved.id.native().as_str(), "first");
-    assert_eq!(native_reference.to_string(), "message:claude-code:late");
+    assert_eq!(message_reference.to_string(), "message:claude-code:late");
     let options = polylogue_store::query::Options {
         clock: query_language::time::Clock::new(
             "2026-11-08T12:00:00Z".parse().unwrap(),
@@ -414,9 +414,9 @@ fn restart_reopens_an_evicted_response_and_resolves_its_native_record_alias() {
         fields: vec!["id".into()],
         provider_catalog: None,
     };
-    // Select the message grain so the row's id names the canonical message.
+    // Select the message grain so the row's id names the resolved message.
     let program =
-        polylogue_store::query::compile(&format!("messages where {native_reference}"), &options)
+        polylogue_store::query::compile(&format!("messages where {message_reference}"), &options)
             .unwrap();
     let rows = reader.query_rows(&program).unwrap();
     assert_eq!(rows.len(), 1);
@@ -440,7 +440,7 @@ fn restart_reopens_an_evicted_response_and_resolves_its_native_record_alias() {
                     valid_until: None,
                     links: vec![polylogue_model::assertion::NewAssertionLink {
                         role: polylogue_model::assertion::LinkRole::About,
-                        reference: native_reference.clone(),
+                        reference: message_reference.clone(),
                     }],
                 }],
             },
@@ -476,14 +476,14 @@ fn restart_reopens_an_evicted_response_and_resolves_its_native_record_alias() {
         .unwrap();
     assert_eq!(
         before, after,
-        "reparse changed an authored request or its native reference"
+        "reparse changed an authored request or its message reference"
     );
     let rows = reader.query_rows(&program).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["id"], "claude-code:first");
     assert_eq!(
         reader
-            .message_with_projection(id)
+            .message_with_block_selection(id)
             .unwrap()
             .unwrap()
             .0
@@ -495,7 +495,7 @@ fn restart_reopens_an_evicted_response_and_resolves_its_native_record_alias() {
 }
 
 #[test]
-fn loss_of_reconstructible_context_replays_stored_bytes_without_changing_message_ownership() {
+fn lost_context_replays_bytes_keeping_message_sessions() {
     let home = ClaudeHome::new();
     home.append(
         "keyed.jsonl",

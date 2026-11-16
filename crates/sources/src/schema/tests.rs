@@ -48,7 +48,7 @@ fn nested_arrays_mixed_types_null_and_missing_have_conditional_parent_counts() {
 }
 
 #[test]
-fn ordinary_names_are_reported_and_identifier_keys_are_grouped_without_values() {
+fn names_are_reported_and_identifier_keys_are_grouped_without_values() {
     let schema = infer(br#"{"mapping":{"alice":{"text":"secret-a"},"550e8400-e29b-41d4-a716-446655440000":{"text":"secret-b"},"0123456789abcdef":{"count":2},"1234567890":null,"2026-10-27T12:00:00Z":true,"/some/path":false}}
 {"mapping":{"bob":{"count":3}}}"#, Framing::Lines);
     assert!(schema.fields.contains_key("/mapping/alice/text"));
@@ -339,7 +339,7 @@ fn nested_json_has_no_fixed_depth_cutoff() {
 mod streaming;
 
 #[test]
-fn row_dump_tables_keep_native_declarations_separate_from_observed_types() {
+fn row_dumps_keep_declared_and_observed_types_apart() {
     let bytes = br#"{"schema":{"empty":"private SQL","a":"private SQL","b":"private SQL"},"table_metadata":{"empty":{"columns":[{"cid":0,"name":"id","declared_type":"INTEGER","not_null":true,"primary_key":1,"hidden":0,"dflt_value":"private default"}],"without_rowid":true}}}
 {"t":"a","r":{"same":1,"1234567890":"private value","nested":{"1234567890":"private nested"}}}
 {"t":"b","r":{"same":"private value"}}

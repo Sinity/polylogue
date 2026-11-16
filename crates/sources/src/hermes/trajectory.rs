@@ -57,16 +57,14 @@ static ROOT: Fields = Fields::new(
         ("trajectory_id", Rule::Read(T::String)),
         (
             "agent",
-            Rule::Kept(
-                "native agent configuration; only name/version/model descriptors are projected",
-            ),
+            Rule::Kept("ATIF agent configuration; only name/version/model descriptors are read"),
         ),
         ("steps", Rule::Read(T::Array)),
         ("subagent_trajectories", Rule::Read(T::Array)),
-        ("notes", Rule::Kept("native annotation")),
+        ("notes", Rule::Kept("ATIF annotation")),
         ("final_metrics", Rule::Read(T::Object)),
         ("continued_trajectory_ref", Rule::Read(T::String)),
-        ("extra", Rule::Kept("native trajectory metadata")),
+        ("extra", Rule::Kept("ATIF trajectory metadata")),
     ],
 );
 static STEP: Fields = Fields::new(
@@ -84,7 +82,7 @@ static STEP: Fields = Fields::new(
         ("metrics", Rule::Read(T::Object)),
         ("llm_call_count", Rule::Read(T::Number)),
         ("is_copied_context", Rule::Read(T::Boolean)),
-        ("extra", Rule::Kept("native step extensions")),
+        ("extra", Rule::Kept("ATIF step extensions")),
     ],
 );
 
@@ -168,9 +166,7 @@ impl ExportParser for Trajectory {
             {
                 Some("ATIF requires agent and steps; original trajectory kept")
             } else if object.parent.is_some() && native.is_none() {
-                Some(
-                    "embedded ATIF trajectory has no native trajectory_id; original trajectory kept",
-                )
+                Some("embedded ATIF trajectory has no trajectory_id; original trajectory kept")
             } else if !unique {
                 Some(
                     "duplicate embedded ATIF trajectory_id; original trajectory kept without a guessed reference",
@@ -272,7 +268,7 @@ impl ExportParser for Trajectory {
             value.get("source").and_then(Json::as_str),
             Some("system" | "user" | "agent")
         ) {
-            limits.push("unrecognized source role remains a native descriptor");
+            limits.push("unrecognized source role remains a source descriptor");
         }
         if let Some(count) = value.get("llm_call_count").filter(|v| !v.is_null()) {
             if count.as_u64().is_none() {
@@ -320,10 +316,10 @@ impl ExportParser for Trajectory {
             .map_err(|e| e.to_string())?,
         );
         let mut document = Document::new(id, DocumentPurpose::Transcript);
-        let (at, evidence) =
+        let (at, accuracy) =
             crate::time::parts(value.get("timestamp").and_then(crate::time::rfc3339));
         document
-            .set_time(at, evidence)
+            .set_time(at, accuracy)
             .expect("decoded source time is valid");
         if value.get("timestamp").is_some_and(|v| !v.is_null()) && document.source_time.is_none() {
             limits.push("ATIF RFC3339 time unreadable; time remains unknown");
@@ -362,19 +358,19 @@ impl ExportParser for Trajectory {
                     &["function_id", "function_name", "parent_id", "parent_name"][..],
                 ),
             ] {
-                if let Some(native) = extra.get(key).filter(|v| v.is_object()) {
-                    document.metadata[key] = selected(native, names);
+                if let Some(object) = extra.get(key).filter(|v| v.is_object()) {
+                    document.metadata[key] = selected(object, names);
                 }
             }
         }
         if let Some(calls) = value.get("tool_calls").and_then(Json::as_array) {
-            let evidence:Vec<_> = calls.iter().filter_map(|call| {
+            let call_ids:Vec<_> = calls.iter().filter_map(|call| {
                 let provider = call.get("extra")?.get("provider_data")?;
                 let ids = selected(provider,&["call_id","response_item_id"]);
                 (!ids.as_object()?.is_empty()).then(||serde_json::json!({"tool_call_id":call.get("tool_call_id"),"provider_data":ids}))
             }).collect();
-            if !evidence.is_empty() {
-                document.metadata["tool_call_evidence"] = Json::Array(evidence);
+            if !call_ids.is_empty() {
+                document.metadata["tool_call_evidence"] = Json::Array(call_ids);
             }
         }
         document.metadata["trajectory"] = descriptors(&facts.fields);

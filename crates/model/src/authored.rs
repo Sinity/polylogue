@@ -1,4 +1,4 @@
-//! Immutable authored effects prepared against one canonical view. Resolution
+//! Immutable authored effects prepared against one confirmed view. Resolution
 //! belongs to the store; transport, replay and bundles carry these same values.
 use crate::user::{
     BackfillEvent, BackfillJob, ChatAction, ChatEvent, Delivery, UserOutcome, UserRequest,
@@ -27,7 +27,7 @@ pub struct ImportAttribution {
     pub at: Timestamp,
 }
 
-/// Locally observed ingress is distinct from claims carried by a bundle.
+/// Imports observed here are kept apart from the history a bundle states.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImportHistory {
     pub observed: Vec<ImportAttribution>,
@@ -35,9 +35,9 @@ pub struct ImportHistory {
 }
 
 impl ImportHistory {
-    /// An observation's identity excludes wall time: the first admitted tuple
+    /// An observation's identity excludes wall time: the first committed tuple
     /// survives a later clock rollback. Sender history remains declared.
-    pub fn merge(&mut self, claims: &[ImportAttribution], current: &ImportAttribution) {
+    pub fn merge(&mut self, stated: &[ImportAttribution], current: &ImportAttribution) {
         if !self.observed.iter().any(|known| {
             known.input == current.input
                 && known.chain == current.chain
@@ -46,9 +46,9 @@ impl ImportHistory {
         }) {
             self.observed.push(current.clone());
         }
-        for claim in claims {
-            if !self.declared.contains(claim) {
-                self.declared.push(claim.clone());
+        for entry in stated {
+            if !self.declared.contains(entry) {
+                self.declared.push(entry.clone());
             }
         }
     }
@@ -62,7 +62,8 @@ pub struct PreparedRequest {
     pub effect: AuthoredEffect,
 }
 
-/// A durable authored operation waiting for confirmation keeps its authority.
+/// An authored operation saved while it waits for confirmation keeps its
+/// original authorization.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case")]
 pub enum PendingAuthored {

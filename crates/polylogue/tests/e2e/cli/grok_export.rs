@@ -5,7 +5,7 @@ use serde_json::json;
 use std::collections::BTreeSet;
 
 #[test]
-fn grok_account_import_reads_exact_turns_without_path_or_export_order_identity() {
+fn grok_account_import_reads_turns_without_path_or_export_order_identity() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
     let archive = dir.path().join("archive");

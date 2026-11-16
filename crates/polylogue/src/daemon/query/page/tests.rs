@@ -187,7 +187,7 @@ fn authenticated_retired_context_and_changed_definitions_refuse_continuation() {
 }
 
 #[test]
-fn definition_order_does_not_retire_the_same_semantic_question() {
+fn definition_order_does_not_retire_the_same_question() {
     let options = options();
     let mut program = polylogue_store::query::compile("sessions", &options).unwrap();
     program.definitions = ["a", "b"]

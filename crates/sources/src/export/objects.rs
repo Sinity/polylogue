@@ -197,7 +197,7 @@ impl<'de, F: FnMut(u64, &str, Option<&str>, Range<u64>, &RawValue) -> Result<(),
         f.write_str("an export collection or explicit null")
     }
     fn visit_unit<E: serde::de::Error>(self) -> Result<Json, E> {
-        // Serde has consumed the literal null. Its four bytes are an exact
+        // Serde has consumed the literal null. Its four bytes are a
         // scalar record, distinct from an absent or empty collection.
         let end = self.scan_state.borrow().position;
         if self.scan_state.borrow().last != Some((end - 1, b'l')) {

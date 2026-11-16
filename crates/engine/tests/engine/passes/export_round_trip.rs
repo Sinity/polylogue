@@ -1,7 +1,7 @@
 //! An export imported into a fresh archive gives the same sessions and IDs,
 //! and the same user state: notes with their revisions, withdrawals and
 //! judgments, settings, kept results, deliveries, chat actions, backfill
-//! jobs, restored as frozen historical effects through the canonical bundle.
+//! jobs, restored as recorded historical effects through the bundle.
 use super::*;
 use polylogue_model::assertion::{
     AssertionKind, AssertionPatch, Change, LinkRole, NewAssertion, NewAssertionLink,
@@ -17,8 +17,8 @@ use polylogue_model::{Author, DeliveryOutcome, Reference, Timestamp};
 use std::io::Write;
 
 /// The user-state tables, row by row, without the write counter, which
-/// counts this archive's own transactions. Execution eligibility is checked
-/// separately: imported chat and backfill histories are historical.
+/// counts this archive's own transactions. Whether an action may run here is
+/// checked separately: imported chat and backfill histories are historical.
 const USER_STATE: &[(&str, &str)] = &[
     ("client_request", "id, content_hash, created_at, request"),
     (
@@ -112,7 +112,7 @@ fn note(kind: AssertionKind, target: &str, revises: Option<String>) -> UserWrite
     }
 }
 
-fn frozen_authored(w: &ClaudeHome) -> Vec<polylogue_model::authored::PreparedRequest> {
+fn stored_authored(w: &ClaudeHome) -> Vec<polylogue_model::authored::PreparedRequest> {
     let mut records = Vec::new();
     w.reads()
         .reader()
@@ -142,17 +142,17 @@ fn export_file(w: &ClaudeHome, sessions: &[&str]) -> std::path::PathBuf {
         }));
         counts.sessions += 1;
         for message in reader.messages(&id, false).unwrap() {
-            let (message, projection) = reader
-                .message_with_projection(&message.id)
+            let (message, block_selection) = reader
+                .message_with_block_selection(&message.id)
                 .unwrap()
                 .unwrap();
             records.push(Record::Message(Box::new(MessageRecord {
                 reference: format!("message:{}", message.id),
-                commit: reader.message_admission(&message.id).unwrap().unwrap(),
+                commit: reader.message_commit(&message.id).unwrap().unwrap(),
                 order: reader.message_order(&message.id).unwrap().unwrap(),
-                source_version: projection.source_version,
-                block_count: projection.block_count,
-                block_ordinals: projection.block_ordinals,
+                source_version: block_selection.source_version,
+                block_count: block_selection.block_count,
+                block_ordinals: block_selection.block_ordinals,
                 injections: Vec::new(),
                 bindings: Vec::new(),
                 copied_for: reader.copied_for(&message.id).unwrap(),
@@ -205,9 +205,9 @@ fn export_file(w: &ClaudeHome, sessions: &[&str]) -> std::path::PathBuf {
             query_text: "synthetic session and authored state".into(),
             ran_at: Timestamp::from_unix_ms(1_790_000_000_000).unwrap(),
             read_at: reader.change_position().unwrap(),
-            freshness: polylogue_model::currency::ReadFreshness {
-                local: polylogue_model::currency::ReadCompleteness::empty(),
-                owner: polylogue_model::currency::IndexCurrency::Standalone,
+            freshness: polylogue_model::freshness::ReadFreshness {
+                local: polylogue_model::freshness::ReadCompleteness::empty(),
+                sinex: polylogue_model::freshness::IndexFreshness::Standalone,
             },
             enabled_variants: Vec::new(),
             author: Author::Operator,
@@ -288,7 +288,7 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
         })],
         reason: Some("superseded".into()),
     });
-    // Authored notes retain their explicit session targets.
+    // Authored notes keep their explicit session targets.
     write_note(
         AssertionKind::Note,
         Author::Operator,
@@ -373,7 +373,7 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
     );
     let original = w.export("claude-code:s1");
     let source_state = user_state(&w);
-    let source_authored = frozen_authored(&w);
+    let source_authored = stored_authored(&w);
     let file = export_file(&w, &["claude-code:s1"]);
 
     let fresh = ClaudeHome::new();
@@ -388,7 +388,7 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
     assert_eq!(back.events, original.events);
     assert_eq!(back.links, original.links);
     assert_eq!(user_state(&fresh), source_state);
-    assert_eq!(frozen_authored(&fresh), source_authored);
+    assert_eq!(stored_authored(&fresh), source_authored);
     assert_eq!(
         fresh.count("SELECT count(*) AS n FROM a.chat_action WHERE execution='historical'"),
         1
@@ -402,21 +402,21 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
     let again = e2.import(std::slice::from_ref(&file)).unwrap();
     assert_eq!(again.user_state.applied, 0, "{again:?}");
     assert_eq!(again.user_state.present, report.user_state.applied);
-    assert_eq!(frozen_authored(&fresh), source_authored);
+    assert_eq!(stored_authored(&fresh), source_authored);
     assert_eq!(user_state(&fresh), source_state);
 }
 
 #[test]
-fn conflicting_fork_statements_survive_canonical_bundle_export_and_import() {
+fn conflicting_forks_survive_bundle_export_and_import() {
     let original = ClaudeHome::new();
     original.append(
         "parent.jsonl",
         &(user("first", "parent", "first") + &user("second", "parent", "second")),
     );
-    for (message, anchor) in [("child-first", "first"), ("child-second", "second")] {
+    for (message, fork_point) in [("child-first", "first"), ("child-second", "second")] {
         let mut record: serde_json::Value =
             serde_json::from_str(&user(message, "child", "own child")).unwrap();
-        record["forkedFrom"] = serde_json::json!({"sessionId":"parent","messageUuid":anchor});
+        record["forkedFrom"] = serde_json::json!({"sessionId":"parent","messageUuid":fork_point});
         original.append("child.jsonl", &format!("{record}\n"));
     }
     let (mut source, _lock) = original.engine(64 << 20);
@@ -522,7 +522,7 @@ fn copied_subset_survives_whole_parent_bundle_and_later_parent_import() {
 }
 
 #[test]
-fn native_copied_file_subset_survives_export_with_whole_parent() {
+fn copied_file_subset_survives_export_with_parent() {
     let original = ClaudeHome::new();
     original.append(
         "parent.jsonl",
@@ -599,11 +599,11 @@ fn later_copy_annotations_preserve_declared_parent_without_expanding_earlier_bun
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
-        let claim = polylogue_model::bundle::CopiedFor {
+        let copied_for = polylogue_model::bundle::CopiedFor {
             parent: SessionId::parse(&format!("claude-code:{declared}")).unwrap(),
             child: SessionId::parse("claude-code:child").unwrap(),
             source: polylogue_model::PrefixSource {
-                input: "supplied-native-reading".into(),
+                input: "supplied-source-reading".into(),
                 chain: 3,
                 reading_version: "copy-reader=1".into(),
             },
@@ -612,10 +612,10 @@ fn later_copy_annotations_preserve_declared_parent_without_expanding_earlier_bun
         for record in &mut records {
             match record {
                 Record::Message(record) if record.message.id.native().as_str() == "shared" => {
-                    record.copied_for = vec![claim.clone()]
+                    record.copied_for = vec![copied_for.clone()]
                 }
                 Record::Session(record) if record.session.id.native().as_str() == "child" => {
-                    record.copied_prefixes = vec![claim.parent.clone()]
+                    record.copied_prefixes = vec![copied_for.parent.clone()]
                 }
                 _ => {}
             }
@@ -642,7 +642,7 @@ fn later_copy_annotations_preserve_declared_parent_without_expanding_earlier_bun
             assert_eq!(expected.1, ["shared", "own"]);
         } else {
             assert!(
-                matches!(expected.0.issues.as_slice(),[polylogue_model::read::ParentIssue::MissingCopiedMessage {parent,..}] if parent==&claim.parent)
+                matches!(expected.0.issues.as_slice(),[polylogue_model::read::ParentIssue::MissingCopiedMessage {parent,..}] if parent==&copied_for.parent)
             );
             assert_eq!(expected.1, ["own"]);
         }
@@ -655,7 +655,7 @@ fn later_copy_annotations_preserve_declared_parent_without_expanding_earlier_bun
                 .copied_for(&id)
                 .unwrap()
                 .as_slice(),
-            std::slice::from_ref(&claim)
+            std::slice::from_ref(&copied_for)
         );
         let portable = export_file(&receiving, &sessions);
         let final_home = ClaudeHome::new();
@@ -671,7 +671,7 @@ fn later_copy_annotations_preserve_declared_parent_without_expanding_earlier_bun
                 .unwrap()
                 .copied_for(&id)
                 .unwrap(),
-            [claim]
+            [copied_for]
         );
     }
 }

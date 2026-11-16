@@ -77,7 +77,7 @@ fn mixed_hook_entries_keep_other_commands_matchers_and_unknown_fields() {
 }
 
 #[test]
-fn unknown_hook_kinds_and_native_json_numbers_survive_setup() {
+fn unknown_hook_kinds_and_json_numbers_survive_setup() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("settings.json");
     let original = r#"{"large":900719925474099312345,"real":1.23456789012345,"hooks":{"Stop":[{"hooks":[{"type":"future","command":"polylogue hook Stop","opaque":null}]}]}}"#;
@@ -130,7 +130,7 @@ fn only_valid_installs_probe_the_version_and_keep_confirmed_events() {
 }
 
 /// Settings as a person wrote them: keys out of order, four-space indents,
-/// a foreign hook beside an event Polylogue also uses, and a number serde
+/// another program's hook beside an event Polylogue also uses, and a number serde
 /// would print differently.
 const HAND_WRITTEN: &str = r#"{
     "zeta": 1.50,
@@ -148,19 +148,19 @@ const HAND_WRITTEN: &str = r#"{
 "#;
 
 #[test]
-fn install_keeps_foreign_entries_byte_for_byte() {
+fn install_keeps_other_entries_byte_for_byte() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("settings.json");
     std::fs::write(&path, HAND_WRITTEN).unwrap();
     install(&path, Harness::ClaudeCode, || None, true).unwrap();
     let installed = std::fs::read_to_string(&path).unwrap();
-    let foreign = r#"            {
+    let other_hook = r#"            {
                 "matcher": "",
                 "hooks": [ { "type": "command", "command": "notify-send done" } ]
             }"#;
     for kept in [
         "{\n    \"zeta\": 1.50,\n    \"hooks\": {\n        \"Stop\": [\n",
-        foreign,
+        other_hook,
         "\"Custom\": []",
         "\n    \"alpha\": \"\\u00e9\"\n}\n",
     ] {

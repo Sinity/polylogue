@@ -2,7 +2,7 @@
 //! session item index (`session`); documents, events, authored records
 //! and query rows are read row by row, resumed by a row's order values.
 //! Session and query pages queue their first-page run without waiting for a write.
-//! Exact request and raw run reads retain the execution before exposing its reference.
+//! Request and raw run reads keep the run before showing its reference.
 use super::{Daemon, Failure, error};
 use command_surface::Answer;
 use polylogue_model::{bundle::ReadSnapshot, read::*};
@@ -12,13 +12,13 @@ use query_language::cursor::OrderPosition;
 use serde_json::Value;
 use std::{collections::BTreeMap, io::Write, num::NonZeroU64, ops::ControlFlow, sync::Arc};
 
-mod attachment_evidence;
+mod attachment_facts;
 mod authored;
 mod backward;
 mod before;
 mod blobs;
 mod documents;
-mod evidence;
+mod layout_facts;
 mod links;
 mod live;
 mod object;
@@ -79,7 +79,7 @@ impl ReadRequest {
             ..ReadOptions::default()
         };
         options
-            .apply_fold(&show, &hide)
+            .apply_show_hide(&show, &hide)
             .map_err(|error| error.to_string())?;
         options.validate().map_err(|error| error.to_string())?;
         Ok(Self {
@@ -409,7 +409,7 @@ fn selected_source(
 struct Rendering<'a> {
     options: &'a ReadOptions,
     near: Option<&'a polylogue_store::selection::NearFn<'a>>,
-    ready_attachment: &'a attachment_evidence::ReadyAttachment<'a>,
+    ready_attachment: &'a attachment_facts::ReadyAttachment<'a>,
     page: bool,
 }
 
@@ -445,14 +445,14 @@ fn visit(
                     && let ReadTarget::Document(id) = &target
                 {
                     let selected = |_: &Source| Ok(false);
-                    let evidence = ProjectionEvidence::default();
-                    let layout = evidence::Layout {
+                    let facts = LayoutFacts::default();
+                    let layout = layout_facts::Layout {
                         options,
-                        evidence: &evidence,
+                        facts: &facts,
                         selected: &selected,
                         ready_attachment: rendering.ready_attachment,
                         backwards: false,
-                        anchor: None,
+                        page_start: None,
                     };
                     let position = start.filter(|start| start.selection.row == row_number);
                     let keep = if let Some(record) =
@@ -489,18 +489,15 @@ fn visit(
                     &target,
                     options.inherited,
                     record_start.as_ref(),
-                    &mut |record, mut evidence, record_position| {
+                    &mut |record, mut facts, record_position| {
                         if options.view == View::Live
-                            && let records::SelectedRecord::Canonical(canonical) = &record
-                            && let polylogue_model::bundle::Record::Session(row) =
-                                canonical.as_ref()
+                            && let records::SelectedRecord::Original(original) = &record
+                            && let polylogue_model::bundle::Record::Session(row) = original.as_ref()
                         {
                             let now = selection.cursor_context().clock.now.as_millisecond();
-                            evidence.cards.push(live::card(
-                                reader,
-                                &row.session.id.to_string(),
-                                now,
-                            )?);
+                            facts
+                                .cards
+                                .push(live::card(reader, &row.session.id.to_string(), now)?);
                         }
                         polylogue_store::read::limit::ReadLimit::set_stage("read layout");
                         let at = SelectionLocator {
@@ -516,21 +513,20 @@ fn visit(
                             }
                             pending = None;
                         }
-                        let Some(record) =
-                            output::project(record, options, &evidence, mixed, footer)?
+                        let Some(record) = output::project(record, options, &facts, mixed, footer)?
                         else {
                             return Ok(true);
                         };
                         let selected = |source: &Source| {
                             selected_source(reader, selection, Some(&target), options, near, source)
                         };
-                        let layout = evidence::Layout {
+                        let layout = layout_facts::Layout {
                             options,
-                            evidence: &evidence,
+                            facts: &facts,
                             selected: &selected,
                             ready_attachment: rendering.ready_attachment,
                             backwards: false,
-                            anchor: start
+                            page_start: start
                                 .filter(|start| start.selection == at)
                                 .map(|start| start.item),
                         };
@@ -874,9 +870,9 @@ pub(crate) fn page(
     }
 }
 
-/// The base row number of a backward page's anchor row: rows before it count
+/// The base row number of a backward page's start row: rows before it count
 /// down from here, so every row of the page has its own number.
-const BACKWARD_ANCHOR_ROW: u64 = 1 << 32;
+const BACKWARD_START_ROW: u64 = 1 << 32;
 
 fn rows_page(
     reader: &Reader<'_>,
@@ -901,8 +897,8 @@ fn rows_page(
                 ));
             }
             match opened.position {
-                PagePosition::Record { anchor_row, place } => {
-                    Ok::<_, Failure>((anchor_row, place, opened.direction))
+                PagePosition::Record { start_row, place } => {
+                    Ok::<_, Failure>((start_row, place, opened.direction))
                 }
                 PagePosition::Entry { .. } | PagePosition::Links { .. } => Err(Failure::new(
                     "invalid_query",
@@ -944,21 +940,21 @@ fn rows_page(
             let backwards = opened
                 .as_ref()
                 .is_some_and(|(_, _, direction)| *direction == ReadDirection::Before);
-            // The anchor place, numbered as this page numbers its rows.
-            let anchor = opened.as_ref().map(|(_, place, _)| {
+            // The start place, numbered as this page numbers its rows.
+            let page_start = opened.as_ref().map(|(_, place, _)| {
                 let mut place = *place;
-                place.selection.row = if backwards { BACKWARD_ANCHOR_ROW } else { 0 };
+                place.selection.row = if backwards { BACKWARD_START_ROW } else { 0 };
                 place
             });
             let mut pager = if backwards {
                 PageBuilder::new_before(
                     header,
                     budget,
-                    anchor.expect("Before has an anchor"),
+                    page_start.expect("Before has a page start"),
                     framing,
                 )
             } else {
-                PageBuilder::new(header, budget, anchor, framing)
+                PageBuilder::new(header, budget, page_start, framing)
             }
             .map_err(page_error)?;
             let mut footer = ReadFooter::default();
@@ -978,14 +974,14 @@ fn rows_page(
                     .map_err(page_error)?
                     != Push::Full)
             };
-            let anchor_row = opened.as_ref().and_then(|(row, _, _)| row.clone());
+            let start_row = opened.as_ref().and_then(|(row, _, _)| row.clone());
             if backwards {
                 before::visit(
                     reader,
                     selection,
                     &rendering,
-                    anchor.expect("Before has an anchor"),
-                    anchor_row.as_ref(),
+                    page_start.expect("Before has a page start"),
+                    start_row.as_ref(),
                     &mut rows,
                     &mut footer,
                     &mut emit,
@@ -995,7 +991,7 @@ fn rows_page(
                     reader,
                     selection,
                     &rendering,
-                    anchor_row.as_ref().zip(anchor),
+                    start_row.as_ref().zip(page_start),
                     &mut rows,
                     &mut footer,
                     &mut emit,
@@ -1004,7 +1000,7 @@ fn rows_page(
             scope.check()?;
             polylogue_store::read::limit::ReadLimit::set_stage("read page footer");
             let upper = pager.upper_position().copied();
-            // A backward page numbers its rows down from the anchor; its
+            // A backward page numbers its rows down from the page start; its
             // fragments are renumbered from the page's first row, as a forward
             // page numbers them, so the same row gives the same positions.
             let first_row = backwards
@@ -1020,7 +1016,7 @@ fn rows_page(
                     variants: reading.options.variants.clone(),
                     versions: PageCursor::version(&[]),
                     position: PagePosition::Record {
-                        anchor_row: row,
+                        start_row: row,
                         place,
                     },
                     direction,
@@ -1040,8 +1036,8 @@ fn rows_page(
                         footer.next = position
                             .map(|position| seal(position, ReadDirection::After))
                             .transpose()?;
-                        footer.previous = anchor
-                            .map(|anchor| seal(&anchor, ReadDirection::Before))
+                        footer.previous = page_start
+                            .map(|page_start| seal(&page_start, ReadDirection::Before))
                             .transpose()?;
                     }
                     Ok(footer)

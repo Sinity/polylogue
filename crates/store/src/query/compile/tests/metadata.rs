@@ -31,7 +31,7 @@ fn output_schema_uses_shared_bucket_names_types_and_closed_values() {
 }
 
 #[test]
-fn matches_declarations_follow_actual_producer_columns_and_replay_frozen_saved_bodies() {
+fn matches_declarations_follow_the_producer_columns() {
     for text in [
         "sessions where exists tool_calls() | matches",
         "sessions where seq(action:shell -> outcome:error) | matches",
@@ -162,7 +162,7 @@ fn matches_declarations_follow_actual_producer_columns_and_replay_frozen_saved_b
 }
 
 #[test]
-fn frozen_saved_semantic_scope_preserves_native_fields_and_refuses_forged_declarations() {
+fn saved_scope_keeps_fields_and_refuses_forgery() {
     let mut options = opts(&[
         ("failing", "tool_calls where outcome:error"),
         ("grouped", "tool_calls | group by action | count"),
@@ -336,7 +336,7 @@ fn forwarded_saved_conditions_keep_suffixes_defaults_and_reject_cycles() {
 }
 
 #[test]
-fn canonical_replay_recovers_kept_declarations_and_lowers_matching() {
+fn replay_recovers_kept_declarations_and_lowers_matching() {
     use polylogue_model::kept::OutputMetadata;
     let mut options = opts(&[]);
     let columns = vec![
@@ -367,10 +367,10 @@ fn canonical_replay_recovers_kept_declarations_and_lowers_matching() {
         polylogue_query::plan::prepare("result:kept", &options.bindings(), |_| Ok(())).unwrap();
     let mut bindings = options.bindings();
     bindings
-        .add_saved("retained", &base, "retained-revision", "retained-root")
+        .add_saved("kept", &base, "kept-revision", "kept-root")
         .unwrap();
     options.saved = bindings.saved;
-    for source in ["result:kept", "query:retained"] {
+    for source in ["result:kept", "query:kept"] {
         for field in ["body", "payload"] {
             let text = format!("{source} | where {field}:needle");
             let plan =
@@ -410,7 +410,7 @@ fn match_parent_text_alias_keeps_explicit_absence_of_reference_metadata() {
 }
 
 #[test]
-fn reference_targets_agree_between_catalog_native_columns_and_projections() {
+fn catalog_and_compiled_reference_targets_agree() {
     use query_language::catalog::FieldKind;
     let options = opts(&[]);
     let catalog = options.catalog();
@@ -444,8 +444,8 @@ fn reference_targets_agree_between_catalog_native_columns_and_projections() {
             Some(reference.unit()),
             "{unit}.{name}"
         );
-        let native = compile(unit, &options).unwrap();
-        let emitted = native.columns.iter().find(|column| column.name == name);
+        let compiled = compile(unit, &options).unwrap();
+        let emitted = compiled.columns.iter().find(|column| column.name == name);
         assert_eq!(emitted.is_some(), default_column, "{unit}.{name}");
         if let Some(column) = emitted {
             assert_eq!(column.reference, Some(reference), "{unit}.{name}");
@@ -503,7 +503,7 @@ fn reference_targets_agree_between_catalog_native_columns_and_projections() {
 }
 
 #[test]
-fn reference_containers_and_unconstrained_ids_keep_their_physical_shapes() {
+fn reference_containers_and_free_ids_keep_their_stored_shapes() {
     use query_language::catalog::FieldKind;
     let options = opts(&[]);
     let catalog = options.catalog();

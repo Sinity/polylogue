@@ -1,11 +1,11 @@
-use super::stored_text::{native, with_source};
+use super::stored_text::{source_record, with_source};
 use super::*;
 use serde_json::json;
 
 const PREFIX: &str = "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty";
 
 #[test]
-fn snippets_shorten_exact_private_key_shaped_source_and_keep_match_offsets() {
+fn snippets_shorten_private_key_shaped_source_and_keep_match_offsets() {
     run("wholeprobe", false, false);
 }
 #[test]
@@ -13,7 +13,7 @@ fn snippets_do_not_rewrite_matches_after_an_earlier_private_key_header() {
     run("prefixprobe", true, false);
 }
 #[test]
-fn output_snippets_preserve_exact_tool_result_matches() {
+fn output_snippets_preserve_tool_result_matches() {
     run("outputprobe", true, true);
 }
 fn run(term: &str, earlier: bool, output: bool) {
@@ -22,13 +22,13 @@ fn run(term: &str, earlier: bool, output: bool) {
     );
     let mut records = Vec::new();
     if earlier {
-        records.push(native(
+        records.push(source_record(
             "earlier",
             "assistant",
             json!("-----BEGIN PRIVATE KEY----- private header"),
         ));
     }
-    records.push(native(
+    records.push(source_record(
         "matched",
         "user",
         if output {

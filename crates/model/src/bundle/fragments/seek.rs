@@ -1,5 +1,5 @@
-//! Native text coordinates retained in an acknowledged read execution. These
-//! are seek instructions, not copied text or proof of a complete source hash.
+//! Source text coordinates kept in an acknowledged read execution. These are
+//! seek instructions, not copied text or a check of a complete source hash.
 use super::{TextCoverage, TextFragmentError};
 use crate::Reference;
 use serde::{Deserialize, Serialize};
@@ -47,7 +47,7 @@ pub struct NativeSpanSeek {
     pub end: NativeTextPosition,
 }
 impl NativeSpanSeek {
-    /// Shape checks only. The Reader validates actual fields and boundaries;
+    /// Shape checks only. The Reader validates the fields and boundaries;
     /// the acknowledged Run binds the global resolved coordinate mapping.
     pub fn validate(
         &self,
@@ -103,8 +103,8 @@ impl NativeSpanSeek {
         {
             return Err(TextFragmentError::Origin);
         }
-        let start = native_order(self.start.piece);
-        let end = native_order(self.end.piece);
+        let start = piece_order(self.start.piece);
+        let end = piece_order(self.end.piece);
         if start > end || (start == end && self.start.piece != self.end.piece) {
             return Err(TextFragmentError::Origin);
         }
@@ -112,7 +112,7 @@ impl NativeSpanSeek {
     }
 }
 
-fn native_order(piece: NativeTextPiece) -> (u64, u8) {
+fn piece_order(piece: NativeTextPiece) -> (u64, u8) {
     match piece {
         NativeTextPiece::Body { body } => (body.block, 0),
         NativeTextPiece::Separator { before, .. } => (before.block, 1),

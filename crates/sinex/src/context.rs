@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 #[derive(Clone, Serialize, schemars::JsonSchema)]
 pub struct ResolvedContext {
     pub settings_identity: String,
-    pub owner_revision: u64,
+    pub settings_revision: u64,
     pub day: query_language::time::DaySetting,
     pub quiet_hours: Option<shared_signals::QuietHours>,
     pub interrupt_budget: sinex_protocol::PublicInterruptBudget,
@@ -20,7 +20,7 @@ impl std::fmt::Debug for ResolvedContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ResolvedContext")
             .field("settings_identity", &self.settings_identity)
-            .field("owner_revision", &self.owner_revision)
+            .field("settings_revision", &self.settings_revision)
             .field("day", &self.day)
             .field("quiet_hours", &self.quiet_hours)
             .field("interrupt_budget", &self.interrupt_budget)
@@ -108,7 +108,7 @@ impl Cache {
                 "Sinex public context has not been observed",
             )
         })?;
-        let (settings_identity, owner_revision, day, quiet_hours, interrupt_budget, observed_at) =
+        let (settings_identity, settings_revision, day, quiet_hours, interrupt_budget, observed_at) =
             match reply {
                 PublicContext::Pending { reason } => {
                     return Err(self.failure(ContextFailureKind::Pending, reason.clone()));
@@ -121,14 +121,14 @@ impl Cache {
                 }
                 PublicContext::Available {
                     settings_identity,
-                    owner_revision,
+                    owner_revision: settings_revision,
                     day,
                     quiet_hours,
                     interrupt_budget,
                     observed_at,
                 } => (
                     settings_identity,
-                    owner_revision,
+                    settings_revision,
                     day,
                     quiet_hours,
                     interrupt_budget,
@@ -144,7 +144,7 @@ impl Cache {
                     "Sinex public context has no observation age",
                 )
             })?;
-        if age > polylogue_model::currency::OWNER_OBSERVATION_SECONDS {
+        if age > polylogue_model::freshness::SINEX_OBSERVATION_MAX_AGE_SECONDS {
             return Err(self.failure(
                 ContextFailureKind::Stale,
                 "Sinex public context observation is stale",
@@ -153,7 +153,7 @@ impl Cache {
         if !valid(settings_identity, quiet_hours.as_ref(), interrupt_budget) {
             return Err(self.failure(
                 ContextFailureKind::Invalid,
-                "Sinex public context contains invalid policy evidence",
+                "Sinex public context contains invalid policy values",
             ));
         }
         let zone = resolve_zone(&day.zone)
@@ -164,7 +164,7 @@ impl Cache {
             .map_err(|error| self.failure(ContextFailureKind::Invalid, error.to_string()))?;
         Ok(ResolvedContext {
             settings_identity: settings_identity.clone(),
-            owner_revision: *owner_revision,
+            settings_revision: *settings_revision,
             day,
             quiet_hours: *quiet_hours,
             interrupt_budget: interrupt_budget.clone(),
@@ -186,7 +186,7 @@ fn valid(
 }
 
 impl Sinex {
-    /// Reads the last observed owner context. No network request or local
+    /// Reads the last observed Sinex context. No network request or local
     /// deployment setting participates in this operation.
     pub fn context(
         &self,

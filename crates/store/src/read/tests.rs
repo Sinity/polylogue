@@ -59,7 +59,7 @@ fn concurrent_readers_wait_at_the_cap_and_reuse_released_connections() {
     let state = pool.state.lock().unwrap();
     assert_eq!(state.live, 2);
     assert_eq!(state.idle.len(), 2);
-    assert!(state.owners.is_empty());
+    assert!(state.holders.is_empty());
 }
 
 #[test]
@@ -99,7 +99,7 @@ fn nested_readers_are_allowed_but_self_exhaustion_refuses() {
     let third = pool.reader().unwrap();
     third.status().unwrap();
     drop((second, third));
-    assert!(pool.state.lock().unwrap().owners.is_empty());
+    assert!(pool.state.lock().unwrap().holders.is_empty());
 }
 
 #[test]
@@ -137,7 +137,7 @@ fn open_and_begin_failures_release_the_slot_for_waiters() {
         let state = pool.state.lock().unwrap();
         assert_eq!(state.live, 1);
         assert_eq!(state.idle.len(), 1);
-        assert!(state.owners.is_empty());
+        assert!(state.holders.is_empty());
     }
 }
 
@@ -168,7 +168,7 @@ fn close_while_connecting_refuses_the_pending_reader_and_releases_its_slot() {
     let state = pool.state.lock().unwrap();
     assert_eq!(state.live, 0);
     assert!(state.idle.is_empty());
-    assert!(state.owners.is_empty());
+    assert!(state.holders.is_empty());
 }
 
 #[test]

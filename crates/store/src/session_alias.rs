@@ -19,7 +19,7 @@ pub(crate) const NAMED: &str = "SELECT alias, min(session_pk) AS session_pk FROM
 /// A copy's session whose recording route arrives in the batches being
 /// resolved: its rows move to that route's session.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Absorption {
+pub(crate) struct CopyMove {
     pub copy: String,
     pub session: String,
     /// Each message of the copy's session, with the ID it has in the session.
@@ -55,7 +55,7 @@ pub(crate) struct Release {
 pub(crate) struct Identities {
     /// Copy session ID to session ID, for aliases already stored.
     stored: BTreeMap<String, String>,
-    absorbed: Vec<Absorption>,
+    moved_copies: Vec<CopyMove>,
     released: Vec<Release>,
 }
 
@@ -74,7 +74,7 @@ impl Identities {
             .collect::<rusqlite::Result<BTreeMap<String, String>>>()?;
         let mut identities = Self {
             stored,
-            absorbed: Vec::new(),
+            moved_copies: Vec::new(),
             released: Vec::new(),
         };
         for session in recorded {
@@ -92,10 +92,10 @@ impl Identities {
                 if identities.released.iter().any(|r| r.copy == copy) {
                     continue;
                 }
-                if let Some(n) = identities.absorbed.iter().position(|a| a.copy == copy) {
+                if let Some(n) = identities.moved_copies.iter().position(|a| a.copy == copy) {
                     // Two sessions of these batches record it: it names neither.
-                    if identities.absorbed[n].session != id {
-                        identities.absorbed.remove(n);
+                    if identities.moved_copies[n].session != id {
+                        identities.moved_copies.remove(n);
                     }
                     continue;
                 }
@@ -123,7 +123,7 @@ impl Identities {
                     })
                     .collect::<rusqlite::Result<Vec<_>>>()?;
                 let events = copy_events(index, held, &copy, &id)?;
-                identities.absorbed.push(Absorption {
+                identities.moved_copies.push(CopyMove {
                     copy,
                     session: id.clone(),
                     messages,
@@ -134,8 +134,8 @@ impl Identities {
         Ok(identities)
     }
 
-    pub(crate) fn absorbed(&self) -> &[Absorption] {
-        &self.absorbed
+    pub(crate) fn moved_copies(&self) -> &[CopyMove] {
+        &self.moved_copies
     }
 
     pub(crate) fn released(&self) -> &[Release] {
@@ -146,7 +146,7 @@ impl Identities {
     /// names after itself (`<message>:code1`) takes its message's ID in the
     /// session, as the message does.
     pub(crate) fn shown_call<'a>(&self, origin: &str, call: &'a str) -> Cow<'a, str> {
-        if self.stored.is_empty() && self.absorbed.is_empty() {
+        if self.stored.is_empty() && self.moved_copies.is_empty() {
             return Cow::Borrowed(call);
         }
         let id = format!("{origin}:{call}");
@@ -176,7 +176,7 @@ impl Identities {
     /// The session ID a row is written with, including copies these batches
     /// join to their session.
     pub(crate) fn shown_session<'a>(&'a self, id: &'a str) -> &'a str {
-        self.absorbed
+        self.moved_copies
             .iter()
             .find(|a| a.copy == id)
             .map_or_else(|| self.session(id), |a| a.session.as_str())
@@ -185,7 +185,7 @@ impl Identities {
     /// The message ID a row is written with.
     pub(crate) fn shown_message<'a>(&self, id: &'a str) -> Cow<'a, str> {
         let found = self.lookup(id, |copy| {
-            self.absorbed
+            self.moved_copies
                 .iter()
                 .find(|a| a.copy == copy)
                 .map(|a| a.session.as_str())
@@ -208,7 +208,7 @@ impl Identities {
         data: &[u8],
         id: &'a str,
     ) -> crate::Result<Cow<'a, str>> {
-        if self.stored.is_empty() && self.absorbed.is_empty() {
+        if self.stored.is_empty() && self.moved_copies.is_empty() {
             return Ok(Cow::Borrowed(id));
         }
         let Some(mut renamed) = in_session(
@@ -229,7 +229,7 @@ impl Identities {
     }
 
     fn lookup<'s>(&self, id: &str, target: impl Fn(&str) -> Option<&'s str>) -> Option<String> {
-        if self.stored.is_empty() && self.absorbed.is_empty() {
+        if self.stored.is_empty() && self.moved_copies.is_empty() {
             return None;
         }
         let copy = message_session(id)?;

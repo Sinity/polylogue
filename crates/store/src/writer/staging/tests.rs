@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn batch(id: &str, length: u64) -> Batch {
     Batch {
-        required_disposition: None,
+        required_outcome: None,
         input: InputKey {
             id: id.into(),
             format: "export-file".into(),
@@ -35,7 +35,7 @@ fn batch(id: &str, length: u64) -> Batch {
 }
 
 #[test]
-fn dropped_and_foreign_preparations_leave_no_named_parts_or_committed_blobs() {
+fn dropped_and_other_preparations_leave_no_named_parts_or_committed_blobs() {
     let first = tempfile::tempdir().unwrap();
     let second = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(first.path()).unwrap();
@@ -51,9 +51,9 @@ fn dropped_and_foreign_preparations_leave_no_named_parts_or_committed_blobs() {
     ));
     drop(prepared);
     assert_eq!(std::fs::read_dir(archive.staging_dir()).unwrap().count(), 0);
-    let foreign = other.prepare_bytes(body.as_slice()).unwrap();
+    let other_bytes = other.prepare_bytes(body.as_slice()).unwrap();
     assert!(matches!(
-        writer.store_bytes(foreign, batch(&hash.to_string(), body.len() as u64)),
+        writer.store_bytes(other_bytes, batch(&hash.to_string(), body.len() as u64)),
         Err(StoreError::Invalid(_))
     ));
     assert!(matches!(
@@ -92,7 +92,7 @@ fn an_unreferenced_private_stage_is_refused_before_any_group_installation() {
         .unwrap();
     assert!(
         result[0].is_err(),
-        "a private stage without a source owner was stored"
+        "a private stage from another archive was stored"
     );
     assert!(matches!(
         store.extent(&hashed_blobs::Hash(source_hash.0)),
@@ -192,7 +192,7 @@ fn encoded_preparation_crash_child() {
 }
 
 #[test]
-fn ordinary_open_releases_encoded_preparations_after_process_death_in_both_modes() {
+fn open_releases_encoded_preparations_after_process_death_in_both_modes() {
     for primary in [false, true] {
         let directory = tempfile::tempdir().unwrap();
         let mut command = std::process::Command::new(std::env::current_exe().unwrap());
@@ -234,7 +234,7 @@ fn ordinary_open_releases_encoded_preparations_after_process_death_in_both_modes
 }
 
 #[test]
-fn a_late_encoding_refusal_publishes_no_group_and_reopen_can_retry_original_bytes() {
+fn late_encoding_refusal_spools_no_group_and_reopen_retries() {
     let directory = tempfile::tempdir().unwrap();
     let bodies = [
         b"first synthetic source".as_slice(),
@@ -343,7 +343,7 @@ fn reading(input: &str, chain: i64, length: u64) -> PreparedBatch {
         batch: Batch {
             input: InputKey {
                 id: input.into(),
-                // An imported input can retain export-file as its register
+                // An imported input can keep export-file as its register
                 // format while its reading uses the recognized provider.
                 format: "claude-code".into(),
                 route: polylogue_model::Route::Live,
@@ -357,14 +357,14 @@ fn reading(input: &str, chain: i64, length: u64) -> PreparedBatch {
             continues: false,
             acquisition: None,
             basis: None,
-            required_disposition: None,
+            required_outcome: None,
             release: Default::default(),
         },
         files: Vec::new(),
     }
 }
 
-fn retained() -> Connection {
+fn kept() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
     conn.execute_batch(crate::schema::ARCHIVE).unwrap();
     conn.execute("INSERT INTO input VALUES ('input','synthetic')", [])
@@ -374,9 +374,9 @@ fn retained() -> Connection {
 
 #[test]
 fn stored_reading_validation_uses_logical_lengths_without_archive_writes() {
-    let conn = retained();
+    let conn = kept();
     // Empty, incomplete-prefix and incomplete-tail inputs are valid register
-    // states. Their parser diagnosis must not require full physical coverage.
+    // states. Their parser diagnosis must not require full byte coverage.
     for (number, chain, length) in [(1, 1, 0), (2, 2, 100), (3, 2, 200), (4, 4, 10)] {
         conn.execute(
             "INSERT INTO revision VALUES ('input',?1,'rewritten',?2,?3,1)",
@@ -419,7 +419,7 @@ fn stored_reading_validation_uses_logical_lengths_without_archive_writes() {
 }
 
 fn validation_steps(revisions: usize) -> usize {
-    let mut conn = retained();
+    let mut conn = kept();
     {
         let tx = conn.transaction().unwrap();
         for number in 1..=revisions {

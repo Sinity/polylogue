@@ -2,7 +2,7 @@ use polylogue_model::{DocumentAuthorship, DocumentId, DocumentPurpose};
 use polylogue_testkit::ClaudeHome;
 
 fn project() -> Vec<u8> {
-    // The native project/docs contract is also exercised directly by the
+    // The project/docs layout claude.ai writes is also exercised directly by the
     // claude.ai sidecar parser; an account conversations file is not required.
     serde_json::to_vec(&serde_json::json!({
         "uuid":"project-a", "name":"Synthetic project",
@@ -13,12 +13,12 @@ fn project() -> Vec<u8> {
 }
 
 #[test]
-fn a_project_sidecar_declares_only_its_native_member() {
+fn project_sidecar_declares_only_its_own_member() {
     let home = ClaudeHome::new();
     let source = home.dir.path().join("project-export");
     std::fs::create_dir_all(source.join("projects")).unwrap();
-    let native = source.join("projects/project-a.json");
-    std::fs::write(&native, project()).unwrap();
+    let sidecar = source.join("projects/project-a.json");
+    std::fs::write(&sidecar, project()).unwrap();
     let unrelated = source.join("projects/unknown.json");
     std::fs::write(&unrelated, br#"{"uuid":"other","unrelated":true}"#).unwrap();
     let outside_layout = source.join("unrelated.json");
@@ -38,7 +38,7 @@ fn a_project_sidecar_declares_only_its_native_member() {
     let declared = report
         .members
         .iter()
-        .find(|member| member.path == native)
+        .find(|member| member.path == sidecar)
         .unwrap();
     assert_eq!(declared.origin.as_deref(), Some("claude-ai"));
     assert_eq!(declared.class, "parsed");
@@ -60,7 +60,7 @@ fn a_project_sidecar_declares_only_its_native_member() {
 }
 
 #[test]
-fn standalone_project_documents_keep_exact_text_identity_and_receiving_source() {
+fn standalone_project_documents_keep_text_identity_and_receiving_source() {
     let home = ClaudeHome::new();
     let source = home.dir.path().join("project-export");
     std::fs::create_dir_all(source.join("projects")).unwrap();

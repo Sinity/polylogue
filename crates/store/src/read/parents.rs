@@ -17,7 +17,7 @@ struct Key {
 struct Prefix {
     parent: String,
     copies_prefix: bool,
-    anchor: Option<String>,
+    branch_point: Option<String>,
 }
 
 struct CopiedKey {
@@ -54,7 +54,7 @@ pub(super) struct Visibility {
 }
 
 /// A message selection belongs to the reader that made it. Bodies are read
-/// lazily; the parents' history keeps keys for ordering, anchors and deduplication.
+/// lazily; the parents' history keeps keys for ordering, branch points and deduplication.
 pub struct MessageSelection<'r, 'a> {
     reader: &'r Reader<'a>,
     own: Option<(i64, SessionId)>,
@@ -105,47 +105,47 @@ impl<'a> Reader<'a> {
         let mut prefixes: VecDeque<Prefix> = self.conn()?
             .prepare_cached("SELECT parent_id,branch_point,copies_prefix FROM session_prefix WHERE child_id=?1 ORDER BY parent_id,branch_point")?
             .query_map([session.to_string()], |r| Ok(Prefix {
-                parent: r.get(0)?, anchor: r.get(1)?, copies_prefix: r.get(2)?,
+                parent: r.get(0)?, branch_point: r.get(1)?, copies_prefix: r.get(2)?,
             }))?.collect::<rusqlite::Result<_>>()?;
         let forks: std::collections::BTreeSet<_> = prefixes
             .iter()
             .filter_map(|link| {
                 Some((
                     SessionId::parse(&link.parent).ok()?,
-                    link.anchor.as_ref()?.clone(),
+                    link.branch_point.as_ref()?.clone(),
                 ))
             })
             .collect();
         let mut issues = Vec::new();
         if forks.len() > 1 {
             let mut recorded = forks.into_iter();
-            let (first, first_anchor) = recorded.next().expect("conflicting recorded forks");
-            for (second, second_anchor) in recorded {
+            let (first, first_branch_point) = recorded.next().expect("conflicting recorded forks");
+            for (second, second_branch_point) in recorded {
                 issues.push(ParentIssue::ConflictingParents {
                     child: session.clone(),
                     first: first.clone(),
-                    first_anchor: first_anchor.clone(),
+                    first_branch_point: first_branch_point.clone(),
                     second,
-                    second_anchor,
+                    second_branch_point,
                 });
             }
             // No branch is selected from incompatible recorded fork points.
             prefixes.retain(|prefix| {
-                prefix.anchor.is_none() || SessionId::parse(&prefix.parent).is_err()
+                prefix.branch_point.is_none() || SessionId::parse(&prefix.parent).is_err()
             });
-            // Conflicting provider anchors do not erase independently recorded
-            // physical copies. Their exact members choose no provider anchor.
+            // Conflicting provider branch points do not erase separately recorded
+            // byte copies. Their listed members choose no provider branch_point.
             let copies=self.conn()?.prepare_cached("SELECT DISTINCT parent_id FROM prefix_copy WHERE child_id=?1 AND explicit_members=1 ORDER BY parent_id")?
                 .query_map([session.to_string()], |r| r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
             for parent in copies {
                 if !prefixes
                     .iter()
-                    .any(|prefix| prefix.parent == parent && prefix.anchor.is_none())
+                    .any(|prefix| prefix.parent == parent && prefix.branch_point.is_none())
                 {
                     prefixes.push_back(Prefix {
                         parent,
                         copies_prefix: true,
-                        anchor: None,
+                        branch_point: None,
                     });
                 }
             }
@@ -196,19 +196,19 @@ impl<'a> Reader<'a> {
                     continue;
                 }
                 let explicit: bool = self.conn()?.query_row("SELECT EXISTS(SELECT 1 FROM prefix_copy WHERE parent_id=?1 AND child_id=?2 AND explicit_members=1)",params![parent.to_string(),frame.session.to_string()],|r|r.get(0))?;
-                if explicit || link.copies_prefix && link.anchor.is_none() {
+                if explicit || link.copies_prefix && link.branch_point.is_none() {
                     let copied = self
                         .conn()?
                         .prepare_cached(&format!(
-                            "WITH canonical_order AS ({}) SELECT DISTINCT m.pk,m.id,c.record_order,ir.id,s.chain,s.seq,s.record_position FROM message m
-                             JOIN canonical_order c ON c.pk=m.pk
+                            "WITH record_ranks AS ({}) SELECT DISTINCT m.pk,m.id,c.record_order,ir.id,s.chain,s.seq,s.record_position FROM message m
+                             JOIN record_ranks c ON c.pk=m.pk
                              JOIN message_source s ON s.message_pk = m.pk
                              JOIN input_ref ir ON ir.pk=s.input_pk
                              WHERE m.session_pk = ?1 AND m.duplicate_of IS NULL
                                AND EXISTS(SELECT 1 FROM prefix_copy p WHERE p.input_pk=s.input_pk AND p.chain=s.chain AND p.child_id=?2 AND p.parent_id=?3 AND p.explicit_members=0)
                                AND NOT EXISTS(SELECT 1 FROM prefix_copy p WHERE p.input_pk=s.input_pk AND p.chain=s.chain AND p.child_id=?2 AND p.parent_id=?3 AND p.explicit_members=1)
                              ORDER BY m.session_order, m.id",
-                             order::canonical_rows("?1")))?
+                             order::session_record_rows("?1")))?
                         .query_map(params![parent_pk, frame.session.to_string(), parent.to_string()], |r| {
                             Ok(CopiedKey {
                                 source: r.get(3)?,
@@ -237,7 +237,7 @@ impl<'a> Reader<'a> {
                         }
                     }));
                     let explicit = self.conn()?.prepare_cached(&format!(
-                        "WITH canonical_order AS ({}) SELECT DISTINCT m.pk,m.id,c.record_order,p.source_input,p.source_chain,p.source_version,p.sequence,p.position FROM prefix_member p JOIN message m ON m.id=p.message_id JOIN canonical_order c ON c.pk=m.pk WHERE p.child_id=?2 AND p.parent_id=?3 AND m.session_pk=?1 AND m.duplicate_of IS NULL", order::canonical_rows("?1")))?
+                        "WITH record_ranks AS ({}) SELECT DISTINCT m.pk,m.id,c.record_order,p.source_input,p.source_chain,p.source_version,p.sequence,p.position FROM prefix_member p JOIN message m ON m.id=p.message_id JOIN record_ranks c ON c.pk=m.pk WHERE p.child_id=?2 AND p.parent_id=?3 AND m.session_pk=?1 AND m.duplicate_of IS NULL", order::session_record_rows("?1")))?
                         .query_map(params![parent_pk,frame.session.to_string(),parent.to_string()], |r| {
                             let coordinate = |index| -> rusqlite::Result<u64> {
                                 let value: String = r.get(index)?;
@@ -246,11 +246,11 @@ impl<'a> Reader<'a> {
                             Ok(CopiedKey { source:r.get(3)?,chain:r.get(4)?,version:r.get(5)?,sequence:coordinate(6)?,position:coordinate(7)?,key:Key {session_pk:parent_pk,session:parent.clone(),message_pk:r.get(0)?,id:r.get(1)?,order:r.get(2)?} })
                         })?.collect::<rusqlite::Result<Vec<_>>>()?;
                     frame.copied.extend(explicit);
-                } else if link.anchor.is_none() {
-                    frame.issues.push(ParentIssue::MissingAnchor {
+                } else if link.branch_point.is_none() {
+                    frame.issues.push(ParentIssue::MissingBranchPoint {
                         child: frame.session.clone(),
                         parent,
-                        anchor: None,
+                        branch_point: None,
                     });
                 } else {
                     let child = frame.session.clone();
@@ -258,7 +258,7 @@ impl<'a> Reader<'a> {
                     frames.push(self.parent_frame(
                         parent_pk,
                         parent,
-                        Some((child, link.anchor)),
+                        Some((child, link.branch_point)),
                     )?);
                 }
                 continue;
@@ -282,19 +282,19 @@ impl<'a> Reader<'a> {
                 done.keys.retain(|key| seen.insert(key.message_pk));
                 return Ok((done.keys, done.issues));
             };
-            let (child, anchor) = done.via.expect("only the root has no incoming fork");
+            let (child, branch_point) = done.via.expect("only the root has no incoming fork");
             match done
                 .keys
                 .iter()
-                .position(|key| Some(&key.id) == anchor.as_ref())
+                .position(|key| Some(&key.id) == branch_point.as_ref())
             {
                 Some(at) => done.keys.truncate(at + 1),
                 None => {
                     done.keys.clear();
-                    done.issues.push(ParentIssue::MissingAnchor {
+                    done.issues.push(ParentIssue::MissingBranchPoint {
                         child,
                         parent: done.session,
-                        anchor,
+                        branch_point,
                     });
                 }
             }
@@ -442,7 +442,7 @@ impl MessageSelection<'_, '_> {
     }
 
     /// Require the complete requested parent history before using its metadata
-    /// as a strict content or evidence binding. No record bodies are loaded.
+    /// as a strict content or source binding. No record bodies are loaded.
     pub fn require_complete(&self) -> Result<()> {
         match self.parents.issues.first() {
             Some(issue) => Err(StoreError::IncompleteParents(Box::new(issue.clone()))),
@@ -454,49 +454,50 @@ impl MessageSelection<'_, '_> {
         self.visit_from(VisitStart::default(), visit).map(drop)
     }
 
-    pub fn visit_with_projection(
+    pub fn visit_with_block_selection(
         &self,
         visit: impl FnMut(Message, MessageProjection) -> ControlFlow<()>,
     ) -> Result<()> {
-        self.visit_from_with_projection(VisitStart::default(), visit)
+        self.visit_from_with_block_selection(VisitStart::default(), visit)
             .map(drop)
     }
 
-    /// Visit canonical facts, original block positions and their admission in
-    /// the same selected row. Raw-source retention does not affect the receipt.
-    pub fn visit_with_evidence(
+    /// Visit stored facts, original block positions and their commit in
+    /// the same selected row. Whether the source bytes are still stored does not affect the commit.
+    pub fn visit_with_arrival(
         &self,
         visit: impl FnMut(Message, MessageProjection, Option<u64>) -> ControlFlow<()>,
     ) -> Result<()> {
-        self.visit_from_with_evidence(VisitStart::default(), visit)
+        self.visit_from_with_arrival(VisitStart::default(), visit)
             .map(drop)
     }
 
-    /// Canonical facts with the full own-session snapshot ordinal, before
+    /// Stored facts with the full own-session snapshot ordinal, before
     /// inherited prefixes or caller subsets change the visited sequence.
-    pub fn visit_with_record_evidence(
+    pub fn visit_with_record_arrival(
         &self,
         visit: impl FnMut(Message, MessageProjection, Option<u64>, u64) -> ControlFlow<()>,
     ) -> Result<()> {
-        self.visit_from_with_record_evidence(VisitStart::default(), visit)
+        self.visit_from_with_record_arrival(VisitStart::default(), visit)
             .map(drop)
     }
 
-    pub fn visit_from_with_record_evidence(
+    pub fn visit_from_with_record_arrival(
         &self,
         start: VisitStart,
         mut visit: impl FnMut(Message, MessageProjection, Option<u64>, u64) -> ControlFlow<()>,
     ) -> Result<Option<i64>> {
         let mut error = None;
-        let last = self.visit_from_projected(start, true, |message, projection, evidence| {
-            match self.reader.conn().and_then(|conn| evidence.record(conn)) {
-                Ok((admitted, order)) => visit(message, projection, admitted, order),
-                Err(err) => {
-                    error = Some(err);
-                    ControlFlow::Break(())
+        let last =
+            self.visit_from_selected_blocks(start, true, |message, block_selection, arrival| {
+                match self.reader.conn().and_then(|conn| arrival.record(conn)) {
+                    Ok((committed, order)) => visit(message, block_selection, committed, order),
+                    Err(err) => {
+                        error = Some(err);
+                        ControlFlow::Break(())
+                    }
                 }
-            }
-        })?;
+            })?;
         match error {
             Some(error) => Err(error),
             None => Ok(last),
@@ -514,59 +515,58 @@ impl MessageSelection<'_, '_> {
         self.visit_from_rows(start, false, |message, _, _| visit(message))
     }
 
-    pub fn visit_from_with_projection(
+    pub fn visit_from_with_block_selection(
         &self,
         start: VisitStart,
         mut visit: impl FnMut(Message, MessageProjection) -> ControlFlow<()>,
     ) -> Result<Option<i64>> {
-        self.visit_from_projected(start, false, |message, projection, _| {
-            visit(message, projection)
+        self.visit_from_selected_blocks(start, false, |message, block_selection, _| {
+            visit(message, block_selection)
         })
     }
 
-    pub fn visit_from_with_evidence(
+    pub fn visit_from_with_arrival(
         &self,
         start: VisitStart,
         mut visit: impl FnMut(Message, MessageProjection, Option<u64>) -> ControlFlow<()>,
     ) -> Result<Option<i64>> {
         let mut error = None;
-        let last = self.visit_from_projected(start, false, |message, projection, admission| {
-            match self.reader.conn().and_then(|conn| admission.resolve(conn)) {
-                Ok(admitted) => visit(message, projection, admitted),
-                Err(err) => {
-                    error = Some(err);
-                    ControlFlow::Break(())
+        let last =
+            self.visit_from_selected_blocks(start, false, |message, block_selection, commit| {
+                match self.reader.conn().and_then(|conn| commit.resolve(conn)) {
+                    Ok(committed) => visit(message, block_selection, committed),
+                    Err(err) => {
+                        error = Some(err);
+                        ControlFlow::Break(())
+                    }
                 }
-            }
-        })?;
+            })?;
         match error {
             Some(error) => Err(error),
             None => Ok(last),
         }
     }
 
-    fn visit_from_projected(
+    fn visit_from_selected_blocks(
         &self,
         start: VisitStart,
         ordered: bool,
-        mut visit: impl FnMut(Message, MessageProjection, MessageEvidence) -> ControlFlow<()>,
+        mut visit: impl FnMut(Message, MessageProjection, MessageArrival) -> ControlFlow<()>,
     ) -> Result<Option<i64>> {
         let mut missing = false;
         let last =
-            self.visit_from_rows(
-                start,
-                ordered,
-                |message, projection, admitted| match projection {
-                    Some(projection) => visit(message, projection, admitted),
+            self.visit_from_rows(start, ordered, |message, block_selection, committed| {
+                match block_selection {
+                    Some(block_selection) => visit(message, block_selection, committed),
                     None => {
                         missing = true;
                         ControlFlow::Break(())
                     }
-                },
-            )?;
+                }
+            })?;
         if missing {
             return Err(StoreError::Invalid(
-                "the message has no canonical source reading".into(),
+                "the message has no source reading".into(),
             ));
         }
         Ok(last)
@@ -576,7 +576,7 @@ impl MessageSelection<'_, '_> {
         &self,
         start: VisitStart,
         ordered: bool,
-        mut visit: impl FnMut(Message, Option<MessageProjection>, MessageEvidence) -> ControlFlow<()>,
+        mut visit: impl FnMut(Message, Option<MessageProjection>, MessageArrival) -> ControlFlow<()>,
     ) -> Result<Option<i64>> {
         if let Some(keys) = &self.with_parents {
             let mut last = None;
@@ -596,9 +596,9 @@ impl MessageSelection<'_, '_> {
                         visibility: self.visibility.as_ref(),
                     },
                     |pk| pk == key.message_pk,
-                    &mut |pk, message, projection, admitted| {
+                    &mut |pk, message, block_selection, committed| {
                         last = Some(pk);
-                        flow = visit(message, projection, admitted);
+                        flow = visit(message, block_selection, committed);
                         ControlFlow::Break(())
                     },
                 )?;
@@ -618,26 +618,28 @@ impl MessageSelection<'_, '_> {
             }
         };
         match (start.key, &self.with_parents) {
-            (Some(key), None) => self.visit_kept_projection(Some(key), 0, ordered, |_| true, visit),
-            _ => self.visit_kept_projection(None, 0, ordered, after_prefix, visit),
+            (Some(key), None) => {
+                self.visit_kept_block_selection(Some(key), 0, ordered, |_| true, visit)
+            }
+            _ => self.visit_kept_block_selection(None, 0, ordered, after_prefix, visit),
         }
     }
 
     /// Visits the selected messages `keep` takes, in order, from the own
     /// session's message `from` when given; `keep` sees each key before its
     /// blocks are read.
-    fn visit_kept_projection(
+    fn visit_kept_block_selection(
         &self,
         from: Option<i64>,
         skip: usize,
         ordered: bool,
         mut keep: impl FnMut(i64) -> bool,
-        mut visit: impl FnMut(Message, Option<MessageProjection>, MessageEvidence) -> ControlFlow<()>,
+        mut visit: impl FnMut(Message, Option<MessageProjection>, MessageArrival) -> ControlFlow<()>,
     ) -> Result<Option<i64>> {
         let mut last = None;
-        let mut visit = |pk, message, projection, admitted| {
+        let mut visit = |pk, message, block_selection, committed| {
             last = Some(pk);
-            visit(message, projection, admitted)
+            visit(message, block_selection, committed)
         };
         if let Some(keys) = &self.with_parents {
             let mut start = skip;

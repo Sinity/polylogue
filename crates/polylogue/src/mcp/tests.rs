@@ -46,7 +46,7 @@ pub(crate) fn call_as(
     call_params(archive, params)
 }
 
-/// The native tool result's complete answer, independent of its human text.
+/// The tool result's complete answer, independent of its human text.
 pub(crate) fn structured_call_as(
     archive: &Archive,
     operation: &str,
@@ -533,13 +533,13 @@ fn a_tool_call_names_one_of_its_operations() {
         json!({"arguments": {}, "request_id": "no-operation"}),
     );
     assert!(missing.contains("name the operation: one of"), "{missing}");
-    let foreign = run(
+    let wrong_tool = run(
         "polylogue_read",
-        json!({"operation": "assert", "arguments": {}, "request_id": "foreign"}),
+        json!({"operation": "assert", "arguments": {}, "request_id": "wrong-tool"}),
     );
     assert!(
-        foreign.contains("assert is not an operation of this tool"),
-        "{foreign}"
+        wrong_tool.contains("assert is not an operation of this tool"),
+        "{wrong_tool}"
     );
     let inside = run(
         "polylogue_note",
@@ -616,7 +616,7 @@ fn tool_requests_and_answers_keep_terminal_controls_visible() {
 }
 
 #[test]
-fn generated_ready_mcp_call_executes_its_exact_typed_envelope() {
+fn generated_ready_mcp_call_executes_its_typed_envelope() {
     let daemon = test_daemon::start("MCP ready example");
     let ready = daemon
         .daemon
@@ -681,7 +681,7 @@ fn generated_ready_mcp_call_executes_its_exact_typed_envelope() {
             format!("polylogue does not take {option}")
         );
     }
-    // Every declared request retains an executable MCP form.
+    // Every declared request keeps an executable MCP form.
     let sql = daemon
         .daemon
         .ready_call(&command_surface::Request {
@@ -717,7 +717,7 @@ fn generated_ready_mcp_call_executes_its_exact_typed_envelope() {
             .unwrap()
             .starts_with("/api/v1/sql?")
     );
-    let legacy = call_with_limit(
+    let outside_arguments = call_with_limit(
         &daemon.daemon.archive,
         "polylogue_read",
         args(json!({"operation":"query","query":"sessions","request_id":"outside"})),
@@ -726,7 +726,7 @@ fn generated_ready_mcp_call_executes_its_exact_typed_envelope() {
         None,
     );
     assert!(
-        legacy.is_err(),
+        outside_arguments.is_err(),
         "typed MCP operation accepted arguments outside its declared envelope"
     );
     let tool = tools()
@@ -738,7 +738,7 @@ fn generated_ready_mcp_call_executes_its_exact_typed_envelope() {
 }
 
 #[test]
-fn typed_admission_failure_has_the_same_shared_answer_without_opening_a_daemon() {
+fn typed_acceptance_failure_answers_without_a_daemon() {
     let directory = tempfile::tempdir().unwrap();
     let archive = Archive::at(directory.path());
     let (text, structured, failed) = call_with_limit(
@@ -762,12 +762,12 @@ fn typed_admission_failure_has_the_same_shared_answer_without_opening_a_daemon()
         ..
     } = answer
     else {
-        panic!("canonical admission error");
+        panic!("request refusal");
     };
     assert_eq!(error.kind, command_surface::FailureKind::BadRequest);
 }
 
-/// The tool list is the shared declarations' projection of the rows: one
+/// The tool list is the shared declarations rendered from the rows: one
 /// tool per family, each row its operation, its input from the rows' typed
 /// requests.
 #[test]
@@ -870,21 +870,21 @@ fn setting_mcp_keeps_typed_write_repeat_and_read_results() {
         ..Default::default()
     };
     let mut invoke = |id, arguments| {
-        session.prepare(json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":tool_call("setting", arguments,"mcp-setting-receipt")})).answer(&daemon.daemon.archive).unwrap()
+        session.prepare(json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":tool_call("setting", arguments,"mcp-setting-write-result")})).answer(&daemon.daemon.archive).unwrap()
     };
     let first = invoke(1, json!({"key":"reading.variants","value":"[]"}));
     assert_eq!(first["result"]["isError"], false, "{first}");
     let first: crate::protocol::setting::Answer =
         serde_json::from_value(first["result"]["structuredContent"]["value"].clone()).unwrap();
-    let crate::protocol::setting::Answer::Receipt(first) = first else {
-        panic!("write must return a receipt")
+    let crate::protocol::setting::Answer::Outcome(first) = first else {
+        panic!("write must return a write result")
     };
     assert!(!first.pending);
     let repeat = invoke(2, json!({"key":"reading.variants","value":"[]"}));
     let repeat: crate::protocol::setting::Answer =
         serde_json::from_value(repeat["result"]["structuredContent"]["value"].clone()).unwrap();
-    let crate::protocol::setting::Answer::Receipt(repeat) = repeat else {
-        panic!("repeat must return a receipt")
+    let crate::protocol::setting::Answer::Outcome(repeat) = repeat else {
+        panic!("repeat must return a write result")
     };
     assert_eq!(first.id, repeat.id);
     assert!(repeat.repeat);

@@ -128,7 +128,7 @@ fn prefix_updates_include_neighbors_unicode_and_removed_sessions() {
     );
 }
 #[test]
-fn read_only_snapshot_never_writes_and_typed_items_use_exact_identity() {
+fn read_only_snapshot_never_writes_and_typed_items_use_identity() {
     use std::os::unix::fs::PermissionsExt;
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("catalog");
@@ -186,7 +186,7 @@ fn read_only_snapshot_never_writes_and_typed_items_use_exact_identity() {
 }
 
 #[test]
-fn assertion_cache_candidates_include_tag_only_owners_and_remove_only_their_contribution() {
+fn tag_only_contributors_are_listed_and_removed_alone() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("catalog");
     let mut cache = writer(&path);
@@ -218,7 +218,7 @@ fn assertion_cache_candidates_include_tag_only_owners_and_remove_only_their_cont
                     kind: polylogue_model::settings::Kind::Boolean,
                     default: Some(polylogue_model::settings::Value::Boolean(false)),
                     scope: polylogue_model::settings::Scope::Archive,
-                    owner: "polylogue".into(),
+                    supplier: "polylogue".into(),
                     value: None,
                     authored: None,
                     conflicts: vec![
@@ -345,7 +345,7 @@ fn derived_saved_pattern_codec_is_atomic_and_old_versions_are_invalidated() {
             .unwrap()
             .match_units,
         None,
-        "missing provenance stays unknown instead of becoming known empty qualifiers"
+        "missing source stays unknown instead of becoming known empty qualifiers"
     );
     drop(reader);
     writer

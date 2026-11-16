@@ -10,7 +10,7 @@ pub fn cost(scope: &str, data: &Value) -> String {
     };
     let body = format!(
         "<h1>Cost and usage</h1><form action=\"/cost\" method=\"get\"><label for=\"scope\">Session query</label> <input id=\"scope\" name=\"q\" value=\"{}\"> <button>Measure</button></form>\
-         <p>Physical response records at source record time. API-equivalent figures use catalog list prices; tool-reported figures remain separate. Known sums exclude unreported usage and unpriced responses shown below.</p>\
+         <p>Per-response records at source record time. API-equivalent figures use catalog list prices; tool-reported figures remain separate. Known sums exclude unreported usage and unpriced responses shown below.</p>\
          <p>{} known response records; {} model items excluded because response boundaries are unknown. Independent usage observations are reported separately below.</p><pre>{}</pre><p><a href=\"/search?q={}\">Browse selected sessions</a></p>",
         esc(scope),
         count("known_response_messages"),

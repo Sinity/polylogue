@@ -59,7 +59,7 @@ fn reimport_changes_nothing_in_archive_rows() {
 }
 
 #[test]
-fn declared_native_export_signatures_reach_their_scanners_without_whole_json_shape() {
+fn declared_export_signatures_reach_scanners_unshaped() {
     for (name, raw, origin, complete) in [
         (
             "conversations.json",
@@ -110,7 +110,7 @@ fn declared_native_export_signatures_reach_their_scanners_without_whole_json_sha
 }
 
 #[test]
-fn native_export_names_without_a_provider_signature_stay_refused() {
+fn export_names_lacking_a_signature_are_refused() {
     let w = ClaudeHome::new();
     let path = w.dir.path().join("conversations.json");
     std::fs::write(&path, br#"[{"arbitrary":true}]"#).unwrap();

@@ -57,7 +57,7 @@ fn message_id(item: &ReadItem) -> polylogue_model::MessageId {
     let polylogue_model::Reference::Message(id) =
         polylogue_model::Reference::parse(&item.source.reference).unwrap()
     else {
-        panic!("message header must name its actual canonical message")
+        panic!("message header must name its stored message")
     };
     // A header's reference is its message; only block sources name a containing message.
     assert_eq!(item.source.message, None, "{item:?}");
@@ -74,7 +74,7 @@ fn mcp_page(archive: &Archive, arguments: serde_json::Value) -> ReadPage {
 }
 
 #[test]
-fn native_hook_failures_reach_ordinary_mcp_reads_and_budgeted_pages() {
+fn hook_failures_reach_mcp_reads_and_budgeted_pages() {
     let daemon = test_daemon::start("human prompt");
     let source = daemon.home.join(".claude/projects/-p/s1.jsonl");
     let summary = json!({"type":"system", "subtype":"stop_hook_summary", "uuid":"hook1",
@@ -96,16 +96,16 @@ fn native_hook_failures_reach_ordinary_mcp_reads_and_budgeted_pages() {
             .iter()
             .any(|event| event.data == summary)
     });
-    let native_messages = daemon
+    let stored_messages = daemon
         .daemon
         .reads
         .reader()
         .unwrap()
         .messages(&id, false)
         .unwrap();
-    assert_eq!(native_messages.len(), 2);
+    assert_eq!(stored_messages.len(), 2);
     assert_eq!(
-        native_messages[1].prompt_kind,
+        stored_messages[1].prompt_kind,
         Some(polylogue_model::PromptKind::Harness)
     );
     let ordinary = (crate::test_daemon::read(crate::daemon::service::read::ReadRequest {
@@ -130,7 +130,7 @@ fn native_hook_failures_reach_ordinary_mcp_reads_and_budgeted_pages() {
         .filter(|item| matches!(item.kind, ItemKind::MessageHeader { .. }))
         .collect();
     assert_eq!(headers.len(), 2);
-    assert_eq!(message_id(headers[1]), native_messages[1].id);
+    assert_eq!(message_id(headers[1]), stored_messages[1].id);
     let archive = Archive::at(&daemon.daemon.archive.root);
     let full = mcp_page(
         &archive,
@@ -191,7 +191,7 @@ fn native_hook_failures_reach_ordinary_mcp_reads_and_budgeted_pages() {
         .collect();
     assert_eq!(
         messages,
-        native_messages
+        stored_messages
             .iter()
             .map(|message| message.id.clone())
             .collect::<Vec<_>>()

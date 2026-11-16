@@ -2,7 +2,7 @@ use super::super::*;
 use crate::input_rows::{Extent, InputRows, ObservationRow, Revision};
 use crate::primary::SourceStatus;
 
-// These rows model source admissions; byte comparison belongs to the sampler.
+// These rows model source commits; byte comparison belongs to the sampler.
 fn append(conn: &Connection, input: &str, id: &str, seq: i64, from: i64, end: i64) {
     let hash = polylogue_model::BlobHash::of(id.as_bytes());
     conn.execute(
@@ -57,7 +57,7 @@ fn append(conn: &Connection, input: &str, id: &str, seq: i64, from: i64, end: i6
 }
 
 #[test]
-fn pre_io_boundary_excludes_later_admissions_and_keeps_the_original_subject_head() {
+fn pre_io_boundary_excludes_later_commits() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = crate::Archive::open_or_create(&dir.path().join("archive")).unwrap();
     let conn = Connection::open(archive.archive_db()).unwrap();
@@ -121,7 +121,7 @@ fn pre_io_boundary_excludes_later_admissions_and_keeps_the_original_subject_head
 }
 
 #[test]
-fn source_rows_without_a_recorded_admission_counter_remain_unknown() {
+fn source_rows_without_a_commit_position_stay_unknown() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = crate::Archive::open_or_create(&dir.path().join("archive")).unwrap();
     let conn = Connection::open(archive.archive_db()).unwrap();

@@ -206,7 +206,7 @@ pub enum BenchCommand {
         #[arg(long)]
         binary: Option<PathBuf>,
     },
-    /// Native cold/warm CLI and bounded session-page measurements on synthetic inputs.
+    /// Cold/warm CLI and bounded session-page measurements of the real binary on synthetic inputs.
     Reads {
         /// Warm repetitions after each operation's first request.
         #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(u32).range(1..))]

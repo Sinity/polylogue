@@ -84,7 +84,7 @@ fn an_older_hidden_tag_becomes_the_hidden_session_mark() {
 }
 
 #[test]
-fn a_relation_to_another_family_names_that_note_exactly() {
+fn relation_to_another_family_names_that_note() {
     let note_row = |id: &str, first: &str, relations: Vec<(String, String)>| Note {
         id: id.into(),
         first_note: first.into(),

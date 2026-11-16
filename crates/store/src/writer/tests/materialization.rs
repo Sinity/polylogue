@@ -131,7 +131,7 @@ fn apply_prepared(conn: &mut Connection, b: Batch) -> (Result<u64>, Work) {
         p.resolution.as_ref().unwrap(),
         1,
         None,
-        Some(&fixture_receipt()),
+        Some(&fixture_commit()),
         &changes,
     );
     tx.trace_v2(TraceEventCodes::empty(), None);
@@ -225,7 +225,7 @@ fn registered_responses_and_selected_blocks_consume_the_written_keys() {
 }
 
 #[test]
-fn mismatched_context_references_use_exact_validation_and_rollback() {
+fn mismatched_context_references_use_validation_and_rollback() {
     for wrong in ["message", "session", "version", "range"] {
         let mut conn = database();
         let message = text_message(
@@ -312,7 +312,7 @@ fn old_context_versions_keep_payload_and_hash_corruption_checks() {
                 .unwrap(),
             "text" => replace_every_text(&conn, "changed response"),
             "layout" => conn
-                .execute("UPDATE message_projection SET layout=x'00'", [])
+                .execute("UPDATE message_block_selection SET layout=x'00'", [])
                 .unwrap(),
             _ => unreachable!(),
         };
@@ -408,7 +408,7 @@ fn sparse_registered_context_keeps_full_hash_and_enriches_block_positions() {
             vec![part],
             vec![reference(&full, "response")],
         );
-        b.parse[0].output.message_projections.insert(
+        b.parse[0].output.block_selections.insert(
             0,
             polylogue_model::bundle::MessageProjection {
                 source_version: hash,
@@ -425,12 +425,12 @@ fn sparse_registered_context_keeps_full_hash_and_enriches_block_positions() {
             (u64::from(ordinal != 0), 0)
         );
     }
-    let (stored, projection) = crate::versions::read_message(&conn, &hash.0)
+    let (stored, block_selection) = crate::versions::read_message(&conn, &hash.0)
         .unwrap()
         .unwrap();
     assert_eq!(stored, full);
-    assert_eq!(projection.block_ordinals, [0, 1]);
-    assert_eq!(projection.source_version, hash);
+    assert_eq!(block_selection.block_ordinals, [0, 1]);
+    assert_eq!(block_selection.source_version, hash);
 }
 
 #[test]

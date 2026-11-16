@@ -142,7 +142,7 @@ fn the_index_follows_sessions_changed_after_its_position() {
     assert_eq!(index.repos_under(&dirs), ["proj"]);
 }
 
-/// The scope index reads the same folded facts as the query's live view.
+/// The scope index reads the same live facts as the query's live view.
 #[test]
 fn live_facts_are_read_from_the_session_live_columns() {
     assert!(columns().contains("live_facts"));
@@ -161,7 +161,7 @@ fn live_facts_are_read_from_the_session_live_columns() {
 }
 
 #[test]
-fn equal_activity_uses_stable_session_identity_instead_of_row_admission() {
+fn equal_activity_orders_by_session_identity() {
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(dir.path()).unwrap();
     session(&mut f, "test:a", "/work/proj", None, NOW);

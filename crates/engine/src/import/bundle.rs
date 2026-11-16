@@ -55,8 +55,8 @@ fn stage_record(
     let mut key = format!("{}:{}", record.commit().unwrap_or(0), reference);
     if let Record::TextFragment(fragment) = &record {
         // A span is shared by source versions and independent declarations.
-        // Keep conflicting totals/provenance as claims for the Store reader;
-        // selected-text identity alone must not replace or veto either claim.
+        // Keep conflicting totals and sources as stated values for the Store
+        // reader; selected-text identity alone must not replace or veto either.
         let raw = serde_json::to_vec(&record).map_err(|error| error.to_string())?;
         key.push_str(&format!(
             ":{}:{}",
@@ -210,8 +210,7 @@ pub(super) fn preflight(members: &mut [package::Member]) -> std::io::Result<()> 
                 }
                 if matches!(record, Record::Variant(_) | Record::VariantPart(_)) {
                     return Err(
-                        "bundle variant restoration requires the canonical historical variant seam"
-                            .into(),
+                        "bundle variant restoration requires the historical variant import".into(),
                     );
                 }
                 if let Record::Blob(blob) = &record {

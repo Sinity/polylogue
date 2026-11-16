@@ -12,10 +12,10 @@ fn a_failed_middle_batch_blocks_its_suffix_until_a_committed_progress_retry() {
             &[input],
         )
     };
-    let mut raw = make("input", 0, "first", "first");
-    raw.parse.clear();
-    raw.length = 300;
-    w.store_reading(raw, Some(&[b'r'; 300])).unwrap();
+    let mut bytes_only = make("input", 0, "first", "first");
+    bytes_only.parse.clear();
+    bytes_only.length = 300;
+    w.store_reading(bytes_only, Some(&[b'r'; 300])).unwrap();
     let reading = |start, id, text| {
         let mut b = make("input", start, id, text);
         b.change = Change::Reparse { chain: 1 };
@@ -28,7 +28,7 @@ fn a_failed_middle_batch_blocks_its_suffix_until_a_committed_progress_retry() {
     let mut bad = reading(100, "middle", "middle");
     bad.parse[0].counts.records = 0;
     // Worker validation can refuse a batch before it reaches the writer.
-    // The committed parse position remains the retry authority in either case.
+    // The committed parse position still decides where a retry starts, in either case.
     let refused_before_queue = match w.writer.send(bad) {
         Ok(()) => false,
         Err(StoreError::Counts(_)) => true,

@@ -1,4 +1,4 @@
-//! Lookup of an original authored request. Frozen records stream through
+//! Lookup of an original authored request. Recorded records stream through
 //! [`crate::Reader::visit_authored`] for export and copy.
 use crate::{Reader, Result};
 use polylogue_model::user::UserRequest;

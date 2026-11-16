@@ -72,7 +72,7 @@ fn child(w: &TestArchive, input: &str, order: &[(&str, &str)], links: Vec<Link>)
 }
 
 #[test]
-fn copied_parent_families_follow_actual_child_coordinates_instead_of_link_insertion() {
+fn copied_parent_families_follow_child_coordinates_instead_of_link_insertion() {
     let w = archive();
     child(
         &w,
@@ -80,7 +80,7 @@ fn copied_parent_families_follow_actual_child_coordinates_instead_of_link_insert
         &[("p0", "p0-0"), ("c0", "c0-0"), ("c1", "c1-0")],
         vec![copy("c0")],
     );
-    // The p0 link arrives later, independently of its earlier physical record.
+    // The p0 link arrives later, independently of its earlier record in the file.
     child(&w, "later-link", &[], vec![copy("p0")]);
     let pool = ReadPool::open(&w.archive).unwrap();
     let reader = pool.reader().unwrap();
@@ -161,8 +161,8 @@ fn tied_historical_child_coordinates_never_gain_order_from_link_or_message_keys(
             vec![copy(parents[0])],
         );
         child(&w, "later-link", &[], vec![copy(parents[1])]);
-        // Historical rows with the original default coordinates retain their
-        // actual bytes and identity, but supply no relative display order.
+        // Historical rows with the original default coordinates keep their
+        // bytes and identity, but supply no relative display order.
         crate::archive::open_write(&w.archive.index_db(), crate::archive::cache::SETUP).unwrap()
             .execute("UPDATE message_source SET seq=0,record_position=0,source_start=0,source_end=0 WHERE input_pk=(SELECT pk FROM input_ref WHERE id='child-file')", []).unwrap();
         let pool = ReadPool::open(&w.archive).unwrap();

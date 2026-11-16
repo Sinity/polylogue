@@ -1,4 +1,4 @@
-//! The effective producer format retained by reads and their continuations.
+//! The effective producer format kept by reads and their continuations.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]

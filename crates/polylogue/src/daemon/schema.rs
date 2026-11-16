@@ -83,13 +83,13 @@ pub struct Inference {
 /// at each streaming read and before opening a SQL reader; waiting holds no
 /// reader and no chain read transaction.
 #[derive(Default)]
-pub(super) struct Admission(Arc<Shared>);
+pub(super) struct IdleGate(Arc<Shared>);
 #[derive(Default)]
 pub(super) struct Shared {
     state: Mutex<Activity>,
     changed: Condvar,
 }
-impl std::ops::Deref for Admission {
+impl std::ops::Deref for IdleGate {
     type Target = Shared;
     fn deref(&self) -> &Shared {
         &self.0
@@ -100,7 +100,7 @@ struct Activity {
     foreground: usize,
     background: bool,
 }
-pub(super) struct Foreground<'a>(&'a Admission);
+pub(super) struct Foreground<'a>(&'a IdleGate);
 impl Drop for Foreground<'_> {
     fn drop(&mut self) {
         let mut s = self.0.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -108,8 +108,8 @@ impl Drop for Foreground<'_> {
         self.0.changed.notify_all();
     }
 }
-pub(super) struct BackgroundLease<'a>(&'a Admission);
-impl Drop for BackgroundLease<'_> {
+pub(super) struct BackgroundTurn<'a>(&'a IdleGate);
+impl Drop for BackgroundTurn<'_> {
     fn drop(&mut self) {
         self.0
             .state
@@ -119,7 +119,7 @@ impl Drop for BackgroundLease<'_> {
         self.0.changed.notify_all();
     }
 }
-impl Admission {
+impl IdleGate {
     pub(super) fn foreground(&self) -> Foreground<'_> {
         self.state
             .lock()
@@ -165,19 +165,19 @@ impl Admission {
         claim(&mut state);
         Ok(())
     }
-    pub(super) fn background(&self) -> Result<BackgroundLease<'_>, StoreError> {
+    pub(super) fn background(&self) -> Result<BackgroundTurn<'_>, StoreError> {
         // Test and claim under the same lock: two waiters cannot both enter.
         self.wait(
             |s| !s.background && s.foreground == 0,
             || (),
             |s| s.background = true,
         )?;
-        Ok(BackgroundLease(self))
+        Ok(BackgroundTurn(self))
     }
     pub(super) fn idle(&self) -> Result<(), StoreError> {
         self.idle_releasing(|| ())
     }
-    /// Waits like [`Admission::idle`]; when it has to wait, `release` runs
+    /// Waits like [`IdleGate::idle`]; when it has to wait, `release` runs
     /// first, so a streaming read gives up its read transaction for the wait.
     pub(super) fn idle_releasing(&self, release: impl FnOnce()) -> Result<(), StoreError> {
         self.wait(|s| s.foreground == 0, release, |_| ())
@@ -189,13 +189,13 @@ fn check() -> Result<(), StoreError> {
 
 struct IdleRead<'a, B> {
     source: ChainReader<B>,
-    admission: &'a Admission,
+    gate: &'a IdleGate,
     read: &'a std::cell::Cell<u64>,
 }
 impl<B: PlainBlobs> Read for IdleRead<'_, B> {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
         let source = &self.source;
-        self.admission
+        self.gate
             .idle_releasing(|| source.release())
             .map_err(io::Error::other)?;
         let n = self.source.read(bytes)?;
@@ -208,21 +208,17 @@ pub(super) fn infer(d: &Daemon, selection: Infer) -> Answer<Inference> {
     if let Err(message) = selection.validate() {
         return error("bad_request", message);
     }
-    let _lease = match d.idle_admission.background() {
-        Ok(lease) => lease,
+    let _turn = match d.idle_gate.background() {
+        Ok(turn) => turn,
         Err(e) => return store_error(&e),
     };
-    match observe(&d.reads, &d.idle_admission, selection) {
+    match observe(&d.reads, &d.idle_gate, selection) {
         Ok(report) => Answer::ok(report),
         Err(e) => store_error(&e),
     }
 }
 
-fn observe(
-    pool: &ReadPool,
-    admission: &Admission,
-    selection: Infer,
-) -> Result<Inference, StoreError> {
+fn observe(pool: &ReadPool, gate: &IdleGate, selection: Infer) -> Result<Inference, StoreError> {
     let mut summary = SelectionSummary {
         origin: selection.origin.clone(),
         explicit_inputs: !selection.inputs.is_empty(),
@@ -243,24 +239,19 @@ fn observe(
     }
     if !selection.inputs.is_empty() {
         for input in &selection.inputs {
-            admission.idle()?;
+            gate.idle()?;
             let stored = pool.reader()?.schema_input(input, selection.revision)?;
             match stored {
-                Some(stored) => observe_input(
-                    pool,
-                    admission,
-                    &selection,
-                    stored,
-                    &mut observers,
-                    &mut summary,
-                )?,
+                Some(stored) => {
+                    observe_input(pool, gate, &selection, stored, &mut observers, &mut summary)?
+                }
                 None => summary.missing_revisions.push(input.clone()),
             }
         }
     } else {
         let mut after = None;
         loop {
-            admission.idle()?;
+            gate.idle()?;
             let page = pool.reader()?.schema_inputs_page(
                 selection.origin.as_deref(),
                 selection.revision,
@@ -273,14 +264,7 @@ fn observe(
             }
             summary.missing_revisions.extend(page.missing_revisions);
             for stored in page.inputs {
-                observe_input(
-                    pool,
-                    admission,
-                    &selection,
-                    stored,
-                    &mut observers,
-                    &mut summary,
-                )?;
+                observe_input(pool, gate, &selection, stored, &mut observers, &mut summary)?;
             }
             after = page.next;
             if after.is_none() {
@@ -307,7 +291,7 @@ fn observe(
 
 fn observe_input(
     pool: &ReadPool,
-    admission: &Admission,
+    gate: &IdleGate,
     selection: &Infer,
     stored: InputRevision,
     observers: &mut BTreeMap<String, (Observer, Vec<Selection>)>,
@@ -338,9 +322,9 @@ fn observe_input(
         let spec =
             polylogue_sources::origin::by_name(&stored.format).ok_or("unsupported_origin")?;
         if stored.format == polylogue_sources::browser_capture::ORIGIN {
-            return Err("native_capture_format");
+            return Err("browser_capture_format");
         }
-        admission.idle().map_err(|_| "input_read")?;
+        gate.idle().map_err(|_| "input_read")?;
         // Check the chain's extents and take a read-only blob handle, then
         // release the SQL reader before reading any payload bytes. The chain
         // reads its extents in its own transaction, which it ends whenever
@@ -359,18 +343,18 @@ fn observe_input(
         };
         let mut bytes = BufReader::new(IdleRead {
             source: bytes,
-            admission,
+            gate,
             read: &read,
         });
         let mut one = Observer::new(selection.fields.clone());
         let result = if stored.format == "codex-compressed" {
-            // Native codex revisions already contain decoded bytes even when
+            // Stored Codex revisions already contain decoded bytes even when
             // their observation path ends in .zst. Only this container origin
             // is decompressed; framing never follows the filename alone.
-            let native = polylogue_sources::origin::by_name("codex").expect("codex origin");
+            let codex = polylogue_sources::origin::by_name("codex").expect("codex origin");
             let decoded =
                 zstd::stream::read::Decoder::new(bytes).map_err(|_| "unreadable_input")?;
-            observe_bytes(&mut one, BufReader::new(decoded), native, &stored.path)
+            observe_bytes(&mut one, BufReader::new(decoded), codex, &stored.path)
         } else {
             observe_bytes(&mut one, &mut bytes, spec, &stored.path)
         };

@@ -63,7 +63,7 @@ fn boundary_steps(messages: i64, successor: bool) -> u64 {
     let (boundary, steps) = counted(&conn, || start(&conn, 1, &change).unwrap());
     assert!(matches!(
         boundary,
-        Start::From(Anchor {
+        Start::From(StartPoint {
             seq: 0,
             pk: 1,
             time_bound: Some(1)
@@ -118,7 +118,7 @@ fn insertion_boundary_work_follows_changed_batch_size() {
     let current = boundary_steps(1024, true);
     assert!(
         old_steps > current * 8,
-        "positive control {old_steps}, current {current}"
+        "old loop steps {old_steps}, current {current}"
     );
 }
 
@@ -127,7 +127,7 @@ fn moved_and_removed_messages_keep_the_earliest_boundary() {
     let (conn, mut change) = fixture(1, true);
     conn.execute("INSERT INTO session_item VALUES(1,2,2,NULL,1)", [])
         .unwrap();
-    // An existing message moved before the retained prefix.
+    // An existing message moved before the stored prefix.
     conn.execute("UPDATE message SET session_order='-1' WHERE pk=2", [])
         .unwrap();
     assert!(matches!(start(&conn, 1, &change).unwrap(), Start::Whole));
@@ -135,7 +135,7 @@ fn moved_and_removed_messages_keep_the_earliest_boundary() {
     conn.execute("DELETE FROM message WHERE pk=2", []).unwrap();
     assert!(matches!(
         start(&conn, 1, &change).unwrap(),
-        Start::From(Anchor { seq: 1, .. })
+        Start::From(StartPoint { seq: 1, .. })
     ));
     change.messages.clear();
     assert!(matches!(start(&conn, 1, &change).unwrap(), Start::Links));
@@ -147,7 +147,7 @@ fn reply_parent_boundary_work_follows_the_changed_batch() {
         let (conn, mut change) = fixture(messages, false);
         change.parents.insert("prefix".into());
         change.parents.insert("absent-parent".into());
-        // In this reversed-PK reply chain, every parent except the retained
+        // In this reversed-PK reply chain, every parent except the kept
         // prefix is itself a visible message in the changed batch.
         for pk in 3..=messages + 1 {
             change.parents.insert(format!("message-{pk}"));

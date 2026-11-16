@@ -60,8 +60,8 @@ fn later(a: Option<i64>, b: Option<i64>) -> Ordering {
 /// What the session derivation stores for a session.
 #[derive(Debug)]
 pub(crate) struct Facts {
-    /// Its live facts folded again, when evidence arrived out of order.
-    live: Option<crate::live::Refold>,
+    /// Its live facts recomputed, when live events arrived out of order.
+    live: Option<crate::live::RecomputedLive>,
     last_activity_at: Option<i64>,
     columns: Columns,
 }
@@ -80,7 +80,7 @@ fn compute(conn: &Connection, session_pk: i64) -> Result<Facts> {
         .prepare_cached("SELECT live_reparse FROM session WHERE pk=?1")?
         .query_row([session_pk], |r| r.get(0))?;
     let live = reset
-        .then(|| crate::live::refold(conn, session_pk))
+        .then(|| crate::live::recompute_live(conn, session_pk))
         .transpose()?;
     let last_activity_at: Option<i64> = conn
         .prepare_cached("SELECT max(at) FROM message WHERE session_pk=?1")?
@@ -148,8 +148,8 @@ fn compute(conn: &Connection, session_pk: i64) -> Result<Facts> {
 }
 
 pub(super) fn apply(tx: &Transaction<'_>, session_pk: i64, facts: &Facts) -> Result<()> {
-    if let Some(refold) = &facts.live {
-        crate::live::write_refold(tx, session_pk, refold)?;
+    if let Some(recomputed) = &facts.live {
+        crate::live::write_recomputed_live(tx, session_pk, recomputed)?;
     }
     tx.prepare_cached("UPDATE session SET last_activity_at=?2 WHERE pk=?1")?
         .execute(params![session_pk, facts.last_activity_at])?;

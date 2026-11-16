@@ -1,4 +1,4 @@
-//! Client-owned, staged directory delivery over canonical read records.
+//! Client-owned, staged directory delivery of read records.
 use polylogue_model::bundle::Format;
 use polylogue_model::{BlobHash, SessionId, bundle::*, read::*};
 use polylogue_store::export_items::{ExportItems, Order};
@@ -9,7 +9,7 @@ use std::{
 };
 
 #[derive(Debug, thiserror::Error)]
-#[error("{message}; staged bundle retained at {staging}")]
+#[error("{message}; staged bundle kept at {staging}")]
 pub struct Error {
     pub message: String,
     pub staging: PathBuf,
@@ -22,7 +22,7 @@ pub struct Summary {
     pub previous: Option<PathBuf>,
 }
 
-/// The staging directory is retained on every unsuccessful path, including
+/// The staging directory is kept on every unsuccessful path, including
 /// disconnect/drop. Only publication transfers its ownership to the destination.
 pub struct Bundle {
     destination: PathBuf,
@@ -118,7 +118,7 @@ impl Bundle {
         }
         self.frames += 1;
         let (mut record, mut parts) = match item {
-            ReadRecord::Canonical { record, parts } => (*record, parts),
+            ReadRecord::Original { record, parts } => (*record, parts),
             presentation @ ReadRecord::Presentation { .. } => {
                 if presentation.parts().is_empty() {
                     return Err(self.error("empty presentation transfer"));
@@ -141,28 +141,28 @@ impl Bundle {
         if let Some(previous) = previous {
             let previous: ReadRecord =
                 serde_json::from_reader(previous.reader).map_err(|e| self.error(e))?;
-            let ReadRecord::Canonical {
+            let ReadRecord::Original {
                 record: previous,
                 parts: previous_parts,
             } = previous
             else {
-                return Err(self.error("canonical staging identity names presentation"));
+                return Err(self.error("the staging identity names a presentation"));
             };
             match (&mut record, &*previous) {
                 (Record::Message(new), Record::Message(old))
                     if new.commit == old.commit && new.order == old.order =>
                 {
                     let merged = old
-                        .projection()
-                        .merge(&old.message, &new.projection(), &new.message)
+                        .block_selection()
+                        .merge(&old.message, &new.block_selection(), &new.message)
                         .map_err(|e| self.error(e))?;
-                    let Some((message, projection)) = merged else {
+                    let Some((message, block_selection)) = merged else {
                         return Err(self.error("conflicting message source versions"));
                     };
                     new.message = message;
-                    new.source_version = projection.source_version;
-                    new.block_count = projection.block_count;
-                    new.block_ordinals = projection.block_ordinals;
+                    new.source_version = block_selection.source_version;
+                    new.block_count = block_selection.block_count;
+                    new.block_ordinals = block_selection.block_ordinals;
                     new.copied_for.extend(old.copied_for.iter().cloned());
                     new.copied_for.sort();
                     new.copied_for.dedup();
@@ -184,7 +184,7 @@ impl Bundle {
             }
         }
         self.stage(
-            &ReadRecord::Canonical {
+            &ReadRecord::Original {
                 record: Box::new(record),
                 parts,
             },
@@ -325,10 +325,10 @@ impl Bundle {
                 }
                 let expected = format!("blobs/{}", blob.file.hash);
                 if blob.file.path != expected {
-                    return Err("noncanonical blob path".into());
+                    return Err("unexpected blob path".into());
                 }
-                let actual = describe(&self.staging, &expected)?;
-                if actual != blob.file {
+                let described = describe(&self.staging, &expected)?;
+                if described != blob.file {
                     return Err("blob bytes do not match descriptor".into());
                 }
                 line(
@@ -336,7 +336,7 @@ impl Bundle {
                     &InventoryRecord {
                         kind: MemberKind::Blob,
                         reference: Some(blob.reference.clone()),
-                        file: actual,
+                        file: described,
                     },
                 )?;
             }
@@ -358,7 +358,7 @@ impl Bundle {
                         .map_err(string)?
                         .is_none()
                 {
-                    return Err("blob bytes have no canonical descriptor".into());
+                    return Err("blob bytes have no stored descriptor".into());
                 }
             }
         }
@@ -636,8 +636,8 @@ fn line(file: &mut File, value: &impl serde::Serialize) -> std::result::Result<(
     serde_json::to_writer(&mut *file, value).map_err(string)?;
     file.write_all(b"\n").map_err(string)
 }
-/// Records follow their admission, and a session's messages follow their
-/// reading order within one admission, not the alphabet of their IDs.
+/// Records follow their commit order, and a session's messages follow their
+/// reading order within one commit, not the alphabet of their IDs.
 fn order_key(record: &Record) -> Vec<u8> {
     let mut key = record.commit().unwrap_or(u64::MAX).to_be_bytes().to_vec();
     if let Record::Message(message) = record {

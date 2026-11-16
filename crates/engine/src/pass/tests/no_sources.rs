@@ -157,21 +157,21 @@ fn without_sources_an_import_is_stored_and_the_loop_then_becomes_idle() {
 }
 
 #[test]
-fn retained_replay_uses_recorded_native_paths_without_machine_discovery() {
+fn replay_uses_recorded_raw_paths() {
     use std::os::unix::ffi::OsStringExt;
 
     let mut home = ClaudeHome::new();
-    // Fixed roots may contain native bytes; the provider's wildcard path
+    // Fixed roots may contain raw path bytes; the provider's wildcard path
     // components and transcript stem still use their supported spelling.
-    let native_home = home
+    let raw_home = home
         .home
         .with_file_name(std::ffi::OsString::from_vec(b"home-\xff".to_vec()));
-    std::fs::rename(&home.home, &native_home).unwrap();
-    home.home = native_home;
+    std::fs::rename(&home.home, &raw_home).unwrap();
+    home.home = raw_home;
     let path = home.file("native-kept.jsonl");
     std::fs::write(
         &path,
-        claude_user("one", "native-kept", "native retained words"),
+        claude_user("one", "native-kept", "native kept words"),
     )
     .unwrap();
     {
@@ -181,7 +181,7 @@ fn retained_replay_uses_recorded_native_paths_without_machine_discovery() {
         let known = reader
             .known_watched_input_at("test-machine", path.as_os_str().as_encoded_bytes())
             .unwrap()
-            .expect("the fixed native root was captured");
+            .expect("the fixed raw root was captured");
         assert_eq!(
             known.path_bytes.as_deref(),
             Some(path.as_os_str().as_encoded_bytes())
@@ -189,7 +189,7 @@ fn retained_replay_uses_recorded_native_paths_without_machine_discovery() {
         let plans = reader
             .chains_behind_index(
                 &[("claude-code".into(), "synthetic-previous-reading".into())],
-                polylogue_store::StoppedChains::Settled,
+                polylogue_store::StoppedChains::Finished,
                 RevisionChains::Newest,
                 None,
             )
@@ -201,7 +201,7 @@ fn retained_replay_uses_recorded_native_paths_without_machine_discovery() {
             Some(path.as_os_str().as_encoded_bytes())
         );
     }
-    assert_eq!(home.texts("native-kept"), ["native retained words"]);
+    assert_eq!(home.texts("native-kept"), ["native kept words"]);
     let stored = rows(&home);
     assert!(
         stored.iter().all(|count| *count > 0),
@@ -212,11 +212,11 @@ fn retained_replay_uses_recorded_native_paths_without_machine_discovery() {
     let (mut engine, _lock) = open_engine(&home);
     engine.config.reads_sources = false;
     // Stored identity and parser selection do not depend on this host having
-    // observed the input. No native path is used to reopen the gone file.
+    // observed the input. No raw path is used to reopen the gone file.
     engine.config.machine = "another-machine".into();
     let summary = until_idle(&mut engine, Vec::new());
     assert!(summary.work.errors.is_empty(), "{summary:?}");
-    assert_eq!(home.texts("native-kept"), ["native retained words"]);
+    assert_eq!(home.texts("native-kept"), ["native kept words"]);
     assert_eq!(rows(&home), stored);
     assert!(engine.inputs.is_empty());
     let idle = engine.run_pass().unwrap();
@@ -229,14 +229,11 @@ fn retained_replay_uses_recorded_native_paths_without_machine_discovery() {
 
 #[cfg(feature = "faults")]
 #[test]
-fn retained_planning_never_reads_watched_history_but_source_restoration_still_does() {
+fn stored_planning_skips_watched_history() {
     use polylogue_store::fault::{self, Action};
 
     let home = ClaudeHome::new();
-    home.append(
-        "stored.jsonl",
-        &claude_user("one", "stored", "retained body"),
-    );
+    home.append("stored.jsonl", &claude_user("one", "stored", "stored body"));
     {
         let (mut engine, _lock) = open_engine(&home);
         assert!(engine.run_pass().unwrap().errors.is_empty());
@@ -246,7 +243,7 @@ fn retained_planning_never_reads_watched_history_but_source_restoration_still_do
     let (mut engine, _lock) = open_engine(&home);
     engine.config.reads_sources = false;
     // Refuse the entire observation-history lookup, not just one result row.
-    // Successful replay proves that this work is absent from the real route.
+    // Successful replay shows that this work is absent from the real route.
     fault::clear();
     fault::arm(
         "read.watched_inputs",
@@ -276,12 +273,12 @@ fn retained_planning_never_reads_watched_history_but_source_restoration_still_do
         engine.inputs[&home.file("stored.jsonl")].parsed_upto,
         std::fs::metadata(home.file("stored.jsonl")).unwrap().len()
     );
-    assert_eq!(home.texts("stored"), ["retained body"]);
+    assert_eq!(home.texts("stored"), ["stored body"]);
     assert_eq!(rows(&home), stored);
 }
 
 #[test]
-fn retained_stopped_readings_keep_their_attempt_and_upgrade_from_stored_bytes() {
+fn stopped_readings_keep_their_attempt_and_upgrade() {
     use polylogue_model::batch::StepProgress;
 
     for old_version in [false, true] {
@@ -317,7 +314,7 @@ fn retained_stopped_readings_keep_their_attempt_and_upgrade_from_stored_bytes() 
         engine
             .writer
             .send(polylogue_store::Batch {
-                required_disposition: None,
+                required_outcome: None,
                 input: InputKey {
                     id: input.clone(),
                     format: state.origin.name.into(),

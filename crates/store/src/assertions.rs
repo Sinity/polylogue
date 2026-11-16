@@ -1,4 +1,4 @@
-//! Assertion records, their links and the stored currency index. Write policy
+//! Assertion records, their links and the stored current-revision index. Write policy
 //! resolves selectors before this layer receives immutable records; every
 //! record written here updates `revision_state` for exactly the roots it can
 //! affect, in the same transaction.
@@ -13,7 +13,7 @@ use polylogue_model::{
 use rusqlite::{Connection, params};
 use std::collections::BTreeSet;
 
-pub(crate) mod currency;
+pub(crate) mod current_revisions;
 mod saved;
 pub(crate) mod sql;
 pub(crate) use saved::{
@@ -100,7 +100,7 @@ pub(crate) fn family_present(conn: &Connection, root: &str) -> Result<bool> {
         .exists([root])?)
 }
 
-/// Streams canonical facts, independently of currency, in deterministic order.
+/// Streams stored facts, current or not, in deterministic order.
 pub fn visit(
     conn: &Connection,
     after: Option<u64>,
@@ -128,7 +128,7 @@ pub fn visit(
     Ok(())
 }
 
-/// Families whose currency can change when these newly admitted facts arrive.
+/// Families whose current revisions can change when these newly committed facts arrive.
 /// Includes withdrawal/reinstatement targets through the owning link rules.
 pub(crate) fn changed_roots(conn: &Connection, after: i64) -> Result<BTreeSet<String>> {
     let after = u64::try_from(after).map_err(|_| invalid("negative assertion cursor"))?;
@@ -292,10 +292,10 @@ pub fn apply(conn: &Connection, assertions: &[AssertionFact], counter: i64) -> R
     for record in &written {
         roots.extend(authored::affected_roots(&mut stored, record)?);
     }
-    currency::recompute(conn, roots)
+    current_revisions::recompute(conn, roots)
 }
 
-/// Inserts one fact, its links and its slots; the caller recomputes currency.
+/// Inserts one fact, its links and its slots; the caller recomputes current revisions.
 pub(crate) fn insert(
     conn: &Connection,
     source: Source,
@@ -368,7 +368,7 @@ fn check_read() -> Result<()> {
     Ok(())
 }
 
-/// The links of stored assertions, for the shared currency and request rules.
+/// The links of stored assertions, for the shared current-revision and request rules.
 /// Reads go through the connection's source tables; an as-of view keeps only
 /// records written by a time.
 pub(crate) struct StoredLinks<'a> {
@@ -411,7 +411,7 @@ impl<'a> StoredLinks<'a> {
             ..Self::new(conn)?
         })
     }
-    fn eligible(&self, created_at: Option<i64>) -> bool {
+    fn in_view(&self, created_at: Option<i64>) -> bool {
         match self.until {
             None => true,
             Some(Until {
@@ -433,7 +433,7 @@ impl<'a> StoredLinks<'a> {
         let mut incoming = Vec::new();
         while let Some(row) = rows.next()? {
             check_read()?;
-            if self.eligible(row.get(2)?) {
+            if self.in_view(row.get(2)?) {
                 incoming.push(Revision::new(
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
@@ -456,7 +456,7 @@ impl Links for StoredLinks<'_> {
         let mut rows = statement.query([root])?;
         let mut result = Vec::new();
         while let Some(row) = rows.next()? {
-            if self.eligible(row.get(1)?) {
+            if self.in_view(row.get(1)?) {
                 result.push(Revision::new(root, row.get::<_, String>(0)?));
             }
         }
@@ -505,7 +505,7 @@ impl Holders for StoredLinks<'_> {
     }
 }
 
-/// Variant revisions follow the same currency rule: a variant's `base` is the
+/// Variant revisions follow the same current-revision rule: a variant's `base` is the
 /// revision it revises, and a `withdrawal` assertion withdraws it. A withdrawal
 /// of a withdrawal is an assertion, so lookups that leave the variant's own
 /// revisions go to the stored assertions.
@@ -607,7 +607,7 @@ pub fn heads(conn: &Connection, root: &Reference) -> Result<Vec<Reference>> {
         Reference::Assertion(RevisionReference {
             root,
             revision: None,
-        }) => currency::stored_heads(conn, root),
+        }) => current_revisions::stored_heads(conn, root),
         Reference::Variant {
             revision:
                 RevisionReference {

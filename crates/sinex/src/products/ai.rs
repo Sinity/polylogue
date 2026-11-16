@@ -1,4 +1,4 @@
-//! Declared AI domain fields and source evidence for native Sinex readers.
+//! Declared AI domain fields, with time accuracy and stated sources, for Sinex readers.
 use crate::kinds::{GitIdentity, Objective, RecordRef, TerminalIdentity};
 use polylogue_model::{
     Block, MessageId, MessageRow, Production, PromptKind, Role, Session, SessionId, SessionKind,
@@ -203,10 +203,10 @@ pub(super) fn schema(product: &str) -> Option<serde_json::Value> {
         rename_schema_field(&mut schema, "at", "branch_point");
     }
     if matches!(product, "document" | "event") {
-        let mut evidence = serde_json::to_value(schemars::schema_for!(TimeEvidence)).unwrap();
-        if let Some(definitions) = evidence
+        let mut accuracy = serde_json::to_value(schemars::schema_for!(TimeEvidence)).unwrap();
+        if let Some(definitions) = accuracy
             .as_object_mut()
-            .expect("time evidence schema")
+            .expect("time accuracy schema")
             .remove("$defs")
         {
             let fields = schema
@@ -216,7 +216,7 @@ pub(super) fn schema(product: &str) -> Option<serde_json::Value> {
                 .or_insert_with(|| serde_json::json!({}))
                 .as_object_mut()
                 .expect("domain definitions");
-            for (name, definition) in definitions.as_object().expect("time evidence definitions") {
+            for (name, definition) in definitions.as_object().expect("time accuracy definitions") {
                 if let Some(existing) = fields.get(name) {
                     assert_eq!(existing, definition);
                 } else {
@@ -224,7 +224,7 @@ pub(super) fn schema(product: &str) -> Option<serde_json::Value> {
                 }
             }
         }
-        schema["properties"]["at_evidence"] = evidence;
+        schema["properties"]["at_evidence"] = accuracy;
         schema["required"]
             .as_array_mut()
             .expect("required domain fields")
@@ -252,5 +252,5 @@ fn rename_schema_field(schema: &mut serde_json::Value, from: &str, to: &str) {
 pub(super) struct ToolFields<'a> {
     #[serde(flatten)]
     pub call: &'a polylogue_store::primary::products::ToolCall,
-    pub context: crate::native::Facts,
+    pub context: crate::attribution::Facts,
 }

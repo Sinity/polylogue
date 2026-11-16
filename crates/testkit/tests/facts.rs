@@ -75,6 +75,6 @@ fn a_continuation_reads_its_inherited_prefix_logically() {
     let r = pool.reader().unwrap();
     // #4 copies #2's prefix: 18 inherited messages, then its 10 own turns
     // and the explicit isCompactSummary harness message (sessions.md compaction).
-    // Physical copied history needs no invented provider resume link.
+    // History copied into the file needs no invented provider resume link.
     assert_eq!(r.messages(&session(4), true).unwrap().len(), 29);
 }

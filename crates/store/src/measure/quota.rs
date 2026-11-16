@@ -92,7 +92,7 @@ pub struct ToolQuota {
     pub windows: Vec<Window>,
     /// Readings that cannot be placed in a provider window.
     pub unplaced: Vec<Observation>,
-    /// Physical usage whose spend time cannot be assigned to a window.
+    /// Recorded usage whose spend time cannot be assigned to a window.
     pub recorded_usage: usage::RecordedUsage,
 }
 
@@ -138,21 +138,25 @@ pub fn current_window(obs: &[Observation], now: i64) -> Option<(WindowSource, i6
 
 /// Five-hour blocks from response times (sorted), the way the tools bill
 /// them: a block starts at the hour of the first response after the
-/// previous block ended and lasts `len`. Reported windows (`anchors`) are
+/// previous block ended and lasts `len`. Reported windows (`reported_windows`) are
 /// fixed and win: a response inside one belongs to it, and an inferred
 /// block ends where a reported one begins, so a response before a reported
 /// reset never moves the windows after it.
-pub fn blocks(times: &[i64], anchors: &[(i64, i64)], len: i64) -> Vec<(WindowSource, i64, i64)> {
-    let mut anchors: Vec<(i64, i64)> = anchors.to_vec();
-    anchors.sort_unstable();
-    anchors.dedup();
-    let mut out: Vec<(WindowSource, i64, i64)> = anchors
+pub fn blocks(
+    times: &[i64],
+    reported_windows: &[(i64, i64)],
+    len: i64,
+) -> Vec<(WindowSource, i64, i64)> {
+    let mut reported_windows: Vec<(i64, i64)> = reported_windows.to_vec();
+    reported_windows.sort_unstable();
+    reported_windows.dedup();
+    let mut out: Vec<(WindowSource, i64, i64)> = reported_windows
         .iter()
         .map(|&(s, e)| (WindowSource::Reported, s, e))
         .collect();
     let mut open: Option<(i64, i64)> = None;
     for &t in times {
-        if anchors.iter().any(|&(s, e)| s <= t && t < e) {
+        if reported_windows.iter().any(|&(s, e)| s <= t && t < e) {
             continue;
         }
         if let Some((_, end)) = open
@@ -161,8 +165,12 @@ pub fn blocks(times: &[i64], anchors: &[(i64, i64)], len: i64) -> Vec<(WindowSou
             continue;
         }
         let start = t - t.rem_euclid(HOUR);
-        let next_anchor = anchors.iter().map(|&(s, _)| s).filter(|&s| s > start).min();
-        let end = next_anchor.map_or(start + len, |a| a.min(start + len));
+        let next_reported_start = reported_windows
+            .iter()
+            .map(|&(s, _)| s)
+            .filter(|&s| s > start)
+            .min();
+        let end = next_reported_start.map_or(start + len, |a| a.min(start + len));
         open = Some((start, end));
         out.push((WindowSource::Inferred, start, end));
     }
@@ -286,12 +294,12 @@ pub fn quota(reader: &Reader<'_>, now: i64, known: &[(&str, &[QuotaLimit])]) -> 
                 // previous one ended.
                 _ if from_first_response => {
                     let times = response_times(reader, tool, now - 2 * minutes * MINUTE, now)?;
-                    let anchors: Vec<(i64, i64)> = these
+                    let reported_windows: Vec<(i64, i64)> = these
                         .iter()
                         .filter_map(|o| o.resets_at)
                         .map(|r| (r - minutes * MINUTE, r))
                         .collect();
-                    blocks(&times, &anchors, minutes * MINUTE)
+                    blocks(&times, &reported_windows, minutes * MINUTE)
                         .into_iter()
                         .find(|&(_, s, e)| s <= now && now < e)
                 }

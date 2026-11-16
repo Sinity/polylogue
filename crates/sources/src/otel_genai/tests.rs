@@ -144,7 +144,7 @@ fn malformed_middle_lines_discard_their_prefix_and_preserve_later_spans() {
 }
 
 #[test]
-fn nanoseconds_are_exact_unknowns_precede_known_and_equal_keys_keep_physical_order() {
+fn span_order_keeps_nanoseconds_and_file_order() {
     let spans = vec![
         named("last", Some(u64::MAX), "max"),
         named("tie", Some(42), "tie first"),
@@ -210,7 +210,7 @@ fn an_out_of_range_numeric_timestamp_stays_unknown_without_dropping_its_span() {
 }
 
 #[test]
-fn native_span_bounds_and_message_clock_basis_survive() {
+fn span_bounds_and_message_clock_basis_survive() {
     use polylogue_model::{Precision, TimeQuality};
     let doc = wrapped(vec![chat_span(
         "ns",
@@ -239,7 +239,7 @@ fn native_span_bounds_and_message_clock_basis_survive() {
 }
 
 #[test]
-fn a_span_without_native_clock_does_not_invent_time() {
+fn span_without_a_clock_does_not_invent_time() {
     use polylogue_model::TimeQuality;
     let step = parse(&serde_json::to_vec(&wrapped(vec![named("none", None, "c")])).unwrap());
     assert!(step.output.sessions[0].started.is_none());

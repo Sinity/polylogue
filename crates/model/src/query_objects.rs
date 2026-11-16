@@ -1,4 +1,4 @@
-//! Immutable questions and the exact bindings of their executions.
+//! Immutable questions and the bindings of their executions.
 
 use crate::bundle::{
     TextCoverage, TextFragmentError, TextSourceVersion, TextSpanOrigin,
@@ -331,7 +331,7 @@ impl QueryRun {
     pub fn binding_hash(&self) -> Result<crate::BlobHash, serde_json::Error> {
         self.binding.binding_hash()
     }
-    /// Integrity of this exact invocation, including its position and envelope.
+    /// Hash of this invocation, including its position and request.
     pub fn record_hash(&self) -> Result<crate::BlobHash, serde_json::Error> {
         metadata_hash("polylogue-query-run-begin-v1", self)
     }
@@ -366,7 +366,7 @@ pub enum ExecutionBindingError {
     SpanTarget,
 }
 impl ExecutionBinding {
-    /// Shape only. Raw serialized bindings never establish custody or authority.
+    /// Shape only. A serialized binding alone grants nothing.
     pub fn validate_presentation(&self) -> Result<(), ExecutionBindingError> {
         validate_presentation(
             &self.presentation,

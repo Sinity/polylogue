@@ -45,13 +45,13 @@ impl ParentLifetime {
 }
 
 impl Inner {
-    pub(super) fn admit_user_parent(
+    pub(super) fn check_user_parent(
         &self,
         id: &str,
         parent: Option<&ParentLifetime>,
     ) -> Result<()> {
         #[cfg(any(test, feature = "fixture"))]
-        self.dispatch.reach(id, DispatchPhase::BeforeAdmission)?;
+        self.dispatch.reach(id, DispatchPhase::BeforeParentCheck)?;
         if let Some(parent) = parent {
             parent.check()?;
         }
@@ -71,7 +71,7 @@ mod fixture {
 
     #[derive(Clone, Copy, PartialEq, Eq)]
     pub enum DispatchPhase {
-        BeforeAdmission,
+        BeforeParentCheck,
         Owned,
     }
 
@@ -83,14 +83,14 @@ mod fixture {
     }
 
     #[derive(Clone, Default)]
-    pub(in crate::writer) struct Barriers(Arc<Mutex<Vec<Pause>>>);
+    pub(in crate::writer) struct DispatchPauses(Arc<Mutex<Vec<Pause>>>);
 
-    /// One exact writer dispatch pause. Dropping it releases the native worker.
-    pub struct DispatchBarrier {
+    /// One writer dispatch pause. Dropping it releases the worker thread.
+    pub struct DispatchPause {
         reached: Receiver<()>,
         release: Option<SyncSender<()>>,
     }
-    impl DispatchBarrier {
+    impl DispatchPause {
         pub fn wait(&self) -> std::result::Result<(), std::sync::mpsc::RecvTimeoutError> {
             self.reached.recv_timeout(Duration::from_secs(5))
         }
@@ -100,13 +100,13 @@ mod fixture {
             }
         }
     }
-    impl Drop for DispatchBarrier {
+    impl Drop for DispatchPause {
         fn drop(&mut self) {
             // A disconnected release channel also lets the writer finish.
             self.release.take();
         }
     }
-    impl Barriers {
+    impl DispatchPauses {
         pub(in crate::writer) fn reach(&self, id: &str, phase: DispatchPhase) -> Result<()> {
             let pause = {
                 let mut pauses = self.0.lock().map_err(|_| StoreError::WriterGone)?;
@@ -117,7 +117,7 @@ mod fixture {
             };
             if let Some(pause) = pause {
                 let _ = pause.reached.send(());
-                // No registry lock is held while the actual writer is paused.
+                // No registry lock is held while the writer is paused.
                 let _ = pause.release.recv();
             }
             Ok(())
@@ -128,7 +128,7 @@ mod fixture {
             &self,
             id: &str,
             phase: DispatchPhase,
-        ) -> DispatchBarrier {
+        ) -> DispatchPause {
             let (reached, wait) = sync_channel(1);
             let (release, resume) = sync_channel(1);
             self.0.dispatch.0.lock().unwrap().push(Pause {
@@ -137,7 +137,7 @@ mod fixture {
                 reached,
                 release: resume,
             });
-            DispatchBarrier {
+            DispatchPause {
                 reached: wait,
                 release: Some(release),
             }
@@ -145,6 +145,6 @@ mod fixture {
     }
 }
 #[cfg(any(test, feature = "fixture"))]
-pub(super) use fixture::Barriers;
+pub(super) use fixture::DispatchPauses;
 #[cfg(any(test, feature = "fixture"))]
-pub use fixture::{DispatchBarrier, DispatchPhase};
+pub use fixture::{DispatchPause, DispatchPhase};

@@ -200,7 +200,7 @@ fn tool_result(
     }
 }
 
-/// Multi-result records associate metadata by native call identity. An
+/// Multi-result records associate metadata by tool call ID. An
 /// unkeyed result belongs to a block only when the record has one result.
 fn result_metadata<'a>(record: &'a Json, item: &Json, sole: bool) -> Option<&'a Json> {
     let result = record.get("toolUseResult")?;
@@ -235,7 +235,7 @@ fn result_metadata<'a>(record: &'a Json, item: &Json, sole: bool) -> Option<&'a 
     sole.then_some(result).filter(|value| value.is_object())
 }
 
-/// The result's outcome, from the most specific evidence present: a denial,
+/// The result's outcome, from the most specific signal present: a denial,
 /// an interruption, a timeout, a background launch, then `is_error`.
 pub fn outcome(
     record: &Json,

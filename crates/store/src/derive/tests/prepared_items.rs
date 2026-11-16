@@ -13,7 +13,7 @@ fn duplicate_write(
     let items = if duplicate.is_none() {
         vec![(
             message,
-            crate::items::prepare_retained_message(conn, message).unwrap(),
+            crate::items::prepare_stored_message(conn, message).unwrap(),
         )]
     } else {
         Vec::new()

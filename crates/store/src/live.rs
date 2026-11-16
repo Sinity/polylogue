@@ -1,16 +1,16 @@
-//! Live facts and their history. Each stored piece of live evidence (an
-//! event of route `hook`, `process` or `registry`) is folded into its
+//! Live facts and their history. Each stored live event (an
+//! event of route `hook`, `process` or `registry`) is applied to its
 //! session's `live_facts` in the transaction that stores it
-//! ([`polylogue_model::live::fold`]); the intervals it closes go to
+//! ([`polylogue_model::live::apply_live_event`]); the intervals it closes go to
 //! `live_interval` and process lines to `process`. The live state itself
 //! is computed when asked, from the facts and the time (`pl_live`); nothing
 //! here looks at the clock.
 //!
-//! Evidence that arrives no later than what a session has already folded
-//! marks the session for a refold, which the session derivation runs over
+//! An event that arrives no later than what a session has already applied
+//! marks the session for a recomputation, which the session derivation runs over
 //! every stored line in (time, input identity, byte offset) order (the
 //! input's stable identity, not its row key, so a rebuild orders alike): lines at one
-//! instant may arrive in any order, and a line stored again must not fold
+//! instant may arrive in any order, and a line stored again must not count
 //! twice. Both paths give the same rows.
 
 use crate::Result;
@@ -19,8 +19,8 @@ use polylogue_model::live::{self, LiveFacts, LiveInterval};
 use rusqlite::{OptionalExtension, Transaction, params};
 use std::collections::BTreeSet;
 
-/// The kinds that are live evidence, as a SQL condition on `kind`.
-pub(crate) const EVIDENCE_KINDS: &str = "(kind LIKE 'hook~_%' ESCAPE '~' \
+/// The kinds that are live events, as a SQL condition on `kind`.
+pub(crate) const LIVE_EVENT_KINDS: &str = "(kind LIKE 'hook~_%' ESCAPE '~' \
      OR kind LIKE 'process~_%' ESCAPE '~' OR kind LIKE 'registry~_%' ESCAPE '~' \
      OR kind LIKE 'git~_%' ESCAPE '~')";
 
@@ -131,9 +131,9 @@ fn record_process(
     Ok(())
 }
 
-/// Folds one stored live evidence event into `session_pk`'s facts. An
-/// event no later than the facts already folded marks the session for a
-/// refold instead, so the result never depends on arrival order.
+/// Applies one stored live event to `session_pk`'s facts. An
+/// event no later than the facts already applied marks the session for a
+/// recomputation instead, so the result never depends on arrival order.
 pub(crate) fn apply(
     tx: &Transaction<'_>,
     session_pk: i64,
@@ -142,7 +142,7 @@ pub(crate) fn apply(
     data: &Json,
     counter: i64,
 ) -> Result<()> {
-    if !live::is_evidence(kind) {
+    if !live::is_live_event(kind) {
         return Ok(());
     }
     // A line without a time cannot be ordered against the others.
@@ -155,27 +155,30 @@ pub(crate) fn apply(
             .execute([session_pk])?;
         return Ok(());
     }
-    let closed = live::fold(&mut facts, kind, at, data);
+    let closed = live::apply_live_event(&mut facts, kind, at, data);
     record_intervals(tx, session_pk, &closed)?;
     record_process(tx, session_pk, kind, at, data)?;
     store(tx, session_pk, &facts, counter)
 }
 
-/// A session's live facts folded again from every stored live evidence
+/// A session's live facts recomputed from every stored live
 /// event, in (time, line) order: what each event closed and the process
 /// line it is, then the facts after the last.
 #[derive(Debug)]
-pub(crate) struct Refold {
+pub(crate) struct RecomputedLive {
     events: Vec<(Vec<LiveInterval>, String, i64, Json)>,
     facts: LiveFacts,
 }
 
-/// Folds every stored live evidence event of the session again.
-pub(crate) fn refold(conn: &rusqlite::Connection, session_pk: i64) -> Result<Refold> {
+/// Recomputes the session's live facts from every stored live event.
+pub(crate) fn recompute_live(
+    conn: &rusqlite::Connection,
+    session_pk: i64,
+) -> Result<RecomputedLive> {
     let mut facts = LiveFacts::default();
     let mut statement = conn.prepare_cached(&format!(
         "SELECT e.kind, e.at, e.data FROM event e JOIN input_ref i ON i.pk = e.input_pk
-         WHERE e.session_pk = ?1 AND e.at IS NOT NULL AND {EVIDENCE_KINDS}
+         WHERE e.session_pk = ?1 AND e.at IS NOT NULL AND {LIVE_EVENT_KINDS}
          ORDER BY e.at, i.id, e.source_start, e.id"
     ))?;
     let rows = statement.query_map([session_pk], |r| {
@@ -189,15 +192,19 @@ pub(crate) fn refold(conn: &rusqlite::Connection, session_pk: i64) -> Result<Ref
     for row in rows {
         let (kind, at, data) = row?;
         let data: Json = crate::encoding::unpack_json(&data)?;
-        let closed = live::fold(&mut facts, &kind, at, &data);
+        let closed = live::apply_live_event(&mut facts, &kind, at, &data);
         events.push((closed, kind, at, data));
     }
-    Ok(Refold { events, facts })
+    Ok(RecomputedLive { events, facts })
 }
 
 /// Replaces the session's live facts, intervals and process rows with a
-/// refold's.
-pub(crate) fn write_refold(tx: &Transaction<'_>, session_pk: i64, refold: &Refold) -> Result<()> {
+/// recomputation's.
+pub(crate) fn write_recomputed_live(
+    tx: &Transaction<'_>,
+    session_pk: i64,
+    recomputed: &RecomputedLive,
+) -> Result<()> {
     let counter: i64 = tx
         .prepare_cached("SELECT changed FROM session WHERE pk = ?1")?
         .query_row([session_pk], |r| r.get(0))?;
@@ -205,11 +212,11 @@ pub(crate) fn write_refold(tx: &Transaction<'_>, session_pk: i64, refold: &Refol
         .execute([session_pk])?;
     tx.prepare_cached("DELETE FROM process WHERE session_pk = ?1")?
         .execute([session_pk])?;
-    for (closed, kind, at, data) in &refold.events {
+    for (closed, kind, at, data) in &recomputed.events {
         record_intervals(tx, session_pk, closed)?;
         record_process(tx, session_pk, kind, *at, data)?;
     }
-    store(tx, session_pk, &refold.facts, counter)?;
+    store(tx, session_pk, &recomputed.facts, counter)?;
     tx.prepare_cached("UPDATE session SET live_reparse = 0 WHERE pk = ?1")?
         .execute([session_pk])?;
     Ok(())
@@ -280,7 +287,7 @@ pub struct FollowedCall {
 
 /// A running session's uncommitted files, for the commit watcher.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LiveFootprint {
+pub struct LiveEditedFiles {
     pub session: String,
     pub cwd: String,
     pub files: Vec<String>,
@@ -294,7 +301,7 @@ pub struct RunningSession {
     pub session: String,
     #[schemars(with = "String")]
     pub state: live::LiveState,
-    /// When it entered its state, as far as the evidence says.
+    /// When it entered its state, as far as its live events say.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub since: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -308,12 +315,12 @@ pub struct RunningSession {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
     /// How many files it changed and has not committed.
-    pub footprint: usize,
+    pub edited_files: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
 }
 
-/// A session whose root process is alive by its evidence: what the
+/// A session whose root process is alive by its live events: what the
 /// process watcher watches.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LiveRoot {
@@ -325,8 +332,8 @@ pub struct LiveRoot {
 
 impl crate::Reader<'_> {
     /// The sessions whose live state or stall would change at an instant
-    /// with no new evidence, with that instant (`live_until`): those with
-    /// live evidence within a day, and those whose transcript alone grew
+    /// with no new live event, with that instant (`live_until`): those with
+    /// live events within a day, and those whose transcript alone grew
     /// within the live window.
     pub fn live_untils(&self, now: i64) -> Result<Vec<(String, i64)>> {
         let conn = self.conn()?;
@@ -393,7 +400,7 @@ impl crate::Reader<'_> {
                     .as_ref()
                     .and_then(|f| f.open_call.as_ref().map(|c| c.tool.clone())),
                 task: facts.as_ref().and_then(|f| f.task.clone()),
-                footprint: facts.as_ref().map_or(0, |f| f.footprint.len()),
+                edited_files: facts.as_ref().map_or(0, |f| f.edited_files.len()),
                 cwd,
             });
         }
@@ -573,14 +580,14 @@ impl crate::Reader<'_> {
         }))
     }
 
-    /// The sessions not ended with a footprint: each with its working
+    /// The sessions not ended with edited files: each with its working
     /// directory and the files it changed and has not committed.
-    pub fn live_footprints(&self, now: i64) -> Result<Vec<LiveFootprint>> {
+    pub fn live_edited_files(&self, now: i64) -> Result<Vec<LiveEditedFiles>> {
         let conn = self.conn()?;
         let mut statement = conn.prepare_cached(
             "SELECT id, live_facts, last_activity_at, cwd FROM session
              WHERE live_last_at IS NOT NULL AND live_last_at >= ?1 AND cwd IS NOT NULL
-               AND json_extract(live_facts, '$.footprint') IS NOT NULL",
+               AND json_extract(live_facts, '$.edited_files') IS NOT NULL",
         )?;
         let rows = statement.query_map(
             params![now - live::STALE_FOR_MS - live::LIVE_WINDOW_MS],
@@ -597,22 +604,22 @@ impl crate::Reader<'_> {
         for row in rows {
             let (session, facts, grew_at, cwd) = row?;
             let facts: LiveFacts = serde_json::from_str(&facts)?;
-            // A stale session keeps its footprint until a commit or its end.
-            if facts.footprint.is_empty()
+            // A stale session keeps its edited files until a commit or its end.
+            if facts.edited_files.is_empty()
                 || live::view(Some(&facts), grew_at, now).state == live::LiveState::Ended
             {
                 continue;
             }
-            out.push(LiveFootprint {
+            out.push(LiveEditedFiles {
                 session,
                 cwd,
-                files: facts.footprint.into_iter().collect(),
+                files: facts.edited_files.into_iter().collect(),
             });
         }
         Ok(out)
     }
 
-    /// Every session whose root process is alive by its evidence.
+    /// Every session whose root process is alive by its live events.
     pub fn live_roots(&self) -> Result<Vec<LiveRoot>> {
         let conn = self.conn()?;
         let mut statement = conn.prepare_cached(

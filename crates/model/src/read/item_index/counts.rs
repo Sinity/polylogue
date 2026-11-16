@@ -5,8 +5,8 @@
 //! the kinds of block its message holds. The writer keeps, on each unit's
 //! first entry, the counts per class of every entry before it and the
 //! running sum of their full-form token estimates; a reading combines them
-//! with [`FoldProfile::shows`].
-use super::{EntryKind, FoldProfile, IndexEntry, View};
+//! with [`ShowProfile::shows`].
+use super::{EntryKind, IndexEntry, ShowProfile, View};
 use crate::{PromptKind, ToolAction, WrittenBy};
 use std::collections::BTreeMap;
 
@@ -227,7 +227,7 @@ pub fn entry_classes(entries: &[IndexEntry]) -> Vec<EntryClass> {
     out
 }
 
-impl FoldProfile {
+impl ShowProfile {
     /// Whether this reading shows entries of `class`: the rule
     /// [`super::visible_entries`] applies, decided from the class alone.
     pub fn shows(&self, class: EntryClass) -> bool {
@@ -283,7 +283,7 @@ impl ItemCounts {
             .sum()
     }
     /// The entries counted that `profile` shows.
-    pub fn shown(&self, profile: &FoldProfile) -> u64 {
+    pub fn shown(&self, profile: &ShowProfile) -> u64 {
         self.count(|class| profile.shows(class))
     }
 }

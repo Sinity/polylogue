@@ -77,11 +77,11 @@ pub enum PagePosition {
     /// A place in the depth-first walk of a links tree.
     Links { place: LinksPlace },
     /// A place in a row reading (documents, events, authored records and
-    /// query rows). `anchor_row` holds the order values of the row the place
+    /// query rows). `start_row` holds the order values of the row the place
     /// is in, so the selection resumes by key; `place.selection.row` is 0.
     Record {
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        anchor_row: Option<OrderPosition>,
+        start_row: Option<OrderPosition>,
         place: ItemPlace,
     },
 }

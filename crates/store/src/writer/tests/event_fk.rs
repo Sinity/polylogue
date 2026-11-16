@@ -76,7 +76,7 @@ fn removal_steps(unrelated: usize, indexed: bool) -> u64 {
     // The fixture resolver reloads its first-build map; exclude that test-only work.
     resolve::prepare_index(&tx, &mut removed, 1, true).unwrap();
     let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
-    let receipt = fixture_receipt();
+    let commit = fixture_commit();
     use std::sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -99,7 +99,7 @@ fn removal_steps(unrelated: usize, indexed: bool) -> u64 {
         removed.parse[0].resolution.as_ref().unwrap(),
         4,
         Some(&first),
-        Some(&receipt),
+        Some(&commit),
         &changes,
     )
     .unwrap();

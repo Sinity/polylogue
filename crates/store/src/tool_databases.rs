@@ -1,5 +1,5 @@
 //! Tool databases read in one SQLite transaction and emitted as row-dump
-//! records. The writer stores these bytes as an ordinary input. Comparison
+//! records. The writer stores these bytes as an input like any other. Comparison
 //! hashes live in the index, beside the parsed rows. Every completed read
 //! records an observation with the database's and its log's file facts, so
 //! a database left as it was when the process restarts is not read again.
@@ -73,8 +73,8 @@ pub struct DatabaseReader {
 }
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct ReadReport {
-    /// Created only inside the actual consistent provider read. It is custody
-    /// provenance, never a resumable database revision or data_version.
+    /// Created only inside the consistent provider read. It records where the
+    /// bytes came from, never a resumable database revision or data_version.
     pub snapshot: Option<crate::primary::DatabaseSnapshotToken>,
     pub rows: u64,
     pub gone: u64,
@@ -105,8 +105,8 @@ impl DatabaseReader {
 
     /// Takes, for a database this reader has not read, the facts of the
     /// last read whose observation the archive holds for this input at this
-    /// machine and exact path. An unchanged database is then not read again
-    /// after a restart; any other evidence leaves it to be read.
+    /// machine and path. An unchanged database is then not read again
+    /// after a restart; anything else leaves it to be read.
     pub fn recall(
         &mut self,
         db: &Path,
@@ -135,7 +135,7 @@ impl DatabaseReader {
         st.read = Some(facts);
         st.read_at = Some(Instant::now());
         // A database changed since that read is read at once, as by a
-        // reader that never read it, not after it settles.
+        // reader that never read it, not after it goes quiet.
         st.last_seen = Some(DbFacts::of(db));
         Ok(())
     }
@@ -155,7 +155,7 @@ impl DatabaseReader {
         self.read(db, archive, input, observation, due, send)
             .map(Some)
     }
-    /// Queue complete groups while their predecessors commit. The caller
+    /// Queue complete groups while earlier groups commit. The caller
     /// waits for acknowledgment before reading the same input again. Each
     /// group is sent with the observation it records: `observation` with
     /// the file facts this read was decided on. A read that finds no changed
@@ -222,7 +222,7 @@ fn facts_of(value: &Value) -> Option<FileFacts> {
 }
 
 /// The database and log facts of the last completed read of `input` at this
-/// observation's machine and exact path: the newest such observation the
+/// observation's machine and path: the newest such observation the
 /// archive holds, committed with that read's rows. Primary mode holds it
 /// once Sinex confirmed it.
 fn recorded(
@@ -382,8 +382,8 @@ fn tables(conn: &Connection) -> rusqlite::Result<Vec<Table>> {
     Ok(out)
 }
 
-/// The tables' SQL and native metadata, as a row-dump header states them.
-/// Comparison includes native metadata so a pre-metadata capture emits the
+/// The tables' SQL and SQLite metadata, as a row-dump header states them.
+/// Comparison includes the metadata so a pre-metadata capture emits the
 /// additive header even when its SQL declaration has not changed.
 fn signature(tables: &[Table]) -> Value {
     let schema: Map<String, Value> = tables

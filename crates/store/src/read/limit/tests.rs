@@ -283,7 +283,7 @@ fn absolute_limit_cancellation_stops_sqlite_progress_and_joins_reader_cleanup() 
 }
 
 #[test]
-fn absolute_deadline_stops_an_actual_sqlite_busy_wait() {
+fn absolute_deadline_stops_a_sqlite_busy_wait() {
     let directory = tempfile::tempdir().unwrap();
     let database = directory.path().join("busy.db");
     let writer = Connection::open(&database).unwrap();

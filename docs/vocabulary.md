@@ -21,7 +21,7 @@ generated page of the thing they belong to, or on the area page that owns them.
   meanwhile when its schema identity is the build's.
 - **set-aside cache**: in primary mode, a cache from another schema, renamed
   beside the new one under its schema identity until the rebuild reaches the
-  confirmed stream's head.
+  confirmed stream's latest position.
 - **embeddings store**: message vectors for semantic ranking, kept apart
   because vectors cost money or time to make.
 - **segment log**: append-only files of compressed frames holding every blob;
@@ -30,18 +30,27 @@ generated page of the thing they belong to, or on the area page that owns them.
 - **input**: one file as Polylogue tracks it: one location's history, or one
   imported file.
 - **revision**: one distinct content of an input.
-- **chain**: revisions of an input where each one appends to the one before.
+- **chain**: revisions of an input where each one appends to the one before,
+  its **previous revision**.
 - **extent**: a range of a blob placed at an offset in a chain.
 - **chunk**: one content-defined piece of a document its source saves whole,
   stored as a blob of its own so a revision stores only the chunks it changes.
 - **observation**: one time the collector found something at a path; a file
   that disappears is an observation, never a deletion.
+- **observed state**: what one read saw of a file or database (size, inode,
+  write-ahead log), used to tell whether it changed.
 - **export** and **member**: a provider's data export, stored whole, and one
   file inside it.
 - **migration**: a numbered, data-preserving step that brings a store from one
   version to the next.
 - **position**: how far a consumer has applied a store or stream; saved in
   the same transaction as what it applied.
+- **commit position**: the index's write counter at the transaction that
+  committed a row's source; such a row is **committed** at that position.
+- **fixed position**: a commit position held as one consistent read point
+  while several reads use it.
+- **freshness**: how far the index is behind its sources, or in primary mode
+  behind Sinex's latest position.
 
 ## Where inputs come from
 
@@ -69,6 +78,8 @@ generated page of the thing they belong to, or on the area page that owns them.
 - **hook event**: one event a harness reports to `polylogue hook`, spooled whole.
 - **process identity**: a harness process's pid, start time and boot ID.
 - **capture**: one conversation saved by the browser extension.
+- **capture read**: one read of original bytes from a provider location, with
+  its byte range, hash and route.
 - **backfill**: the extension capturing a web chat's older conversations.
 - **chat action**: a turn the extension drafts or sends in a web chat on a
   user's request.
@@ -77,6 +88,8 @@ generated page of the thing they belong to, or on the area page that owns them.
   hash of its role and content, and its occurrence among equal messages
   (`id_kind` `content`, against `native`).
 - **linked material**: a page or file a conversation cites, fetched and stored.
+- **Python Polylogue**: the earlier Python implementation; `import` reads its
+  archive, user database and vectors as declared older formats.
 
 ## Parsing
 
@@ -86,6 +99,10 @@ generated page of the thing they belong to, or on the area page that owns them.
 - **record**: one entry in an input (a JSON line, an export item, a row). Each
   record ends **used**, **skipped** (with a reason) or **unreadable**: its
   **record outcome**.
+- **record wrapper**: the outer JSON of a harness record around its message.
+- **stated**: a value as a source states it, before it is checked (a stated
+  source, a stated attachment, a stated parent).
+- **parsed end**: the furthest byte a parse of a chain reached.
 - **field accounting**: every leaf of every record is read, kept, or counted
   as unused.
 - **golden**: expected parser output written by hand from knowledge of the
@@ -108,6 +125,8 @@ generated page of the thing they belong to, or on the area page that owns them.
   are **physical sessions**.
 - **session link**: an explicit relationship between sessions (`spawn`,
   `fork`, `continuation`, `resume`, `reference`).
+- **known parents**: the parent sessions known for a session whose ancestry
+  reaches no root yet.
 - **compaction boundary**: where a harness replaced earlier context with a
   summary; the summary is a message.
 - **`written_by`**: who wrote a message (`human`, `model`, `harness`, `tool`,
@@ -133,6 +152,8 @@ generated page of the thing they belong to, or on the area page that owns them.
   ([sessions.md](sessions.md#messages)).
 - **availability**: whether an attachment's bytes are `present`, `unfetched`,
   `failed` or `unavailable_at_source`.
+- **byte match**: a saved check that an export member's stored bytes hash to
+  an attachment's stated hash.
 
 ## References and queries
 
@@ -140,6 +161,8 @@ generated page of the thing they belong to, or on the area page that owns them.
   `assertion:…@…`, `query:…`); one parser reads them on every surface.
 - **query**, **unit** (what a query lists), **field**, **condition**,
   **stage** (`| …`).
+- **field selection**: a stage or default that changes which fields a row
+  shows, keeping its row identity.
 - **query signal**: what makes a first argument a query rather than a command.
 - **query object**: `query:<hash>`, the identity of a query's normal form.
 - **run**: one recorded execution of a query.
@@ -191,8 +214,9 @@ generated page of the thing they belong to, or on the area page that owns them.
   `scope`, `origin`, or a relation such as `answers` or `revises`).
 - **stack**: assertions about assertions, joined by typed relations.
 - **current revision**: a revision no unwithdrawn `revises` points at; two
-  current revisions of one record are a **conflict**. A write naming an
-  outdated base is **stale** and refused.
+  current revisions of one record are a **conflict**. A write names its
+  **base**, the revisions it revises; one naming an outdated base is
+  **stale** and refused.
 - **withdrawal**: an authored statement that retracts assertions.
 - **author**: who wrote a record (`operator`, `agent:<session>`,
   `script:<unit>`, `unattributed`), computed by the daemon. **via**: the
@@ -258,11 +282,15 @@ generated page of the thing they belong to, or on the area page that owns them.
 - **money kind**: where a cost comes from (`api_equivalent`,
   `provider_reported`, `subscription_share`, `manual`, `estimated`).
 - **clustered time**: the union of active intervals with short gaps closed.
+- **party**: whose time a span of a session counts as (`tool`, `model`,
+  `human`, `unattributed`).
+- **token kind**: a category of tokens a provider counts or charges
+  (uncached input, cached input, cache write, output).
 - **command class**: the extracted class of a normalized shell command, used
   only for analysing agent tool use.
 - **fail-then-pass**: a failing run followed by a passing run of the same
   command.
-- **open item**: unfinished work in a repository, with the evidence that
+- **open item**: unfinished work in a repository, with the record that
   resolves it.
 
 ## The daemon and its surfaces
@@ -282,7 +310,8 @@ generated page of the thing they belong to, or on the area page that owns them.
 - **status**: figures and a verdict about the daemon and archive.
 - **halt state**: work that cannot proceed and is reported, not retried.
 - **notice**: a delivery a signal rule fired; an **interrupting** one is also a
-  desktop notification. A **shipped rule** is defined in code.
+  desktop notification. A **shipped rule** is defined in code. A rule's
+  **pending deliveries** are those it fired that are not yet delivered.
 - **picker**: the embedded fuzzy selector; `@N` names row N of the last list.
 - **catalog file**: the completion data the daemon publishes.
 - **scope index**: the daemon's in-memory map of main sessions by the working
@@ -299,15 +328,32 @@ generated page of the thing they belong to, or on the area page that owns them.
   become materials in primary mode.
 - **kind declaration**: the immutable schema and rules of one version of a
   Sinex event type; Polylogue owns its `polylogue.*` declarations.
-- **kind version**: the exact numbered declaration a producer event selects.
+- **kind version**: the numbered declaration a producer event selects.
+- **recall class**: the class a kind declaration gives its events for recall.
 - **confirmed stream**: Sinex's ordered stream of committed events, which
-  Polylogue applies to `index.db`.
-- **write identity**: the durable identity of a prepared write, reused on retry.
+  Polylogue applies to `index.db`. A recreated stream is a new **stream
+  instance**; its newest committed position is Sinex's **latest position**.
+- **Sinex event** (or **confirmed event**): one of Polylogue's `polylogue.*`
+  events as Sinex holds it after confirming it.
+- **acknowledgment**: Sinex's answer to a frame Polylogue sent: admitted,
+  kinds registered, replayed or refused.
+- **producer spool**: the queue and files where Polylogue's prepared bytes and
+  writes are **held in the spool** until Sinex acknowledges them and the
+  index has applied their events.
+- **record offset**: the byte position of a record inside a material.
+- **snapshot**: the current state Sinex sends a new consumer before its
+  deltas, in bounded pages.
+- **completion marker**: the stream message saved with an applied position,
+  named on reconnect so delivery resumes after it; the last snapshot page
+  carries the first one.
+- **write identity**: the identity of a prepared write, saved with it and
+  reused on retry.
 - **cutover**: the one-way move of a standalone archive to primary mode.
 
 ## Development
 
 - **Morrow**: the synthetic example archive in `examples/morrow/`.
-- **fault point**: a named point where a test can stop a write.
+- **fault point**: a named point where a test can stop a write; a **writer
+  pause** holds the writer at one.
 - **scenario**: an end-to-end test against the real daemon, CLI and MCP.
 - **paired run**: a base and a change benchmarked together on one sample.

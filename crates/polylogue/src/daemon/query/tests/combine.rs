@@ -186,7 +186,7 @@ fn in_compares_with_the_values_a_query_groups_by() {
     );
 }
 
-/// An independently restored current definition with actual object custody.
+/// An independently restored current definition with its stored object.
 fn saved(w: &mut TestArchive, name: &str, text: &str) {
     save_definition(w, name, text);
 }

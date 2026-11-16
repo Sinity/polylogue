@@ -45,13 +45,13 @@ struct Paging {
 }
 fn paging(
     reader: &Reader<'_>,
-    owner: &Arc<Context>,
+    request_context: &Arc<Context>,
     cursor: Option<&str>,
-    semantic: &Value,
+    question_parts: &Value,
     binding: &Value,
 ) -> Result<Paging, Failure> {
-    let owner_versions = owner.cursor_versions();
-    let question = QuestionId(*fingerprint("question", semantic)?.as_bytes());
+    let request_versions = request_context.cursor_versions();
+    let question = QuestionId(*fingerprint("question", question_parts)?.as_bytes());
     let binding = fingerprint("binding", binding)?.to_hex().to_string();
     let position = reader.change_position()?;
     let file = reader.index_identity()?;
@@ -65,19 +65,19 @@ fn paging(
                 &SealedCursor::from_wire(text),
                 question,
                 |name| {
-                    if name == owner.clock.day.zone_name() {
-                        Ok(owner.clock.day.zone().clone())
+                    if name == request_context.clock.day.zone_name() {
+                        Ok(request_context.clock.day.zone().clone())
                     } else {
                         Err(query_language::Error::new(
                             query_language::ErrorKind::StaleCursor,
-                            "the owner day changed",
+                            "the request day changed",
                             0,
                         ))
                     }
                 },
                 |context| {
-                    context.clock.day == owner.clock.day
-                        && owner_versions
+                    context.clock.day == request_context.clock.day
+                        && request_versions
                             .iter()
                             .all(|(key, value)| context.versions.get(key) == Some(value))
                         && context.versions.get("domain").map(String::as_str) == Some("calendar-v1")
@@ -120,7 +120,7 @@ fn paging(
         None => (
             CursorContext {
                 question,
-                clock: owner.clock.clone(),
+                clock: request_context.clock.clone(),
                 resolved_times: vec![],
                 random_seed: 0,
                 read_positions: BTreeMap::from([
@@ -129,7 +129,7 @@ fn paging(
                     ("index".into(), position.index.to_string()),
                     ("archive".into(), position.archive.to_string()),
                 ]),
-                versions: owner_versions
+                versions: request_versions
                     .into_iter()
                     .chain([
                         ("domain".into(), "calendar-v1".into()),
@@ -140,12 +140,16 @@ fn paging(
             None,
         ),
     };
-    let operation = Arc::new(owner.replay_clock(context.clock.clone()).map_err(|_| {
-        Failure::new(
-            "stale_cursor",
-            "the canonical calendar context changed; run without the cursor",
-        )
-    })?);
+    let operation = Arc::new(
+        request_context
+            .replay_clock(context.clock.clone())
+            .map_err(|_| {
+                Failure::new(
+                    "stale_cursor",
+                    "the calendar context changed; run without the cursor",
+                )
+            })?,
+    );
     Ok(Paging {
         operation,
         seal,
@@ -231,7 +235,7 @@ pub struct Timeline<'a> {
 pub fn timeline(
     reader: &Reader<'_>,
     options: Timeline<'_>,
-    owner: &Arc<Context>,
+    request_context: &Arc<Context>,
 ) -> Result<Value, Failure> {
     let Timeline {
         date: text,
@@ -242,7 +246,7 @@ pub fn timeline(
     } = options;
     let mut paging = paging(
         reader,
-        owner,
+        request_context,
         cursor,
         &json!(["timeline", text, across_years, undated]),
         &json!(["timeline"]),
@@ -292,7 +296,7 @@ pub fn timeline(
         }
     };
     Ok(
-        json!({"context":paging.operation.provenance(),"date":date.to_string(),"previous":date.yesterday().ok().map(|d|d.to_string()),"following":date.tomorrow().ok().map(|d|d.to_string()),"previous_month":date.first_of_month().yesterday().ok().map(|d|d.first_of_month().to_string()),"following_month":date.last_of_month().tomorrow().ok().map(|d|d.to_string()),"day":day,"since":since,"until":until,"activity":activity,"cursor":cursor,"calendar":calendar,"usage":usage,"across_years":across_years,"undated":undated}),
+        json!({"context":paging.operation.run_context(),"date":date.to_string(),"previous":date.yesterday().ok().map(|d|d.to_string()),"following":date.tomorrow().ok().map(|d|d.to_string()),"previous_month":date.first_of_month().yesterday().ok().map(|d|d.first_of_month().to_string()),"following_month":date.last_of_month().tomorrow().ok().map(|d|d.to_string()),"day":day,"since":since,"until":until,"activity":activity,"cursor":cursor,"calendar":calendar,"usage":usage,"across_years":across_years,"undated":undated}),
     )
 }
 
@@ -313,7 +317,7 @@ pub struct Cost<'a> {
 pub fn cost(
     reader: &Reader<'_>,
     options: Cost<'_>,
-    owner: &Arc<Context>,
+    request_context: &Arc<Context>,
 ) -> Result<Value, Failure> {
     let Cost {
         embeddings,
@@ -331,13 +335,13 @@ pub fn cost(
     let (plan, mut query_options) = query::prepare_usage(
         reader,
         scope,
-        Arc::clone(owner),
+        Arc::clone(request_context),
         embeddings,
         ranking_identity.clone(),
     )?;
     let mut paging = paging(
         reader,
-        owner,
+        request_context,
         cursor,
         &json!([
             "cost",
@@ -424,7 +428,7 @@ pub fn cost(
         Err(error) => json!({"error":error.kind,"message":error.message}),
     };
     Ok(
-        json!({"context":paging.operation.provenance(),"unplaced":unplaced,"quota":quota,"usage":report,"responses":responses,"days":days,"days_error":days_error,"month":month.to_string(),"previous_month":previous_month,"following_month":following_month,"date":text,"model":model,"day":day,"since":selection.since,"until":selection.until}),
+        json!({"context":paging.operation.run_context(),"unplaced":unplaced,"quota":quota,"usage":report,"responses":responses,"days":days,"days_error":days_error,"month":month.to_string(),"previous_month":previous_month,"following_month":following_month,"date":text,"model":model,"day":day,"since":selection.since,"until":selection.until}),
     )
 }
 

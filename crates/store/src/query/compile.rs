@@ -11,7 +11,7 @@ use combine::join;
 use polylogue_query::QueryError;
 use polylogue_query::compile::Parameters;
 pub use polylogue_query::search::SnippetTerms;
-use polylogue_query::selection::{Order, Projection, Selection, contains_order, top_level};
+use polylogue_query::selection::{FieldSelection, Order, Selection, contains_order, top_level};
 pub use polylogue_query::{
     ColKind, Column, ColumnReference, Definition, Kept, Options, SavedQuery, Shape,
 };
@@ -87,8 +87,8 @@ pub struct Near {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum RowBasis {
-    Native { unit: Unit, columns: Vec<String> },
+pub enum RowKind {
+    UnitRows { unit: Unit, columns: Vec<String> },
     Group { columns: Vec<String> },
     Summary,
     Distinct { columns: Vec<String> },
@@ -98,7 +98,7 @@ pub enum RowBasis {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Program {
     pub query: String,
-    pub row_basis: RowBasis,
+    pub row_kind: RowKind,
     pub unit: Unit,
     pub shape: Shape,
     /// The statements that select, page, count and read the answer's rows.
@@ -110,7 +110,7 @@ pub struct Program {
     /// slots never share the namespace of a user alias.
     pub column_slots: std::collections::BTreeMap<String, String>,
     #[serde(skip)]
-    native_sources: Option<Vec<relations::NativeSource>>,
+    row_sources: Option<Vec<relations::RowSource>>,
     #[serde(skip)]
     time_text_columns: std::collections::BTreeSet<String>,
     /// Ordered by relevance to text terms.
@@ -257,19 +257,19 @@ pub fn lower(plan: &polylogue_query::plan::Plan, opts: &Options) -> Result<Progr
     captured.saved = plan.bindings().saved.clone();
     captured.kept = plan.bindings().kept.clone();
     for (id, kept) in &mut captured.kept {
-        let actual = opts.kept.get(id).ok_or_else(|| QueryError::Unavailable {
+        let current = opts.kept.get(id).ok_or_else(|| QueryError::Unavailable {
             what: format!("kept result {id:?} is absent from this read"),
         })?;
-        actual.validate_output_metadata()?;
+        current.validate_output_metadata()?;
         if [ResultPart::Rows, ResultPart::Matches]
             .into_iter()
-            .any(|part| kept.output_schema(part) != actual.output_schema(part))
+            .any(|part| kept.output_schema(part) != current.output_schema(part))
         {
             return Err(QueryError::Unavailable {
                 what: format!("kept result {id:?} differs from its bound columns"),
             });
         }
-        *kept = actual.clone();
+        *kept = current.clone();
     }
     let opts = &captured;
     let bound = plan.expanded_query();

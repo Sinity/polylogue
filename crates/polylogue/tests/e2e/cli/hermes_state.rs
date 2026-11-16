@@ -4,12 +4,12 @@ use polylogue_model::bundle::Record;
 use serde_json::json;
 
 #[test]
-fn native_hermes_query_read_export_preserve_tool_data_and_supplied_compression_parents() {
+fn hermes_query_read_export_keep_compression_parents() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
-    let native = home.join(".hermes/state.db");
-    std::fs::create_dir_all(native.parent().unwrap()).unwrap();
-    let db = rusqlite::Connection::open(&native).unwrap();
+    let state_db = home.join(".hermes/state.db");
+    std::fs::create_dir_all(state_db.parent().unwrap()).unwrap();
+    let db = rusqlite::Connection::open(&state_db).unwrap();
     db.execute_batch("CREATE TABLE sessions(id TEXT PRIMARY KEY,source TEXT,model TEXT,parent_session_id TEXT,end_reason TEXT,started_at REAL,title TEXT);
         INSERT INTO sessions VALUES('parent','cli','supplied-model',NULL,'compression',0,'Native parent');
         INSERT INTO sessions VALUES('child','cli','supplied-model','parent',NULL,1,'Native child');
@@ -78,8 +78,8 @@ fn native_hermes_query_read_export_preserve_tool_data_and_supplied_compression_p
     assert_eq!(messages[1]["prompt_kind"], "harness");
     assert_eq!(messages[1]["blocks"][0]["data"], result);
     let inherited = reading(&env, child, &["--show", "inherited"]);
-    // The recorded continuation anchor includes the stored predecessor even
-    // though the child file did not physically copy it.
+    // The recorded continuation point includes the stored parent even
+    // though the child file did not copy it.
     let own = reading(&env, child, &[]);
     for (page, expected) in [
         (&inherited, polylogue_model::read::ValueState::known(true)),
@@ -153,12 +153,12 @@ fn native_hermes_query_read_export_preserve_tool_data_and_supplied_compression_p
 }
 
 #[test]
-fn native_hermes_empty_active_path_is_distinct_from_missing_activity_flags() {
+fn empty_active_path_differs_from_missing_flags() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
-    let native = home.join(".hermes/state.db");
-    std::fs::create_dir_all(native.parent().unwrap()).unwrap();
-    let db = rusqlite::Connection::open(&native).unwrap();
+    let state_db = home.join(".hermes/state.db");
+    std::fs::create_dir_all(state_db.parent().unwrap()).unwrap();
+    let db = rusqlite::Connection::open(&state_db).unwrap();
     db.execute_batch("CREATE TABLE sessions(id TEXT PRIMARY KEY,source TEXT,title TEXT);
         INSERT INTO sessions VALUES('empty','cli','All inactive'),('mixed','cli','Mixed activity'),('unknown','cli','Unknown activity');
         CREATE TABLE messages(id INTEGER PRIMARY KEY,session_id TEXT,role TEXT,content TEXT,active INTEGER,compacted INTEGER);
@@ -272,7 +272,7 @@ fn native_hermes_empty_active_path_is_distinct_from_missing_activity_flags() {
         (None, "active:unknown", 2),
         (Some(0), "active:true", 0),
     ] {
-        let db = rusqlite::Connection::open(&native).unwrap();
+        let db = rusqlite::Connection::open(&state_db).unwrap();
         db.execute("UPDATE messages SET active=?1 WHERE id=2", [flag])
             .unwrap();
         drop(db);
@@ -285,7 +285,7 @@ fn native_hermes_empty_active_path_is_distinct_from_missing_activity_flags() {
         assert_eq!(messages(&env, &empty).len(), 2);
         drop(daemon);
     }
-    std::fs::remove_file(&native).unwrap();
+    std::fs::remove_file(&state_db).unwrap();
     polylogue_testkit::delete_index(&archive);
     let _rebuilt = start_daemon(&env);
     wait_status(&env, |s| s["store"]["messages"].as_u64() == Some(7));

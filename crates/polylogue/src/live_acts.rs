@@ -4,7 +4,7 @@
 //! protocol and holds a connection to. The acts themselves are in
 //! `daemon::service::acts`.
 
-use crate::live_evidence::CodexConnection;
+use crate::live_events::CodexConnection;
 use polylogue_model::SessionId;
 use polylogue_model::live::LiveFacts;
 use polylogue_model::live::channel::Probe;
@@ -601,7 +601,7 @@ impl Acts {
         let session = run.session.clone();
         if !self.report(Report::Resume(run)) {
             // Nothing runs: the pings go back to the mailbox, where they
-            // are settled like any other.
+            // are handled like any other.
             self.release(&delivery);
             while let Some(queued) = self.resume_finished(&session) {
                 self.release(&queued.delivery);
@@ -626,7 +626,7 @@ impl Acts {
 }
 
 /// What the act channels know about a session's harness: whether
-/// Polylogue hosts it, whether its evidence shows the hook installed,
+/// Polylogue hosts it, whether its live events show the hook installed,
 /// whether the installed harness asks the permission hook, and whether it
 /// has a headless resume.
 pub(crate) fn probe(acts: &Acts, session: &SessionId, facts: &LiveFacts) -> Probe {

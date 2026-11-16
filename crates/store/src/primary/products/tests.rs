@@ -10,7 +10,7 @@ use polylogue_model::{
 };
 
 #[test]
-fn complete_callback_products_keep_semantic_fields_and_source_keys() {
+fn complete_callback_products_keep_fields_and_source_keys() {
     let message = crate::fixture::writer::message(
         "export-message",
         "export-session",
@@ -116,7 +116,7 @@ fn complete_callback_products_keep_semantic_fields_and_source_keys() {
         ..Default::default()
     };
     output.message_order.insert(0, 51);
-    output.message_projections.insert(
+    output.block_selections.insert(
         0,
         polylogue_model::bundle::MessageProjection {
             source_version: version,
@@ -124,7 +124,7 @@ fn complete_callback_products_keep_semantic_fields_and_source_keys() {
             block_ordinals: vec![0],
         },
     );
-    output.native_hook_fields.insert(0, Vec::new());
+    output.hook_fields.insert(0, Vec::new());
     output.declared_injections.insert(0, Vec::new());
     output.declared_attachment_bindings.insert(0, Vec::new());
     output.event_ids.insert(0, "explicit-event".into());

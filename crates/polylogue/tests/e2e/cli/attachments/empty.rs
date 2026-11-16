@@ -5,7 +5,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 fn missing_or_corrupt_empty_frames_never_install_blank_attachment_output() {
     for zip in [false, true] {
         for missing in [false, true] {
-            // TestArchive imports actual provider bytes, then deletes the provider.
+            // TestArchive imports real provider bytes, then deletes the provider.
             let fixture = TestArchive::with_bytes(zip, b"");
             assert_eq!(fixture.descriptor()["state"], "available");
             let (extent, byte_root) = {
@@ -43,8 +43,8 @@ fn missing_or_corrupt_empty_frames_never_install_blank_attachment_output() {
             std::fs::create_dir(&directory).unwrap();
             let existing = directory.join("existing.bin");
             let absent = directory.join("absent.bin");
-            let sentinel = b"previous complete attachment output";
-            std::fs::write(&existing, sentinel).unwrap();
+            let marker = b"previous complete attachment output";
+            std::fs::write(&existing, marker).unwrap();
             let results = [&existing, &absent].map(|destination| {
                 cli(
                     &fixture.env(),
@@ -73,7 +73,7 @@ fn missing_or_corrupt_empty_frames_never_install_blank_attachment_output() {
             for result in results {
                 assert!(!result.status.success(), "{result:?}");
             }
-            assert_eq!(std::fs::read(&existing).unwrap(), sentinel);
+            assert_eq!(std::fs::read(&existing).unwrap(), marker);
             assert!(!absent.exists());
             assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
             // The same real CLI path can deliver the restored, verified body.

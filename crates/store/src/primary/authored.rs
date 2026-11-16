@@ -1,6 +1,6 @@
-//! Freeze authored changes once. Writes that resolve prior facts use a private
-//! overlay; literal deliveries come directly from their admitted body. Confirmed
-//! records apply frozen effects without selecting targets, families or claims again.
+//! Authored changes are fixed once. Writes that resolve earlier records use a private
+//! overlay; literal deliveries come directly from their committed body. Confirmed
+//! records apply recorded effects without selecting targets, families or claims again.
 mod records;
 pub(crate) use records::insert_kept;
 #[cfg(test)]
@@ -13,8 +13,8 @@ use polylogue_model::user::{UserOutcome, UserRequest};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::collections::HashMap;
 
-/// Semantic idempotence includes the accepting machine and authored intent;
-/// a retry timestamp does not change the admitted request. Stored requests
+/// A retry is the same request when its accepting machine and authored intent
+/// match; a retry timestamp does not change the committed request. Stored requests
 /// keep this hash, so its bytes carry no tag.
 pub fn request_hash(request: &UserRequest) -> Result<[u8; 32]> {
     let canonical = canonical_json::canonical_json(&(
@@ -31,7 +31,7 @@ pub(crate) fn pack(value: &impl serde::Serialize) -> Result<Vec<u8>> {
 
 /// The stored request with its outcome and effect. A request whose outcome
 /// and effect were not yet written is incomplete.
-pub fn frozen_request(conn: &Connection, id: &str) -> Result<Option<PreparedRequest>> {
+pub fn stored_request(conn: &Connection, id: &str) -> Result<Option<PreparedRequest>> {
     let source = Source::reading(conn)?;
     let stored = conn
         .query_row(
@@ -50,7 +50,7 @@ pub fn frozen_request(conn: &Connection, id: &str) -> Result<Option<PreparedRequ
     let Some((hash, body, outcome, effect)) = stored else {
         return Ok(None);
     };
-    let missing = || StoreError::Invalid(format!("request {id} has no complete frozen outcome"));
+    let missing = || StoreError::Invalid(format!("request {id} has no complete recorded outcome"));
     let prepared = PreparedRequest {
         request: crate::encoding::unpack_json(&body)?,
         outcome: crate::encoding::unpack_json(&outcome.ok_or_else(missing)?)?,
@@ -61,7 +61,7 @@ pub fn frozen_request(conn: &Connection, id: &str) -> Result<Option<PreparedRequ
     }
     if prepared.outcome.pending {
         return Err(StoreError::Invalid(
-            "pending is not a canonical outcome".into(),
+            "pending is not a confirmed outcome".into(),
         ));
     }
     Ok(Some(prepared))
@@ -69,7 +69,7 @@ pub fn frozen_request(conn: &Connection, id: &str) -> Result<Option<PreparedRequ
 
 /// The existing request row owns the original outcome and immutable effect.
 pub fn known_request(conn: &Connection, request: &UserRequest) -> Result<Option<PreparedRequest>> {
-    match frozen_request(conn, &request.id)? {
+    match stored_request(conn, &request.id)? {
         None => Ok(None),
         Some(prepared) => {
             if request_hash(&prepared.request)? != request_hash(request)? {
@@ -80,7 +80,7 @@ pub fn known_request(conn: &Connection, request: &UserRequest) -> Result<Option<
     }
 }
 
-/// Durable pending requests retain their complete first admitted body. A
+/// Pending requests keep their complete first committed body. A
 /// transport retry never rebuilds that effect against newer definitions.
 pub(crate) fn pending_outcome(
     sinex: &dyn crate::primary::Sinex,
@@ -105,8 +105,8 @@ pub(crate) fn pending_outcome(
     Ok(outcome)
 }
 
-/// `visit_pending` includes publisher-acknowledged requests until the confirmed
-/// consumer has applied them. Blob metadata is verified by the spool owner.
+/// `visit_pending` includes requests Sinex acknowledged until the confirmed
+/// consumer has applied them. The spool checks blob metadata.
 pub fn prepare(
     index: &Connection,
     request: &UserRequest,
@@ -202,15 +202,15 @@ pub fn prepare(
             request,
             1,
             &available,
-            crate::user_writes::Preparation::native(preparation, pending),
+            crate::user_writes::Preparation::plain(preparation, pending),
         )?;
         known_request(tx, request)?
             .ok_or_else(|| StoreError::Invalid("prepared request was not recorded".into()))
     })
 }
 
-/// One original snapshot plus this host's immutable pending effects. The
-/// callback cannot retain a SQLite borrow across a subsequent custody ACK.
+/// One original snapshot plus this host's pending effects. The callback cannot
+/// hold a SQLite borrow across a later spool acknowledgment.
 pub(crate) fn with_overlay<T>(
     index: &Connection,
     visit_pending: impl FnOnce(&mut dyn FnMut(&PendingAuthored) -> Result<()>) -> Result<()>,
@@ -224,8 +224,8 @@ pub(crate) fn with_overlay<T>(
     } else {
         None
     };
-    // Private scratch can spill beyond the SQLite page cache; it owns no
-    // durable fact and needs no journal or sync boundary.
+    // Private scratch can spill beyond the SQLite page cache; it holds nothing
+    // that must survive a crash, so it needs no journal or sync.
     let scratch_file = tempfile::NamedTempFile::new()?;
     let mut scratch = Connection::open(scratch_file.path())?;
     scratch.execute_batch(
@@ -250,10 +250,10 @@ pub(crate) fn with_overlay<T>(
     visit(&tx)
 }
 
-/// Checks a frozen request's internal consistency without applying it.
+/// Checks a recorded request's internal consistency without applying it.
 pub fn validate(prepared: &PreparedRequest) -> Result<()> {
     // Restored records can include later events written by other requests.
-    // The request still owns its exact delivery body and its own receipt.
+    // The request still owns its delivery body and its own delivery receipt.
     if let Some(expected) = crate::user_writes::prepare_delivery(&prepared.request) {
         let mut effect = prepared.effect.clone();
         for change in &mut effect.deliveries {
@@ -264,7 +264,7 @@ pub fn validate(prepared: &PreparedRequest) -> Result<()> {
         }
         if effect != expected.effect || prepared.outcome != expected.outcome {
             return Err(StoreError::Invalid(
-                "delivery effect differs from its admitted request".into(),
+                "delivery effect differs from its committed request".into(),
             ));
         }
     }
@@ -291,7 +291,7 @@ pub fn validate(prepared: &PreparedRequest) -> Result<()> {
         for event in added {
             if identity(event) != request || !all.contains(event) {
                 return Err(StoreError::Invalid(
-                    "authored event additions disagree with their frozen history".into(),
+                    "authored event additions disagree with their recorded history".into(),
                 ));
             }
         }
@@ -337,7 +337,7 @@ fn validate_live(prepared: &PreparedRequest) -> Result<()> {
 }
 
 // A new literal delivery used to meet the delivery primary key in the
-// preparation transaction. Keep that check before durable queue admission.
+// preparation transaction. Keep that check before the request enters the spool.
 pub(crate) fn require_new_delivery(conn: &Connection, id: &str) -> Result<()> {
     let source = Source::reading(conn)?;
     if conn
@@ -349,7 +349,7 @@ pub(crate) fn require_new_delivery(conn: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Apply immutable facts only. No request selection or domain precondition is
+/// Apply recorded effects only. No request selection or domain precondition is
 /// rerun after Sinex confirms the prepared body.
 pub fn apply(tx: &Transaction<'_>, prepared: &PreparedRequest, counter: i64) -> Result<()> {
     if let Some(known) = known_request(tx, &prepared.request)? {
@@ -361,7 +361,7 @@ pub fn apply(tx: &Transaction<'_>, prepared: &PreparedRequest, counter: i64) -> 
     }
     if prepared.outcome.pending {
         return Err(StoreError::Invalid(
-            "pending is not a canonical outcome".into(),
+            "pending is not a confirmed outcome".into(),
         ));
     }
     validate_live(prepared)?;
@@ -376,7 +376,7 @@ pub fn restore(
     prepared: &PreparedRequest,
     counter: i64,
 ) -> Result<UserOutcome> {
-    if let Some(known) = frozen_request(tx, &prepared.request.id)? {
+    if let Some(known) = stored_request(tx, &prepared.request.id)? {
         if known != *prepared {
             return Err(StoreError::Conflict(prepared.request.id.clone()));
         }
@@ -418,7 +418,7 @@ pub(crate) fn capture(
     records::capture(conn, request, counter)
 }
 
-/// Authored lifecycle rebuilds use only the confirmed live authored facts.
+/// Authored lifecycle rebuilds use only the confirmed live authored records.
 pub fn clear(conn: &Connection) -> Result<()> {
     let source = Source::of(conn)?;
     for table in [
@@ -459,7 +459,7 @@ pub fn visit(
         .collect::<rusqlite::Result<Vec<_>>>()?;
     for id in ids {
         let prepared =
-            frozen_request(conn, &id)?.ok_or_else(|| StoreError::NotFound(id.clone()))?;
+            stored_request(conn, &id)?.ok_or_else(|| StoreError::NotFound(id.clone()))?;
         accept(&prepared)?;
     }
     Ok(())

@@ -2,7 +2,7 @@ use super::*;
 use serde_json::json;
 
 #[test]
-fn cli_read_shows_native_hook_errors_without_an_injected_context_message() {
+fn cli_read_shows_hook_errors_without_context_message() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
     let archive = dir.path().join("archive");
@@ -44,7 +44,7 @@ fn cli_read_shows_native_hook_errors_without_an_injected_context_message() {
                     data["event"]["data"] == summary,
                 _ => false,
             }),
-            "{format}: native hook event must retain its exact recorded fields: {items:?}"
+            "{format}: hook event must keep its recorded fields: {items:?}"
         );
     }
     let items = hook_items(&env, "json", "1000");
@@ -53,7 +53,7 @@ fn cli_read_shows_native_hook_errors_without_an_injected_context_message() {
             polylogue_model::read::ItemKind::Other { data, .. } => data["event"]["data"] == summary,
             _ => false,
         }),
-        "paged native hook event lost source data: {items:?}"
+        "paged hook event lost source data: {items:?}"
     );
     assert_eq!(std::fs::read_to_string(source).unwrap(), original);
 }
@@ -128,7 +128,7 @@ fn hook_items(
         let page: polylogue_model::read::ReadPage = serde_json::from_value(json(&output)).unwrap();
         assert!(
             !page.document.items.is_empty(),
-            "native hook read made no progress"
+            "hook read made no progress"
         );
         items.push(&page);
         let Some(next) = page.document.footer.next else {

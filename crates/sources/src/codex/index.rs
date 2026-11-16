@@ -26,7 +26,7 @@ static NAME_FIELDS: crate::fields::Fields = crate::fields::Fields::new(
         ),
         (
             "updated_at",
-            crate::fields::Rule::Excluded("native index edit time; receipt order chooses the name"),
+            crate::fields::Rule::Excluded("Codex index edit time; commit order chooses the name"),
         ),
     ],
 );

@@ -1,12 +1,12 @@
-//! Complete Polylogue facts built from parser output. The source
-//! reading is part of every parsed fact; indexed summaries are never an input.
+//! Complete Polylogue events built from parser output. The source
+//! reading is part of every parsed event; indexed summaries are never an input.
 use crate::{Error, Result};
 use polylogue_model::user::UserWrite;
 use polylogue_store::primary::products::Product;
 use serde_json::{Value, json};
 mod ai;
 
-/// Decode a confirmed fact whose kind definition is the one Polylogue declares.
+/// Decode a confirmed event whose kind definition is the one Polylogue declares.
 pub(crate) fn decode_source(
     kind: &sinex_model::KindRef,
     definition_hash: &str,
@@ -27,7 +27,7 @@ pub(crate) fn decode_source(
 pub(crate) fn require_source(product: &Product) -> Result<()> {
     if matches!(product, Product::Interpreted { .. }) {
         return Err(Error::Invalid(
-            "native eligibility metadata is not a domain fact".into(),
+            "contribution metadata is not a domain fact".into(),
         ));
     }
     if product
@@ -46,9 +46,9 @@ pub(crate) fn require_reading(
     product: &Product,
     key: &polylogue_store::primary::ExportReadingKey,
 ) -> Result<()> {
-    let reading = product.reading().ok_or_else(|| {
-        Error::Invalid("export custody contains a product without a reading".into())
-    })?;
+    let reading = product
+        .reading()
+        .ok_or_else(|| Error::Invalid("export contains a product without a reading".into()))?;
     if reading.input.id != key.input.id
         || reading.input.format != key.input.format
         || reading.chain != key.chain
@@ -109,7 +109,7 @@ pub(crate) fn kind(product: &Product) -> &'static str {
     }
 }
 
-/// Source copies remain separate readings of one natural record. This retains
+/// Source copies remain separate readings of one natural record. This keeps
 /// every source rank and provider attribute when another copy arrives.
 pub(crate) fn key(product: &Product, _occurrence: u64) -> Result<String> {
     let natural = match product {
@@ -130,7 +130,7 @@ pub(crate) fn key(product: &Product, _occurrence: u64) -> Result<String> {
         Product::Event { id, .. } => json!([id]),
         // Link assertions accumulate: a later source record may omit a branch
         // point which an earlier record supplied. Keep both contributions for
-        // the canonical relation merger rather than replacing one with the other.
+        // the relation merger rather than replacing one with the other.
         Product::Link { facts, .. } => json!([facts]),
         Product::PrefixCopy { facts, .. } => json!([facts]),
         Product::PrefixMember { facts, .. } => json!([facts]),
@@ -169,10 +169,10 @@ pub(crate) fn key(product: &Product, _occurrence: u64) -> Result<String> {
     )
 }
 
-/// Declared native facts retain domain values independently of the local index.
+/// A Sinex event payload carries its declared domain values whatever the local index holds.
 pub(crate) fn payload(product: &Product, occurrence: u64) -> Result<Value> {
     let mut payload = match product {
-        Product::Interpreted { .. } => unreachable!("eligibility is local metadata"),
+        Product::Interpreted { .. } => unreachable!("a contribution is local metadata"),
         Product::ToolCall { facts, .. } => serde_json::to_value(ai::ToolFields {
             call: facts,
             context: Default::default(),
@@ -399,7 +399,7 @@ pub(crate) fn decode(event_kind: &sinex_model::KindRef, payload: Value) -> Resul
             || record.end > reading.parsed_upto
         {
             return Err(Error::Invalid(
-                "native interpretation differs from its original source".into(),
+                "parsed event differs from its original source".into(),
             ));
         }
         if let Some(delivery) = &reading.delivery {
@@ -463,9 +463,9 @@ fn reachable_definitions(root: &Value, definitions: &Value) -> Value {
     }
     let mut pending = std::collections::BTreeSet::new();
     references(root, &mut pending);
-    let mut retained = serde_json::Map::new();
+    let mut kept = serde_json::Map::new();
     while let Some(name) = pending.pop_first() {
-        if retained.contains_key(&name) {
+        if kept.contains_key(&name) {
             continue;
         }
         let definition = definitions
@@ -473,13 +473,13 @@ fn reachable_definitions(root: &Value, definitions: &Value) -> Value {
             .expect("generated schema reference exists")
             .clone();
         references(&definition, &mut pending);
-        retained.insert(name, definition);
+        kept.insert(name, definition);
     }
-    Value::Object(retained)
+    Value::Object(kept)
 }
 
-/// Native source kinds declare their domain fields and source evidence.
-/// Durable authored and input records retain their exact operation decoder.
+/// Source kinds declare their domain fields and time accuracy.
+/// Authored and input records keep the decoder of their operation.
 pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> {
     use sinex_model::kinds::{FieldHint, KeyRule, Normalization, RemovedRule, Search, TimeRule};
     use sinex_model::{Class, KindDeclaration, KindRef, ReplaceRule, TimeQuality};
@@ -559,12 +559,12 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                 })
             };
             let mut definitions = definitions.as_object().expect("schema definitions").clone();
-            if let Some(native) = schema
+            if let Some(domain) = schema
                 .as_object_mut()
-                .expect("native schema object")
+                .expect("domain schema object")
                 .remove("$defs")
             {
-                for (name, definition) in native.as_object().expect("native definitions") {
+                for (name, definition) in domain.as_object().expect("domain definitions") {
                     if let Some(existing) = definitions.get(name) {
                         assert_eq!(existing, definition, "one definition for {name}");
                     } else {
@@ -578,7 +578,7 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                     .expect("record variants")
                     .iter()
                     .find(|variant| variant["properties"]["product"]["const"] == "interpreted")
-                    .expect("source eligibility schema");
+                    .expect("source contribution schema");
                 let fields = schema["properties"].as_object_mut().expect("domain fields");
                 fields.insert("record_key".into(), json!({"type":"string","minLength":1}));
                 fields.insert(
@@ -774,18 +774,19 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
         .collect()
 }
 
-/// Build each event from its complete fact and its confirmed material anchor.
+/// Build each event from its complete product and its record offset in the confirmed material.
 pub(crate) fn events(
     writes: &[polylogue_store::primary::products::ProductWrite],
 ) -> Result<Vec<sinex_protocol::ProducerEvent>> {
     use sinex_model::{Class, MaterialId, RecordLocation};
-    let mut observations = std::collections::BTreeMap::<String, crate::native::Native>::new();
+    let mut observations =
+        std::collections::BTreeMap::<String, crate::attribution::SessionAttribution>::new();
     for write in writes {
         match &write.product {
             Product::Session { facts, .. } => {
-                let context = observations
-                    .entry(facts.id.to_string())
-                    .or_insert_with(|| crate::native::Native::new(facts.repo.clone()));
+                let context = observations.entry(facts.id.to_string()).or_insert_with(|| {
+                    crate::attribution::SessionAttribution::new(facts.repo.clone())
+                });
                 if let Some(repository) = &facts.repo {
                     context.repository(repository);
                 }
@@ -824,27 +825,27 @@ pub(crate) fn events(
                 _ => None,
             };
             if let Some((session, session_record)) = session {
-                let native = contexts
+                let stated = contexts
                     .get(&session.to_string())
                     .cloned()
                     .unwrap_or_default();
-                if session_record && let Some(first) = native.sources.first() {
+                if session_record && let Some(first) = stated.sources.first() {
                     source = Some(polylogue_store::primary::products::SourceLocation {
                         material: first.material.to_string(),
                         anchor: first.anchor,
                     });
                 }
                 if session_record {
-                    payload["repo"] = serde_json::to_value(native.repo)?;
-                    payload["objectives"] = serde_json::to_value(native.objectives)?;
-                    payload["git_identity"] = serde_json::to_value(native.git_identity)?;
-                    payload["terminal"] = serde_json::to_value(native.terminal)?;
-                    payload["boot_id"] = serde_json::to_value(native.boot_id)?;
-                    payload["native_sources"] = serde_json::to_value(native.sources)?;
-                    payload["native_unavailable"] = serde_json::to_value(native.unavailable)?;
+                    payload["repo"] = serde_json::to_value(stated.repo)?;
+                    payload["objectives"] = serde_json::to_value(stated.objectives)?;
+                    payload["git_identity"] = serde_json::to_value(stated.git_identity)?;
+                    payload["terminal"] = serde_json::to_value(stated.terminal)?;
+                    payload["boot_id"] = serde_json::to_value(stated.boot_id)?;
+                    payload["native_sources"] = serde_json::to_value(stated.sources)?;
+                    payload["native_unavailable"] = serde_json::to_value(stated.unavailable)?;
                     payload["machine"] = serde_json::to_value(&write.machine)?;
                 } else {
-                    payload["context"] = serde_json::to_value(native)?;
+                    payload["context"] = serde_json::to_value(stated)?;
                 }
             }
             let location = source

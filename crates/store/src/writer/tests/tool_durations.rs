@@ -25,7 +25,7 @@ fn messages(duration: u64) -> (Message, Message) {
 }
 
 #[test]
-fn a_duration_outside_sql_integer_range_remains_canonical_in_both_pairing_orders() {
+fn duration_outside_sql_integer_range_stays_exact() {
     for duration in [27, u64::MAX] {
         for result_first in [false, true] {
             let archive = test_archive();
@@ -74,7 +74,7 @@ fn a_duration_outside_sql_integer_range_remains_canonical_in_both_pairing_orders
 }
 
 #[test]
-fn an_oversized_background_duration_does_not_wrap_or_rewrite_the_canonical_result() {
+fn oversized_background_duration_keeps_the_stored_result() {
     let archive = test_archive();
     let (call, result) = messages(27);
     archive

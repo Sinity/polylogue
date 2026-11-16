@@ -1,6 +1,6 @@
 # Assertions
 
-Everything people and agents add to the archive is an assertion, except variants, which have their own records here too. This page owns the record and its tables, kinds, links and currency, authorship of every authored record, reading, judgment, comparisons and forecasts, rubrics and passes, checked claims, variants, markup, memory and methods, and the one write path. Pages are built from assertions and are described in [pages.md](pages.md); the reference grammar is [references.md](references.md); how agents receive assertions in briefs is [agents.md](agents.md#brief); how a web view edits them is [web.md](web.md).
+Everything people and agents add to the archive is an assertion, except variants, which have their own records here too. This page owns the record and its tables, kinds, links and current revisions, authorship of every authored record, reading, judgment, comparisons and forecasts, rubrics and passes, checked claims, variants, markup, memory and methods, and the one write path. Pages are built from assertions and are described in [pages.md](pages.md); the reference grammar is [references.md](references.md); how agents receive assertions in briefs is [agents.md](agents.md#brief); how a web view edits them is [web.md](web.md).
 
 Assertions are the substrate of everything authored, and there are no separate tables per kind of mark. (ruling 2026-06-20, codex:019ecc6e-b42c-73b1-865a-6a59d352de2c@2026-06-20T20:08:14Z).
 
@@ -8,7 +8,7 @@ Assertions are the substrate of everything authored, and there are no separate t
 
 An assertion is an authored statement that a **key** has a **value** for a **target**. It records its author and the channel it came through, may carry evidence, a scope and an origin, may carry an expiry, and is revisable and addressable, so other assertions can be about it.
 
-Captured content (sessions, messages, blocks, tool calls, bytes) is evidence and never an assertion. Derived values (costs, detected language) are not assertions; neither are settings' defaults, kept results, deliveries or variants. "Annotation" is the everyday word for assertions in general; "note" names only the free-text kind. The type is `Assertion`, the query unit `assertions`, the verb `assert`.
+Captured content (sessions, messages, blocks, tool calls, bytes) is what assertions point at, never an assertion. Derived values (costs, detected language) are not assertions; neither are settings' defaults, kept results, deliveries or variants. "Annotation" is the everyday word for assertions in general; "note" names only the free-text kind. The type is `Assertion`, the query unit `assertions`, the verb `assert`.
 
 The tables live in `archive.db`:
 
@@ -53,25 +53,25 @@ CREATE INDEX assertion_kind_key ON assertion(kind, key);
 CREATE INDEX assertion_root     ON assertion(root);
 ```
 
-Original authored time is optional. Ordinary mutations use the accepting request's
+Original authored time is optional. Other mutations use the accepting request's
 captured time; imports keep the recorded time or `null` when none was recorded.
 An undated assertion is current by the same link and slot rules as a dated one.
-Time-filtered and as-of reads exclude undated facts, whose eligibility at that
+Time-filtered and as-of reads exclude undated assertions, whose standing at that
 instant cannot be established. Unbounded reads include them and show an unknown
 time. An import's observed time describes ingress, not original authorship.
 
-A predecessor rubric is identified by its stored schema name and version. Its
-registration time is retained when recorded; the predecessor's zero registration
-sentinel means unknown. Physical source memberships are kept separately in
+A Python Polylogue rubric is identified by its stored schema name and version. Its
+registration time is kept when recorded; Python Polylogue's zero registration
+time means unknown. Physical source memberships are kept separately in
 `assertion_import`, keyed by assertion, rows input, chain, machine and actor.
-Thus two stores containing an identical schema retain both original rows and
-memberships while restoring one immutable rubric. A different fact under that
+Thus two stores containing an identical schema keep both original rows and
+memberships while restoring one immutable rubric. A different rubric under that
 same ID is refused, including a conflicting time; import order never replaces a
-known time with an unknown one. Imported assertions retain their original pass
+known time with an unknown one. Imported assertions keep their original pass
 links; shared schema definitions do not derive identity from a physical store's
 pass.
 
-- **One link table.** Target, evidence, scope, origin and every relation are the same fact: this assertion points at that reference, in this role.
+- **One link table.** Target, evidence, scope, origin and every relation are the same kind of row: this assertion points at that reference, in this role.
 - **Nothing derived is stored except two indexes.** `revision_state` holds which revisions are current and withdrawn, and `assertion_slot` which uniqueness slots each revision holds. The write that adds a record recomputes them for exactly the roots it can affect, in the same transaction, so they always equal the rule over the links. Conflicts, judgment state, target state and work-item state are computed when read.
 - **Nothing expires by itself.** `valid_until` changes how an assertion is shown; it deletes nothing. Polylogue has no deletion ([architecture.md](architecture.md#deletion)); withdrawal is itself an authored statement.
 
@@ -108,7 +108,7 @@ Kinds are one closed declaration in the `model` crate. Each states the key's mea
 A setting's `machine` is its target host for a host-scoped key and null for an archive-scoped key; `value` has the catalog's type for that key. The machine that wrote the setting stays the assertion's own `machine`. Two current revisions for one key and host are a conflict, shown with both references; the default does not resolve it.
 
 - **Marks.** Starring, pinning and other marks are tags. "Pin" stays the word for a mark; a page slot that shows an exact revision is `fixed` ([pages.md](pages.md#layouts)).
-- **`hidden`** takes a session and its rows out of default listings, search results, briefs and resume lists; `hidden:true` or `hidden:*` brings them back. Measures and population counts still include hidden sessions and say how many ("includes 3 hidden sessions"), because a display preference never changes a measured population. It is a reading preference, written and withdrawn with the ordinary `assert` and `withdraw` verbs.
+- **`hidden`** takes a session and its rows out of default listings, search results, briefs and resume lists; `hidden:true` or `hidden:*` brings them back. Measures and population counts still include hidden sessions and say how many ("includes 3 hidden sessions"), because a display preference never changes a measured population. It is a reading preference, written and withdrawn with the usual `assert` and `withdraw` verbs.
 - **A summary is a variant,** not a kind (see Variants). A pass is the one way to group bulk annotation.
 
 ## Links
@@ -124,11 +124,11 @@ A setting's `machine` is its target host for a host-scoped key and null for an a
 | `answers`, `challenges`, `supports`, `qualifies`, `corrects`, `derived_from`, `blocks` | typed relations between assertions |
 | `slot_of`, `member_of`, `role_of` | page structure ([pages.md](pages.md)) |
 
-**Stacks.** An assertion may be about another assertion at an exact revision, through one typed relation, so a claim, a question about it and an answer that challenges it form a stack. `read assertion:X --stack` shows everything that links to any revision of X, transitively, each with author, revision, currency and relation; a page renders the same tree in place.
+**Stacks.** An assertion may be about another assertion at an exact revision, through one typed relation, so a claim, a question about it and an answer that challenges it form a stack. `read assertion:X --stack` shows everything that links to any revision of X, transitively, each with author, revision, whether it is current, and relation; a page renders the same tree in place.
 
 **Repetition is not corroboration.** `supports` counts distinct roots reached through `derived_from`: three summaries of one source are one source, and variants never count.
 
-## Currency
+## Current revisions
 
 - **Current revision.** Revision R of root X is current when R is not withdrawn and no revision reachable from R through incoming `revises` links (its descendants, transitively) is not withdrawn. Withdrawn revisions are thus transparent: in R1←R2←R3, withdrawing R2 leaves R3 current and R1 not. It is a pure function of the `revises` and `withdraws` links, never of `commit_seq` or time, so every machine computes the same answer from the same links. The rule and its functions are shared with Sinex through polylogue-sinex-common's `authored` crate.
 - **Conflict.** Two current revisions of one root are a conflict. Both are shown with their authors; a single-valued read matches neither value; `conflict:true` finds them; `status` counts them. A revision that `revises` both resolves it.
@@ -138,7 +138,7 @@ A setting's `machine` is its target host for a host-scoped key and null for an a
 - **Across machines** no host sees another's unconfirmed writes; concurrent revisions become two heads by the same rule. No winner is chosen by timestamp.
 - **A revision inherits** the kind, key and links of its base unless the write gives new ones.
 
-**Withdrawal.** A `withdrawal` links `withdraws` to one or more assertion revisions, roots (all their revisions), variant revisions or roots, or other withdrawals. An assertion is withdrawn while a non-withdrawn withdrawal names it or its root. Withdrawing the newest revision makes the one it revised current again; restoring is withdrawing the withdrawal. A withdrawal is never revised: a revised withdrawal would go on withdrawing what the old one named, so `revise` of a withdrawal is refused. One withdrawal may name many assertions, so a whole pass is withdrawn at once. Withdrawn assertions leave results, briefs, pages and currency unless a query asks for them (`withdrawn:true`, `withdrawn:*`).
+**Withdrawal.** A `withdrawal` links `withdraws` to one or more assertion revisions, roots (all their revisions), variant revisions or roots, or other withdrawals. An assertion is withdrawn while a non-withdrawn withdrawal names it or its root. Withdrawing the newest revision makes the one it revised current again; restoring is withdrawing the withdrawal. A withdrawal is never revised: a revised withdrawal would go on withdrawing what the old one named, so `revise` of a withdrawal is refused. One withdrawal may name many assertions, so a whole pass is withdrawn at once. Withdrawn assertions leave results, briefs, pages and current revisions unless a query asks for them (`withdrawn:true`, `withdrawn:*`).
 
 **Exact references hold.** Judgments, questions, `fixed` slots, kept results and deliveries store `assertion:X@R`. A new revision never moves them, and a judgment of R says nothing about R+1.
 
@@ -155,8 +155,8 @@ Every authored record in Polylogue (assertions, variants, withdrawals, judgments
   - `agent:<session>`, the most specific session known, for example `claude-code:agent-a7f3a2c1000000003` for a Claude subagent or `codex:<thread>`;
   - `agent:<origin>`, when the harness is known and its session is not, for example `agent:gemini-cli`;
   - `script:<unit>`, a named non-interactive program, named by its cgroup unit (a systemd unit or a scope);
-  - `unattributed`, when there is no evidence either way.
-- **`via`** is the channel the write arrived on: `mcp`, `cli`, `web`, `extension`, `desktop`, `hook`, `markup`, `import` or `daemon`. There is no evidence blob and no confidence score.
+  - `unattributed`, when nothing shows either way.
+- **`via`** is the channel the write arrived on: `mcp`, `cli`, `web`, `extension`, `desktop`, `hook`, `markup`, `import` or `daemon`. There is no attribution blob and no confidence score.
 
 **No surface accepts an author from the caller.** A request that names an author is refused as `invalid`. A `--session` option or `session` argument names a subject or a recipient, never the author.
 
@@ -167,7 +167,7 @@ The client process gathers its identity and sends it as `caller` in the request 
 | Channel | Author |
 |---|---|
 | **MCP**, the agents' primary channel (`polylogue mcp`, a child of the harness) | At start: `CLAUDE_CODE_SESSION_ID` gives `claude-code:<id>`; `CODEX_THREAD_ID` gives `codex:<id>`; `HERMES_SESSION_ID` is resolved through Hermes's state database; otherwise the parent executable names the harness, giving `agent:<origin>`. When hooks are installed, the hook spool's latest `SessionStart` for the server's parent pid wins over the start-up variable, so resumed and cleared sessions are followed. Per call, for Claude Code: `_meta["claudecode/toolUseId"]` is joined to the spooled `PreToolUse` with that `tool_use_id`; when that event carries `agent_id`, the author is `claude-code:agent-<agent_id>`, otherwise its `session_id`. MCP writes are never `operator`. |
-| **CLI**, the second channel | Harness identities come from the environment (`CLAUDE_CODE_SESSION_ID` with `CLAUDE_PID`; `CODEX_THREAD_ID` with `CODEX_TOOL_CALL_ID`; `HERMES_SESSION_ID`; `GEMINI_CLI=1`, which has no session). With several present, the nearest harness ancestor in the process tree wins; with several and no harness ancestor, `unattributed`. A harness ancestor is recognised by its executable or by the harness variables it set in the processes below it (an ancestor whose own environment lacks the `CLAUDECODE`, `CODEX_THREAD_ID`, `HERMES_SESSION_ID` or `GEMINI_CLI=1` its children carry), and the harness pid is that ancestor's. A CLI write from a Claude subagent's Bash call is attributed to the main session, which is correct as the root of the work: no per-process evidence ties the command to one tool call, and an open Bash call in the spool does not tell which process it started. With no harness identity, a controlling terminal gives `operator`; no terminal gives `script:<unit>` when the process's cgroup names a unit, else `unattributed`. |
+| **CLI**, the second channel | Harness identities come from the environment (`CLAUDE_CODE_SESSION_ID` with `CLAUDE_PID`; `CODEX_THREAD_ID` with `CODEX_TOOL_CALL_ID`; `HERMES_SESSION_ID`; `GEMINI_CLI=1`, which has no session). With several present, the nearest harness ancestor in the process tree wins; with several and no harness ancestor, `unattributed`. A harness ancestor is recognised by its executable or by the harness variables it set in the processes below it (an ancestor whose own environment lacks the `CLAUDECODE`, `CODEX_THREAD_ID`, `HERMES_SESSION_ID` or `GEMINI_CLI=1` its children carry), and the harness pid is that ancestor's. A CLI write from a Claude subagent's Bash call is attributed to the main session, which is correct as the root of the work: nothing recorded per process ties the command to one tool call, and an open Bash call in the spool does not tell which process it started. With no harness identity, a controlling terminal gives `operator`; no terminal gives `script:<unit>` when the process's cgroup names a unit, else `unattributed`. |
 | **Web UI and HTTP API** | `operator`, `via: web`, with no inspection of the browser. The web UI is the operator's channel; agents are directed to MCP. |
 | **Browser extension** | `operator`, `via: extension`, for acts in the extension's own UI. Acts it performs for a request (a chat send, a backfill) carry the requester's author from the request record ([extension.md](extension.md#authorship-from-the-extension)). |
 | **Desktop notifications** | `operator`, `via: desktop`, for actions taken on a desktop notification ([operations.md](operations.md#notices)); a rule cannot supply this channel |
@@ -183,9 +183,9 @@ How captured messages record who wrote them (`written_by`, `prompt_kind`) is a s
 ### What the author changes
 
 - **No capability depends on the author.** Every author may write every kind, judgments and settings included. Settings that spend money or send data out of the machine are no exception; changes by anyone but the operator are listed in `status` until the operator next looks (default; open operator question).
-- "Operator" means exactly `operator`; `agent:*`, `script:*` and `unattributed` are claims.
+- "Operator" means exactly `operator`; `agent:*`, `script:*` and `unattributed` are best-effort attributions.
 - Readers show author and `via` on every record. Query fields: `author`, `by_operator` (exactly `operator`), `agent` (any `agent:*`), `unattributed`, `via`. Unattributed records are labelled "author unknown", never shown as the operator's.
-- **Claiming.** The operator makes an unattributed or mis-attributed record their own by an ordinary revision authored `operator`. The original stays in history; there is no re-attribution verb.
+- **Claiming.** The operator makes an unattributed or mis-attributed record their own by a revision authored `operator`. The original stays in history; there is no re-attribution verb.
 - Briefs and signals read the author: how briefs treat agent assertions is [agents.md](agents.md#brief); which rules may interrupt is [operations.md](operations.md#notices).
 
 ### MCP completeness
@@ -194,7 +194,7 @@ Every write in this page is a command-table operation and therefore an MCP tool:
 
 ### What authorship does not guarantee
 
-Authorship is for honest attribution, not a security boundary: all agents run as the operator's user, and the threat it addresses is mistakes, not adversaries. Not guaranteed: deliberate impersonation (unsetting variables, typing into a terminal an agent opened, driving the web UI, forging `caller`); an agent using the operator's channels in good faith (recorded as `operator`); the operator running `polylogue` inside a harness's shell mode (recorded as that session, and claimable); exact subagent attribution for two concurrent CLI calls from one Claude process (recorded as the main session); Gemini sessions (harness only, `agent:gemini-cli`); detached work whose launcher does not forward the harness variables.
+Authorship is for honest attribution, not a security boundary: all agents run as the operator's user, and the threat it addresses is mistakes, not adversaries. Not guaranteed: deliberate impersonation (unsetting variables, typing into a terminal an agent opened, driving the web UI, forging `caller`); an agent using the operator's channels in good faith (recorded as `operator`); the operator running `polylogue` inside a harness's shell mode (recorded as that session, and claimable); attribution to the right subagent for two concurrent CLI calls from one Claude process (recorded as the main session); Gemini sessions (harness only, `agent:gemini-cli`); detached work whose launcher does not forward the harness variables.
 
 ## Reading
 
@@ -215,7 +215,7 @@ Authorship is for honest attribution, not a security boundary: all agents run as
 | goal **achieved** | an `accepted` judgment, by the judges the reader counts, of an assertion that `answers` it |
 | item **blocked** | a current assertion `blocks` it; the block ends when the blocking assertion is answered or withdrawn; blocked never closes a goal |
 | **decided** | a current `decision` is about it; deciding does not answer an open question |
-| **withdrawn** | see Currency |
+| **withdrawn** | see Current revisions |
 | **unresolved since T** | none of the above, stated with how far capture reaches |
 
 A later answer is tied to an earlier item only by an explicit link (a marker argument or an `answers` link); similar wording never ties them.
@@ -223,7 +223,7 @@ A later answer is tied to an earlier item only by an explicit link (a marker arg
 **Backlinks, history and as-of.**
 - Reading any reference lists what links to it: assertions by role, slots, kept results, deliveries and variants (`referenced_by:` in queries).
 - `read assertion:X --history` lists revisions, withdrawals, judgments and conflicts in the order of the `revises` graph; ties are shown by `(created_at, id)`.
-- `evidence_until:T` reads each assertion at the revision current among records with `created_at ≤ T`; pages use it for `--at`. `created_at` is the writer's clock, so as-of reads across machines are approximate and say so.
+- `seen_by:T` reads each assertion at the revision current among records with `created_at ≤ T`; pages use it for `--at`. `created_at` is the writer's clock, so as-of reads across machines are approximate and say so.
 
 ## Judgment
 
@@ -242,7 +242,7 @@ Judgment is optional and never a gate: most agent assertions will never be seen 
 
 **Comparisons.** A `comparison` judges two or more references on one dimension. Its verdict is `prefer:<ref>`, `ranking:[…]`, `tie`, `incomparable`, `abstain` or `insufficient_evidence`; the last two add no preference. Rankings are computed at read (win rate and a Bradley-Terry fit), each rank with its number of comparisons, and uncertain pairs are listed for judging, because choosing between two things is easier than scoring one.
 
-**Forecasts.** A `forecast` names an event, a probability, a horizon and what resolves it; the resolution is an assertion that `answers` it with the outcome. Calibration uses only forecasts written before their event resolved (by `commit_seq` on one archive, otherwise by the resolving evidence's time) and is reported with its count.
+**Forecasts.** A `forecast` names an event, a probability, a horizon and what resolves it; the resolution is an assertion that `answers` it with the outcome. Calibration uses only forecasts written before their event resolved (by `commit_seq` on one archive, otherwise by the resolving record's time) and is reported with its count.
 
 ## Passes and bulk writes
 
@@ -254,7 +254,7 @@ Systematic agent annotation is a **pass**: key/value assertions governed by a ru
 4. **Coverage** is the kept rows minus the rows with an annotation or abstention, computed at read.
 5. Withdrawing a pass's whole set is one withdrawal.
 6. A marker cannot open a pass; `::annotation` names a rubric revision and a pass the same author opened.
-7. **Shipped rubrics:** the predecessor's six annotation schemas (`delegation.discourse`, `seed.activity`, `seed.goal-event`, `seed.outcome-evidence`, `seed.knowledge-artifact`, `seed.reusability`) ship as rubric data, resolved by name like shipped saved queries; a rubric of one's own with the same name takes precedence.
+7. **Shipped rubrics:** Python Polylogue's six annotation schemas (`delegation.discourse`, `seed.activity`, `seed.goal-event`, `seed.outcome-evidence`, `seed.knowledge-artifact`, `seed.reusability`) ship as rubric data, resolved by name like shipped saved queries; a rubric of one's own with the same name takes precedence.
 
 **Bulk writes.** Any write over a query or a kept result writes **one assertion per matched row**, in one transaction and one request, with IDs `<request>.<n>`; the reply gives the committed count, the query's `query:<hash>` and its resolved bounds. An assertion **about** `result:<id>` is about the result itself, which is different from assertions on its rows.
 
@@ -295,7 +295,7 @@ CREATE TABLE variant_part (
 ) STRICT, WITHOUT ROWID;
 ```
 
-Revisions use `base`; withdrawal is an ordinary `withdrawal` that `withdraws variant:<root>[@<rev>]`; currency follows the rule under Currency with `base` in place of `revises`. Finer alignment inside one part is expressed by span references in assertions about the part.
+Revisions use `base`; withdrawal is a plain `withdrawal` that `withdraws variant:<root>[@<rev>]`; current revisions follow the rule under Current revisions with `base` in place of `revises`. Finer alignment inside one part is expressed by span references in assertions about the part.
 
 - **Hierarchical.** A variant whose source is a session consists of parts, one per rendered block, each naming its original block in `of`; its messages are the groups of parts by their original message. A message variant is the same at message grain. A summary is one or more parts whose `of` is what the producing agent chose (the session, a range of messages, a block), with relation `summarizes`; the agent declares that mapping when it writes the variant. Reading `variant:V` renders the original's structure with parts swapped in; unmapped children show "untranslated" and `omits` parts show "omitted".
 - **Several parts for one child.** Several parts may name the same `of`, for example an expansion. They render in ascending `n`, joined by two line feeds. A group renders as omitted only when every part is `omits`; a mixed group keeps its text and is marked partly omitted. Each part keeps its own relation. Two current renditions of one source are an ambiguity, never concatenated.
@@ -308,7 +308,7 @@ Revisions use `base`; withdrawal is an ordinary `withdrawal` that `withdraws var
 
 ## Markup
 
-Agents and the operator write assertions and pings inside ordinary messages, as an alternative to tool calls. (ruling 2026-07-03, cc:30f5e650-7033-4423-9f91-2b66ebd1e6b2:027fee03-005e-46fe-9d0f-eb7c62ed4b8a).
+Agents and the operator write assertions and pings inside their messages, as an alternative to tool calls. (ruling 2026-07-03, cc:30f5e650-7033-4423-9f91-2b66ebd1e6b2:027fee03-005e-46fe-9d0f-eb7c62ed4b8a).
 
 ```ebnf
 marker = "::" kind [ "(" args ")" ] [ ":" " " body ] ;
@@ -344,7 +344,7 @@ Every write is a request `{id, machine, at, write}`, executed by the daemon's wr
 1. **Idempotency.** The same request ID with the same content hash returns the original outcome (`repeat: true`); with other content it is refused as `conflict`. The client chooses the ID once per user action and reuses it on retry.
 2. **Author**, computed as described under Authorship.
 3. **Resolution.** References resolve; a query target runs in the same read transaction as the write's checks.
-4. **Validation:** the kind's shape, cardinality, the rubric's allowance, stale base, an experiment's frozen assignment ([pages.md](pages.md)).
+4. **Validation:** the kind's shape, cardinality, the rubric's allowance, stale base, an experiment's fixed assignment ([pages.md](pages.md)).
 5. **Insert** with `commit_seq`.
 6. **Reply** with the committed IDs, the count, the recorded author and `via`, and for query targets `query:<hash>` and the resolved bounds. Refusals carry their kind: `stale`, `ambiguous`, `invalid/<shape>`, `not_allowed_by_rubric`, `conflict`.
 
@@ -367,10 +367,10 @@ Page verbs are listed in [pages.md](pages.md#agents-and-pages). Every write prin
 
 **Importing assertion lines.** `polylogue import FILE` with JSON lines of assertion writes checks each line first; bad lines are reported with their line numbers and not written; good lines share one request and one `pass` (without a rubric) as their `origin`, so one withdrawal removes them. Moving user state between archives (`read --to DIR`, then `import`) is described in [primary-mode.md](primary-mode.md#moving-user-state).
 
-**The predecessor's assertions** are a declared older format of `import` (`--format predecessor-user-db`). Each keeps its ID and creation time, with every stored column in the value under `predecessor`. A judgment of another assertion carrying a decision becomes a `judgment` of that exact revision (`accept`, `reject` and `defer` as `accepted`, `rejected` and `deferred`); a row superseding another about the same target becomes a revision of it with `revises`; any other `judgment`, a detector's request for one, becomes a `question`; `blocker` becomes `problem`; `finding` and `note` keep their kind; an expiry becomes `valid_until`. Targets and evidence that name sessions, messages or other assertions become links; a finding about an analysis is about the rows of the result set it cites; other references stay only in `predecessor`. Authors map to the nearest honest author: a detector or analysis run to `script:<its stored name>`, a recorded agent session to that session (`agent:codex:<id>`), and the operator's account name to `unattributed`, never `operator`, because commands agents ran under that account were stored under it too. A row of a kind or target with no counterpart is refused with its reason. All of them share one `pass` origin, and every row of every table, refused or not, stays readable in `user.db!/rows.jsonl`; annotation schemas, query plans and result sets have no counterpart here (a rubric needs a unit query in this query language) and are kept only there.
+**Python Polylogue's assertions** are a declared older format of `import` (`--format python-user-db`). Each keeps its ID and creation time, with every stored column in the value under `predecessor`. A judgment of another assertion carrying a decision becomes a `judgment` of that exact revision (`accept`, `reject` and `defer` as `accepted`, `rejected` and `deferred`); a row superseding another about the same target becomes a revision of it with `revises`; any other `judgment`, a detector's request for one, becomes a `question`; `blocker` becomes `problem`; `finding` and `note` keep their kind; an expiry becomes `valid_until`. Targets and evidence that name sessions, messages or other assertions become links; a finding about an analysis is about the rows of the result set it cites; other references stay only in `predecessor`. Authors map to the nearest honest author: a detector or analysis run to `script:<its stored name>`, a recorded agent session to that session (`agent:codex:<id>`), and the operator's account name to `unattributed`, never `operator`, because commands agents ran under that account were stored under it too. A row of a kind or target with no counterpart is refused with its reason. All of them share one `pass` origin, and every row of every table, refused or not, stays readable in `user.db!/rows.jsonl`; annotation schemas, query plans and result sets have no counterpart here (a rubric needs a unit query in this query language) and are kept only there.
 
 ## Storage
 
-Standalone, `assertion`, `link`, `revision_state`, `assertion_slot`, `variant` and `variant_part` live in `archive.db` and are backed up with it; there is no separate file of user state. In primary mode every authored record travels to Sinex as a `polylogue.*` record and is applied locally from the confirmed stream like every other record ([primary-mode.md](primary-mode.md)); currency follows the same rule on every machine.
+Standalone, `assertion`, `link`, `revision_state`, `assertion_slot`, `variant` and `variant_part` live in `archive.db` and are backed up with it; there is no separate file of user state. In primary mode every authored record travels to Sinex as a `polylogue.*` record and is applied locally from the confirmed stream like every other record ([primary-mode.md](primary-mode.md)); current revisions follow the same rule on every machine.
 
-Performance rules: currency, conflict and withdrawn state are read from `revision_state`, which the writing transaction recomputes for the affected roots only, never by scanning all assertions per row; an assertion write never waits behind a first build for more than one writer group; markup extraction costs a declared, measured share of parsing throughput; `toc` and the other assertion reads meet the latency classes in [interfaces.md](interfaces.md#latency-classes).
+Performance rules: current, conflict and withdrawn state are read from `revision_state`, which the writing transaction recomputes for the affected roots only, never by scanning all assertions per row; an assertion write never waits behind a first build for more than one writer group; markup extraction costs a declared, measured share of parsing throughput; `toc` and the other assertion reads meet the latency classes in [interfaces.md](interfaces.md#latency-classes).

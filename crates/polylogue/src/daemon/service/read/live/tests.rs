@@ -37,20 +37,20 @@ fn the_live_card_shows_the_state_the_wait_and_the_process_tree() {
         }
         data
     };
-    live::fold(&mut facts, "hook_user_prompt_submit", 0, &hook(json!({})));
-    live::fold(
+    live::apply_live_event(&mut facts, "hook_user_prompt_submit", 0, &hook(json!({})));
+    live::apply_live_event(
         &mut facts,
         "hook_pre_tool_use",
         2 * MIN,
         &hook(json!({"tool_name": "Bash", "tool_use_id": "t1"})),
     );
-    live::fold(
+    live::apply_live_event(
         &mut facts,
         "hook_permission_request",
         3 * MIN,
         &hook(json!({})),
     );
-    live::fold(
+    live::apply_live_event(
         &mut facts,
         "hook_task_claimed",
         3 * MIN,

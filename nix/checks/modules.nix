@@ -96,7 +96,7 @@ assert lib.assertMsg (
   (homeUnit homeBase).Service.Type == "notify"
   && (homeUnit homeBase).Service.WatchdogSec == 30
   && (homeUnit homeBase).Service.RestartPreventExitStatus == "74 78"
-) "The service must retain readiness, liveness and refused-schema behavior.";
+) "The service must keep readiness, liveness and refused-schema behavior.";
 assert lib.assertMsg (
   !(builtins.hasAttr "MemoryMax" (homeUnit homeBase).Service)
 ) "The module must not impose a memory cap.";

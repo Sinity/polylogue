@@ -79,7 +79,7 @@ fn chat_then_view(
         Err(failure) => return failure.answer(),
     };
     if outcome.pending {
-        return crate::protocol::written(protocol::ChatAnswer::Receipt(outcome), true);
+        return crate::protocol::written(protocol::ChatAnswer::Outcome(outcome), true);
     }
     let reader = match d.reads.reader() {
         Ok(reader) => reader,
@@ -110,7 +110,7 @@ fn backfill_then_view(
         Err(failure) => return failure.answer(),
     };
     if outcome.pending {
-        return crate::protocol::written(protocol::BackfillAnswer::Receipt(outcome), true);
+        return crate::protocol::written(protocol::BackfillAnswer::Outcome(outcome), true);
     }
     let reader = match d.reads.reader() {
         Ok(reader) => reader,
@@ -203,9 +203,9 @@ browser!(
         }
         let stored = match store_files(d, &a.files)? {
             PreparedFiles::Complete(files) => files,
-            PreparedFiles::Pending(receipt) => {
+            PreparedFiles::Pending(pending) => {
                 return Ok(crate::protocol::written(
-                    protocol::ChatAnswer::Capture(receipt),
+                    protocol::ChatAnswer::Capture(pending),
                     true,
                 ));
             }

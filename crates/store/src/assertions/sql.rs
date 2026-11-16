@@ -1,4 +1,4 @@
-//! SQL over the stored currency index (`revision_state`), which the writer
+//! SQL over the stored current-revision index (`revision_state`), which the writer
 //! keeps equal to the descendant rule for every root it touches.
 
 pub fn current_assertion(row: &str) -> String {

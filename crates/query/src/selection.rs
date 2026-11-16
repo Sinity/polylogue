@@ -3,7 +3,7 @@
 //! that filter its rows, the text that ranks them, the stages that follow,
 //! the attached rows and the columns shown (docs/query.md: Defaults,
 //! Stages, Attached rows; docs/search.md). `A B`, `A | where B` and
-//! `(A) AND (B)` select alike. Projection and attachment sit beside the
+//! `(A) AND (B)` select alike. Field selection and attachment sit beside the
 //! selection and never decide which rows it holds.
 use crate::{
     QueryError,
@@ -43,7 +43,7 @@ pub struct Selection {
     /// includes hidden sessions.
     pub measured: bool,
     pub attach: Vec<Attachment>,
-    pub projection: Projection,
+    pub field_selection: FieldSelection,
 }
 
 /// A `similar:` ranking: the text whose embedding the rows are compared
@@ -85,7 +85,7 @@ pub enum Ranking {
 
 /// The columns each row shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Projection {
+pub enum FieldSelection {
     /// The unit's own columns and the fields the conditions name.
     Default,
     /// Exactly these fields (`--fields`), `prefix.field` paths included.
@@ -118,16 +118,17 @@ impl Selection {
             None => (None, None),
         };
         let top = condition.as_ref().map(top_level).unwrap_or_default();
-        let folded = stages_from(query);
+        let stage_start = stages_from(query);
         let relations_from = if condition.as_ref().is_some_and(contains_order) {
             Some(0)
         } else {
-            query.transforms[folded..]
+            query.transforms[stage_start..]
                 .iter()
                 .position(|stage| relational(&stage.kind))
-                .map(|at| at + folded)
+                .map(|at| at + stage_start)
         };
-        let measured = query.transforms[folded..relations_from.unwrap_or(query.transforms.len())]
+        let measured = query.transforms
+            [stage_start..relations_from.unwrap_or(query.transforms.len())]
             .iter()
             .any(|stage| {
                 matches!(&stage.kind, TransformKind::Extension { name, .. }
@@ -135,14 +136,12 @@ impl Selection {
             });
         let defaults = defaults::bind(unit, &top, origins, measured);
         let mut written: Vec<Condition> = condition.into_iter().collect();
-        written.extend(
-            query.transforms[..folded]
-                .iter()
-                .filter_map(|stage| match &stage.kind {
-                    TransformKind::Where { condition } => Some(condition.clone()),
-                    _ => None,
-                }),
-        );
+        written.extend(query.transforms[..stage_start].iter().filter_map(
+            |stage| match &stage.kind {
+                TransformKind::Where { condition } => Some(condition.clone()),
+                _ => None,
+            },
+        ));
         // `A | where B` is the conjunction `(A) (B)`: each part keeps its
         // own grouping of search words.
         let filter = match written.as_slice() {
@@ -154,13 +153,13 @@ impl Selection {
                     .collect::<Result<_, _>>()?,
             )),
         };
-        // An order condition's witness is read by the relation holding it.
+        // An order condition's matching row is read by the relation holding it.
         let search = if written.iter().any(contains_order) {
             Search::default()
         } else {
             Search::of(filter.as_ref(), unit)
         };
-        let order = if !order_read(&query.transforms[folded..]) {
+        let order = if !order_read(&query.transforms[stage_start..]) {
             Order::Sorted
         } else {
             match (search.rank.is_some(), semantic.is_some()) {
@@ -178,15 +177,15 @@ impl Selection {
             search,
             semantic,
             order,
-            stages_from: folded,
-            stages: crate::stages::stages(&query.transforms, folded)?,
+            stages_from: stage_start,
+            stages: crate::stages::stages(&query.transforms, stage_start)?,
             relations_from,
             measured,
             attach: query.attach.clone(),
-            projection: if fields.is_empty() {
-                Projection::Default
+            field_selection: if fields.is_empty() {
+                FieldSelection::Default
             } else {
-                Projection::Fields(fields.to_vec())
+                FieldSelection::Fields(fields.to_vec())
             },
         }))
     }
@@ -200,7 +199,7 @@ impl Selection {
 
 /// How many `| where` stages directly after a unit source join its
 /// selection: the index of the first transform that stays a stage. A stage stays a stage when the conjunction would mean
-/// something else: an order condition (whose witness the stage replaces),
+/// something else: an order condition (whose matching row the stage replaces),
 /// `last`/`latest` (the newest session meeting every condition beside it)
 /// and `| matches` (which reads its pattern from the stage).
 pub fn stages_from(query: &Query) -> usize {
@@ -387,7 +386,7 @@ pub fn top_level(c: &Condition) -> Vec<Condition> {
     }
 }
 
-/// An order condition anywhere outside a nested query: its witness makes
+/// An order condition anywhere outside a nested query: its matching row makes
 /// the condition a relation boundary.
 pub fn contains_order(condition: &Condition) -> bool {
     query_language::depth::deeper(|| match &condition.kind {

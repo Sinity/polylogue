@@ -1,8 +1,8 @@
 use super::*;
 
 #[test]
-fn feed_admission_refuses_unsupported_envelopes_before_socket_production() {
-    let daemon = crate::test_daemon::start("stream admission source");
+fn feed_refuses_unsupported_envelopes_before_production() {
+    let daemon = crate::test_daemon::start("stream acceptance source");
     for operation in ["changes", "follow"] {
         let arguments = if operation == "changes" {
             json!({})

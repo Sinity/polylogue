@@ -1,6 +1,6 @@
 //! The producer protocol over NATS: frames to the ingress, their
 //! acknowledgments, which frames Sinex recorded, and the materials Sinex holds from this producer.
-//! Frozen spool encodings pass through local frame directories. Shared-host
+//! Immutable spool encodings pass through local frame directories. Shared-host
 //! peers use hardlinks; remote peers receive encoded chunks before the logical
 //! frame. Sinex stores the bytes before it records that frame.
 use crate::{Authentication, Config, Error, Result};
@@ -176,8 +176,8 @@ impl Client {
             publication,
             _backup: backup,
         };
-        // The publication connection owns registration and backup custody.
-        // A confirmed reader never publishes while acquiring its connection.
+        // The sending connection handles registration and the backup callback.
+        // A confirmed reader never sends while it connects.
         if start_backup {
             let declarations = crate::kinds::declarations(&family);
             let hashes: Vec<_> = declarations
@@ -259,7 +259,7 @@ impl Client {
             .lock()
             .map_err(|_| Error::Invalid("producer spool panicked".into()))?
             .prepare(frame)?;
-        self.publish_prepared(prepared).await
+        self.send_prepared(prepared).await
     }
 
     /// Resume a bounded turn of immutable operations, leaving completion
@@ -283,11 +283,11 @@ impl Client {
                 )?;
             selected += ready.len();
             for prepared in ready {
-                let publisher = self.publisher();
+                let sender = self.frame_sender();
                 identities.push(prepared.identity.clone());
                 sending.push(async move {
                     let identity = prepared.identity.clone();
-                    (identity, publisher.publish_prepared(prepared).await)
+                    (identity, sender.send_prepared(prepared).await)
                 });
             }
             let Some((identity, result)) = sending.next().await else {
@@ -304,8 +304,8 @@ impl Client {
         }
     }
 
-    fn publisher(&self) -> Publisher {
-        Publisher {
+    fn frame_sender(&self) -> FrameSender {
+        FrameSender {
             client: self.client.clone(),
             subjects: self.subjects.clone(),
             producer: self.producer.clone(),
@@ -317,8 +317,8 @@ impl Client {
             health: self.health.clone(),
         }
     }
-    async fn publish_prepared(&self, prepared: crate::spool::Prepared) -> Result<Acknowledgment> {
-        self.publisher().publish_prepared(prepared).await
+    async fn send_prepared(&self, prepared: crate::spool::Prepared) -> Result<Acknowledgment> {
+        self.frame_sender().send_prepared(prepared).await
     }
 }
 
@@ -355,7 +355,7 @@ async fn transport(
         // the plaintext loopback exception onto another host.
         options = options.ignore_discovered_servers();
     } else {
-        // The native handshake establishes and verifies TLS before sending AUTH.
+        // The NATS client's built-in TLS handshake runs and verifies before AUTH is sent.
         options = options.require_tls(true);
     }
     let client = options
@@ -400,8 +400,8 @@ pub(crate) fn submit_error(error: sinex_transport::producer::SubmitError) -> Err
     }
 }
 
-/// A LargeFrame envelope names the original logical frame hash. Receipt
-/// adoption needs that identity, independently of the encoded custody layout.
+/// A LargeFrame names the original frame's hash. Accepting a recorded
+/// acknowledgment needs that identity, whatever the encoded spool layout.
 pub(crate) fn verified_acknowledgment(
     prepared: &crate::spool::Prepared,
     acknowledgment: Acknowledgment,
@@ -433,7 +433,7 @@ pub(crate) fn checked(acknowledgment: Acknowledgment) -> Result<Acknowledgment> 
 mod tests;
 
 #[derive(Clone)]
-struct Publisher {
+struct FrameSender {
     client: async_nats::Client,
     subjects: Subjects,
     producer: String,
@@ -453,9 +453,9 @@ fn frame_error(error: frame_bytes::Error) -> Error {
     }
 }
 
-impl Publisher {
-    async fn publish_prepared(&self, prepared: crate::spool::Prepared) -> Result<Acknowledgment> {
-        // Freeze waits for transmission and durable acknowledgment publication as one
+impl FrameSender {
+    async fn send_prepared(&self, prepared: crate::spool::Prepared) -> Result<Acknowledgment> {
+        // A backup freeze waits for transmission and the saved acknowledgment as one
         // unit. Capture may append new spool operations while this waits.
         let _publication = self.publication.enter().await;
         let (frame, body) = {
@@ -473,7 +473,7 @@ impl Publisher {
             if current.unresolved || current.phase.is_refused() {
                 return Err(Error::Refused {
                     name: prepared.identity.clone(),
-                    reason: "the original operation is not publishable".into(),
+                    reason: "the original operation is not sendable".into(),
                 });
             }
             (
@@ -485,7 +485,7 @@ impl Publisher {
                 },
             )
         };
-        // Frozen spool paths are local custody only; the wire names logical bytes.
+        // Spool paths stay local; the wire names the frame's bytes.
         for part in body.into_iter().flatten() {
             frame_bytes::link_file(
                 &self.frame_root,
@@ -542,7 +542,7 @@ impl Publisher {
                     .record_conflict(&frame, &offered_hash, &acknowledgment)?;
                 return Err(Error::Refused {
                     name: frame,
-                    reason: "the owner recorded different immutable contents".into(),
+                    reason: "Sinex recorded different immutable contents".into(),
                 });
             }
             Err(error) => return Err(error),
@@ -557,7 +557,7 @@ impl Publisher {
         checked(acknowledgment)
     }
 
-    /// Publishes one frame's JSON and waits for its acknowledgment. Accepted
+    /// Sends one frame's JSON and waits for its acknowledgment. Accepted
     /// by NATS is not confirmed: only the acknowledgment, which Sinex commits
     /// with the frame's contents, is. A lost acknowledgment is an error here;
     /// sending the frame again is answered from Sinex's record of it.

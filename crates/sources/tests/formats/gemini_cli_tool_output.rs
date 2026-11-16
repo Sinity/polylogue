@@ -63,7 +63,7 @@ fn gemini_cli_output_and_error_survive_with_identical_or_divergent_display() {
 }
 
 #[test]
-fn gemini_cli_marker_text_and_longer_ui_do_not_replace_native_streams() {
+fn marker_text_and_longer_ui_keep_source_streams() {
     for output in [
         "<tool_output_masked>head ... tail</tool_output_masked>",
         "Output too large. Showing first 8,000 and last 32,000 characters\nhead ... tail",

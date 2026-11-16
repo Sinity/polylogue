@@ -5,7 +5,7 @@ use rusqlite::{Transaction, params};
 
 pub(super) const DERIVATION: Derivation = Derivation {
     name: "lineage",
-    class: Class::Fold,
+    class: Class::PerChange,
     products: &[polylogue_model::derived::SESSION_LINEAGE],
     version: Version::Rules(1),
     after: &[],

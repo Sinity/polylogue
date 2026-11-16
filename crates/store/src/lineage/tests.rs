@@ -138,7 +138,7 @@ fn depth_cycle_reported() {
 }
 
 #[test]
-fn conflicting_parents_choose_neither_while_anchor_alternatives_keep_one_structural_parent() {
+fn conflicting_parents_choose_neither_and_keep_one_structural_parent() {
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(dir.path()).unwrap();
     for id in ["test:a", "test:b", "test:child", "test:leaf"] {
@@ -215,7 +215,7 @@ fn lineage_has_no_silent_depth_limit_and_unrelated_components_are_not_dirtied() 
 }
 
 #[test]
-fn family_entries_keep_all_frontiers_and_cycle_components_without_claiming_a_root() {
+fn family_entries_keep_known_parents_and_cycles_without_a_root() {
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(dir.path()).unwrap();
     for id in [

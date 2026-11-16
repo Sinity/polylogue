@@ -85,7 +85,7 @@ fn admit(conn: &mut Connection, p: &polylogue_model::authored::PreparedRequest, 
 }
 
 #[test]
-fn signal_checkpoint_outbox_and_receipt_freeze_once_across_pending_and_restart() {
+fn checkpoint_and_receipts_are_stored_once_across_restart() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("source.db");
     let mut conn = Connection::open(&path).unwrap();
@@ -138,7 +138,7 @@ fn signal_checkpoint_outbox_and_receipt_freeze_once_across_pending_and_restart()
 }
 
 #[test]
-fn signal_historical_reverse_snapshots_preserve_receipts_without_authorizing_effects() {
+fn historical_snapshots_keep_receipts_but_run_no_effects() {
     let mut origin = cache();
     let first = initial();
     let id = first.outbox[0].metadata.delivery.id().to_owned();
@@ -194,7 +194,7 @@ fn signal_historical_reverse_snapshots_preserve_receipts_without_authorizing_eff
 }
 
 #[test]
-fn signal_source_schema_is_shared_by_ledger_and_cache_and_rollback_is_atomic() {
+fn signal_source_schema_is_shared_by_archive_and_cache() {
     let mut conn = Connection::open_in_memory().unwrap();
     conn.execute_batch(crate::schema::ARCHIVE).unwrap();
     let r = request("rolled-back", initial());
@@ -202,7 +202,11 @@ fn signal_source_schema_is_shared_by_ledger_and_cache_and_rollback_is_atomic() {
         let tx = conn.transaction().unwrap();
         crate::user_writes::apply(&tx, &r, 1).unwrap();
     }
-    assert!(checkpoint(&conn, Source::Ledger, "host").unwrap().is_none());
+    assert!(
+        checkpoint(&conn, Source::Standalone, "host")
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(
         conn.query_row("SELECT count(*) FROM delivery", [], |r| r.get::<_, i64>(0))
             .unwrap(),
@@ -231,7 +235,7 @@ fn signal_numeric_host_decision_survives_tagged_request_round_trip() {
 }
 
 #[test]
-fn signal_outbox_notice_must_follow_its_route_decision() {
+fn pending_signal_notice_must_follow_its_route() {
     let mut conn = Connection::open_in_memory().unwrap();
     conn.execute_batch(crate::schema::ARCHIVE).unwrap();
     let mut shown_on_desktop = initial();

@@ -1,5 +1,6 @@
-//! Export callback identity, separate from native byte parser checkpoints.
-//! These claims carry no input, receipt, or native observation authority.
+//! Export callback identity, separate from parser checkpoints over source bytes.
+//! These stated values never establish an input, its receipt or an observation
+//! of source bytes.
 use crate::BlobHash;
 use serde::{Deserialize, Serialize};
 
@@ -47,11 +48,11 @@ impl ExportDeliverySource {
 /// The bytes a native reading covered, or the actual source of an export callback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ReadingFootprint {
+pub enum ReadRange {
     Bytes { start: u64, end: u64 },
     Export { source: ExportDeliverySource },
 }
-impl ReadingFootprint {
+impl ReadRange {
     pub fn validate(&self) -> Result<(), ExportDeliveryError> {
         match self {
             Self::Bytes { start, end } if start > end => {
@@ -123,8 +124,8 @@ impl ExportDelivery {
         Ok(delivery)
     }
 
-    /// Validates envelope shape and link integrity, not the body's truth, an
-    /// earlier replayed prefix, or the receiving input/reading/receipt binding.
+    /// Validates the delivery's shape and link integrity, not whether the body
+    /// is true, an earlier replayed prefix, or which input and reading received it.
     pub fn validate(&self) -> Result<(), ExportDeliveryError> {
         if self.version != Self::VERSION {
             return Err(ExportDeliveryError::UnsupportedVersion {
@@ -158,8 +159,8 @@ impl ExportDelivery {
         Ok(())
     }
 
-    /// Retains only this delivery's cursor metadata. Callers establish admission
-    /// and verify replayed prefixes before persisting or extending this cursor.
+    /// Keeps only this delivery's cursor metadata. Callers commit the delivery
+    /// and verify replayed prefixes before saving or extending this cursor.
     pub fn cursor(&self) -> Result<ExportCursor, ExportDeliveryError> {
         self.validate()?;
         Ok(ExportCursor {
@@ -204,8 +205,8 @@ impl ExportCursor {
             .ok_or(ExportDeliveryError::OrdinalOverflow)
     }
 
-    /// Checks one extension. Verifying an archived replay through this retained
-    /// prefix remains the receiving caller's job; no earlier item ledger exists.
+    /// Checks one extension. Verifying an archived replay through this kept
+    /// prefix remains the receiving caller's job; no list of earlier items exists.
     pub fn advance(&self, delivery: &ExportDelivery) -> Result<Self, ExportDeliveryError> {
         let expected = self.next_ordinal()?;
         delivery.validate()?;
@@ -240,7 +241,7 @@ pub enum ExportDeliveryError {
     InvalidCompletionCounts,
     #[error("export delivery ordinal is not the expected callback position")]
     InvalidOrdinal,
-    #[error("export delivery prefix does not match its envelope or predecessor")]
+    #[error("export delivery prefix does not match its fields or previous prefix")]
     InvalidPrefix,
     #[error("export delivery ordinal cannot advance beyond u64::MAX")]
     OrdinalOverflow,

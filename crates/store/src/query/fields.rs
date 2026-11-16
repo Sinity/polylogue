@@ -22,10 +22,10 @@ pub enum Expr {
     Template(&'static str),
     Fn(fn(&Aliases) -> String),
     Clock(fn(&Aliases, i64) -> String),
-    NativeTime {
+    StoredTime {
         unit: Unit,
         field: &'static str,
-        attribute: NativeTimeAttribute,
+        attribute: TimeAttribute,
     },
 }
 
@@ -35,12 +35,12 @@ impl Expr {
             Expr::Template(t) => a.expand(t),
             Expr::Fn(f) => f(a),
             Expr::Clock(f) => f(a, now),
-            Expr::NativeTime {
+            Expr::StoredTime {
                 unit,
                 field,
                 attribute,
-            } => native_time(*unit, field, a)
-                .map_or_else(|| "NULL".into(), |native| native.attribute(*attribute)),
+            } => stored_time(*unit, field, a)
+                .map_or_else(|| "NULL".into(), |stored| stored.attribute(*attribute)),
         }
     }
 }
@@ -70,9 +70,9 @@ impl Rule {
         mut self,
         unit: Unit,
         field: &'static str,
-        attribute: NativeTimeAttribute,
+        attribute: TimeAttribute,
     ) -> Self {
-        self.sql = Some(Expr::NativeTime {
+        self.sql = Some(Expr::StoredTime {
             unit,
             field,
             attribute,
@@ -84,15 +84,15 @@ impl Rule {
         query_language::depth::deeper(|| self.sql.map(|e| e.render(a, now)))
     }
 }
-/// Canonical native evidence behind a temporal field. The integer cache is
+/// How the source time behind a temporal field is stored. The integer cache is
 /// used only for broad candidates; the blob decides the exact predicate.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum NativeTimeStorage {
+pub(crate) enum TimeStorage {
     Tuple,
     Event,
     Latest,
 }
-impl NativeTimeStorage {
+impl TimeStorage {
     pub(crate) fn code(self) -> &'static str {
         match self {
             Self::Tuple => "tuple",
@@ -110,11 +110,11 @@ impl NativeTimeStorage {
     }
 }
 #[derive(Clone, Copy)]
-pub enum NativeTimeAttribute {
+pub enum TimeAttribute {
     Quality,
     Precision,
 }
-impl NativeTimeAttribute {
+impl TimeAttribute {
     pub(crate) fn code(self) -> &'static str {
         match self {
             Self::Quality => "quality",
@@ -129,13 +129,13 @@ impl NativeTimeAttribute {
         }
     }
 }
-pub(crate) struct NativeTime {
+pub(crate) struct StoredTime {
     pub cache: String,
     pub bytes: String,
-    pub storage: NativeTimeStorage,
+    pub storage: TimeStorage,
 }
-impl NativeTime {
-    fn attribute(&self, attribute: NativeTimeAttribute) -> String {
+impl StoredTime {
+    fn attribute(&self, attribute: TimeAttribute) -> String {
         format!(
             "pl_time_attribute({}, '{}', '{}')",
             self.bytes,
@@ -144,41 +144,37 @@ impl NativeTime {
         )
     }
 }
-pub(crate) fn native_time(unit: Unit, field: &str, a: &Aliases) -> Option<NativeTime> {
+pub(crate) fn stored_time(unit: Unit, field: &str, a: &Aliases) -> Option<StoredTime> {
     let (cache, bytes, storage) = match (unit, field) {
-        (Messages | Blocks, "at") => ("{m}.at", "{m}.at_time", NativeTimeStorage::Tuple),
-        (ToolCalls, "at") => ("{m}.at", "{m}.at_time", NativeTimeStorage::Tuple),
-        (Sessions, "started") => (
-            "{s}.started_at",
-            "{s}.started_time",
-            NativeTimeStorage::Tuple,
-        ),
+        (Messages | Blocks, "at") => ("{m}.at", "{m}.at_time", TimeStorage::Tuple),
+        (ToolCalls, "at") => ("{m}.at", "{m}.at_time", TimeStorage::Tuple),
+        (Sessions, "started") => ("{s}.started_at", "{s}.started_time", TimeStorage::Tuple),
         (Sessions, "last_active") => (
             "{s}.last_activity_at",
             "(SELECT pl_time_latest({s}_activity.at_time) FROM message {s}_activity WHERE {s}_activity.session_pk={s}.pk AND {s}_activity.at IS NOT NULL)",
-            NativeTimeStorage::Latest,
+            TimeStorage::Latest,
         ),
-        (Events, "at") => ("{r}.at", "{r}.fields", NativeTimeStorage::Event),
+        (Events, "at") => ("{r}.at", "{r}.fields", TimeStorage::Event),
         (Documents, "source_time") => (
             "{r}.source_time",
             "(SELECT {r}_time.time FROM document_source {r}_time WHERE {r}_time.document_pk={r}.pk AND {r}_time.input_pk={r}.input_pk AND {r}_time.chain={r}.source_chain AND {r}_time.shown=1)",
-            NativeTimeStorage::Tuple,
+            TimeStorage::Tuple,
         ),
         _ => return None,
     };
-    Some(NativeTime {
+    Some(StoredTime {
         cache: a.expand(cache),
         bytes: a.expand(bytes),
         storage,
     })
 }
-pub(crate) fn native_window(unit: Unit, since: bool, a: &Aliases) -> Option<NativeTime> {
+pub(crate) fn time_window(unit: Unit, since: bool, a: &Aliases) -> Option<StoredTime> {
     let field = if unit == Sessions && !since {
         "started"
     } else {
         polylogue_query::units::spec(unit).main_time?
     };
-    native_time(unit, field, a)
+    stored_time(unit, field, a)
 }
 
 /// One value of a `has:` field and the condition it stands for, over the
@@ -306,34 +302,34 @@ pub const MESSAGE_HAS: [Has; 4] = [
 pub fn rule(id: FieldId) -> Rule {
     use FieldId::*;
     match id {
-        MessagesAtTimeQuality => Rule::NONE.time_attribute(Messages, "at",NativeTimeAttribute::Quality),
-        MessagesAtPrecision => Rule::NONE.time_attribute(Messages, "at",NativeTimeAttribute::Precision),
-        BlocksAtTimeQuality => Rule::NONE.time_attribute(Blocks, "at",NativeTimeAttribute::Quality),
-        BlocksAtPrecision => Rule::NONE.time_attribute(Blocks, "at",NativeTimeAttribute::Precision),
-        ToolCallsAtTimeQuality => Rule::NONE.time_attribute(ToolCalls, "at",NativeTimeAttribute::Quality),
-        ToolCallsAtPrecision => Rule::NONE.time_attribute(ToolCalls, "at",NativeTimeAttribute::Precision),
-        EventsAtTimeQuality => Rule::NONE.time_attribute(Events, "at",NativeTimeAttribute::Quality),
-        EventsAtPrecision => Rule::NONE.time_attribute(Events, "at",NativeTimeAttribute::Precision),
-        DeliveriesAtTimeQuality => Rule::NONE.time_attribute(Deliveries, "at",NativeTimeAttribute::Quality),
-        DeliveriesAtPrecision => Rule::NONE.time_attribute(Deliveries, "at",NativeTimeAttribute::Precision),
-        SessionsStartedAtTimeQuality => Rule::NONE.time_attribute(Sessions, "started",NativeTimeAttribute::Quality),
-        SessionsStartedAtPrecision => Rule::NONE.time_attribute(Sessions, "started",NativeTimeAttribute::Precision),
-        DocumentsSourceTimeTimeQuality => Rule::NONE.time_attribute(Documents, "source_time",NativeTimeAttribute::Quality),
-        DocumentsSourceTimePrecision => Rule::NONE.time_attribute(Documents, "source_time",NativeTimeAttribute::Precision),
-        SessionsLastActiveTimeQuality => Rule::NONE.time_attribute(Sessions, "last_active",NativeTimeAttribute::Quality),
-        SessionsLastActivePrecision => Rule::NONE.time_attribute(Sessions, "last_active",NativeTimeAttribute::Precision),
-        ToolCallsResultAtTimeQuality => Rule::NONE.time_attribute(ToolCalls, "result_at",NativeTimeAttribute::Quality),
-        ToolCallsResultAtPrecision => Rule::NONE.time_attribute(ToolCalls, "result_at",NativeTimeAttribute::Precision),
-        DocumentsTimeQuality => Rule::NONE.time_attribute(Documents, "source_time",NativeTimeAttribute::Quality),
-        DocumentsPrecision => Rule::NONE.time_attribute(Documents, "source_time",NativeTimeAttribute::Precision),
-        MessagesTimeQuality => Rule::NONE.time_attribute(Messages, "at",NativeTimeAttribute::Quality),
-        MessagesPrecision => Rule::NONE.time_attribute(Messages, "at",NativeTimeAttribute::Precision),
-        BlocksTimeQuality => Rule::NONE.time_attribute(Blocks, "at",NativeTimeAttribute::Quality),
-        BlocksPrecision => Rule::NONE.time_attribute(Blocks, "at",NativeTimeAttribute::Precision),
-        ToolCallsTimeQuality => Rule::NONE.time_attribute(ToolCalls, "at",NativeTimeAttribute::Quality),
-        ToolCallsPrecision => Rule::NONE.time_attribute(ToolCalls, "at",NativeTimeAttribute::Precision),
-        EventsTimeQuality => Rule::NONE.time_attribute(Events, "at",NativeTimeAttribute::Quality),
-        EventsPrecision => Rule::NONE.time_attribute(Events, "at",NativeTimeAttribute::Precision),
+        MessagesAtTimeQuality => Rule::NONE.time_attribute(Messages, "at",TimeAttribute::Quality),
+        MessagesAtPrecision => Rule::NONE.time_attribute(Messages, "at",TimeAttribute::Precision),
+        BlocksAtTimeQuality => Rule::NONE.time_attribute(Blocks, "at",TimeAttribute::Quality),
+        BlocksAtPrecision => Rule::NONE.time_attribute(Blocks, "at",TimeAttribute::Precision),
+        ToolCallsAtTimeQuality => Rule::NONE.time_attribute(ToolCalls, "at",TimeAttribute::Quality),
+        ToolCallsAtPrecision => Rule::NONE.time_attribute(ToolCalls, "at",TimeAttribute::Precision),
+        EventsAtTimeQuality => Rule::NONE.time_attribute(Events, "at",TimeAttribute::Quality),
+        EventsAtPrecision => Rule::NONE.time_attribute(Events, "at",TimeAttribute::Precision),
+        DeliveriesAtTimeQuality => Rule::NONE.time_attribute(Deliveries, "at",TimeAttribute::Quality),
+        DeliveriesAtPrecision => Rule::NONE.time_attribute(Deliveries, "at",TimeAttribute::Precision),
+        SessionsStartedAtTimeQuality => Rule::NONE.time_attribute(Sessions, "started",TimeAttribute::Quality),
+        SessionsStartedAtPrecision => Rule::NONE.time_attribute(Sessions, "started",TimeAttribute::Precision),
+        DocumentsSourceTimeTimeQuality => Rule::NONE.time_attribute(Documents, "source_time",TimeAttribute::Quality),
+        DocumentsSourceTimePrecision => Rule::NONE.time_attribute(Documents, "source_time",TimeAttribute::Precision),
+        SessionsLastActiveTimeQuality => Rule::NONE.time_attribute(Sessions, "last_active",TimeAttribute::Quality),
+        SessionsLastActivePrecision => Rule::NONE.time_attribute(Sessions, "last_active",TimeAttribute::Precision),
+        ToolCallsResultAtTimeQuality => Rule::NONE.time_attribute(ToolCalls, "result_at",TimeAttribute::Quality),
+        ToolCallsResultAtPrecision => Rule::NONE.time_attribute(ToolCalls, "result_at",TimeAttribute::Precision),
+        DocumentsTimeQuality => Rule::NONE.time_attribute(Documents, "source_time",TimeAttribute::Quality),
+        DocumentsPrecision => Rule::NONE.time_attribute(Documents, "source_time",TimeAttribute::Precision),
+        MessagesTimeQuality => Rule::NONE.time_attribute(Messages, "at",TimeAttribute::Quality),
+        MessagesPrecision => Rule::NONE.time_attribute(Messages, "at",TimeAttribute::Precision),
+        BlocksTimeQuality => Rule::NONE.time_attribute(Blocks, "at",TimeAttribute::Quality),
+        BlocksPrecision => Rule::NONE.time_attribute(Blocks, "at",TimeAttribute::Precision),
+        ToolCallsTimeQuality => Rule::NONE.time_attribute(ToolCalls, "at",TimeAttribute::Quality),
+        ToolCallsPrecision => Rule::NONE.time_attribute(ToolCalls, "at",TimeAttribute::Precision),
+        EventsTimeQuality => Rule::NONE.time_attribute(Events, "at",TimeAttribute::Quality),
+        EventsPrecision => Rule::NONE.time_attribute(Events, "at",TimeAttribute::Precision),
         DocumentsId => Rule::NONE.sql("{r}.id"),
         DocumentsOrigin => Rule::NONE.sql("{r}.origin"),
         DocumentsPurpose => Rule::NONE.sql("{r}.purpose"),
@@ -366,7 +362,7 @@ pub fn rule(id: FieldId) -> Rule {
         SessionsProcessAlive => Rule::NONE.sql_clock(sessions_process_alive),
         SessionsHarnessStatus => Rule::NONE.sql("json_extract({s}.live_facts, '$.harness_status.word')"),
         SessionsOpenTool => Rule::NONE.sql("json_extract({s}.live_facts, '$.open_call.tool')"),
-        SessionsFootprint => Rule::NONE.sql("(SELECT group_concat(fp.value, char(10)) FROM json_each({s}.live_facts, '$.footprint') fp)"),
+        SessionsEditedFiles => Rule::NONE.sql("(SELECT group_concat(fp.value, char(10)) FROM json_each({s}.live_facts, '$.edited_files') fp)"),
         SessionsTask => Rule::NONE.sql("json_extract({s}.live_facts, '$.task')"),
         SessionsLiveUntil => Rule::NONE.sql_clock(sessions_live_until),
         SessionsLiveSince => Rule::NONE.sql_clock(sessions_live_since),
@@ -393,7 +389,7 @@ pub fn rule(id: FieldId) -> Rule {
         SessionsAction => Rule::NONE.custom(custom::session_tool_call),
         SessionsStarted => Rule::NONE.sql("{s}.started_at"),
         SessionsFirstSeen => Rule::NONE.sql_fn(session_first_seen),
-        SessionsEvidenceUntil => Rule::NONE.custom(custom::evidence_until),
+        SessionsSeenBy => Rule::NONE.custom(custom::seen_by),
         SessionsLastActive => Rule::NONE.sql("{s}.last_activity_at"),
         SessionsSince => Rule::NONE.custom(custom::since),
         SessionsUntil => Rule::NONE.custom(custom::until),
@@ -417,8 +413,8 @@ pub fn rule(id: FieldId) -> Rule {
         SessionsEndsWith => Rule::NONE.sql_fn(|a| crate::session_sql::span(&a.s,"ends_with")),
         SessionsLastStopReason => Rule::NONE.sql_fn(|a| crate::session_sql::span(&a.s,"last_stop_reason")),
         SessionsTimeSource => Rule::NONE.sql_fn(|a| crate::session_sql::span(&a.s,"time_source")),
-        SessionsWaitingModel => Rule::NONE.sql_fn(|a| format!("(SELECT ms FROM session_time st WHERE st.session_pk={s}.pk AND st.lane='model' AND st.key='' AND {})",crate::session_sql::current(&a.s,"session_span"),s=a.s)),
-        SessionsWaitingHuman => Rule::NONE.sql_fn(|a| format!("(SELECT ms FROM session_time st WHERE st.session_pk={s}.pk AND st.lane='human' AND st.key='' AND {})",crate::session_sql::current(&a.s,"session_span"),s=a.s)),
+        SessionsWaitingModel => Rule::NONE.sql_fn(|a| format!("(SELECT ms FROM session_time st WHERE st.session_pk={s}.pk AND st.party='model' AND st.key='' AND {})",crate::session_sql::current(&a.s,"session_span"),s=a.s)),
+        SessionsWaitingHuman => Rule::NONE.sql_fn(|a| format!("(SELECT ms FROM session_time st WHERE st.session_pk={s}.pk AND st.party='human' AND st.key='' AND {})",crate::session_sql::current(&a.s,"session_span"),s=a.s)),
         SessionsHumanWords => Rule::NONE.sql_fn(|a| crate::session_sql::count(&a.s,"human_word_count")),
         SessionsModelWords => Rule::NONE.sql_fn(|a| crate::session_sql::count(&a.s,"model_word_count")),
         SessionsThinkingMessages => Rule::NONE.sql_fn(|a| crate::session_sql::count(&a.s,"thinking_count")),
@@ -433,7 +429,7 @@ pub fn rule(id: FieldId) -> Rule {
         MessagesModel => Rule::NONE.sql("{m}.model"),
         MessagesAt => Rule::NONE.sql("{m}.at"),
         MessagesFirstSeen => Rule::NONE.sql_fn(message_first_seen),
-        MessagesEvidenceUntil => Rule::NONE.custom(custom::evidence_until),
+        MessagesSeenBy => Rule::NONE.custom(custom::seen_by),
         MessagesDuplicate => Rule::NONE.sql("({m}.duplicate_of IS NOT NULL)"),
         MessagesActive => Rule::NONE.sql("{m}.on_active_path"),
         MessagesHas => Rule::NONE.custom(custom::has),
@@ -455,7 +451,7 @@ pub fn rule(id: FieldId) -> Rule {
         BlocksFileName => Rule::NONE.sql("{b}.file_name"),
         BlocksAt => Rule::NONE.sql("{m}.at"),
         BlocksFirstSeen => Rule::NONE.sql_fn(message_first_seen),
-        BlocksEvidenceUntil => Rule::NONE.custom(custom::evidence_until),
+        BlocksSeenBy => Rule::NONE.custom(custom::seen_by),
         BlocksSince => Rule::NONE.custom(custom::since),
         BlocksUntil => Rule::NONE.custom(custom::until),
         ToolCallsMessage => Rule::NONE.sql("{m}.id"),
@@ -477,7 +473,7 @@ pub fn rule(id: FieldId) -> Rule {
         ToolCallsResultAt => Rule::NONE.sql("{t}.result_at"),
         ToolCallsReportedDuration => Rule::NONE.sql("{t}.reported_duration_ms"),
         ToolCallsFirstSeen => Rule::NONE.sql_fn(message_first_seen),
-        ToolCallsEvidenceUntil => Rule::NONE.custom(custom::evidence_until),
+        ToolCallsSeenBy => Rule::NONE.custom(custom::seen_by),
         ToolCallsSince => Rule::NONE.custom(custom::since),
         ToolCallsUntil => Rule::NONE.custom(custom::until),
         ToolCallsChild => Rule::NONE.custom(custom::spawned_child),
@@ -501,7 +497,7 @@ pub fn rule(id: FieldId) -> Rule {
         EventsKind => Rule::NONE.sql("{r}.kind"),
         EventsAt => Rule::NONE.sql("{r}.at"),
         EventsFirstSeen => Rule::NONE.sql_fn(event_first_seen),
-        EventsEvidenceUntil => Rule::NONE.custom(custom::evidence_until),
+        EventsSeenBy => Rule::NONE.custom(custom::seen_by),
         EventsSince => Rule::NONE.custom(custom::since),
         EventsUntil => Rule::NONE.custom(custom::until),
         LinksKind => Rule::NONE.sql("{r}.kind"),
@@ -528,7 +524,7 @@ pub fn rule(id: FieldId) -> Rule {
         AssertionsConflict => Rule::NONE.sql_fn(|a| crate::assertions::sql::in_conflict(&a.row)),
         AssertionsWithdrawn => Rule::NONE.sql_fn(notes_withdrawn),
         AssertionsSince => Rule::NONE.custom(custom::since),
-        AssertionsEvidenceUntil => Rule::NONE.custom(custom::evidence_until),
+        AssertionsSeenBy => Rule::NONE.custom(custom::seen_by),
         AssertionsUntil => Rule::NONE.custom(custom::until),
         DeliveriesId => Rule::NONE.sql("{r}.id"),
         DeliveriesRecipient => Rule::NONE.custom(custom::recipient).sql("{r}.recipient_id"),
@@ -652,8 +648,8 @@ pub fn live_state(s: &str, now: i64) -> String {
     live_part(s, "state", now)
 }
 
-/// When `s`'s live state or stall changes with no new evidence; NULL when
-/// only new evidence can change them.
+/// When `s`'s live state or stall changes with no new live events; NULL when
+/// only new live events can change them.
 pub fn live_until(s: &str, now: i64) -> String {
     live_part(s, "until", now)
 }
@@ -664,7 +660,7 @@ pub fn sql(unit: Unit, name: &str, a: &Aliases, now: i64) -> Option<String> {
 }
 
 /// The sum of a column over session `s`'s own messages.
-/// A session's token lane over its own responses, the population every
+/// A session's token kind over its own responses, the population every
 /// usage figure sums.
 fn own_sum(s: &str, col: &str) -> String {
     crate::measure::own_responses_sum(&format!("{s}.pk"), col)
@@ -909,7 +905,7 @@ pub fn subtree(s: &str) -> String {
     )
 }
 
-/// Every native working directory, with the currently selected value retained.
+/// Every recorded working directory, with the currently selected value kept.
 pub(crate) fn working_directories(s: &str) -> String {
     format!("json_each(json_insert(COALESCE({s}.cwd_json,'[]'),'$[#]',{s}.cwd))")
 }

@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn retained_items_reopen_payload_and_order_metadata_after_disconnect() {
+fn stored_items_reopen_payload_and_order_after_disconnect() {
     let directory = tempfile::tempdir().unwrap();
     {
         let mut items = ExportItems::in_directory(directory.path()).unwrap();
@@ -59,7 +59,7 @@ fn retained_items_reopen_payload_and_order_metadata_after_disconnect() {
 }
 
 #[test]
-fn retained_drop_discards_unaccepted_scan_group_and_preserves_prior_work() {
+fn drop_discards_unaccepted_scan_group_and_keeps_prior_work() {
     let directory = tempfile::tempdir().unwrap();
     {
         let mut items = ExportItems::in_directory(directory.path()).unwrap();
@@ -76,7 +76,7 @@ fn retained_drop_discards_unaccepted_scan_group_and_preserves_prior_work() {
     assert!(items.source_item("rejected").unwrap().is_none());
 }
 #[test]
-fn spilled_items_follow_byte_keys_and_claim_owners_once() {
+fn spilled_items_follow_byte_keys_and_claim_sessions_once() {
     let mut scratch = ExportItems::new().unwrap();
     for (i, key) in [9, 6, 2, 3, 0, 6].into_iter().enumerate() {
         scratch
@@ -97,9 +97,9 @@ fn spilled_items_follow_byte_keys_and_claim_owners_once() {
     assert_eq!(order, ["4", "2", "3", "1", "5", "0"]);
     let parent = SessionId::parse("chatgpt:parent").unwrap();
     let child = SessionId::parse("chatgpt:child").unwrap();
-    assert_eq!(scratch.claim_owner("message", &parent).unwrap(), None);
+    assert_eq!(scratch.claim_session("message", &parent).unwrap(), None);
     assert_eq!(
-        scratch.claim_owner("message", &child).unwrap(),
+        scratch.claim_session("message", &child).unwrap(),
         Some(parent)
     );
 }

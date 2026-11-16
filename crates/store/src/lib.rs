@@ -7,7 +7,6 @@
 //! - `embeddings.db`: purchased vectors, never destroyed by a reindex;
 //! - `segments/`: every input blob, in append-only shared frame segments.
 
-mod admission;
 pub mod archive;
 pub mod assertions;
 pub mod assets;
@@ -18,6 +17,7 @@ pub mod cancellation;
 mod chain_progress;
 mod change_summary;
 pub mod chat_actions;
+mod commit_positions;
 pub mod completion;
 mod container_members;
 pub mod context;
@@ -35,25 +35,25 @@ mod fragment;
 pub mod input_rows;
 pub mod items;
 mod kept;
-pub mod legacy_import;
 pub mod lineage;
 mod live;
+pub mod python_archive;
 pub use live::{
-    FollowSnapshot, FollowedCall, FollowedMessage, LiveDetail, LiveFootprint, LiveRoot,
+    FollowSnapshot, FollowedCall, FollowedMessage, LiveDetail, LiveEditedFiles, LiveRoot,
     LiveSession, ProcessRow, RunningSession,
 };
+mod identical_chains;
 pub mod measure;
 pub mod older_archive;
 mod ordered_blocks;
-pub mod predecessor;
 pub mod primary;
+pub mod python_polylogue;
 pub mod query;
 pub mod query_objects;
 pub mod read;
 pub mod reference;
 mod repo_lookup;
-mod same_bytes;
-pub use same_bytes::{ChainLayout, ChainReading, ReadingCopy, StoredExtent};
+pub use identical_chains::{ChainLayout, ChainReading, ReadingCopy, StoredExtent};
 pub mod schema;
 pub mod schema_inputs;
 pub mod scope_index;
@@ -111,7 +111,7 @@ pub enum StoreError {
     #[error(transparent)]
     Json(#[from] serde_json::Error),
     #[error(transparent)]
-    Projection(#[from] polylogue_model::bundle::BundleError),
+    Bundle(#[from] polylogue_model::bundle::BundleError),
     #[error("archive {path} is held by another process")]
     Locked { path: std::path::PathBuf },
     #[error(
@@ -199,10 +199,10 @@ pub enum StoreError {
     #[error("backfill job refused: {0}")]
     Backfill(&'static str),
     /// Sinex could not be reached, or refused what was sent (primary mode).
-    #[error("capture {identity} is durable and waiting for Sinex confirmation")]
+    #[error("capture {identity} is saved and waiting for Sinex confirmation")]
     PrimaryPending { identity: String },
-    #[error("acquisition {custody:?} retained raw bytes after a source basis conflict")]
-    UnresolvedBasisConflict { custody: primary::RawCustodyReceipt },
+    #[error("capture read {spooled:?} stored original bytes after a source base conflict")]
+    UnresolvedBasisConflict { spooled: primary::SpooledGroup },
     #[error("Sinex: {0}")]
     Sinex(String),
     #[error("{0}")]
@@ -216,7 +216,7 @@ pub enum StoreError {
         reason: String,
     },
     /// A value in the archive that this build cannot read back: corrupt or
-    /// foreign stored data, never the caller's request.
+    /// unrecognized stored data, never the caller's request.
     #[error("stored column {column} is unreadable: {reason}")]
     StoredValue { column: usize, reason: String },
     #[error(transparent)]
@@ -256,7 +256,7 @@ impl StoreError {
             Self::Invalid(_)
             | Self::Counts(_)
             | Self::Conflict(_)
-            | Self::Projection(_)
+            | Self::Bundle(_)
             | Self::RowsRefused { .. } => true,
             Self::Sqlite(error) => {
                 error.sqlite_error_code() == Some(rusqlite::ErrorCode::ConstraintViolation)
@@ -298,8 +298,8 @@ impl StoreError {
             Self::Ambiguous { .. } => "ambiguous",
             Self::Stale { .. } => "stale",
             Self::ReferenceUnavailable { .. } => "not_yet_available",
-            Self::Projection(issue) => match issue {
-                polylogue_model::bundle::BundleError::ProjectionConflict
+            Self::Bundle(issue) => match issue {
+                polylogue_model::bundle::BundleError::BlockSelectionConflict
                 | polylogue_model::bundle::BundleError::SourceVersionMismatch => "conflict",
                 _ => "bad_request",
             },

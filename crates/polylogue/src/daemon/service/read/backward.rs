@@ -1,4 +1,4 @@
-//! Adjacent canonical record coordinates. The caller hydrates exactly the
+//! Adjacent source record coordinates. The caller loads only the
 //! returned record through records::reference and stops after its first record.
 use super::super::Failure;
 use polylogue_model::read::{ReadRecordKind, ReadRecordLocator, ReadTarget};

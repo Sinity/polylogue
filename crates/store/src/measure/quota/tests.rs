@@ -34,20 +34,20 @@ fn a_past_reset_is_carried_forward_by_the_window_length() {
 /// message is inserted, and windows nothing reported are labelled
 /// inferred.
 #[test]
-fn windows_anchor_to_reported_resets() {
+fn windows_start_at_reported_resets() {
     let five = 5 * HOUR;
     let reset = T0 + 10 * HOUR;
-    let anchors = [(reset - five, reset)];
+    let reported_windows = [(reset - five, reset)];
     let times = vec![
         T0 + 7 * HOUR,
         T0 + 11 * HOUR,
         T0 + 17 * HOUR,
         T0 + 23 * HOUR,
     ];
-    let before = blocks(&times, &anchors, five);
+    let before = blocks(&times, &reported_windows, five);
     let mut more = times.clone();
     more.insert(0, T0 + 2 * HOUR + 30 * MINUTE);
-    let after = blocks(&more, &anchors, five);
+    let after = blocks(&more, &reported_windows, five);
     let after_reset = |b: &[(WindowSource, i64, i64)]| -> Vec<(WindowSource, i64, i64)> {
         b.iter()
             .copied()
@@ -56,7 +56,7 @@ fn windows_anchor_to_reported_resets() {
     };
     assert_eq!(after_reset(&before), after_reset(&after));
     for (source, s, e) in &after {
-        let reported = anchors.contains(&(*s, *e));
+        let reported = reported_windows.contains(&(*s, *e));
         assert_eq!(
             *source == WindowSource::Reported,
             reported,

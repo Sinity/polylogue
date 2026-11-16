@@ -109,9 +109,9 @@ fn encode(doc: &ReadDocument, format: Format) -> String {
     .unwrap();
     String::from_utf8(out).unwrap()
 }
-fn layout(record: Record, options: &ReadOptions, evidence: &ProjectionEvidence) -> Vec<ReadItem> {
-    let record = project_record(record, options, evidence).unwrap().unwrap();
-    layout_record(&record, options, evidence)
+fn layout(record: Record, options: &ReadOptions, facts: &LayoutFacts) -> Vec<ReadItem> {
+    let record = project_record(record, options, facts).unwrap().unwrap();
+    layout_record(&record, options, facts)
         .unwrap()
         .into_iter()
         .filter_map(|p| {
@@ -131,7 +131,7 @@ fn formats_use_one_layout_and_archived_text_survives_json() {
             text: payload.into(),
         }]),
         &ReadOptions::default(),
-        &ProjectionEvidence::default(),
+        &LayoutFacts::default(),
     );
     let doc = document(items);
     let encoded = encode(&doc, Format::Json);
@@ -173,7 +173,7 @@ fn dialogue_has_no_thinking_harness_or_tools_and_keeps_original_ordinals() {
             },
         ]),
         &options,
-        &ProjectionEvidence::default(),
+        &LayoutFacts::default(),
     );
     assert_eq!(items.len(), 2);
     assert_eq!(items[1].source.block, Some(1));
@@ -186,7 +186,7 @@ fn dialogue_has_no_thinking_harness_or_tools_and_keeps_original_ordinals() {
         row.source_version = row.message.content_hash().unwrap();
     }
     assert!(
-        project_record(record, &options, &ProjectionEvidence::default())
+        project_record(record, &options, &LayoutFacts::default())
             .unwrap()
             .is_none()
     );
@@ -214,8 +214,8 @@ fn tool_pair_uses_declared_relationship_outside_current_record() {
         attachments: vec![],
     };
     let source = Source::record("block:test:earlier:call#7");
-    let mut evidence = ProjectionEvidence::default();
-    evidence.tool_pairs.insert(
+    let mut facts = LayoutFacts::default();
+    facts.tool_pairs.insert(
         0,
         ToolPair {
             emit_at: "block:test:session:message#0".into(),
@@ -238,7 +238,7 @@ fn tool_pair_uses_declared_relationship_outside_current_record() {
         tools: Some(Expansion::Full),
         ..Default::default()
     };
-    let items = layout(message(vec![result]), &options, &evidence);
+    let items = layout(message(vec![result]), &options, &facts);
     let ItemKind::Call { call } = &items[1].kind else {
         panic!("call")
     };
@@ -265,11 +265,7 @@ fn unknown_call_and_empty_output_are_distinct() {
         data: None,
         attachments: vec![],
     };
-    let items = layout(
-        message(vec![result]),
-        &options,
-        &ProjectionEvidence::default(),
-    );
+    let items = layout(message(vec![result]), &options, &LayoutFacts::default());
     let ItemKind::Call { call } = &items[1].kind else {
         panic!()
     };
@@ -282,8 +278,8 @@ fn variants_change_layout_only_and_stale_is_opt_in() {
     let original = message(vec![Block::Text {
         text: "original".into(),
     }]);
-    let mut evidence = ProjectionEvidence::default();
-    evidence
+    let mut facts = LayoutFacts::default();
+    facts
         .variants
         .insert(
             polylogue_model::Reference::parse("block:test:session:message#0").unwrap(),
@@ -302,11 +298,11 @@ fn variants_change_layout_only_and_stale_is_opt_in() {
         )
         .unwrap();
     let options = ReadOptions::default();
-    let projected = project_record(original.clone(), &options, &evidence)
+    let projected = project_record(original.clone(), &options, &facts)
         .unwrap()
         .unwrap();
     assert_eq!(projected, original);
-    let items = layout_record(&projected, &options, &evidence).unwrap();
+    let items = layout_record(&projected, &options, &facts).unwrap();
     assert!(
         matches!(&items[1],ReadPart::Item(ReadItem{kind:ItemKind::Text{text},..}) if text=="original")
     );
@@ -316,7 +312,7 @@ fn variants_change_layout_only_and_stale_is_opt_in() {
             variants: vec!["en".into()],
             ..options
         },
-        &evidence,
+        &facts,
     )
     .unwrap();
     assert!(
@@ -325,7 +321,7 @@ fn variants_change_layout_only_and_stale_is_opt_in() {
     assert_eq!(projected, original);
 }
 #[test]
-fn specialized_views_require_typed_evidence_and_never_fall_back_to_transcript() {
+fn specialized_views_need_prepared_layout_facts() {
     let record = message(vec![Block::Text {
         text: "not a summary".into(),
     }]);
@@ -336,7 +332,7 @@ fn specialized_views_require_typed_evidence_and_never_fall_back_to_transcript() 
                 view,
                 ..Default::default()
             },
-            &ProjectionEvidence::default(),
+            &LayoutFacts::default(),
         )
         .unwrap();
         assert!(!format!("{parts:?}").contains("not a summary"));
@@ -349,12 +345,12 @@ fn specialized_views_require_typed_evidence_and_never_fall_back_to_transcript() 
                     view,
                     ..Default::default()
                 },
-                &ProjectionEvidence::default()
+                &LayoutFacts::default()
             ),
-            Err(ReadError::MissingEvidence { .. })
+            Err(ReadError::MissingPreparedData { .. })
         ));
     }
-    let evidence = ProjectionEvidence {
+    let facts = LayoutFacts {
         raw: vec![RawRecord {
             reference: "message:test:session:message".into(),
             input: "input:abc".into(),
@@ -369,7 +365,7 @@ fn specialized_views_require_typed_evidence_and_never_fall_back_to_transcript() 
             view: View::Raw,
             ..Default::default()
         },
-        &evidence,
+        &facts,
     )
     .unwrap();
     assert!(
@@ -578,7 +574,7 @@ fn huge_structured_items_round_trip_without_dropping_any_fields() {
     assert_eq!(serde_json::from_str::<ReadItem>(&json).unwrap(), original);
 }
 #[test]
-fn page_cut_uses_canonical_record_position_not_paired_display_source() {
+fn page_break_uses_source_record_position() {
     let mut builder = pager::PageBuilder::new(header(), budget(), None, framing()).unwrap();
     assert_eq!(
         builder.push_at(selection(), 0, text("first")).unwrap(),
@@ -633,7 +629,7 @@ fn lazy_layout_stops_before_visiting_next_block() {
     visit_record(
         &record,
         &ReadOptions::default(),
-        &ProjectionEvidence::default(),
+        &LayoutFacts::default(),
         |_| {
             visited += 1;
             false
@@ -696,7 +692,7 @@ fn summary_cards_show_header_facts_without_source_instructions() {
             view: View::Summary,
             ..Default::default()
         },
-        &ProjectionEvidence::default(),
+        &LayoutFacts::default(),
     );
     for format in [Format::Terminal, Format::Markdown, Format::Html] {
         assert!(
@@ -756,14 +752,14 @@ fn result_output(output: String, options: ReadOptions) -> (Record, Box<CallItem>
         data: None,
         attachments: vec![],
     }]);
-    let items = layout(record.clone(), &options, &ProjectionEvidence::default());
+    let items = layout(record.clone(), &options, &LayoutFacts::default());
     let ItemKind::Call { call } = items[1].kind.clone() else {
         panic!()
     };
     (record, call)
 }
 #[test]
-fn expanded_tool_output_has_exact_omission_counts_and_zero_means_all() {
+fn expanded_tool_output_has_omission_counts_and_zero_means_all() {
     let original = (0..301)
         .map(|n| format!("line {n} λ\n"))
         .collect::<String>();
@@ -849,17 +845,17 @@ fn multiple_result_attachments_keep_individual_availability_and_source() {
         data: None,
         attachments,
     }]);
-    let mut evidence = ProjectionEvidence::default();
-    evidence.attachments.insert(
+    let mut facts = LayoutFacts::default();
+    facts.attachments.insert(
         "block:test:session:message#0".into(),
         std::collections::BTreeMap::from([(
             0,
             vec![
-                AttachmentEvidence {
+                AttachmentFacts {
                     availability: ValueState::known("present".into()),
                     ..Default::default()
                 },
-                AttachmentEvidence {
+                AttachmentFacts {
                     availability: ValueState::Unavailable {
                         reason: "source missing".into(),
                     },
@@ -868,7 +864,7 @@ fn multiple_result_attachments_keep_individual_availability_and_source() {
             ],
         )]),
     );
-    let items = layout(record, &ReadOptions::default(), &evidence);
+    let items = layout(record, &ReadOptions::default(), &facts);
     assert!(
         matches!(&items[2].kind,ItemKind::Attachment{availability:ValueState::Value{value},..} if value=="present")
     );
@@ -877,7 +873,7 @@ fn multiple_result_attachments_keep_individual_availability_and_source() {
     );
 }
 #[test]
-fn inline_images_need_exact_hash_safe_raster_type_and_size() {
+fn inline_images_need_hash_safe_raster_type_and_size() {
     let bytes = vec![137, 80, 78, 71];
     let mut attachment = polylogue_model::Attachment {
         name: Some("sample".into()),
@@ -1046,11 +1042,7 @@ fn document_items_keep_a_runnable_document_reference_and_separate_original_posit
         commit: 1,
         document: doc,
     });
-    let items = layout(
-        record,
-        &ReadOptions::default(),
-        &ProjectionEvidence::default(),
-    );
+    let items = layout(record, &ReadOptions::default(), &LayoutFacts::default());
     assert_eq!(items[1].source.reference, "document:test:document");
     assert_eq!(items[1].source.block, Some(1));
 }
@@ -1079,7 +1071,7 @@ fn json_encoding_preserves_the_output_error_kind() {
 }
 
 #[test]
-fn each_retained_long_tool_line_has_its_own_explicit_omission() {
+fn each_kept_long_tool_line_has_its_own_omission() {
     let original = format!("{}\nshort middle\n{}\n", "a".repeat(5000), "λ".repeat(5000));
     let (_, call) = result_output(
         original,
@@ -1122,11 +1114,7 @@ fn empty_thinking_runs_compact_without_reindexing_later_text() {
             text: "after".into(),
         },
     ]);
-    let items = layout(
-        record,
-        &ReadOptions::default(),
-        &ProjectionEvidence::default(),
-    );
+    let items = layout(record, &ReadOptions::default(), &LayoutFacts::default());
     assert_eq!(items.len(), 3);
     assert!(matches!(
         &items[1].kind,
@@ -1150,7 +1138,7 @@ fn orphan_result_names_its_recorded_call_id_in_every_prose_format() {
     }
 }
 #[test]
-fn budgeted_pages_name_the_canonical_token_estimator() {
+fn budgeted_pages_name_the_token_estimator() {
     let mut builder = pager::PageBuilder::new(header(), budget(), None, framing()).unwrap();
     builder.push_at(selection(), 0, text("item")).unwrap();
     let doc = builder.finish(ReadFooter::default()).unwrap();
@@ -1172,7 +1160,7 @@ fn a_recorded_call_with_unknown_tool_name_is_not_an_orphan_result() {
     let items = layout(
         message(vec![call]),
         &ReadOptions::default(),
-        &ProjectionEvidence::default(),
+        &LayoutFacts::default(),
     );
     let ItemKind::Call { call } = &items[1].kind else {
         panic!()
@@ -1197,20 +1185,20 @@ fn document_attachments_at_different_blocks_do_not_share_availability() {
         commit: 1,
         document,
     });
-    let mut evidence = ProjectionEvidence::default();
-    evidence.attachments.insert(
+    let mut facts = LayoutFacts::default();
+    facts.attachments.insert(
         "document:test:document".into(),
         std::collections::BTreeMap::from([
             (
                 0,
-                vec![AttachmentEvidence {
+                vec![AttachmentFacts {
                     availability: ValueState::known("present".into()),
                     ..Default::default()
                 }],
             ),
             (
                 1,
-                vec![AttachmentEvidence {
+                vec![AttachmentFacts {
                     availability: ValueState::Unavailable {
                         reason: "missing".into(),
                     },
@@ -1219,7 +1207,7 @@ fn document_attachments_at_different_blocks_do_not_share_availability() {
             ),
         ]),
     );
-    let items = layout(record, &ReadOptions::default(), &evidence);
+    let items = layout(record, &ReadOptions::default(), &facts);
     assert!(
         matches!(&items[0].kind,ItemKind::Attachment{availability:ValueState::Value{value},..} if value=="present")
     );
@@ -1285,8 +1273,8 @@ fn variant_marks_only_describe_visible_substitutions() {
     let record = message(vec![Block::Text {
         text: "visible".into(),
     }]);
-    let mut evidence = ProjectionEvidence::default();
-    evidence
+    let mut facts = LayoutFacts::default();
+    facts
         .variants
         .insert(
             polylogue_model::Reference::parse("block:test:session:message#7").unwrap(),
@@ -1304,7 +1292,7 @@ fn variant_marks_only_describe_visible_substitutions() {
             },
         )
         .unwrap();
-    let items = layout(record, &ReadOptions::default(), &evidence);
+    let items = layout(record, &ReadOptions::default(), &facts);
     assert!(matches!(&items[0].kind,ItemKind::MessageHeader{header} if header.variant.is_none()));
 }
 #[test]
@@ -1339,8 +1327,8 @@ fn paired_off_page_result_attachments_use_their_own_original_ordinal() {
         7,
         false,
     );
-    let mut evidence = ProjectionEvidence::default();
-    evidence.tool_pairs.insert(
+    let mut facts = LayoutFacts::default();
+    facts.tool_pairs.insert(
         0,
         ToolPair {
             emit_at: call_source.reference.clone(),
@@ -1359,12 +1347,12 @@ fn paired_off_page_result_attachments_use_their_own_original_ordinal() {
             edit: None,
         },
     );
-    evidence.attachments.insert(
+    facts.attachments.insert(
         result_source.reference.clone(),
         std::collections::BTreeMap::from([
             (
                 0,
-                vec![AttachmentEvidence {
+                vec![AttachmentFacts {
                     availability: ValueState::Unavailable {
                         reason: "wrong ordinal".into(),
                     },
@@ -1373,14 +1361,14 @@ fn paired_off_page_result_attachments_use_their_own_original_ordinal() {
             ),
             (
                 7,
-                vec![AttachmentEvidence {
+                vec![AttachmentFacts {
                     availability: ValueState::known("present".into()),
                     ..Default::default()
                 }],
             ),
         ]),
     );
-    let items = layout(message(vec![call]), &ReadOptions::default(), &evidence);
+    let items = layout(message(vec![call]), &ReadOptions::default(), &facts);
     assert!(
         matches!(&items[2],ReadItem{source,kind:ItemKind::Attachment{availability:ValueState::Value{value},..}} if source==&result_source && value=="present")
     );
@@ -1422,7 +1410,7 @@ fn large_footer(position: Option<&ItemPlace>) -> Result<ReadFooter, pager::PageE
     Ok(footer)
 }
 #[test]
-fn final_footer_size_can_trim_items_and_regenerate_the_exact_boundary() {
+fn final_footer_size_can_trim_items_and_regenerate_the_boundary() {
     let mut limits = budget();
     limits.items = NonZeroUsize::new(3).unwrap();
     let mut builder = pager::PageBuilder::new(header(), limits, None, framing()).unwrap();
@@ -1522,7 +1510,7 @@ fn text_variant(original: &str, text: &str, alignment: Vec<TextAlignment>) -> Va
     }
 }
 #[test]
-fn variants_replace_thinking_and_remote_tool_output_at_their_exact_sources() {
+fn variants_replace_thinking_and_remote_tool_output_at_their_sources() {
     let call = Block::ToolCall {
         written_text: None,
         call_id: Some("c".into()),
@@ -1553,12 +1541,12 @@ fn variants_replace_thinking_and_remote_tool_output_at_their_exact_sources() {
         7,
         false,
     );
-    let mut evidence = ProjectionEvidence::default();
+    let mut facts = LayoutFacts::default();
     for (reference, text) in [
         ("block:test:session:message#0", "translated thinking"),
         (result_source.reference.as_str(), "translated result"),
     ] {
-        evidence
+        facts
             .variants
             .insert(
                 polylogue_model::Reference::parse(reference).unwrap(),
@@ -1566,7 +1554,7 @@ fn variants_replace_thinking_and_remote_tool_output_at_their_exact_sources() {
             )
             .unwrap();
     }
-    evidence.tool_pairs.insert(
+    facts.tool_pairs.insert(
         1,
         ToolPair {
             emit_at: call_source.reference.clone(),
@@ -1598,12 +1586,12 @@ fn variants_replace_thinking_and_remote_tool_output_at_their_exact_sources() {
         ..Default::default()
     };
     assert_eq!(
-        project_record(original.clone(), &options, &evidence)
+        project_record(original.clone(), &options, &facts)
             .unwrap()
             .unwrap(),
         original
     );
-    let items = layout(original, &options, &evidence);
+    let items = layout(original, &options, &facts);
     assert!(items.iter().any(|i| matches!(&i.kind, ItemKind::Thinking { content: ThinkingContent::Text { text }, .. } if text == "translated thinking")));
     assert!(items.iter().any(|i| matches!(&i.kind, ItemKind::Call { call } if call.output.as_deref()==Some("translated result") && call.result_source.as_ref()==Some(&result_source))));
     let doc = document(items);
@@ -1640,9 +1628,9 @@ fn document_overlay_uses_original_body_ordinal_and_byte_boundaries() {
         block: Some(1),
         ..Source::record("document:test:document")
     };
-    let mut evidence = ProjectionEvidence::default();
+    let mut facts = LayoutFacts::default();
     let reference = polylogue_model::Reference::parse("document:test:document").unwrap();
-    evidence
+    facts
         .variants
         .insert(
             reference.clone(),
@@ -1664,7 +1652,7 @@ fn document_overlay_uses_original_body_ordinal_and_byte_boundaries() {
             document: doc,
         }),
         &ReadOptions::default(),
-        &evidence,
+        &facts,
     );
     assert!(matches!(&items[0].kind,ItemKind::Text{text} if text=="first"));
     assert!(
@@ -1682,14 +1670,14 @@ fn supplied_attachment_action_survives_layout_and_all_encoders() {
         false,
     );
     let action = ready(json!({"target":"attachment:synthetic"}));
-    let mut evidence = ProjectionEvidence::default();
-    evidence
+    let mut facts = LayoutFacts::default();
+    facts
         .attachments
         .entry(source.reference.clone())
         .or_default()
         .insert(
             9,
-            vec![AttachmentEvidence {
+            vec![AttachmentFacts {
                 open: Some(Box::new(action.clone())),
                 ..Default::default()
             }],
@@ -1701,7 +1689,7 @@ fn supplied_attachment_action_survives_layout_and_all_encoders() {
             block: Block::File(Default::default()),
         },
         &ReadOptions::default(),
-        &evidence,
+        &facts,
         |item| {
             items.push(item);
             true
@@ -1737,7 +1725,7 @@ fn supplied_attachment_action_survives_layout_and_all_encoders() {
 }
 
 #[test]
-fn a_paired_result_header_marks_only_the_pair_actually_emitted_here() {
+fn paired_result_header_marks_only_the_pair_emitted_here() {
     let result = Block::ToolResult {
         call_id: Some("c".into()),
         reported_duration_ms: None,
@@ -1758,15 +1746,15 @@ fn a_paired_result_header_marks_only_the_pair_actually_emitted_here() {
         3,
         false,
     );
-    let mut evidence = ProjectionEvidence::default();
-    evidence
+    let mut facts = LayoutFacts::default();
+    facts
         .variants
         .insert(
             polylogue_model::Reference::parse(&result_source.reference).unwrap(),
             text_variant(&result_source.reference, "replacement result", vec![]),
         )
         .unwrap();
-    evidence.tool_pairs.insert(
+    facts.tool_pairs.insert(
         0,
         ToolPair {
             emit_at: call_source.reference.clone(),
@@ -1798,17 +1786,17 @@ fn a_paired_result_header_marks_only_the_pair_actually_emitted_here() {
         tools: Some(Expansion::Full),
         ..Default::default()
     };
-    let hidden = layout(message(vec![result.clone()]), &options, &evidence);
+    let hidden = layout(message(vec![result.clone()]), &options, &facts);
     assert_eq!(hidden.len(), 1);
     assert!(matches!(&hidden[0].kind,ItemKind::MessageHeader{header} if header.variant.is_none()));
-    evidence.tool_pairs.get_mut(&0).unwrap().emit_at = result_source.reference;
-    let shown = layout(message(vec![result]), &options, &evidence);
+    facts.tool_pairs.get_mut(&0).unwrap().emit_at = result_source.reference;
+    let shown = layout(message(vec![result]), &options, &facts);
     assert!(matches!(&shown[0].kind,ItemKind::MessageHeader{header} if header.variant.is_some()));
     assert!(shown.iter().any(|item|matches!(&item.kind,ItemKind::Call{call} if call.output.as_deref()==Some("replacement result"))));
 }
 
 #[test]
-fn a_separator_only_span_keeps_its_exact_reference_and_emits_text_once() {
+fn separator_only_span_keeps_its_reference_and_emits_text_once() {
     let original = message(vec![
         Block::Text { text: "a".into() },
         Block::Text { text: "b".into() },
@@ -1820,8 +1808,8 @@ fn a_separator_only_span_keeps_its_exact_reference_and_emits_text_once() {
         0,
         false,
     );
-    let mut evidence = ProjectionEvidence::default();
-    evidence
+    let mut facts = LayoutFacts::default();
+    facts
         .variants
         .insert(
             polylogue_model::Reference::parse(span).unwrap(),
@@ -1836,11 +1824,11 @@ fn a_separator_only_span_keeps_its_exact_reference_and_emits_text_once() {
             ),
         )
         .unwrap();
-    let projected = project_record(original.clone(), &ReadOptions::default(), &evidence)
+    let projected = project_record(original.clone(), &ReadOptions::default(), &facts)
         .unwrap()
         .unwrap();
     assert_eq!(projected, original);
-    let items = layout(projected, &ReadOptions::default(), &evidence);
+    let items = layout(projected, &ReadOptions::default(), &facts);
     assert!(
         matches!(&items[0].kind,ItemKind::MessageHeader{header} if header.variant.as_ref().is_some_and(|variant|variant.original==span))
     );
@@ -1872,7 +1860,7 @@ fn a_separator_only_span_keeps_its_exact_reference_and_emits_text_once() {
 }
 
 #[test]
-fn accessible_empty_record_renditions_have_root_anchors_without_canonical_blocks() {
+fn empty_record_renditions_have_no_source_blocks() {
     for original in [
         message(vec![]),
         Record::Document(polylogue_model::bundle::DocumentRecord {
@@ -1900,16 +1888,16 @@ fn accessible_empty_record_renditions_have_root_anchors_without_canonical_blocks
             }],
         );
         variant.relations = vec![polylogue_model::VariantRelation::Expands];
-        let mut evidence = ProjectionEvidence::default();
-        evidence
+        let mut facts = LayoutFacts::default();
+        facts
             .variants
             .insert(polylogue_model::Reference::parse(&key).unwrap(), variant)
             .unwrap();
-        let projected = project_record(original.clone(), &ReadOptions::default(), &evidence)
+        let projected = project_record(original.clone(), &ReadOptions::default(), &facts)
             .unwrap()
             .unwrap();
         assert_eq!(projected, original);
-        let items = layout(projected, &ReadOptions::default(), &evidence);
+        let items = layout(projected, &ReadOptions::default(), &facts);
         assert!(items.iter().any(|item| item.source.reference == reference
             && item.source.block.is_none()
             && matches!(&item.kind,ItemKind::Text{text} if text=="expanded empty source")));
@@ -1931,7 +1919,7 @@ fn accessible_empty_record_renditions_have_root_anchors_without_canonical_blocks
 }
 
 #[test]
-fn verified_bound_rasters_inline_without_overriding_canonical_attachment_hashes() {
+fn bound_rasters_inline_without_overriding_stored_hashes() {
     let bytes = vec![137, 80, 78, 71];
     let hash = polylogue_model::BlobHash::of(&bytes);
     let attachment = polylogue_model::Attachment {
@@ -1945,14 +1933,14 @@ fn verified_bound_rasters_inline_without_overriding_canonical_attachment_hashes(
         0,
         false,
     );
-    let mut evidence = ProjectionEvidence::default();
-    evidence
+    let mut facts = LayoutFacts::default();
+    facts
         .attachments
         .entry(source.reference.clone())
         .or_default()
         .insert(
             0,
-            vec![AttachmentEvidence {
+            vec![AttachmentFacts {
                 inline_bytes: Some(bytes.clone()),
                 verified_hash: Some(hash),
                 availability: ValueState::known("present".into()),
@@ -1963,15 +1951,15 @@ fn verified_bound_rasters_inline_without_overriding_canonical_attachment_hashes(
         source: source.clone(),
         block: Block::Image(attachment.clone()),
     };
-    let render = |block: &SourceBlock, evidence: &ProjectionEvidence| {
+    let render = |block: &SourceBlock, facts: &LayoutFacts| {
         let mut items = vec![];
-        let result = visit_source_block(block, &ReadOptions::default(), evidence, |item| {
+        let result = visit_source_block(block, &ReadOptions::default(), facts, |item| {
             items.push(item);
             true
         });
         result.map(|()| items)
     };
-    let items = render(&block, &evidence).unwrap();
+    let items = render(&block, &facts).unwrap();
     assert!(
         matches!(&items[0].kind,ItemKind::Attachment{attachment,verified_hash:Some(value),..} if attachment.blob.is_none() && *value==hash)
     );
@@ -1997,7 +1985,7 @@ fn verified_bound_rasters_inline_without_overriding_canonical_attachment_hashes(
             .into_string()
             .contains("data:image/svg")
     );
-    let entry = evidence
+    let entry = facts
         .attachments
         .get_mut(&source.reference)
         .unwrap()
@@ -2006,8 +1994,8 @@ fn verified_bound_rasters_inline_without_overriding_canonical_attachment_hashes(
         .first_mut()
         .unwrap();
     entry.verified_hash = Some(polylogue_model::BlobHash::of(b"wrong"));
-    assert!(render(&block, &evidence).is_err());
-    let entry = evidence
+    assert!(render(&block, &facts).is_err());
+    let entry = facts
         .attachments
         .get_mut(&source.reference)
         .unwrap()
@@ -2016,11 +2004,11 @@ fn verified_bound_rasters_inline_without_overriding_canonical_attachment_hashes(
         .first_mut()
         .unwrap();
     entry.verified_hash = None;
-    assert!(render(&block, &evidence).is_err());
+    assert!(render(&block, &facts).is_err());
 }
 
 #[test]
-fn unbounded_native_source_is_inside_lossless_bounded_frames() {
+fn unbounded_reference_fits_lossless_bounded_frames() {
     let original = ReadItem {
         source: Source {
             reference: format!("message:{}", "λ/native:".repeat(4000)),
@@ -2063,7 +2051,7 @@ fn unbounded_native_source_is_inside_lossless_bounded_frames() {
 }
 
 #[test]
-fn resumed_item_digest_rejects_late_evidence_changes_before_emitting_a_fragment() {
+fn resumed_item_digest_rejects_late_layout_changes() {
     let original = text(&"visible".repeat(1000));
     let mut first = pager::PageBuilder::new(header(), budget(), None, framing()).unwrap();
     assert_eq!(
@@ -2117,7 +2105,7 @@ fn prose_encoders_label_json_fragments_as_encoded_transport() {
 }
 
 #[test]
-fn authored_selection_preserves_the_complete_frozen_request_and_explicit_coverage() {
+fn authored_selection_keeps_the_stored_request_and_coverage() {
     use polylogue_model::{
         Author, Reference, Timestamp,
         assertion::{
@@ -2200,15 +2188,15 @@ fn authored_selection_preserves_the_complete_frozen_request_and_explicit_coverag
         selected: polylogue_model::Reference::Delivery("selected".into()),
         coverage: AuthoredCoverage::WholeRequest,
     };
-    let evidence = ProjectionEvidence {
+    let facts = LayoutFacts {
         authored: Some(selected.clone()),
         ..Default::default()
     };
-    let projected = project_record(record.clone(), &options, &evidence)
+    let projected = project_record(record.clone(), &options, &facts)
         .unwrap()
         .unwrap();
     assert_eq!(projected, record);
-    let items = layout(projected, &options, &evidence);
+    let items = layout(projected, &options, &facts);
     let ItemKind::Other { type_name, data } = &items[0].kind else {
         panic!()
     };
@@ -2256,7 +2244,7 @@ fn selected_fragment_in(container: polylogue_model::Reference, text: &str, start
             container: container.clone(),
             source_version: TextSourceVersion::ContentHash {
                 record: container,
-                hash: BlobHash::of(b"retained whole-source claim"),
+                hash: BlobHash::of(b"kept whole-stated source"),
             },
             coverage: TextCoverage {
                 start,
@@ -2287,38 +2275,38 @@ fn known_fragment_origin(kind: polylogue_model::BlockKind, start: u64, end: u64)
     }
 }
 #[test]
-fn partial_source_claims_do_not_invent_message_roles_or_dialogue_visibility() {
+fn partial_stated_sources_do_not_invent_roles() {
     use polylogue_model::BlockKind;
     let record = selected_fragment("<script>\u{9b}quote</script>", 9);
     record.validate().unwrap();
-    let claimed = known_fragment_origin(BlockKind::Text, 9, 42);
+    let stated = known_fragment_origin(BlockKind::Text, 9, 42);
     for origin in [
         ValueState::default(),
         ValueState::Unavailable {
             reason: "source unavailable".into(),
         },
         ValueState::Partial {
-            value: claimed.clone(),
+            value: stated.clone(),
             unknown: 1,
         },
         ValueState::Inferred {
-            value: claimed.clone(),
+            value: stated.clone(),
         },
         ValueState::Stale {
-            value: Some(claimed.clone()),
+            value: Some(stated.clone()),
             reason: "source changed".into(),
         },
-        ValueState::Inherited { value: claimed },
+        ValueState::Inherited { value: stated },
     ] {
-        let evidence = ProjectionEvidence {
+        let facts = LayoutFacts {
             fragment_origin: origin.clone(),
             ..Default::default()
         };
-        let projected = project_record(record.clone(), &ReadOptions::default(), &evidence)
+        let projected = project_record(record.clone(), &ReadOptions::default(), &facts)
             .unwrap()
             .unwrap();
         assert_eq!(projected, record);
-        let items = layout(projected, &ReadOptions::default(), &evidence);
+        let items = layout(projected, &ReadOptions::default(), &facts);
         assert_eq!(items.len(), 1);
         assert!(
             matches!(&items[0].kind,ItemKind::TextFragment {origin:actual,..} if actual==&origin)
@@ -2344,9 +2332,9 @@ fn partial_source_claims_do_not_invent_message_roles_or_dialogue_visibility() {
                         view,
                         ..Default::default()
                     },
-                    &evidence
+                    &facts
                 ),
-                Err(ReadError::MissingEvidence { .. })
+                Err(ReadError::MissingPreparedData { .. })
             ));
         }
     }
@@ -2359,12 +2347,12 @@ fn known_fragment_origins_apply_existing_view_and_expansion_rules_without_mutati
         (BlockKind::Thinking, "thinking"),
         (BlockKind::ToolResult, "tools"),
     ] {
-        let evidence = ProjectionEvidence {
+        let facts = LayoutFacts {
             fragment_origin: ValueState::known(known_fragment_origin(kind, 10, 30)),
             ..Default::default()
         };
         assert!(matches!(
-            project_record(record.clone(), &ReadOptions::default(), &evidence),
+            project_record(record.clone(), &ReadOptions::default(), &facts),
             Err(ReadError::RequiredExpansion { .. })
         ));
         assert!(matches!(
@@ -2374,7 +2362,7 @@ fn known_fragment_origins_apply_existing_view_and_expansion_rules_without_mutati
                     view: View::Dialogue,
                     ..Default::default()
                 },
-                &evidence
+                &facts
             ),
             Err(ReadError::UnsupportedTarget { .. })
         ));
@@ -2385,13 +2373,13 @@ fn known_fragment_origins_apply_existing_view_and_expansion_rules_without_mutati
             full.tools = Some(Expansion::Full)
         };
         assert_eq!(
-            project_record(record.clone(), &full, &evidence).unwrap(),
+            project_record(record.clone(), &full, &facts).unwrap(),
             Some(record.clone())
         );
-        let items = layout(record.clone(), &full, &evidence);
+        let items = layout(record.clone(), &full, &facts);
         assert!(matches!(&items[0].kind, ItemKind::TextFragment { .. }));
     }
-    let text = ProjectionEvidence {
+    let text = LayoutFacts {
         fragment_origin: ValueState::known(known_fragment_origin(BlockKind::Text, 10, 30)),
         ..Default::default()
     };
@@ -2464,7 +2452,7 @@ fn known_fragment_origins_apply_existing_view_and_expansion_rules_without_mutati
     ));
 }
 #[test]
-fn fragment_separator_ranges_require_complete_original_adjacent_body_evidence() {
+fn separator_ranges_need_complete_adjacent_bodies() {
     use polylogue_model::BlockKind;
     let record = selected_fragment("\n\n", 2);
     let mut origin = FragmentOrigin {
@@ -2493,7 +2481,7 @@ fn fragment_separator_ranges_require_complete_original_adjacent_body_evidence() 
         project_record(
             record.clone(),
             &dialogue,
-            &ProjectionEvidence {
+            &LayoutFacts {
                 fragment_origin: ValueState::known(origin.clone()),
                 ..Default::default()
             }
@@ -2506,12 +2494,12 @@ fn fragment_separator_ranges_require_complete_original_adjacent_body_evidence() 
         project_record(
             record,
             &dialogue,
-            &ProjectionEvidence {
+            &LayoutFacts {
                 fragment_origin: ValueState::known(origin),
                 ..Default::default()
             }
         ),
-        Err(ReadError::InvalidEvidence(_))
+        Err(ReadError::InvalidPreparedData(_))
     ));
     let empty = selected_fragment_in(
         polylogue_model::Reference::Document(
@@ -2520,7 +2508,7 @@ fn fragment_separator_ranges_require_complete_original_adjacent_body_evidence() 
         "",
         0,
     );
-    let bodyless = ProjectionEvidence {
+    let bodyless = LayoutFacts {
         fragment_origin: ValueState::known(FragmentOrigin {
             message: None,
             bodies: vec![],
@@ -2537,7 +2525,7 @@ fn fragment_separator_ranges_require_complete_original_adjacent_body_evidence() 
     ));
 }
 
-fn before_anchor(item: &ReadItem, ordinal: u64, character: u64) -> ItemPlace {
+fn upper_place(item: &ReadItem, ordinal: u64, character: u64) -> ItemPlace {
     ItemPlace {
         selection: selection(),
         item: ordinal,
@@ -2555,16 +2543,16 @@ fn before_unicode_fragments_reconstruct_complete_json_without_overlap_or_gaps() 
         },
     };
     let encoded = String::from_utf8(crate::encode::json_bytes(&original).unwrap()).unwrap();
-    let mut anchor = before_anchor(&original, 3, encoded.chars().count() as u64);
+    let mut page_start = upper_place(&original, 3, encoded.chars().count() as u64);
     let mut chunks = Vec::new();
     for _ in 0..1000 {
         let mut page =
-            pager::PageBuilder::new_before(header(), budget(), anchor, framing()).unwrap();
-        assert_eq!(page.upper_position(), Some(&anchor));
+            pager::PageBuilder::new_before(header(), budget(), page_start, framing()).unwrap();
+        assert_eq!(page.upper_position(), Some(&page_start));
         let status = page.push_at(selection(), 3, original.clone()).unwrap();
         let lower = *page.first_position().unwrap();
         let previous = page.position().copied();
-        assert_eq!(page.upper_position(), Some(&anchor));
+        assert_eq!(page.upper_position(), Some(&page_start));
         let doc = page.finish(ReadFooter::default()).unwrap();
         assert!(encode(&doc, Format::Json).len() <= budget().bytes.get());
         let [item] = doc.items.as_slice() else {
@@ -2582,7 +2570,7 @@ fn before_unicode_fragments_reconstruct_complete_json_without_overlap_or_gaps() 
         };
         assert_eq!(*position, lower);
         assert_eq!(position.item_hash, item_hash(&original));
-        assert_eq!(*until, anchor.character);
+        assert_eq!(*until, page_start.character);
         assert_eq!(*total, encoded.chars().count() as u64);
         assert_eq!(text.chars().count() as u64, until - position.character);
         assert!(position.character < *until);
@@ -2592,7 +2580,7 @@ fn before_unicode_fragments_reconstruct_complete_json_without_overlap_or_gaps() 
             break;
         }
         assert_eq!(previous, Some(lower));
-        anchor = lower;
+        page_start = lower;
     }
     chunks.reverse();
     let restored = chunks.concat();
@@ -2603,9 +2591,9 @@ fn before_unicode_fragments_reconstruct_complete_json_without_overlap_or_gaps() 
     );
 }
 #[test]
-fn before_zero_excludes_the_verified_anchor_and_outputs_descending_input_forward() {
+fn before_zero_excludes_the_page_start_and_outputs_forward() {
     let upper_item = text("anchor");
-    let upper = before_anchor(&upper_item, 5, 0);
+    let upper = upper_place(&upper_item, 5, 0);
     let mut limits = budget();
     limits.items = NonZeroUsize::new(2).unwrap();
     let mut page = pager::PageBuilder::new_before(header(), limits, upper, framing()).unwrap();
@@ -2649,9 +2637,9 @@ fn before_zero_excludes_the_verified_anchor_and_outputs_descending_input_forward
     );
 }
 #[test]
-fn before_footer_trim_evicts_earliest_output_and_regenerates_its_lower_anchor() {
+fn before_footer_trim_evicts_earliest_output_and_moves_lower_bound() {
     let upper_item = text("anchor");
-    let upper = before_anchor(&upper_item, 3, 0);
+    let upper = upper_place(&upper_item, 3, 0);
     let mut limits = budget();
     limits.items = NonZeroUsize::new(3).unwrap();
     limits.bytes = NonZeroUsize::new(2200).unwrap();
@@ -2721,7 +2709,7 @@ fn before_footer_trim_evicts_earliest_output_and_regenerates_its_lower_anchor() 
 fn before_footer_trim_advances_only_the_left_fragment_edge() {
     let original = text(&"λ🙂".repeat(150));
     let encoded = String::from_utf8(crate::encode::json_bytes(&original).unwrap()).unwrap();
-    let upper = before_anchor(&original, 1, encoded.chars().count() as u64);
+    let upper = upper_place(&original, 1, encoded.chars().count() as u64);
     let mut limits = budget();
     limits.items = NonZeroUsize::new(2).unwrap();
     limits.bytes = NonZeroUsize::new(1900).unwrap();
@@ -2769,25 +2757,25 @@ fn before_footer_trim_advances_only_the_left_fragment_edge() {
 
 #[test]
 fn before_input_must_descend_across_rows_families_and_record_ordinals() {
-    let anchor_item = text("anchor");
-    let anchor_selection = SelectionLocator {
+    let start_item = text("anchor");
+    let start_selection = SelectionLocator {
         row: 2,
         record: ReadRecordLocator {
             kind: ReadRecordKind::Event,
             ordinal: 4,
         },
     };
-    let anchor = ItemPlace {
-        selection: anchor_selection,
+    let page_start = ItemPlace {
+        selection: start_selection,
         item: 5,
         character: 0,
-        item_hash: item_hash(&anchor_item),
+        item_hash: item_hash(&start_item),
     };
     for (selection, ordinal) in [
         (
             SelectionLocator {
                 row: 3,
-                ..anchor_selection
+                ..start_selection
             },
             0,
         ),
@@ -2797,7 +2785,7 @@ fn before_input_must_descend_across_rows_families_and_record_ordinals() {
                     kind: ReadRecordKind::Link,
                     ordinal: 0,
                 },
-                ..anchor_selection
+                ..start_selection
             },
             0,
         ),
@@ -2805,17 +2793,17 @@ fn before_input_must_descend_across_rows_families_and_record_ordinals() {
             SelectionLocator {
                 record: ReadRecordLocator {
                     ordinal: 5,
-                    ..anchor_selection.record
+                    ..start_selection.record
                 },
-                ..anchor_selection
+                ..start_selection
             },
             0,
         ),
-        (anchor_selection, 6),
+        (start_selection, 6),
     ] {
         let mut page =
-            pager::PageBuilder::new_before(header(), budget(), anchor, framing()).unwrap();
-        page.push_at(anchor_selection, 5, anchor_item.clone())
+            pager::PageBuilder::new_before(header(), budget(), page_start, framing()).unwrap();
+        page.push_at(start_selection, 5, start_item.clone())
             .unwrap();
         assert_eq!(
             page.push_at(selection, ordinal, text("out of order")),
@@ -2825,8 +2813,8 @@ fn before_input_must_descend_across_rows_families_and_record_ordinals() {
     let mut limits = budget();
     limits.items = NonZeroUsize::new(8).unwrap();
     limits.bytes = NonZeroUsize::new(5000).unwrap();
-    let mut page = pager::PageBuilder::new_before(header(), limits, anchor, framing()).unwrap();
-    page.push_at(anchor_selection, 5, anchor_item).unwrap();
+    let mut page = pager::PageBuilder::new_before(header(), limits, page_start, framing()).unwrap();
+    page.push_at(start_selection, 5, start_item).unwrap();
     for selection in [
         SelectionLocator {
             row: 2,
@@ -2887,7 +2875,7 @@ fn typed_lineage_issues_fragment_losslessly_and_escape_prose_markup() {
         .into_iter()
         .map(|part| match part.kind {
             ItemKind::Fragment { text, .. } => text,
-            _ => panic!("large issue must use ordinary JSON fragments"),
+            _ => panic!("large issue must use JSON fragments"),
         })
         .collect::<String>();
     assert_eq!(
@@ -2908,7 +2896,7 @@ fn typed_lineage_issues_fragment_losslessly_and_escape_prose_markup() {
 }
 
 #[test]
-fn html_relationship_links_encode_only_exact_recorded_session_references() {
+fn html_relationship_links_encode_only_recorded_session_references() {
     let render = |from: &str, to: &str| {
         crate::html::item(
             &ReadItem {
@@ -2918,7 +2906,7 @@ fn html_relationship_links_encode_only_exact_recorded_session_references() {
                         from: from.into(),
                         to: to.into(),
                         relation: "continuation".into(),
-                        branch_point: Some("message:claude-code:<anchor>".into()),
+                        branch_point: Some("message:claude-code:<branch>".into()),
                         spawning_call: Some("call <marker>".into()),
                         copies_prefix: true,
                         how: Some("fork <marker>".into()),
@@ -2938,9 +2926,9 @@ fn html_relationship_links_encode_only_exact_recorded_session_references() {
         "session:claude-code:child\"<&",
     );
     assert!(html.contains("copied prefix"));
-    assert!(html.contains("message:claude-code:&lt;anchor&gt;"));
+    assert!(html.contains("message:claude-code:&lt;branch&gt;"));
     assert!(html.contains("call &lt;marker&gt;"));
-    assert!(!html.contains("<anchor>"));
+    assert!(!html.contains("<branch>"));
     assert!(html.contains("href=\"/s/claude-code%3Aparent\""), "{html}");
     assert!(
         html.contains("href=\"/s/claude-code%3Achild%22%3C%26\""),
@@ -2972,7 +2960,7 @@ fn times_render_local_with_quality() {
         m.source_version = m.message.content_hash().unwrap();
     }
     let options = ReadOptions::default();
-    let items = layout(record, &options, &ProjectionEvidence::default());
+    let items = layout(record, &options, &LayoutFacts::default());
     let mut doc = ReadDocument {
         header: header(),
         items,
@@ -3128,13 +3116,9 @@ fn every_kind_document() -> ReadDocument {
             attachments: vec![],
         };
         items.extend(
-            layout(
-                message(vec![result]),
-                &options,
-                &ProjectionEvidence::default(),
-            )
-            .into_iter()
-            .filter(|item| matches!(item.kind, ItemKind::Call { .. })),
+            layout(message(vec![result]), &options, &LayoutFacts::default())
+                .into_iter()
+                .filter(|item| matches!(item.kind, ItemKind::Call { .. })),
         );
     }
     let mut doc = document(items);

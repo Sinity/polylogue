@@ -1,11 +1,11 @@
 use super::*;
 
 fn authored_bundle() -> Vec<u8> {
-    // Independent wire literals: the manifest's claimed operator is unrelated
+    // Independent wire literals: the manifest's stated operator is unrelated
     // to the current program accepting this historical setting.
     let manifest = json!({"record":"manifest","data":{
         "format":"polylogue-bundle","version":3,"query":format!("query:{}","0".repeat(64)),"query_text":"synthetic",
-        "ran_at":"2026-01-01T00:00:00Z","read_at":{"generation":"synthetic","index":100,"archive":100},"freshness":{"local":{"parsing":{"state":"complete"},"derivation":{"state":"complete"},"search":{"state":"complete"},"projection":{"state":"not_applicable"},"kept_chains":0,"raw_only_chains":0},"owner":{"mode":"standalone"}},
+        "ran_at":"2026-01-01T00:00:00Z","read_at":{"generation":"synthetic","index":100,"archive":100},"freshness":{"local":{"parsing":{"state":"complete"},"derivation":{"state":"complete"},"search":{"state":"complete"},"confirmed_stream":{"state":"not_applicable"},"kept_chains":0,"raw_only_chains":0},"sinex":{"mode":"standalone"}},
         "counts":{"sessions":1,"messages":0,"documents":0,"events":0,"links":0,"authored":1,"assertions":0,"text_fragments":0,"variants":0,"variant_parts":0,"blobs":0},
         "flags":{"format":"jsonl","with_blobs":false,"read":{"view":"transcript","inherited":false,"assertions":true}},"enabled_variants":[],"author":"operator"}});
     let session = json!({"record":"session","data":{"ref":"session:claude-code:bundle-session","commit":1,"session":{"id":"claude-code:bundle-session","kind":"main","cwd":[]}}});
@@ -24,7 +24,7 @@ fn authored_bundle() -> Vec<u8> {
 }
 
 #[test]
-fn canonical_bundle_keeps_historical_authorship_and_separate_import_observation() {
+fn bundle_keeps_authorship_apart_from_import_observation() {
     let w = ClaudeHome::new();
     let path = w.dir.path().join("records.jsonl");
     fs::write(&path, authored_bundle()).unwrap();
@@ -47,7 +47,7 @@ fn canonical_bundle_keeps_historical_authorship_and_separate_import_observation(
 }
 
 #[test]
-fn malformed_canonical_suffix_and_retired_own_exports_are_refused_before_writes() {
+fn malformed_bundle_suffix_is_refused_before_writes() {
     for bytes in [
         [
             authored_bundle(),
@@ -100,7 +100,7 @@ fn authored_crash_child() {
     let report = engine.import(&[base.join("records.jsonl")]).unwrap();
     assert!(report.refused.is_empty(), "{report:?}");
     assert!(report.pass.errors.is_empty(), "{report:?}");
-    panic!("the configured custody boundary was not reached");
+    panic!("the configured crash point was not reached");
 }
 
 #[cfg(feature = "faults")]
@@ -131,7 +131,7 @@ fn interrupt_authored_import(w: &ClaudeHome, point: &str) {
 
 #[cfg(feature = "faults")]
 #[test]
-fn ordinary_open_replays_stored_authored_state_after_real_interruption() {
+fn open_replays_stored_authored_state_after_real_interruption() {
     for point in [
         "import.before_authored_restore",
         "import.after_authored_restore",

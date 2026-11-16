@@ -1,0 +1,291 @@
+use super::*;
+use crate::python_polylogue::fixture;
+use polylogue_model::assertion::LinkRole;
+
+type Facts = Vec<(String, Mapped<AssertionFact>)>;
+
+fn mapped() -> (Vec<Row>, Facts, RevisionReference) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("user.db");
+    fixture::user_db(&path);
+    let db = UserDb::open(&path, dir.path()).unwrap();
+    let rows = db.assertions().unwrap();
+    let pass = RevisionReference::exact("pass-1".into(), "pass-1".into());
+    let facts = facts(&rows, "machine-1", &pass, &db.result_set_members().unwrap());
+    (rows, facts, pass)
+}
+
+fn fact<'a>(facts: &'a [(String, Mapped<AssertionFact>)], id: &str) -> &'a AssertionFact {
+    facts
+        .iter()
+        .find(|(row, _)| row == id)
+        .unwrap()
+        .1
+        .as_ref()
+        .unwrap()
+}
+
+fn links(fact: &AssertionFact, role: LinkRole) -> Vec<String> {
+    fact.links
+        .iter()
+        .filter(|link| link.role == role)
+        .map(|link| link.reference.to_string())
+        .collect()
+}
+
+#[test]
+fn every_python_form_maps_with_author_and_history() {
+    let (rows, facts, pass) = mapped();
+    assert_eq!(rows.len(), 12);
+    assert_eq!(facts.len(), 12);
+
+    let open = fact(&facts, fixture::CANDIDATE);
+    assert_eq!(open.kind, AssertionKind::Question);
+    assert_eq!(open.key.as_deref(), Some("duplicate:1"));
+    assert_eq!(open.author, Author::Script(fixture::DETECTOR.into()));
+    assert_eq!(open.via, Channel::Import);
+    assert_eq!(open.machine, "machine-1");
+    assert_eq!(open.created_at.unwrap().unix_ms(), 1_000);
+    assert_eq!(
+        links(open, LinkRole::About),
+        ["session:chatgpt:00000000-0000-4000-8000-00000000aaaa"]
+    );
+    assert_eq!(
+        links(open, LinkRole::Origin),
+        [Reference::Assertion(pass).to_string()]
+    );
+    let value = open.value.as_ref().unwrap();
+    assert_eq!(value["text"], "two captures of one conversation disagree");
+    assert_eq!(value["predecessor"]["assertion_id"], fixture::CANDIDATE);
+    assert_eq!(value["predecessor"]["status"], "candidate");
+
+    // The acceptance is a revision of the detector's request, by whoever ran
+    // the command under the operator's account name.
+    let accepted_revision = fact(&facts, fixture::ACCEPTED_REVISION);
+    assert_eq!(accepted_revision.kind, AssertionKind::Question);
+    assert_eq!(accepted_revision.root, fixture::ACCEPTED);
+    assert_eq!(accepted_revision.author, Author::Unattributed);
+    let accepted = format!("assertion:{0}@{0}", fixture::ACCEPTED);
+    assert_eq!(
+        links(accepted_revision, LinkRole::Revises),
+        [accepted.as_str()]
+    );
+    assert_eq!(
+        links(accepted_revision, LinkRole::Evidence),
+        [accepted.as_str()]
+    );
+
+    let accept = fact(&facts, fixture::ACCEPT);
+    assert_eq!(accept.kind, AssertionKind::Judgment);
+    assert_eq!(accept.key.as_deref(), Some("accepted"));
+    assert_eq!(accept.root, fixture::ACCEPT);
+    assert_eq!(links(accept, LinkRole::About), [accepted.as_str()]);
+    assert_eq!(
+        links(accept, LinkRole::Evidence),
+        // Links are stored in reference order.
+        [
+            format!(
+                "assertion:{}@{}",
+                fixture::ACCEPTED,
+                fixture::ACCEPTED_REVISION
+            ),
+            accepted,
+        ]
+    );
+    assert_eq!(
+        accept.value.as_ref().unwrap()["reason"],
+        "the bytes are identical"
+    );
+    let reject = fact(&facts, fixture::REJECT);
+    assert_eq!(reject.key.as_deref(), Some("rejected"));
+    assert_eq!(
+        links(reject, LinkRole::About),
+        [format!("assertion:{0}@{0}", fixture::REJECTED)]
+    );
+
+    let blocker = fact(&facts, fixture::BLOCKER);
+    assert_eq!(blocker.kind, AssertionKind::Problem);
+    assert_eq!(blocker.key.as_deref(), Some("raw/1"));
+    assert_eq!(
+        blocker.value.as_ref().unwrap()["text"],
+        "a competing copy blocks the merge"
+    );
+
+    // A finding about an analysis is about the rows it was drawn from;
+    // references with no counterpart stay in its `predecessor` value.
+    let finding = fact(&facts, fixture::FINDING);
+    assert_eq!(finding.kind, AssertionKind::Finding);
+    assert_eq!(finding.author, Author::Script("run:followups-1".into()));
+    assert_eq!(
+        links(finding, LinkRole::About),
+        [
+            "message:claude-code:00000000-0000-4000-8000-00000000bbbb:m-1",
+            "message:claude-code:00000000-0000-4000-8000-00000000bbbb:m-2"
+        ]
+    );
+    assert!(links(finding, LinkRole::Evidence).is_empty());
+    assert_eq!(
+        finding.value.as_ref().unwrap()["predecessor"]["evidence_refs_json"],
+        r#"["query:00","result-set:finding-0001"]"#
+    );
+
+    let note = fact(&facts, fixture::NOTE);
+    assert_eq!(note.kind, AssertionKind::Note);
+    assert_eq!(note.key, None);
+    assert_eq!(
+        note.author,
+        Author::Agent(Some(
+            SessionId::parse("codex:00000000-0000-7000-8000-00000000c0de").unwrap()
+        ))
+    );
+    assert_eq!(
+        note.valid_until,
+        Timestamp::parse_rfc3339("2026-07-12T00:00:00Z")
+    );
+    assert_eq!(
+        links(note, LinkRole::Evidence),
+        ["session:codex:00000000-0000-7000-8000-00000000c0de"]
+    );
+
+    let refused = &facts.iter().find(|(id, _)| id == fixture::MARK).unwrap().1;
+    assert_eq!(
+        refused.as_ref().unwrap_err(),
+        "assertion kind mark has no counterpart here"
+    );
+}
+
+#[test]
+fn every_row_follows_the_rows_it_names() {
+    let (_, facts, _) = mapped();
+    let position = |id: &str| facts.iter().position(|(row, _)| row == id).unwrap();
+    assert!(position(fixture::ACCEPTED) < position(fixture::ACCEPTED_REVISION));
+    assert!(position(fixture::ACCEPTED_REVISION) < position(fixture::ACCEPT));
+    assert!(position(fixture::REJECTED) < position(fixture::REJECT));
+}
+
+#[test]
+fn a_target_with_no_counterpart_refuses_its_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("user.db");
+    fixture::user_db(&path);
+    let db = UserDb::open(&path, dir.path()).unwrap();
+    let rows = db.assertions().unwrap();
+    let pass = RevisionReference::exact("pass-1".into(), "pass-1".into());
+    // Without the result set, the finding's analysis target has no counterpart.
+    let facts = facts(&rows, "machine-1", &pass, &BTreeMap::new());
+    let finding = &facts
+        .iter()
+        .find(|(id, _)| id == fixture::FINDING)
+        .unwrap()
+        .1;
+    assert_eq!(
+        finding.as_ref().unwrap_err(),
+        "its target analysis:followups has no counterpart here"
+    );
+}
+
+#[test]
+fn every_row_of_every_table_is_kept_verbatim() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("user.db");
+    fixture::user_db(&path);
+    let db = UserDb::open(&path, dir.path()).unwrap();
+    let mut out = Vec::new();
+    assert_eq!(db.write_rows(&mut out).unwrap(), 12 + 1 + 2);
+    let lines: Vec<Json> = out
+        .split(|b| *b == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice(line).unwrap())
+        .collect();
+    assert_eq!(lines[0]["table"], "annotation_schemas");
+    assert_eq!(lines[0]["row"]["schema_id"], "seed.example");
+    assert!(lines.iter().any(|line| line["table"] == "assertions"
+        && line["row"]["assertion_id"] == fixture::MARK
+        && line["row"]["body_text"] == "starred"));
+    assert_eq!(
+        db.row_counts().unwrap(),
+        BTreeMap::from([
+            ("annotation_schemas".to_owned(), 1),
+            ("assertions".to_owned(), 12),
+            ("result_set_members".to_owned(), 2)
+        ])
+    );
+}
+
+#[test]
+fn database_without_python_assertions_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("other.db");
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch("CREATE TABLE assertions (id TEXT)")
+        .unwrap();
+    let error = UserDb::open(&path, dir.path()).err().unwrap().to_string();
+    assert!(error.contains("not Python Polylogue's user.db"), "{error}");
+}
+
+#[test]
+fn the_pass_is_the_same_for_the_same_rows() {
+    let (rows, _, _) = mapped();
+    let first = pass("pass-1", &rows, "machine-1").unwrap();
+    assert_eq!(first, pass("pass-1", &rows, "machine-1").unwrap());
+    assert_eq!(first.kind, AssertionKind::Pass);
+    assert_eq!(first.created_at.unwrap().unix_ms(), 6_000);
+    assert_eq!(first.value.as_ref().unwrap()["counts"]["assertions"], 12);
+}
+
+#[test]
+fn an_annotation_schema_becomes_a_rubric_with_its_fields() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("user.db");
+    fixture::user_db(&path);
+    let db = UserDb::open(&path, dir.path()).unwrap();
+    let schemas = db.schemas().unwrap();
+    assert_eq!(schemas.len(), 1);
+    let fact = rubric(&schemas[0], "machine-1").unwrap();
+    assert_eq!(fact.kind, AssertionKind::Rubric);
+    assert_eq!(fact.key.as_deref(), Some("seed.example"));
+    assert_eq!(fact.id, "predecessor-schema:seed.example@1");
+    assert_eq!(fact.author, Author::Script("polylogue".into()));
+    assert_eq!(fact.created_at, None);
+    let value = fact.value.unwrap();
+    assert_eq!(
+        value["instructions"],
+        "Session activity. What kind of work the session did."
+    );
+    // The first target kind with a unit here decides the unit.
+    assert_eq!(value["unit_query"], "sessions");
+    assert_eq!(value["abstain"], true);
+    assert_eq!(value["confidence"], true);
+    assert_eq!(value["rationale"], true);
+    assert_eq!(
+        value["fields"],
+        serde_json::json!([{"name": "activity", "value_type": "enum",
+            "enum_values": ["build", "debug", "research"], "minimum": null, "maximum": null,
+            "required": true, "description": "The main activity."}])
+    );
+    assert_eq!(value["predecessor"]["schema_id"], "seed.example");
+    assert_eq!(value["predecessor"]["definition_json"], fixture::SCHEMA);
+}
+
+#[test]
+fn rubric_time_comes_from_its_own_registration() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("user.db");
+    fixture::user_db(&path);
+    let db = UserDb::open(&path, dir.path()).unwrap();
+    let mut schema = db.schemas().unwrap().remove(0);
+    let unknown = rubric(&schema, "machine-1").unwrap();
+    assert_eq!(unknown.created_at, None);
+    assert!(unknown.links.is_empty());
+    schema.stored["registered_at_ms"] = 1234.into();
+    let known = rubric(&schema, "machine-1").unwrap();
+    assert_eq!(known.created_at, Timestamp::from_unix_ms(1234));
+    assert_eq!(known.id, unknown.id);
+    assert_eq!(known.root, unknown.root);
+    assert_eq!(known.key, unknown.key);
+    assert_ne!(
+        known, unknown,
+        "different original facts cannot silently overwrite"
+    );
+}

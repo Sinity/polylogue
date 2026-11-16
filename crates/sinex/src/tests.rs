@@ -36,12 +36,12 @@ pub(crate) fn every_event_applied(_: &str) -> crate::Result<bool> {
 pub(crate) fn applied(position: i64) -> polylogue_store::primary::ReplayState {
     polylogue_store::primary::ReplayState {
         applied_position: Some(position),
-        head: Some(position),
+        latest_position: Some(position),
         scope: Some("fixture-scope".into()),
         staged_delivery: None,
         completed_delivery: None,
         snapshot: None,
-        projection: None,
+        snapshot_progress: None,
     }
 }
 
@@ -157,7 +157,7 @@ fn capture_retries_keep_identity_but_a_b_a_is_three_observations() {
 }
 
 #[test]
-fn grouped_capture_rejects_parser_values_and_waits_for_its_confirmed_barrier() {
+fn grouped_capture_rejects_parser_values_and_awaits_marker() {
     let root = tempfile::tempdir().unwrap();
     let sinex = client(root.path());
     let bytes = b"attachment";
@@ -168,8 +168,8 @@ fn grouped_capture_rejects_parser_values_and_waits_for_its_confirmed_barrier() {
             body(root.path(), bytes),
         )
         .unwrap();
-    let physical = extent(root.path(), bytes);
-    let acknowledgment=serde_json::from_value(json!({"number":1,"frame":raw.identity,"material":crate::material_id("polylogue-test", &raw.identity),"material_extents":[physical.encode()],"admitted":[],"content_hash":null,"result":"admitted","counts":crate::tests::zero_counts(),"commit_seq":null})).unwrap();
+    let stored = extent(root.path(), bytes);
+    let acknowledgment=serde_json::from_value(json!({"number":1,"frame":raw.identity,"material":crate::material_id("polylogue-test", &raw.identity),"material_extents":[stored.encode()],"admitted":[],"content_hash":null,"result":"admitted","counts":crate::tests::zero_counts(),"commit_seq":null})).unwrap();
     sinex
         .spool
         .lock()
@@ -224,7 +224,7 @@ fn grouped_capture_rejects_parser_values_and_waits_for_its_confirmed_barrier() {
             }],
         );
         assert!(
-            matches!(result, Err(crate::Error::Invalid(reason)) if reason == "material completion cannot publish parser values")
+            matches!(result, Err(crate::Error::Invalid(reason)) if reason == "material completion cannot send parser values")
         );
     }
     let write = ProductWrite {
@@ -267,16 +267,16 @@ fn grouped_capture_rejects_parser_values_and_waits_for_its_confirmed_barrier() {
 pub(crate) mod named;
 mod signals;
 
-mod native_capture;
+mod file_capture;
 
 mod rewritten_documents;
 
-mod custody_rebuild;
+mod binding_rebuild;
 
 mod export_delivery;
 
 #[test]
-fn advisory_readiness_is_nonblocking_and_retains_pending_advice_across_restart() {
+fn advice_history_waits_for_confirmed_application() {
     use polylogue_model::authored::{
         AuthoredEffect, DeliveryChange, DeliveryRecord, PreparedRequest,
     };
@@ -287,7 +287,7 @@ fn advisory_readiness_is_nonblocking_and_retains_pending_advice_across_restart()
     let queue = sinex.queue().unwrap();
     assert!(
         !sinex.advisory_history_ready(),
-        "a busy owner means uncertainty, not empty history"
+        "a busy Sinex means uncertainty, not empty history"
     );
     drop(queue);
     let delivery = Delivery {
@@ -296,7 +296,7 @@ fn advisory_readiness_is_nonblocking_and_retains_pending_advice_across_restart()
         sender: "hook".into(),
         event: "advice".into(),
         cwd: Some("/synthetic/repo".into()),
-        text: "one exact file pointer".into(),
+        text: "one file pointer".into(),
         refs: vec![
             "assertion:root@revision".into(),
             "file:src/parser.rs@commit".into(),
@@ -341,13 +341,13 @@ fn advisory_readiness_is_nonblocking_and_retains_pending_advice_across_restart()
     drop(queue);
     assert!(
         !sinex.advisory_history_ready(),
-        "publication ACK is not confirmed application"
+        "a Sinex acknowledgment is not confirmed application"
     );
     drop(sinex);
     let reopened = client(root.path());
     assert!(
         !reopened.advisory_history_ready(),
-        "restart must not offer the pair again from empty projected delivery history"
+        "restart must not offer the pair again from empty delivery history in the index"
     );
 }
 

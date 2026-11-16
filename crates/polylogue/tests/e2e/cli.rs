@@ -8,7 +8,7 @@ use std::path::Path;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-// Exercise the real CLI with the canonical envelope. Transport rendering itself
+// Exercise the real CLI with the shared request envelope. Transport rendering itself
 // is covered by the command-declaration tests in the binary.
 fn continuation_arguments(call: &polylogue_model::read::ReadyCall) -> Vec<String> {
     use command_surface::{Deadline, TokenBudget};
@@ -162,7 +162,7 @@ pub(super) fn wait_status(
             command_surface::Outcome::Degraded { value, .. } => (value, false),
             other => panic!("startup status failed: {other:?}: {out:?}"),
         };
-        // A settled fixture requires a current index as well as its expected rows.
+        // A ready fixture requires a current index as well as its expected rows.
         if current && status["busy"] == false && status["store"].is_object() && ready(&status) {
             return status;
         }
@@ -175,7 +175,7 @@ pub(super) fn wait_status(
 }
 
 /// Poll a query until the current answer has the expected rows. A degraded
-/// answer cannot satisfy a settled fixture even when its partial rows match.
+/// answer cannot satisfy a ready fixture even when its partial rows match.
 pub(super) fn wait_rows(
     env: &crate::Fixture,
     query: &str,
@@ -242,7 +242,7 @@ fn killing_the_test_parent_stops_its_real_daemon() {
     use std::os::unix::process::ExitStatusExt;
 
     let dir = tempfile::tempdir().unwrap();
-    let mut owner = Daemon(
+    let mut first = Daemon(
         polylogue_testkit::spawn_daemon(
             crate::test_process(dir.path())
                 .args([
@@ -258,7 +258,7 @@ fn killing_the_test_parent_stops_its_real_daemon() {
         )
         .unwrap(),
     );
-    let mut stdout = BufReader::new(owner.0.stdout.take().unwrap());
+    let mut stdout = BufReader::new(first.0.stdout.take().unwrap());
     let mut line = String::new();
     loop {
         assert_ne!(stdout.read_line(&mut line).unwrap(), 0, "{line}");
@@ -274,7 +274,7 @@ fn killing_the_test_parent_stops_its_real_daemon() {
         .trim()
         .parse()
         .unwrap();
-    let mut stderr = BufReader::new(owner.0.stderr.take().unwrap());
+    let mut stderr = BufReader::new(first.0.stderr.take().unwrap());
     loop {
         line.clear();
         assert_ne!(
@@ -307,15 +307,15 @@ fn killing_the_test_parent_stops_its_real_daemon() {
         Err(polylogue_store::StoreError::Locked { .. })
     ));
     let exit = polylogue_testkit::ProcessExit::watch(daemon_pid.try_into().unwrap()).unwrap();
-    owner.0.kill().unwrap();
-    assert_eq!(owner.0.wait().unwrap().signal(), Some(9));
+    first.0.kill().unwrap();
+    assert_eq!(first.0.wait().unwrap().signal(), Some(9));
     // Stderr can close before other descriptors during process teardown.
     // Wait for process exit before checking that the archive lock is released.
     exit.wait().unwrap();
     let mut remaining = String::new();
     stderr.read_to_string(&mut remaining).unwrap();
     let (_archive, _lock) = polylogue_store::Archive::open_or_create(&dir.path().join("archive"))
-        .expect("the killed owner's daemon must release its archive lock");
+        .expect("the killed first daemon must release its archive lock");
 }
 
 #[cfg(target_os = "linux")]
@@ -581,7 +581,7 @@ fn ai_studio_drive_prompt_and_title_read_identically_after_a_rebuild_from_stored
             .lines()
             .map(|line| serde_json::from_str::<polylogue_model::bundle::Record>(line).unwrap());
         let Some(polylogue_model::bundle::Record::Manifest(manifest)) = records.next() else {
-            panic!("canonical bundle must start with its manifest");
+            panic!("bundle must start with its manifest");
         };
         manifest.validate().unwrap();
         records
@@ -595,7 +595,7 @@ fn ai_studio_drive_prompt_and_title_read_identically_after_a_rebuild_from_stored
     let w = polylogue_testkit::ClaudeHome::new();
     let config = w.dir.path().join("config");
     let env = crate::Fixture::new(w.root.as_path(), w.home.as_path(), config.as_path());
-    // Read the actual child environment, whose XDG state root differs from
+    // Read the child's environment, whose XDG state root differs from
     // ClaudeHome's standalone engine fixture and its HOME fallback.
     let child = command(&env);
     let state = child
@@ -653,7 +653,7 @@ fn ai_studio_drive_prompt_and_title_read_identically_after_a_rebuild_from_stored
         expected_ids.map(|id| format!("message:{id}"))
     );
     assert_eq!(headers[2].1.model, ValueState::known("example".to_owned()));
-    // Usage belongs to canonical Message, rather than the presentation header.
+    // Usage belongs to the stored message, rather than the presentation header.
     let before_messages = messages(&env, &w.dir.path().join("before-bundle"));
     assert_eq!(
         before_messages
@@ -672,7 +672,7 @@ fn ai_studio_drive_prompt_and_title_read_identically_after_a_rebuild_from_stored
     polylogue_testkit::delete_index(&w.root);
     let daemon = start_daemon(&env);
     // The title's separate Drive input and prompt must both reparse from
-    // retained source bytes, after their provider files have disappeared.
+    // stored source bytes, after their provider files have disappeared.
     wait_status(&env, |s| s["store"]["messages"].as_u64() == Some(3));
     let after = reading(&env);
     assert_eq!(after, before);

@@ -135,14 +135,14 @@ fn a_middle_links_page_does_not_visit_the_prefix() {
     }
     // A page in the walk of the grandchildren, after more than half of the
     // nodes, reads the links of its own nodes and of those above them.
-    let (at, (anchor, expected)) = pages
+    let (at, (start, expected)) = pages
         .iter()
         .enumerate()
         .find(|(_, (_, page))| page.document.footer.position > Some(total as u64 / 2))
         .unwrap();
     let shown = nodes(&expected.document.items).len() as u64;
     let reads = polylogue_store::lineage::link_reads();
-    let again = read(&d, 200, anchor.as_ref());
+    let again = read(&d, 200, start.as_ref());
     let visited = polylogue_store::lineage::link_reads() - reads;
     assert_eq!(again.document.items, expected.document.items);
     assert!(
@@ -338,7 +338,7 @@ fn cyclic_and_conflicting_families_tile_both_directions_without_a_guessed_root()
 }
 
 #[test]
-fn alternative_native_anchors_and_spawning_calls_keep_their_exact_edge_facts() {
+fn alternative_branch_points_and_spawn_calls_keep_edges() {
     let d = test_daemon::start("placeholder");
     let dir = d.home.join(".claude/projects/-p");
     let mut parent = polylogue_testkit::claude_user("first", "root", "first prompt");
@@ -349,14 +349,14 @@ fn alternative_native_anchors_and_spawning_calls_keep_their_exact_edge_facts() {
     ));
     parent.push_str(&format!("{}\n",serde_json::json!({"type":"progress","sessionId":"root","parentToolUseID":"spawn-call","data":{"type":"agent_progress","agentId":"worker"}})));
     let mut child = polylogue_testkit::claude_user("own", "child", "child prompt");
-    for anchor in ["first", "second"] {
-        child.push_str(&format!("{}\n",serde_json::json!({"type":"fork-context-ref","sessionId":"child","parentSessionId":"root","parentLastUuid":anchor})));
+    for point in ["first", "second"] {
+        child.push_str(&format!("{}\n",serde_json::json!({"type":"fork-context-ref","sessionId":"child","parentSessionId":"root","parentLastUuid":point})));
     }
     std::fs::write(dir.join("root.jsonl"), parent).unwrap();
     std::fs::write(dir.join("child.jsonl"), child).unwrap();
     d.wait_for(|status| status["store"]["messages"] == 4);
     let page = read_target(&d, "session:claude-code:child", 1_000_000, None);
-    let mut anchors = std::collections::BTreeSet::new();
+    let mut branch_points = std::collections::BTreeSet::new();
     let mut cross = 0;
     let mut calls = Vec::new();
     for item in &page.document.items {
@@ -390,7 +390,7 @@ fn alternative_native_anchors_and_spawning_calls_keep_their_exact_edge_facts() {
                     assert_eq!(from, "session:claude-code:root");
                     assert_eq!(relation, "spawn");
                     if to == "session:claude-code:child" {
-                        anchors.insert(branch_point.clone().unwrap());
+                        branch_points.insert(branch_point.clone().unwrap());
                         assert!(spawning_call.is_none());
                         assert!(*copies_prefix);
                         cross += usize::from(*cross_link);
@@ -406,7 +406,7 @@ fn alternative_native_anchors_and_spawning_calls_keep_their_exact_edge_facts() {
         }
     }
     assert_eq!(
-        anchors,
+        branch_points,
         [
             "message:claude-code:first".to_owned(),
             "message:claude-code:second".to_owned()

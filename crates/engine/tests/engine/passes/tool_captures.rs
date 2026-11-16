@@ -43,7 +43,7 @@ fn open_descriptors(path: &std::path::Path) -> usize {
 }
 
 #[test]
-fn ordinary_inputs_are_serviced_while_a_database_is_read() {
+fn inputs_are_serviced_while_a_database_is_read() {
     let w = ClaudeHome::new();
     w.append("live.jsonl", &user("u1", "live", "before capture"));
     let (mut engine, _lock) = w.engine(64 << 20);
@@ -67,7 +67,7 @@ fn ordinary_inputs_are_serviced_while_a_database_is_read() {
     assert!(second.capture_pending);
     assert!(
         second.errors.is_empty(),
-        "ordinary append during database capture: {second:?}"
+        "append during database capture: {second:?}"
     );
     assert_eq!(w.texts("live"), ["before capture", "during capture"]);
     // The active batch is independent of later discovery results.

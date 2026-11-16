@@ -1,11 +1,11 @@
-//! One retained export cursor admits callback semantics before parsed effects.
+//! One stored export cursor checks each callback before its parsed rows apply.
 use super::*;
 
 #[derive(Clone)]
 pub(crate) struct ExportPrefix {
     cursor: Option<ExportCursor>,
-    first: ReadingFootprint,
-    last: ReadingFootprint,
+    first: ReadRange,
+    last: ReadRange,
     length: u64,
     body_hash: String,
     refused: bool,
@@ -33,8 +33,8 @@ pub(crate) fn load_prefix(
             let old: Reading = serde_json::from_str(&json)?;
             Ok(ExportPrefix {
                 cursor: old.export_cursor,
-                first: old.first.footprint,
-                last: old.last.footprint,
+                first: old.first.covered,
+                last: old.last.covered,
                 length: old.length,
                 body_hash: old.last_hash,
                 refused: old.refused_export,
@@ -50,16 +50,16 @@ pub(crate) fn admit_export(
     length: u64,
     step: &ParseStep,
 ) -> Result<bool> {
-    admit(
+    accept(
         load_prefix(conn, input, chain, &step.reading_version)?.as_ref(),
         length,
         step,
     )
 }
 
-fn admit(previous: Option<&ExportPrefix>, length: u64, step: &ParseStep) -> Result<bool> {
+fn accept(previous: Option<&ExportPrefix>, length: u64, step: &ParseStep) -> Result<bool> {
     // A failure carries no records and moves no cursor, so it switches
-    // neither an export reading nor ordinary byte control.
+    // neither an export reading nor a byte-range reading.
     if matches!(
         step.progress,
         polylogue_model::batch::StepProgress::Failed { .. }
@@ -68,7 +68,7 @@ fn admit(previous: Option<&ExportPrefix>, length: u64, step: &ParseStep) -> Resu
     }
     let Some(delivery) = step.delivery.as_ref() else {
         if previous.is_some_and(|old| old.cursor.is_some() || old.refused) {
-            return invalid("an export reading cannot switch to ordinary byte control");
+            return invalid("an export reading cannot switch to byte ranges");
         }
         return Ok(true);
     };
@@ -113,7 +113,7 @@ fn admit(previous: Option<&ExportPrefix>, length: u64, step: &ParseStep) -> Resu
             return Ok(false);
         }
         return invalid(
-            "a refused immutable source cannot change its callback without a new actual source length",
+            "a refused immutable source cannot change its callback without a new source length",
         );
     }
     let first = if let Some(old) = previous {
@@ -126,7 +126,7 @@ fn admit(previous: Option<&ExportPrefix>, length: u64, step: &ParseStep) -> Resu
             .validate()
             .map_err(|error| StoreError::Invalid(error.to_string()))?;
         if refused {
-            return invalid("an unreadable scan cannot replace a retained export callback prefix");
+            return invalid("an unreadable scan cannot replace a stored export callback prefix");
         }
         if delivery.ordinal <= cursor.last_ordinal {
             if delivery.ordinal == cursor.last_ordinal && delivery.prefix_hash != cursor.prefix_hash
@@ -136,13 +136,13 @@ fn admit(previous: Option<&ExportPrefix>, length: u64, step: &ParseStep) -> Resu
             if matches!(delivery.source, ExportDeliverySource::Complete { .. })
                 && delivery.ordinal != cursor.last_ordinal
             {
-                return invalid("export replay completed before its retained callback prefix");
+                return invalid("export replay completed before its kept callback prefix");
             }
             return Ok(false);
         }
         if matches!(
             old.last,
-            ReadingFootprint::Export {
+            ReadRange::Export {
                 source: ExportDeliverySource::Complete { .. }
             }
         ) {
@@ -161,7 +161,7 @@ fn admit(previous: Option<&ExportPrefix>, length: u64, step: &ParseStep) -> Resu
         if !step.reset {
             return invalid("the first export callback must begin its reading");
         }
-        ReadingFootprint::Export {
+        ReadRange::Export {
             source: delivery.source,
         }
     };
@@ -173,7 +173,7 @@ fn admit(previous: Option<&ExportPrefix>, length: u64, step: &ParseStep) -> Resu
     {
         let headers = u64::from(matches!(
             first,
-            ReadingFootprint::Export {
+            ReadRange::Export {
                 source: ExportDeliverySource::ContainerHeader
             }
         ));

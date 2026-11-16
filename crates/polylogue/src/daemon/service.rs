@@ -50,7 +50,7 @@ pub struct Daemon {
     #[cfg(test)]
     pub(crate) signal_trace: Mutex<Option<Sender<crate::signals::observations::Phase>>>,
     stopping: AtomicBool,
-    pub(super) idle_admission: super::schema::Admission,
+    pub(super) idle_gate: super::schema::IdleGate,
     #[cfg(test)]
     pub(crate) read_limits: Mutex<Option<Sender<crate::test_daemon::ReadObservation>>>,
 }
@@ -149,21 +149,21 @@ impl Daemon {
         })
     }
 
-    /// Freshness comes from this reader snapshot and cached owner observations.
+    /// Freshness comes from this reader snapshot and cached Sinex observations.
     pub(crate) fn freshness(
         &self,
         reader: &polylogue_store::Reader<'_>,
-    ) -> polylogue_store::Result<polylogue_model::currency::ReadFreshness> {
-        use polylogue_model::currency::IndexCurrency;
+    ) -> polylogue_store::Result<polylogue_model::freshness::ReadFreshness> {
+        use polylogue_model::freshness::IndexFreshness;
         let local = reader.completeness(&polylogue_engine::reading_contracts())?;
-        let owner = match &self.mode {
-            ModeState::Standalone => IndexCurrency::Standalone,
+        let sinex = match &self.mode {
+            ModeState::Standalone => IndexFreshness::Standalone,
             #[cfg(feature = "sinex")]
             ModeState::Primary { connection } => connection
-                .currency(reader.confirmed_checkpoint()?, reader.confirmed_scope()?)
+                .freshness(reader.confirmed_checkpoint()?, reader.confirmed_scope()?)
                 .map_err(StoreError::from)?,
-            ModeState::Blocked { .. } if !self.archive.is_primary() => IndexCurrency::Standalone,
-            ModeState::Blocked { error, .. } => IndexCurrency::primary(
+            ModeState::Blocked { .. } if !self.archive.is_primary() => IndexFreshness::Standalone,
+            ModeState::Blocked { error, .. } => IndexFreshness::primary(
                 reader.confirmed_checkpoint()?,
                 None,
                 None,
@@ -172,7 +172,7 @@ impl Daemon {
             )
             .with_scope(reader.confirmed_scope()?),
         };
-        Ok(polylogue_model::currency::ReadFreshness { local, owner })
+        Ok(polylogue_model::freshness::ReadFreshness { local, sinex })
     }
 }
 
@@ -187,7 +187,7 @@ impl Daemon {
     }
     /// Holds idle-priority jobs back while an ordinary request runs.
     pub(super) fn foreground(&self) -> super::schema::Foreground<'_> {
-        self.idle_admission.foreground()
+        self.idle_gate.foreground()
     }
 }
 
@@ -196,7 +196,7 @@ impl Daemon {
 /// it matched nothing; ok otherwise.
 fn query_outcome(
     answer: super::query::QueryAnswer,
-    freshness: &polylogue_model::currency::ReadFreshness,
+    freshness: &polylogue_model::freshness::ReadFreshness,
 ) -> Answer<crate::protocol::query::Answer> {
     let super::query::QueryAnswer {
         mut value,
@@ -250,8 +250,8 @@ pub(crate) fn error<T>(code: &str, message: impl ToString) -> Answer<T> {
     Failure::new(code, message).answer()
 }
 
-/// A failed store operation. Durable preparations have their operation's
-/// own declared receipt and are handled where that preparation is made.
+/// A failed store operation. Saved preparations have their operation's
+/// own declared result and are handled where that preparation is made.
 pub(crate) fn store_error<T>(e: &StoreError) -> Answer<T> {
     Failure::store(e).answer()
 }
@@ -485,7 +485,7 @@ fn context(
             seq: written_up_to,
         };
         if is_advisory {
-            // A positive preparation reserves this session while its record/ACK
+            // A non-empty preparation reserves this session while its record or acknowledgment
             // is unconfirmed. The stored outcome is still prepared until emitted.
             let session = ask.recipient().expect("advisory recipient");
             let recent = cooldown.as_mut().expect("advisory cooldown held");
@@ -577,7 +577,7 @@ pub(crate) fn authored_preparation() -> user_writes::PreparationContext {
 }
 
 /// Submits one authored write; a write prepared from a read carries the
-/// selected generation through the writer queue to custody commit. A write
+/// selected generation through the writer queue to its commit. A write
 /// accepted locally but not yet confirmed by Sinex is a degraded answer.
 fn submit<T: serde::Serialize>(
     d: &Daemon,
@@ -708,7 +708,7 @@ pub(crate) fn shutting_down() -> Failure {
 }
 
 /// Resolve bulk targets through the same pinned selection and acknowledged
-/// execution lifecycle used by reads. The returned references retain native grain.
+/// execution lifecycle used by reads. The returned references keep the rows' own grain.
 fn query_targets(
     d: &Daemon,
     reader: &polylogue_store::Reader<'_>,
@@ -718,8 +718,8 @@ fn query_targets(
     query_targets_in(d, reader, query, invocation, None)
 }
 
-/// A browser selection additionally requires one physical row in its supplied
-/// conversation. Membership uses the same prepared population authority.
+/// A browser selection additionally requires one stored row in its supplied
+/// conversation. Membership is decided by the same prepared population.
 fn query_targets_in(
     d: &Daemon,
     reader: &polylogue_store::Reader<'_>,
@@ -823,7 +823,7 @@ fn query_targets_in(
                             .ok_or_else(|| {
                                 Failure::new(
                                     "not_yet_available",
-                                    "the selected row has no authoritative source reference",
+                                    "the selected row has no source reference",
                                 )
                             })?;
                         if seen.insert(reference.clone()) {
@@ -894,8 +894,8 @@ pub struct Runtime {
     /// Ends the signal worker: a child of the archive's stop request.
     signals_stop: Option<polylogue_store::cancellation::Cancellation>,
     signals: Option<JoinHandle<std::io::Result<()>>>,
-    live_evidence_stop: Option<Sender<()>>,
-    live_evidence: Option<JoinHandle<()>>,
+    live_events_stop: Option<Sender<()>>,
+    live_events: Option<JoinHandle<()>>,
     /// Records hosted-connection outcomes and runs resumes.
     acts: Option<JoinHandle<()>>,
     completion: Option<crate::completion_catalog::publisher::Publisher>,
@@ -1002,11 +1002,11 @@ impl Runtime {
             return Some(failure);
         }
         if self
-            .live_evidence
+            .live_events
             .as_ref()
             .is_some_and(JoinHandle::is_finished)
         {
-            return Some("live evidence worker terminated");
+            return Some("live event worker terminated");
         }
         if self.acts.as_ref().is_some_and(JoinHandle::is_finished) {
             return Some("acts worker terminated");
@@ -1049,13 +1049,13 @@ impl Runtime {
             failure.get_or_insert(error);
         }
         self.scope.take();
-        if let Some(stop) = self.live_evidence_stop.take() {
+        if let Some(stop) = self.live_events_stop.take() {
             let _ = stop.send(());
         }
-        if let Some(worker) = self.live_evidence.take()
+        if let Some(worker) = self.live_events.take()
             && worker.join().is_err()
         {
-            failure.get_or_insert_with(|| std::io::Error::other("live evidence worker panicked"));
+            failure.get_or_insert_with(|| std::io::Error::other("live event worker panicked"));
         }
         if let Some(worker) = self.acts.take() {
             self.daemon.acts.stop_reports();
@@ -1302,7 +1302,7 @@ pub fn start(
         #[cfg(test)]
         signal_trace: Mutex::new(None),
         stopping: AtomicBool::new(false),
-        idle_admission: super::schema::Admission::default(),
+        idle_gate: super::schema::IdleGate::default(),
         #[cfg(test)]
         read_limits: Mutex::new(None),
     });
@@ -1316,8 +1316,8 @@ pub fn start(
     // app-server, kept them running; connect to each again.
     daemon.acts.reattach();
     // Pings and notices left pending raise their running sessions' mailbox
-    // flags; those to sessions no longer running are settled.
-    acts::settle_ended(&daemon, daemon.config.requests.now().unix_ms(), true);
+    // flags; those to sessions no longer running are closed.
+    acts::finish_ended(&daemon, daemon.config.requests.now().unix_ms(), true);
     let operations = Arc::new(crate::commands::table(Arc::clone(&daemon)));
     assert!(
         daemon.operations.set(Arc::downgrade(&operations)).is_ok(),
@@ -1328,8 +1328,8 @@ pub fn start(
         operations,
         signals_stop: None,
         signals: None,
-        live_evidence_stop: None,
-        live_evidence: None,
+        live_events_stop: None,
+        live_events: None,
         acts: Some(acts_worker),
         completion: None,
         scope: None,
@@ -1416,10 +1416,10 @@ pub fn start(
         .map_err(std::io::Error::other)?;
     runtime.start_signals()?;
     let (stop, stopped) = channel();
-    runtime.live_evidence_stop = Some(stop);
+    runtime.live_events_stop = Some(stop);
     let daemon = Arc::clone(&runtime.daemon);
     let worker_events = runtime.worker_events.clone();
-    let paths = crate::live_evidence::Paths {
+    let paths = crate::live_events::Paths {
         spool: settings.spool_dir(polylogue_sources::hook_spool::ORIGIN),
         claude_sessions: polylogue_sources::origin::by_name("claude-code")
             .map(|origin| settings.root(origin.root).join("sessions"))
@@ -1428,16 +1428,16 @@ pub fn start(
         codex_program: runtime.daemon.acts.codex().0,
     };
     let clock = settings.clock.clone();
-    runtime.live_evidence = Some(
+    runtime.live_events = Some(
         std::thread::Builder::new()
             .name("polylogue-live".into())
             .spawn(move || {
                 let _exit = super::lifecycle::WorkerExit::new(
                     worker_events,
-                    "live evidence worker terminated",
+                    "live event worker terminated",
                     None,
                 );
-                crate::live_evidence::run(daemon, paths, clock, stopped)
+                crate::live_events::run(daemon, paths, clock, stopped)
             })?,
     );
     // Load the vectors `similar:` ranks by before the first query needs them.

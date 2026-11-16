@@ -1,10 +1,10 @@
-//! Native tool timing facts reach the public registry through the real loop.
+//! Tool timing the source reports reaches the public registry through the real loop.
 use super::super::*;
 use super::{fixture_context, run};
 use polylogue_testkit::ClaudeHome;
 
 #[test]
-fn reported_duration_and_result_time_preserve_their_native_meaning() {
+fn reported_duration_and_result_time_keep_meaning() {
     let home = ClaudeHome::new();
     home.append("timing.jsonl", concat!(
         "{\"type\":\"assistant\",\"uuid\":\"call-message\",\"sessionId\":\"timing\",\"timestamp\":\"2026-10-07T10:00:00Z\",\"message\":{\"id\":\"api-call\",\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"call-a\",\"name\":\"Bash\",\"input\":{\"command\":\"printf synthetic\"}}]}}\n",

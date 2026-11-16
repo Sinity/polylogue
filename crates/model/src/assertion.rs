@@ -1,6 +1,6 @@
-//! Authored statements and their one set of typed links. Currency follows
-//! the shared descendant rule of the `authored` crate over these links; the
-//! store keeps it in an index written with each record.
+//! Authored statements and their one set of typed links. Which revisions are
+//! current follows the shared descendant rule of the `authored` crate over
+//! these links; the store keeps that in an index written with each record.
 pub mod policy;
 pub mod uniqueness;
 pub mod values;
@@ -289,7 +289,7 @@ impl Quote {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(transform=values::schema::canonical)]
+#[schemars(transform=values::schema::stored)]
 pub struct AssertionFact {
     pub id: String,
     pub root: String,
@@ -346,7 +346,8 @@ impl AssertionFact {
         Ok(fact)
     }
     /// Copies one captured accepting request without resampling any clock or
-    /// deriving provenance from the value. Publication authority is separate.
+    /// deriving its source from the value. Whether it may be written is checked
+    /// separately.
     pub fn from_request(
         id: String,
         root: String,
@@ -369,7 +370,7 @@ impl AssertionFact {
         }
     }
     /// Checks immutable shape only. The accepting store separately validates
-    /// current bases, configured allowances and resolved source evidence.
+    /// current bases, configured allowances and the sources its links resolve to.
     pub fn validate(&self) -> Result<values::Value, AssertionError> {
         if self.id.is_empty() || self.root.is_empty() {
             return Err(AssertionError::Identity);
@@ -399,8 +400,8 @@ impl AssertionFact {
             setting
                 .fields
                 .value
-                .validate_for(key, crate::settings::Owner::Standalone)?;
-            // A canonical host target is already resolved; the writing
+                .validate_for(key, crate::settings::SettingMode::Standalone)?;
+            // A stored host target is already resolved; the writing
             // machine never stands in for it.
             crate::settings::target_machine(key, setting.fields.machine.as_deref(), "")?;
         }

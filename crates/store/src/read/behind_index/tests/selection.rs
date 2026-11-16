@@ -112,7 +112,7 @@ fn history(fixture: &Fixture, chains: usize, appends: usize) {
 }
 
 #[test]
-fn newest_and_older_match_the_original_query_for_retained_histories() {
+fn newest_and_older_match_the_query_for_stored_histories() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(dir.path()).unwrap();
     history(&fixture, 12, 7);
@@ -153,7 +153,7 @@ fn newest_and_older_match_the_original_query_for_retained_histories() {
         }
     }
     let newest = reader
-        .chains_behind_index(&[], StoppedChains::Settled, RevisionChains::Newest, None)
+        .chains_behind_index(&[], StoppedChains::Finished, RevisionChains::Newest, None)
         .unwrap();
     let a = newest.iter().find(|c| c.input == "a").unwrap();
     assert_eq!((a.progress.chain, a.progress.length), (1, 107));

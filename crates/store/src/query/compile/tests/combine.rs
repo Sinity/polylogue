@@ -91,12 +91,12 @@ fn fusion_keeps_projected_values_order_and_full_right_operand_ranks() {
             json!({"label":"claude-code:b","n":13})
         ]
     );
-    let after_projection = read(
+    let after_field_selection = read(
         &reader,
         "sessions | fields id as label,input_tokens as n | fuse (sessions | sort by id) | fields label,n | sort by n desc | fuse (sessions | sort by input_tokens desc) | fields label,n",
     );
     assert_eq!(
-        after_projection,
+        after_field_selection,
         [
             json!({"label":"claude-code:c","n":5}),
             json!({"label":"claude-code:b","n":3}),
@@ -213,7 +213,7 @@ fn measurements_share_the_scoped_combination_selection() {
 }
 
 #[test]
-fn snapshot_operands_refuse_without_reconstructing_current_native_rows() {
+fn snapshot_operands_refuse_rebuilding_current_rows() {
     let mut options = opts(&[]);
     options.kept.insert(
         "captured".into(),
@@ -259,7 +259,7 @@ fn projected_set_operands_refuse_reference_text_and_reference_target_mismatches(
             let error = compile(&text, &options).unwrap_err();
             assert_eq!(error.kind(), "invalid_query", "{text}: {error}");
         }
-        // Over one native row domain, intersect and except compare row
+        // Over one row domain, intersect and except compare row
         // identities and keep the left operand's columns.
         for operation in ["intersect", "except"] {
             let text = format!("{left} | {operation} ({right})");
@@ -371,24 +371,24 @@ fn compatible_duration_operands_normalize_real_values_in_both_directions() {
 }
 
 #[test]
-fn union_members_without_an_optional_witness_keep_unknown_values_and_provenance() {
+fn union_members_keep_unknown_values_and_sources() {
     let archive = mixed_duration_archive();
     let reads = crate::ReadPool::open(&archive.archive).unwrap();
     let reader = reads.reader().unwrap();
-    let witnessed =
+    let with_match =
         "tool_calls where command:first AND before(tool_calls where command:last) within 5s";
     let plain = "tool_calls where command:last";
     assert_eq!(
         read(
             &reader,
-            &format!("{witnessed} | fields command,match.command,match.message.id")
+            &format!("{with_match} | fields command,match.command,match.message.id")
         ),
         [
             json!({"command":"first", "match.command":"last", "match.message.id":"claude-code:mixed-duration-c2"})
         ]
     );
     let text = format!(
-        "{witnessed} | union ({plain}) | sort by command | fields command,match.command,match.message.id"
+        "{with_match} | union ({plain}) | sort by command | fields command,match.command,match.message.id"
     );
     assert_eq!(
         read(&reader, &text),
@@ -398,7 +398,7 @@ fn union_members_without_an_optional_witness_keep_unknown_values_and_provenance(
         ]
     );
     let unknown =
-        format!("{witnessed} | union ({plain}) | where match.command:unknown | fields command");
+        format!("{with_match} | union ({plain}) | where match.command:unknown | fields command");
     assert_eq!(read(&reader, &unknown), [json!({"command":"last"})]);
 }
 

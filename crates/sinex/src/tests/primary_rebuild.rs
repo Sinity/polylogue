@@ -5,11 +5,11 @@ use polylogue_store::{Archive, ReadPool};
 use std::io::Read;
 
 #[test]
-fn rebuilding_the_source7_cache_preserves_actual_pending_authored_intent() {
+fn rebuilding_the_source7_cache_preserves_pending_authored_intent() {
     let dir = tempfile::tempdir().unwrap();
-    let store = dir.path().join("native");
+    let store = dir.path().join("sinex");
     let root = dir.path().join("archive");
-    let predecessor = client(&dir.path().join("request-source"));
+    let previous = client(&dir.path().join("request-source"));
     let request = PreparedRequest {
         request: polylogue_store::fixture::authored::operator_request(
             "pending-through-primary-cache-rebuild".into(),
@@ -22,16 +22,16 @@ fn rebuilding_the_source7_cache_preserves_actual_pending_authored_intent() {
         },
         effect: AuthoredEffect::default(),
     };
-    predecessor.prepare_request(&request).unwrap();
+    previous.prepare_request(&request).unwrap();
     let identity = "request:pending-through-primary-cache-rebuild";
-    let mut original = predecessor
+    let mut original = previous
         .spool
         .lock()
         .unwrap()
         .decode_frame(identity)
         .unwrap();
     let sinex_protocol::Ingress::Material { material, .. } = &mut original else {
-        panic!("authored intent must retain its original material");
+        panic!("authored intent must keep its original material");
     };
     material.source.version = 7;
     let original_body = serde_json::to_vec(&request).unwrap();

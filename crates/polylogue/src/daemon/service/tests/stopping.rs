@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 /// takes them largest first. A stop before the second provider call discards
 /// its private reading, keeps its acquired bytes and starts no queued work.
 #[test]
-fn a_stop_during_a_pass_keeps_admitted_rows_and_cancels_private_parsing() {
+fn stop_during_a_pass_keeps_committed_rows() {
     let mut daemon = crate::test_daemon::start_with_workers("before the pass", 1);
     let project = daemon.home.join(".claude/projects/-p");
     let names = ["stop-1", "stop-2", "stop-3", "stop-4", "stop-5", "stop-6"];
@@ -42,7 +42,7 @@ fn a_stop_during_a_pass_keeps_admitted_rows_and_cancels_private_parsing() {
         assert_eq!(
             messages.len(),
             expected,
-            "{name}: only the earlier admitted parse is published"
+            "{name}: only the earlier committed parse is shown"
         );
     }
     let held_path = project.join("stop-2.jsonl");
@@ -65,7 +65,7 @@ fn a_stop_during_a_pass_keeps_admitted_rows_and_cancels_private_parsing() {
             .read_range(&archive.blobs().unwrap(), 0, held.stored)
             .unwrap(),
         original,
-        "the held parser's acquired bytes retain exact custody"
+        "the held parser's read bytes stay stored unchanged"
     );
     drop(reader);
     drop(reads);
@@ -98,10 +98,10 @@ fn a_stop_during_a_pass_keeps_admitted_rows_and_cancels_private_parsing() {
 }
 
 #[test]
-fn a_stop_during_index_rebuild_preserves_retained_bytes_and_restart_finishes() {
+fn stop_during_index_rebuild_keeps_stored_bytes() {
     let records: String = (0..48)
         .map(|n| {
-            polylogue_testkit::claude_user(&format!("rebuild-{n}"), "rebuild", "retained source")
+            polylogue_testkit::claude_user(&format!("rebuild-{n}"), "rebuild", "stored source")
         })
         .collect();
     let mut original = crate::test_daemon::start_with_sources_and_workers(
@@ -177,13 +177,13 @@ fn a_stop_during_index_rebuild_preserves_retained_bytes_and_restart_finishes() {
             assert!(
                 messages
                     .iter()
-                    .all(|message| message.text() == "retained source")
+                    .all(|message| message.text() == "stored source")
             );
             break;
         }
         assert!(
             started.elapsed() < Duration::from_secs(30),
-            "restart did not replay retained bytes"
+            "restart did not replay stored bytes"
         );
         std::thread::yield_now();
     }
@@ -203,7 +203,7 @@ fn due_derivations(root: &std::path::Path) -> i64 {
 fn a_stop_during_derivation_leaves_the_session_due_and_restart_derives_it() {
     let mut daemon = crate::test_daemon::start_with_workers("before derivation", 1);
     let root = daemon._dir.path().join("archive");
-    let barrier = daemon
+    let pause = daemon
         .daemon
         .writes
         .as_ref()
@@ -214,11 +214,11 @@ fn a_stop_during_derivation_leaves_the_session_due_and_restart_derives_it() {
         polylogue_testkit::claude_user("d1", "derive", "a session to derive"),
     )
     .unwrap();
-    while barrier.wait().is_err() {}
-    let barrier = std::sync::Mutex::new(Some(barrier));
+    while pause.wait().is_err() {}
+    let pause = std::sync::Mutex::new(Some(pause));
     let _release = daemon.daemon.archive.stop().on_cancel(move || {
-        if let Some(barrier) = barrier.lock().unwrap().take() {
-            barrier.release();
+        if let Some(pause) = pause.lock().unwrap().take() {
+            pause.release();
         }
     });
     daemon.stop().unwrap();

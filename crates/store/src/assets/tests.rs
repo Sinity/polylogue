@@ -5,7 +5,7 @@ use polylogue_model::BlobHash;
 use std::sync::Arc;
 
 #[test]
-fn segmented_asset_ranges_and_hashes_are_exact_and_old_selections_refuse_rewrites() {
+fn segmented_asset_ranges_and_hashes_match_and_old_selections_refuse_rewrites() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     let writer = Writer::start(&archive).unwrap();
@@ -35,7 +35,7 @@ fn segmented_asset_ranges_and_hashes_are_exact_and_old_selections_refuse_rewrite
             .store_group(
                 vec![crate::staging::PreparedBatch {
                     batch: Batch {
-                        required_disposition: None,
+                        required_outcome: None,
                         input: input.clone(),
                         change: Change::First,
                         observation: Some(observation.clone()),
@@ -100,7 +100,7 @@ fn segmented_asset_ranges_and_hashes_are_exact_and_old_selections_refuse_rewrite
         .store_group(
             vec![crate::staging::PreparedBatch {
                 batch: Batch {
-                    required_disposition: None,
+                    required_outcome: None,
                     input: input.clone(),
                     change: Change::Rewritten,
                     observation: Some(Observation {
@@ -128,7 +128,7 @@ fn segmented_asset_ranges_and_hashes_are_exact_and_old_selections_refuse_rewrite
     assert!(reader.attachment_range(&asset, 0..asset.size).is_err());
 }
 
-// These fixtures exercise source metadata discovery, not byte admission or availability.
+// These fixtures exercise source metadata discovery, not byte commits or availability.
 fn member_scan_fixture(prefix: &str) -> Connection {
     let conn = Connection::open_in_memory().unwrap();
     conn.execute_batch(&format!(

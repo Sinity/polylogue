@@ -66,7 +66,7 @@ fn large_numbers_in_opaque_json_are_lossless() {
 }
 
 #[test]
-fn document_exports_require_wire_two_and_keep_empty_text_and_unknown_authorship() {
+fn document_exports_need_version_2_and_keep_unknowns() {
     let mut document = crate::Document::new(
         crate::DocumentId::parse("claude-ai:project:a:doc:b").unwrap(),
         crate::DocumentPurpose::Instruction,
@@ -92,7 +92,7 @@ fn document_exports_require_wire_two_and_keep_empty_text_and_unknown_authorship(
 }
 
 #[test]
-fn transcripts_unknown_media_and_input_events_require_wire3_without_relabelling_old_documents() {
+fn new_content_needs_version_3_and_keeps_old_labels() {
     use crate::{
         Attachment, AttachmentDirection, Block, DocumentId, DocumentPurpose, NativeId, Origin,
     };
@@ -141,7 +141,7 @@ fn transcripts_unknown_media_and_input_events_require_wire3_without_relabelling_
             .version,
         2
     );
-    let fact = EventExport {
+    let event = EventExport {
         id: "sender-event".into(),
         input: "sender-input".into(),
         source: "hermes".into(),
@@ -150,7 +150,7 @@ fn transcripts_unknown_media_and_input_events_require_wire3_without_relabelling_
         source_end: Some(20),
         event: Event {
             session: None,
-            kind: "native_observation".into(),
+            kind: "observation".into(),
             at: None,
             at_quality: TimeQuality::Unknown,
             at_precision: None,
@@ -160,7 +160,7 @@ fn transcripts_unknown_media_and_input_events_require_wire3_without_relabelling_
             data: serde_json::json!({"approved":false,"value":null}),
         },
     };
-    let mut exported = Document::new(vec![]).with_events(vec![fact]);
+    let mut exported = Document::new(vec![]).with_events(vec![event]);
     assert_eq!(exported.version, 3);
     assert_eq!(
         Document::from_json(&exported.to_json().unwrap()).unwrap(),

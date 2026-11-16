@@ -154,7 +154,7 @@ impl Fixture {
         crate::derive::run(&mut self.index)
     }
 
-    /// Runs the ordinary derivations with a test's declared model prices.
+    /// Runs the derivations with a test's declared model prices.
     #[cfg(test)]
     pub fn derive_with_catalog(&mut self, catalog: &polylogue_model::Catalog) -> Result<u64> {
         crate::derive::run_with_catalog(&mut self.index, catalog)
@@ -196,17 +196,17 @@ impl Fixture {
         Ok(self.index.last_insert_rowid())
     }
 
-    /// Record source time evidence rather than treating every fixture time as exact.
+    /// Record source time accuracy rather than treating every fixture time as exact.
     pub fn session_time(
         &mut self,
         session_pk: i64,
         at: Option<polylogue_model::Timestamp>,
-        evidence: polylogue_model::TimeEvidence,
+        accuracy: polylogue_model::TimeEvidence,
     ) -> Result<()> {
-        evidence
+        accuracy
             .validate(at)
             .map_err(polylogue_model::bundle::BundleError::Time)?;
-        let bytes = crate::encoding::time_bytes(at, evidence)?;
+        let bytes = crate::encoding::time_bytes(at, accuracy)?;
         self.index.execute(
             "UPDATE session SET started_at=?2, started_time=?3, changed=changed+1 WHERE pk=?1",
             params![session_pk, at.map(|time| time.unix_ms()), bytes],
@@ -219,12 +219,12 @@ impl Fixture {
         &mut self,
         message_pk: i64,
         at: Option<polylogue_model::Timestamp>,
-        evidence: polylogue_model::TimeEvidence,
+        accuracy: polylogue_model::TimeEvidence,
     ) -> Result<()> {
-        evidence
+        accuracy
             .validate(at)
             .map_err(polylogue_model::bundle::BundleError::Time)?;
-        let bytes = crate::encoding::time_bytes(at, evidence)?;
+        let bytes = crate::encoding::time_bytes(at, accuracy)?;
         self.index.execute(
             "UPDATE message SET at=?2, at_time=?3 WHERE pk=?1",
             params![message_pk, at.map(|time| time.unix_ms()), bytes],
@@ -260,8 +260,8 @@ impl Fixture {
         Ok((seq ^ (1 << 63)) as i64)
     }
 
-    /// Sets a session's live facts and git identity: the facts are the fold
-    /// of one live evidence line of `kind` (`hook_stop`, …) at `at`, with no
+    /// Sets a session's live facts and git identity: the facts are computed
+    /// from one live event line of `kind` (`hook_stop`, …) at `at`, with no
     /// process identity; `waiting_on` adds the hook line that starts that
     /// wait at the same instant.
     pub fn live(
@@ -272,16 +272,16 @@ impl Fixture {
         waiting_on: Option<&str>,
         repo_root: Option<&str>,
     ) -> Result<()> {
-        use polylogue_model::live::{LiveFacts, fold};
+        use polylogue_model::live::{LiveFacts, apply_live_event};
         let mut facts = LiveFacts::default();
         let none = serde_json::json!({});
-        fold(&mut facts, kind, at, &none);
+        apply_live_event(&mut facts, kind, at, &none);
         match waiting_on {
             Some("permission") => {
-                fold(&mut facts, "hook_permission_request", at, &none);
+                apply_live_event(&mut facts, "hook_permission_request", at, &none);
             }
             Some("question") => {
-                fold(&mut facts, "hook_elicitation", at, &none);
+                apply_live_event(&mut facts, "hook_elicitation", at, &none);
             }
             _ => {}
         }
@@ -293,7 +293,7 @@ impl Fixture {
         Ok(())
     }
 
-    /// Explicit live evidence already folded by the writer.
+    /// Live facts as the writer computes them from live events.
     pub fn live_facts(
         &mut self,
         session_pk: i64,
@@ -469,7 +469,7 @@ impl Fixture {
     /// last active `last - (sessions - 1 - n)` minutes ago, so the highest
     /// numbers are the newest. Each has `messages` messages alternating a
     /// person's prompt and a model answer; the newest `answered` end on a
-    /// model answer with text. The fixture folds each session's counts once;
+    /// model answer with text. The fixture sums each session's counts once;
     /// brief summaries are stored as the derive step leaves them. Returns the session row keys in order.
     pub fn many_sessions(&mut self, spec: ManySessions<'_>) -> Result<Vec<i64>> {
         let tx = rusqlite::Transaction::new_unchecked(
@@ -587,23 +587,23 @@ impl Fixture {
                 .query_row("SELECT id FROM session WHERE pk=?1", [session_pk], |r| {
                     r.get(0)
                 })?;
-        // Fixture `at` declares a native instant, like MessageFacts::at.
-        let native_at = at.and_then(polylogue_model::Timestamp::from_unix_ms);
-        let evidence = if native_at.is_some() {
+        // Fixture `at` declares a source instant, like MessageFacts::at.
+        let source_at = at.and_then(polylogue_model::Timestamp::from_unix_ms);
+        let accuracy = if source_at.is_some() {
             polylogue_model::TimeEvidence::intrinsic(polylogue_model::Precision::Instant)
         } else {
             polylogue_model::TimeEvidence::UNKNOWN
         };
         let fields = crate::encoding::pack_json(&polylogue_model::Event {
-            at_quality: evidence.quality,
-            at_precision: evidence.precision,
-            at_until: evidence.until,
+            at_quality: accuracy.quality,
+            at_precision: accuracy.precision,
+            at_until: accuracy.until,
             session: Some(
                 polylogue_model::SessionId::parse(&session)
                     .map_err(|error| crate::StoreError::Invalid(error.to_string()))?,
             ),
             kind: kind.into(),
-            at: native_at,
+            at: source_at,
             after: None,
             range: None,
             data: serde_json::Value::Null,
@@ -617,7 +617,7 @@ impl Fixture {
             "INSERT OR IGNORE INTO event_value(hash,body) VALUES (?1,?2)",
             params![hash.as_slice(), data],
         )?;
-        self.index.execute("INSERT INTO event_source(event_pk,input_pk,chain,value_pk,route,session_pk,fields,imported_provenance)
+        self.index.execute("INSERT INTO event_source(event_pk,input_pk,chain,value_pk,route,session_pk,fields,imported_sources)
             SELECT e.pk,?2,1,v.pk,'live',?3,?4,'[]' FROM event e,event_value v WHERE e.id=?1 AND v.hash=?5",
             params![id,self.input_pk,session_pk,fields,hash.as_slice()])?;
         self.index.execute(
@@ -717,7 +717,7 @@ impl Fixture {
     }
 
     /// A setting accepted at an explicit synthetic time, through the same
-    /// catalog, slot policy and frozen-effect capture as the Writer.
+    /// catalog, slot policy and saved-effect capture as the Writer.
     pub fn setting_at(
         &mut self,
         key: &str,
@@ -766,13 +766,13 @@ impl Fixture {
             &original,
             &request,
             self.commit_seq,
-            crate::user_writes::Preparation::native(None, None),
+            crate::user_writes::Preparation::plain(None, None),
         )?;
         tx.commit()?;
         Ok(id)
     }
 
-    /// Inserts a canonical fixture assertion with a text or absent value.
+    /// Inserts a fixture assertion with a text or absent value.
     /// Kind and key follow the same checked shapes as stored assertion facts.
     pub fn note(
         &mut self,

@@ -20,7 +20,7 @@ fn run(lines: &[(&str, i64, Json)]) -> (LiveFacts, Vec<LiveInterval>) {
     let mut facts = LiveFacts::default();
     let mut closed = Vec::new();
     for (kind, at, data) in lines {
-        closed.extend(fold(&mut facts, kind, *at, data));
+        closed.extend(apply_live_event(&mut facts, kind, *at, data));
     }
     (facts, closed)
 }
@@ -62,7 +62,7 @@ fn the_view_is_total_and_constant_between_until_instants() {
             (LiveState::Working, Some(Stall::LongCall))
         ]
     );
-    // No evidence and no time is unknown; growth alone is unknown for a
+    // No event and no time is unknown; growth alone is unknown for a
     // window and ended after it.
     assert_eq!(view(None, None, 0).state, LiveState::Unknown);
     let grew = view(None, Some(10 * MIN), 20 * MIN);
@@ -125,13 +125,13 @@ fn the_registry_word_outranks_hook_inference() {
         ),
         ("hook_stop", 3 * MIN, hook(json!({}))),
     ]);
-    // Both pieces of evidence stay in the facts; the registry decides.
+    // Both events stay in the facts; the registry decides.
     assert_eq!(facts.hook_activity.unwrap().value, Activity::Idle);
     assert_eq!(facts.harness_status.as_ref().unwrap().word, "busy");
     assert_eq!(state(&facts, 4 * MIN), LiveState::Working);
     // `blocked` is waiting on a permission.
     let mut blocked = facts.clone();
-    fold(
+    apply_live_event(
         &mut blocked,
         "registry_status",
         5 * MIN,
@@ -152,7 +152,7 @@ fn a_line_about_another_process_never_attaches() {
     ];
     // Same pid, different start time: a different process.
     let (mut facts, _) = run(&start);
-    fold(
+    apply_live_event(
         &mut facts,
         "process_root_gone",
         2 * MIN,
@@ -160,7 +160,7 @@ fn a_line_about_another_process_never_attaches() {
     );
     assert_eq!(facts.root_gone_at, None);
     // Same pid and start, another boot.
-    fold(
+    apply_live_event(
         &mut facts,
         "process_root_gone",
         2 * MIN,
@@ -168,7 +168,7 @@ fn a_line_about_another_process_never_attaches() {
     );
     assert_eq!(facts.root_gone_at, None);
     // A registry line for a reused pid says nothing about this session.
-    fold(
+    apply_live_event(
         &mut facts,
         "registry_status",
         2 * MIN,
@@ -176,7 +176,7 @@ fn a_line_about_another_process_never_attaches() {
     );
     assert_eq!(facts.harness_status, None);
     // The root itself.
-    fold(
+    apply_live_event(
         &mut facts,
         "process_root_gone",
         3 * MIN,
@@ -208,10 +208,10 @@ fn no_fact_comes_from_prose_or_command_text() {
             hook(json!({"last_assistant_message": "Shall I continue?"})),
         ),
     ]);
-    assert!(facts.footprint.is_empty());
+    assert!(facts.edited_files.is_empty());
     assert_eq!(facts.task, None);
     assert_eq!(state(&facts, 3 * MIN), LiveState::Idle);
-    // A structured edit adds its path; explicit task evidence sets the task.
+    // A structured edit adds its path; an explicit task event sets the task.
     let (facts, _) = run(&[
         (
             "hook_post_tool_use",
@@ -229,7 +229,7 @@ fn no_fact_comes_from_prose_or_command_text() {
     ]);
     assert_eq!(
         facts
-            .footprint
+            .edited_files
             .iter()
             .map(String::as_str)
             .collect::<Vec<_>>(),
@@ -239,7 +239,7 @@ fn no_fact_comes_from_prose_or_command_text() {
 }
 
 #[test]
-fn intervals_close_only_on_evidence_and_replay_identically() {
+fn intervals_close_on_live_events_and_replay_identically() {
     let lines = vec![
         ("hook_session_start", 0, hook(json!({}))),
         ("hook_user_prompt_submit", MIN, hook(json!({}))),
@@ -273,7 +273,7 @@ fn intervals_close_only_on_evidence_and_replay_identically() {
     );
     // The root's exit closes every open interval.
     let mut gone = facts.clone();
-    let last = fold(
+    let last = apply_live_event(
         &mut gone,
         "process_root_gone",
         11 * MIN,
@@ -287,7 +287,7 @@ fn intervals_close_only_on_evidence_and_replay_identically() {
 }
 
 #[test]
-fn folding_through_stored_facts_equals_folding_at_once() {
+fn applying_stored_facts_matches_applying_at_once() {
     let lines = vec![
         ("hook_session_start", 0, hook(json!({}))),
         (
@@ -312,14 +312,14 @@ fn folding_through_stored_facts_equals_folding_at_once() {
     for (kind, at, data) in &lines {
         let stored = serde_json::to_string(&facts).unwrap();
         facts = serde_json::from_str(&stored).unwrap();
-        closed.extend(fold(&mut facts, kind, *at, data));
+        closed.extend(apply_live_event(&mut facts, kind, *at, data));
     }
     assert_eq!((facts, closed), (whole, whole_closed));
 }
 
-/// Without process evidence, hook evidence holds for the live window only.
+/// Without process events, hook events hold for the live window only.
 #[test]
-fn hook_evidence_without_a_process_holds_for_the_window() {
+fn hook_events_without_a_process_hold_for_the_window() {
     let (facts, _) = run(&[(
         "hook_notification",
         0,
@@ -335,7 +335,7 @@ fn hook_evidence_without_a_process_holds_for_the_window() {
     assert_eq!((v.state, v.until), (LiveState::Idle, None));
 }
 
-/// Evidence passing through a value at one instant leaves no interval, so
+/// Events passing through a value at one instant leave no interval, so
 /// no two intervals of one aspect share a start.
 #[test]
 fn an_instant_leaves_no_interval() {
@@ -358,11 +358,11 @@ fn an_instant_leaves_no_interval() {
     );
 }
 
-/// A stale session ages out: a day after its latest evidence it is ended,
+/// A stale session ages out: a day after its latest event it is ended,
 /// whether its process was seen gone mid-turn or it never had process
-/// evidence; the stale view says when.
+/// events; the stale view says when.
 #[test]
-fn stale_sessions_end_a_day_after_their_latest_evidence() {
+fn stale_sessions_end_a_day_after_their_latest_event() {
     let (gone, _) = run(&[
         ("hook_user_prompt_submit", 0, hook(json!({}))),
         (

@@ -225,14 +225,14 @@ fn stored_chain_pool_releases_consumed_chunks_before_done_is_drained() {
         engine.archive.clone(),
         done,
     );
-    // Match the scheduler's read-ahead: retained plans are not advanced while
+    // Match the scheduler's read-ahead: kept plans are not advanced while
     // their completed jobs release the byte budget and later inputs enter.
     for plan in &mut plans {
         assert!(pool.submit(plan.next_job(&polylogue_testkit::stopped_attempt())));
     }
     drop(pool);
     engine.writer.flush().unwrap();
-    let retained: usize = plans
+    let kept: usize = plans
         .iter()
         .zip(&expected)
         .map(|(plan, (_, _, _, _, suffix))| {
@@ -295,8 +295,8 @@ fn stored_chain_pool_releases_consumed_chunks_before_done_is_drained() {
         assert_eq!(home.texts(session), [first.clone(), last.clone()]);
     }
     assert!(
-        retained <= budget,
-        "consumed chunks retained {retained} bytes outside the {budget}-byte pool budget"
+        kept <= budget,
+        "consumed chunks kept {kept} bytes outside the {budget}-byte pool budget"
     );
 }
 
@@ -417,7 +417,7 @@ fn a_submit_waiting_for_room_returns_when_a_stop_is_requested() {
     );
     assert!(
         completed[0].chain.is_none(),
-        "no private parse was admitted"
+        "no private parse was committed"
     );
     assert_eq!(completed[0].parsed_upto, 0);
     assert!(completed[0].parser_state.is_none());
@@ -439,31 +439,31 @@ fn a_submit_waiting_for_room_returns_when_a_stop_is_requested() {
     assert_eq!(
         bytes,
         original.as_bytes(),
-        "retained import bytes remain exact"
+        "kept import bytes stay unchanged"
     );
 }
 
 #[test]
-fn native_range_binds_the_opened_file_generation_and_rejects_path_replacement() {
+fn source_range_binds_opened_file_and_rejects_swaps() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("native");
     std::fs::write(&path, b"original body").unwrap();
     let metadata = std::fs::metadata(&path).unwrap();
     let facts = polylogue_store::FileFacts::of(&metadata);
-    let (bytes, observed) = read_native_range(&path, 0, facts.size, Some(facts)).unwrap();
+    let (bytes, observed) = read_source_range(&path, 0, facts.size, Some(facts)).unwrap();
     assert_eq!(bytes, b"original body");
     assert_eq!(
         observed,
-        crate::acquisition::file_snapshot(&metadata).unwrap()
+        crate::source_read::file_snapshot(&metadata).unwrap()
     );
     let replacement = dir.path().join("replacement");
     std::fs::write(&replacement, b"different body").unwrap();
     std::fs::rename(replacement, &path).unwrap();
-    assert!(read_native_range(&path, 0, facts.size, Some(facts)).is_err());
+    assert!(read_source_range(&path, 0, facts.size, Some(facts)).is_err());
 }
 
 #[test]
-fn a_new_empty_native_file_has_a_real_body_and_known_eof_without_parser_progress() {
+fn new_empty_file_has_body_and_eof_without_progress() {
     let home = polylogue_testkit::ClaudeHome::new();
     home.append("empty.jsonl", "");
     let path = home.home.join(".claude/projects/-proj/empty.jsonl");
@@ -491,26 +491,26 @@ fn a_new_empty_native_file_has_a_real_body_and_known_eof_without_parser_progress
     plan.parser_deferred = true;
     assert!(
         !plan.finished(),
-        "an unrecorded observation is still local acquisition work"
+        "an unrecorded observation is still local capture work"
     );
     let mut job = plan.next_job(&polylogue_testkit::stopped_attempt());
     assert_eq!(job.store_from, Some(0));
     let mut context = engine.sampling_context(&path, origin.name).unwrap();
     context.facts = Some(facts);
-    job.acquisition = Some(context);
+    job.source_read = Some(context);
     let (prepared, done) = crate::pool::run(job, &engine.archive, &engine.blobs, true);
     assert!(done.error.is_none(), "{:?}", done.error);
     let prepared = prepared.unwrap();
     assert!(prepared.batch.parse.is_empty());
     assert_eq!(prepared.batch.new_blob.as_ref().unwrap().size, 0);
-    let receipt = prepared.batch.acquisition.as_ref().unwrap();
+    let source_read = prepared.batch.acquisition.as_ref().unwrap();
     assert_eq!(
-        receipt.range,
+        source_read.range,
         polylogue_store::primary::RawRange { start: 0, end: 0 }
     );
-    assert_eq!(receipt.raw_total, Some(0));
+    assert_eq!(source_read.raw_total, Some(0));
     assert!(
-        matches!(&receipt.generation, Some(polylogue_store::primary::SourceGeneration::File { observed, .. }) if observed.size == 0)
+        matches!(&source_read.generation, Some(polylogue_store::primary::SourceGeneration::File { observed, .. }) if observed.size == 0)
     );
     let results = engine
         .writer
@@ -528,10 +528,10 @@ fn a_new_empty_native_file_has_a_real_body_and_known_eof_without_parser_progress
 }
 
 #[test]
-fn malformed_middle_is_counted_unreadable_and_keeps_later_native_facts_and_raw_eof() {
+fn malformed_middle_is_unreadable_and_later_facts_stay() {
     let home = polylogue_testkit::ClaudeHome::new();
     let first = polylogue_testkit::claude_user("first", "raw-error", "valid prefix");
-    let later = "retained raw tail ".repeat(128);
+    let later = "stored raw tail ".repeat(128);
     let bytes = [
         first.as_bytes(),
         b"not-json\n",
@@ -540,7 +540,7 @@ fn malformed_middle_is_counted_unreadable_and_keeps_later_native_facts_and_raw_e
     .concat();
     home.append("corrupt.jsonl", std::str::from_utf8(&bytes).unwrap());
     assert!(bytes.len() > 3 * first.len());
-    let mut admission = None;
+    let mut commit = None;
     for attempt in 0..2 {
         let (mut engine, lock) = crate::import::tests::engine(&home, first.len() as u64);
         let pass = engine.run_pass().unwrap();
@@ -597,13 +597,13 @@ fn malformed_middle_is_counted_unreadable_and_keeps_later_native_facts_and_raw_e
             ["valid prefix", later.as_str()]
         );
         let current = reader
-            .message_admission(&polylogue_model::MessageId::parse("claude-code:first").unwrap())
+            .message_commit(&polylogue_model::MessageId::parse("claude-code:first").unwrap())
             .unwrap()
             .unwrap();
-        if let Some(admission) = admission {
-            assert_eq!(current, admission);
+        if let Some(commit) = commit {
+            assert_eq!(current, commit);
         }
-        admission = Some(current);
+        commit = Some(current);
         drop(reader);
         assert_eq!(home.count("SELECT sum(records) AS n FROM parse_state"), 3);
         assert_eq!(
@@ -617,25 +617,25 @@ fn malformed_middle_is_counted_unreadable_and_keeps_later_native_facts_and_raw_e
 
 #[cfg(feature = "faults")]
 #[test]
-fn parser_error_keeps_last_checkpoint_and_quiet_native_raw_eof_across_reopen() {
+fn parser_error_keeps_checkpoint_and_eof_across_reopen() {
     use polylogue_store::fault::{self, Action};
     let home = polylogue_testkit::ClaudeHome::new();
     let first = polylogue_testkit::claude_user("first", "raw-error", "valid prefix");
     let bytes = [
         first.as_bytes(),
-        polylogue_testkit::claude_user("later", "raw-error", &"retained raw tail ".repeat(128))
+        polylogue_testkit::claude_user("later", "raw-error", &"stored raw tail ".repeat(128))
             .as_bytes(),
     ]
     .concat();
     home.append("failed.jsonl", std::str::from_utf8(&bytes).unwrap());
     assert!(bytes.len() > 3 * first.len());
-    let mut admission = None;
-    let mut retained_checkpoint = None;
+    let mut commit = None;
+    let mut kept_checkpoint = None;
     for attempt in 0..2 {
         let (mut engine, lock) = crate::import::tests::engine(&home, first.len() as u64);
         fault::clear();
         // The real pool failure boundary is before provider parsing and after
-        // raw preparation. Reopen retries that same failing parser boundary.
+        // byte preparation. Reopen retries that same failing parser boundary.
         fault::arm(
             "parse",
             &home.file("failed.jsonl").to_string_lossy(),
@@ -666,7 +666,7 @@ fn parser_error_keeps_last_checkpoint_and_quiet_native_raw_eof_across_reopen() {
         let progress = reader.input_progress(&known.input_id).unwrap().unwrap();
         assert_eq!(progress.length, bytes.len() as u64);
         assert_eq!(progress.parsed_upto, first.len() as u64);
-        assert!(progress.parsed, "the valid prefix retains its reading");
+        assert!(progress.parsed, "the valid prefix keeps its reading");
         assert!(!progress.waiting);
         assert_eq!(
             reader
@@ -695,10 +695,10 @@ fn parser_error_keeps_last_checkpoint_and_quiet_native_raw_eof_across_reopen() {
                 .unwrap()
                 .matches(&version, first.len() as u64)
         );
-        if let Some(previous) = &retained_checkpoint {
+        if let Some(previous) = &kept_checkpoint {
             assert_eq!(&checkpoint, previous);
         }
-        retained_checkpoint = Some(checkpoint);
+        kept_checkpoint = Some(checkpoint);
         let session = polylogue_model::SessionId::parse("claude-code:raw-error").unwrap();
         assert_eq!(
             reader
@@ -710,13 +710,13 @@ fn parser_error_keeps_last_checkpoint_and_quiet_native_raw_eof_across_reopen() {
             ["valid prefix"]
         );
         let current = reader
-            .message_admission(&polylogue_model::MessageId::parse("claude-code:first").unwrap())
+            .message_commit(&polylogue_model::MessageId::parse("claude-code:first").unwrap())
             .unwrap()
             .unwrap();
-        if let Some(admission) = admission {
-            assert_eq!(current, admission);
+        if let Some(commit) = commit {
+            assert_eq!(current, commit);
         }
-        admission = Some(current);
+        commit = Some(current);
         let wire = reader
             .wire_shapes(polylogue_store::wire_shapes::Scope::current(Some(
                 "claude-code",

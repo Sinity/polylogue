@@ -28,7 +28,7 @@ fn names_resolve_through_prefixes_dates_and_tags() {
 }
 
 #[test]
-fn cost_sums_each_lane_at_its_rate() {
+fn cost_sums_each_token_kind_at_its_rate() {
     let c = Catalog::builtin();
     // claude-opus-4-1: 15 in, 1.5 cache read, 18.75 cache write, 75 out.
     let u = usage(1_000_000, Some(1_000_000), Some(1_000_000), 1_000_000);

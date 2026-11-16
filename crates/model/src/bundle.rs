@@ -1,5 +1,5 @@
-//! Portable readings over the canonical domain records. Provider bytes stay
-//! in their archive; imported source claims never become local byte extents.
+//! Portable readings over the domain records. Provider bytes stay
+//! in their archive; imported stated sources never become local byte extents.
 
 use crate::{Author, BlobHash, ChangePosition, Document, Event, Link, Message, Session, Timestamp};
 use serde::{Deserialize, Serialize};
@@ -22,7 +22,7 @@ pub struct ReadSnapshot {
     pub query_text: String,
     pub ran_at: Timestamp,
     pub read_at: ChangePosition,
-    pub freshness: crate::currency::ReadFreshness,
+    pub freshness: crate::freshness::ReadFreshness,
     pub enabled_variants: Vec<String>,
     pub author: Author,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -42,7 +42,7 @@ pub struct Manifest {
     pub query_text: String,
     pub ran_at: Timestamp,
     pub read_at: ChangePosition,
-    pub freshness: crate::currency::ReadFreshness,
+    pub freshness: crate::freshness::ReadFreshness,
     pub counts: Counts,
     pub flags: Flags,
     pub enabled_variants: Vec<String>,
@@ -145,7 +145,7 @@ pub struct MessageRecord {
     /// display order, including native ordering ties. Subsets never renumber it;
     /// it is independent of native counters, commit order and local byte extents.
     pub order: u64,
-    /// Identity of the complete source value, unchanged by view projection.
+    /// Identity of the complete source value, unchanged by view filter.
     pub source_version: BlobHash,
     /// Original source cardinality; absent positions are unavailable or omitted.
     pub block_count: u64,
@@ -379,7 +379,7 @@ pub struct InputEventRecord {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum BundleError {
-    #[error("invalid canonical assertion: {0}")]
+    #[error("invalid assertion: {0}")]
     Assertion(String),
     #[error(transparent)]
     TextFragment(#[from] TextFragmentError),
@@ -399,25 +399,25 @@ pub enum BundleError {
     ReadOptions(String),
     #[error("bundle member path is not a canonical relative path")]
     InvalidPath,
-    #[error("bundle record reference does not match its canonical identity")]
+    #[error("bundle record reference does not match its record identity")]
     ReferenceMismatch,
     #[error("invalid session relationship: {0}")]
     InvalidLink(&'static str),
-    #[error("message projection has invalid original block positions")]
+    #[error("block selection has invalid original block positions")]
     InvalidBlockSelection,
-    #[error("injection evidence does not match its source message or field")]
+    #[error("hook injection does not match its source message or field")]
     InvalidInjectionEvidence,
-    #[error("attachment binding does not match its message source slot or provenance")]
+    #[error("attachment binding does not match its message source slot or stated source")]
     InvalidAttachmentBinding,
     #[error("complete message content does not match its source version")]
     SourceVersionMismatch,
     #[error("partial message observations conflict at the same source version")]
-    ProjectionConflict,
+    BlockSelectionConflict,
     #[error("cannot encode canonical message content: {0}")]
     CanonicalMessage(String),
-    #[error("invalid source time evidence: {0}")]
+    #[error("invalid source time accuracy: {0}")]
     Time(#[from] crate::TimeEvidenceError),
-    #[error("invalid event identity or original source claim")]
+    #[error("invalid event identity or original stated source")]
     InvalidEventIdentity,
     #[error("event reference does not name its imported identity")]
     EventReferenceMismatch,
@@ -564,9 +564,9 @@ impl MessageRecord {
             return Err(BundleError::ReferenceMismatch);
         }
         self.message.time_evidence().validate(self.message.at)?;
-        self.projection().validate(self.message.blocks.len())?;
-        for evidence in &self.injections {
-            evidence.validate_for(&self.message.id, &self.projection())?;
+        self.block_selection().validate(self.message.blocks.len())?;
+        for injection in &self.injections {
+            injection.validate_for(&self.message.id, &self.block_selection())?;
         }
         crate::attachment_binding::validate_record(self)?;
         if self.is_complete()
@@ -581,7 +581,7 @@ impl MessageRecord {
         Ok(())
     }
 
-    pub fn projection(&self) -> MessageProjection {
+    pub fn block_selection(&self) -> MessageProjection {
         MessageProjection {
             source_version: self.source_version,
             block_count: self.block_count,
@@ -614,7 +614,7 @@ impl MessageProjection {
 
 impl MessageProjection {
     /// Distinct source versions stay distinct. Compatible views of one
-    /// version union original positions; an overlap must contain equal facts.
+    /// version union original positions; an overlap must contain equal blocks.
     pub fn merge(
         &self,
         message: &Message,
@@ -631,7 +631,7 @@ impl MessageProjection {
         let mut other_header = other_message.clone();
         other_header.blocks.clear();
         if header != other_header || self.block_count != other.block_count {
-            return Err(BundleError::ProjectionConflict);
+            return Err(BundleError::BlockSelectionConflict);
         }
         let mut blocks = std::collections::BTreeMap::new();
         for (index, block) in self
@@ -643,25 +643,25 @@ impl MessageProjection {
             if let Some(previous) = blocks.insert(*index, block.clone())
                 && previous != *block
             {
-                return Err(BundleError::ProjectionConflict);
+                return Err(BundleError::BlockSelectionConflict);
             }
         }
         let ordinals = blocks.keys().copied().collect();
         header.blocks = blocks.into_values().collect();
-        let projection = Self {
+        let selection = Self {
             source_version: self.source_version,
             block_count: self.block_count,
             block_ordinals: ordinals,
         };
-        if projection.block_ordinals.len() as u64 == projection.block_count
+        if selection.block_ordinals.len() as u64 == selection.block_count
             && header
                 .content_hash()
                 .map_err(|e| BundleError::CanonicalMessage(e.to_string()))?
-                != projection.source_version
+                != selection.source_version
         {
             return Err(BundleError::SourceVersionMismatch);
         }
-        Ok(Some((header, projection)))
+        Ok(Some((header, selection)))
     }
 }
 

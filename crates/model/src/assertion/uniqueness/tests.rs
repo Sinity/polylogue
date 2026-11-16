@@ -162,7 +162,7 @@ fn memory_scope_and_setting_target_host_are_part_of_the_slot() {
             .resolve(
                 "signal.interrupts_per_hour",
                 "first-host",
-                crate::settings::Owner::Standalone,
+                crate::settings::SettingMode::Standalone,
             )
             .unwrap(),
     )));

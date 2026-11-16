@@ -491,7 +491,7 @@ fn a_failed_derivation_rolls_back_values_counters_and_markers() {
 }
 
 #[test]
-fn stored_products_declare_validity_and_executable_evidence() {
+fn stored_products_declare_validity_and_tests() {
     use polylogue_model::derived::Validity;
     let products = super::products();
     assert_eq!(
@@ -891,9 +891,9 @@ fn user_write_served_between_derive_commits() {
     .unwrap()
     .query_object()
     .unwrap();
-    let barrier = sender.pause_user_dispatch_for_test(
+    let pause = sender.pause_user_dispatch_for_test(
         &object.id.to_string(),
-        crate::writer::DispatchPhase::BeforeAdmission,
+        crate::writer::DispatchPhase::BeforeParentCheck,
     );
     std::thread::scope(|scope| {
         let deriving = scope.spawn(|| sender.derive().unwrap());
@@ -903,13 +903,13 @@ fn user_write_served_between_derive_commits() {
             std::thread::yield_now();
         }
         let writing = scope.spawn(|| sender.query_object(object.clone()).unwrap());
-        barrier.wait().unwrap();
+        pause.wait().unwrap();
         let remaining = due();
         assert!(
             remaining > 0 && remaining < i64::try_from(sessions).unwrap(),
             "{remaining}"
         );
-        barrier.release();
+        pause.release();
         writing.join().unwrap();
         assert!(deriving.join().unwrap() > 0);
     });
@@ -989,7 +989,7 @@ fn a_held_derivation_does_not_hold_parse_commits() {
     let sender = w.writer.sender().unwrap();
     // The derive thread stops after computing its first wave, as a slow
     // derivation would, before the writer is sent anything.
-    let barrier = sender.pause_derive_for_test();
+    let pause = sender.pause_derive_for_test();
     // The pass's first derive installs the index built so far; this test
     // reads it once the pass is held.
     let installed = w.archive.root.join("index.db");
@@ -1005,7 +1005,7 @@ fn a_held_derivation_does_not_hold_parse_commits() {
     };
     std::thread::scope(|scope| {
         let deriving = scope.spawn(|| sender.derive().unwrap());
-        barrier.wait().unwrap();
+        pause.wait().unwrap();
         let (written, done) = std::sync::mpsc::sync_channel(1);
         let w = &mut w;
         let writing = scope.spawn(move || {
@@ -1034,7 +1034,7 @@ fn a_held_derivation_does_not_hold_parse_commits() {
         }
         // Nothing of the held pass is stored yet.
         assert_eq!(title("a"), None);
-        barrier.release();
+        pause.release();
         assert!(deriving.join().unwrap() > 0);
     });
     assert_eq!(title("a").as_deref(), Some("the first session"));
@@ -1049,7 +1049,7 @@ fn a_value_computed_from_rows_that_changed_is_not_stored() {
     let mut w = WriterArchive::new();
     w.write_underived("a", prose("a", 1, 1_000, "the first prompt"));
     let sender = w.writer.sender().unwrap();
-    let barrier = sender.pause_derive_for_test();
+    let pause = sender.pause_derive_for_test();
     // The pass's first derive installs the index built so far; this test
     // reads it once the pass has run.
     let installed = w.archive.root.join("index.db");
@@ -1071,7 +1071,7 @@ fn a_value_computed_from_rows_that_changed_is_not_stored() {
         let deriving = scope.spawn(|| sender.derive().unwrap());
         // Computed from the session's first message; the second arrives
         // before the writer is sent the values.
-        barrier.wait().unwrap();
+        pause.wait().unwrap();
         let (written, done) = std::sync::mpsc::sync_channel(1);
         let w = &mut w;
         scope.spawn(move || {
@@ -1079,10 +1079,10 @@ fn a_value_computed_from_rows_that_changed_is_not_stored() {
             written.send(()).unwrap();
         });
         within_a_minute(&done, "the append");
-        barrier.release();
+        pause.release();
         assert_eq!(deriving.join().unwrap(), 0);
     });
-    // The counts fold kept up with both messages; nothing the pass computed
+    // The count update kept up with both messages; nothing the pass computed
     // was stored, and the session is still due.
     assert_eq!(state(), (None, 2, 1, 0));
     assert!(w.writer.derive().unwrap() > 0);
@@ -1095,12 +1095,12 @@ fn a_stop_reaches_the_derive_worker_before_writer_teardown() {
     w.write_underived("a", prose("a", 1, 1_000, "the first session"));
     let sender = w.writer.sender().unwrap();
     let stop = w.archive.stop().clone();
-    let barrier = sender.pause_derive_for_test();
+    let pause = sender.pause_derive_for_test();
     std::thread::scope(|scope| {
         let deriving = scope.spawn(|| sender.derive());
-        barrier.wait().unwrap();
+        pause.wait().unwrap();
         stop.cancel();
-        barrier.release();
+        pause.release();
         assert!(matches!(
             deriving.join().unwrap(),
             Err(crate::StoreError::WriterGone)

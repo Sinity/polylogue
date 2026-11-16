@@ -1,7 +1,7 @@
 // Chat actions: turns the operator queued with `polylogue chat send`. The
 // extension claims one at a time through the host, opens the conversation in
 // a background tab, drafts the turn or sends it, and reports what happened.
-// Replies come back through ordinary capture.
+// Replies come back through regular capture.
 
 import { attachmentInPage, cancelChatActionInPage, chatActionInPage, failureOutcome } from "../actions/chatgpt.js";
 import { ProviderScheduler } from "./provider.js";
@@ -106,7 +106,7 @@ export class ChatActions {
       if (result.outcome === "submitted") {
         const captured = await this.capture(tab.id, { turn: result.provider_turn_id, text: action.text });
         if (!captured || captured.outcome !== "stored" || captured.conversation !== result.provider_conversation_id || !result.provider_turn_id || captured.confirmedTurn !== result.provider_turn_id) {
-          throw new Error("the submitted turn is not durably captured yet");
+          throw new Error("the submitted turn is not stored by a capture yet");
         }
       }
       await report({

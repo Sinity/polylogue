@@ -208,7 +208,7 @@ fn primary_previous_index_rebuild_preserves_original_cache_and_paid_and_pending_
     {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("archive");
-        let store = dir.path().join("native");
+        let store = dir.path().join("sinex");
         let (archive, lock) = Archive::open_primary(&root, &store).unwrap();
         let embeddings = open_write(&archive.embeddings_db(), cache::SETUP).unwrap();
         embeddings.execute("INSERT INTO embedded(text_hash,model,dims,vector,embedded_at) VALUES(x'1234','paid/synthetic',1,x'0000803f',1)",[]).unwrap();
@@ -218,7 +218,7 @@ fn primary_previous_index_rebuild_preserves_original_cache_and_paid_and_pending_
         crate::fixture::primary_previous_index(&archive.index_db()).unwrap();
         let old = crate::archive::open_runtime_writer(&archive.index_db(), cache::SETUP).unwrap();
         old.execute(
-            "INSERT INTO meta VALUES('original-cache-marker','retained')",
+            "INSERT INTO meta VALUES('original-cache-marker','kept')",
             [],
         )
         .unwrap();
@@ -229,7 +229,7 @@ fn primary_previous_index_rebuild_preserves_original_cache_and_paid_and_pending_
             std::fs::read(archive.index_db().with_file_name("index.db-wal")).unwrap();
         assert!(
             !original_wal.is_empty(),
-            "predecessor has committed rows in its WAL"
+            "the old index has committed rows in its WAL"
         );
         let paid_before = std::fs::read(archive.embeddings_db()).unwrap();
         let paid_wal_before =
@@ -250,12 +250,12 @@ fn primary_previous_index_rebuild_preserves_original_cache_and_paid_and_pending_
         #[cfg(not(feature = "faults"))]
         let _ = boundary;
         let (current, lock) = Archive::open_primary(&root, &store).unwrap();
-        let retained = root.join(file_name(&original_schema));
-        assert_eq!(std::fs::read(&retained).unwrap(), original_bytes);
-        let mut retained_wal = retained.as_os_str().to_owned();
-        retained_wal.push("-wal");
+        let kept = root.join(file_name(&original_schema));
+        assert_eq!(std::fs::read(&kept).unwrap(), original_bytes);
+        let mut kept_wal = kept.as_os_str().to_owned();
+        kept_wal.push("-wal");
         assert_eq!(
-            std::fs::read(std::path::PathBuf::from(retained_wal)).unwrap(),
+            std::fs::read(std::path::PathBuf::from(kept_wal)).unwrap(),
             original_wal
         );
         assert_eq!(std::fs::read(current.embeddings_db()).unwrap(), paid_before);
@@ -283,10 +283,10 @@ fn primary_previous_index_rebuild_preserves_original_cache_and_paid_and_pending_
             schema::PRIMARY_INDEX_VERSION
         );
         assert!(!built(&index).unwrap());
-        let mut replay = crate::primary::projection::replay_state(&index).unwrap();
+        let mut replay = crate::primary::confirmed::replay_state(&index).unwrap();
         replay.applied_position = Some(5);
-        replay.head = Some(5);
-        crate::primary::projection::save_replay(&index, &replay).unwrap();
+        replay.latest_position = Some(5);
+        crate::primary::confirmed::save_replay(&index, &replay).unwrap();
         index
             .execute_batch(
                 "INSERT INTO source_input VALUES('original','claude-code');
@@ -296,7 +296,7 @@ fn primary_previous_index_rebuild_preserves_original_cache_and_paid_and_pending_
             .unwrap();
         assert!(
             !built(&index).unwrap(),
-            "head receipt does not replace missing parser progress"
+            "latest position does not replace missing parser progress"
         );
         index.execute_batch("INSERT INTO parse_state(input_pk,chain,reading_version,status,parsed_upto) VALUES(71,1,'reader=1','parsing',5)").unwrap();
         assert!(
@@ -308,7 +308,7 @@ fn primary_previous_index_rebuild_preserves_original_cache_and_paid_and_pending_
             .unwrap();
         assert!(
             !built(&index).unwrap(),
-            "a waiting suffix belongs to its exact source length"
+            "a waiting suffix belongs to its own source length"
         );
         index
             .execute_batch("UPDATE parse_state SET at_length=10")
@@ -317,14 +317,14 @@ fn primary_previous_index_rebuild_preserves_original_cache_and_paid_and_pending_
             built(&index).unwrap(),
             "waiting at the known source length is an explicit incomplete suffix"
         );
-        index.execute_batch("INSERT INTO primary_refused VALUES('unknown',5,'unknown@1','unavailable original evidence',1)").unwrap();
+        index.execute_batch("INSERT INTO primary_refused VALUES('unknown',5,'unknown@1','unavailable original bytes',1)").unwrap();
         assert!(
             !built(&index).unwrap(),
-            "unknown native evidence retains the old cache"
+            "an unknown source keeps the old cache"
         );
         index.execute_batch("DELETE FROM primary_refused").unwrap();
         remove_when_built(&index, &current.index_db()).unwrap();
-        assert!(!retained.exists());
+        assert!(!kept.exists());
         assert_eq!(
             std::fs::read(&pending).unwrap(),
             b"synthetic immutable pending intent"

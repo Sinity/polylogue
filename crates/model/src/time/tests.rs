@@ -38,7 +38,7 @@ fn nanosecond_creation_refuses_values_outside_supported_instants() {
 }
 
 #[test]
-fn source_time_evidence_distinguishes_unknown_instants_and_periods() {
+fn time_accuracy_tells_unknown_instants_from_periods() {
     let at = Timestamp::parse_rfc3339("2026-01-02T03:04:05.123456789Z").unwrap();
     assert!(TimeEvidence::UNKNOWN.validate(None).is_ok());
     assert_eq!(

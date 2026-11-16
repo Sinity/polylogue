@@ -363,7 +363,7 @@ fn gemini_hooks_use_the_documented_events_and_millisecond_timeouts() {
 }
 
 #[test]
-fn gemini_context_output_matches_the_native_protocol() {
+fn gemini_context_output_matches_the_harness_protocol() {
     assert_eq!(
         output_for(Harness::GeminiCli, "SessionStart", "brief"),
         json!({"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"brief"}})
@@ -395,18 +395,18 @@ fn decoded_hook_context_has_visible_terminal_controls() {
 }
 
 #[test]
-fn successful_native_context_output_produces_a_distinct_parsable_emission_receipt() {
+fn context_output_records_a_parsable_emission() {
     for printed in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         let startup = startup();
         let payload = json!({"session_id":"emission-session","cwd":"/synthetic/project"});
-        let native = json!({"boot_id":"synthetic-boot"});
+        let observed = json!({"boot_id":"synthetic-boot"});
         let invocation = append_to_spool(
             dir.path(),
             Harness::ClaudeCode,
             "SessionStart",
             &payload,
-            &native,
+            &observed,
             &startup,
         )
         .unwrap();
@@ -416,7 +416,7 @@ fn successful_native_context_output_produces_a_distinct_parsable_emission_receip
             event: "SessionStart",
             invocation: Some(&invocation),
             session: session_of(Harness::ClaudeCode, &payload, &startup),
-            native: &native,
+            observed: &observed,
             startup: &startup,
         };
         let emitted = recorder.emit(
@@ -458,27 +458,27 @@ fn successful_native_context_output_produces_a_distinct_parsable_emission_receip
         .unwrap();
         assert_eq!(step.output.events.len(), if printed { 2 } else { 1 });
         assert!(step.output.messages.is_empty());
-        let claims = step
+        let emissions = step
             .output
             .events
             .iter()
             .filter_map(polylogue_sources::hook_spool::context_emission)
             .collect::<Vec<_>>();
         if printed {
-            assert_eq!(claims.len(), 1);
-            assert_eq!(claims[0].invocation, invocation);
+            assert_eq!(emissions.len(), 1);
+            assert_eq!(emissions[0].invocation, invocation);
             assert_eq!(
-                claims[0].session.to_string(),
+                emissions[0].session.to_string(),
                 "claude-code:emission-session"
             );
-            assert_eq!(claims[0].hook_event, "SessionStart");
+            assert_eq!(emissions[0].hook_event, "SessionStart");
             assert_eq!(
-                claims[0].deliveries,
+                emissions[0].deliveries,
                 ["delivery:first-receipt", "delivery:second:receipt"]
             );
             assert_ne!(step.output.events[1].data["event_id"], invocation);
         } else {
-            assert!(claims.is_empty());
+            assert!(emissions.is_empty());
         }
     }
 }
@@ -639,7 +639,7 @@ fn a_context_timeout_emits_an_unreferenced_notice_and_names_only_the_original_pr
 }
 
 #[test]
-fn file_advisory_hook_uses_the_canonical_request_and_silences_timeout() {
+fn file_advisory_hook_uses_the_shared_request_and_silences_timeout() {
     use std::io::{BufRead, BufReader};
     use std::os::unix::net::UnixListener;
     for timed_out in [false, true] {
@@ -701,7 +701,7 @@ fn file_advisory_hook_uses_the_canonical_request_and_silences_timeout() {
 }
 
 #[test]
-fn ordinary_prompt_without_a_path_needs_no_advisory_exchange() {
+fn prompt_without_a_path_needs_no_advisory_exchange() {
     use std::os::unix::net::UnixListener;
     let dir = tempfile::tempdir().unwrap();
     let startup = Startup::for_test(startup().engine, dir.path());

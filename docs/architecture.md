@@ -45,7 +45,7 @@ the deadline lifted ([deadlines](query.md#deadlines)). (ruling 2026-09-27, cc:62
 
 **Invariants, not repair.** The code does not produce broken state, so there
 is nothing to repair: no repair, reconcile, reindex or verify-and-fix command,
-and no scheduled checks. A crash leaves only states that the ordinary open path
+and no scheduled checks. A crash leaves only states that the open path
 treats as normal ([durability](#durability)). Reads of content-addressed bytes
 check their hashes as they read.
 
@@ -137,7 +137,7 @@ Writes reach disk in one order:
 4. Source cursors (how far a growing file has been read) are saved only for
    committed rows.
 
-A crash therefore leaves at most these states, and ordinary code resumes from
+A crash therefore leaves at most these states, and the normal start resumes from
 each: a segment tail past the last committed extent, which is truncated when
 the segment opens; `index.db` behind its saved position, which catches up; a
 source cursor behind its committed rows, which re-reads and finds the bytes
@@ -184,7 +184,7 @@ and tool-database catalog reads. Serving readers, the search thread and the
 derive thread open `index.db` once it is installed, so no reader can hold up
 the switch to WAL or a stop. With a rollback journal a held read blocks
 the writer, so the pipeline's reads of the build file are short: a resumed
-parse looks up its admitted context one statement at a time, and a
+parse looks up its committed context one statement at a time, and a
 tool-database comparison copies its recorded rows out in one read. While the build runs, reads are answered from
 the previous index when it has this build's schema identity, and otherwise
 answer `index_building` with the build's progress
@@ -204,9 +204,9 @@ Building the archive overlaps every stage:
   the parser state kept between an input's ranges leaves out the keyed
   context's changes, which the next range reads from the index;
 - one writer that resolves text hashes to row identities, appends and commits;
-  one writer-owned map retains text identities for the writer's lifetime,
+  one map the writer holds keeps text identities for the writer's lifetime,
   including after the first build and while an unreferenced text has no row.
-  First builds preload hashes; ordinary writes learn identities as needed.
+  First builds preload hashes; other writes learn identities as needed.
   After a failed index transaction the writer reloads row presence without
   forgetting allocated identities. Workers prepare text hashes and compress
   each step's texts together in groups ([text bodies](archive.md#evolution))
@@ -221,18 +221,18 @@ Building the archive overlaps every stage:
   the reference survives a staged reading's disk roundtrip. Composition and
   sparse enrichment keep their owned selected value and time/item overlays.
   Missing or mismatched selected references refuse the transaction normally.
-  Older, unchanged or reused-text versions retain full payload,
+  Older, unchanged or reused-text versions keep full payload,
   hash and layout validation. A new message is inserted with its resolved
-  selected metadata before source claims refer to it; its first body installation
+  selected metadata before stated sources refer to it; its first body installation
   consumes that creation result. Later installations replace the existing
   blocks and routes, including multiple changes within one transaction;
-  after a row application installs its selected messages and source claims,
-  one indexed operation resolves their event anchors from that final state.
+  after a row application installs its selected messages and stated sources,
+  one indexed operation resolves their event placements from that final state.
   Deleting a referenced message first detaches its events to preserve their
-  natural anchors and the foreign-key constraint;
+  natural placements and the foreign-key constraint;
 - consumers of committed positions: derived data (computed on a thread of
   its own and written by the writer only if its inputs are unchanged), the
-  request-log projection and the completion catalog;
+  request-log view and the completion catalog;
 - at the end of an index build, both full-text indexes written from one
   ordered scan of the text in one transaction, so each search segment is
   written once rather than flushed small and merged again; then the trigram
@@ -264,7 +264,7 @@ child of it. Every reader the store hands out checks it in its SQLite
 progress handler and every blocking wait registers a wake on it; the loop and
 its workers run under it, so the store connections opened there, their
 source-byte reads and their parsing steps observe it; the writer's
-reconstructible work (derivation, deferred indexes, replay of retained bytes,
+reconstructible work (derivation, deferred indexes, replay of stored bytes,
 copies of identical chains' readings) rolls back to its last commit. Captured
 bytes in hand and writes already handed to the writer commit. A stop skips
 optional checkpoint work and leaves committed WAL frames beside their
@@ -302,7 +302,7 @@ daemon refuses to start; paths are absolute.
   type, default and scope; unknown keys are refused. How they are loaded is in
   [operations](operations.md#configuration).
 - **Derived outputs and cursors record the settings they were made under**, so
-  a changed setting re-derives them through the ordinary version mechanism.
+  a changed setting re-derives them through the usual version mechanism.
 - **One instant type, one clock, one error type** whose kind names are stable
   on the wire; conversions happen only at the storage boundary. Unknown times
   stay unknown.

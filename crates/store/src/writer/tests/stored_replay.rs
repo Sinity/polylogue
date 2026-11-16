@@ -11,7 +11,7 @@ fn queued_stored_reading_changes_only_the_index() {
     let reading = w
         .commit_source(
             batch(
-                "retained",
+                "kept",
                 Route::Live,
                 0,
                 vec![row(
@@ -20,7 +20,7 @@ fn queued_stored_reading_changes_only_the_index() {
                         "message",
                         "session",
                         Role::User,
-                        "Retained source reading",
+                        "Kept source reading",
                         None,
                     ),
                 )],
@@ -66,7 +66,7 @@ fn stored_reading_index_failure_keeps_source_and_can_retry() {
                         "message",
                         "session",
                         Role::User,
-                        "Retry retained source",
+                        "Retry stored source",
                         None,
                     ),
                 )],
@@ -102,7 +102,7 @@ fn stored_reading_index_failure_keeps_source_and_can_retry() {
 }
 
 #[test]
-fn sparse_retained_readings_commit_their_diagnosis_even_during_stop() {
+fn sparse_stored_readings_commit_their_diagnosis_during_stop() {
     for missing in ["prefix", "tail"] {
         let w = test_archive();
         let mut reading = w

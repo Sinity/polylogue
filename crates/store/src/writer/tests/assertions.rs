@@ -65,10 +65,10 @@ fn selected(reader: &crate::Reader<'_>, text: &str) -> Vec<String> {
 }
 
 #[test]
-fn canonical_query_and_typed_about_share_forks_withdrawal_and_snapshot_retirement() {
+fn query_and_typed_about_share_forks_and_withdrawal() {
     let archive = test_archive();
     let about = (LinkRole::About, "session:codex:subject");
-    // The base arrives last; its larger local admission cannot replace heads.
+    // The base arrives last; its larger local commit position cannot replace heads.
     for id in ["right", "left"] {
         restore(
             &archive,
@@ -131,7 +131,7 @@ fn canonical_query_and_typed_about_share_forks_withdrawal_and_snapshot_retiremen
 }
 
 #[test]
-fn exact_no_effect_request_exports_its_original_action_outcome_and_provenance() {
+fn no_effect_request_exports_its_outcome_and_source() {
     use polylogue_model::{
         assertion::NewAssertion,
         authorship::{Authorship, Channel},
@@ -140,7 +140,7 @@ fn exact_no_effect_request_exports_its_original_action_outcome_and_provenance() 
     let archive = test_archive();
     let request = |id: &str| UserRequest {
         id: id.into(),
-        machine: "actual-machine".into(),
+        machine: "requesting-machine".into(),
         at: Timestamp::from_unix_ms(1).unwrap(),
         authorship: Authorship {
             author: Author::Operator,
@@ -165,10 +165,10 @@ fn exact_no_effect_request_exports_its_original_action_outcome_and_provenance() 
     let pool = ReadPool::open(&archive.archive).unwrap();
     let reader = pool.reader().unwrap();
     let reference = Reference::Request(original.id.clone());
-    let Some(crate::read::authored_evidence::AuthoredReadEvidence::Local { selected, record }) =
+    let Some(crate::read::authored_read::AuthoredRead::Local { selected, record }) =
         reader.authored_record(&reference).unwrap()
     else {
-        panic!("exact no-effect accepted request missing")
+        panic!("no-effect accepted request missing")
     };
     assert_eq!(selected, reference);
     assert_eq!(record.prepared.request, original);
@@ -187,9 +187,8 @@ fn exact_no_effect_request_exports_its_original_action_outcome_and_provenance() 
         .unwrap();
     let pool = ReadPool::open(&other.archive).unwrap();
     let reader = pool.reader().unwrap();
-    let Some(crate::read::authored_evidence::AuthoredReadEvidence::Local {
-        record: copied, ..
-    }) = reader.authored_record(&reference).unwrap()
+    let Some(crate::read::authored_read::AuthoredRead::Local { record: copied, .. }) =
+        reader.authored_record(&reference).unwrap()
     else {
         panic!("import lost the no-effect request")
     };
@@ -197,7 +196,7 @@ fn exact_no_effect_request_exports_its_original_action_outcome_and_provenance() 
 }
 
 #[test]
-fn unknown_authored_time_keeps_currency_queries_and_distinct_source_memberships() {
+fn unknown_authored_time_keeps_current_revision_queries() {
     use polylogue_model::{RevisionReference, authored::ImportAttribution};
     let archive = test_archive();
     let mut undated = fact(
@@ -217,21 +216,21 @@ fn unknown_authored_time_keeps_currency_queries_and_distinct_source_memberships(
     assert!(
         !archive
             .writer
-            .restore_assertion_from(undated.clone(), ingress("physical-one", 50))
+            .restore_assertion_from(undated.clone(), ingress("input-one", 50))
             .unwrap()
             .repeat
     );
     assert!(
         archive
             .writer
-            .restore_assertion_from(undated.clone(), ingress("physical-two", 60))
+            .restore_assertion_from(undated.clone(), ingress("input-two", 60))
             .unwrap()
             .repeat
     );
     assert!(
         archive
             .writer
-            .restore_assertion_from(undated.clone(), ingress("physical-one", 70))
+            .restore_assertion_from(undated.clone(), ingress("input-one", 70))
             .unwrap()
             .repeat
     );
@@ -260,7 +259,7 @@ fn unknown_authored_time_keeps_currency_queries_and_distinct_source_memberships(
     let ingresses = reader.assertion_imports(&reference).unwrap().unwrap();
     assert_eq!(
         ingresses,
-        [ingress("physical-one", 50), ingress("physical-two", 60)]
+        [ingress("input-one", 50), ingress("input-two", 60)]
     );
     assert_eq!(
         reader

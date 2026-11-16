@@ -1,4 +1,4 @@
-//! Logical declarations retained by the kept-result producer.
+//! Output declarations that the kept-result producer stores with a result.
 use query_language::catalog::OutputSchema;
 use serde::{Deserialize, Serialize};
 

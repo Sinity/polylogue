@@ -91,8 +91,8 @@ pub(super) fn building(
     d: &Daemon,
     build: polylogue_store::archive::index_build::IndexBuild,
 ) -> command_surface::Answer<crate::protocol::status::Answer> {
-    use polylogue_model::currency::{
-        CompletenessDimension, CompletenessReason, IndexCurrency, ReadCompleteness, ReadFreshness,
+    use polylogue_model::freshness::{
+        CompletenessDimension, CompletenessReason, IndexFreshness, ReadCompleteness, ReadFreshness,
     };
     let unread = build.to_string();
     let loop_status = d
@@ -116,11 +116,11 @@ pub(super) fn building(
                 CompletenessReason::DerivationBehind,
             ]),
             search: CompletenessDimension::Incomplete(vec![CompletenessReason::FirstBuild]),
-            projection: CompletenessDimension::NotApplicable,
+            confirmed_stream: CompletenessDimension::NotApplicable,
             kept_chains: 0,
             raw_only_chains: 0,
         },
-        owner: IndexCurrency::Standalone,
+        sinex: IndexFreshness::Standalone,
     };
     let status = crate::protocol::status::Answer {
         archive: Some(d.archive.root.clone()),
@@ -167,9 +167,9 @@ fn primary(
                 }
             };
             let lag_positions = producer
-                .owner_position
+                .sinex_position
                 .zip(applied_position)
-                .and_then(|(owner, applied)| owner.checked_sub(applied).filter(|lag| *lag >= 0));
+                .and_then(|(sinex, applied)| sinex.checked_sub(applied).filter(|lag| *lag >= 0));
             Primary::Observed {
                 producer: Box::new(producer),
                 applied_position,

@@ -21,7 +21,7 @@
   ],
   "chatgpt": [
     "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=1,crate::chatgpt::VERSION=2,crate::export::VERSION=2",
-    "5fe8a7e99fb7fd3b20e368242562f1cfe207332e1d5a218b272a0fc1670dd212"
+    "48ed98ed22ec5d06167f604eeb3ed1fff4cbbec00e4a6563e2721fe2139d2723"
   ],
   "claude-ai": [
     "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=1,crate::chatgpt::VERSION=2,crate::claude_ai::VERSION=2",
@@ -92,8 +92,8 @@
     "f290b2dc965bf30d63452dd1d965600c2481bb85136c5aad59019921f6075c95"
   ],
   "polylogue-bundle": [
-    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=1,crate::export::VERSION=2,crate::polylogue_bundle::VERSION=4,polylogue_model::bundle::VERSION=3",
-    "cb494a3ec2288e3c5e24ece1203b0ff6a54dbcb9ee765f7ebba6c6868ea08ddf"
+    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=1,crate::export::VERSION=2,crate::polylogue_bundle::VERSION=5,polylogue_model::bundle::VERSION=3",
+    "2d8ae752d9d757f1e57a9cae94c8c29f80007f661e4a37e735f1469734870e9b"
   ],
   "polylogue-repo-lookup": [
     "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=1,crate::repo_lookup::VERSION=2",

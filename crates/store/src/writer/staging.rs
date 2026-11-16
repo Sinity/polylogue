@@ -12,9 +12,9 @@ pub(super) type WaitingGroup = (
     SyncSender<Vec<Result<StoredInput>>>,
 );
 
-// A package or one consistent database read is one logical acquisition.
-// A physical pool flush may contain several independent file samples.
-pub(super) fn atomic_acquisition(items: &[PreparedBatch]) -> bool {
+// A package or one consistent database read is one capture group. A pool
+// flush may contain several independent file samples.
+pub(super) fn is_atomic_capture_group(items: &[PreparedBatch]) -> bool {
     items.iter().any(|item| {
         crate::container_members::container_of(&item.batch).is_some()
             || item
@@ -22,10 +22,10 @@ pub(super) fn atomic_acquisition(items: &[PreparedBatch]) -> bool {
                 .observation
                 .as_ref()
                 .is_some_and(|observation| observation.import.is_some())
-            || item.batch.acquisition.as_ref().is_some_and(|receipt| {
-                receipt.route == crate::primary::AcquisitionRoute::ExplicitImport
+            || item.batch.acquisition.as_ref().is_some_and(|capture_read| {
+                capture_read.route == crate::primary::AcquisitionRoute::ExplicitImport
                     || matches!(
-                        receipt.generation,
+                        capture_read.generation,
                         Some(crate::primary::SourceGeneration::Database { .. })
                     )
             })
@@ -34,10 +34,10 @@ pub(super) fn atomic_acquisition(items: &[PreparedBatch]) -> bool {
 
 pub(super) fn independent_files(items: &[PreparedBatch]) -> bool {
     items.len() > 1
-        && !atomic_acquisition(items)
+        && !is_atomic_capture_group(items)
         && items.iter().any(|item| {
-            item.batch.acquisition.as_ref().is_some_and(|receipt| {
-                receipt.route == crate::primary::AcquisitionRoute::NativeCapture
+            item.batch.acquisition.as_ref().is_some_and(|capture_read| {
+                capture_read.route == crate::primary::AcquisitionRoute::NativeCapture
             })
         })
 }
@@ -76,13 +76,13 @@ impl Inner {
 
     /// Stores the groups that were waiting together, so their files and
     /// rows share syncs and commits ([`Self::store_group`]), and answers
-    /// each. Logical package and database groups retain the caller's boundary.
-    /// In primary mode each caller's group also stays whole before its file
-    /// samples receive their separate acquisition dispositions.
+    /// each. Package and database groups keep the caller's boundary. In
+    /// primary mode each caller's group also stays whole before its file
+    /// samples receive their separate capture outcomes.
     pub(super) fn store_groups(&mut self, groups: Vec<WaitingGroup>) {
         let (alone, together): (Vec<WaitingGroup>, Vec<WaitingGroup>) = groups
             .into_iter()
-            .partition(|(items, _, _)| self.sinex.is_some() || atomic_acquisition(items));
+            .partition(|(items, _, _)| self.sinex.is_some() || is_atomic_capture_group(items));
         for (items, store, reply) in alone {
             let _ = reply.send(self.store_group(items, store));
         }
@@ -104,8 +104,8 @@ impl Inner {
     /// Stores a group of batches whose new blobs include private files, then
     /// writes their parsed rows. The bytes commit together. Parsed rows of
     /// independent inputs that are refused together are written again batch
-    /// by batch, so one bad batch costs only itself; one logical acquisition
-    /// ([`atomic_acquisition`]) succeeds or fails as a whole.
+    /// by batch, so one bad batch costs only itself; one capture group
+    /// ([`is_atomic_capture_group`]) succeeds or fails as a whole.
     pub(super) fn store_group(
         &mut self,
         group: Vec<PreparedBatch>,
@@ -131,7 +131,7 @@ impl Inner {
         if self.sinex.is_some() {
             return self.primary_store_group(group);
         }
-        let independent = !atomic_acquisition(&group);
+        let independent = !is_atomic_capture_group(&group);
         let replay = group.iter().all(|item| replayed_input(&item.batch));
         for item in &group {
             if let Err(error) = self.check_staged(item) {
@@ -264,7 +264,7 @@ impl Inner {
             .collect()
     }
 
-    /// Commits the durable extents and the revisions and observations that cite them.
+    /// Commits the stored extents and the revisions and observations that cite them.
     fn write_rows_first(
         &mut self,
         group: &mut [PreparedBatch],
@@ -359,7 +359,7 @@ impl Inner {
         Ok(stored)
     }
 
-    /// An exact retry of an immutable import group has no new fact to write.
+    /// A retry of an unchanged import group has nothing new to write.
     /// Format validation has already run through `check_staged`; a new path,
     /// receiver or import membership is a new observation even for known bytes.
     fn repeated_imports(&self, group: &[PreparedBatch]) -> Result<Option<Vec<StoredInput>>> {
@@ -462,7 +462,7 @@ impl Inner {
     }
 }
 
-/// A retained reading with no new custody has only index effects. The
+/// A stored reading that stores no new bytes has only index effects. The
 /// standalone archive lock keeps its immutable chain available through the write.
 fn stored_readings(
     archive: &Connection,
@@ -474,7 +474,7 @@ fn stored_readings(
             && item.batch.blobs.is_empty()
             && item.batch.acquisition.is_none()
             && item.batch.basis.is_none()
-            && item.batch.required_disposition.is_none()
+            && item.batch.required_outcome.is_none()
     }) {
         return Ok(None);
     }

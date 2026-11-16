@@ -3,8 +3,8 @@
 //! `gh pr create`). A session's live task never comes from here: a command's
 //! name or arguments establish no task (`polylogue_model::live`).
 //!
-//! A fold: the transaction that writes a call's message or its result adds
-//! the links of the calls it finished ([`fold`]); one that rewrites a stored
+//! Updated per change: the transaction that writes a call's message or its result adds
+//! the links of the calls it finished ([`add_finished_links`]); one that rewrites a stored
 //! message of the session marks it due, and the derive step derives the
 //! session's links again.
 
@@ -16,7 +16,7 @@ use rusqlite::{Connection, Transaction, params};
 
 pub(super) const DERIVATION: super::Derivation = super::Derivation {
     name: "links",
-    class: super::Class::Fold,
+    class: super::Class::PerChange,
     // Bumped when the rules change; every session is derived again.
     products: &[],
     version: super::Version::Rules(3),
@@ -117,7 +117,7 @@ fn compute(conn: &Connection, session_pk: i64) -> Result<Links> {
 /// block is in one of its new messages add their links. A session with a
 /// rewritten message is marked due instead; the derive step derives its
 /// links again.
-pub(crate) fn fold(
+pub(crate) fn add_finished_links(
     tx: &Transaction<'_>,
     sessions: &std::collections::BTreeMap<i64, crate::change_summary::SessionChange>,
 ) -> Result<()> {
@@ -189,7 +189,7 @@ fn links_of(conn: &Connection, calls: Vec<(i64, String)>) -> Result<Links> {
 /// Adds `links` to the session's.
 fn add(tx: &Transaction<'_>, session_pk: i64, links: &Links) -> Result<()> {
     for (hash, call_pk) in &links.commits {
-        // The evidence is the first call in session order to report the
+        // The recorded call is the first call in session order to report the
         // hash, whichever order the calls arrived in.
         tx.prepare_cached(
             "INSERT INTO commit_link(session_pk, commit_hash, evidence_block_pk, evidence)

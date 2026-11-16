@@ -49,7 +49,7 @@ impl Reader<'_> {
 pub struct SchemaInputsPage {
     pub inputs: Vec<InputRevision>,
     /// Inputs present in the origin whose requested revision is absent,
-    /// retained even when a time bound cannot be evaluated for that revision.
+    /// kept even when a time bound cannot be evaluated for that revision.
     pub missing_revisions: Vec<String>,
     pub next: Option<String>,
     /// Whole-selection count on the initial page, absent on continuation.
@@ -57,7 +57,7 @@ pub struct SchemaInputsPage {
     pub unknown_time_inputs: Option<u64>,
 }
 impl Reader<'_> {
-    /// Select all inputs, or one origin, using receipt observation time.
+    /// Select all inputs, or one origin, by the time each was observed.
     /// Missing times are excluded only when a time bound is requested.
     pub fn schema_inputs_page(
         &self,

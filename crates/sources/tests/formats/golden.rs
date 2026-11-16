@@ -38,7 +38,7 @@ fn run_case(origin: &str, dir: &Path) -> Result<(), String> {
         ));
     }
     // Wire observations have their own independent shape/count tests. Historical
-    // conversation goldens keep their public record-accounting projection.
+    // conversation goldens keep their public record-accounting view.
     let mut counts = serde_json::to_value(step.counts).map_err(|error| error.to_string())?;
     counts
         .as_object_mut()

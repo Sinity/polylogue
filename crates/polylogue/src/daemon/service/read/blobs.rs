@@ -103,7 +103,7 @@ impl Blobs {
                 size,
             },
         });
-        stream.record(&ReadRecord::Canonical {
+        stream.record(&ReadRecord::Original {
             record: Box::new(descriptor),
             parts: vec![],
         })?;

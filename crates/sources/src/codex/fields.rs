@@ -303,14 +303,14 @@ pub static USER_MESSAGE: Fields = Fields::new(
     ],
 );
 
-/// Native replacement context stays whole beside normalized message identities.
+/// Replacement context as Codex wrote it stays whole beside normalized message identities.
 pub static COMPACTED: Fields = Fields::new(
     "compacted",
     &[
         ("message", Read(T::String)),
         (
             "replacement_history",
-            Kept("native replacement context retained in the boundary"),
+            Kept("replacement context kept in the boundary"),
         ),
     ],
 );

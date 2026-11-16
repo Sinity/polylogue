@@ -19,21 +19,21 @@ pub enum ParentIssue {
     },
     #[error("parent ID {parent:?} of {child} is invalid")]
     InvalidParent { child: SessionId, parent: String },
-    #[error("fork from {parent} to {child} has no available branch anchor ({anchor:?})")]
-    MissingAnchor {
+    #[error("fork from {parent} to {child} has no available branch point ({branch_point:?})")]
+    MissingBranchPoint {
         child: SessionId,
         parent: SessionId,
-        anchor: Option<String>,
+        branch_point: Option<String>,
     },
     #[error(
-        "{child} records incompatible forks from {first} at {first_anchor} and {second} at {second_anchor}"
+        "{child} records incompatible forks from {first} at {first_branch_point} and {second} at {second_branch_point}"
     )]
     ConflictingParents {
         child: SessionId,
         first: SessionId,
-        first_anchor: String,
+        first_branch_point: String,
         second: SessionId,
-        second_anchor: String,
+        second_branch_point: String,
     },
     #[error("copied messages {first} and {second} have no recorded relative order in {child}")]
     UnknownOrder {

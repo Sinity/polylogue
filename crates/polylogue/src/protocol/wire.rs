@@ -1,4 +1,4 @@
-//! Transport evidence surrounds the shared request without entering operation arguments.
+//! Caller details from the transport surround the shared request without entering operation arguments.
 use polylogue_model::authorship::CallerEvidence;
 use serde::Serialize;
 

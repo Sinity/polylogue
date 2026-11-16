@@ -1,5 +1,5 @@
-//! Publication runs independently of confirmed-stream reads. A wake is only
-//! a hint: durable queue readiness is the work to do.
+//! Sending runs independently of confirmed-stream reads. A wake is only
+//! a hint: the spool's ready operations are the work to do.
 use crate::{Error, Result, Sinex};
 use std::sync::{
     Arc,

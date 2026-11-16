@@ -24,7 +24,7 @@ pub enum Kind {
     /// Unix milliseconds.
     Time,
     Bool,
-    /// Product-specific matching semantics.
+    /// Product-specific matching rules.
     Special,
 }
 
@@ -133,7 +133,7 @@ const fn f(unit: Unit, name: &'static str, kind: Kind, help: &'static str) -> Fi
     }
 }
 
-/// A field with product-specific matching semantics.
+/// A field with product-specific matching rules.
 const fn sp(unit: Unit, name: &'static str, help: &'static str) -> Field {
     Field {
         unit,
@@ -214,7 +214,7 @@ const TIME_PRECISIONS: [&str; query_language::time::Precision::ALL.len()] = {
     names
 };
 
-/// Declares every field once: its identity and its semantics. The list
+/// Declares every field once: its identity and its meaning. The list
 /// emits [`FieldId`], one variant per field, and [`FIELDS`], indexed by it,
 /// so a field's lowering is an exhaustive `match` on its identity.
 macro_rules! fields {
@@ -239,169 +239,169 @@ fields! {
         Messages,
         "at.time_quality",
         &TIME_QUALITIES,
-        "native time quality; absent evidence stays unknown",
+        "source time quality; unknown when the source does not say",
     ),
     MessagesAtPrecision = v(
         Messages,
         "at.precision",
         &TIME_PRECISIONS,
-        "native time precision; absent evidence stays unknown",
+        "source time precision; unknown when the source does not say",
     ),
     BlocksAtTimeQuality = v(
         Blocks,
         "at.time_quality",
         &TIME_QUALITIES,
-        "native time quality; absent evidence stays unknown",
+        "source time quality; unknown when the source does not say",
     ),
     BlocksAtPrecision = v(
         Blocks,
         "at.precision",
         &TIME_PRECISIONS,
-        "native time precision; absent evidence stays unknown",
+        "source time precision; unknown when the source does not say",
     ),
     ToolCallsAtTimeQuality = v(
         ToolCalls,
         "at.time_quality",
         &TIME_QUALITIES,
-        "native time quality; absent evidence stays unknown",
+        "source time quality; unknown when the source does not say",
     ),
     ToolCallsAtPrecision = v(
         ToolCalls,
         "at.precision",
         &TIME_PRECISIONS,
-        "native time precision; absent evidence stays unknown",
+        "source time precision; unknown when the source does not say",
     ),
     EventsAtTimeQuality = v(
         Events,
         "at.time_quality",
         &TIME_QUALITIES,
-        "native time quality; absent evidence stays unknown",
+        "source time quality; unknown when the source does not say",
     ),
     EventsAtPrecision = v(
         Events,
         "at.precision",
         &TIME_PRECISIONS,
-        "native time precision; absent evidence stays unknown",
+        "source time precision; unknown when the source does not say",
     ),
     DeliveriesAtTimeQuality = v(
         Deliveries,
         "at.time_quality",
         &TIME_QUALITIES,
-        "native time quality; absent evidence stays unknown",
+        "source time quality; unknown when the source does not say",
     ),
     DeliveriesAtPrecision = v(
         Deliveries,
         "at.precision",
         &TIME_PRECISIONS,
-        "native time precision; absent evidence stays unknown",
+        "source time precision; unknown when the source does not say",
     ),
     SessionsStartedAtTimeQuality = v(
         Sessions,
         "started_at.time_quality",
         &TIME_QUALITIES,
-        "native time quality; absent evidence stays unknown",
+        "source time quality; unknown when the source does not say",
     ),
     SessionsStartedAtPrecision = v(
         Sessions,
         "started_at.precision",
         &TIME_PRECISIONS,
-        "native time precision; absent evidence stays unknown",
+        "source time precision; unknown when the source does not say",
     ),
     DocumentsSourceTimeTimeQuality = v(
         Documents,
         "source_time.time_quality",
         &TIME_QUALITIES,
-        "native time quality; absent evidence stays unknown",
+        "source time quality; unknown when the source does not say",
     ),
     DocumentsSourceTimePrecision = v(
         Documents,
         "source_time.precision",
         &TIME_PRECISIONS,
-        "native time precision; absent evidence stays unknown",
+        "source time precision; unknown when the source does not say",
     ),
     SessionsLastActiveTimeQuality = v(
         Sessions,
         "last_active.time_quality",
         &TIME_QUALITIES,
-        "native time quality; absent evidence stays unknown",
+        "source time quality; unknown when the source does not say",
     ),
     SessionsLastActivePrecision = v(
         Sessions,
         "last_active.precision",
         &TIME_PRECISIONS,
-        "native time precision; absent evidence stays unknown",
+        "source time precision; unknown when the source does not say",
     ),
     ToolCallsResultAtTimeQuality = v(
         ToolCalls,
         "result_at.time_quality",
         &TIME_QUALITIES,
-        "native time quality; absent evidence stays unknown",
+        "source time quality; unknown when the source does not say",
     ),
     ToolCallsResultAtPrecision = v(
         ToolCalls,
         "result_at.precision",
         &TIME_PRECISIONS,
-        "native time precision; absent evidence stays unknown",
+        "source time precision; unknown when the source does not say",
     ),
     DocumentsTimeQuality = v(
         Documents,
         "time_quality",
         &TIME_QUALITIES,
-        "native time quality; absent evidence stays unknown",
+        "source time quality; unknown when the source does not say",
     ),
     DocumentsPrecision = v(
         Documents,
         "precision",
         &TIME_PRECISIONS,
-        "native time precision; absent evidence stays unknown",
+        "source time precision; unknown when the source does not say",
     ),
     MessagesTimeQuality = v(
         Messages,
         "time_quality",
         &TIME_QUALITIES,
-        "native time quality; absent evidence stays unknown",
+        "source time quality; unknown when the source does not say",
     ),
     MessagesPrecision = v(
         Messages,
         "precision",
         &TIME_PRECISIONS,
-        "native time precision; absent evidence stays unknown",
+        "source time precision; unknown when the source does not say",
     ),
     BlocksTimeQuality = v(
         Blocks,
         "time_quality",
         &TIME_QUALITIES,
-        "native time quality; absent evidence stays unknown",
+        "source time quality; unknown when the source does not say",
     ),
     BlocksPrecision = v(
         Blocks,
         "precision",
         &TIME_PRECISIONS,
-        "native time precision; absent evidence stays unknown",
+        "source time precision; unknown when the source does not say",
     ),
     ToolCallsTimeQuality = v(
         ToolCalls,
         "time_quality",
         &TIME_QUALITIES,
-        "native time quality; absent evidence stays unknown",
+        "source time quality; unknown when the source does not say",
     ),
     ToolCallsPrecision = v(
         ToolCalls,
         "precision",
         &TIME_PRECISIONS,
-        "native time precision; absent evidence stays unknown",
+        "source time precision; unknown when the source does not say",
     ),
     EventsTimeQuality = v(
         Events,
         "time_quality",
         &TIME_QUALITIES,
-        "native time quality; absent evidence stays unknown",
+        "source time quality; unknown when the source does not say",
     ),
     EventsPrecision = v(
         Events,
         "precision",
         &TIME_PRECISIONS,
-        "native time precision; absent evidence stays unknown",
+        "source time precision; unknown when the source does not say",
     ),
     DocumentsId = f(Documents, "id", Prefix, "document ID or a unique prefix").reference(Documents),
     DocumentsOrigin = f(Documents, "origin", Match, "the provider export family"),
@@ -415,7 +415,7 @@ fields! {
         Documents,
         "authorship",
         DocumentAuthorship::NAMES,
-        "who wrote the text, unknown without source evidence",
+        "who wrote the text; unknown when the source does not say",
     )
     .stored_unknown("unknown"),
     DocumentsTitle = f(Documents, "title", Substring, "the supplied source title"),
@@ -480,7 +480,7 @@ fields! {
         Sessions,
         "live",
         LIVE_STATES,
-        "the live state now, from hook, process and registry evidence",
+        "the live state now, from hook events, processes and the registry",
     ),
     SessionsWaiting = sp(Sessions, "waiting", "the live state is waiting").boolean(),
     SessionsRunning = sp(
@@ -519,9 +519,9 @@ fields! {
         Match,
         "the tool of the call running now",
     ),
-    SessionsFootprint = f(
+    SessionsEditedFiles = f(
         Sessions,
-        "footprint",
+        "edited_files",
         Substring,
         "files the live session changed through edit tools and has not committed",
     ),
@@ -529,13 +529,13 @@ fields! {
         Sessions,
         "task",
         Match,
-        "the live task, from explicit task evidence",
+        "the live task, when a task is stated explicitly",
     ),
     SessionsLiveUntil = f(
         Sessions,
         "live_until",
         Time,
-        "when the live state or stall changes with no new evidence; empty when only new evidence can change it",
+        "when the live state or stall changes with no new events; empty when only new events can change it",
     ),
     SessionsLiveSince = f(
         Sessions,
@@ -547,7 +547,7 @@ fields! {
         Sessions,
         "last_event_at",
         Time,
-        "when the latest live evidence happened",
+        "when the latest live events happened",
     ),
     SessionsTodo = f(
         Sessions,
@@ -632,10 +632,10 @@ fields! {
         Time,
         "when Polylogue first had any of its messages",
     ),
-    SessionsEvidenceUntil = sp(
+    SessionsSeenBy = sp(
         Sessions,
-        "evidence_until",
-        "the evidence Polylogue had by the time (asked of messages, blocks, tool calls, events and notes)",
+        "seen_by",
+        "what Polylogue had seen by the time (asked of messages, blocks, tool calls, events and notes)",
     ),
     SessionsLastActive = f(Sessions, "last_active", Time, "last own message or event"),
     SessionsSince = sp(Sessions, "since", "active on or after the time"),
@@ -777,10 +777,10 @@ fields! {
         Time,
         "when Polylogue first had its bytes",
     ),
-    MessagesEvidenceUntil = sp(
+    MessagesSeenBy = sp(
         Messages,
-        "evidence_until",
-        "first seen by the time: the evidence Polylogue had then",
+        "seen_by",
+        "first seen by the time: what Polylogue had seen then",
     ),
     MessagesDuplicate = f(
         Messages,
@@ -833,9 +833,9 @@ fields! {
         Time,
         "when Polylogue first had its message's bytes",
     ),
-    BlocksEvidenceUntil = sp(
+    BlocksSeenBy = sp(
         Blocks,
-        "evidence_until",
+        "seen_by",
         "its message first seen by the time",
     ),
     BlocksSince = sp(Blocks, "since", "at or after the time"),
@@ -902,7 +902,7 @@ fields! {
         ToolCalls,
         "result_at",
         Time,
-        "native time of the message or notification reporting the result",
+        "source time of the message or notification reporting the result",
     ),
     ToolCallsReportedDuration = f(
         ToolCalls,
@@ -916,9 +916,9 @@ fields! {
         Time,
         "when Polylogue first had the bytes of the message that made the call",
     ),
-    ToolCallsEvidenceUntil = sp(
+    ToolCallsSeenBy = sp(
         ToolCalls,
-        "evidence_until",
+        "seen_by",
         "its call first seen by the time",
     ),
     ToolCallsSince = sp(
@@ -976,7 +976,7 @@ fields! {
         Time,
         "when Polylogue first had its bytes",
     ),
-    EventsEvidenceUntil = sp(Events, "evidence_until", "first seen by the time"),
+    EventsSeenBy = sp(Events, "seen_by", "first seen by the time"),
     EventsSince = sp(Events, "since", "at or after the time"),
     EventsUntil = sp(
         Events,
@@ -1017,7 +1017,7 @@ fields! {
         Assertions,
         "reference",
         Match,
-        "the exact natural reference",
+        "the natural reference",
     )
     .reference(Assertions),
     AssertionsKind = f(
@@ -1073,9 +1073,9 @@ fields! {
     ),
     AssertionsWithdrawn = f(Assertions, "withdrawn", Bool, "a withdrawal names it"),
     AssertionsSince = sp(Assertions, "since", "created at or after the time"),
-    AssertionsEvidenceUntil = sp(
+    AssertionsSeenBy = sp(
         Assertions,
-        "evidence_until",
+        "seen_by",
         "the notes stored by the time, each family at its revision then",
     ),
     AssertionsUntil = sp(
@@ -1132,7 +1132,7 @@ fields! {
         "the activity, wait or stall during the interval",
     ),
     LiveIntervalsStart = f(LiveIntervals, "start", Time, "when the interval began"),
-    LiveIntervalsEnd = f(LiveIntervals, "end", Time, "when evidence closed it"),
+    LiveIntervalsEnd = f(LiveIntervals, "end", Time, "when an event closed it"),
     LiveIntervalsDurationMs = f(
         LiveIntervals,
         "duration_ms",
@@ -1143,7 +1143,7 @@ fields! {
         LiveIntervals,
         "closed_by",
         Match,
-        "the kind of the evidence that closed it",
+        "the kind of event that closed it",
     ),
     ProcessesSession = sp(
         Processes,
@@ -1310,7 +1310,7 @@ pub fn relation(unit: Unit, prefix: &str) -> Option<Unit> {
     crate::units::spec(unit).relation(prefix).map(|r| r.target)
 }
 
-/// Evidence and unknown rules for fields backed by declared session products.
+/// The declared construct and unknown rule of fields backed by session products.
 pub fn construct(field: &Field) -> Option<polylogue_model::derived::Construct> {
     use polylogue_model::derived;
     if field.unit != Unit::Sessions {

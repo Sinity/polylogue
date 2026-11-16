@@ -5,7 +5,7 @@ use super::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-/// Supplied by the owning native-origin registry, never inferred from a stored cursor.
+/// Supplied by the origin registry, never inferred from a stored cursor.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ReadingContract {
@@ -31,7 +31,7 @@ impl ReadingContract {
     }
 }
 
-use polylogue_model::currency::{CompletenessDimension, CompletenessReason, ReadCompleteness};
+use polylogue_model::freshness::{CompletenessDimension, CompletenessReason, ReadCompleteness};
 
 impl Reader<'_> {
     pub fn completeness(&self, contracts: &[ReadingContract]) -> Result<ReadCompleteness> {
@@ -122,13 +122,15 @@ impl Reader<'_> {
         } else {
             CompletenessDimension::Incomplete(search_missing)
         };
-        let projection = if self.pool.archive.is_primary() {
-            let state = crate::primary::projection::replay_state(conn)?;
-            match (state.applied_position, state.head) {
+        let confirmed_stream = if self.pool.archive.is_primary() {
+            let state = crate::primary::confirmed::replay_state(conn)?;
+            match (state.applied_position, state.latest_position) {
                 (None, _) => {
                     CompletenessDimension::Incomplete(vec![CompletenessReason::StreamNotApplied])
                 }
-                (Some(applied), Some(head)) if applied >= head => CompletenessDimension::Complete,
+                (Some(applied), Some(latest_position)) if applied >= latest_position => {
+                    CompletenessDimension::Complete
+                }
                 (Some(_), Some(_)) => {
                     CompletenessDimension::Incomplete(vec![CompletenessReason::StreamBehind])
                 }
@@ -144,7 +146,7 @@ impl Reader<'_> {
             parsing,
             derivation,
             search,
-            projection,
+            confirmed_stream,
             kept_chains,
             raw_only_chains,
         })

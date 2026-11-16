@@ -24,7 +24,7 @@ fn texts(w: &ClaudeHome, id: &str) -> Vec<String> {
 }
 
 #[test]
-fn array_order_and_parent_ownership_survive_newest_first_storage_and_rebuild() {
+fn array_order_and_parent_sessions_survive_rebuild() {
     let w = ClaudeHome::new();
     let path = w.dir.path().join("conversations.json");
     let parent = conversation("parent", 1, &[("z-first", "First"), ("a-second", "Second")]);
@@ -301,7 +301,7 @@ fn repeated_conversation_markers_follow_logical_order_and_repeated_facts_keep_th
 }
 
 #[test]
-fn pending_ordinary_live_input_commits_before_bulk_array_delivery() {
+fn pending_live_input_commits_before_bulk_array_delivery() {
     let w = ClaudeHome::new();
     let path = w.dir.path().join("conversations.json");
     fs::write(
@@ -373,12 +373,12 @@ fn a_live_append_during_bulk_array_processing_is_served_by_the_next_pass() {
             &mut self,
             value: &[u8],
             sink: &mut polylogue_sources::document::Sink<'_>,
-            owners: &mut dyn ExportState,
+            first_sessions: &mut dyn ExportState,
         ) -> Result<(), String> {
             if self.entered.send(()).is_ok() {
                 self.resume.recv().unwrap();
             }
-            self.parser.item(value, sink, owners)
+            self.parser.item(value, sink, first_sessions)
         }
     }
     let w = ClaudeHome::new();

@@ -1,4 +1,4 @@
-//! Runtime setting catalog, values and authored receipts share one declared operation.
+//! Runtime setting catalog, values and write results share one declared operation.
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -15,7 +15,7 @@ pub struct Arguments {
 pub enum Answer {
     Catalog(Vec<polylogue_model::settings::Current>),
     Current(Box<polylogue_model::settings::Current>),
-    Receipt(polylogue_model::user::UserOutcome),
+    Outcome(polylogue_model::user::UserOutcome),
 }
 
 #[cfg(test)]

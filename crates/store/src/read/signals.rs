@@ -3,11 +3,11 @@ use crate::{Result, source::Source};
 use polylogue_model::signal::{Checkpoint, StoredOutbox};
 
 impl Reader<'_> {
-    pub fn signal_checkpoint(&self, owner: &str) -> Result<Option<Checkpoint>> {
-        crate::signals::checkpoint(self.conn()?, Source::Cache, owner)
+    pub fn signal_checkpoint(&self, evaluator: &str) -> Result<Option<Checkpoint>> {
+        crate::signals::checkpoint(self.conn()?, Source::Cache, evaluator)
     }
 
-    /// Historical records remain readable but are never eligible for effects.
+    /// Older records stay readable but never trigger effects.
     pub fn visit_signals(&self, mut visit: impl FnMut(StoredOutbox) -> Result<()>) -> Result<()> {
         let conn = self.conn()?;
         let mut query =
@@ -15,8 +15,8 @@ impl Reader<'_> {
         let mut rows = query.query([])?;
         while let Some(row) = rows.next()? {
             let id: String = row.get(0)?;
-            let outbox = crate::primary::authored::signal_outbox(conn, &id)?;
-            visit(outbox)?;
+            let pending = crate::primary::authored::signal_outbox(conn, &id)?;
+            visit(pending)?;
         }
         Ok(())
     }

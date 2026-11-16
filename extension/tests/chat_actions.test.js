@@ -95,7 +95,7 @@ it("keeps an unconfirmed submitted turn open and never reports it submitted", as
   expect(chrome.tabs.list).toHaveLength(1);
 });
 
-it("reports submitted only after its exact turn is durably captured", async () => {
+it("reports submitted only after its turn is captured", async () => {
   const { actions, reports, chrome } = setup(() => {
     expect(reports.at(-1)).toMatchObject({ outcome: "progress", phase: "sending" });
     return { ok: true, outcome: "submitted", provider_conversation_id: "c1", provider_turn_id: "m1" };

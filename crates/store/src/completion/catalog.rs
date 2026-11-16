@@ -40,7 +40,7 @@ pub struct Session {
     pub repo: Option<String>,
     pub last_activity: Option<i64>,
     pub first_prompt: Option<String>,
-    /// Each field/value is counted once or by its declared native grain.
+    /// Each field/value is counted once or by its declared grain.
     pub values: BTreeMap<String, BTreeMap<String, u64>>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -127,7 +127,7 @@ fn text_key(value: &str) -> String {
 
 impl CatalogWriter {
     /// Seed a synthetic catalog for cross-crate read tests. Production builds
-    /// allocate their physical database through CatalogPointer.
+    /// allocate their database file through CatalogPointer.
     #[cfg(feature = "fixture")]
     pub fn fixture(
         path: &Path,
@@ -184,8 +184,8 @@ impl CatalogWriter {
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
         configure(&conn)?;
-        // New readers must retain the previous committed vocabulary while a
-        // publication commits. Rollback journaling excludes them at COMMIT.
+        // New readers must keep the previous committed vocabulary while a
+        // new catalog commits. Rollback journaling excludes them at COMMIT.
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")?;
         persist_wal(&conn)?;
         // Initialize the WAL and shared memory as the writer, before activation.
@@ -202,7 +202,7 @@ impl CatalogWriter {
     pub(crate) fn connection(&self) -> &Connection {
         &self.conn
     }
-    /// A deleted derived file is rebuilt on the next ordinary publication.
+    /// A deleted derived file is rebuilt on the next publication.
     pub fn is_current_file(&self) -> bool {
         fs::metadata(&self.path).is_ok_and(|file| (file.dev(), file.ino()) == self.identity)
     }
@@ -247,20 +247,20 @@ impl CatalogWriter {
         )?;
         self.conn.execute("INSERT INTO session VALUES(?1,?2,'',?3,?4,?5,?6,?7,?8) ON CONFLICT(id) DO UPDATE SET native_id=excluded.native_id,title=excluded.title,title_key=excluded.title_key,origin=excluded.origin,repo=excluded.repo,last_activity=excluded.last_activity,first_prompt=excluded.first_prompt",
             params![session.id,session.native_id,session.title,text_key(&session.title),session.origin,session.repo,session.last_activity,session.first_prompt])?;
-        let owner = format!("session:{}", session.id);
+        let contributor = format!("session:{}", session.id);
         for (field, values) in &session.values {
             let stored = self
                 .conn
                 .prepare_cached("SELECT value FROM contribution WHERE session=?1 AND field=?2")?
-                .query_map([&owner, field], |row| row.get::<_, String>(0))?
+                .query_map([&contributor, field], |row| row.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             for value in stored {
                 if !values.contains_key(&value) {
-                    self.set_value(&owner, field, &value, 0)?;
+                    self.set_value(&contributor, field, &value, 0)?;
                 }
             }
             for (value, n) in values {
-                self.set_value(&owner, field, value, *n)?;
+                self.set_value(&contributor, field, value, *n)?;
             }
         }
         // An ID's shortest unique prefix changes only when IDs come or go.
@@ -287,14 +287,14 @@ impl CatalogWriter {
             } => self.set_value(&format!("session:{session}"), &field, &value, count),
         }
     }
-    /// One owner's count of one value; 0 removes it.
-    pub fn set_value(&mut self, owner: &str, field: &str, value: &str, n: u64) -> Result<()> {
+    /// One contributor's count of one value; 0 removes it.
+    pub fn set_value(&mut self, contributor: &str, field: &str, value: &str, n: u64) -> Result<()> {
         let old: i64 = self
             .conn
             .prepare_cached(
                 "SELECT n FROM contribution WHERE session=?1 AND field=?2 AND value=?3",
             )?
-            .query_row(params![owner, field, value], |row| row.get(0))
+            .query_row(params![contributor, field, value], |row| row.get(0))
             .optional()?
             .unwrap_or(0);
         let new = count(n)?;
@@ -306,11 +306,11 @@ impl CatalogWriter {
                 .prepare_cached(
                     "DELETE FROM contribution WHERE session=?1 AND field=?2 AND value=?3",
                 )?
-                .execute(params![owner, field, value])?;
+                .execute(params![contributor, field, value])?;
         } else {
             self.conn
                 .prepare_cached("INSERT INTO contribution VALUES(?1,?2,?3,?4) ON CONFLICT(session,field,value) DO UPDATE SET n=excluded.n")?
-                .execute(params![owner, field, value, new])?;
+                .execute(params![contributor, field, value, new])?;
         }
         // SQLite checks the proposed row of an upsert, so a decrease updates.
         if new > old {
@@ -329,10 +329,10 @@ impl CatalogWriter {
     }
     pub fn put_values(
         &mut self,
-        owner: &str,
+        contributor: &str,
         values: &BTreeMap<String, BTreeMap<String, u64>>,
     ) -> Result<()> {
-        self.remove_values(owner)?;
+        self.remove_values(contributor)?;
         for (field, values) in values {
             for (value, n) in values {
                 if *n == 0 {
@@ -341,7 +341,7 @@ impl CatalogWriter {
                 let n = count(*n)?;
                 self.conn.execute(
                     "INSERT INTO contribution VALUES(?1,?2,?3,?4)",
-                    params![owner, field, value, n],
+                    params![contributor, field, value, n],
                 )?;
                 self.conn.execute("INSERT INTO value_count VALUES(?1,?2,?3) ON CONFLICT(field,value) DO UPDATE SET n=n+excluded.n", params![field,value,n])?;
             }
@@ -445,7 +445,7 @@ impl CatalogWriter {
         }
         self.put_item("setting", &item.key, &item.key, item)
     }
-    /// Existing cache keys are invalidation candidates, never source truth.
+    /// Existing cache keys are invalidation candidates, never the source of truth.
     pub fn setting_keys(&self) -> Result<Vec<String>> {
         Ok(self
             .conn
@@ -458,7 +458,7 @@ impl CatalogWriter {
             .execute("DELETE FROM item WHERE kind='setting' AND id=?1", [key])?;
         Ok(())
     }
-    /// Replace only authored vocabulary after the source owner rewrote it.
+    /// Replace only authored vocabulary after the authored records were rewritten.
     /// Session contributions remain independent of this category.
     pub fn clear_authored(&mut self) -> Result<()> {
         for family in self.definition_families()? {
@@ -471,7 +471,7 @@ impl CatalogWriter {
         Ok(())
     }
 
-    /// Includes tag-only contribution owners as well as saved definitions.
+    /// Includes tag-only contributors as well as saved definitions.
     pub fn definition_families(&self) -> Result<Vec<String>> {
         Ok(self.conn.prepare("SELECT id FROM item WHERE kind='saved' UNION SELECT substr(session,11) FROM contribution WHERE session GLOB 'assertion:*' ORDER BY 1")?
             .query_map([],|row|row.get(0))?.collect::<rusqlite::Result<_>>()?)

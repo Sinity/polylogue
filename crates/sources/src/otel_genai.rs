@@ -47,7 +47,10 @@ mod stream;
 static SPAN_FIELDS: crate::fields::Fields = crate::fields::Fields::new(
     "span",
     &[
-        ("", crate::fields::Rule::Kept("complete native span event")),
+        (
+            "",
+            crate::fields::Rule::Kept("complete span event as written"),
+        ),
         (
             "traceId",
             crate::fields::Rule::Read(crate::fields::ExpectedType::String),
@@ -147,7 +150,7 @@ impl ExportParser for OtelGenAi {
         &mut self,
         bytes: &[u8],
         sink: &mut Sink<'_>,
-        owners: &mut dyn ExportState,
+        first_sessions: &mut dyn ExportState,
     ) -> Result<(), String> {
         let value: Json = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
         let value = &value;
@@ -175,13 +178,13 @@ impl ExportParser for OtelGenAi {
             );
             return Ok(());
         };
-        if owners
+        if first_sessions
             .record_first_session(&format!("session\0{conversation}"), &sid)?
             .is_none()
         {
             let mut s = Session::new(sid.clone(), SessionKind::Main);
             if let Some(at) = span.start {
-                s.offer_start(at.timestamp(), at.evidence())
+                s.offer_start(at.timestamp(), at.accuracy())
                     .expect("decoded source time is valid");
             }
             sink.out.sessions.push(s);
@@ -204,7 +207,7 @@ impl ExportParser for OtelGenAi {
             .fields(op.unwrap_or("gen_ai"), value, &SPAN_FIELDS);
         match op {
             Some("execute_tool") => tool_span(&span, &sid, sink),
-            _ => model_span(&span, conversation, &sid, owners, sink)?,
+            _ => model_span(&span, conversation, &sid, first_sessions, sink)?,
         }
         sink.records
             .record(op.unwrap_or("gen_ai"), &RecordOutcome::Used);
@@ -264,7 +267,7 @@ fn model_span(
     span: &Span,
     conversation: &str,
     sid: &polylogue_model::SessionId,
-    owners: &mut dyn ExportState,
+    first_sessions: &mut dyn ExportState,
     sink: &mut Sink<'_>,
 ) -> Result<(), String> {
     let inputs = messages_attr(span, "gen_ai.input.messages");
@@ -285,7 +288,7 @@ fn model_span(
     };
     let n = inputs.len();
     for (place, m) in inputs.iter().chain(outputs.iter()).enumerate() {
-        if owners
+        if first_sessions
             .record_first_session(&format!("message\0{conversation}#{place}"), sid)?
             .is_some()
         {

@@ -287,7 +287,7 @@ fn completed_walk_distinguishes_accessible_empty_absent_and_unavailable_roots() 
     config.home = home.home.clone();
     config.tool_dirs.clear();
     std::fs::create_dir_all(home.home.join(".codex")).unwrap();
-    // A self-referential symlink is an actual metadata failure even as root.
+    // A self-referential symlink is a real metadata failure even as root.
     std::os::unix::fs::symlink(".gemini", home.home.join(".gemini")).unwrap();
     let scan = scan_with_coverage(&config);
     let root = |name: &str| {

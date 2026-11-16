@@ -72,7 +72,7 @@ fn command_and_sign_in_body_types_are_checked_before_parsing_or_writing() {
             }
         }
         let mut req = own_origin(authed(post("/api/v1/setting")))
-            .body(Body::from(setting_envelope("media-setting")))
+            .body(Body::from(setting_request("media-setting")))
             .unwrap();
         req.headers_mut().insert(
             header::CONTENT_TYPE,
@@ -338,7 +338,7 @@ fn inheritance_is_an_explicit_shared_read_option() {
 }
 
 #[test]
-fn previous_links_reopen_exact_unicode_fragments_without_browser_history() {
+fn previous_links_reopen_unicode_fragments_without_browser_history() {
     let r = reader();
     let text = "first λ🙂 ".repeat(800);
     let rewritten = polylogue_testkit::claude_user("u1", "s1", &text);

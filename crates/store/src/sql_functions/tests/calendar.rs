@@ -25,7 +25,7 @@ fn labels(conn: &Connection, at: &str) -> Vec<String> {
     .unwrap()
 }
 #[test]
-fn cached_and_nested_sql_uses_the_exact_connection_calendar() {
+fn cached_and_nested_sql_uses_the_connection_calendar() {
     let (conn, context) = connection();
     let (other, other_context) = connection();
     let los_angeles = clock("America/Los_Angeles", "06:00:01");

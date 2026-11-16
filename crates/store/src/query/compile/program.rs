@@ -5,7 +5,7 @@ use super::*;
 
 impl<'a> Compiler<'a> {
     /// A selection and the `stages` that read its rows as they are.
-    pub(super) fn native_program_with(
+    pub(super) fn unit_rows_program_with(
         mut self,
         selection: &Selection,
         stages: &[Transform],
@@ -56,7 +56,7 @@ impl<'a> Compiler<'a> {
             let rank = self.rank.clone();
             let alone = self.cond(c, &scope, false)?;
             self.rank = rank;
-            // Bound conditions retain their original spans, while the compiler's
+            // Bound conditions keep their original spans, while the compiler's
             // text is a formatted expansion. Render the bound clause itself.
             let clause = Query {
                 source: Source::Unit {
@@ -210,9 +210,7 @@ impl<'a> Compiler<'a> {
                             ..
                         } => self.seq_matches(steps, gaps, &scope, &parent_rows, c.span)?,
                         ConditionKind::Sequence { all: true, .. } => {
-                            return Err(not_built(
-                                "overlapping sequence Matches projection (seq all)",
-                            ));
+                            return Err(not_built("overlapping sequence matches (seq all)"));
                         }
                         _ => {
                             return Err(QueryError::Invalid {
@@ -243,13 +241,13 @@ impl<'a> Compiler<'a> {
             && let Some(scoped) = &search.scope
             && let Some(recent) = &scoped.recent
         {
-            // A shared descendant can make other owners match. A recency
-            // batch must still return only its own candidate owners.
+            // A shared descendant can make other rows match. A recency
+            // batch must still return only its own candidate rows.
             where_sql.push(format!(
                 "(?{}<>2 OR {} IN (SELECT value FROM json_each(?{})))",
                 scoped.mode,
                 scope.a.expand(units::spec(scope.unit).key),
-                recent.owners
+                recent.batch
             ));
         }
         let recursive = matched.as_ref().is_some_and(|m| m.recursive);
@@ -281,7 +279,7 @@ impl<'a> Compiler<'a> {
                 let order = explicit_order.unwrap_or_else(|| self.default_order(&scope));
                 let (pk, mut cols) =
                     row_columns(unit, &scope.a, self.opts.clock.now.as_millisecond());
-                if let Projection::Fields(fields) = &selection.projection {
+                if let FieldSelection::Fields(fields) = &selection.field_selection {
                     cols.clear();
                     for field in fields {
                         let (expression, kind) = self.expr(field, &scope, 0)?;
@@ -503,12 +501,12 @@ impl<'a> Compiler<'a> {
                 polylogue_model::derived::CLUSTER_GAP_MS / 60_000
             ));
         }
-        let row_basis = if shape == Shape::Matches {
-            RowBasis::Group {
+        let row_kind = if shape == Shape::Matches {
+            RowKind::Group {
                 columns: vec!["parent".into(), "match".into(), "position".into()],
             }
         } else {
-            RowBasis::Native {
+            RowKind::UnitRows {
                 unit,
                 columns: units::spec(unit)
                     .identity
@@ -538,7 +536,7 @@ impl<'a> Compiler<'a> {
             }),
         };
         Ok(Program {
-            row_basis,
+            row_kind,
             query: self.text.to_owned(),
             unit,
             shape,
@@ -550,7 +548,7 @@ impl<'a> Compiler<'a> {
             } else {
                 Default::default()
             },
-            native_sources: None,
+            row_sources: None,
             time_text_columns: Default::default(),
             ranked,
             snippet_terms: self.snippet_terms,

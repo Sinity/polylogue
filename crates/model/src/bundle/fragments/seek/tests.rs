@@ -1,6 +1,6 @@
 use super::*;
 #[test]
-fn native_seek_coordinates_preserve_actual_ordinals_and_explicit_separator_positions() {
+fn seek_keeps_ordinals_and_separator_positions() {
     let body = NativeTextBody {
         block: 7,
         field: TextField::ToolOutput,
@@ -58,7 +58,7 @@ fn native_seek_coordinates_preserve_actual_ordinals_and_explicit_separator_posit
     );
 }
 #[test]
-fn accessible_empty_has_no_invented_body_and_cannot_name_nonempty_coverage() {
+fn accessible_empty_invents_no_body_or_coverage() {
     let position = NativeTextPosition {
         piece: NativeTextPiece::Empty,
         byte: 0,

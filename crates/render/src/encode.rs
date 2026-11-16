@@ -41,7 +41,7 @@ impl Default for EncodeOptions<'_> {
         }
     }
 }
-/// Writes immediately to a caller-owned sink. No record or item is retained.
+/// Writes immediately to a caller-owned sink. No record or item is kept.
 /// The caller stages a file and publishes it only after successful `finish`.
 pub struct Encoder<'a> {
     out: &'a mut dyn Write,
@@ -188,7 +188,7 @@ impl<'a> Encoder<'a> {
         Ok(())
     }
     /// Footer metadata stays outside prose content. Delivery prints its ready
-    /// calls separately (stderr, MCP envelope, or web navigation).
+    /// calls separately (stderr, MCP answer metadata, or web navigation).
     pub fn finish(self, footer: &ReadFooter) -> io::Result<()> {
         match self.format {
             Format::Json => {
@@ -825,17 +825,17 @@ pub(crate) fn header_zone(header: &ReadHeader) -> jiff::tz::TimeZone {
 
 pub(crate) fn recorded_time(
     at: Option<polylogue_model::Timestamp>,
-    evidence: polylogue_model::TimeEvidence,
+    accuracy: polylogue_model::TimeEvidence,
     zone: &jiff::tz::TimeZone,
 ) -> String {
     let time = at
         .map(|at| polylogue_model::local_minute(at, zone))
         .unwrap_or_else(|| "unknown".into());
-    let mut quality = evidence.quality.as_str().to_owned();
-    if let Some(precision) = evidence.precision {
+    let mut quality = accuracy.quality.as_str().to_owned();
+    if let Some(precision) = accuracy.precision {
         quality.push_str(&format!(", {}", precision.as_str()));
     }
-    if let Some(until) = evidence.until {
+    if let Some(until) = accuracy.until {
         quality.push_str(&format!(
             " until {}",
             polylogue_model::local_minute(until, zone)

@@ -142,7 +142,7 @@ pub(super) fn parse(
             redacted: false,
         });
     }
-    let mut evidence = serde_json::Map::new();
+    let mut kept_items = serde_json::Map::new();
     for field in [
         "reasoning_details",
         "codex_reasoning_items",
@@ -155,20 +155,20 @@ pub(super) fn parse(
             if decoded.as_ref().is_none_or(|value| !value.is_array()) {
                 diagnostics.push(("hermes_message_diagnostic".into(), serde_json::json!({"field":field,"reason":"structured item array unreadable; original value kept"})));
             }
-            evidence.insert(
+            kept_items.insert(
                 field.into(),
                 serde_json::json!({"kept":true,"json_decoded":decoded.is_some()}),
             );
         }
     }
     if !tool {
-        let mut native_calls = Vec::new();
+        let mut function_calls = Vec::new();
         let codex = decoded(row, "codex_message_items");
         let mut prose = Vec::new();
         if let Some(items) = codex.as_ref().and_then(Json::as_array) {
             for item in items {
                 if item.get("type").and_then(Json::as_str) == Some("function_call") {
-                    native_calls.push(tool_call(item));
+                    function_calls.push(tool_call(item));
                 } else if item.get("type").and_then(Json::as_str) == Some("message") {
                     if let Some(parts) = item.get("content").and_then(Json::as_array) {
                         for part in parts {
@@ -182,7 +182,7 @@ pub(super) fn parse(
                         }
                     }
                 } else {
-                    diagnostics.push(("hermes_message_diagnostic".into(), serde_json::json!({"field":"codex_message_items","reason":"unrecognized native item type; original value kept"})));
+                    diagnostics.push(("hermes_message_diagnostic".into(), serde_json::json!({"field":"codex_message_items","reason":"unrecognized item type; original value kept"})));
                 }
             }
         }
@@ -253,7 +253,7 @@ pub(super) fn parse(
                 serde_json::json!({"reason":"tool_calls JSON is unreadable"}),
             ));
         }
-        for block in native_calls {
+        for block in function_calls {
             if projected_calls.contains(&block) {
                 continue;
             }
@@ -270,8 +270,8 @@ pub(super) fn parse(
             ));
         }
     }
-    if !evidence.is_empty() {
-        diagnostics.push(("hermes_reasoning_evidence".into(), Json::Object(evidence)));
+    if !kept_items.is_empty() {
+        diagnostics.push(("hermes_reasoning_evidence".into(), Json::Object(kept_items)));
     }
     if row.get("active").is_some()
         || row.get("compacted").is_some()
@@ -293,10 +293,10 @@ pub(super) fn parse(
     } else {
         None
     };
-    let (at, evidence) =
+    let (at, accuracy) =
         crate::time::parts(row.get("timestamp").and_then(crate::time::epoch_seconds));
     message
-        .set_time(at, evidence)
+        .set_time(at, accuracy)
         .expect("decoded source time is valid");
     message.model = (role == Role::Assistant && !harness)
         .then_some(model)

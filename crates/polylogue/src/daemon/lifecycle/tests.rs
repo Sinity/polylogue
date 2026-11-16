@@ -17,7 +17,7 @@ fn inputs(values: &[(&str, &str)], pid: u32) -> Result<Inputs, Error> {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn service_inputs_observe_the_watchdog_owner_and_keep_native_socket_names() {
+fn service_inputs_keep_watchdog_and_raw_socket_names() {
     assert!(inputs(&[], 7).unwrap().notify.is_none());
     let configured = inputs(
         &[
@@ -58,7 +58,7 @@ fn service_inputs_observe_the_watchdog_owner_and_keep_native_socket_names() {
 }
 
 #[test]
-fn notifications_are_sent_to_the_captured_native_socket() {
+fn notifications_go_to_the_captured_socket() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("notify");
     let receiver = UnixDatagram::bind(&path).unwrap();
@@ -128,7 +128,7 @@ fn until(receiver: &UnixDatagram, expected: &str) {
 }
 
 #[test]
-fn sigterm_and_sigint_drain_real_daemons_and_preserve_admitted_writes() {
+fn sigterm_and_sigint_drain_daemons_keeping_accepted_writes() {
     for signal in [rustix::process::Signal::TERM, rustix::process::Signal::INT] {
         let dir = tempfile::tempdir().unwrap();
         let notify = dir.path().join("notify");
@@ -231,7 +231,7 @@ fn a_second_signal_ends_the_process_while_startup_is_blocked() {
 }
 
 #[test]
-fn watchdog_requires_a_response_from_the_actual_request_path() {
+fn watchdog_requires_a_response_from_the_request_path() {
     let dir = tempfile::tempdir().unwrap();
     let notify = dir.path().join("notify");
     let receiver = UnixDatagram::bind(&notify).unwrap();
@@ -295,7 +295,7 @@ fn continuous_worker_exit_wakes_supervision_without_a_watchdog() {
 }
 
 #[test]
-fn exit_events_are_retained_report_panics_and_allow_finite_completion() {
+fn exit_events_are_kept_and_report_panics() {
     let (events, mut received) = tokio::sync::watch::channel(None);
     let worker_events = events.clone();
     assert!(
@@ -321,7 +321,7 @@ fn exit_events_are_retained_report_panics_and_allow_finite_completion() {
 }
 
 #[test]
-fn busy_workers_remain_live_until_their_actual_return() {
+fn busy_workers_remain_live_until_their_return() {
     let (events, received) = tokio::sync::watch::channel(None);
     let (entered, active) = std::sync::mpsc::sync_channel(0);
     let (release, blocked) = std::sync::mpsc::sync_channel(0);
@@ -379,7 +379,7 @@ fn isolated_signal_child() {
             web: None,
             runtime,
         };
-        let mut listener_ended = app.socket.take_quiescing().unwrap();
+        let mut listener_ended = app.socket.take_listener_stopped().unwrap();
         let executor = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -401,7 +401,7 @@ fn isolated_signal_child() {
                 None,
             );
             tokio::pin!(monitored);
-            // Poll until supervision waits on events, then terminate an actual
+            // Poll until supervision waits on events, then terminate a real
             // continuous worker. No watchdog tick can discover this exit.
             std::future::poll_fn(
                 |cx| match std::future::Future::poll(monitored.as_mut(), cx) {

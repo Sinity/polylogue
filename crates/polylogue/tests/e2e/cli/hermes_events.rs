@@ -6,7 +6,7 @@ use polylogue_model::bundle::Record;
 use serde_json::json;
 
 #[test]
-fn hermes_observer_preserves_exact_evidence_and_rebuilds_without_conversations() {
+fn hermes_observer_keeps_events_and_rebuilds_without_conversations() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
     std::fs::create_dir_all(&home).unwrap();
@@ -89,12 +89,12 @@ fn hermes_observer_preserves_exact_evidence_and_rebuilds_without_conversations()
             serde_json::to_value(&event.event.data).unwrap(),
             row["data"]
         );
-        assert!(event.identity.sources.iter().any(|claim| {
-            claim.input == row["input"].as_str().unwrap()
-                && claim.source == "hermes"
-                && claim.source_chain == row["source_chain"].as_i64().unwrap()
-                && claim.source_start == Some(0)
-                && claim.source_end == Some(raw.len() as u64)
+        assert!(event.identity.sources.iter().any(|stated| {
+            stated.input == row["input"].as_str().unwrap()
+                && stated.source == "hermes"
+                && stated.source_chain == row["source_chain"].as_i64().unwrap()
+                && stated.source_start == Some(0)
+                && stated.source_end == Some(raw.len() as u64)
         }));
         let second_archive = dir.path().join("second-archive");
         let second_env =
@@ -132,19 +132,19 @@ fn hermes_observer_preserves_exact_evidence_and_rebuilds_without_conversations()
                 })
                 .unwrap();
             // The receiving bundle has its own record coordinates; the
-            // supplied native identity and source claims remain unchanged.
+            // supplied native ID and stated sources stay unchanged.
             let mut expected_event = event.event.clone();
             assert_eq!(received.event.range, Some((0, 0)));
             let receiving = &imported["rows"][0];
-            assert!(received.identity.sources.iter().any(|claim| {
-                claim.input == receiving["input"].as_str().unwrap()
-                    && claim.source == "polylogue-bundle"
-                    && claim.source_chain == receiving["source_chain"].as_i64().unwrap()
-                    && claim.source_start == receiving["source_start"].as_u64()
-                    && claim.source_end == receiving["source_end"].as_u64()
+            assert!(received.identity.sources.iter().any(|stated| {
+                stated.input == receiving["input"].as_str().unwrap()
+                    && stated.source == "polylogue-bundle"
+                    && stated.source_chain == receiving["source_chain"].as_i64().unwrap()
+                    && stated.source_start == receiving["source_start"].as_u64()
+                    && stated.source_end == receiving["source_end"].as_u64()
             }));
-            // The current importer marks this Event's semantic position as
-            // a point; physical evidence is the actual retained JSONL item.
+            // The current importer marks this event's logical position as
+            // a point; its bytes are the kept JSONL item.
             let bytes = std::fs::read(imported_path.join("records.jsonl")).unwrap();
             let mut offset = 0;
             let mut item_range = None;
@@ -163,7 +163,7 @@ fn hermes_observer_preserves_exact_evidence_and_rebuilds_without_conversations()
                 polylogue_store::ReadPool::open(&polylogue_store::Archive::at(&second_archive))
                     .unwrap();
             let reader = pool.reader().unwrap();
-            let retained = reader
+            let kept = reader
                 .stored_range(
                     receiving["input"].as_str().unwrap(),
                     receiving["source_chain"].as_i64().unwrap(),
@@ -172,9 +172,9 @@ fn hermes_observer_preserves_exact_evidence_and_rebuilds_without_conversations()
                     &reader.blob_reader().unwrap(),
                 )
                 .unwrap();
-            assert_eq!(retained, bytes[start..end]);
-            let retained: Record = serde_json::from_slice(&retained).unwrap();
-            assert_eq!(retained, Record::Event(event.clone()));
+            assert_eq!(kept, bytes[start..end]);
+            let kept: Record = serde_json::from_slice(&kept).unwrap();
+            assert_eq!(kept, Record::Event(event.clone()));
             expected_event.range = received.event.range;
             assert_eq!(received.event, expected_event);
             assert!(
@@ -182,7 +182,7 @@ fn hermes_observer_preserves_exact_evidence_and_rebuilds_without_conversations()
                     .identity
                     .sources
                     .iter()
-                    .all(|claim| received.identity.sources.contains(claim))
+                    .all(|stated| received.identity.sources.contains(stated))
             );
         }
         let joined = joined_items(&env, &reference, "16");
@@ -222,7 +222,7 @@ fn hermes_observer_preserves_exact_evidence_and_rebuilds_without_conversations()
     polylogue_testkit::delete_index(&archive);
     let _daemon = start_daemon(&env);
     wait_rows(&env, "events where source:hermes | sort by id", |rows| {
-        ledger_count(rows, "hermes_approval_response") == 1
+        count_kind(rows, "hermes_approval_response") == 1
     });
     let out = cli(
         &env,
@@ -237,11 +237,11 @@ fn hermes_observer_preserves_exact_evidence_and_rebuilds_without_conversations()
     assert_eq!(json(&out)["rows"], first["rows"]);
 }
 
-fn ledger_rows(env: &crate::Fixture) -> serde_json::Value {
+fn hermes_event_rows(env: &crate::Fixture) -> serde_json::Value {
     let out = cli(env, &["--json", "events where source:hermes | sort by id"]);
     query_rows(&out)
 }
-fn ledger_count(rows: &serde_json::Value, kind: &str) -> usize {
+fn count_kind(rows: &serde_json::Value, kind: &str) -> usize {
     rows["rows"]
         .as_array()
         .unwrap()
@@ -251,12 +251,12 @@ fn ledger_count(rows: &serde_json::Value, kind: &str) -> usize {
 }
 
 #[test]
-fn hermes_verification_native_restart_append_and_fresh_rebuild_keep_the_same_observations() {
+fn hermes_verification_restart_and_rebuild_agree() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
-    let native = home.join(".hermes/verification_evidence.db");
-    std::fs::create_dir_all(native.parent().unwrap()).unwrap();
-    let db = rusqlite::Connection::open(&native).unwrap();
+    let verification_db = home.join(".hermes/verification_evidence.db");
+    std::fs::create_dir_all(verification_db.parent().unwrap()).unwrap();
+    let db = rusqlite::Connection::open(&verification_db).unwrap();
     db.execute_batch("CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
         INSERT INTO meta VALUES('schema_version','1');
         CREATE TABLE verification_events(id INTEGER PRIMARY KEY AUTOINCREMENT,created_at TEXT NOT NULL,session_id TEXT NOT NULL,cwd TEXT NOT NULL,root TEXT NOT NULL,command TEXT NOT NULL,canonical_command TEXT NOT NULL,kind TEXT NOT NULL,scope TEXT NOT NULL,status TEXT NOT NULL,exit_code INTEGER NOT NULL,output_summary TEXT NOT NULL);
@@ -270,8 +270,8 @@ fn hermes_verification_native_restart_append_and_fresh_rebuild_keep_the_same_obs
     let before_rebuild = {
         let daemon = start_daemon(&env);
         let initial = wait_rows(&env, "events where source:hermes | sort by id", |rows| {
-            ledger_count(rows, "hermes_verification_event") == 1
-                && ledger_count(rows, "hermes_verification_state") == 1
+            count_kind(rows, "hermes_verification_event") == 1
+                && count_kind(rows, "hermes_verification_state") == 1
         });
         let first = initial["rows"]
             .as_array()
@@ -282,7 +282,7 @@ fn hermes_verification_native_restart_append_and_fresh_rebuild_keep_the_same_obs
         assert!(first["session"].is_null());
         assert_eq!(first["data"]["r"]["output_summary"], " exact λ result ");
         drop(daemon);
-        let db = rusqlite::Connection::open(&native).unwrap();
+        let db = rusqlite::Connection::open(&verification_db).unwrap();
         db.execute_batch("BEGIN;
             UPDATE meta SET value='2' WHERE key='schema_version';
             INSERT INTO verification_events VALUES(2,'2026-01-02T03:04:06Z','default','/neutral','/neutral','printf future','printf future','test','workspace','future',23,'unread future data');
@@ -301,11 +301,11 @@ fn hermes_verification_native_restart_append_and_fresh_rebuild_keep_the_same_obs
             std::thread::sleep(Duration::from_millis(5));
         }
         assert_eq!(
-            ledger_count(&ledger_rows(&env), "hermes_verification_event"),
+            count_kind(&hermes_event_rows(&env), "hermes_verification_event"),
             1
         );
         drop(daemon);
-        let db = rusqlite::Connection::open(&native).unwrap();
+        let db = rusqlite::Connection::open(&verification_db).unwrap();
         db.execute_batch("BEGIN;
             UPDATE meta SET value='1' WHERE key='schema_version';
             INSERT INTO verification_events VALUES(3,'2026-01-02T03:04:07Z','default','/neutral','/neutral','printf later','printf later','test','workspace','failed',1,'later recorded result');
@@ -315,9 +315,9 @@ fn hermes_verification_native_restart_append_and_fresh_rebuild_keep_the_same_obs
         drop(db);
         let _daemon = start_daemon(&env);
         let final_rows = wait_rows(&env, "events where source:hermes | sort by id", |rows| {
-            ledger_count(rows, "hermes_verification_event") == 2
-                && ledger_count(rows, "hermes_verification_state") == 2
-                && ledger_count(rows, "hermes_verification_row_deleted") == 1
+            count_kind(rows, "hermes_verification_event") == 2
+                && count_kind(rows, "hermes_verification_state") == 2
+                && count_kind(rows, "hermes_verification_row_deleted") == 1
         });
         let observations: Vec<_> = final_rows["rows"]
             .as_array()
@@ -334,19 +334,19 @@ fn hermes_verification_native_restart_append_and_fresh_rebuild_keep_the_same_obs
         }
         final_rows
     };
-    std::fs::remove_file(&native).unwrap();
+    std::fs::remove_file(&verification_db).unwrap();
     polylogue_testkit::delete_index(&archive);
     let _daemon = start_daemon(&env);
     let rebuilt = wait_rows(&env, "events where source:hermes | sort by id", |rows| {
-        ledger_count(rows, "hermes_verification_event") == 2
-            && ledger_count(rows, "hermes_verification_state") == 2
-            && ledger_count(rows, "hermes_verification_row_deleted") == 1
+        count_kind(rows, "hermes_verification_event") == 2
+            && count_kind(rows, "hermes_verification_state") == 2
+            && count_kind(rows, "hermes_verification_row_deleted") == 1
     });
     assert_eq!(rebuilt["rows"], before_rebuild["rows"]);
 }
 
 #[test]
-fn hermes_atif_documents_preserve_roles_unknown_media_and_exact_ordered_parts() {
+fn hermes_atif_documents_preserve_roles_unknown_media_and_ordered_parts() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
     std::fs::create_dir_all(&home).unwrap();
@@ -376,7 +376,7 @@ fn hermes_atif_documents_preserve_roles_unknown_media_and_exact_ordered_parts() 
         assert_eq!(row["authorship"], "unknown");
         assert!(
             row["title"].is_null(),
-            "Polylogue's rendering label is not a native title"
+            "Polylogue's rendering label is not a title the source gave"
         );
         let doc = document(&env, &reference);
         if doc["metadata"]["source"] == "user" {

@@ -97,7 +97,7 @@ fn a_ping_with_no_channel_is_refused_and_recorded() {
     assert!(text.contains("rebase after my commit"));
     assert!(text.contains(&format!("delivery:{delivery}")));
     drop(reader);
-    // Running by its transcript's growth, but no hook evidence: no channel.
+    // Running by its transcript's growth, but no hook event: no channel.
     let running = test_daemon::start_with_clock("running", at("2026-03-01T10:05:00Z"));
     let answer = ping(&running, false);
     assert_eq!(answer["deliveries"][0]["reason"], "unsupported");
@@ -319,7 +319,7 @@ fn role_addresses_and_role_starts() {
     assert_eq!(instances.len(), 1);
     assert_eq!(instances[0].0, "codex:t1");
     drop(reader);
-    // The instance runs on its hosted connection (no live evidence has
+    // The instance runs on its hosted connection (no live events have
     // arrived yet), so a ping reaches it rather than starting another.
     let pinged = crate::test_answers::ok(
         crate::test_daemon::Call::new(

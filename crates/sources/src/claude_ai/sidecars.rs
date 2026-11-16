@@ -173,9 +173,9 @@ fn document(
     );
     let mut document = Document::new(id, purpose);
     document.title = title;
-    let (at, evidence) = crate::time::parts(source_time);
+    let (at, accuracy) = crate::time::parts(source_time);
     document
-        .set_time(at, evidence)
+        .set_time(at, accuracy)
         .expect("decoded source time is valid");
     document.metadata = serde_json::json!({"source_kind":source_kind,"identity":if fallback {serde_json::json!({"kind":"input_scoped","input":input})}else{serde_json::json!({"kind":"provider_scoped"})}});
     Ok(document)
@@ -416,8 +416,8 @@ impl ExportParser for Sidecars {
                 }] = Json::String(id.to_owned());
             }
             if doc.purpose != DocumentPurpose::Context {
-                let (at, evidence) = crate::time::parts(source_time(fields).0);
-                doc.set_time(at, evidence)
+                let (at, accuracy) = crate::time::parts(source_time(fields).0);
+                doc.set_time(at, accuracy)
                     .expect("decoded source time is valid");
             }
             if doc.purpose == DocumentPurpose::Instruction {

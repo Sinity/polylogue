@@ -152,7 +152,7 @@ fn typed_natural_word_and_path_matches_preserve_their_boundaries() {
 }
 
 #[test]
-fn kept_time_and_native_identity_require_actual_captured_scalar_evidence() {
+fn kept_time_and_row_identity_need_captured_scalars() {
     let conn = Connection::open_in_memory().unwrap();
     register(&conn).unwrap();
     let timestamp: i64 = conn

@@ -1,10 +1,10 @@
-//! A physical scope-driven alternative to the selected full-text leg.
+//! A scope-driven alternative to the selected full-text leg.
 //! The bound filter keeps every other predicate and its original defaults.
 use super::*;
 use polylogue_query::filter::Filter;
 
-/// A direct native-time sort keeps key-first selection. Other relation sorts
-/// retain their existing expression and projection rules.
+/// A direct sort on a stored time keeps key-first selection. Other relation sorts
+/// keep their existing expression and field-selection rules.
 pub(super) fn recent_sort(unit: Unit, transforms: &[Transform]) -> bool {
     let [
         Transform {
@@ -78,7 +78,7 @@ impl Compiler<'_> {
             .filter(|_| selection.unit == scope.unit)
             .and_then(|filter| without_terms(filter, &build.spans));
         if filter.is_none() && recent_order.is_none() {
-            // With only the native defaults there is no narrower scope to
+            // With only the unit's defaults there is no narrower scope to
             // drive this search. Keep the ranked index-prefix path.
             self.ctes.push(format!(
                 "{}_scope_candidates AS (SELECT NULL AS block WHERE 0)",
@@ -90,7 +90,7 @@ impl Compiler<'_> {
         if let Some(filter) = filter {
             conditions.push(self.lower(&filter, scope, false)?);
         }
-        let recent_owners = recent_order.map(|_| {
+        let recent_batch = recent_order.map(|_| {
             let parameter = self.params.len() + 1;
             self.bind(Param::Text("[]".into()));
             parameter
@@ -102,7 +102,7 @@ impl Compiler<'_> {
         };
         let name = &build.name;
         let mode = format!("?{}", build.mode);
-        let owners = format!("{name}_scope_owners");
+        let scope_rows = format!("{name}_scope_rows");
         let blocks = format!("{name}_scope_blocks");
         let candidates = format!("{name}_scope_candidates");
         let hits = units::Hits {
@@ -116,7 +116,7 @@ impl Compiler<'_> {
         let pk = scope.a.expand(units::spec(scope.unit).key);
         let from = self.from(scope)?;
         let condition = and_all(&conditions);
-        let owner_rows = match recent_owners {
+        let scope_row_sql = match recent_batch {
             Some(parameter) => format!(
                 "SELECT {pk} AS pk FROM {from} WHERE {mode}<>2 AND {condition} UNION ALL \
                  SELECT {pk} FROM json_each(?{parameter}) chosen CROSS JOIN {from} \
@@ -124,17 +124,18 @@ impl Compiler<'_> {
             ),
             None => format!("SELECT {pk} AS pk FROM {from} WHERE {condition}"),
         };
-        self.ctes
-            .push(format!("{owners} AS NOT MATERIALIZED ({owner_rows})"));
+        self.ctes.push(format!(
+            "{scope_rows} AS NOT MATERIALIZED ({scope_row_sql})"
+        ));
         let eligible = match scope.unit {
             Unit::Sessions => format!(
                 "WITH RECURSIVE tree(pk) AS (\
-                 SELECT pk FROM {owners} WHERE {mode}<>0 UNION \
-                 SELECT min(pk) FROM {owners} WHERE {mode}=0 UNION \
+                 SELECT pk FROM {scope_rows} WHERE {mode}<>0 UNION \
+                 SELECT min(pk) FROM {scope_rows} WHERE {mode}=0 UNION \
                  SELECT l.child_pk FROM tree t CROSS JOIN session p ON p.pk=t.pk \
                  CROSS JOIN session_link l ON l.parent_id=p.id AND l.kind='spawn' \
                  WHERE l.child_pk IS NOT NULL UNION \
-                 SELECT (SELECT min(pk) FROM {owners} WHERE pk>t.pk) \
+                 SELECT (SELECT min(pk) FROM {scope_rows} WHERE pk>t.pk) \
                  FROM tree t WHERE {mode}=0 AND t.pk IS NOT NULL) \
                  SELECT b.pk AS block,b.text_id FROM tree t \
                  CROSS JOIN message m ON m.session_pk=t.pk \
@@ -143,17 +144,17 @@ impl Compiler<'_> {
                 fields::own_messages("m", None)
             ),
             Unit::Messages => format!(
-                "SELECT b.pk AS block,b.text_id FROM {owners} o \
+                "SELECT b.pk AS block,b.text_id FROM {scope_rows} o \
                  CROSS JOIN message m ON m.pk=o.pk \
                  CROSS JOIN block b ON b.message_pk=m.pk \
                  WHERE b.text_id IS NOT NULL AND {kind}{writer}"
             ),
             _ => unreachable!("scope-driven source units"),
         };
-        // The recursive probe admits owners one at a time: seeding every
-        // owner would read the full scope before its first block. Execution
-        // seeds all owners directly. Only execution materializes blocks, and it
-        // shares that materialization with text probes and owner selection.
+        // The recursive probe adds scope rows one at a time: seeding every
+        // row would read the full scope before its first block. Execution
+        // seeds all rows directly. Only execution stores the blocks, and it
+        // shares them with text probes and row selection.
         self.ctes
             .push(format!("{blocks} AS NOT MATERIALIZED ({eligible})"));
         self.ctes.push(format!(
@@ -173,7 +174,7 @@ impl Compiler<'_> {
             limit = search.limit,
         );
         let blocks = format!("WITH {} SELECT block FROM {blocks}", self.ctes.join(", "));
-        let recent = recent_order.zip(recent_owners).map(|(order, owners)| {
+        let recent = recent_order.zip(recent_batch).map(|(order, batch)| {
             let (hidden, _) = hidden_order(order, "_o");
             RecentSearch {
                 keys: format!(
@@ -181,7 +182,7 @@ impl Compiler<'_> {
                     self.ctes.join(", "),
                     hidden.join(", ")
                 ),
-                owners,
+                batch,
             }
         });
         self.text_search.as_mut().expect("selected search").scope = Some(ScopedSearch {

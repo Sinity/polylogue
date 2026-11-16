@@ -70,7 +70,7 @@ impl fmt::Display for NativeId {
     }
 }
 
-/// An internally minted run identity in canonical UUID spelling. This is not
+/// A run identity Polylogue makes itself, in canonical UUID spelling. This is not
 /// a provider ID or a caller's retry key; the stored run establishes existence.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RunId(String);

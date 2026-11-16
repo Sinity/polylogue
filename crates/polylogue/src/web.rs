@@ -73,7 +73,7 @@ impl Drop for Server {
     }
 }
 
-/// Binds the port and returns the owner of the HTTP worker. Socket serving
+/// Binds the port and returns the holder of the HTTP worker. Socket serving
 /// can continue independently if HTTP startup fails.
 pub fn start(
     daemon: Arc<Daemon>,
@@ -360,8 +360,8 @@ pub async fn ask(
         .await
         .unwrap_or_else(|| crate::daemon::service::shutting_down().answer());
     cancel.0.take();
-    let publication = crate::protocol::ReadScopes::single(scope);
-    let answer = crate::protocol::scope_answer(answer, &publication);
+    let scopes = crate::protocol::ReadScopes::single(scope);
+    let answer = crate::protocol::scope_answer(answer, &scopes);
     browser_response(answer, &web.daemon.archive.root)
 }
 

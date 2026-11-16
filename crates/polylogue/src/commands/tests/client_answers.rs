@@ -1,6 +1,6 @@
 //! Client responses match: the command line, MCP and the HTTP API
 //! give the daemon the same request for the same arguments and hand back
-//! the complete answer, with native transport provenance and observed read positions.
+//! the complete answer, with the caller details the transport observed and the read positions.
 
 use super::*;
 use crate::test_daemon;
@@ -211,13 +211,13 @@ fn http_answer(
     (shown, Some(exit))
 }
 
-// The socket peer is this actual fixture process; HTTP has the trusted Web
+// The socket peer is this fixture process; HTTP has the trusted Web
 // channel. Expectations come from those boundaries, never from an answer.
 fn socket_authorship() -> Authorship {
     let (_client, server) = std::os::unix::net::UnixStream::pair().unwrap();
-    let (evidence, via) = crate::protocol::caller::peer(&server, &Default::default()).unwrap();
+    let (details, via) = crate::protocol::caller::peer(&server, &Default::default()).unwrap();
     assert_eq!(via, Channel::Cli);
-    polylogue_model::authorship::compute_authorship(via, &evidence, None)
+    polylogue_model::authorship::compute_authorship(via, &details, None)
 }
 
 fn context_authorship_path(name: &str) -> Option<&'static str> {
@@ -251,7 +251,7 @@ fn expected_transport_answer(baseline: &Answer, name: &str, authorship: &Authors
 // (docs/reading.md: "handed to the writer without waiting and committed on
 // its next turn"), so the previous call's run
 // may still be landing. Observe each invocation's descriptor once the
-// position has settled, from a fresh native reader released before the call.
+// position has stopped moving, from a fresh reader released before the call.
 fn read_position(w: &test_daemon::TestDaemon) -> polylogue_model::ChangePosition {
     let observe = || w.daemon.reads.reader().unwrap().change_position().unwrap();
     let mut last = observe();
@@ -267,11 +267,11 @@ fn read_position(w: &test_daemon::TestDaemon) -> polylogue_model::ChangePosition
 }
 
 fn assert_read_page(answer: &Answer, position: &polylogue_model::ChangePosition) {
-    let value = answer.as_ref().expect("canonical session read succeeds");
+    let value = answer.as_ref().expect("session read succeeds");
     let page: polylogue_model::read::ReadPage = serde_json::from_value(value.clone()).unwrap();
     assert_eq!(
         &page.snapshot.read_at, position,
-        "the page must report the independently observed native descriptor"
+        "the page must report the independently observed position"
     );
     assert!(
         page.document.footer.next.is_none(),
@@ -361,8 +361,8 @@ fn every_client_answers_the_same_request_identically() {
             && let Ok(value) = &cli
         {
             // Session's protocol handler runs in this test process. The
-            // daemon observes that native peer as CLI, so it does not record
-            // a model delivery. The native MCP process control is in e2e.
+            // daemon observes that socket peer as CLI, so it does not record
+            // a model delivery. The MCP process control is in e2e.
             assert_eq!(value["delivery"], Value::Null);
             assert_eq!(http.as_ref().unwrap()["delivery"], Value::Null);
             assert_eq!(mcp.as_ref().unwrap()["delivery"], Value::Null);

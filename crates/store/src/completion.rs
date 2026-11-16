@@ -49,7 +49,7 @@ struct Subscriber {
     wake: mpsc::SyncSender<()>,
 }
 
-/// Coalesced cues to read the authoritative index, each saying what kinds
+/// Coalesced cues to read the index, each saying what kinds
 /// of record the commits changed.
 #[derive(Clone, Default)]
 pub struct CommitEvents(Arc<Mutex<Vec<Subscriber>>>);
@@ -124,7 +124,7 @@ impl CommitSubscription {
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         )
     }
-    /// The owner sets its stop flag before waking a sleeping publisher.
+    /// The caller sets its stop flag before waking a sleeping publisher.
     pub fn wake_handle(&self) -> mpsc::SyncSender<()> {
         self.wake.clone()
     }
@@ -135,8 +135,8 @@ pub use catalog::{
     CatalogReader, CatalogWriter, Kept, Metadata, Parameter, Saved, Session, Setting, ValueCount,
 };
 
-mod projection;
-pub use projection::{DefinitionChange, NativeKept, NativeSaved, SessionChange, VocabularyChanges};
+mod catalog_rows;
+pub use catalog_rows::{DefinitionChange, KeptEntry, SavedEntry, SessionChange, VocabularyChanges};
 
-mod custody;
-pub use custody::CatalogPointer;
+mod pointer;
+pub use pointer::CatalogPointer;

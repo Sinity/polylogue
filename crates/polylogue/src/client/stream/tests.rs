@@ -24,7 +24,7 @@ fn refusal() -> Answer<serde_json::Value> {
 }
 
 #[test]
-fn an_early_canonical_refusal_keeps_its_kind_and_notes_through_split_reads() {
+fn early_refusal_keeps_its_kind_and_notes_across_split_reads() {
     let expected = refusal();
     let mut bytes = serde_json::to_vec(&expected).unwrap();
     bytes.push(b'\n');

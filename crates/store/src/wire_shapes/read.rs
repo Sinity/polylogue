@@ -19,15 +19,15 @@ WITH readings AS (
  WHERE (?1 IS NULL OR i.format=?1) AND (?2 IS NULL OR p.reading_version=?2)
    AND NOT EXISTS(SELECT 1 FROM wire_reading r WHERE r.input_pk=p.input_pk AND r.chain=p.chain AND r.active=1)
 ), latest AS (
- SELECT format,reading_version,MAX(json_extract(state,'$.last.sequence')) AS receipt
+ SELECT format,reading_version,MAX(json_extract(state,'$.last.sequence')) AS occurrence
  FROM readings GROUP BY format,reading_version
 )
 "#;
 type Key = (String, String, String, String, Option<String>);
 
-/// Aggregate active readings by default, retaining only schema-shaped results
+/// Aggregate active readings by default, keeping only schema-shaped results
 /// and first/last source references in memory. SQLite owns grouping and spill.
-/// Full source provenance remains in the tables; history must be requested.
+/// Every source reference stays in the tables; history must be requested.
 pub fn read(conn: &Connection, scope: Scope<'_>) -> Result<Report> {
     register(conn)?;
     let mut report = Report::default();
@@ -51,8 +51,8 @@ pub fn read(conn: &Connection, scope: Scope<'_>) -> Result<Report> {
             parsed_bytes: decimal(row, 5)?,
             known_source_bytes: decimal(row, 6)?,
             unknown_lengths: integer(row, 7)?,
-            first: receipt(row, 8)?,
-            last: receipt(row, 9)?,
+            first: occurrence(row, 8)?,
+            last: occurrence(row, 9)?,
         });
     }
     let sql = format!(
@@ -79,23 +79,23 @@ pub fn read(conn: &Connection, scope: Scope<'_>) -> Result<Report> {
 SELECT r.format,s.reading_version,s.record_kind,s.path,json_extract(s.table_key,'$'),COUNT(*),
  MIN(d.expected),MAX(d.dynamic_map),MIN(d.known_kinds),
  SUM(s.unknown_kinds),SUM(s.unknown_tables),
- pl_wire_first(first_receipt.receipt),pl_wire_last(last_receipt.receipt),
+ pl_wire_first(first_occurrence.occurrence),pl_wire_last(last_occurrence.occurrence),
  pl_wire_last(CASE WHEN EXISTS(SELECT 1 FROM wire_type t WHERE t.input_pk=s.input_pk AND t.chain=s.chain
      AND t.reading_version=s.reading_version AND t.record_kind=s.record_kind AND t.path=s.path
      AND t.table_key=s.table_key AND t.count>0)
-   THEN CASE WHEN json_extract(first_receipt.receipt,'$.sequence')<=json_extract(r.state,'$.completed.sequence')
+   THEN CASE WHEN json_extract(first_occurrence.occurrence,'$.sequence')<=json_extract(r.state,'$.completed.sequence')
      THEN json_extract(r.state,'$.completed') END
-   ELSE CASE WHEN json_extract(last_receipt.receipt,'$.sequence')<=json_extract(r.state,'$.completed_before_reset.sequence')
+   ELSE CASE WHEN json_extract(last_occurrence.occurrence,'$.sequence')<=json_extract(r.state,'$.completed_before_reset.sequence')
      THEN json_extract(r.state,'$.completed_before_reset') END END),
- MAX(CASE WHEN json_extract(r.state,'$.last.sequence')=l.receipt AND EXISTS(
+ MAX(CASE WHEN json_extract(r.state,'$.last.sequence')=l.occurrence AND EXISTS(
    SELECT 1 FROM wire_type t WHERE t.input_pk=s.input_pk AND t.chain=s.chain AND t.reading_version=s.reading_version
      AND t.record_kind=s.record_kind AND t.path=s.path AND t.table_key=s.table_key AND t.count>0)
    THEN 1 ELSE 0 END),SUM(s.unused)
 FROM wire_shape s JOIN readings r ON r.input_pk=s.input_pk AND r.chain=s.chain AND r.reading_version=s.reading_version
 JOIN latest l ON l.format=r.format AND l.reading_version=r.reading_version
 JOIN wire_declaration d ON d.format=r.format AND d.reading_version=s.reading_version AND d.record_kind=s.record_kind AND d.path=s.path AND d.table_key=s.table_key
-JOIN wire_receipt first_receipt ON first_receipt.input_pk=s.input_pk AND first_receipt.chain=s.chain AND first_receipt.reading_version=s.reading_version AND first_receipt.number=s.first
-JOIN wire_receipt last_receipt ON last_receipt.input_pk=s.input_pk AND last_receipt.chain=s.chain AND last_receipt.reading_version=s.reading_version AND last_receipt.number=s.last
+JOIN wire_occurrence first_occurrence ON first_occurrence.input_pk=s.input_pk AND first_occurrence.chain=s.chain AND first_occurrence.reading_version=s.reading_version AND first_occurrence.number=s.first
+JOIN wire_occurrence last_occurrence ON last_occurrence.input_pk=s.input_pk AND last_occurrence.chain=s.chain AND last_occurrence.reading_version=s.reading_version AND last_occurrence.number=s.last
 GROUP BY r.format,s.reading_version,s.record_kind,s.path,s.table_key
 ORDER BY r.format,s.reading_version,s.record_kind,s.path,json_extract(s.table_key,'$')"#
     );
@@ -131,11 +131,11 @@ ORDER BY r.format,s.reading_version,s.record_kind,s.path,json_extract(s.table_ke
             known_kinds: declarations(row, 8)?,
             unknown_kind_count: integer(row, 9)?,
             unknown_table_count: integer(row, 10)?,
-            first: receipt(row, 11)?
-                .ok_or_else(|| StoreError::Invalid("wire shape has no first receipt".into()))?,
-            last: receipt(row, 12)?
-                .ok_or_else(|| StoreError::Invalid("wire shape has no last receipt".into()))?,
-            complete_presence: receipt(row, 13)?,
+            first: occurrence(row, 11)?
+                .ok_or_else(|| StoreError::Invalid("wire shape has no first occurrence".into()))?,
+            last: occurrence(row, 12)?
+                .ok_or_else(|| StoreError::Invalid("wire shape has no last occurrence".into()))?,
+            complete_presence: occurrence(row, 13)?,
             present_in_latest: row.get(14)?,
             unused_count: integer(row, 15)?,
         });
@@ -143,10 +143,10 @@ ORDER BY r.format,s.reading_version,s.record_kind,s.path,json_extract(s.table_ke
     let sql = format!(
         r#"{READINGS}
 SELECT r.format,t.reading_version,t.record_kind,t.path,json_extract(t.table_key,'$'),t.json_type,
- SUM(t.count),pl_wire_first(first_receipt.receipt),pl_wire_last(last_receipt.receipt)
+ SUM(t.count),pl_wire_first(first_occurrence.occurrence),pl_wire_last(last_occurrence.occurrence)
 FROM wire_type t JOIN readings r ON r.input_pk=t.input_pk AND r.chain=t.chain AND r.reading_version=t.reading_version
-JOIN wire_receipt first_receipt ON first_receipt.input_pk=t.input_pk AND first_receipt.chain=t.chain AND first_receipt.reading_version=t.reading_version AND first_receipt.number=t.first
-JOIN wire_receipt last_receipt ON last_receipt.input_pk=t.input_pk AND last_receipt.chain=t.chain AND last_receipt.reading_version=t.reading_version AND last_receipt.number=t.last
+JOIN wire_occurrence first_occurrence ON first_occurrence.input_pk=t.input_pk AND first_occurrence.chain=t.chain AND first_occurrence.reading_version=t.reading_version AND first_occurrence.number=t.first
+JOIN wire_occurrence last_occurrence ON last_occurrence.input_pk=t.input_pk AND last_occurrence.chain=t.chain AND last_occurrence.reading_version=t.reading_version AND last_occurrence.number=t.last
 GROUP BY r.format,t.reading_version,t.record_kind,t.path,t.table_key,t.json_type
 ORDER BY r.format,t.reading_version,t.record_kind,t.path,json_extract(t.table_key,'$'),t.json_type"#
     );
@@ -165,10 +165,12 @@ ORDER BY r.format,t.reading_version,t.record_kind,t.path,json_extract(t.table_ke
             row.get(5)?,
             TypeObservation {
                 count: integer(row, 6)?,
-                first: receipt(row, 7)?
-                    .ok_or_else(|| StoreError::Invalid("wire type has no first receipt".into()))?,
-                last: receipt(row, 8)?
-                    .ok_or_else(|| StoreError::Invalid("wire type has no last receipt".into()))?,
+                first: occurrence(row, 7)?.ok_or_else(|| {
+                    StoreError::Invalid("wire type has no first occurrence".into())
+                })?,
+                last: occurrence(row, 8)?.ok_or_else(|| {
+                    StoreError::Invalid("wire type has no last occurrence".into())
+                })?,
             },
         );
     }
@@ -209,7 +211,7 @@ ORDER BY r.format,t.reading_version,t.record_kind,t.path,json_extract(t.table_ke
                 kind,
                 shape: shape.clone(),
                 coverage: source.status(),
-                certainty: Certainty::Observed,
+                reason: DriftReason::Seen,
                 compared_with: Vec::new(),
             });
         }
@@ -228,14 +230,14 @@ ORDER BY r.format,t.reading_version,t.record_kind,t.path,json_extract(t.table_ke
                 kind: Kind::StoppedField,
                 shape: shape.clone(),
                 coverage: CoverageStatus::Complete,
-                certainty: Certainty::OptionalPresence,
+                reason: DriftReason::MaybeOptional,
                 compared_with: vec![source.clone()],
             });
         }
     }
     report.drift.sort_by(|left, right| {
-        event_receipt(right)
-            .cmp(&event_receipt(left))
+        latest_occurrence(right)
+            .cmp(&latest_occurrence(left))
             .then_with(|| left.shape.format.cmp(&right.shape.format))
             .then_with(|| left.shape.reading_version.cmp(&right.shape.reading_version))
             .then_with(|| left.shape.record_kind.cmp(&right.shape.record_kind))
@@ -291,11 +293,11 @@ fn name_of(status: CoverageStatus) -> &'static str {
         CoverageStatus::Unknown => "unknown",
     }
 }
-fn event_receipt(drift: &Drift) -> i64 {
+fn latest_occurrence(drift: &Drift) -> i64 {
     drift
         .compared_with
         .iter()
-        .filter_map(|source| source.last.as_ref().map(|receipt| receipt.sequence))
+        .filter_map(|source| source.last.as_ref().map(|occurrence| occurrence.sequence))
         .max()
         .unwrap_or(drift.shape.last.sequence)
 }
@@ -317,7 +319,7 @@ fn decimal(row: &rusqlite::Row<'_>, at: usize) -> Result<u64> {
         .parse()
         .map_err(|_| StoreError::Invalid("invalid wire count in index".into()))
 }
-fn receipt(row: &rusqlite::Row<'_>, at: usize) -> Result<Option<Receipt>> {
+fn occurrence(row: &rusqlite::Row<'_>, at: usize) -> Result<Option<Occurrence>> {
     row.get::<_, Option<String>>(at)?
         .map(|json| serde_json::from_str(&json))
         .transpose()
@@ -369,25 +371,25 @@ impl Aggregate<u64, String> for Sum {
         Ok(sum.unwrap_or(0).to_string())
     }
 }
-struct ReceiptOrder {
+struct OccurrenceOrder {
     first: bool,
 }
-impl Aggregate<Option<Receipt>, Option<String>> for ReceiptOrder {
-    fn init(&self, _: &mut Context<'_>) -> rusqlite::Result<Option<Receipt>> {
+impl Aggregate<Option<Occurrence>, Option<String>> for OccurrenceOrder {
+    fn init(&self, _: &mut Context<'_>) -> rusqlite::Result<Option<Occurrence>> {
         Ok(None)
     }
-    fn step(&self, ctx: &mut Context<'_>, stored: &mut Option<Receipt>) -> rusqlite::Result<()> {
+    fn step(&self, ctx: &mut Context<'_>, stored: &mut Option<Occurrence>) -> rusqlite::Result<()> {
         let value = field(ctx)?;
         if value.is_null() {
             return Ok(());
         }
-        let next: Receipt = serde_json::from_value(value).map_err(error)?;
-        let key = |receipt: &Receipt| {
+        let next: Occurrence = serde_json::from_value(value).map_err(error)?;
+        let key = |occurrence: &Occurrence| {
             (
-                receipt.sequence,
-                receipt.input.clone(),
-                receipt.chain,
-                receipt.observation.clone(),
+                occurrence.sequence,
+                occurrence.input.clone(),
+                occurrence.chain,
+                occurrence.observation.clone(),
             )
         };
         if stored.as_ref().is_none_or(|current| {
@@ -404,11 +406,11 @@ impl Aggregate<Option<Receipt>, Option<String>> for ReceiptOrder {
     fn finalize(
         &self,
         _: &mut Context<'_>,
-        stored: Option<Option<Receipt>>,
+        stored: Option<Option<Occurrence>>,
     ) -> rusqlite::Result<Option<String>> {
         stored
             .flatten()
-            .map(|receipt| serde_json::to_string(&receipt))
+            .map(|occurrence| serde_json::to_string(&occurrence))
             .transpose()
             .map_err(error)
     }
@@ -420,13 +422,13 @@ fn register(conn: &Connection) -> Result<()> {
             "pl_wire_first",
             arguments,
             FLAGS,
-            ReceiptOrder { first: true },
+            OccurrenceOrder { first: true },
         )?;
         conn.create_aggregate_function(
             "pl_wire_last",
             arguments,
             FLAGS,
-            ReceiptOrder { first: false },
+            OccurrenceOrder { first: false },
         )?;
     }
     conn.create_scalar_function("pl_wire_status", 2, FLAGS, |ctx| {

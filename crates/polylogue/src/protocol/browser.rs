@@ -135,7 +135,7 @@ pub struct SelectionNote {
     pub selected_at: String,
 }
 
-/// A blob is durable in the local primary spool, before a chat action exists.
+/// A blob is stored in the local primary-mode spool before a chat action exists.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PendingCapture {
@@ -150,12 +150,12 @@ pub struct ChatCurrent {
     pub action: Option<serde_json::Value>,
 }
 
-/// Confirmed state, a durable authored receipt, or file custody before enqueue.
+/// Confirmed state, a saved write result, or files held in the spool before enqueue.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub enum ChatAnswer {
     Current(ChatCurrent),
-    Receipt(polylogue_model::user::UserOutcome),
+    Outcome(polylogue_model::user::UserOutcome),
     Capture(PendingCapture),
 }
 
@@ -169,5 +169,5 @@ pub struct BackfillCurrent {
 #[serde(untagged)]
 pub enum BackfillAnswer {
     Current(BackfillCurrent),
-    Receipt(polylogue_model::user::UserOutcome),
+    Outcome(polylogue_model::user::UserOutcome),
 }

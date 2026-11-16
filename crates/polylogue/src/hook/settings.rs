@@ -51,7 +51,7 @@ pub fn settings_path(
 
 /// Claude Code events registered only from the version a probe confirmed
 /// them in: a harness older than that may not know them, and they carry
-/// the waits and stalls the live fold reads (permission requests, failed
+/// the waits and stalls the live-state update reads (permission requests, failed
 /// stops, subagent starts, questions).
 pub const CONFIRMED_FROM: &[(&str, &str)] = &[
     ("PermissionRequest", "2.1.316"),

@@ -25,8 +25,8 @@
 //! A row-class derivation computes a value of one row alone (a message's
 //! cost, a shell call's normalized command). The writer writes it with the
 //! row by the same function, so it runs here only when its version moves.
-//! A fold-class derivation is kept in the transaction of each change to the
-//! rows it folds: the session counts by the transaction's change summary (including the
+//! A per-change derivation is kept in the transaction of each change to the
+//! rows it combines: the session counts by the transaction's change summary (including the
 //! changes this step makes to duplicates and the active path), the links by
 //! the writer from the transaction's change summary. It runs here only when
 //! its version moves, for a session it never ran on, or for a cause it
@@ -81,10 +81,10 @@ enum Class {
     /// One row's value, written by the writer with the row: derived again
     /// only when its version moves.
     Row,
-    /// A session value kept from every change to the rows it folds, in the
+    /// A session value kept from every change to the rows it combines, in the
     /// transaction of the change: derived again only when its version moves
     /// or a cause it declares is marked.
-    Fold,
+    PerChange,
     /// A value of the whole session: derived again whenever the session's
     /// rows changed.
     Session,
@@ -100,7 +100,7 @@ enum Cause {
     /// changed (`derive_due.repo_lookup`).
     RepoLookupChanged,
     /// A stored message of the session was rewritten, or the session changed
-    /// in a way the writer does not describe message by message, so a fold
+    /// in a way the writer does not describe message by message, so a per-change update
     /// cannot add the change's share (`derive_due.rewritten`).
     MessagesRewritten,
 }
@@ -418,7 +418,7 @@ impl<'a> Pass<'a> {
                 pk,
                 token: None,
                 stale: Vec::new(),
-                admitted: true,
+                applied: true,
             })
             .collect();
         let last_wave = self.waves.iter().copied().max().unwrap_or(0);
@@ -426,7 +426,7 @@ impl<'a> Pass<'a> {
             let mut sessions = Vec::new();
             let mut at = Vec::new();
             for (i, t) in taken.iter_mut().enumerate() {
-                if !t.admitted {
+                if !t.applied {
                     continue;
                 }
                 if stopping() {
@@ -438,14 +438,14 @@ impl<'a> Pass<'a> {
                 if wave == 0 {
                     let Some((token, due)) = marked else {
                         // Its mark is gone already.
-                        t.admitted = false;
+                        t.applied = false;
                         continue;
                     };
                     t.token = Some(token);
                     t.stale = self.stale(&snapshot, t.pk, token, due)?;
                 } else if token != t.token {
                     // Its rows changed since its first wave: it stays due.
-                    t.admitted = false;
+                    t.applied = false;
                     continue;
                 }
                 let token = t.token.expect("a taken session's token");
@@ -471,7 +471,7 @@ impl<'a> Pass<'a> {
                             if duplicate.is_none() {
                                 items.push((
                                     *message,
-                                    crate::items::prepare_retained_message(&snapshot, *message)?,
+                                    crate::items::prepare_stored_message(&snapshot, *message)?,
                                 ));
                             }
                         }
@@ -493,15 +493,15 @@ impl<'a> Pass<'a> {
             if sessions.is_empty() {
                 break;
             }
-            let admitted = write(Write { sessions, finish })?;
-            for (i, ok) in at.into_iter().zip(admitted) {
-                taken[i].admitted &= ok;
+            let applied = write(Write { sessions, finish })?;
+            for (i, ok) in at.into_iter().zip(applied) {
+                taken[i].applied &= ok;
             }
         }
         Ok(Some(
             taken
                 .iter()
-                .filter(|t| t.admitted && t.token.is_some_and(|t| t.changed.is_some()))
+                .filter(|t| t.applied && t.token.is_some_and(|t| t.changed.is_some()))
                 .map(|t| t.stale.len() as u64)
                 .sum(),
         ))
@@ -553,7 +553,7 @@ struct Taken {
     /// The derivations it needs, with whether each starts from nothing.
     stale: Vec<(usize, bool)>,
     /// Every wave so far was applied.
-    admitted: bool,
+    applied: bool,
 }
 
 /// Why a session is due (`derive_due`).

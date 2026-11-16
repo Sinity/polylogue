@@ -27,7 +27,7 @@ pub struct KeyedRows {
     pub rows: String,
     /// The count of selected rows and of those without a similarity.
     pub count: String,
-    /// Physical text-selection alternatives before row hydration.
+    /// Text-selection alternatives before row hydration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub search: Option<TextSearch>,
 }
@@ -37,7 +37,7 @@ pub struct TextSearch {
     pub index: polylogue_query::search::SnippetIndex,
     pub expression: String,
     /// One-based parameter holding the number of ranked indexed texts.
-    /// Its ordinary value is -1, so counts and whole selections stay exact.
+    /// Its usual value is -1, so counts and whole selections stay exact.
     pub limit: usize,
     /// A non-text scope whose blocks can drive the same ranked selection.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -48,7 +48,7 @@ pub struct TextSearch {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ScopedSearch {
-    /// Streams eligible block occurrences for the bounded planning probe.
+    /// Streams in-scope block occurrences for the bounded planning probe.
     pub blocks: String,
     /// One-based parameter: zero reads the index, one reads the full scope,
     /// two reads the current recency batch.
@@ -59,10 +59,10 @@ pub struct ScopedSearch {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RecentSearch {
-    /// Non-text owner keys and their final order values, read newest first.
+    /// Keys of the scope rows and their final order values, read newest first.
     pub keys: String,
-    /// One-based JSON parameter containing the current batch of owner keys.
-    pub owners: usize,
+    /// One-based JSON parameter containing the current batch of row keys.
+    pub batch: usize,
 }
 
 /// A derived relation's rows.
@@ -150,7 +150,7 @@ impl Statements {
             Statements::Keyed(keyed) => &keyed.keys,
             Statements::Derived(derived) => &derived.rows,
         };
-        let projection = match columns {
+        let select_list = match columns {
             PageColumns::All => "*".to_owned(),
             PageColumns::Order => order
                 .iter()
@@ -158,7 +158,7 @@ impl Statements {
                 .collect::<Vec<_>>()
                 .join(", "),
         };
-        let mut sql = format!("SELECT {projection} FROM ({source})");
+        let mut sql = format!("SELECT {select_list} FROM ({source})");
         if after && !order.is_empty() {
             sql.push_str(" WHERE ");
             sql.push_str(&after_condition(order, params, reverse));
@@ -180,7 +180,7 @@ impl Statements {
     /// query's `params` parameters; `None` for a derived relation, whose
     /// page holds its rows.
     // Drive from the page keys. With IN, ANALYZE can choose to scan an
-    // entire native unit even though only a few rows need hydration.
+    // entire unit table even though only a few rows need hydration.
     pub fn hydrate(&self, params: usize) -> Option<String> {
         match self {
             Statements::Keyed(keyed) => Some(format!(
@@ -214,19 +214,19 @@ impl Statements {
 
     /// `columns` of every selected row, in key order.
     pub fn member_columns(&self, columns: &[String]) -> String {
-        let projection = columns
+        let select_list = columns
             .iter()
             .map(|c| format!("q.\"{c}\""))
             .collect::<Vec<_>>()
             .join(",");
         match self {
             Statements::Keyed(keyed) => format!(
-                "SELECT {projection} FROM ({}) q WHERE q._pk IN (SELECT _pk FROM ({})) ORDER BY q._pk",
+                "SELECT {select_list} FROM ({}) q WHERE q._pk IN (SELECT _pk FROM ({})) ORDER BY q._pk",
                 keyed.rows, keyed.keys
             ),
             Statements::Derived(derived) => {
                 format!(
-                    "SELECT {projection} FROM ({}) q ORDER BY q._pk",
+                    "SELECT {select_list} FROM ({}) q ORDER BY q._pk",
                     derived.rows
                 )
             }

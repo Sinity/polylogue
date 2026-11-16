@@ -18,13 +18,13 @@ fn key() -> Key {
 #[test]
 fn a_prior_backend_failure_is_not_reclassified_when_cancellation_arrives() {
     let handle = Handle::new(Backend(VecDeque::from([
-        Error::Failed("ordinary backend failure".into()),
+        Error::Failed("backend failure".into()),
         Error::Cancelled,
     ])));
     assert!(handle.get(&key()).is_none());
     assert!(handle.get(&key()).is_none());
     assert!(!handle.is_cancelled());
-    assert_eq!(handle.check().unwrap_err(), "ordinary backend failure");
+    assert_eq!(handle.check().unwrap_err(), "backend failure");
 }
 #[test]
 fn backend_cancellation_keeps_its_kind_across_the_provider_boundary() {

@@ -76,7 +76,7 @@ impl Test {
                     (Some(blob), file.into_iter().collect())
                 };
                 let batch = Batch {
-                    required_disposition: None,
+                    required_outcome: None,
                     input: input.clone(),
                     change: if first {
                         Change::First
@@ -472,7 +472,7 @@ fn an_invalid_comparison_position_does_not_change_row_hashes() {
 }
 
 #[test]
-fn row_dump_header_preserves_native_columns_without_defaults_or_guessed_json_types() {
+fn row_dump_header_keeps_source_columns_unguessed() {
     let mut t = Test::new(
         "CREATE TABLE empty(a TEXT NOT NULL,b INTEGER DEFAULT 17,PRIMARY KEY(a,b)) WITHOUT ROWID; CREATE TABLE generated(n INTEGER,doubled INTEGER GENERATED ALWAYS AS(n*2) STORED); CREATE VIRTUAL TABLE search USING fts5(body);",
     );
@@ -509,8 +509,8 @@ fn row_dump_header_preserves_native_columns_without_defaults_or_guessed_json_typ
     let length = t.length;
     t.capture(&mut DatabaseReader::default()).unwrap();
     assert_eq!(t.length, length);
-    // The comparison is derived state. A SQL-only predecessor must emit its
-    // native metadata header once, then resume ordinary unchanged detection.
+    // The comparison is derived state. A comparison saved from SQL alone must
+    // emit the metadata header once, then detect unchanged tables as before.
     Connection::open(t.archive.index_db())
         .unwrap()
         .execute(

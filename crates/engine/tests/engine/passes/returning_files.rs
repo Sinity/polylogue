@@ -173,14 +173,14 @@ fn a_growing_capture_log_appends_to_one_chain() {
 /// declarations have kinds of their own. When they shared one, the writer
 /// refused the later range and the chain stayed short of its end.
 #[test]
-fn a_capture_log_with_turn_and_native_captures_is_read_to_its_end() {
+fn capture_log_with_mixed_captures_is_read_to_its_end() {
     let w = ClaudeHome::new();
     let path = w
         .config(256)
         .spool_dir("browser-capture")
         .join("chatgpt/mixed.json");
     fs::create_dir_all(path.parent().unwrap()).unwrap();
-    let native: serde_json::Value = serde_json::from_slice(
+    let full_capture: serde_json::Value = serde_json::from_slice(
         &fs::read(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../examples/sources/browser-capture/python-chatgpt-capture/input.json"
@@ -188,7 +188,7 @@ fn a_capture_log_with_turn_and_native_captures_is_read_to_its_end() {
         .unwrap(),
     )
     .unwrap();
-    let mut from_turns = native.clone();
+    let mut from_turns = full_capture.clone();
     from_turns["raw_provider_payload"] = serde_json::json!({});
     from_turns["session"]
         .as_object_mut()
@@ -197,10 +197,10 @@ fn a_capture_log_with_turn_and_native_captures_is_read_to_its_end() {
     let mut log = capture_log::MAGIC.to_vec();
     log.extend(frame(&from_turns));
     let later = log.len();
-    log.extend(frame(&native));
+    log.extend(frame(&full_capture));
     assert!(
         log.len() - later > 256,
-        "the native capture is in a later range"
+        "the full capture is in a later range"
     );
     fs::write(&path, &log).unwrap();
 

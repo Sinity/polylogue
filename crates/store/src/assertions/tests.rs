@@ -52,7 +52,7 @@ fn archive() -> Connection {
 }
 
 #[test]
-fn frozen_assertions_replay_exact_facts_and_first_admission() {
+fn saved_assertions_replay_facts_and_first_commit() {
     let conn = archive();
     let mut original = assertion(
         "first",
@@ -83,7 +83,7 @@ fn frozen_assertions_replay_exact_facts_and_first_admission() {
     .unwrap();
     assert_eq!(changes, vec![actual.clone()]);
     visit(&conn, Some(7), |_| {
-        panic!("already admitted fact appeared again")
+        panic!("already committed fact appeared again")
     })
     .unwrap();
     original.value = Some(Json::String("changed".into()));
@@ -100,7 +100,7 @@ fn frozen_assertions_replay_exact_facts_and_first_admission() {
     assert_eq!(get(&overlay, "first").unwrap(), Some(expected));
 }
 #[test]
-fn canonical_assertion_graph_exposes_forks_and_restoration_in_every_import_order() {
+fn assertion_graph_shows_forks_in_every_import_order() {
     let facts = [
         assertion("family", "first", AssertionKind::Note, &[]),
         assertion(
@@ -153,7 +153,7 @@ fn canonical_assertion_graph_exposes_forks_and_restoration_in_every_import_order
     }
 }
 #[test]
-fn canonical_withdrawals_cover_variant_roots_and_restore_through_the_same_graph() {
+fn withdrawals_cover_variant_roots_and_restore_together() {
     let conn = archive();
     let variant = Variant {
         id: "v1".into(),
@@ -215,7 +215,7 @@ fn states(conn: &Connection, root: &str) -> Vec<(String, bool, bool)> {
 }
 
 #[test]
-fn stored_currency_keeps_every_fork_head_and_follows_withdrawal_and_restoration() {
+fn stored_heads_keep_forks_and_follow_withdrawals() {
     let conn = archive();
     apply(
         &conn,

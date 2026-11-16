@@ -65,12 +65,12 @@ pub const SESSION_SPAN: Construct = Construct {
     parameters: TIME_PARAMETERS,
     validity: Validity::Parameterized,
     tests: &[
-        "span_and_lanes_match_a_hand_computed_session",
+        "span_and_parties_match_a_hand_computed_session",
         "tool_intervals_extend_clusters_and_share_overlap",
         "clustering_sensitivity_matches_the_morrow_shaped_sample",
     ],
     figures: &[
-        "Morrow #2, 18 own messages: clustered 62 minutes at a 5-minute gap, 75 minutes at a 10-minute gap. Time lanes at both gaps: tools 1704000 ms, model 2348000 ms, human 448000 ms (2026-10-28)",
+        "Morrow #2, 18 own messages: clustered 62 minutes at a 5-minute gap, 75 minutes at a 10-minute gap. Time per party at both gaps: tools 1704000 ms, model 2348000 ms, human 448000 ms (2026-10-28)",
     ],
 };
 
@@ -85,9 +85,9 @@ pub const SESSION_TIME: Construct = Construct {
     parameters: TIME_PARAMETERS,
     validity: Validity::Parameterized,
     tests: &[
-        "span_and_lanes_match_a_hand_computed_session",
+        "span_and_parties_match_a_hand_computed_session",
         "tool_intervals_extend_clusters_and_share_overlap",
-        "time_lanes_sum_to_wall_for_overlapping_intervals",
+        "party_times_sum_to_wall_for_overlapping_intervals",
     ],
     figures: SESSION_SPAN.figures,
 };
@@ -130,7 +130,7 @@ pub const OUTLOOK: Construct = Construct {
         "message.at",
         "message.cost_nusd",
         "message.provider_cost_nusd",
-        "message token lanes",
+        "message token kinds",
         "usage_report",
     ],
     unit: "nano-USD; tokens",
@@ -203,7 +203,7 @@ pub const COMPARE: Construct = Construct {
     figures: &[],
 };
 
-/// The checked-in reference uses these exact declarations.
+/// The checked-in reference is generated from these declarations.
 pub fn markdown(products: &[Construct]) -> String {
     let mut out = String::from(
         "# Derived data\n\nGenerated from the product declarations. Session products read parsed rows; read-time products may read settings, notes and the query clock.\n",

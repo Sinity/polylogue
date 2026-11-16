@@ -126,7 +126,7 @@ pub(super) fn current_event(product: &Product) -> ConfirmedEvent {
 }
 
 #[test]
-fn current_readings_keep_their_progress_and_authenticated_owner_context() {
+fn current_readings_keep_progress_and_sinex_context() {
     for product in [
         document(StepProgress::AtEnd),
         fragment(StepProgress::Partway),
@@ -145,18 +145,18 @@ fn current_readings_keep_their_progress_and_authenticated_owner_context() {
                     .unwrap(),
             }
         );
-        let native = confirmed.native.unwrap();
-        assert_eq!(native.kind.name, event.event_type);
-        assert_eq!(native.kind.version, event.kind_version);
-        assert_eq!(native.kind_definition_hash, event.kind_definition_hash);
+        let context = confirmed.sinex_context.unwrap();
+        assert_eq!(context.kind.name, event.event_type);
+        assert_eq!(context.kind.version, event.kind_version);
+        assert_eq!(context.kind_definition_hash, event.kind_definition_hash);
         assert_eq!(
-            native.projection.payload_hash,
+            context.payload_identity.payload_hash,
             event.projection.payload_hash
         );
-        assert_eq!(native.origin.producer_identity, event.producer_identity);
-        assert_eq!(native.origin.source_fingerprint, event.source_fingerprint);
+        assert_eq!(context.origin.producer_identity, event.producer_identity);
+        assert_eq!(context.origin.source_fingerprint, event.source_fingerprint);
         assert_eq!(
-            serde_json::to_value(native.projection).unwrap(),
+            serde_json::to_value(context.payload_identity).unwrap(),
             json!({"payload_hash": event.projection.payload_hash})
         );
     }
@@ -184,41 +184,41 @@ fn no_position_confirmed_removal_requires_post_ack_head_in_the_applied_scope() {
     let before = std::time::Instant::now();
     let after = before + std::time::Duration::from_secs(1);
     let mut health = crate::status::Health {
-        owner_position: state.head,
-        owner_scope: state.scope.clone(),
+        sinex_position: state.latest_position,
+        sinex_scope: state.scope.clone(),
         position_observed: Some(before),
         last_ack: Some(after),
         ..Default::default()
     };
     assert_eq!(
-        confirmed_removal_state(&state, &health).head,
+        confirmed_removal_state(&state, &health).latest_position,
         None,
-        "a caught-up presend head cannot cover a new acknowledgment"
+        "a caught-up position read before sending cannot cover a new acknowledgment"
     );
     health.position_observed = Some(after);
     assert_eq!(
-        confirmed_removal_state(&state, &health).head,
+        confirmed_removal_state(&state, &health).latest_position,
         Some(42),
-        "a newly verified head need not advance numerically"
+        "a newly verified latest position need not advance numerically"
     );
-    health.owner_scope = Some("replacement-scope".into());
+    health.sinex_scope = Some("replacement-scope".into());
     assert_eq!(
-        confirmed_removal_state(&state, &health).head,
+        confirmed_removal_state(&state, &health).latest_position,
         None,
         "the same number in another scope is not the applied prefix"
     );
     let mut reset = state;
-    reset.scope = health.owner_scope.clone();
+    reset.scope = health.sinex_scope.clone();
     reset.applied_position = None;
     assert_eq!(
         confirmed_removal_state(&reset, &health).applied_position,
         None
     );
-    health.owner_position = Some(43);
+    health.sinex_position = Some(43);
     assert_eq!(
-        confirmed_removal_state(&reset, &health).head,
+        confirmed_removal_state(&reset, &health).latest_position,
         None,
-        "a newer observed head must itself be saved before confirmed_removal"
+        "a newer observed latest position must itself be saved before confirmed_removal"
     );
 }
 

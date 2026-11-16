@@ -48,7 +48,7 @@ fn separate_immutable_exports_keep_older_text_when_new_collections_are_null_or_e
         let out = cli(&env, &["--json", "read", context]);
         assert!(out.status.success(), "{out:?}");
         let value = document(&env, context);
-        let provenance = cli(
+        let sources = cli(
             &env,
             &[
                 "--json",
@@ -56,15 +56,15 @@ fn separate_immutable_exports_keep_older_text_when_new_collections_are_null_or_e
                 "SELECT r.id AS input FROM document_source s JOIN document d ON d.pk=s.document_pk JOIN input_ref r ON r.pk=s.input_pk WHERE d.id='claude-ai:project:p:doc:d'",
             ],
         );
-        assert!(provenance.status.success(), "{provenance:?}");
-        let provenance = json(&provenance);
+        assert!(sources.status.success(), "{sources:?}");
+        let sources = json(&sources);
         if initial.is_none() {
             initial = Some(value.clone());
-            input = Some(provenance[0]["input"].clone());
+            input = Some(sources[0]["input"].clone());
         }
         assert_eq!(&value, initial.as_ref().unwrap());
-        assert_eq!(provenance[0]["input"], *input.as_ref().unwrap());
-        assert_eq!(provenance.as_array().unwrap().len(), 1);
+        assert_eq!(sources[0]["input"], *input.as_ref().unwrap());
+        assert_eq!(sources.as_array().unwrap().len(), 1);
     }
     let inputs = cli(
         &env,

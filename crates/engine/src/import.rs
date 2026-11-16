@@ -10,16 +10,16 @@ mod assets;
 mod authored;
 mod bundle;
 pub(crate) mod exports;
-mod legacy;
 pub(crate) mod older_archive;
 mod package;
-pub(crate) mod predecessor;
+mod python_archive;
+pub(crate) mod python_polylogue;
 mod recognition;
 
 impl Engine {
     /// Imports immutable content identified by the BLAKE3 of its original
     /// bytes. The bytes are hashed and compressed into a private file; the
-    /// writer commits their durable extents before they are parsed.
+    /// writer commits their extents before they are parsed.
     /// Origins read as whole documents still parse one document in one job.
     pub fn import(&mut self, paths: &[PathBuf]) -> Result<ImportReport, EngineError> {
         self.import_with_options(paths, &ImportOptions::default())
@@ -51,12 +51,12 @@ impl Engine {
             return Err(std::io::Error::other("--dry-run applies to --from-archive").into());
         }
         if let Some(format) = options.format.as_deref()
-            && format != predecessor::ARCHIVE
-            && predecessor::STORES.contains(&format)
+            && format != python_polylogue::ARCHIVE
+            && python_polylogue::STORES.contains(&format)
         {
             let [path] = paths else {
                 return Err(std::io::Error::other(format!(
-                    "--format {format} names one predecessor store"
+                    "--format {format} names one Python Polylogue store"
                 ))
                 .into());
             };
@@ -65,20 +65,20 @@ impl Engine {
                     std::io::Error::other(format!("--explain does not apply to {format}")).into(),
                 );
             }
-            report.predecessor =
-                Some(self.import_predecessor_store(format, path, options.authorship.as_ref())?);
+            report.python_import =
+                Some(self.import_python_store(format, path, options.authorship.as_ref())?);
             report.pass.seconds = started.elapsed().as_secs_f64();
             return Ok(report);
         }
         for path in paths {
-            if options.format.as_deref() == Some(predecessor::ARCHIVE) {
+            if options.format.as_deref() == Some(python_polylogue::ARCHIVE) {
                 let archive = self.archive.clone();
                 let mut ids = Vec::new();
                 let mut package = ImportPackage {
                     path: path.clone(),
                     ..Default::default()
                 };
-                let found = legacy::visit(path, &archive, |member| {
+                let found = python_archive::visit(path, &archive, |member| {
                     if member.origin.is_some() {
                         ids.push(member.bytes.hash().to_string());
                     }
@@ -98,7 +98,7 @@ impl Engine {
                     recognition::refuse(
                         &mut report,
                         path,
-                        "not the predecessor's archive: it needs source.db and blob/",
+                        "not Python Polylogue's archive: it needs source.db and blob/",
                     );
                 } else {
                     if !options.explain {
@@ -470,7 +470,7 @@ impl Engine {
             member
         });
         polylogue_store::Batch {
-            required_disposition: None,
+            required_outcome: None,
             input: InputKey {
                 id: hash.to_string(),
                 format: origin.name.into(),
@@ -484,7 +484,7 @@ impl Engine {
             length: size,
             parse: Vec::new(),
             acquisition: Some(
-                self.acquisition_context(
+                self.source_read_context(
                     path,
                     origin.name,
                     polylogue_store::primary::AcquisitionRoute::ExplicitImport,
@@ -522,7 +522,7 @@ impl Engine {
         let reading = reader.parser_checkpoint(&input.id, stored.chain, &version)?;
         // An import does not grow, so a reading that waits on its last
         // record is unfinished and is read again; a recorded stop at its
-        // length stays settled for the same program.
+        // length stays final for the same program.
         if progress.parsed
             && reading.as_ref().is_some_and(|reading| {
                 reading.reading_version == version
@@ -568,8 +568,8 @@ impl Engine {
     }
 }
 
-/// One immutable acquisition at one receiving location and by one author.
-/// Retrying that acquisition keeps its namespace; another path, receiver,
+/// One immutable read at one receiving location and by one author.
+/// Retrying that read keeps its namespace; another path, receiver,
 /// member body or author establishes a different namespace.
 fn import_identity<'a>(
     machine: &str,
@@ -593,7 +593,7 @@ fn import_identity<'a>(
     format!("import:{}", digest.finalize())
 }
 
-/// Generation and length must still describe the descriptor that was captured.
+/// File facts and length must still describe the descriptor that was captured.
 fn unchanged(file: &std::fs::File, before: FileFacts, length: u64) -> std::io::Result<()> {
     if FileFacts::of(&file.metadata()?) != before || length != before.size {
         return Err(std::io::Error::other("source changed during import"));

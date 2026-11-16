@@ -1,4 +1,4 @@
-//! Descending metadata coordinates hydrate only the adjacent canonical record.
+//! Descending metadata coordinates hydrate only the adjacent source record.
 use super::*;
 use polylogue_store::selection::SelectionRow;
 
@@ -7,29 +7,29 @@ pub(super) fn visit(
     reader: &Reader<'_>,
     selection: &PreparedSelection,
     rendering: &Rendering<'_>,
-    anchor: ItemPlace,
-    anchor_row: Option<&OrderPosition>,
+    page_start: ItemPlace,
+    start_row: Option<&OrderPosition>,
     rows: &mut RowKeys,
     footer: &mut ReadFooter,
     emit: &mut Emit<'_>,
 ) -> Result<(), Failure> {
     let near = rendering.near;
     let mut current = None;
-    reader.visit_selection_from_row::<Failure>(selection, anchor_row, near, |row| {
+    reader.visit_selection_from_row::<Failure>(selection, start_row, near, |row| {
         current = Some(row);
         Ok(ControlFlow::Break(()))
     })?;
     let current = current
         .ok_or_else(|| Failure::new("stale_cursor", "the backward row is no longer selected"))?;
-    if anchor_row.is_some_and(|anchor| anchor.values != current.position.values) {
+    if start_row.is_some_and(|page_start| page_start.values != current.position.values) {
         return Err(Failure::new(
             "stale_cursor",
             "the backward row is no longer selected",
         ));
     }
-    let anchor_position = current.position.clone();
+    let start_row_position = current.position.clone();
     rows.keys
-        .insert(anchor.selection.row, anchor_position.clone());
+        .insert(page_start.selection.row, start_row_position.clone());
     let mut walk = Walk {
         reader,
         selection,
@@ -37,11 +37,11 @@ pub(super) fn visit(
         footer,
         emit,
     };
-    if !walk.row(anchor.selection.row, current, Some(anchor), near)? {
+    if !walk.row(page_start.selection.row, current, Some(page_start), near)? {
         return Ok(());
     }
-    let mut ordinal = anchor.selection.row;
-    reader.visit_selection_before_row::<Failure>(selection, &anchor_position, near, |row| {
+    let mut ordinal = page_start.selection.row;
+    reader.visit_selection_before_row::<Failure>(selection, &start_row_position, near, |row| {
         ordinal = ordinal
             .checked_sub(1)
             .ok_or_else(|| Failure::new("stale_cursor", "the backward row number underflowed"))?;
@@ -71,7 +71,7 @@ impl Walk<'_, '_, '_, '_> {
         near: Option<&polylogue_store::selection::NearFn<'_>>,
     ) -> Result<bool, Failure> {
         let start = position.map(|position| position.selection.record);
-        let anchor_item = position.map(|position| position.item);
+        let start_item = position.map(|position| position.item);
         let Some(target) = row.target else {
             let record = ReadRecordLocator {
                 kind: ReadRecordKind::Presentation,
@@ -94,14 +94,14 @@ impl Walk<'_, '_, '_, '_> {
         };
         if let ReadTarget::Document(id) = &target {
             let selected = |_: &Source| Ok(false);
-            let evidence = ProjectionEvidence::default();
-            let layout = evidence::Layout {
+            let facts = LayoutFacts::default();
+            let layout = layout_facts::Layout {
                 options: self.rendering.options,
-                evidence: &evidence,
+                facts: &facts,
                 selected: &selected,
                 ready_attachment: self.rendering.ready_attachment,
                 backwards: true,
-                anchor: None,
+                page_start: None,
             };
             if let Some(record) = output::document_omission(
                 &target.to_string(),
@@ -130,7 +130,7 @@ impl Walk<'_, '_, '_, '_> {
             Some(start) => Some(start),
             None => backward::last_record(self.reader, &target, self.rendering.options.inherited)?,
         };
-        let mut required_anchor = start.is_some();
+        let mut start_required = start.is_some();
         while let Some(record_position) = current {
             let mut observed = false;
             let mut keep = true;
@@ -139,7 +139,7 @@ impl Walk<'_, '_, '_, '_> {
                 &target,
                 self.rendering.options.inherited,
                 Some(&record_position),
-                &mut |record, evidence, actual| {
+                &mut |record, facts, actual| {
                     if observed || actual != record_position {
                         return Err(Failure::new(
                             "stale_cursor",
@@ -150,7 +150,7 @@ impl Walk<'_, '_, '_, '_> {
                     let projected = output::project(
                         record,
                         self.rendering.options,
-                        &evidence,
+                        &facts,
                         self.selection.direct_target().is_none(),
                         self.footer,
                     )?;
@@ -169,19 +169,19 @@ impl Walk<'_, '_, '_, '_> {
                                 source,
                             )
                         };
-                        let layout = evidence::Layout {
+                        let layout = layout_facts::Layout {
                             options: self.rendering.options,
-                            evidence: &evidence,
+                            facts: &facts,
                             selected: &selected,
                             ready_attachment: self.rendering.ready_attachment,
                             backwards: true,
-                            anchor: required_anchor.then_some(anchor_item).flatten(),
+                            page_start: start_required.then_some(start_item).flatten(),
                         };
                         keep = output::emit_record(self.reader, &record, at, &layout, self.emit)?;
-                    } else if required_anchor {
+                    } else if start_required {
                         return Err(Failure::new(
                             "stale_cursor",
-                            "the backward anchor is no longer visible",
+                            "the backward page start is no longer visible",
                         ));
                     }
                     // The metadata adapter names exactly one record, never its suffix.
@@ -203,7 +203,7 @@ impl Walk<'_, '_, '_, '_> {
                 self.rendering.options.inherited,
                 &record_position,
             )?;
-            required_anchor = false;
+            start_required = false;
         }
         Ok(true)
     }

@@ -70,7 +70,7 @@ fn rows(fixture: &Fixture, text: &str) -> Vec<Value> {
 }
 
 #[test]
-fn computed_conditions_keep_unknowns_and_native_money_and_duration_units() {
+fn computed_conditions_keep_unknowns_and_units() {
     let (_dir, fixture) = fixture();
     let ids = |text: &str| {
         rows(&fixture, text)
@@ -184,7 +184,7 @@ fn sum_with_unknown_member_stays_unknown() {
 }
 
 #[test]
-fn conditional_expression_is_lazy_and_keeps_the_selected_native_kind() {
+fn conditional_is_lazy_and_keeps_the_value_kind() {
     let (_dir, fixture) = fixture();
     let options = opts(&[]);
     let mut compiler = Compiler::new("", &options);
@@ -310,7 +310,7 @@ fn text_cast_returns_plain_strings_without_reference_lineage() {
 }
 
 #[test]
-fn text_cast_refuses_a_native_json_object_at_the_reader_boundary() {
+fn text_cast_refuses_a_json_object_value() {
     let directory = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(directory.path()).unwrap();
     let session = fixture

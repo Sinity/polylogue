@@ -6,7 +6,7 @@ fn relationship_version(w: &TestArchive) -> polylogue_model::BlobHash {
 }
 
 #[test]
-fn exact_chain_replacement_keeps_the_relationship_revision_but_retraction_changes_it() {
+fn chain_replacement_keeps_the_relationship_revision_but_retraction_changes_it() {
     let w = test_archive();
     let mut original = batch(
         "relations",
@@ -47,7 +47,7 @@ fn exact_chain_replacement_keeps_the_relationship_revision_but_retraction_change
     assert_eq!(
         relationship_version(&w),
         before,
-        "exact reparse preserves links cursors"
+        "an identical reparse keeps link cursors"
     );
     let mut removed = original;
     removed.parse[0].output.links.clear();
@@ -137,7 +137,7 @@ fn alias_reidentification_changes_visible_relations_and_the_cursor_version() {
 }
 
 #[test]
-fn changing_only_canonical_relation_order_invalidates_the_cursor() {
+fn changing_only_relation_order_invalidates_the_cursor() {
     let w = test_archive();
     let mut partial = batch("partial", Route::Live, 0, vec![], &["root", "a"]);
     partial.parse[0].output.links.push(relation("root", "a"));

@@ -130,7 +130,7 @@ pub fn compare(reader: &Reader<'_>, selection: &Selection, options: &str) -> Res
         let mut values = BTreeMap::new();
         for &field in &fields {
             let span = time.as_ref().and_then(|t| t.0.as_ref());
-            let lanes = time.as_ref().map(|t| t.1.as_slice()).unwrap_or_default();
+            let parties = time.as_ref().map(|t| t.1.as_slice()).unwrap_or_default();
             let value = match field {
                 "origin" => json!(origin),
                 "wall_span" => json!(span.and_then(|s| s.wall_ms)),
@@ -141,9 +141,9 @@ pub fn compare(reader: &Reader<'_>, selection: &Selection, options: &str) -> Res
                 "ends_with" => json!(span.map(|s| s.ends_with.as_str())),
                 "last_stop_reason" => json!(span.and_then(|s| s.last_stop_reason.as_deref())),
                 "waiting_model" | "waiting_human" => json!(
-                    lanes
+                    parties
                         .iter()
-                        .find(|l| l.lane
+                        .find(|l| l.party
                             == if field == "waiting_model" {
                                 "model"
                             } else {
@@ -227,7 +227,7 @@ fn field_sql(name: &str) -> Result<String> {
         "tool_untimed" => session_sql::span("s", "tool_untimed"),
         "ends_with" | "last_stop_reason" => session_sql::span("s", name),
         "waiting_model" | "waiting_human" => format!(
-            "(SELECT ms FROM session_time st WHERE st.session_pk=s.pk AND st.lane='{}' AND st.key='' AND {})",
+            "(SELECT ms FROM session_time st WHERE st.session_pk=s.pk AND st.party='{}' AND st.key='' AND {})",
             if name == "waiting_model" {
                 "model"
             } else {

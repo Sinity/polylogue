@@ -603,7 +603,7 @@ fn query_vectors_are_stored_once_by_key_and_text() {
 mod restore;
 
 #[test]
-fn proven_request_lookup_ignores_unrelated_current_texts() {
+fn request_text_lookup_ignores_unrelated_texts() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     let dir = tempfile::tempdir().unwrap();
     let mut fixture = crate::fixture::Fixture::new(dir.path()).unwrap();

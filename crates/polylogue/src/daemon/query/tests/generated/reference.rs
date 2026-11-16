@@ -117,34 +117,34 @@ impl SessionRow {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Truth {
+pub enum TriState {
     Yes,
     No,
     Unknown,
 }
 
-impl Truth {
+impl TriState {
     fn of(b: bool) -> Self {
-        if b { Truth::Yes } else { Truth::No }
+        if b { TriState::Yes } else { TriState::No }
     }
 
     fn known(value: Option<bool>) -> Self {
-        value.map_or(Truth::Unknown, Truth::of)
+        value.map_or(TriState::Unknown, TriState::of)
     }
 
     fn not(self) -> Self {
         match self {
-            Truth::Yes => Truth::No,
-            Truth::No => Truth::Yes,
-            Truth::Unknown => Truth::Unknown,
+            TriState::Yes => TriState::No,
+            TriState::No => TriState::Yes,
+            TriState::Unknown => TriState::Unknown,
         }
     }
 
     fn and(self, other: Self) -> Self {
         match (self, other) {
-            (Truth::No, _) | (_, Truth::No) => Truth::No,
-            (Truth::Yes, Truth::Yes) => Truth::Yes,
-            _ => Truth::Unknown,
+            (TriState::No, _) | (_, TriState::No) => TriState::No,
+            (TriState::Yes, TriState::Yes) => TriState::Yes,
+            _ => TriState::Unknown,
         }
     }
 
@@ -342,7 +342,7 @@ impl Cond {
         self.top_level().iter().any(|l| matches!(l, Leaf::Word(_)))
     }
 
-    fn eval(&self, rows: &Rows, row: Row) -> Truth {
+    fn eval(&self, rows: &Rows, row: Row) -> TriState {
         match self {
             Cond::Leaf(l) => l.eval(rows, row),
             Cond::And(a, b) => a.eval(rows, row).and(b.eval(rows, row)),
@@ -361,7 +361,7 @@ pub enum Row {
 }
 
 impl Leaf {
-    fn eval(&self, rows: &Rows, row: Row) -> Truth {
+    fn eval(&self, rows: &Rows, row: Row) -> TriState {
         let session = match row {
             Row::Session(i) | Row::Message(i, _) | Row::Call(i, _, _) => &rows.sessions[i],
         };
@@ -378,46 +378,46 @@ impl Leaf {
         let any_model = session.messages.iter().any(|m| m.model.is_some());
         match self {
             Leaf::Origin(o) | Leaf::SessionOrigin(o) | Leaf::CallSessionOrigin(o) => {
-                Truth::of(session.origin == *o)
+                TriState::of(session.origin == *o)
             }
-            Leaf::EitherOrigin(a, b) => Truth::of(session.origin == *a || session.origin == *b),
-            Leaf::Subagent(s) => Truth::of(session.subagent == *s),
-            Leaf::Repo(name) => Truth::known(session.repo.map(|r| {
+            Leaf::EitherOrigin(a, b) => TriState::of(session.origin == *a || session.origin == *b),
+            Leaf::Subagent(s) => TriState::of(session.subagent == *s),
+            Leaf::Repo(name) => TriState::known(session.repo.map(|r| {
                 let r = r.trim_end_matches('/').to_lowercase();
                 r == *name
                     || r.ends_with(&format!("/{name}"))
                     || r.ends_with(&format!("/{name}.git"))
             })),
-            Leaf::RepoUnknown => Truth::of(session.repo.is_none()),
-            Leaf::Model(name) => Truth::known(
+            Leaf::RepoUnknown => TriState::of(session.repo.is_none()),
+            Leaf::Model(name) => TriState::known(
                 any_model.then(|| session.messages.iter().any(|m| m.model == Some(*name))),
             ),
-            Leaf::ModelUnknown => Truth::of(!any_model),
-            Leaf::CostAbove(t) => Truth::known(session.cost().map(|c| c > t * 100_000_000)),
-            Leaf::CostBelow(t) => Truth::known(session.cost().map(|c| c < t * 100_000_000)),
-            Leaf::CostUnknown => Truth::of(session.cost().is_none()),
-            Leaf::MessagesAtLeast(n) => Truth::of(session.own().count() >= *n),
-            Leaf::ToolCallsAbove(n) => Truth::of(session.own_calls().count() > *n),
+            Leaf::ModelUnknown => TriState::of(!any_model),
+            Leaf::CostAbove(t) => TriState::known(session.cost().map(|c| c > t * 100_000_000)),
+            Leaf::CostBelow(t) => TriState::known(session.cost().map(|c| c < t * 100_000_000)),
+            Leaf::CostUnknown => TriState::of(session.cost().is_none()),
+            Leaf::MessagesAtLeast(n) => TriState::of(session.own().count() >= *n),
+            Leaf::ToolCallsAbove(n) => TriState::of(session.own_calls().count() > *n),
             Leaf::ErrorsAtLeast(n) => {
-                Truth::of(session.own_calls().filter(|c| c.outcome == "error").count() >= *n)
+                TriState::of(session.own_calls().filter(|c| c.outcome == "error").count() >= *n)
             }
             Leaf::Has(what) => {
                 let mut calls = session.own().flat_map(|m| m.calls.iter());
-                Truth::of(match *what {
+                TriState::of(match *what {
                     "errors" => calls.any(|c| c.outcome == "error"),
                     "tool_calls" => calls.next().is_some(),
                     "branches" => session.messages.iter().any(|m| m.path == Some(false)),
                     other => unreachable!("has:{other} is not generated"),
                 })
             }
-            Leaf::StartedBefore(d) => Truth::known(session.started().map(|t| t < day_start(*d))),
-            Leaf::StartedFrom(d) => Truth::known(session.started().map(|t| t >= day_start(*d))),
-            Leaf::StartedUnknown => Truth::of(session.started().is_none()),
+            Leaf::StartedBefore(d) => TriState::known(session.started().map(|t| t < day_start(*d))),
+            Leaf::StartedFrom(d) => TriState::known(session.started().map(|t| t >= day_start(*d))),
+            Leaf::StartedUnknown => TriState::of(session.started().is_none()),
             Leaf::ExistsCall(inner) => {
                 let Row::Session(i) = row else {
                     unreachable!("exists is generated on sessions")
                 };
-                let mut found = Truth::No;
+                let mut found = TriState::No;
                 for (j, m) in session.messages.iter().enumerate() {
                     if m.path == Some(false) {
                         continue;
@@ -428,31 +428,31 @@ impl Leaf {
                 }
                 found
             }
-            Leaf::Role(r) => Truth::of(m().speaker.0 == *r),
+            Leaf::Role(r) => TriState::of(m().speaker.0 == *r),
             Leaf::WrittenBy(w) => {
                 let stored = m().speaker.1;
                 if *w == "unknown" {
-                    Truth::of(stored == "unknown")
+                    TriState::of(stored == "unknown")
                 } else if stored == "unknown" {
-                    Truth::Unknown
+                    TriState::Unknown
                 } else {
-                    Truth::of(stored == *w)
+                    TriState::of(stored == *w)
                 }
             }
-            Leaf::MessageModel(name) => Truth::known(m().model.map(|x| x == *name)),
-            Leaf::MessageModelUnknown => Truth::of(m().model.is_none()),
-            Leaf::MessageCostAbove(t) => Truth::known(m().cost.map(|c| c > t * 100_000_000)),
-            Leaf::MessageCostUnknown => Truth::of(m().cost.is_none()),
-            Leaf::AtBefore(d) => Truth::known(m().at.map(|t| t < day_start(*d))),
-            Leaf::AtUnknown => Truth::of(m().at.is_none()),
-            Leaf::WordsAtLeast(n) => Truth::of(
+            Leaf::MessageModel(name) => TriState::known(m().model.map(|x| x == *name)),
+            Leaf::MessageModelUnknown => TriState::of(m().model.is_none()),
+            Leaf::MessageCostAbove(t) => TriState::known(m().cost.map(|c| c > t * 100_000_000)),
+            Leaf::MessageCostUnknown => TriState::of(m().cost.is_none()),
+            Leaf::AtBefore(d) => TriState::known(m().at.map(|t| t < day_start(*d))),
+            Leaf::AtUnknown => TriState::of(m().at.is_none()),
+            Leaf::WordsAtLeast(n) => TriState::of(
                 m().text
                     .as_deref()
                     .map_or(0, |t| t.split_whitespace().count())
                     >= *n,
             ),
             // Unknown authorship remains searchable alongside human/model prose.
-            Leaf::Word(w) => Truth::of(
+            Leaf::Word(w) => TriState::of(
                 matches!(m().speaker.1, "human" | "model" | "unknown")
                     && m()
                         .text
@@ -460,29 +460,29 @@ impl Leaf {
                         .is_some_and(|t| t.split_whitespace().any(|x| x == *w)),
             ),
             // An unknown path is neither on nor off the path.
-            Leaf::Abandoned => m().path.map_or(Truth::Unknown, |on| Truth::of(!on)),
-            Leaf::PathUnknown => Truth::of(m().path.is_none()),
-            Leaf::Tool(t) => Truth::of(c().tool.0 == *t),
-            Leaf::Action(a) => Truth::of(c().tool.1 == *a),
+            Leaf::Abandoned => m().path.map_or(TriState::Unknown, |on| TriState::of(!on)),
+            Leaf::PathUnknown => TriState::of(m().path.is_none()),
+            Leaf::Tool(t) => TriState::of(c().tool.0 == *t),
+            Leaf::Action(a) => TriState::of(c().tool.1 == *a),
             Leaf::Outcome(o) => {
                 let stored = c().outcome;
                 if *o == "unknown" {
-                    Truth::of(stored == "unknown")
+                    TriState::of(stored == "unknown")
                 } else if stored == "unknown" {
-                    Truth::Unknown
+                    TriState::Unknown
                 } else {
-                    Truth::of(stored == *o)
+                    TriState::of(stored == *o)
                 }
             }
-            Leaf::ExitZero => Truth::known(c().exit_code.map(|e| e == 0)),
-            Leaf::ExitNonzero => Truth::known(c().exit_code.map(|e| e != 0)),
-            Leaf::ExitUnknown => Truth::of(c().exit_code.is_none()),
-            Leaf::Command(part) => Truth::known(c().command.map(|x| x.contains(part))),
-            Leaf::CommandUnknown => Truth::of(c().command.is_none()),
-            // The query descriptor reads native parent-message evidence. The
-            // separately cached call clock is retained only in displayed row keys.
-            Leaf::CallAtBefore(d) => Truth::known(m().at.map(|t| t < day_start(*d))),
-            Leaf::CallAtUnknown => Truth::of(m().at.is_none()),
+            Leaf::ExitZero => TriState::known(c().exit_code.map(|e| e == 0)),
+            Leaf::ExitNonzero => TriState::known(c().exit_code.map(|e| e != 0)),
+            Leaf::ExitUnknown => TriState::of(c().exit_code.is_none()),
+            Leaf::Command(part) => TriState::known(c().command.map(|x| x.contains(part))),
+            Leaf::CommandUnknown => TriState::of(c().command.is_none()),
+            // The query descriptor reads the parent message's own time. The
+            // separately cached call clock is kept only in displayed row keys.
+            Leaf::CallAtBefore(d) => TriState::known(m().at.map(|t| t < day_start(*d))),
+            Leaf::CallAtUnknown => TriState::of(m().at.is_none()),
         }
     }
 }
@@ -559,12 +559,12 @@ fn source(rows: &Rows, unit: Unit, cond: Option<&Cond>) -> Vec<Row> {
 pub fn answer(rows: &Rows, unit: Unit, cond: &Cond) -> Vec<Row> {
     source(rows, unit, Some(cond))
         .into_iter()
-        .filter(|row| cond.eval(rows, *row) == Truth::Yes)
+        .filter(|row| cond.eval(rows, *row) == TriState::Yes)
         .collect()
 }
 
 /// Whether `cond` holds for one row.
-pub fn truth(rows: &Rows, cond: &Cond, row: Row) -> Truth {
+pub fn evaluate(rows: &Rows, cond: &Cond, row: Row) -> TriState {
     cond.eval(rows, row)
 }
 

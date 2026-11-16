@@ -50,14 +50,14 @@ fn fragment(version: BlobHash, text: &str, total: u64, source: &str) -> Record {
 }
 
 #[test]
-fn fragment_staging_conserves_versions_conflicting_claims_and_complete_canonical_input() {
+fn fragment_staging_keeps_conflicting_stated_fragments() {
     let message: Message = serde_json::from_value(serde_json::json!({
         "id":"codex:source", "session":"codex:session", "role":"user",
         "blocks":[{"type":"text","text":"AB canonical full source"}]
     }))
     .unwrap();
     let version = message.content_hash().unwrap();
-    let canonical = Record::Message(Box::new(MessageRecord {
+    let message_record = Record::Message(Box::new(MessageRecord {
         reference: "message:codex:source".into(),
         commit: 17,
         order: 0,
@@ -79,7 +79,7 @@ fn fragment_staging_conserves_versions_conflicting_claims_and_complete_canonical
     let mut staged = polylogue_store::export_items::ExportItems::new().unwrap();
     for (ordinal, record) in declarations
         .iter()
-        .chain(std::iter::once(&canonical))
+        .chain(std::iter::once(&message_record))
         .enumerate()
     {
         record.validate().unwrap();
@@ -92,17 +92,17 @@ fn fragment_staging_conserves_versions_conflicting_claims_and_complete_canonical
     }
     stage_record(&mut staged, 100..101, declarations[0].clone()).unwrap();
     let mut counts = Counts::default();
-    let mut retained = Vec::new();
+    let mut kept = Vec::new();
     while let Some(item) = staged.next_item().unwrap() {
         let record: Record = serde_json::from_reader(item.reader).unwrap();
         count(&mut counts, &record);
-        retained.push(record);
+        kept.push(record);
     }
     assert_eq!(counts.messages, 1);
     assert_eq!(counts.text_fragments, 5);
-    assert_eq!(retained.len(), 6);
-    assert!(retained.contains(&canonical));
+    assert_eq!(kept.len(), 6);
+    assert!(kept.contains(&message_record));
     for declaration in declarations {
-        assert!(retained.contains(&declaration));
+        assert!(kept.contains(&declaration));
     }
 }

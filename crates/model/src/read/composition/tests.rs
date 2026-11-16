@@ -208,7 +208,7 @@ fn a_microcompaction_removes_the_results_it_names_before_it() {
 }
 
 #[test]
-fn a_compaction_keeps_recorded_messages_after_its_summary_in_recorded_order() {
+fn compaction_keeps_later_messages_in_recorded_order() {
     let mut source = entries("kept", 3);
     let mut boundary = event_entry("boundary", "compaction", None, 10, Vec::new());
     boundary.compaction = Some(crate::CompactionBoundary {
@@ -258,7 +258,7 @@ fn a_compaction_keeps_recorded_messages_after_its_summary_in_recorded_order() {
 }
 
 #[test]
-fn a_compaction_reports_missing_kept_context_instead_of_using_an_older_prefix() {
+fn compaction_reports_missing_kept_context() {
     let mut source = compacted();
     source[6].compaction = Some(crate::CompactionBoundary {
         kept: vec![MessageId::parse("test:missing").unwrap()],

@@ -21,7 +21,7 @@ fn stored_ai_studio_chunks_survive_source_deletion_and_index_rebuild() {
         let (mut e, _lock) = engine(&w, 8);
         let captured = Captured::stream(&e.archive, fs::File::open(&path).unwrap()).unwrap();
         let origin = polylogue_sources::origin::by_name("ai-studio").unwrap();
-        // Stop after durable import. The first parse must use stored bytes.
+        // Stop once the import is stored. The first parse must use stored bytes.
         e.import_plan(&path, origin, captured, None, &mut ImportReport::default())
             .unwrap()
             .unwrap();
@@ -153,7 +153,7 @@ fn an_appended_ai_studio_suffix_reuses_the_stored_prefix_without_duplicate_bytes
     let (mut e, _lock) = engine(&w, 8);
     assert!(e.run_pass().unwrap().errors.is_empty());
     assert!(texts(&w, "ai-studio:incomplete").is_empty());
-    let (input, old_chain, _) = native_source(&e, &path);
+    let (input, old_chain, _) = watched_input(&e, &path);
     assert_eq!(
         e.inputs[&path].facts,
         Some(FileFacts::of(&fs::metadata(&path).unwrap()))
@@ -171,9 +171,9 @@ fn an_appended_ai_studio_suffix_reuses_the_stored_prefix_without_duplicate_bytes
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
     assert_eq!(pass.bytes_stored, 1);
     assert!(pass.bytes_read >= full.len() as u64, "{pass:?}");
-    let (_, chain, length) = native_source(&e, &path);
+    let (_, chain, length) = watched_input(&e, &path);
     assert_eq!(chain, old_chain);
-    assert_eq!(retained(&e, &input, chain, length), full);
+    assert_eq!(kept(&e, &input, chain, length), full);
     assert_eq!(texts(&w, "ai-studio:incomplete"), ["now complete"]);
     assert_eq!(
         w.count("SELECT SUM(length) AS n FROM a.extent"),
@@ -182,7 +182,7 @@ fn an_appended_ai_studio_suffix_reuses_the_stored_prefix_without_duplicate_bytes
     assert_eq!(w.count("SELECT SUM(records) AS n FROM parse_state"), 2);
 }
 
-fn native_source(engine: &Engine, path: &Path) -> (String, i64, u64) {
+fn watched_input(engine: &Engine, path: &Path) -> (String, i64, u64) {
     let known = engine
         .reads
         .reader()
@@ -193,7 +193,7 @@ fn native_source(engine: &Engine, path: &Path) -> (String, i64, u64) {
     (known.input_id, known.chain.unwrap(), known.stored)
 }
 
-fn retained(engine: &Engine, input: &str, chain: i64, length: u64) -> Vec<u8> {
+fn kept(engine: &Engine, input: &str, chain: i64, length: u64) -> Vec<u8> {
     engine
         .reads
         .reader()
@@ -203,13 +203,13 @@ fn retained(engine: &Engine, input: &str, chain: i64, length: u64) -> Vec<u8> {
 }
 
 #[test]
-fn proven_export_append_reads_the_prefix_but_stores_only_the_delta() {
+fn checked_export_append_stores_only_the_delta() {
     use std::io::Write;
     let w = ClaudeHome::new();
     let dir = w.config(8).spool_dir("ai-studio");
     fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("append-proof.json");
-    let text = "retained prefix ".repeat(1200);
+    let path = dir.join("append-check.json");
+    let text = "stored prefix ".repeat(1200);
     let full =
         serde_json::to_vec(&json!({"chunkedPrompt":{"chunks":[{"role":"user","text":text}]}}))
             .unwrap();
@@ -218,7 +218,7 @@ fn proven_export_append_reads_the_prefix_but_stores_only_the_delta() {
     let (mut e, _lock) = engine(&w, 8);
     let first = e.run_pass().unwrap();
     assert!(first.errors.is_empty(), "{first:?}");
-    let (input, old_chain, _) = native_source(&e, &path);
+    let (input, old_chain, _) = watched_input(&e, &path);
     fs::OpenOptions::new()
         .append(true)
         .open(&path)
@@ -228,13 +228,13 @@ fn proven_export_append_reads_the_prefix_but_stores_only_the_delta() {
     let pass = e.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{pass:?}");
     assert_eq!(pass.bytes_stored, 1);
-    // One archived full scan plus the actual provider prefix and delta. The
+    // One archived full scan plus the provider prefix and delta. The
     // cached tail alone is too short to satisfy this independent IO bound.
     assert!(pass.bytes_read >= 2 * full.len() as u64, "{pass:?}");
-    let (_, chain, length) = native_source(&e, &path);
+    let (_, chain, length) = watched_input(&e, &path);
     assert_eq!(chain, old_chain);
-    assert_eq!(retained(&e, &input, chain, length), full);
-    assert_eq!(texts(&w, "ai-studio:append-proof"), [text]);
+    assert_eq!(kept(&e, &input, chain, length), full);
+    assert_eq!(texts(&w, "ai-studio:append-check"), [text]);
     assert_eq!(
         w.count("SELECT sum(length) AS n FROM a.extent"),
         full.len() as i64
@@ -267,7 +267,7 @@ fn early_rewrite_with_an_unchanged_tail_keeps_both_export_chains() {
     let (mut e, _lock) = engine(&w, 8);
     let first = e.run_pass().unwrap();
     assert!(first.errors.is_empty(), "{first:?}");
-    let (input, old_chain, old_length) = native_source(&e, &path);
+    let (input, old_chain, old_length) = watched_input(&e, &path);
     fs::OpenOptions::new()
         .write(true)
         .open(&path)
@@ -277,11 +277,11 @@ fn early_rewrite_with_an_unchanged_tail_keeps_both_export_chains() {
     let pass = e.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{pass:?}");
     assert_eq!(pass.bytes_stored, current.len() as u64);
-    let (new_input, chain, length) = native_source(&e, &path);
+    let (new_input, chain, length) = watched_input(&e, &path);
     assert_eq!(input, new_input);
     assert_ne!(chain, old_chain);
-    assert_eq!(retained(&e, &input, old_chain, old_length), incomplete);
-    assert_eq!(retained(&e, &input, chain, length), current);
+    assert_eq!(kept(&e, &input, old_chain, old_length), incomplete);
+    assert_eq!(kept(&e, &input, chain, length), current);
     assert_eq!(
         texts(&w, "ai-studio:prefix"),
         [format!("new {}", "x".repeat(8192))]
@@ -293,7 +293,7 @@ fn early_rewrite_with_an_unchanged_tail_keeps_both_export_chains() {
 }
 
 #[test]
-fn missing_retained_export_prefix_captures_a_full_rewrite_without_repair() {
+fn missing_stored_export_prefix_captures_a_full_rewrite() {
     let w = ClaudeHome::new();
     let dir = w.config(8).spool_dir("ai-studio");
     fs::create_dir_all(&dir).unwrap();
@@ -304,7 +304,7 @@ fn missing_retained_export_prefix_captures_a_full_rewrite_without_repair() {
     let (mut e, _lock) = engine(&w, 8);
     let first = e.run_pass().unwrap();
     assert!(first.errors.is_empty(), "{first:?}");
-    let (input, old_chain, old_length) = native_source(&e, &path);
+    let (input, old_chain, old_length) = watched_input(&e, &path);
     let stored = e
         .reads
         .reader()
@@ -341,14 +341,14 @@ fn missing_retained_export_prefix_captures_a_full_rewrite_without_repair() {
     fs::rename(&segment, &held).unwrap();
     let mut pass = Pass::default();
     let result = e.store_plan(&mut plan, &mut pass);
-    // Restore the synthetic segment's name before decoding either retained body.
+    // Restore the synthetic segment's name before decoding either stored body.
     fs::rename(&held, &segment).unwrap();
     result.unwrap();
     assert_eq!(pass.bytes_stored, full.len() as u64);
-    let (_, chain, length) = native_source(&e, &path);
+    let (_, chain, length) = watched_input(&e, &path);
     assert_ne!(chain, old_chain);
-    assert_eq!(retained(&e, &input, old_chain, old_length), incomplete);
-    assert_eq!(retained(&e, &input, chain, length), full);
+    assert_eq!(kept(&e, &input, old_chain, old_length), incomplete);
+    assert_eq!(kept(&e, &input, chain, length), full);
     let Some(polylogue_sources::Parse::Export(mut parser)) = (origin.open)(&path) else {
         panic!("export parser")
     };
@@ -362,7 +362,7 @@ fn missing_retained_export_prefix_captures_a_full_rewrite_without_repair() {
 }
 
 #[test]
-fn replacement_during_export_prefix_comparison_refuses_the_generation() {
+fn replacement_during_prefix_comparison_is_refused() {
     let scratch = tempfile::tempdir().unwrap();
     let path = scratch.path().join("provider");
     let replacement = scratch.path().join("replacement");
@@ -388,7 +388,7 @@ fn replacement_during_export_prefix_comparison_refuses_the_generation() {
     assert!(moved);
     assert!(
         result.is_err(),
-        "the old descriptor cannot certify its replacement path"
+        "the old descriptor cannot vouch for its replacement path"
     );
 }
 

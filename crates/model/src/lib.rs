@@ -1,5 +1,5 @@
 //! Types every Polylogue crate shares, their rules, the export codec and
-//! durable file replacement.
+//! crash-safe file replacement.
 
 #[macro_use]
 mod stored_names;
@@ -17,7 +17,7 @@ pub mod capture;
 pub mod capture_log;
 mod change_position;
 pub mod clock;
-pub mod currency;
+pub mod freshness;
 pub use clock::WallClock;
 pub mod command;
 pub mod context;
@@ -29,8 +29,8 @@ mod id;
 pub mod injection;
 pub mod kept;
 pub mod live;
-pub mod native;
 pub mod parser_context;
+pub mod sinex_event;
 pub use injection::{HookContextEmission, HookFieldClaim};
 mod message;
 pub mod money;

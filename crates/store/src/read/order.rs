@@ -1,4 +1,4 @@
-//! Export order is metadata over the full canonical own session, before any
+//! Export order is metadata over the full own session, before any
 //! query, parent prefix or view subset. Source coordinates remain separate.
 use super::*;
 
@@ -9,7 +9,7 @@ pub(super) enum RecordOrder {
     Known(i64),
 }
 
-pub(super) fn canonical_rows(session: &str) -> String {
+pub(super) fn session_record_rows(session: &str) -> String {
     format!(
         "SELECT pk,row_number() OVER (ORDER BY session_order,id)-1 AS record_order
         FROM message WHERE session_pk={session} AND duplicate_of IS NULL"
@@ -22,10 +22,10 @@ pub(super) fn checked(value: i64) -> Result<u64> {
 }
 
 impl Reader<'_> {
-    /// The canonical physical owner is metadata; resolving it never hydrates
+    /// The message's physical session is metadata; resolving it never loads
     /// an endpoint body or expands inherited parents.
     pub fn message_session(&self, id: &MessageId) -> Result<Option<SessionId>> {
-        let id = crate::parser_context::canonical_message(self.conn()?, id)?;
+        let id = crate::parser_context::resolved_message(self.conn()?, id)?;
         let value = self.conn()?.query_row(
             "SELECT s.id FROM message m JOIN session s ON s.pk=m.session_pk WHERE m.id=?1 AND m.duplicate_of IS NULL",
             [id.to_string()], |row| crate::encoding::Columns::id::<SessionId>(row, 0),
@@ -33,11 +33,11 @@ impl Reader<'_> {
         Ok(value)
     }
 
-    /// The export snapshot ordinal in this message's entire canonical own
-    /// session. It is independent of query order and inherited parent prefixes.
+    /// The export snapshot ordinal in the whole physical session that
+    /// holds this message. It is independent of query order and inherited parent prefixes.
     /// The count walks the session's reading-order index up to the message.
     pub fn message_order(&self, id: &MessageId) -> Result<Option<u64>> {
-        let id = crate::parser_context::canonical_message(self.conn()?, id)?;
+        let id = crate::parser_context::resolved_message(self.conn()?, id)?;
         self.conn()?
             .prepare_cached(
                 "SELECT (SELECT count(*) FROM message o WHERE o.session_pk=m.session_pk AND o.duplicate_of IS NULL

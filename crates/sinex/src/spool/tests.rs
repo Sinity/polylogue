@@ -25,10 +25,12 @@ fn events(identity: &str, value: &str) -> Ingress {
 }
 
 #[test]
-fn producer_backup_cut_keeps_original_frames_after_live_confirmed_removal() {
+fn backup_keeps_original_frames_after_confirmed_removal() {
     let directory = tempfile::tempdir().unwrap();
     let spool = Spool::open(directory.path(), "host").unwrap();
-    let first = spool.prepare(events("before-core-cut", "first")).unwrap();
+    let first = spool
+        .prepare(events("before-core-backup", "first"))
+        .unwrap();
     let acknowledgment: Acknowledgment = serde_json::from_value(serde_json::json!({
         "number":1,"frame":first.identity,"material":null,"admitted":[],
         "content_hash":null,"result":"admitted","counts":crate::tests::zero_counts(),"commit_seq":10
@@ -36,7 +38,7 @@ fn producer_backup_cut_keeps_original_frames_after_live_confirmed_removal() {
     .unwrap();
     spool.acknowledge(acknowledgment.clone()).unwrap();
     let pending = spool
-        .prepare(events("after-core-cut", "retained original"))
+        .prepare(events("after-core-backup", "stored original"))
         .unwrap();
     let encoded = fs::read(
         spool
@@ -51,11 +53,9 @@ fn producer_backup_cut_keeps_original_frames_after_live_confirmed_removal() {
         .finish(&AtomicBool::new(false))
         .unwrap();
 
-    // Ordinary capture and confirmed removal continue after pinning. Neither can
-    // change the bounded producer artifact or its original retry identities.
-    spool
-        .prepare(events("after-producer-cut", "later"))
-        .unwrap();
+    // Capture and confirmed removal continue after pinning. Neither can change
+    // the producer's backup copy or its original retry identities.
+    spool.prepare(events("after-backup-copy", "later")).unwrap();
     spool
         .remove_confirmed(
             &crate::tests::applied(10),
@@ -68,7 +68,7 @@ fn producer_backup_cut_keeps_original_frames_after_live_confirmed_removal() {
         restored.acknowledgment(&first.identity).unwrap(),
         Some(acknowledgment)
     );
-    assert!(restored.get("after-producer-cut").unwrap().is_none());
+    assert!(restored.get("after-backup-copy").unwrap().is_none());
     let retry = restored.get(&pending.identity).unwrap().unwrap();
     assert!(retry.phase.is_pending());
     assert_eq!(retry.identity, pending.identity);
@@ -133,7 +133,7 @@ fn producer_backup_keeps_group_material_encoding_after_confirmed_removal() {
 fn producer_backup_cancelled_before_pin_keeps_live_queue() {
     let directory = tempfile::tempdir().unwrap();
     let spool = Spool::open(directory.path(), "host").unwrap();
-    spool.prepare(events("original", "retained")).unwrap();
+    spool.prepare(events("original", "kept")).unwrap();
     assert!(spool.pin_backup(&AtomicBool::new(true)).is_err());
     assert!(spool.get("original").unwrap().is_some());
     let parent = spool.root.parent().unwrap();
@@ -142,7 +142,7 @@ fn producer_backup_cancelled_before_pin_keeps_live_queue() {
             .unwrap()
             .file_name()
             .to_str()
-            .is_some_and(|name| name.starts_with(".backup-cut-"))
+            .is_some_and(|name| name.starts_with(".backup-copy-"))
     }));
 }
 
@@ -153,7 +153,7 @@ fn named_prefix_lookup_reads_only_matching_operations_and_survives_restart() {
     let one = format!("query:0123456789ab{}", "1".repeat(52));
     let two = format!("query:0123456789ab{}", "2".repeat(52));
     for name in [&one, &two, "bulk:unrelated"] {
-        spool.prepare(events(name, "frozen object")).unwrap();
+        spool.prepare(events(name, "saved object")).unwrap();
     }
     let unrelated = spool.operation("bulk:unrelated").unwrap().join("frame.zst");
     let original = fs::read(&unrelated).unwrap();
@@ -202,7 +202,7 @@ fn named_lookup_accepts_unbounded_logical_names() {
 }
 
 #[test]
-fn a_late_acknowledgment_removes_at_the_already_applied_barrier() {
+fn late_acknowledgment_removes_at_the_applied_marker() {
     let directory = tempfile::tempdir().unwrap();
     let spool = Spool::open(directory.path(), "host").unwrap();
     spool.prepare(events("late", "value")).unwrap();
@@ -283,7 +283,7 @@ fn all(spool: &Spool, size: usize) -> Vec<Prepared> {
 }
 
 #[test]
-fn retries_keep_exact_bytes_and_later_equal_values_are_separate_operations() {
+fn retries_keep_bytes_and_later_equal_values_are_separate_operations() {
     let directory = tempfile::tempdir().unwrap();
     let spool = Spool::open(directory.path(), "host-a").unwrap();
     let first = events("write-a", "A");
@@ -310,7 +310,7 @@ fn retries_keep_exact_bytes_and_later_equal_values_are_separate_operations() {
 }
 
 #[test]
-fn acknowledgment_is_not_the_confirmed_application_barrier() {
+fn acknowledgment_is_not_the_applied_completion_marker() {
     let directory = tempfile::tempdir().unwrap();
     let spool = Spool::open(directory.path(), "host-a").unwrap();
     assert!(spool.is_known_empty());
@@ -321,7 +321,7 @@ fn acknowledgment_is_not_the_confirmed_application_barrier() {
     let spool = Spool::open(directory.path(), "host-a").unwrap();
     assert!(
         !spool.is_known_empty(),
-        "restart retains unpublished/unapplied ownership"
+        "restart keeps unsent and unapplied operations"
     );
     let page = spool.pending_after(None, 1).unwrap();
     assert!(page[0].phase.is_acknowledged());
@@ -355,12 +355,12 @@ fn one_group_owns_every_capture_until_its_confirmed_position_is_applied() {
     }
     let members = vec!["member".into(), "zip".into()];
     spool
-        .prepare_group(events("canonical", "complete"), &members)
+        .prepare_group(events("grouped", "complete"), &members)
         .unwrap();
     assert!(spool.group_for(&["zip".into()]).unwrap().is_none());
     assert_eq!(
         spool.group_for(&members).unwrap().unwrap().identity,
-        "canonical"
+        "grouped"
     );
     assert!(
         spool
@@ -369,12 +369,12 @@ fn one_group_owns_every_capture_until_its_confirmed_position_is_applied() {
     );
     assert!(
         spool
-            .prepare_group(events("canonical", "changed"), &members)
+            .prepare_group(events("grouped", "changed"), &members)
             .is_err()
     );
     assert_eq!(
         spool.capture_group("member").unwrap().unwrap().identity,
-        "canonical"
+        "grouped"
     );
     spool
         .remove_confirmed(
@@ -383,9 +383,7 @@ fn one_group_owns_every_capture_until_its_confirmed_position_is_applied() {
         )
         .unwrap();
     assert!(spool.get("zip").unwrap().is_some());
-    spool
-        .acknowledge(ack("canonical", false, Some(21)))
-        .unwrap();
+    spool.acknowledge(ack("grouped", false, Some(21))).unwrap();
     spool
         .remove_confirmed(
             &crate::tests::applied(20),
@@ -412,7 +410,7 @@ fn malformed_acknowledgments_do_not_advance_validated_queue_position() {
         .unwrap();
     assert!(spool.acknowledge(ack("raw", false, None)).is_err());
     spool
-        .prepare_group(events("group", "canonical"), &["raw".into()])
+        .prepare_group(events("group", "grouped"), &["raw".into()])
         .unwrap();
     assert!(spool.acknowledge(ack("group", false, None)).is_err());
     assert!(spool.acknowledge(ack("group", false, Some(-1))).is_err());
@@ -512,10 +510,10 @@ fn pending_metadata_stays_small_with_large_immutable_frames_and_streamed_bodies(
             .len()
             < 4096
     );
-    let physical = spool.counts().unwrap().2;
+    let stored_bytes = spool.counts().unwrap().2;
     let (body_path, descriptor) = spool.encoded_body("large-body").unwrap().remove(0);
     assert_eq!(body_path.metadata().unwrap().len(), descriptor.stored_len);
-    assert!(physical > descriptor.stored_len && physical < (28 << 20));
+    assert!(stored_bytes > descriptor.stored_len && stored_bytes < (28 << 20));
     assert_eq!(
         spool
             .body("large-body")
@@ -533,9 +531,9 @@ fn crash_worker() {
     };
     let spool = Spool::open(Path::new(&root), "host").unwrap();
     let stage = std::env::var("POLYLOGUE_SPOOL_CRASH").unwrap();
-    if stage.starts_with("acquisition_") {
+    if stage.starts_with("capture_group_") {
         spool
-            .prepare_acquisition("acquisition", "two-raws", 2, |staging| {
+            .prepare_capture_group("capture-group", "two-raws", 2, |staging| {
                 for id in ["first", "second"] {
                     staging.prepare_material(
                         material(id, b"source bytes"),
@@ -553,11 +551,11 @@ fn crash_worker() {
         }
         spool
             .prepare_group(
-                events("canonical", "all members"),
+                events("grouped", "all members"),
                 &["zip".into(), "member".into()],
             )
             .unwrap();
-        spool.acknowledge(ack("canonical", false, Some(9))).unwrap();
+        spool.acknowledge(ack("grouped", false, Some(9))).unwrap();
         spool
             .remove_confirmed(
                 &crate::tests::applied(9),
@@ -586,8 +584,8 @@ fn crash_worker() {
 }
 
 #[test]
-fn process_death_publishes_all_acquisition_members_together() {
-    for stage in ["acquisition_synced", "acquisition_published"] {
+fn process_death_publishes_all_group_members_together() {
+    for stage in ["capture_group_synced", "capture_group_published"] {
         let directory = tempfile::tempdir().unwrap();
         let status = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "spool::tests::crash_worker", "--nocapture"])
@@ -600,7 +598,7 @@ fn process_death_publishes_all_acquisition_members_together() {
         let entries = all(&spool, 1);
         assert_eq!(
             entries.len(),
-            if stage == "acquisition_published" {
+            if stage == "capture_group_published" {
                 2
             } else {
                 0
@@ -622,7 +620,7 @@ fn process_death_publishes_all_acquisition_members_together() {
 }
 
 #[test]
-fn process_death_at_durability_boundaries_exposes_only_complete_operations() {
+fn process_death_exposes_only_complete_operations() {
     for stage in [
         "body_synced",
         "operation_synced",
@@ -701,15 +699,15 @@ fn process_death_never_exposes_a_partial_capture_group() {
         } else if stage != "group_member_removed" {
             assert_eq!(
                 spool.group_for(&members).unwrap().unwrap().identity,
-                "canonical"
+                "grouped"
             );
             assert_eq!(
                 spool.capture_group("zip").unwrap().unwrap().identity,
-                "canonical"
+                "grouped"
             );
             assert_eq!(
                 spool.capture_group("member").unwrap().unwrap().identity,
-                "canonical"
+                "grouped"
             );
         }
         if stage == "group_member_removed" {
@@ -778,7 +776,7 @@ fn request_and_blob_visitors_can_use_small_metadata_until_application() {
 }
 
 #[test]
-fn replay_capture_group_retains_its_material_until_applied() {
+fn replay_capture_group_keeps_its_material_until_applied() {
     let directory = tempfile::tempdir().unwrap();
     let spool = Spool::open(directory.path(), "host").unwrap();
     spool
@@ -882,10 +880,10 @@ fn request_restore_metadata_remains_discoverable_after_acknowledgment_and_restar
 }
 
 #[test]
-fn encoded_capture_adoption_retains_exact_codec_bytes_across_retry_and_restart() {
+fn encoded_capture_keeps_codec_bytes_across_restart() {
     let directory = tempfile::tempdir().unwrap();
     let source = tempfile::tempdir().unwrap();
-    let bytes = b"synthetic encoded acquisition ".repeat(300);
+    let bytes = b"synthetic encoded capture ".repeat(300);
     let capture = raw_capture(&bytes);
     let frame = capture_frame("encoded", &bytes, &capture);
     let preparation = Preparation::new(source.path())
@@ -935,7 +933,7 @@ fn encoded_capture_adoption_retains_exact_codec_bytes_across_retry_and_restart()
 }
 
 #[test]
-fn corrupted_encoded_capture_is_rejected_before_publication() {
+fn corrupted_encoded_capture_is_rejected_before_spooling() {
     let directory = tempfile::tempdir().unwrap();
     let source = tempfile::tempdir().unwrap();
     let bytes = b"synthetic source";
@@ -1062,7 +1060,7 @@ fn every_payload_kind_is_encoded_and_counts_never_decode_it() {
         )
         .unwrap();
     spool
-        .prepare_group(events("group", "canonical facts"), &["raw".into()])
+        .prepare_group(events("group", "stored facts"), &["raw".into()])
         .unwrap();
     spool.acknowledge(ack("group", false, Some(19))).unwrap();
     for (identity, relative) in [
@@ -1098,7 +1096,7 @@ fn every_payload_kind_is_encoded_and_counts_never_decode_it() {
 }
 
 #[test]
-fn acknowledgment_body_conflict_is_terminal_evidence_and_keeps_offered_bytes_after_restart() {
+fn body_conflict_is_final_and_keeps_offered_bytes() {
     let root = tempfile::tempdir().unwrap();
     let spool = Spool::open(root.path(), "host").unwrap();
     let bytes = b"actual newly offered provider bytes";
@@ -1134,8 +1132,8 @@ fn acknowledgment_body_conflict_is_terminal_evidence_and_keeps_offered_bytes_aft
             &crate::tests::every_event_applied,
         )
         .unwrap();
-    let retained = spool.get("same-frame").unwrap().unwrap();
-    assert!(matches!(retained.phase, Phase::Conflicted { .. }));
+    let kept = spool.get("same-frame").unwrap().unwrap();
+    assert!(matches!(kept.phase, Phase::Conflicted { .. }));
     let mut observed = Vec::new();
     spool
         .body("same-frame")
@@ -1153,11 +1151,11 @@ fn acknowledgment_body_conflict_is_terminal_evidence_and_keeps_offered_bytes_aft
 }
 
 #[test]
-fn conflict_evidence_for_another_frame_cannot_change_an_operation_phase() {
+fn conflict_for_another_frame_keeps_the_phase() {
     let root = tempfile::tempdir().unwrap();
     let spool = Spool::open(root.path(), "host").unwrap();
-    let prepared = spool.prepare(events("owned", "frozen bytes")).unwrap();
-    let acknowledgment = ack("foreign", false, Some(2));
+    let prepared = spool.prepare(events("owned", "recorded bytes")).unwrap();
+    let acknowledgment = ack("other-frame", false, Some(2));
     assert!(
         spool
             .record_conflict("owned", &prepared.frame.blob, &acknowledgment)
@@ -1172,22 +1170,22 @@ fn conflict_evidence_for_another_frame_cannot_change_an_operation_phase() {
 fn a_finished_operation_refuses_a_different_outcome_through_the_spool() {
     let root = tempfile::tempdir().unwrap();
     let spool = Spool::open(root.path(), "host").unwrap();
-    let prepared = spool.prepare(events("write", "frozen")).unwrap();
-    let foreign = ack("write", false, Some(2));
+    let prepared = spool.prepare(events("write", "fixed")).unwrap();
+    let conflicting = ack("write", false, Some(2));
     spool
         .record_conflict("write", &prepared.frame.blob, &{
-            let mut acknowledgment = foreign.clone();
+            let mut acknowledgment = conflicting.clone();
             acknowledgment.content_hash = Some("blake3:other".into());
             acknowledgment
         })
         .unwrap();
-    assert!(spool.acknowledge(foreign).is_err());
+    assert!(spool.acknowledge(conflicting).is_err());
     assert!(matches!(
         spool.get("write").unwrap().unwrap().phase,
         Phase::Conflicted { .. }
     ));
 
-    let accepted = spool.prepare(events("accepted", "frozen")).unwrap();
+    let accepted = spool.prepare(events("accepted", "fixed")).unwrap();
     spool.acknowledge(ack("accepted", false, Some(5))).unwrap();
     let acknowledgment = ack("accepted", false, Some(6));
     assert!(
@@ -1221,8 +1219,8 @@ fn complete_no_position_outcomes_preserve_acknowledgment_and_application_identit
         spool.get(repeat.frame()).unwrap().unwrap().phase,
         Phase::Acknowledged { commit_seq: None }
     );
-    // An accepted metadata operation can settle without claiming any index
-    // position. Raw materials remain governed by the group barrier below.
+    // An accepted metadata operation can finish without any index position.
+    // Raw materials still wait for the group completion marker below.
     spool
         .remove_confirmed(&ReplayState::default(), &crate::tests::every_event_applied)
         .unwrap();
@@ -1243,10 +1241,10 @@ fn complete_no_position_outcomes_preserve_acknowledgment_and_application_identit
 }
 
 #[test]
-fn incomplete_or_new_admission_without_position_cannot_settle_or_remove_raw_group() {
+fn raw_group_stays_without_a_positioned_acknowledgment() {
     let directory = tempfile::tempdir().unwrap();
     let spool = Spool::open(directory.path(), "host").unwrap();
-    let bytes = b"retained provider bytes";
+    let bytes = b"kept provider bytes";
     spool
         .prepare_material(material("raw", bytes), bytes.as_slice())
         .unwrap();
@@ -1272,7 +1270,7 @@ fn incomplete_or_new_admission_without_position_cannot_settle_or_remove_raw_grou
     let mut refused = complete;
     refused.result = FrameResult::Refused {
         kind: sinex_model::FrameRefusal::Content,
-        reason: "owner refused data".into(),
+        reason: "Sinex refused data".into(),
     };
     spool.acknowledge(refused).unwrap();
     spool
@@ -1314,7 +1312,7 @@ fn new_no_position_group_at_same_completed_head_is_removed() {
         .unwrap();
     assert!(
         spool.get("raw").unwrap().is_none(),
-        "new same-head ACK invalidates the memo"
+        "new ACK at the same latest position invalidates the memo"
     );
     assert!(spool.get(frame.frame()).unwrap().is_none());
     spool
@@ -1335,12 +1333,12 @@ fn new_no_position_group_at_same_completed_head_is_removed() {
         .unwrap();
     assert!(spool.get("raw-next").unwrap().is_some());
     let mut stale = state.clone();
-    stale.head = None;
+    stale.latest_position = None;
     spool
         .remove_confirmed(&stale, &crate::tests::every_event_applied)
         .unwrap();
     assert!(spool.get("raw-next").unwrap().is_some());
-    // A fresh verified post-ACK head can have the same numeric position.
+    // A fresh latest position verified after the ACK can have the same number.
     spool
         .remove_confirmed(&state, &crate::tests::every_event_applied)
         .unwrap();
@@ -1384,7 +1382,7 @@ fn archive_only_replay_without_admitted_event_position_waits_for_completed_prefi
     };
     spool.acknowledge(acknowledgment.clone()).unwrap();
     let mut state = crate::tests::applied(42);
-    state.head = Some(43); // lifecycle commit belongs to the stream, not the event ACK
+    state.latest_position = Some(43); // lifecycle commit belongs to the stream, not the event ACK
     spool
         .remove_confirmed(&state, &crate::tests::every_event_applied)
         .unwrap();
@@ -1476,7 +1474,7 @@ fn unpublished_names(root: &Path) -> Vec<String> {
 #[test]
 fn open_removes_unpublished_preparations() {
     // `ack_synced` leaves `.ack-preparing-*` inside a published operation.
-    for stage in ["body_synced", "acquisition_synced", "ack_synced"] {
+    for stage in ["body_synced", "capture_group_synced", "ack_synced"] {
         let directory = tempfile::tempdir().unwrap();
         let status = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "spool::tests::crash_worker", "--nocapture"])
@@ -1532,7 +1530,7 @@ fn an_operation_whose_events_the_index_lacks_is_not_removed() {
 }
 
 #[test]
-fn last_acknowledgement_time_read_from_spool_after_restart() {
+fn last_acknowledgment_time_read_from_spool_after_restart() {
     let directory = tempfile::tempdir().unwrap();
     let before = std::time::SystemTime::now() - std::time::Duration::from_secs(1);
     {
@@ -1556,7 +1554,7 @@ fn last_acknowledgement_time_read_from_spool_after_restart() {
     let at = spool
         .last_acknowledged()
         .unwrap()
-        .expect("a recorded acknowledgement");
+        .expect("a recorded acknowledgment");
     assert!(at >= before, "{at:?}");
     assert!(at <= std::time::SystemTime::now());
 }

@@ -1,27 +1,28 @@
-//! Durable primary producer intents and the confirmed cache contract.
+//! Primary mode: the producer operations Polylogue saves for Sinex, and the
+//! confirmed cache.
 pub use crate::source::SourceBoundary;
-pub mod acquisition;
 pub mod authored;
-pub use acquisition::{
-    AcquisitionReceipt, AcquisitionRoute, CaptureDisposition, CaptureEmitter, CaptureMembers,
-    CaptureMode, CapturePlan, CaptureReceipt, ConfirmedSource, PendingGroupPage, PendingSource,
-    RawCustodyReceipt, RawRange, SourceBasis, SourceSelector, SourceSnapshot, SourceStatus,
-    SourceSubject,
+pub mod capture;
+pub use capture::{
+    AcquisitionReceipt, AcquisitionRoute, CaptureEmitter, CaptureMembers, CaptureMode,
+    CaptureOutcome, CapturePlan, CaptureResult, ConfirmedSource, PendingGroupPage, PendingSource,
+    RawRange, SourceBasis, SourceSelector, SourceSnapshot, SourceStatus, SourceSubject,
+    SpooledGroup,
 };
+pub mod byte_cursor;
 pub mod products;
 pub mod queue;
-pub mod raw_acquisition;
 pub mod replay;
-pub use raw_acquisition::{
-    DatabaseSnapshotToken, FileSnapshot, FileTime, RawAcquisitionCursor, RawAcquisitionProof,
-    RawAcquisitionQuery, RawBodyRange, RawStream, RawStreamRole, SourceGeneration,
+pub use byte_cursor::{
+    BodyRange, ByteCursor, ByteCursorCheck, ByteCursorQuery, DatabaseSnapshotToken, FileSnapshot,
+    FileTime, RawStream, RawStreamRole, SourceGeneration,
 };
 pub use replay::{
-    AppliedSnapshot, CompletedDelivery, ConfirmedOrigin, LastStreamMessage, NativeDeliveryCursor,
-    NativeFactContext, NativeKind, NativeSource, ProjectionIdentity, ProjectionReplay,
-    ReplayControl, ReplayState,
+    AppliedSnapshot, CompletedDelivery, ConfirmedOrigin, LastStreamMessage, PayloadIdentity,
+    ReplayControl, ReplayState, SinexEventContext, SinexKind, SinexSource, SnapshotProgress,
+    StreamCursor,
 };
-pub(crate) mod projection;
+pub(crate) mod confirmed;
 pub(crate) mod scope;
 pub use products::{
     Capture, CaptureGroup, CapturedInput, Confirmed, ConfirmedChange, ExportReadingKey, Material,
@@ -36,18 +37,18 @@ use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 pub type ProductEmitter<'a> = dyn FnMut(ProductWrite) -> Result<()> + 'a;
-/// Emits every parsed fact of a replacement reading.
+/// Emits every parsed event of a replacement reading.
 pub type ReadingProducts<'a> = dyn FnMut(&mut ProductEmitter<'_>) -> Result<()> + 'a;
 
-/// Logical names of immutable intents in the existing producer custody store.
+/// Names of saved producer operations in the spool.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NamedProductSelector {
     Exact(String),
     Prefix(String),
 }
 
-/// A locally pinned encoded body. Its optional path is a same-host custody
-/// optimization; the file and descriptor determine the bytes.
+/// An encoded body pinned on this host. Its optional path is a shortcut for
+/// readers on the same host; the file and descriptor determine the bytes.
 pub struct PreparedBody {
     pub file: std::fs::File,
     pub descriptor: hashed_blobs::EncodedBlob,
@@ -63,33 +64,31 @@ pub trait Sinex: Send + Sync {
         length: u64,
         body: PreparedBody,
     ) -> Result<PreparedWrite>;
-    /// Stages member bodies and acquisition metadata before one durable group publication.
+    /// Stages member bodies and capture-read metadata before the group is
+    /// spooled once.
     fn prepare_input_group(
         &self,
         plan: &CapturePlan,
         members: &mut CaptureMembers<'_>,
-    ) -> Result<CaptureReceipt>;
-    /// Reads local durable acquisition headers.
+    ) -> Result<CaptureResult>;
+    /// Reads the capture-read headers held in the spool.
     fn pending_source(&self, source: &SourceSelector) -> Result<PendingSource>;
     /// Pages immutable accepted membership; headers contain no parsed outputs.
-    /// Zero limit is invalid. Missing applied members do not prove source EOF.
+    /// Zero limit is invalid. Missing applied members do not show the source ended.
     fn pending_group_headers(
         &self,
         group: &str,
         after_ordinal: Option<u64>,
         limit: usize,
     ) -> Result<PendingGroupPage>;
-    /// Proves contiguous committed physical ranges in one exact generation.
-    /// This local custody cursor does not acknowledge logical source acceptance.
-    fn raw_acquisition_cursor(
-        &self,
-        query: &RawAcquisitionQuery,
-    ) -> Result<Option<RawAcquisitionCursor>>;
-    /// Pins the original encoded body for exact range comparison without
+    /// Checks contiguous committed byte ranges in one observed state of the
+    /// source. This spool cursor does not mean Sinex accepted the source.
+    fn byte_cursor(&self, query: &ByteCursorQuery) -> Result<Option<ByteCursor>>;
+    /// Pins the original encoded body for byte comparison of a range without
     /// network I/O: its one encoding, or its chunks' in order.
     fn capture_body(&self, identity: &str) -> Result<Vec<PreparedBody>>;
     fn pending_captures(&self) -> Result<Vec<PendingCapture>>;
-    /// Loads immutable acquisition metadata for one capture.
+    /// Loads the capture-read metadata of one capture.
     fn capture(&self, identity: &str) -> Result<Capture>;
     fn complete_captures(
         &self,
@@ -97,7 +96,7 @@ pub trait Sinex: Send + Sync {
         products: &[ProductWrite],
     ) -> Result<PreparedWrite>;
     fn prepare_products(&self, products: &[ProductWrite]) -> Result<PreparedWrite>;
-    /// Prepares parsed facts from a confirmed original chain in the spool,
+    /// Prepares parsed events from a confirmed original chain in the spool,
     /// before the local rows of the same parse commit. The frames of one chain
     /// are sent in the order they were prepared.
     fn prepare_parsed(
@@ -109,7 +108,7 @@ pub trait Sinex: Send + Sync {
         &self,
         request: &polylogue_model::authored::PreparedRequest,
     ) -> Result<UserOutcome>;
-    /// Existing named intents, including published but unapplied frames.
+    /// Saved named operations, including frames sent but not yet applied.
     fn visit_named_products(
         &self,
         selector: &NamedProductSelector,
@@ -123,7 +122,7 @@ pub trait Sinex: Send + Sync {
         &self,
         visit: &mut dyn FnMut(&crate::NewBlob) -> Result<()>,
     ) -> Result<()>;
-    /// Prepares a producer replay that replaces Sinex's parsed facts for one
+    /// Prepares a producer replay that replaces Sinex's parsed events for one
     /// chain. `None` while an earlier frame of that chain is unacknowledged.
     fn prepare_reading(
         &self,
@@ -139,7 +138,7 @@ pub trait Sinex: Send + Sync {
     ) -> Result<PreparedWrite>;
     fn confirmed(&self, state: &ReplayState, cache: &str) -> Result<Vec<Confirmed>>;
     /// Acknowledges the applied page. `applied` answers whether `index.db`
-    /// holds a fact for one Sinex event; producer operations retire only when
+    /// holds a row for one Sinex event; producer operations retire only when
     /// all their admitted events are there.
     fn acknowledge(
         &self,

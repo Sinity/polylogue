@@ -150,7 +150,7 @@ fn last_respects_scope() {
     );
 }
 #[test]
-fn prepared_selection_retains_exact_block_reference() {
+fn prepared_selection_keeps_block_reference() {
     let (_dir, f) = fixture();
     let pool = f.reads().unwrap();
     let reader = pool.reader().unwrap();
@@ -167,7 +167,7 @@ fn prepared_selection_retains_exact_block_reference() {
 }
 
 #[test]
-fn selected_reference_survives_projection_and_membership_keeps_offset() {
+fn selected_reference_survives_and_membership_keeps_offset() {
     let (_dir, f) = fixture();
     let pool = f.reads().unwrap();
     let reader = pool.reader().unwrap();
@@ -268,7 +268,7 @@ fn pure_bindings_preserve_closed_group_values_without_a_clock() {
 }
 
 #[test]
-fn native_facets_share_field_values_and_stream_cwd_ancestors() {
+fn facets_share_field_values_and_cwd_ancestors() {
     use crate::fixture::CallFacts;
     use crate::query::facets::{FacetError, FacetKey};
     let dir = tempfile::tempdir().unwrap();
@@ -368,7 +368,7 @@ fn native_facets_share_field_values_and_stream_cwd_ancestors() {
     assert_eq!(rows, 1);
 }
 #[test]
-fn absence_of_hook_and_activity_evidence_is_unknown_live_state() {
+fn no_hook_or_activity_events_means_unknown_live_state() {
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(dir.path()).unwrap();
     f.session(SessionFacts {
@@ -500,7 +500,7 @@ fn model_authored_user_task_does_not_answer_a_turn() {
 }
 
 #[test]
-fn canonical_object_selection_replays_frozen_definitions_in_the_same_reader() {
+fn saved_object_selection_replays_saved_definitions() {
     let (_dir, mut f) = fixture();
     save_definition(&mut f, "picked", "sessions where session:test:one");
     let pool = f.reads().unwrap();
@@ -533,7 +533,7 @@ fn canonical_object_selection_replays_frozen_definitions_in_the_same_reader() {
 }
 
 #[test]
-fn selected_assertion_reference_retains_its_actual_family_and_revision() {
+fn assertion_reference_keeps_its_family_and_revision() {
     let (_dir, mut fixture) = fixture();
     let first = fixture
         .note("note", None, Some("first"), "session:test:one")
@@ -542,14 +542,15 @@ fn selected_assertion_reference_retains_its_actual_family_and_revision() {
         .note("note", None, Some("second"), "session:test:one")
         .unwrap();
     // A fork with no revises link: both revisions of `first`'s family stay
-    // current. The stored currency index is recomputed as a writer would.
+    // current. The stored current-revision index is recomputed as a writer would.
     let conn = crate::archive::open_write(&fixture.archive.archive_db(), 1).unwrap();
     conn.execute(
         "UPDATE assertion SET root=?1 WHERE id=?2",
         rusqlite::params![first, second],
     )
     .unwrap();
-    crate::assertions::currency::recompute(&conn, [first.clone(), second.clone()].into()).unwrap();
+    crate::assertions::current_revisions::recompute(&conn, [first.clone(), second.clone()].into())
+        .unwrap();
     drop(conn);
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
@@ -615,7 +616,7 @@ fn selected_assertion_reference_retains_its_actual_family_and_revision() {
 }
 
 #[test]
-fn direct_native_reads_preserve_opaque_ids_and_ranges_without_truncating_queries() {
+fn direct_reads_keep_opaque_ids_and_ranges_whole() {
     let dir = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(dir.path()).unwrap();
     let session = fixture
@@ -736,33 +737,33 @@ fn direct_native_reads_preserve_opaque_ids_and_ranges_without_truncating_queries
             .code(),
         "not_found"
     );
-    let ordinary = reader
+    let sorted = reader
         .prepare_selection(
             "messages where message:test:a..test:b | sort by id",
             &options,
         )
         .unwrap();
-    assert!(ordinary.direct_target().is_none());
+    assert!(sorted.direct_target().is_none());
     let mut selected = vec![];
     reader
-        .visit_selection::<SelectionError>(&ordinary, None, None, |row| {
+        .visit_selection::<SelectionError>(&sorted, None, None, |row| {
             selected.push(row.target.unwrap().to_string());
             Ok(ControlFlow::Continue(()))
         })
         .unwrap();
     assert_eq!(selected, ["message:test:a", "message:test:b"]);
-    let semantic = reader
+    let query_rows = reader
         .prepare_query_selection("messages where message:test:a..test:b", &options)
         .unwrap();
-    assert!(semantic.direct_target().is_none());
-    let mut semantic_count = 0;
+    assert!(query_rows.direct_target().is_none());
+    let mut query_count = 0;
     reader
-        .visit_selection::<SelectionError>(&semantic, None, None, |_| {
-            semantic_count += 1;
+        .visit_selection::<SelectionError>(&query_rows, None, None, |_| {
+            query_count += 1;
             Ok(ControlFlow::Continue(()))
         })
         .unwrap();
-    assert_eq!(semantic_count, 2);
+    assert_eq!(query_count, 2);
     let range = reader
         .prepare_selection("message:test:a..test:b", &options)
         .unwrap();
@@ -773,7 +774,7 @@ fn direct_native_reads_preserve_opaque_ids_and_ranges_without_truncating_queries
 }
 
 #[test]
-fn direct_authored_reference_uses_exact_family_revision_membership() {
+fn direct_authored_reference_uses_family_revision_membership() {
     let (_dir, mut fixture) = fixture();
     let first = fixture
         .note("lesson", None, Some("first"), "session:test:one")
@@ -811,14 +812,14 @@ fn direct_authored_reference_uses_exact_family_revision_membership() {
 }
 
 #[test]
-fn native_event_read_target_uses_event_grain_without_rebinding_ordinary_queries() {
+fn event_read_target_uses_event_grain() {
     use crate::fixture::writer::WriterArchive;
     use polylogue_model::{Event, Output, TimeQuality};
     let mut archive = WriterArchive::new();
     let output = Output {
         events: vec![Event {
             session: None,
-            kind: "native_event".into(),
+            kind: "synthetic_event".into(),
             at: None,
             at_quality: TimeQuality::Unknown,
             at_precision: None,
@@ -829,15 +830,21 @@ fn native_event_read_target_uses_event_grain_without_rebinding_ordinary_queries(
         }],
         ..Default::default()
     };
-    archive.write_output("native-event", "claude-code", "synthetic/event", output, 1);
+    archive.write_output(
+        "synthetic-event",
+        "claude-code",
+        "synthetic/event",
+        output,
+        1,
+    );
     let pool = crate::ReadPool::open(&archive.archive).unwrap();
     let reader = pool.reader().unwrap();
-    let semantic = reader
+    let query_rows = reader
         .prepare_query_selection("events", &options())
         .unwrap();
     let mut references = vec![];
     reader
-        .visit_selection::<SelectionError>(&semantic, None, None, |row| {
+        .visit_selection::<SelectionError>(&query_rows, None, None, |row| {
             references.push(row.target.unwrap());
             Ok(ControlFlow::Continue(()))
         })
@@ -856,8 +863,8 @@ fn native_event_read_target_uses_event_grain_without_rebinding_ordinary_queries(
         })
         .unwrap();
     assert_eq!(selected, references);
-    let ordinary = reader.prepare_query_plan(&target, &options()).unwrap();
-    assert!(matches!(&ordinary.bound_query().query().source,
+    let plan = reader.prepare_query_plan(&target, &options()).unwrap();
+    assert!(matches!(&plan.bound_query().query().source,
         polylogue_query::ast::Source::Unit { unit, implicit: true, .. } if unit == "sessions"));
 }
 
@@ -906,7 +913,7 @@ fn assertion_values_are_decoded_once_and_predicates_match_recorded_text() {
 /// The prepared selection that assertion writes use and the listing the query
 /// command shows must select the same rows for one question.
 #[test]
-fn prepared_selection_and_listing_select_the_same_rows_for_an_id_with_every_row_admitted() {
+fn selection_and_listing_agree_when_every_row_is_committed() {
     let (_dir, f) = fixture();
     let pool = f.reads().unwrap();
     let reader = pool.reader().unwrap();
@@ -1058,7 +1065,7 @@ fn cwd_searches_recorded_directories_and_never_scans_sessions() {
 }
 
 #[test]
-fn unseeded_random_windows_keep_selected_rows_and_order_witnesses() {
+fn unseeded_random_windows_keep_rows_and_their_order() {
     let (_directory, fixture) = fixture();
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();

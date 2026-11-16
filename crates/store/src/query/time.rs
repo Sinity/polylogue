@@ -1,6 +1,6 @@
 //! Shared time mechanics with explicit conversion at the millisecond SQL seam.
 //! Bounds are ceiled for integer-index comparisons.
-//! Native temporal predicates compare canonical evidence at nanosecond precision.
+//! Temporal predicates compare stored source times at nanosecond precision.
 //! Millisecond conversions remain for derived point fields and broad candidates.
 use polylogue_query::QueryError;
 pub use polylogue_query::time::money_nusd;
@@ -33,7 +33,7 @@ mod tests;
 
 /// Serialized once by lowering and interpreted by the deterministic SQL adapter.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub(crate) enum NativePredicate {
+pub(crate) enum TimePredicate {
     Known,
     Compare {
         condition: query_language::time::TimeCondition,
@@ -44,7 +44,7 @@ pub(crate) enum NativePredicate {
         until: Option<jiff::Timestamp>,
     },
 }
-impl NativePredicate {
+impl TimePredicate {
     pub(crate) fn candidates(&self, cache: &str) -> String {
         use query_language::time::TimeCondition::*;
         let lower = |at: jiff::Timestamp| {

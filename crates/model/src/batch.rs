@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 pub mod export;
 mod progress;
 pub use export::{
-    ExportCursor, ExportDelivery, ExportDeliveryError, ExportDeliverySource, ReadingFootprint,
+    ExportCursor, ExportDelivery, ExportDeliveryError, ExportDeliverySource, ReadRange,
 };
 pub use progress::{ParseProgress, StepProgress};
 
@@ -66,7 +66,7 @@ pub struct Output {
     /// Native parser claims, indexed by message. Receiving admission validates
     /// their source before promoting them to observed injection evidence.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub native_hook_fields: BTreeMap<usize, Vec<crate::HookFieldClaim>>,
+    pub hook_fields: BTreeMap<usize, Vec<crate::HookFieldClaim>>,
     /// Imported hook evidence remains declared, independent of local acquisition.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub declared_injections: BTreeMap<usize, Vec<crate::injection::InjectionEvidence>>,
@@ -82,7 +82,7 @@ pub struct Output {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fragments: Vec<FragmentRow>,
     pub events: Vec<Event>,
-    /// Stable exported identities and their original source claims, indexed by event.
+    /// Stable exported identities and their original stated sources, indexed by event.
     /// The containing input still owns the local bytes.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub imported_events: BTreeMap<usize, crate::bundle::ImportedEventIdentity>,
@@ -95,7 +95,7 @@ pub struct Output {
     pub message_order: BTreeMap<usize, u64>,
     /// Selected original block positions retain the original source version.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub message_projections: BTreeMap<usize, crate::bundle::MessageProjection>,
+    pub block_selections: BTreeMap<usize, crate::bundle::MessageProjection>,
     /// Exact statements of provider relationships or references.
     pub links: Vec<Link>,
     /// Copied-prefix evidence is independent of provider relationship markers.

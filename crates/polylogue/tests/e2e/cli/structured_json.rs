@@ -1,4 +1,4 @@
-use super::stored_text::{bundle, native, page, texts, with_source};
+use super::stored_text::{bundle, page, source_record, texts, with_source};
 use super::*;
 use serde_json::json;
 
@@ -12,8 +12,8 @@ fn crossing_quoted_credentials_are_preserved_by_typed_read_without_changing_sour
     ];
     with_source(
         &[
-            native("u1", "user", json!(expected[0])),
-            native("u2", "user", json!(expected[1])),
+            source_record("u1", "user", json!(expected[0])),
+            source_record("u2", "user", json!(expected[1])),
         ],
         |fixture, _| {
             assert_eq!(texts(&page(fixture, &[])), expected);
@@ -24,16 +24,19 @@ fn crossing_quoted_credentials_are_preserved_by_typed_read_without_changing_sour
 #[test]
 fn structured_read_preserves_credential_shaped_bytes() {
     let expected = format!("synthetic credential {SECRET}");
-    with_source(&[native("u1", "user", json!(expected))], |fixture, _| {
-        assert_eq!(texts(&page(fixture, &[])), [expected.as_str()]);
-    });
+    with_source(
+        &[source_record("u1", "user", json!(expected))],
+        |fixture, _| {
+            assert_eq!(texts(&page(fixture, &[])), [expected.as_str()]);
+        },
+    );
 }
 
 #[test]
 fn read_to_bundle_import_round_trip_preserves_structured_values_and_unknown_tool_fields() {
     let input = json!({"command":"printf synthetic","empty":"","nil":null,"count":0,"enabled":false,"nested":{"paths":["a","b"]},"unknown_provider_field":{"credential":SECRET}});
     with_source(
-        &[native(
+        &[source_record(
             "a1",
             "assistant",
             json!([{"type":"tool_use","id":"c1","name":"Bash","input":input}]),
@@ -88,11 +91,11 @@ fn read_to_bundle_import_round_trip_preserves_structured_values_and_unknown_tool
 }
 
 #[test]
-fn exact_source_controls_are_escaped_and_html_remains_inert() {
+fn source_controls_are_escaped_and_html_remains_inert() {
     let expected =
         "λ🙂 --token=synthetic-later-value <script>alert('synthetic')</script>\u{1b}[31m\u{7}";
     with_source(
-        &[native("u1", "user", json!(expected))],
+        &[source_record("u1", "user", json!(expected))],
         |fixture, directory| {
             assert_eq!(texts(&page(fixture, &[])), [expected]);
             let terminal = cli(

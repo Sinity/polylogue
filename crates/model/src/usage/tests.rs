@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn unknown_lanes_stay_unknown() {
+fn unknown_token_kinds_stay_unknown() {
     let u = Usage::default();
     assert!(u.is_empty());
     assert_eq!(u.total_input(), None);

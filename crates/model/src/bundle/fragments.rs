@@ -1,5 +1,5 @@
-//! Selected text is a partial source observation, never a shortened canonical
-//! Message or Block. Complete-source attestation belongs to the Store reader.
+//! Selected text is a partial source observation, never a shortened stored
+//! Message or Block. Checking the complete source belongs to the Store reader.
 pub mod seek;
 
 use super::SourceClaim;
@@ -87,24 +87,24 @@ pub enum TextFragmentError {
     SelectedText,
     #[error("text fragment reference does not name its normalized byte interval")]
     Reference,
-    #[error("text fragment version does not identify the exact container owner")]
+    #[error("text fragment version does not identify its containing record")]
     SourceVersion,
-    #[error("text fragment has invalid original-span provenance")]
+    #[error("text fragment has an invalid original-span source")]
     Origin,
-    #[error("text fragment source claim is invalid: {0}")]
+    #[error("text fragment stated source is invalid: {0}")]
     SourceClaim(String),
     #[error("same-version text observations conflict")]
     Conflict,
     #[error("text fragment bounds split a UTF-8 character")]
     CharacterBoundary,
-    #[error("complete source text disagrees with the fragment or its span claims")]
+    #[error("complete source text disagrees with the fragment or its stated spans")]
     CompleteSource,
 }
 
 type Result<T> = std::result::Result<T, TextFragmentError>;
 
 impl TextSourceVersion {
-    /// Checks exact version/container metadata without attesting source bytes.
+    /// Checks version and container metadata without checking source bytes.
     pub fn validate_container(&self, container: &Reference) -> Result<()> {
         if Reference::parse(&container.to_string()).ok().as_ref() != Some(container) {
             return Err(TextFragmentError::SourceVersion);
@@ -123,18 +123,18 @@ impl TextSourceVersion {
         let valid = match (self, container) {
             (
                 Self::ContentHash {
-                    record: Reference::Message(owner),
+                    record: Reference::Message(version_message),
                     ..
                 },
                 Reference::Message(message) | Reference::Block { message, .. },
-            ) => owner == message,
+            ) => version_message == message,
             (
                 Self::ContentHash {
-                    record: Reference::Document(owner),
+                    record: Reference::Document(version_document),
                     ..
                 },
                 Reference::Document(document),
-            ) => owner == document,
+            ) => version_document == document,
             (Self::ExactRevision { reference }, Reference::Assertion(revision)) => {
                 revision.revision.is_some() && reference == container
             }
@@ -166,9 +166,10 @@ impl TextFragmentRecord {
 }
 
 impl TextFragment {
-    /// A staging key for one exact source domain, version and covered value.
-    /// Provenance and a newly learned total do not change this key; it is not
-    /// proof of the complete source content or a receiving admission receipt.
+    /// A staging key for one source domain, version and covered value. The
+    /// fragment's sources and a newly learned total do not change this key; it
+    /// does not show the complete source content or that a receiving archive
+    /// committed it.
     pub fn content_key(&self) -> BlobHash {
         let bytes = serde_json::to_vec(&(
             &self.container,
@@ -300,8 +301,8 @@ impl TextFragment {
         Ok(Some((left, right, right_end)))
     }
 
-    /// Merge data only. Wire commits remain foreign claims retained by each
-    /// receiving source reading, never a clock used to choose an authority.
+    /// Merge data only. Commits stated on the wire stay values that each
+    /// receiving source reading keeps, never a clock that decides which side wins.
     pub fn merge(&self, other: &Self) -> Result<Option<Self>> {
         let Some((left, right, right_end)) = self.overlap(other)? else {
             return Ok(None);
@@ -315,30 +316,28 @@ impl TextFragment {
                     .ok_or(TextFragmentError::CharacterBoundary)?,
             );
         }
-        let mut provenance = self.provenance.clone();
-        provenance
-            .spans
-            .extend(other.provenance.spans.iter().cloned());
-        provenance.spans.sort();
-        provenance.spans.dedup();
-        provenance
+        let mut source = self.provenance.clone();
+        source.spans.extend(other.provenance.spans.iter().cloned());
+        source.spans.sort();
+        source.spans.dedup();
+        source
             .sources
             .extend(other.provenance.sources.iter().cloned());
-        provenance.sources.sort();
-        provenance.sources.dedup();
-        provenance
+        source.sources.sort();
+        source.sources.dedup();
+        source
             .imports
             .extend(other.provenance.imports.iter().cloned());
-        provenance.imports.sort_by_cached_key(|claim| {
+        source.imports.sort_by_cached_key(|import| {
             (
-                claim.machine.clone(),
-                claim.input.clone(),
-                claim.chain,
-                claim.actor.to_string(),
-                claim.at.unix_ns(),
+                import.machine.clone(),
+                import.input.clone(),
+                import.chain,
+                import.actor.to_string(),
+                import.at.unix_ns(),
             )
         });
-        provenance.imports.dedup();
+        source.imports.dedup();
         let merged = Self {
             container: self.container.clone(),
             source_version: self.source_version.clone(),
@@ -349,15 +348,15 @@ impl TextFragment {
             },
             text_hash: BlobHash::of(text.as_bytes()),
             text,
-            provenance,
+            provenance: source,
         };
         merged.validate()?;
         Ok(Some(merged))
     }
 
-    /// Checks the reference-text stream against a caller-supplied exact version.
-    /// This does not prove a complete Message/Document hash from text: Store
-    /// must first validate the complete canonical source identity itself.
+    /// Checks the reference-text stream against a version the caller supplies.
+    /// This does not show a complete Message/Document hash from text: Store
+    /// must first validate the complete source identity itself.
     pub fn check_source<'a>(
         &'a self,
         version: &TextSourceVersion,

@@ -347,14 +347,14 @@ fn operator_note_ids(
     Ok(eligible)
 }
 
-/// Recheck the existing selection's eligibility before materializing its body.
+/// Recheck the existing selection's eligibility before loading its body.
 fn eligible_note(
     reader: &Reader<'_>,
     reference: &polylogue_model::RevisionReference,
     context: &std::sync::Arc<crate::operation::Context>,
 ) -> Result<Option<Assertion>, StoreError> {
     if !reader
-        .assertion_revision_currency(reference)?
+        .assertion_revision_state(reference)?
         .is_some_and(|state| state.current)
         || !reader.assertion_is_unexpired(reference, context.clock.now.into())?
     {
@@ -471,7 +471,7 @@ fn assertion_item(
         }
         Ok("unknown")
     };
-    let mut provenance = format!(
+    let mut attribution = format!(
         "original author:{} via:{} judgment:{}",
         note.fact.author,
         note.fact.via.as_str(),
@@ -490,7 +490,7 @@ fn assertion_item(
         };
         let state = judgment(&correction)?;
         let _ = write!(
-            provenance,
+            attribution,
             "; contrary assertion:{}@{} author:{} via:{} judgment:{}",
             correction.fact.root,
             correction.fact.id,
@@ -500,7 +500,7 @@ fn assertion_item(
         );
         let _ = writeln!(
             text,
-            "Contrary evidence, author:{} via:{}; judgment {state}: {}",
+            "Contrary note, author:{} via:{}; judgment {state}: {}",
             correction.fact.author,
             correction.fact.via.as_str(),
             note_line(&correction, context.clock.day.zone())
@@ -512,7 +512,7 @@ fn assertion_item(
     }
     if !not_inlined.is_empty() {
         let _ = write!(
-            provenance,
+            attribution,
             "; contrary assertions not inlined: {}; inspect: {}",
             not_inlined.len(),
             not_inlined
@@ -526,7 +526,7 @@ fn assertion_item(
     refs.push(reference.to_string());
     Ok(Item {
         expansion: None,
-        provenance: Some(provenance),
+        attribution: Some(attribution),
         text,
         refs,
     })
@@ -541,12 +541,12 @@ enum Expansion {
 
 struct Item {
     expansion: Option<Expansion>,
-    provenance: Option<String>,
+    attribution: Option<String>,
     text: String,
     refs: Vec<String>,
 }
 
-/// Candidate sections are retained until fitting so later candidates get an
+/// Candidate sections are kept until fitting so later candidates get an
 /// entry before an earlier passage consumes the expansion budget.
 struct Section {
     heading: String,
@@ -606,7 +606,7 @@ fn entry(item: &Item, bytes: usize) -> String {
         "┃ {}\n",
         archive_json(&serde_json::json!({
             "refs": item.refs,
-            "provenance": item.provenance.as_deref().unwrap_or("archived record; author unknown"),
+            "attribution": item.attribution.as_deref().unwrap_or("archived record; author unknown"),
             "source": prefix(&item.text, bytes),
         }))
     )
@@ -779,7 +779,7 @@ impl Fitter {
                         });
                         Item {
                             expansion: None,
-                            provenance: item.provenance.clone(),
+                            attribution: item.attribution.clone(),
                             refs: item.refs.clone(),
                             text: format!("Details not available ({error}).\n{}", item.text),
                         }
@@ -797,7 +797,7 @@ impl Fitter {
                     self.left_out.push(LeftOut {
                         what: format!("details of {}", item.refs.join(" ")),
                         reason: format!(
-                            "budget cannot fit source provenance; expand: {}",
+                            "budget cannot fit source attribution; expand: {}",
                             section.pull
                         ),
                     });
@@ -836,7 +836,7 @@ impl Fitter {
                 }
             }
             // Replacing the long reservation with these counts only releases
-            // space. Every section retains its pull command, even when omitted.
+            // space. Every section keeps its pull command, even when omitted.
             let failures = unavailable[section_index].len();
             unavailable[section_index].sort_unstable();
             unavailable[section_index].dedup();
@@ -983,8 +983,8 @@ fn live_items(
             if let Some(task) = s.task() {
                 let _ = write!(line, ", task {task}");
             }
-            if s.footprint() > 0 {
-                let _ = write!(line, ", uncommitted edits to {}", s.footprint());
+            if s.edited_files() > 0 {
+                let _ = write!(line, ", uncommitted edits to {}", s.edited_files());
             }
 
             if let Some(todo) = s.todo() {
@@ -995,7 +995,7 @@ fn live_items(
             }
             Item {
                 expansion: None,
-                provenance: None,
+                attribution: None,
                 text: line,
                 refs: vec![format!("session:{id}")],
             }
@@ -1080,7 +1080,7 @@ fn session_item(
     }
     Item {
         expansion: Some(Expansion::Session(Box::new(s.clone()))),
-        provenance: Some(format!(
+        attribution: Some(format!(
             "scope-index observation; {} messages; last observed {}; current external state unverified",
             s.session
                 .messages
@@ -1240,7 +1240,7 @@ fn session_start(
             text: format!("Scoped assertion {reference}; content not expanded"),
             refs: vec![format!("assertion:{reference}")],
             expansion: Some(Expansion::Assertion(reference)),
-            provenance: Some("selected as operator/accepted assertion; exact revision; content not expanded; recheck before use".into()),
+            attribution: Some("selected as operator/accepted assertion; exact revision; content not expanded; recheck before use".into()),
         }).collect(),
         "operator notes",
         &operator_notes_command,
@@ -1263,7 +1263,7 @@ fn session_start(
         .into_iter()
         .map(|b| Item {
                 expansion: None,
-                provenance: None,
+                attribution: None,
             text: format!(
                 "- {}: last observed claim by {}; session last active {}; no close or release observed; current external state unverified",
                 b.id,
@@ -1305,7 +1305,7 @@ fn session_start(
         .into_iter()
         .map(|row| Item {
             expansion: Some(Expansion::Notice(row.id.clone())),
-            provenance: Some(format!(
+            attribution: Some(format!(
                 "sender:signal; last observed {}; no outcome recorded",
                 day(Some(row.at), context.clock.day.zone())
             )),
@@ -1360,7 +1360,7 @@ fn session_start(
             };
             return Ok(Some(Item {
                 expansion: None,
-                provenance: item.provenance.clone(),
+                attribution: item.attribution.clone(),
                 text,
                 refs: item.refs.clone(),
             }));
@@ -1384,9 +1384,9 @@ fn session_start(
         for note in notes {
             let note = assertion_item(reader, &note, context)?;
             let _ = writeln!(text, "{}", note.text);
-            if let Some(provenance) = &note.provenance {
-                let target = expanded.provenance.get_or_insert_with(String::new);
-                let _ = write!(target, "; {provenance}");
+            if let Some(attribution) = &note.attribution {
+                let target = expanded.attribution.get_or_insert_with(String::new);
+                let _ = write!(target, "; {attribution}");
             }
             expanded.refs.extend(note.refs);
         }
@@ -1394,8 +1394,8 @@ fn session_start(
             text.push_str(&prompt.text);
             text.push_str("\n\nStored session/model record:\n");
             expanded.refs.push(format!("message:{}", prompt.message_id));
-            let provenance = expanded.provenance.get_or_insert_with(String::new);
-            let _ = write!(provenance, "; latest observed request recorded written_by:{} message:{}; older prompts: `polylogue read session:{} --view dialogue`", prompt.written_by, prompt.message_id, session.session.id);
+            let attribution = expanded.attribution.get_or_insert_with(String::new);
+            let _ = write!(attribution, "; latest observed request recorded written_by:{} message:{}; older prompts: `polylogue read session:{} --view dialogue`", prompt.written_by, prompt.message_id, session.session.id);
         }
         text.push_str(&expanded.text);
         expanded.text = text;
@@ -1527,9 +1527,9 @@ fn takeover(
         .iter()
         .flat_map(|item| item.refs.iter().cloned())
         .collect();
-    let correction_provenance = note_items
+    let correction_attribution = note_items
         .iter()
-        .filter_map(|item| item.provenance.as_deref())
+        .filter_map(|item| item.attribution.as_deref())
         .collect::<Vec<_>>()
         .join("; ");
     let mut fit = Fitter::new(budget, text)?;
@@ -1548,8 +1548,8 @@ fn takeover(
             .iter()
             .map(|p| Item {
                 expansion: None,
-                provenance: Some(format!(
-                    "written_by:human; author:operator; session:{id}; message:{}; at:{}; contrary context: {correction_provenance}",
+                attribution: Some(format!(
+                    "written_by:human; author:operator; session:{id}; message:{}; at:{}; contrary context: {correction_attribution}",
                     p.message_id,
                     day(p.at, context.clock.day.zone())
                 )),
@@ -1567,8 +1567,8 @@ fn takeover(
             .into_iter()
             .map(|text| Item {
                 expansion: None,
-                provenance: Some(format!(
-                    "written_by:model; last answer; contrary context: {correction_provenance}"
+                attribution: Some(format!(
+                    "written_by:model; last answer; contrary context: {correction_attribution}"
                 )),
                 text: format!("{correction_prefix}\n{text}"),
                 refs: correction_refs.clone(),
@@ -1808,12 +1808,12 @@ fn recall(
             context,
         )?;
         let mut prefix = String::new();
-        let mut provenance = String::from("session context; transcript source is archived data");
+        let mut attribution = String::from("session context; transcript source is archived data");
         for note in notes {
             let note = assertion_item(reader, &note, context)?;
             let _ = writeln!(prefix, "{}", note.text);
-            if let Some(actor) = note.provenance {
-                let _ = write!(provenance, "; {actor}");
+            if let Some(actor) = note.attribution {
+                let _ = write!(attribution, "; {actor}");
             }
             refs.extend(note.refs);
         }
@@ -1821,7 +1821,7 @@ fn recall(
         out = prefix;
         items.push(Item {
             expansion: None,
-            provenance: Some(provenance),
+            attribution: Some(attribution),
             text: out,
             refs,
         });

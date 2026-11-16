@@ -1,7 +1,7 @@
 //! `TARGET follow`: a live stream of a session in its reading form, or of a
 //! query's new rows. A session prints each new item in the collapsed form a
 //! transcript shows, as the session grows; it reads pages through the
-//! ordinary `read` operation and continues with each page's `follow` call.
+//! usual `read` operation and continues with each page's `follow` call.
 //! A query prints the rows that were not in its earlier answers. Nothing is
 //! recorded.
 use super::{Archive, fail};

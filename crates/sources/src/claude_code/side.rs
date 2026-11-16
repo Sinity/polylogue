@@ -183,11 +183,11 @@ impl DocumentParser for SideFile {
                     // The list belongs to the agent that kept it: the
                     // subagent's own session when one did.
                     Ok(v) => {
-                        let owner = agent
+                        let todo_session = agent
                             .as_deref()
                             .map(|a| format!("agent-{a}"))
                             .unwrap_or_else(|| session.clone());
-                        whole(&owner, "todo_list", v, len, out)
+                        whole(&todo_session, "todo_list", v, len, out)
                     }
                     Err(d) => d,
                 },
@@ -288,7 +288,7 @@ fn job_state(bytes: &[u8], len: usize, out: &mut Output) -> RecordOutcome {
         s.offer_cwd(cwd);
     }
     if let Some(at) = v.get("createdAt").and_then(time::rfc3339) {
-        s.offer_start(at.timestamp(), at.evidence())
+        s.offer_start(at.timestamp(), at.accuracy())
             .expect("decoded source time is valid");
     }
     if let Some(version) = v.get("cliVersion").and_then(Json::as_str) {

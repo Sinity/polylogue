@@ -82,7 +82,7 @@ impl Engine {
         }
         let origin = polylogue_sources::origin::by_name("codex").expect("declared origin");
         let compressed = found.origin.name == "codex-compressed";
-        let mut context = self.acquisition_context(
+        let mut context = self.source_read_context(
             path,
             origin.name,
             polylogue_store::primary::AcquisitionRoute::NativeCapture,
@@ -90,16 +90,16 @@ impl Engine {
         let snapshot = self.writer.source_snapshot(context.source.clone())?;
         context.basis = Some(snapshot.basis.clone());
         context.facts = Some(facts);
-        let raw_context = if compressed {
+        let original_context = if compressed {
             Some(self.sampling_context(path, found.origin.name)?)
         } else {
             None
         };
         let has_pending = snapshot.pending.head.is_some();
-        if let Some(raw) = &snapshot.pending.raw
-            && let polylogue_store::primary::Capture::Input(input) = &raw.captured
-            && input.rows.acquisition.as_ref().is_some_and(|receipt| {
-                receipt.route == polylogue_store::primary::AcquisitionRoute::NativeCapture
+        if let Some(spooled) = &snapshot.pending.raw
+            && let polylogue_store::primary::Capture::Input(input) = &spooled.captured
+            && input.rows.acquisition.as_ref().is_some_and(|source_read| {
+                source_read.route == polylogue_store::primary::AcquisitionRoute::NativeCapture
             })
             && input
                 .raw_range
@@ -137,16 +137,16 @@ impl Engine {
             return self.stored_plan(path);
         }
         let mut source = std::fs::File::open(path)?;
-        let observed = crate::acquisition::file_snapshot(&source.metadata()?)?;
+        let observed = crate::source_read::file_snapshot(&source.metadata()?)?;
         // A rollout is named by its session ID, which its first record
         // states. Until that record is complete there is nothing to name the
         // input by, so nothing is stored; the file is read again when it grows.
-        let Some(native) = polylogue_sources::codex::rollout_id(decoded(&source, compressed)?)?
+        let Some(session_id) = polylogue_sources::codex::rollout_id(decoded(&source, compressed)?)?
         else {
             return Ok(None);
         };
-        let id = format!("codex:rollout:{native}");
-        let raw = if compressed {
+        let id = format!("codex:rollout:{session_id}");
+        let original = if compressed {
             // Reading the session ID moved the shared file offset.
             source.rewind()?;
             Some(self.archive.prepare_bytes(&mut source)?)
@@ -191,8 +191,8 @@ impl Engine {
                 stream = decoded(&source, compressed)?;
             }
         }
-        // Equal logical content still has a real acquired body. Retain its
-        // encoding through the immutable Accepted/Unresolved disposition.
+        // Equal decoded content still has a body that was read. Keep its
+        // encoding through the immutable Accepted/Unresolved outcome.
         let prepared = Some(
             self.archive
                 .prepare_bytes(if same || historical.is_some() {
@@ -226,14 +226,14 @@ impl Engine {
         };
         let mut observation = self.observation(path, Some(facts));
         let mut group = Vec::new();
-        let mut raw_added = 0;
-        if let Some(raw) = raw {
-            let raw_id = raw.hash().to_string();
-            let exists = self.reads.reader()?.input_progress(&raw_id)?.is_some();
+        let mut original_added = 0;
+        if let Some(original) = original {
+            let original_id = original.hash().to_string();
+            let exists = self.reads.reader()?.input_progress(&original_id)?.is_some();
             if !exists {
-                raw_added = raw.len();
+                original_added = original.len();
             }
-            let raw_length = raw.len();
+            let original_length = original.len();
             group.push(
                 self.rollout_batch(
                     if exists {
@@ -242,14 +242,14 @@ impl Engine {
                         Change::First
                     },
                     self.observation(path, Some(facts)),
-                    Some(raw.clone()),
-                    raw_context.as_ref().expect("compressed acquisition"),
-                    raw_context
+                    Some(original.clone()),
+                    original_context.as_ref().expect("compressed source read"),
+                    original_context
                         .as_ref()
-                        .expect("compressed acquisition")
-                        .file_generation(
+                        .expect("compressed source read")
+                        .observed_file(
                             InputKey {
-                                id: raw_id.clone(),
+                                id: original_id.clone(),
                                 format: found.origin.name.into(),
                                 route: found.origin.route.imported(),
                             },
@@ -257,13 +257,13 @@ impl Engine {
                             polylogue_store::primary::RawStreamRole::ProviderBytes,
                             polylogue_store::primary::RawRange {
                                 start: 0,
-                                end: raw_length,
+                                end: original_length,
                             },
                         ),
                 ),
             );
             observation.container = Some(polylogue_store::InContainer {
-                input: raw_id,
+                input: original_id,
                 member_index: 0,
                 kind: "zstd".into(),
                 path_bytes: path
@@ -309,7 +309,7 @@ impl Engine {
             observation,
             prepared,
             &context,
-            context.file_generation(
+            context.observed_file(
                 InputKey {
                     id: id.clone(),
                     format: origin.name.into(),
@@ -336,13 +336,13 @@ impl Engine {
             }
         }
         pass.bytes_read += facts.size;
-        pass.bytes_stored += raw_added + added;
+        pass.bytes_stored += original_added + added;
         if pending {
             pass.capture_pending = true;
             return Ok(None);
         }
         let progress = self.reads.reader()?.input_progress(&id)?.ok_or_else(|| {
-            std::io::Error::other("captured native input has no current revision")
+            std::io::Error::other("captured rollout input has no current revision")
         })?;
         self.inputs.insert(
             path.clone(),
@@ -368,14 +368,14 @@ impl Engine {
         change: Change,
         observation: Observation,
         bytes: Option<PreparedBytes>,
-        context: &crate::acquisition::AcquisitionContext,
+        context: &crate::source_read::SourceReadContext,
         generation: polylogue_store::primary::SourceGeneration,
     ) -> PreparedBatch {
         let input = generation.stream().input.clone();
         let length = generation.window().end;
         let body_only = matches!(change, Change::Unchanged | Change::Observed { .. });
-        let acquisition = bytes.as_ref().map(|bytes| {
-            context.finish_generation(
+        let source_read = bytes.as_ref().map(|bytes| {
+            context.finish_observed(
                 polylogue_store::primary::RawRange {
                     start: length - bytes.len(),
                     end: length,
@@ -386,7 +386,7 @@ impl Engine {
         });
         PreparedBatch {
             batch: polylogue_store::Batch {
-                required_disposition: None,
+                required_outcome: None,
                 input,
                 change,
                 observation: Some(observation),
@@ -403,7 +403,7 @@ impl Engine {
                     .into_iter()
                     .collect(),
                 parse: Vec::new(),
-                acquisition,
+                acquisition: source_read,
                 basis: context.basis.clone(),
                 release: Default::default(),
             },

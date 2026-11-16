@@ -53,7 +53,7 @@ fn write_one(conn: &Connection, id: &str, assertion: NewAssertion, seq: i64) -> 
         &[assertion],
         seq,
         &|_| Ok(Some(BlobHash([5; 32]))),
-        Owner::Standalone,
+        SettingMode::Standalone,
     )
     .unwrap()
 }
@@ -89,7 +89,7 @@ fn cardinality_and_stale_base_use_graph_after_each_overlay_change() {
         &AssertionPatch::default(),
         3,
         &|_| Ok(None),
-        Owner::Standalone,
+        SettingMode::Standalone,
     );
     assert!(
         matches!(stale,Err(StoreError::Stale {current,..}) if current==vec!["assertion:first@second"])
@@ -122,7 +122,7 @@ fn cardinality_and_stale_base_use_graph_after_each_overlay_change() {
         },
         4,
         &|_| Ok(None),
-        Owner::Standalone,
+        SettingMode::Standalone,
     )
     .unwrap();
     assert_eq!(
@@ -152,7 +152,7 @@ fn duplicate_tag_uses_mathematical_value_and_keeps_original_author_and_hash() {
         &[second],
         2,
         &|_| Ok(Some(BlobHash([9; 32]))),
-        Owner::Standalone,
+        SettingMode::Standalone,
     )
     .unwrap();
     assert!(repeated.repeat);
@@ -164,7 +164,7 @@ fn duplicate_tag_uses_mathematical_value_and_keeps_original_author_and_hash() {
     );
 }
 #[test]
-fn frozen_apply_can_conserve_forks_and_the_next_live_write_resolves_them() {
+fn recorded_apply_keeps_forks_until_the_next_live_write() {
     let conn = db();
     let title = statement(
         AssertionKind::Title,
@@ -186,7 +186,7 @@ fn frozen_apply_can_conserve_forks_and_the_next_live_write_resolves_them() {
         &[title],
         3,
         &|_| Ok(None),
-        Owner::Standalone,
+        SettingMode::Standalone,
     )
     .unwrap();
     let three = get(&conn, "three").unwrap().unwrap().fact;
@@ -201,7 +201,7 @@ fn frozen_apply_can_conserve_forks_and_the_next_live_write_resolves_them() {
     assert_eq!(revised, ["assertion:one@one", "assertion:other@other"]);
 }
 #[test]
-fn native_fact_preserves_captured_provenance_and_original_waiting_hash() {
+fn sinex_fact_keeps_its_captured_source_and_hash() {
     let conn = db();
     let note = statement(
         AssertionKind::Note,
@@ -215,7 +215,7 @@ fn native_fact_preserves_captured_provenance_and_original_waiting_hash() {
         &[note],
         1,
         &|_| Ok(None),
-        Owner::Standalone,
+        SettingMode::Standalone,
     )
     .unwrap();
     let fact = get(&conn, "waiting").unwrap().unwrap().fact;
@@ -231,7 +231,7 @@ fn native_fact_preserves_captured_provenance_and_original_waiting_hash() {
     assert_eq!(get(&conn, "waiting").unwrap().unwrap().fact, fact);
 }
 #[test]
-fn annotation_uses_exact_rubric_and_same_author_pass_before_freezing() {
+fn annotation_checks_rubric_and_pass_before_storing() {
     let conn = db();
     let rubric = statement(
         AssertionKind::Rubric,
@@ -266,7 +266,7 @@ fn annotation_uses_exact_rubric_and_same_author_pass_before_freezing() {
     write_one(&conn, "allowed", annotation.clone(), 3);
     annotation.value = Some(json!({"value":4}));
     assert!(
-        matches!(write(&conn,&request("refused"),&[annotation.clone()],4,&|_| Ok(None),Owner::Standalone),Err(StoreError::Invalid(message)) if message.contains("not_allowed_by_rubric"))
+        matches!(write(&conn,&request("refused"),&[annotation.clone()],4,&|_| Ok(None),SettingMode::Standalone),Err(StoreError::Invalid(message)) if message.contains("not_allowed_by_rubric"))
     );
     annotation.value = Some(json!({"value":2,"confidence":0.5}));
     assert!(
@@ -276,7 +276,7 @@ fn annotation_uses_exact_rubric_and_same_author_pass_before_freezing() {
             &[annotation],
             4,
             &|_| Ok(None),
-            Owner::Standalone
+            SettingMode::Standalone
         )
         .is_err()
     );
@@ -304,7 +304,7 @@ fn bulk_tag_keeps_existing_target_and_writes_each_untagged_target() {
         &[bulk],
         2,
         &|_| Ok(None),
-        Owner::Standalone,
+        SettingMode::Standalone,
     )
     .unwrap();
     assert!(!outcome.repeat);
@@ -405,7 +405,7 @@ fn identity_withdrawal_checks_existence_without_calling_the_text_resolver() {
             &[withdrawal("assertion:missing")],
             2,
             &|_| panic!("identity-only withdrawal requested text"),
-            Owner::Standalone
+            SettingMode::Standalone
         ),
         Err(StoreError::NotFound(_))
     ));
@@ -416,7 +416,7 @@ fn identity_withdrawal_checks_existence_without_calling_the_text_resolver() {
         &[withdrawal("assertion:first")],
         2,
         &|_| panic!("identity-only withdrawal requested text"),
-        Owner::Standalone,
+        SettingMode::Standalone,
     )
     .unwrap();
     assert!(
@@ -427,7 +427,7 @@ fn identity_withdrawal_checks_existence_without_calling_the_text_resolver() {
 }
 
 #[test]
-fn unavailable_text_link_does_not_freeze_an_unbound_fact() {
+fn unavailable_text_link_stores_no_unbound_fact() {
     let conn = db();
     let assertion = statement(
         AssertionKind::Note,
@@ -446,7 +446,7 @@ fn unavailable_text_link_does_not_freeze_an_unbound_fact() {
                 reason: "source unavailable".into(),
             })
         },
-        Owner::Standalone,
+        SettingMode::Standalone,
     );
     assert!(matches!(
         result,
@@ -470,7 +470,7 @@ fn accepting_withdrawal_refuses_a_cycle_closed_by_an_imported_forward_link() {
         },
         vec![AssertionLink {
             role: LinkRole::Withdraws,
-            reference: reference("assertion:native"),
+            reference: reference("assertion:local"),
             seen_hash: None,
             quote: None,
         }],
@@ -479,24 +479,24 @@ fn accepting_withdrawal_refuses_a_cycle_closed_by_an_imported_forward_link() {
     apply(&conn, std::slice::from_ref(&imported), 1).unwrap();
     {
         let tx = conn.transaction().unwrap();
-        let mut native = request("native");
-        native.write = UserWrite::WithdrawAssertions {
+        let mut local = request("local");
+        local.write = UserWrite::WithdrawAssertions {
             targets: vec![reference("assertion:imported")],
             reason: None,
         };
         assert!(
-            matches!(crate::user_writes::apply(&tx, &native, 2), Err(StoreError::Invalid(message)) if message.contains("form a cycle"))
+            matches!(crate::user_writes::apply(&tx, &local, 2), Err(StoreError::Invalid(message)) if message.contains("form a cycle"))
         );
         // The accepting writer rolls back the request and every proposed fact.
     }
-    assert!(get(&conn, "native").unwrap().is_none());
+    assert!(get(&conn, "local").unwrap().is_none());
     assert_eq!(
         get(&conn, "imported").unwrap().unwrap().fact,
         canonical_fact(&imported).unwrap()
     );
     assert!(
         !conn
-            .prepare("SELECT 1 FROM client_request WHERE id='native'")
+            .prepare("SELECT 1 FROM client_request WHERE id='local'")
             .unwrap()
             .exists([])
             .unwrap()
@@ -531,7 +531,7 @@ fn normal_revision_of_an_undated_rubric_uses_its_own_request_time_and_slot() {
         &patch,
         2,
         &|_| Ok(None),
-        Owner::Standalone,
+        SettingMode::Standalone,
     )
     .unwrap();
     assert!(!outcome.repeat);
@@ -543,7 +543,7 @@ fn normal_revision_of_an_undated_rubric_uses_its_own_request_time_and_slot() {
     assert_eq!(revised.root, original.root);
     assert_eq!(get(&conn, "undated").unwrap().unwrap().fact, original);
     assert_eq!(
-        crate::assertions::currency::stored_heads(&conn, "undated").unwrap(),
+        crate::assertions::current_revisions::stored_heads(&conn, "undated").unwrap(),
         [Reference::Assertion(RevisionReference::exact(
             "undated".into(),
             outcome.id

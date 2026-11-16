@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn saved_denominator_is_an_exact_question_identity_not_a_mutable_name() {
+fn saved_denominator_is_a_query_hash_not_a_name() {
     let mut value = serde_json::json!({"text":"sessions","hash":BlobHash([2;32]),"denominator":format!("query:{}",BlobHash([3;32]))});
     decode(
         super::super::AssertionKind::SavedQuery,
@@ -192,7 +192,7 @@ fn comparison_values_round_trip_and_refuse_forged_verdict_shapes() {
     }
 }
 #[test]
-fn rubric_declarations_keep_predecessor_type_and_range_knowledge() {
+fn rubric_declarations_keep_python_types_and_ranges() {
     let rubric:Rubric=serde_json::from_value(serde_json::json!({
         "instructions":"Assess the visible evidence and abstain when it is missing.",
         "unit_query":"messages role:assistant",
@@ -210,13 +210,13 @@ fn rubric_declarations_keep_predecessor_type_and_range_knowledge() {
 }
 
 #[test]
-fn setting_payload_resolves_target_host_without_changing_accepting_identity() {
-    use crate::settings::{Error, Owner, Value};
+fn setting_resolves_target_host_keeping_accepting_host() {
+    use crate::settings::{Error, SettingMode, Value};
     let archive = Setting {
         machine: None,
         value: Value::Boolean(true),
     }
-    .resolve("browser.actions", "accepting", Owner::Standalone)
+    .resolve("browser.actions", "accepting", SettingMode::Standalone)
     .unwrap();
     assert_eq!(archive.machine, None);
     assert_eq!(archive.value, Value::Boolean(true));
@@ -224,14 +224,14 @@ fn setting_payload_resolves_target_host_without_changing_accepting_identity() {
         machine: None,
         value: Value::QuietHours(Some([1320, 420])),
     }
-    .resolve("signal.quiet_hours", "accepting", Owner::Standalone)
+    .resolve("signal.quiet_hours", "accepting", SettingMode::Standalone)
     .unwrap();
     assert_eq!(host.machine.as_deref(), Some("accepting"));
     let remote = Setting {
         machine: Some("other".into()),
         value: Value::QuietHours(None),
     }
-    .resolve("signal.quiet_hours", "accepting", Owner::Standalone)
+    .resolve("signal.quiet_hours", "accepting", SettingMode::Standalone)
     .unwrap();
     assert_eq!(remote.machine.as_deref(), Some("other"));
     assert!(
@@ -239,7 +239,7 @@ fn setting_payload_resolves_target_host_without_changing_accepting_identity() {
             machine: Some("other".into()),
             value: Value::Boolean(true)
         }
-        .resolve("browser.actions", "accepting", Owner::Standalone)
+        .resolve("browser.actions", "accepting", SettingMode::Standalone)
         .is_err()
     );
     assert!(
@@ -247,7 +247,7 @@ fn setting_payload_resolves_target_host_without_changing_accepting_identity() {
             machine: Some("*".into()),
             value: Value::QuietHours(None)
         }
-        .resolve("signal.quiet_hours", "accepting", Owner::Standalone)
+        .resolve("signal.quiet_hours", "accepting", SettingMode::Standalone)
         .is_err()
     );
     assert!(matches!(
@@ -255,22 +255,22 @@ fn setting_payload_resolves_target_host_without_changing_accepting_identity() {
             machine: None,
             value: Value::QuietHours(None)
         }
-        .resolve("signal.quiet_hours", "accepting", Owner::Primary),
+        .resolve("signal.quiet_hours", "accepting", SettingMode::Primary),
         Err(Error::SinexOwned(_))
     ));
     assert!(
         Value::Text("off".into())
-            .validate_for("embed.provider", Owner::Standalone)
+            .validate_for("embed.provider", SettingMode::Standalone)
             .is_err()
     );
     assert!(
         Value::Variants(vec!["invented:pl".into()])
-            .validate_for("reading.variants", Owner::Standalone)
+            .validate_for("reading.variants", SettingMode::Standalone)
             .is_err()
     );
     assert!(
         Value::QuietHours(Some([1440, 0]))
-            .validate_for("signal.quiet_hours", Owner::Standalone)
+            .validate_for("signal.quiet_hours", SettingMode::Standalone)
             .is_err()
     );
     assert!(
@@ -281,14 +281,14 @@ fn setting_payload_resolves_target_host_without_changing_accepting_identity() {
     );
     assert!(
         Value::Boolean(true)
-            .validate_for("variants.enabled", Owner::Standalone)
+            .validate_for("variants.enabled", SettingMode::Standalone)
             .is_err()
     );
     assert!(serde_json::from_value::<Setting>(serde_json::json!({"machine":null,"value":{"type":"boolean","value":true},"author":"operator"})).is_err());
 }
 
 #[test]
-fn kind_shapes_decode_every_declared_value_and_refuse_malformed_static_values() {
+fn kind_shapes_decode_declared_and_refuse_malformed() {
     use super::super::AssertionKind as K;
     let text = Json::String("authored text".into());
     let mut cases: Vec<(K, Option<&str>, Option<Json>)> = vec![
@@ -513,12 +513,15 @@ fn checked_claims_and_experiment_assignments_keep_their_declared_shapes() {
     .unwrap();
     setting
         .value
-        .validate_for("embed.price_per_mtok", crate::settings::Owner::Standalone)
+        .validate_for(
+            "embed.price_per_mtok",
+            crate::settings::SettingMode::Standalone,
+        )
         .unwrap();
 }
 
 #[test]
-fn canonical_predecessor_text_preserves_content_and_detaches_predecessor_claims() {
+fn python_polylogue_text_keeps_only_its_content() {
     use super::super::{AssertionFact, AssertionKind as K};
     let original = "original a\u{301}\n\rβ";
     let metadata = serde_json::json!({"id":"note:older","author":"operator","scope":"repo:claimed","text":"not the body","unknown":{"nested":[1,"kept"]}});
@@ -527,7 +530,7 @@ fn canonical_predecessor_text_preserves_content_and_detaches_predecessor_claims(
     let plain = decode(K::Note, None, Some(&serde_json::json!(original))).unwrap();
     assert_eq!(carried, plain);
     let Value::Text(text) = carried else {
-        panic!("predecessor text")
+        panic!("Python Polylogue text")
     };
     assert_eq!(serde_json::to_value(text).unwrap(), raw);
     assert!(decode_live(K::Note, None, Some(&raw)).is_err());
@@ -562,7 +565,7 @@ fn canonical_predecessor_text_preserves_content_and_detaches_predecessor_claims(
     assert!(decode(K::Note, None, Some(&absent)).is_err());
 }
 #[test]
-fn predecessor_structured_metadata_cannot_override_canonical_fields_or_validation() {
+fn python_polylogue_metadata_never_overrides_fields() {
     use super::super::AssertionKind as K;
     let plain = serde_json::json!({"value":"blue","confidence":0.5});
     let carried = serde_json::json!({"value":"blue","confidence":0.5,"predecessor":{"author":"operator","value":"red","confidence":2,"scope":"repo:other"}});
@@ -609,7 +612,7 @@ fn predecessor_structured_metadata_cannot_override_canonical_fields_or_validatio
         decode(
             K::Member,
             Some("reviewer"),
-            Some(&serde_json::json!({"predecessor":{"legacy":"metadata"}}))
+            Some(&serde_json::json!({"predecessor":{"old":"metadata"}}))
         )
         .unwrap()
     );
@@ -623,10 +626,10 @@ fn predecessor_structured_metadata_cannot_override_canonical_fields_or_validatio
     );
 }
 #[test]
-fn annotation_field_objects_and_predecessor_provenance_have_distinct_addresses() {
+fn annotation_fields_and_import_sources_have_distinct_addresses() {
     use super::super::AssertionKind as K;
     let field = serde_json::json!({"predecessor":{"author":"operator"},"score":1});
-    let raw = serde_json::json!({"value":field,"predecessor":{"legacy_id":"old"}});
+    let raw = serde_json::json!({"value":field,"predecessor":{"old_id":"old"}});
     let Value::Annotation(annotation) = decode(K::Annotation, Some("object"), Some(&raw)).unwrap()
     else {
         panic!("annotation")
@@ -634,7 +637,7 @@ fn annotation_field_objects_and_predecessor_provenance_have_distinct_addresses()
     assert_eq!(annotation.fields.value, field);
     assert_eq!(
         annotation.predecessor,
-        Some(serde_json::json!({"legacy_id":"old"}))
+        Some(serde_json::json!({"old_id":"old"}))
     );
     assert!(decode_live(K::Annotation, Some("object"), Some(&raw)).is_err());
     assert!(
@@ -656,7 +659,7 @@ fn annotation_field_objects_and_predecessor_provenance_have_distinct_addresses()
 }
 
 #[test]
-fn accepting_and_canonical_schemas_distinguish_predecessor_metadata() {
+fn accepting_and_stored_schemas_differ_on_python_record() {
     fn value<'a>(schema: &'a Json, kind: &str) -> &'a Json {
         &schema["allOf"]
             .as_array()
@@ -679,31 +682,31 @@ fn accepting_and_canonical_schemas_distinguish_predecessor_metadata() {
         }
     }
     let live = schemars::schema_for!(super::super::NewAssertion).to_value();
-    let canonical = schemars::schema_for!(super::super::AssertionFact).to_value();
+    let stored = schemars::schema_for!(super::super::AssertionFact).to_value();
     assert_eq!(live["additionalProperties"], false);
     assert!(live["properties"].get("author").is_none());
     assert_eq!(value(&live, "note")["type"], "string");
-    let mut predecessor_text = false;
-    objects(value(&canonical, "note"), |object| {
+    let mut python_record_text = false;
+    objects(value(&stored, "note"), |object| {
         if object.get("properties").is_some_and(|properties| {
             properties.get("text").is_some() && properties.get("predecessor").is_some()
         }) {
             assert_eq!(object.get("additionalProperties"), Some(&Json::Bool(false)));
-            predecessor_text = true;
+            python_record_text = true;
         }
     });
-    assert!(predecessor_text);
-    let mut canonical_tag = false;
-    objects(value(&canonical, "tag"), |object| {
+    assert!(python_record_text);
+    let mut stored_tag = false;
+    objects(value(&stored, "tag"), |object| {
         if object
             .get("properties")
             .is_some_and(|properties| properties.get("predecessor").is_some())
         {
             assert_eq!(object.get("additionalProperties"), Some(&Json::Bool(false)));
-            canonical_tag = true;
+            stored_tag = true;
         }
     });
-    assert!(canonical_tag);
+    assert!(stored_tag);
     objects(value(&live, "tag"), |object| {
         assert!(
             object
@@ -711,7 +714,7 @@ fn accepting_and_canonical_schemas_distinguish_predecessor_metadata() {
                 .is_none_or(|properties| properties.get("predecessor").is_none())
         )
     });
-    for schema in [&live, &canonical] {
+    for schema in [&live, &stored] {
         for condition in schema["allOf"].as_array().unwrap() {
             objects(&condition["then"]["properties"]["value"], |object| {
                 assert!(

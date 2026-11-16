@@ -40,7 +40,7 @@ fn archive() -> Connection {
     conn
 }
 #[test]
-fn variant_revisions_use_graph_currency_and_preserve_exact_parts() {
+fn variant_revisions_follow_the_graph_and_keep_parts() {
     let mut conn = archive();
     let first = request("first", None, "Pierwszy");
     write_request(&mut conn, &first, 9);
@@ -73,7 +73,7 @@ fn variant_revisions_use_graph_currency_and_preserve_exact_parts() {
     assert!(rows::get(&conn, "stale").unwrap().is_none());
 }
 #[test]
-fn variant_frozen_application_preserves_forks_and_restores_withdrawn_base() {
+fn variant_application_keeps_forks_and_restores_base() {
     let mut from = archive();
     let first = request("first", None, "Pierwszy");
     write_request(&mut from, &first, 1);
@@ -148,11 +148,11 @@ fn variant_source_binding_cannot_be_changed_by_a_revision() {
 }
 
 #[test]
-fn variant_text_is_a_separate_derived_index_and_tracks_canonical_lifecycle() {
-    let mut ledger = archive();
+fn variant_text_is_derived_and_tracks_source_lifecycle() {
+    let mut standalone = archive();
     let request = request("first", None, "Tłumaczenie uniquely searchable");
-    write_request(&mut ledger, &request, 1);
-    let effect = capture(&ledger, &request, 1).unwrap();
+    write_request(&mut standalone, &request, 1);
+    let effect = capture(&standalone, &request, 1).unwrap();
     let index = Connection::open_in_memory().unwrap();
     crate::schema::create_index(&index).unwrap();
     index
@@ -194,7 +194,7 @@ fn variant_text_is_a_separate_derived_index_and_tracks_canonical_lifecycle() {
 }
 
 #[test]
-fn variant_restoration_is_exact_idempotent_and_refuses_changed_facts() {
+fn variant_restoration_is_idempotent_and_refuses_changed_facts() {
     let mut original = archive();
     let mut request = request("first", None, "Original");
     request.at = Timestamp::parse_rfc3339("2026-01-02T03:04:05.123456789Z").unwrap();
@@ -364,7 +364,7 @@ fn live_variant_reads_use_one_source_snapshot_and_search_the_committed_text() {
 }
 
 #[test]
-fn variant_ingress_keeps_original_author_and_first_admitted_time_separate_from_claims() {
+fn variant_ingress_keeps_author_and_first_time_apart() {
     use polylogue_model::{Reference, authored::ImportAttribution};
     let mut origin = archive();
     let request = request("first", None, "Original");
@@ -384,17 +384,17 @@ fn variant_ingress_keeps_original_author_and_first_admitted_time_separate_from_c
     restore(&target, &effect, &rollback, 3).unwrap();
     let reference = Reference::parse("variant:first@first").unwrap();
     let part = Reference::parse("variant:first@first#0").unwrap();
-    let claim = ImportAttribution {
+    let attribution = ImportAttribution {
         machine: "sender".into(),
         input: "declared-bundle".into(),
         chain: 2,
         actor: Author::Script("importer.service".into()),
         at: Timestamp::from_unix_ms(1).unwrap(),
     };
-    declare_imports(&target, &reference, std::slice::from_ref(&claim), 4).unwrap();
+    declare_imports(&target, &reference, std::slice::from_ref(&attribution), 4).unwrap();
     let history = imports::history(&target, &reference).unwrap().unwrap();
     assert_eq!(history.observed.as_slice(), std::slice::from_ref(&current));
-    assert_eq!(history.declared, [claim]);
+    assert_eq!(history.declared, [attribution]);
     assert_eq!(
         imports::history(&target, &part).unwrap().unwrap().observed,
         [current]

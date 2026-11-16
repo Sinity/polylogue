@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn native_resume_uses_each_harness_command() {
+fn resume_runs_each_harness_command() {
     let s = SessionId::parse("claude-code:7f3e").unwrap();
     let c = harness_resume(&s, Some("/workspace/project x/repo")).unwrap();
     assert_eq!(

@@ -31,10 +31,10 @@ A reference names one thing in the archive, or one thing outside it, in a form e
 
 Surfaces also accept shorter forms that resolve to one of the above before anything is stored or sent: `self` (the calling session), `last` and `latest`, a bare native ID or a unique prefix of at least eight characters, and a pasted provider URL.
 
-Ordinary query and read preparation match provider conversation URLs through
+Query and read preparation match provider conversation URLs through
 the shared `references::Catalog`, using the origin declarations' hosts,
 conversation paths and account/project prefixes. Supported `www` aliases and
-an optional trailing slash name the same session. Native ID segments retain
+an optional trailing slash name the same session. Native ID segments keep
 their literal spelling, including percent escapes; neither a query string nor
 a browser fragment changes the selected physical session. Extra or embedded
 path segments and lookalike hosts do not name a declared conversation page.
@@ -45,10 +45,10 @@ Span offsets count in the original stored text, before view filtering or variant
 
 ## Rules
 
-- A native Claude record UUID from a split response resolves through its recorded source association to the canonical message. Stored assertion targets keep the native reference as written across re-parse.
+- A Claude record UUID from a split response resolves through its recorded source association to the resolved message. Stored assertion targets keep the reference as written across re-parse.
 - **Natural keys only.** No reference contains a row number, so a reference means the same thing in every archive that holds the same data and survives re-parse and rebuild.
 - **One parser resolves pasted provider URLs** through each origin's declaration: `chatgpt.com/c/<id>` becomes `session:chatgpt:<id>`.
 - **Ambiguity is an error.** A name that two current roots carry (`page:<name>`, `query:<name>`) is refused as `ambiguous`, listing both roots. Time never picks one, because a guess would silently change what an older reference meant.
-- **Stored references name an exact revision where meaning requires it.** Links to assertions in the roles `revises`, `answers`, `challenges`, `supports`, `qualifies` and `corrects`, and every judgment, store `assertion:<root>@<rev>`. A `derived_from` link names its exact source: an assertion revision, a query or a kept result. A `withdraws` link names a revision, or a root to withdraw the whole family ([assertions.md](assertions.md#currency)). Otherwise a revision-less `assertion:<root>` is stored only as what a page slot set to `follow` shows ([pages.md](pages.md)). A judgment of one revision therefore never moves to the next.
-- **A reference may name something not stored yet.** It is kept as written and attaches, with no rewrite, when the thing arrives; until then it is shown as waiting ([assertions.md](assertions.md#currency)).
+- **Stored references name an exact revision where meaning requires it.** Links to assertions in the roles `revises`, `answers`, `challenges`, `supports`, `qualifies` and `corrects`, and every judgment, store `assertion:<root>@<rev>`. A `derived_from` link names its exact source: an assertion revision, a query or a kept result. A `withdraws` link names a revision, or a root to withdraw the whole family ([assertions.md](assertions.md#current-revisions)). Otherwise a revision-less `assertion:<root>` is stored only as what a page slot set to `follow` shows ([pages.md](pages.md)). A judgment of one revision therefore never moves to the next.
+- **A reference may name something not stored yet.** It is kept as written and attaches, with no rewrite, when the thing arrives; until then it is shown as waiting ([assertions.md](assertions.md#current-revisions)).
 - **A reference names a physical thing exactly**, even where listings group physical sessions into logical ones ([sessions.md](sessions.md#logical-sessions)).

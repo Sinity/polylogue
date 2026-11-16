@@ -27,7 +27,7 @@ fn reading(text: &str) -> Batch {
 }
 
 /// Writes the local rows of a re-parse of a confirmed chain, as the serial
-/// writer does after the parsed facts are in the spool.
+/// writer does after the parsed events are in the spool.
 fn write_local(index: &mut Connection, archive: &Archive, mut batch: Batch) {
     batch.parse[0].prepare();
     let resolver = resolve::Resolver::new(archive, index, None).unwrap();
@@ -46,7 +46,7 @@ fn write_local(index: &mut Connection, archive: &Archive, mut batch: Batch) {
         step.resolution.as_ref().unwrap(),
         counter,
         None,
-        Some(&fixture_receipt()),
+        Some(&fixture_commit()),
         &changes,
     )
     .unwrap();
@@ -67,7 +67,7 @@ fn apply_position(
         .into_iter()
         .enumerate()
         .map(|(ordinal, (event, change))| Confirmed {
-            native: None,
+            sinex_context: None,
             position,
             output_index: ordinal as u64,
             event,
@@ -75,7 +75,7 @@ fn apply_position(
         })
         .collect::<Vec<_>>();
     events.push(Confirmed {
-        native: None,
+        sinex_context: None,
         position: 0,
         output_index: 0,
         event: String::new(),
@@ -84,7 +84,7 @@ fn apply_position(
             delivery: None,
         })),
     });
-    crate::primary::projection::apply(
+    crate::primary::confirmed::apply(
         &crate::text_rows::TextIds::new(index, false).unwrap(),
         index,
         &resolver,
@@ -97,7 +97,7 @@ fn shown_text(archive: &Archive, message: &polylogue_model::MessageId) -> Option
     let pool = ReadPool::open(archive).unwrap();
     let reader = pool.reader().unwrap();
     reader
-        .message_with_projection(message)
+        .message_with_block_selection(message)
         .unwrap()
         .map(|(value, _)| value.text())
 }
@@ -112,7 +112,7 @@ fn archiving_a_parsed_sinex_event_leaves_the_local_message_shown() {
     let message = original.parse[0].output.messages[0].message.id.clone();
     write_local(&mut index, &archive, original.clone());
 
-    // Sinex confirms the parsed facts of the same step at positions after the
+    // Sinex confirms the parsed events of the same step at positions after the
     // material acknowledgment the local rows carry.
     let mut prepared = original.clone();
     prepared.parse[0].prepare();
@@ -127,7 +127,7 @@ fn archiving_a_parsed_sinex_event_leaves_the_local_message_shown() {
     .enumerate()
     .map(|(ordinal, product)| {
         (
-            format!("fact-{ordinal}"),
+            format!("event-{ordinal}"),
             ConfirmedChange::Live(Box::new(Product::Interpreted {
                 reading: product.reading().unwrap().clone(),
                 record: crate::primary::SourceRecord::of(&product).unwrap().unwrap(),
@@ -135,24 +135,24 @@ fn archiving_a_parsed_sinex_event_leaves_the_local_message_shown() {
         )
     })
     .collect::<Vec<_>>();
-    let message_fact = facts
+    let message_event = facts
         .iter()
         .position(|(_, change)| {
             matches!(change, ConfirmedChange::Live(product)
                 if matches!(product.as_ref(), Product::Interpreted { record, .. } if record.family == "message"))
         })
-        .map(|ordinal| format!("fact-{ordinal}"))
+        .map(|ordinal| format!("event-{ordinal}"))
         .unwrap();
     apply_position(&mut index, &archive, 10, facts);
-    let admitted = || {
+    let committed = || {
         ReadPool::open(&archive)
             .unwrap()
             .reader()
             .unwrap()
-            .message_admission(&message)
+            .message_commit(&message)
             .unwrap()
     };
-    assert_eq!(admitted(), Some(fixture_receipt().sequence as u64));
+    assert_eq!(committed(), Some(fixture_commit().sequence as u64));
 
     for (position, change) in [
         (11, ConfirmedChange::Archived),
@@ -164,13 +164,13 @@ fn archiving_a_parsed_sinex_event_leaves_the_local_message_shown() {
             &mut index,
             &archive,
             position,
-            vec![(message_fact.clone(), change)],
+            vec![(message_event.clone(), change)],
         );
         assert_eq!(
             shown_text(&archive, &message).as_deref(),
             Some("locally parsed original"),
             "position {position}"
         );
-        assert_eq!(admitted(), Some(fixture_receipt().sequence as u64));
+        assert_eq!(committed(), Some(fixture_commit().sequence as u64));
     }
 }

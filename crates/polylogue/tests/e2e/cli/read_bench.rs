@@ -1,4 +1,4 @@
-//! The opt-in native benchmark uses this existing CLI/daemon test owner.
+//! The opt-in benchmark runs in this CLI and daemon test binary.
 use super::*;
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -164,7 +164,7 @@ struct WindowStart {
 fn reference_windows(env: &crate::Fixture, bodies: &[String]) -> (String, Vec<WindowStart>, Value) {
     let began = Instant::now();
     let budget = bodies.iter().map(String::len).sum::<usize>().to_string();
-    eprintln!("native read bench: starting complete reference read");
+    eprintln!("read bench: starting complete reference read");
     let (whole, seconds) = request(env, &["--json", "read", LARGE, "--page-tokens", &budget]);
     assert!(
         whole["next"].is_null(),
@@ -185,7 +185,7 @@ fn reference_windows(env: &crate::Fixture, bodies: &[String]) -> (String, Vec<Wi
         let cursor = if page == 0 {
             None
         } else {
-            eprintln!("native read bench: preparing {name} reference cursor");
+            eprintln!("read bench: preparing {name} reference cursor");
             let budget = (page * PAGE_BUDGET).to_string();
             let (prefix, _) = request(env, &["--json", "read", LARGE, "--page-tokens", &budget]);
             assert_eq!(prefix["text"].as_str().unwrap(), &reference[..byte]);
@@ -270,9 +270,9 @@ fn cancelled_client(env: &crate::Fixture) {
 }
 
 fn check_cancelled_client(env: &crate::Fixture, daemon: &Daemon, expected: &[String]) -> Value {
-    eprintln!("native read bench: starting client abandonment");
+    eprintln!("read bench: starting client abandonment");
     cancelled_client(env);
-    eprintln!("native read bench: abandoned client and status verified");
+    eprintln!("read bench: abandoned client and status verified");
     let (after, _) = request(
         env,
         &[
@@ -284,7 +284,7 @@ fn check_cancelled_client(env: &crate::Fixture, daemon: &Daemon, expected: &[Str
         ],
     );
     assert!(after["text"].as_str().unwrap().contains(&expected[0]));
-    eprintln!("native read bench: recovery read verified");
+    eprintln!("read bench: recovery read verified");
     memory(daemon.0.id())
 }
 
@@ -354,7 +354,7 @@ fn read_benchmark() {
     });
     assert_status(&status);
     let archive_setup_seconds = began.elapsed().as_secs_f64();
-    eprintln!("native read bench: population and archive ready");
+    eprintln!("read bench: population and archive ready");
     let prepared = (!full_walk).then(|| reference_windows(&env, &expected));
     drop(initial);
     let mut operations = serde_json::Map::new();
@@ -380,7 +380,7 @@ fn read_benchmark() {
             }
             samples.push(seconds);
         }
-        eprintln!("native read bench: {name} answers verified");
+        eprintln!("read bench: {name} answers verified");
         operations.insert(name.into(),json!({"daemon_start_seconds":start_seconds,"cold_seconds":samples[0],"warm_seconds":summary(&samples[1..]),"rss_before":before,"rss_after":memory(daemon.0.id())}));
     }
     let mut help = Vec::new();
@@ -395,7 +395,7 @@ fn read_benchmark() {
     let read = if let Some((reference, starts, reference_facts)) = prepared {
         let mut windows = serde_json::Map::new();
         for start in starts {
-            eprintln!("native read bench: starting {} window", start.name);
+            eprintln!("read bench: starting {} window", start.name);
             let began = Instant::now();
             let daemon = start_daemon(&env);
             let daemon_start = began.elapsed().as_secs_f64();
@@ -405,7 +405,7 @@ fn read_benchmark() {
                 let mut result = window(&env, &start, &reference);
                 result["rss_after"] = memory(daemon.0.id());
                 eprintln!(
-                    "native read bench: {} window {iteration} verified at {:.3}s: {result}",
+                    "read bench: {} window {iteration} verified at {:.3}s: {result}",
                     start.name,
                     setup.elapsed().as_secs_f64()
                 );
@@ -431,7 +431,7 @@ fn read_benchmark() {
         let mut walks = Vec::new();
         let mut digest = None;
         for iteration in 0..=repetitions {
-            eprintln!("native read bench: starting full walk {iteration}");
+            eprintln!("read bench: starting full walk {iteration}");
             let (mut result, current) = walk(&env, &expected);
             if let Some(previous) = &digest {
                 assert_eq!(previous, &current)
@@ -449,20 +449,20 @@ fn read_benchmark() {
         "cold_definition":"first request after daemon restart; filesystem cache is not flushed; every CLI call starts a new client process",
         "operations":operations,"help":{"first_seconds":help[0],"repeated_seconds":summary(&help[1..])},
         "read":read,
-        "cancellation":"native client killed after its first output byte; a subsequent status and bounded read verified daemon responsiveness",
+        "cancellation":"CLI client killed after its first output byte; a subsequent status and bounded read verified daemon responsiveness",
         "answers_verified":true,"cancelled_client_recovered":true});
     eprintln!(
-        "native read bench: saving verified report at {:.3}s",
+        "read bench: saving verified report at {:.3}s",
         setup.elapsed().as_secs_f64()
     );
     std::fs::write(report, serde_json::to_vec_pretty(&result).unwrap()).unwrap();
     eprintln!(
-        "native read bench: cleaning synthetic population at {:.3}s",
+        "read bench: cleaning synthetic population at {:.3}s",
         setup.elapsed().as_secs_f64()
     );
     drop(home);
     eprintln!(
-        "native read bench: finished at {:.3}s",
+        "read bench: finished at {:.3}s",
         setup.elapsed().as_secs_f64()
     );
 }

@@ -1,9 +1,9 @@
-//! Query-object custody precedes native saved assertion acceptance. Private
-//! preflight binds ordered proposals but never publishes their facts.
+//! A query object is stored before Sinex accepts the saved assertion. The
+//! private preflight orders the proposals but never sends their records.
 use super::*;
 use polylogue_model::{
     assertion::AssertionKind,
-    settings::Owner,
+    settings::SettingMode,
     user::{UserRequest, UserWrite},
 };
 
@@ -41,10 +41,10 @@ impl Inner {
         };
         scoped::require_current(&self.location, Some(&selected))?;
         let mut provisional = crate::selection::ProvisionalQueries::default();
-        let owner = if sinex.is_some() {
-            Owner::Primary
+        let mode = if sinex.is_some() {
+            SettingMode::Primary
         } else {
-            Owner::Standalone
+            SettingMode::Standalone
         };
         let prepared = crate::primary::authored::with_overlay(
             &self.index,
@@ -57,13 +57,13 @@ impl Inner {
                     authored,
                     &self.index,
                     request,
-                    // Copied and pending baseline facts use zero. Keep the
+                    // Copied and pending baseline records use zero. Keep the
                     // proposal separate when capturing its private effects.
                     1,
                     crate::user_writes::Preparation::preflight(
                         preparation,
                         sinex.as_deref(),
-                        owner,
+                        mode,
                         &mut provisional,
                     ),
                 )?;

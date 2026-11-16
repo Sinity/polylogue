@@ -90,7 +90,7 @@ impl SpanBounds {
         Ok(())
     }
     /// Both requested bounds have been observed in the original text prefix.
-    /// This proves their UTF-8 coordinates, not completeness of the source.
+    /// This shows their UTF-8 coordinates, not completeness of the source.
     /// Offsets count verbatim source text; no Unicode normalization is applied.
     pub fn resolved(&self) -> Option<Range<u64>> {
         Some(self.start_byte?..self.end_byte?)
@@ -147,7 +147,7 @@ pub enum TextSpanPiece {
 }
 
 /// Splits resolved UTF-8 byte bounds over original bodies and their separators.
-/// An empty source with no bodies has no invented body insertion anchor.
+/// An empty source with no bodies has no invented point to insert a body.
 pub fn span_bodies(
     span: Range<u64>,
     body_lengths: impl IntoIterator<Item = u64>,

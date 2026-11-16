@@ -70,7 +70,7 @@ fn consecutive_unions_and_fuses_are_one_fusion() {
 }
 
 #[test]
-fn the_selection_holds_the_stages_after_its_folded_filters() {
+fn selection_holds_the_stages_after_its_filters() {
     let plan = plan("sessions where repo:morrow | where origin:codex | group by origin | first 1");
     let clock = crate::time::Clock::new(
         jiff::Timestamp::from_millisecond(1_790_000_000_000).unwrap(),

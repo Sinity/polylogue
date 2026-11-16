@@ -33,5 +33,5 @@ class Answer:
         object.__setattr__(self, "data", _freeze(self.data))
 
     def json(self):
-        """An independent, ordinary JSON value for export or comparison."""
+        """An independent, plain JSON value for export or comparison."""
         return _copy(self.data)

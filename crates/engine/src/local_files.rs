@@ -1,4 +1,4 @@
-//! Native local-image references are read when observed. Recorded directories
+//! Local-image references in session files are read when observed. Recorded directories
 //! alone resolve relative paths; coverage facts survive with the captured bytes.
 use crate::*;
 use polylogue_model::Json;
@@ -50,7 +50,7 @@ fn visit(value: &Json, emit: &mut impl FnMut(&str) -> std::io::Result<()>) -> st
 
 impl Engine {
     /// Source positions cannot advance before attachment observations. This
-    /// ordinary plan path also resumes a capture interrupted after byte commit.
+    /// plan path also resumes a capture interrupted after byte commit.
     pub(crate) fn observe_local_references(
         &mut self,
         plan: &crate::plan::Plan,
@@ -149,7 +149,7 @@ impl Engine {
                     None,
                 );
                 let batch = polylogue_store::Batch {
-                    required_disposition: None,
+                    required_outcome: None,
                     input: InputKey {
                         id,
                         format: origin.name.into(),
@@ -228,7 +228,7 @@ impl Engine {
         pass.bytes_read += prepared.len();
         let exists = self.reads.reader()?.input_progress(&id)?.is_some();
         let observation = self.observation(path, Some(facts));
-        let acquisition = context.finish(
+        let source_read = context.finish(
             polylogue_store::primary::RawRange {
                 start: 0,
                 end: prepared.len(),
@@ -236,7 +236,7 @@ impl Engine {
             prepared.hash(),
         );
         let batch = polylogue_store::Batch {
-            required_disposition: None,
+            required_outcome: None,
             input: InputKey {
                 id: id.clone(),
                 format: "codex-local-file".into(),
@@ -253,7 +253,7 @@ impl Engine {
             blobs: Vec::new(),
             length: prepared.len(),
             parse: Vec::new(),
-            acquisition: Some(acquisition),
+            acquisition: Some(source_read),
             basis: context.basis,
             release: Default::default(),
         };

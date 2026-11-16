@@ -54,7 +54,7 @@ fn replayed_evaluation_time_never_rewrites_the_accepting_invocation() {
 
 #[cfg(feature = "sinex")]
 #[test]
-fn a_sinex_context_records_its_settings_revision_in_provenance() {
+fn sinex_context_records_its_settings_revision() {
     let at = Timestamp::parse_rfc3339("2026-10-29T08:00:00Z").unwrap();
     let invocation = Invocation::new(
         at,
@@ -63,7 +63,7 @@ fn a_sinex_context_records_its_settings_revision_in_provenance() {
     );
     let policy = polylogue_sinex::ResolvedContext {
         settings_identity: "public-settings:17".into(),
-        owner_revision: 17,
+        settings_revision: 17,
         day: DaySetting::new(
             jiff::tz::TimeZone::UTC,
             jiff::civil::Time::constant(4, 0, 0, 0),
@@ -80,18 +80,18 @@ fn a_sinex_context_records_its_settings_revision_in_provenance() {
         received_seconds_ago: 1.0,
     };
     let context = Context::primary(invocation, policy).unwrap();
-    assert_eq!(context.provenance().machine, "synthetic-machine");
+    assert_eq!(context.run_context().machine, "synthetic-machine");
     assert!(matches!(
-        context.provenance().owner,
-        Owner::Primary {
-            owner_revision: 17,
+        context.run_context().sinex,
+        SinexContext::Primary {
+            settings_revision: 17,
             ..
         }
     ));
 }
 
 #[test]
-fn accepted_envelope_survives_context_replay_without_becoming_public_evidence() {
+fn accepted_request_survives_context_replay() {
     let at = Timestamp::parse_rfc3339("2026-10-29T08:00:00Z").unwrap();
     for deadline in [
         command_surface::Deadline::Default,
@@ -101,7 +101,7 @@ fn accepted_envelope_survives_context_replay_without_becoming_public_evidence() 
         let envelope = Arc::new(command_surface::Request {
             operation: "read".into(),
             arguments: serde_json::json!({"target":"synthetic-private-input", "options":{"output_lines":0}}),
-            request_id: "actual-accepted-id".into(),
+            request_id: "accepted-id".into(),
             deadline,
             budget_tokens: Default::default(),
             cursor: None,
@@ -127,9 +127,9 @@ fn accepted_envelope_survives_context_replay_without_becoming_public_evidence() 
         );
         assert!(!format!("{replay:?}").contains("synthetic-private-input"));
         assert!(
-            !serde_json::to_string(&replay.provenance())
+            !serde_json::to_string(&replay.run_context())
                 .unwrap()
-                .contains("actual-accepted-id")
+                .contains("accepted-id")
         );
         assert_eq!(replay.ran_at, at);
     }
@@ -190,7 +190,7 @@ fn parent_lifetime_survives_context_conversion_and_replay_without_becoming_publi
     assert!(replay.invocation().check_parent_lifetime().is_err());
     assert!(!format!("{replay:?}").contains("parent"));
     assert!(
-        !serde_json::to_string(&replay.provenance())
+        !serde_json::to_string(&replay.run_context())
             .unwrap()
             .contains("parent")
     );

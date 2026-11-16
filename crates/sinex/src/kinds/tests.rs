@@ -24,7 +24,7 @@ fn message(input: &str, start: u64) -> Product {
     Product::Message {native_fields:None,declared_injections:None,declared_attachment_bindings:None,reading:reading(input,start),order:Some(6),projection:None,facts:Box::new(serde_json::from_value(json!({"offset":50,"end":100,"message":{"id":"codex:m","session":"codex:s","role":"assistant","attrs":{"nested":{"citation":["source"]}},"production":{"phase":"final","server_tool_use":{"web_search_requests":0}},"blocks":[{"type":"tool_result","call_id":"native","outcome":{"kind":"ok"},"output":"done","reported_duration_ms":17}]}})).unwrap())}
 }
 
-fn eligibility(product: &Product) -> Product {
+fn interpreted_record(product: &Product) -> Product {
     Product::Interpreted {
         reading: product.reading().unwrap().clone(),
         record: polylogue_store::primary::SourceRecord::of(product)
@@ -53,7 +53,7 @@ fn source_copies_have_distinct_keys_and_chunk_boundaries_do_not_rename_a_record(
             payload.clone()
         )
         .unwrap(),
-        eligibility(&first)
+        interpreted_record(&first)
     );
     let declaration = declarations("polylogue")
         .into_iter()
@@ -122,7 +122,7 @@ fn richer_and_weaker_link_contributions_keep_their_own_retry_stable_keys() {
                 products::payload(&product, 0).unwrap()
             )
             .unwrap(),
-            eligibility(&product)
+            interpreted_record(&product)
         );
     }
 }
@@ -273,12 +273,12 @@ fn partial_fragment_has_its_own_kind_and_retains_the_receiving_record_range() {
             payload
         )
         .unwrap(),
-        eligibility(&product)
+        interpreted_record(&product)
     );
 }
 
 #[test]
-fn native_message_keeps_exact_numbers_and_source_identity() {
+fn sinex_message_keeps_numbers_and_source_identity() {
     let facts: polylogue_model::MessageRow = serde_json::from_str(
         r#"{"offset":0,"end":10,"message":{"id":"codex:m","session":"codex:s","role":"assistant","attrs":{"x":1.50},"blocks":[{"type":"text","text":"done"}]}}"#,
     )
@@ -301,7 +301,7 @@ fn native_message_keeps_exact_numbers_and_source_identity() {
             returned
         )
         .unwrap(),
-        eligibility(&product),
+        interpreted_record(&product),
     );
 }
 
@@ -374,7 +374,7 @@ fn an_input_payload_at_an_earlier_kind_version_is_refused() {
 }
 
 #[test]
-fn current_declarations_preserve_every_retained_source7_kind_version() {
+fn current_declarations_keep_every_source7_kind_version() {
     let old: sinex_model::SourceDeclaration =
         serde_json::from_str(include_str!("../../tests/rebuild/source7.json")).unwrap();
     let mut changed = Vec::new();

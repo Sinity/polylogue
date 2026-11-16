@@ -77,7 +77,7 @@ pub static MEASURES: &[Measure] = &[
     },
     Measure {
         name: "time",
-        help: "Recorded session clocks and wall-time lanes; clustering gap 5 minutes; query cursor pages sessions",
+        help: "Recorded session clocks and wall-time per party; clustering gap 5 minutes; query cursor pages sessions",
         whole_archive: false,
         messages: false,
         paging: Some(Paging::Sessions),

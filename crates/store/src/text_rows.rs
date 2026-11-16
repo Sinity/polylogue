@@ -49,17 +49,17 @@ pub(crate) fn intern(
                 .expect("the text was just prepared");
             // A first build marks the text for its search index now and
             // writes the entry when the build ends.
-            let claimed = if bulk { bit } else { 0 };
+            let marked = if bulk { bit } else { 0 };
             let id = groups::insert(
                 conn,
                 &StoredGroups::default(),
                 None,
                 hash.as_bytes(),
                 prepared,
-                claimed,
+                marked,
             )?
             .ok_or_else(|| crate::StoreError::Invalid("the text row already exists".into()))?;
-            (id, claimed)
+            (id, marked)
         }
     };
     // `indexed` marks a text for its search index; the entry itself is

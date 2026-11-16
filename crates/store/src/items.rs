@@ -23,7 +23,7 @@ use crate::encoding::Columns;
 #[cfg(any(test, feature = "fixture"))]
 use crate::encoding::{restore_text, unpack_block};
 use crate::{Reader, Result, StoreError};
-use entry_bytes::{Owner, decode, encode};
+use entry_bytes::{EntryOf, decode, encode};
 #[cfg(any(test, feature = "fixture"))]
 use polylogue_model::{Message, Usage};
 use polylogue_model::{
@@ -92,7 +92,7 @@ pub struct ItemVersions {
 }
 
 /// Production uses worker entries. Raw-row fixtures decode only units that
-/// actually need rebuilding, rather than preparing every prior message again.
+/// need rebuilding, rather than preparing every prior message again.
 #[derive(Clone, Copy)]
 enum MessageEntries<'a> {
     Prepared(&'a ChangeSummary),
@@ -176,7 +176,7 @@ impl Unit {
 }
 
 /// Whether an event's stored item already describes its current metadata.
-/// Older item fingerprints are repaired by the ordinary session rewrite.
+/// Older item fingerprints are repaired when the session is next rewritten.
 pub(crate) fn event_is_current(
     conn: &Connection,
     pk: i64,
@@ -200,7 +200,7 @@ pub(crate) fn event_is_current(
 
 /// An indexed message entry the rebuild starts from: entries before it stay.
 #[derive(Debug, Clone, Copy)]
-struct Anchor {
+struct StartPoint {
     seq: i64,
     pk: i64,
     time_bound: Option<i64>,
@@ -274,7 +274,7 @@ fn event_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EventRow> {
     })
 }
 
-/// The session's units in reading order from `anchor` (from the first
+/// The session's units in reading order from `start_point` (from the first
 /// message without one): messages by source position; each event after the
 /// message it follows, a timed event that names no message after the last
 /// message at or before its time, and the rest at the end. `extra` names
@@ -282,12 +282,12 @@ fn event_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EventRow> {
 fn units_from(
     conn: &Connection,
     session_pk: i64,
-    anchor: Option<Anchor>,
+    start_point: Option<StartPoint>,
     extra: &BTreeSet<i64>,
 ) -> Result<Vec<Unit>> {
     // A message with no stored version (rows written directly by the
     // fixture builder) is identified by its block rows.
-    let rows: Vec<MessageRow> = match anchor {
+    let rows: Vec<MessageRow> = match start_point {
         None => conn
             .prepare_cached(&format!(
                 "SELECT {MESSAGE_COLUMNS}
@@ -297,7 +297,7 @@ fn units_from(
             ))?
             .query_map([session_pk], message_row)?
             .collect::<rusqlite::Result<_>>()?,
-        Some(anchor) => conn
+        Some(start_point) => conn
             .prepare_cached(&format!(
                 "SELECT {MESSAGE_COLUMNS}
                  FROM message a, message m LEFT JOIN message_source s ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain
@@ -306,10 +306,10 @@ fn units_from(
                        >= (a.session_order, a.id)
                  ORDER BY m.session_order, m.id"
             ))?
-            .query_map(params![session_pk, anchor.pk], message_row)?
+            .query_map(params![session_pk, start_point.pk], message_row)?
             .collect::<rusqlite::Result<_>>()?,
     };
-    let events = events_from(conn, session_pk, anchor, &rows, extra)?;
+    let events = events_from(conn, session_pk, start_point, &rows, extra)?;
     let loaded: HashSet<i64> = rows.iter().map(|row| row.pk).collect();
     let mut after: HashMap<i64, Vec<Unit>> = HashMap::new();
     let mut timed: Vec<(i64, Unit)> = Vec::new();
@@ -324,8 +324,8 @@ fn units_from(
                 after.entry(message).or_default().push(event.unit());
             }
             (Some(message), _) => {
-                // Shown before the anchor: it is placed there, not here.
-                let shown = anchor.is_some()
+                // Shown before the start point: it is placed there, not here.
+                let shown = start_point.is_some()
                     && shown_before
                         .query_row(params![message, session_pk], |row| row.get::<_, bool>(0))
                         .optional()?
@@ -335,7 +335,9 @@ fn units_from(
                 }
             }
             (None, Some(at)) => {
-                if anchor.is_none_or(|anchor| anchor.time_bound.is_none_or(|bound| at >= bound)) {
+                if start_point.is_none_or(|start_point| {
+                    start_point.time_bound.is_none_or(|bound| at >= bound)
+                }) {
                     timed.push((at, event.unit()));
                 }
             }
@@ -352,9 +354,9 @@ fn units_from(
         next_times[index] = rows[index + 1].at.or(next_times[index + 1]);
     }
     let mut out = Vec::with_capacity(rows.len());
-    let mut time_bound = anchor.and_then(|anchor| anchor.time_bound);
+    let mut time_bound = start_point.and_then(|start_point| start_point.time_bound);
     for (index, row) in rows.iter().enumerate() {
-        // The anchor's bound is stored; the first message's is none.
+        // The start point's bound is stored; the first message's is none.
         if index > 0 {
             time_bound = match (time_bound, row.at) {
                 (Some(bound), Some(at)) => Some(bound.max(at)),
@@ -396,18 +398,18 @@ fn units_from(
     Ok(out)
 }
 
-/// The events that can be placed from `anchor` on, in stored order: those
+/// The events that can be placed from `start_point` on, in stored order: those
 /// following a loaded message, those naming no message, those indexed from
-/// the anchor on (a message they follow may have stopped being shown), and
+/// the start point on (a message they follow may have stopped being shown), and
 /// the changed ones.
 fn events_from(
     conn: &Connection,
     session_pk: i64,
-    anchor: Option<Anchor>,
+    start_point: Option<StartPoint>,
     rows: &[MessageRow],
     extra: &BTreeSet<i64>,
 ) -> Result<Vec<EventRow>> {
-    let Some(anchor) = anchor else {
+    let Some(start_point) = start_point else {
         return Ok(conn
             .prepare_cached(&format!(
                 "SELECT {EVENT_COLUMNS} FROM event e WHERE e.session_pk = ?1 ORDER BY e.seq, e.id"
@@ -426,17 +428,17 @@ fn events_from(
             found.insert(event.pk, event);
         }
     }
-    // Timed ones from the anchor's bound on, and the untimed ones.
+    // Timed ones from the start point's bound on, and the untimed ones.
     let mut timed = conn.prepare_cached(&format!(
-        "SELECT {EVENT_COLUMNS} FROM event e INDEXED BY event_unanchored
+        "SELECT {EVENT_COLUMNS} FROM event e INDEXED BY event_placed_by_time
          WHERE e.session_pk = ?1 AND e.after_message_pk IS NULL AND e.at >= coalesce(?2, -9223372036854775808)"
     ))?;
     let mut untimed = conn.prepare_cached(&format!(
-        "SELECT {EVENT_COLUMNS} FROM event e INDEXED BY event_unanchored
+        "SELECT {EVENT_COLUMNS} FROM event e INDEXED BY event_placed_by_time
          WHERE e.session_pk = ?1 AND e.after_message_pk IS NULL AND e.at IS NULL"
     ))?;
     for event in timed
-        .query_map(params![session_pk, anchor.time_bound], event_row)?
+        .query_map(params![session_pk, start_point.time_bound], event_row)?
         .chain(untimed.query_map([session_pk], event_row)?)
     {
         let event = event?;
@@ -447,7 +449,7 @@ fn events_from(
             "SELECT event_pk FROM session_item
              WHERE session_pk = ?1 AND seq >= ?2 AND event_pk IS NOT NULL",
         )?
-        .query_map(params![session_pk, anchor.seq], |row| row.get(0))?
+        .query_map(params![session_pk, start_point.seq], |row| row.get(0))?
         .collect::<rusqlite::Result<_>>()?;
     let mut by_pk = conn.prepare_cached(&format!(
         "SELECT {EVENT_COLUMNS} FROM event e WHERE e.pk = ?1 AND e.session_pk = ?2"
@@ -581,7 +583,7 @@ enum Start {
     /// No unit changed: only the composing links are compared.
     Links,
     Whole,
-    From(Anchor),
+    From(StartPoint),
 }
 
 fn refresh_session(
@@ -613,10 +615,10 @@ fn refresh_session(
             &change.events,
             MessageEntries::Prepared(prepared),
         ),
-        Start::From(anchor) => rebuild(
+        Start::From(start_point) => rebuild(
             conn,
             session_pk,
-            Some(anchor),
+            Some(start_point),
             &change.events,
             MessageEntries::Prepared(prepared),
         ),
@@ -736,7 +738,7 @@ fn start(conn: &Connection, session_pk: i64, change: &SessionChange) -> Result<S
     let Some(limit) = limit else {
         return Ok(Start::Links);
     };
-    let anchor = conn
+    let start_point = conn
         .prepare_cached(
             "SELECT i.seq, i.message_pk, i.time_bound FROM session_item i
              JOIN message m ON m.pk = i.message_pk
@@ -745,14 +747,14 @@ fn start(conn: &Connection, session_pk: i64, change: &SessionChange) -> Result<S
              ORDER BY i.seq DESC LIMIT 1",
         )?
         .query_row(params![session_pk, limit], |row| {
-            Ok(Anchor {
+            Ok(StartPoint {
                 seq: row.get(0)?,
                 pk: row.get(1)?,
                 time_bound: row.get(2)?,
             })
         })
         .optional()?;
-    Ok(anchor.map_or(Start::Whole, Start::From))
+    Ok(start_point.map_or(Start::Whole, Start::From))
 }
 
 /// The entry of the last timed message an event at `at` that names no
@@ -784,20 +786,20 @@ fn relink(conn: &Connection, session_pk: i64) -> Result<()> {
     Ok(())
 }
 
-/// Rebuilds the session's entries from `anchor` (from its first unit without
+/// Rebuilds the session's entries from `start_point` (from its first unit without
 /// one), keeping those that did not change; returns the units read.
 fn rebuild(
     conn: &Connection,
     session_pk: i64,
-    anchor: Option<Anchor>,
+    start_point: Option<StartPoint>,
     changed_events: &BTreeSet<i64>,
     prepared: MessageEntries<'_>,
 ) -> Result<u64> {
     let changed: i64 = conn
         .prepare_cached("SELECT changed FROM session WHERE pk = ?1")?
         .query_row([session_pk], |row| row.get(0))?;
-    let first_seq = anchor.map_or(0, |anchor| anchor.seq);
-    let units = units_from(conn, session_pk, anchor, changed_events)?;
+    let first_seq = start_point.map_or(0, |start_point| start_point.seq);
+    let units = units_from(conn, session_pk, start_point, changed_events)?;
     let identities: Vec<Vec<u8>> = units.iter().map(Unit::identity).collect::<Result<_>>()?;
     let indexed: Vec<(i64, Vec<u8>)> = conn
         .prepare_cached(
@@ -831,7 +833,7 @@ fn rebuild(
         }
         same += 1;
     }
-    // Capture retained metadata before deleting a rewritten suffix. New content
+    // Capture stored metadata before deleting a rewritten suffix. New content
     // comes from worker preparation; placement-only changes reuse stored entries.
     let pending = units
         .iter()
@@ -1057,7 +1059,7 @@ fn unit_entries(
     }
 }
 
-/// The event entry is the authority for both stored items and their fingerprint.
+/// The event entry decides both the stored items and their fingerprint.
 fn event_item(
     id: &str,
     kind: &str,
@@ -1092,7 +1094,7 @@ fn event_identity(pk: i64, id: &str, entry: &IndexEntry) -> Result<Vec<u8>> {
     Ok(digest.finalize().as_bytes().to_vec())
 }
 
-/// Item metadata retained for one current unit, without visiting payload rows.
+/// Item metadata kept for one current unit, without visiting payload rows.
 fn stored_message_entries(conn: &Connection, pk: i64) -> Result<Vec<IndexEntry>> {
     let bounds: Option<(i64, i64, Option<i64>)> = conn
         .prepare_cached(
@@ -1116,9 +1118,9 @@ fn stored_message_entries(conn: &Connection, pk: i64) -> Result<Vec<IndexEntry>>
 }
 
 /// A visibility derivation may reveal content whose item rows are no longer
-/// present. Its worker prepares the retained canonical value under its snapshot;
+/// present. Its worker prepares the shown value under its snapshot;
 /// the existing derive token protects these entries when the writer applies it.
-pub(crate) fn prepare_retained_message(conn: &Connection, pk: i64) -> Result<Vec<IndexEntry>> {
+pub(crate) fn prepare_stored_message(conn: &Connection, pk: i64) -> Result<Vec<IndexEntry>> {
     let hash: Vec<u8> = conn
         .prepare_cached(
             "SELECT v.version_hash FROM message m JOIN message_source s
@@ -1126,9 +1128,9 @@ pub(crate) fn prepare_retained_message(conn: &Connection, pk: i64) -> Result<Vec
          JOIN message_version v ON v.pk=s.version_pk WHERE m.pk=?1",
         )?
         .query_row([pk], |row| row.get(0))?;
-    let (mut message, projection) =
+    let (mut message, block_selection) =
         crate::versions::read_message(conn, &hash)?.ok_or_else(|| {
-            StoreError::Invalid("revealed message has no retained selected version".into())
+            StoreError::Invalid("revealed message has no kept selected version".into())
         })?;
     conn.prepare_cached(
         "SELECT m.id,s.id,m.role,m.prompt_kind,m.model,m.at,m.input_tokens,m.cache_read_tokens,m.cache_write_tokens
@@ -1147,7 +1149,7 @@ pub(crate) fn prepare_retained_message(conn: &Connection, pk: i64) -> Result<Vec
     })?;
     Ok(message_entries(
         &message,
-        &projection.block_ordinals,
+        &block_selection.block_ordinals,
         MessagePlace::default(),
     ))
 }
@@ -1419,14 +1421,14 @@ impl<'c> Run<'c> {
         for row in std::mem::take(&mut self.rows) {
             let entry = match row.place {
                 RowPlace::MessageStart => self.header(&mut headers, row.seq)?.clone(),
-                RowPlace::Event(id, entry) => decode(&entry, Owner::Event(id), row.call_id)?,
+                RowPlace::Event(id, entry) => decode(&entry, EntryOf::Event(id), row.call_id)?,
                 RowPlace::Block(entry) => {
                     let start = match self.starts.range(..=row.seq).next_back() {
                         Some((start, _)) => *start,
                         None => self.start_before(row.seq)?,
                     };
                     let header = self.header(&mut headers, start)?;
-                    decode(&entry, Owner::Header(header), row.call_id)?
+                    decode(&entry, EntryOf::Header(header), row.call_id)?
                 }
             };
             out.push(StoredEntry {
@@ -1452,7 +1454,7 @@ impl<'c> Run<'c> {
             };
             vacant.insert(decode(
                 &message.entry,
-                Owner::Message(message_id(&message.id)?),
+                EntryOf::Message(message_id(&message.id)?),
                 message.call_id.clone(),
             )?);
         }
@@ -1565,8 +1567,8 @@ fn counter(value: i64) -> Result<u64> {
     u64::try_from(value).map_err(|_| StoreError::Invalid("negative item index counter".into()))
 }
 
-/// Recorded parent history: an anchored branch or messages copied into the
-/// child's input. Physical copying does not create a provider relationship.
+/// Recorded parent history: a branch from a branch point, or messages
+/// copied into the child's input. Copying bytes does not create a provider relationship.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InheritedPrefix {
     pub parent: String,

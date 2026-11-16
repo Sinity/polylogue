@@ -1,4 +1,4 @@
-//! Resume only actual parser state at the confirmed source cursor.
+//! Resume only recorded parser state at the confirmed source cursor.
 use crate::*;
 impl Engine {
     pub(crate) fn restored_parser_state(
@@ -30,7 +30,7 @@ impl Engine {
 
 /// The parser state the loop keeps between an input's ranges. The keyed
 /// context's changes reach the writer in the batch's checkpoint and the next
-/// range reads the admitted context from the index, so the kept state leaves
+/// range reads the committed context from the index, so the kept state leaves
 /// them out; they hold every key a range wrote, many times the rest.
 pub(crate) fn without_context_changes(state: &mut polylogue_model::Json) {
     if let Some(state) = state.as_object_mut() {

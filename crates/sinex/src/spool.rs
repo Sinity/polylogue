@@ -13,7 +13,7 @@ use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-mod raw_ranges;
+mod byte_ranges;
 mod sources;
 
 /// An encoded file: its decoded identity and the encoding that
@@ -129,7 +129,7 @@ fn acknowledgment_phase(acknowledgment: &Acknowledgment) -> Phase {
     }
 }
 
-/// The immutable operation descriptor stored in the durable queue.
+/// The operation record stored in the spool; it never changes.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct Record {
     pub identity: String,
@@ -179,14 +179,14 @@ impl Record {
     }
 }
 
-/// An operation as loaded: its immutable record plus the standing that other
+/// An operation as loaded: its unchanging record plus the state that other
 /// files decide. Never serialized.
 #[derive(Clone, Debug)]
 pub(crate) struct Prepared {
     pub order: u64,
     pub record: Record,
     pub phase: Phase,
-    /// Its acquisition was accepted with an unresolved basis conflict.
+    /// Its capture read was accepted with an unresolved base conflict.
     pub unresolved: bool,
 }
 impl std::ops::Deref for Prepared {
@@ -197,11 +197,11 @@ impl std::ops::Deref for Prepared {
 }
 
 #[derive(Serialize, Deserialize)]
-struct Acquisition {
+struct CaptureGroupHeader {
     identity: String,
     intent: String,
     count: u64,
-    disposition: polylogue_store::primary::CaptureDisposition,
+    disposition: polylogue_store::primary::CaptureOutcome,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -219,7 +219,7 @@ struct StoredAcknowledgment {
     number: Option<i64>,
 }
 
-/// The file whose modification time records the last acknowledgement.
+/// The file whose modification time records the last acknowledgment.
 const ACKNOWLEDGED: &str = "last-acknowledged";
 
 pub(crate) struct Spool {
@@ -229,22 +229,22 @@ pub(crate) struct Spool {
     _lock: File,
 }
 
-/// Encoded capture is verified and synced privately before publication takes
-/// the shared queue lock. Relative member order grants no source authority.
-pub(crate) struct StagedAcquisition {
+/// Encoded capture is verified and synced in a private directory before it is
+/// published under the shared queue lock. Member order alone decides nothing about a source.
+pub(crate) struct StagedCaptureGroup {
     temporary: tempfile::TempDir,
     queue: Spool,
     identity: String,
     intent: String,
     count: u64,
 }
-impl StagedAcquisition {
+impl StagedCaptureGroup {
     pub fn queue(&self) -> &Spool {
         &self.queue
     }
     pub fn finish(&self) -> Result<()> {
         if self.queue.queue.len()? != self.count {
-            return invalid("acquisition member count differs from its complete plan");
+            return invalid("capture read member count differs from its plan");
         }
         sync(self.temporary.path())?;
         Ok(())
@@ -253,7 +253,7 @@ impl StagedAcquisition {
 
 fn check_backup_cancelled(cancelled: &AtomicBool) -> Result<()> {
     if cancelled.load(Ordering::Acquire) {
-        return invalid("producer backup acquisition cancelled");
+        return invalid("producer backup copy cancelled");
     }
     Ok(())
 }
@@ -268,7 +268,7 @@ fn pin_backup_tree(source: &Path, destination: &Path, cancelled: &AtomicBool) ->
         for entry in fs::read_dir(source)? {
             let entry = entry?;
             // Atomic publication leaves preparing directories invisible to a
-            // reopened spool; preserve that same cut in its backup.
+            // reopened spool; preserve that same position in its backup.
             if entry
                 .file_name()
                 .to_str()
@@ -317,13 +317,13 @@ impl PinnedBackup {
 }
 
 impl Spool {
-    /// The read snapshot and immutable hard links hold the same queue cut.
+    /// The read snapshot and immutable hard links hold the same queue position.
     /// Database copying and payload hashing happen after releasing the mutex.
     pub(crate) fn pin_backup(&self, cancelled: &AtomicBool) -> Result<PinnedBackup> {
         check_backup_cancelled(cancelled)?;
         let database = self.queue.snapshot()?;
         let pinned = tempfile::Builder::new()
-            .prefix(".backup-cut-")
+            .prefix(".backup-copy-")
             .tempdir_in(self.root.parent().expect("producer spool parent"))?;
         let target = pinned
             .path()
@@ -373,7 +373,7 @@ impl Spool {
         Ok(spool)
     }
 
-    /// Operations, acquisitions and acknowledgments are prepared in dot-named
+    /// Operations, capture groups and acknowledgments are prepared in dot-named
     /// directories and published by rename, so a dot-named directory left at
     /// open belongs to a preparation that crashed before publication. The
     /// spool lock means no other writer is preparing now. Some hold hard links
@@ -487,7 +487,7 @@ impl Spool {
             .reader(None, ReadLimits::default())?)
     }
 
-    /// Open immutable files under the queue lock; codec verification belongs
+    /// Opens the operation's files under the queue lock; codec verification belongs
     /// to the sender after that lock is released.
     pub fn pin_frame(&self, identity: &str) -> Result<PinnedEncoding> {
         let descriptor = self.required(identity)?.frame.descriptor()?;
@@ -536,7 +536,7 @@ impl Spool {
     }
 
     /// The body files in order, each with its encoding. The caller keeps the
-    /// named spool inodes immutable until the applied barrier.
+    /// named spool inodes immutable until the applied completion marker.
     pub fn encoded_body(&self, identity: &str) -> Result<Vec<(PathBuf, EncodedBlob)>> {
         let prepared = self.required(identity)?;
         let body = prepared
@@ -555,7 +555,7 @@ impl Spool {
             .collect()
     }
 
-    /// Pinned handles survive publication retries without a decoded copy.
+    /// Pinned handles survive send retries without a decoded copy.
     pub fn prepared_body(&self, identity: &str) -> Result<Vec<hashed_blobs::Prepared>> {
         self.encoded_body(identity)?
             .into_iter()
@@ -652,12 +652,12 @@ impl Spool {
         )
     }
 
-    pub fn stage_acquisition(
+    pub fn stage_capture_group(
         &self,
         identity: &str,
         intent: &str,
         count: u64,
-    ) -> Result<StagedAcquisition> {
+    ) -> Result<StagedCaptureGroup> {
         let temporary = tempfile::Builder::new()
             .prefix(&format!(".preparing-{}-", hash(identity.as_bytes())))
             .tempdir_in(self.root.join("operations"))?;
@@ -668,7 +668,7 @@ impl Spool {
             waker: RefCell::new(None),
             _lock: self._lock.try_clone()?,
         };
-        Ok(StagedAcquisition {
+        Ok(StagedCaptureGroup {
             temporary,
             queue,
             identity: identity.into(),
@@ -677,31 +677,31 @@ impl Spool {
         })
     }
 
-    pub fn acquisition_disposition(
+    pub fn capture_group_outcome(
         &self,
         identity: &str,
-    ) -> Result<Option<polylogue_store::primary::CaptureDisposition>> {
+    ) -> Result<Option<polylogue_store::primary::CaptureOutcome>> {
         let header = self
             .queue
             .get(identity)?
-            .map(|entry| serde_json::from_slice::<Acquisition>(&entry.metadata))
+            .map(|entry| serde_json::from_slice::<CaptureGroupHeader>(&entry.metadata))
             .transpose()?;
         if header
             .as_ref()
             .is_some_and(|header| header.identity != identity)
         {
-            return invalid("acquisition acknowledgment has another identity");
+            return invalid("capture group header has another identity");
         }
         Ok(header.map(|header| header.disposition))
     }
 
-    /// Exact frozen retries return their existing disposition without a fresh
+    /// A retry that matches the recorded group returns its existing outcome without a fresh
     /// source comparison or any mutation of accepted ordering.
-    pub fn matching_acquisition(
+    pub fn matching_capture_group(
         &self,
-        staged: &StagedAcquisition,
-    ) -> Result<Option<polylogue_store::primary::CaptureDisposition>> {
-        let Some(disposition) = self.acquisition_disposition(&staged.identity)? else {
+        staged: &StagedCaptureGroup,
+    ) -> Result<Option<polylogue_store::primary::CaptureOutcome>> {
+        let Some(outcome) = self.capture_group_outcome(&staged.identity)? else {
             return Ok(None);
         };
         let path = self
@@ -709,9 +709,9 @@ impl Spool {
             .join("operations")
             .join(hash(staged.identity.as_bytes()))
             .join("acquisition.json");
-        let acquisition =
-            read_checked::<Acquisition>(&path)?.expect("read above under capture lock");
-        if acquisition.intent != staged.intent || acquisition.count != staged.count {
+        let header =
+            read_checked::<CaptureGroupHeader>(&path)?.expect("read above under capture lock");
+        if header.intent != staged.intent || header.count != staged.count {
             return Ok(None);
         }
         let mut after = None;
@@ -733,37 +733,37 @@ impl Spool {
                 }
             }
         }
-        Ok(Some(disposition))
+        Ok(Some(outcome))
     }
 
     /// Only small metadata and the atomic directory publication enter this step.
-    pub fn publish_acquisition(
+    pub fn publish_capture_group(
         &self,
-        staged: StagedAcquisition,
-        disposition: polylogue_store::primary::CaptureDisposition,
+        staged: StagedCaptureGroup,
+        outcome: polylogue_store::primary::CaptureOutcome,
     ) -> Result<()> {
         if self.queue.get(&staged.identity)?.is_some() {
-            if self.matching_acquisition(&staged)? != Some(disposition) {
-                return invalid("acquisition identity changed its frozen capture or disposition");
+            if self.matching_capture_group(&staged)? != Some(outcome) {
+                return invalid("capture group identity changed its recorded capture or outcome");
             }
             return Ok(());
         }
         staged.finish()?;
-        let header = Acquisition {
+        let header = CaptureGroupHeader {
             identity: staged.identity.clone(),
             intent: staged.intent.clone(),
             count: staged.count,
-            disposition,
+            disposition: outcome,
         };
         write_checked(&staged.temporary.path().join("acquisition.json"), &header)?;
         // Close the private database at its original path before moving its
         // directory, so SQLite finishes its checkpoint at the same location.
         drop(staged.queue);
         sync(staged.temporary.path())?;
-        boundary("acquisition_synced");
+        boundary("capture_group_synced");
         let directory = format!("operations/{}", hash(staged.identity.as_bytes()));
         let destination = self.root.join(&directory);
-        // No database publication means the immutable directory is still private.
+        // Until the queue database records it, the directory is still private.
         if destination.exists() {
             fs::remove_dir_all(&destination)?;
         }
@@ -773,34 +773,32 @@ impl Spool {
             staged.identity.clone(),
             directory,
             serde_json::to_vec(&header)?,
-            queue::Kind::Acquisition,
+            queue::Kind::CaptureGroupHeader,
         );
         operation.unresolved =
-            disposition == polylogue_store::primary::CaptureDisposition::UnresolvedBasisConflict;
+            outcome == polylogue_store::primary::CaptureOutcome::UnresolvedBasisConflict;
         let staged_queue = Queue::open(&destination.join("queue.db"))?;
-        self.queue.publish_acquisition(&staged_queue, &operation)?;
+        self.queue
+            .publish_capture_group(&staged_queue, &operation)?;
         drop(staged_queue);
-        boundary("acquisition_published");
+        boundary("capture_group_published");
         remove_staging_database(&destination)?;
         self.wake();
         Ok(())
     }
 
     #[cfg(test)]
-    pub fn prepare_acquisition(
+    pub fn prepare_capture_group(
         &self,
         identity: &str,
         intent: &str,
         count: u64,
         stage: impl FnOnce(&Spool) -> Result<()>,
     ) -> Result<()> {
-        let staged = self.stage_acquisition(identity, intent, count)?;
+        let staged = self.stage_capture_group(identity, intent, count)?;
         stage(staged.queue())?;
         staged.finish()?;
-        self.publish_acquisition(
-            staged,
-            polylogue_store::primary::CaptureDisposition::Prepared,
-        )
+        self.publish_capture_group(staged, polylogue_store::primary::CaptureOutcome::Prepared)
     }
 
     pub fn capture(&self, identity: &str) -> Result<Capture> {
@@ -810,8 +808,8 @@ impl Spool {
             .ok_or_else(|| Error::Invalid("operation has no capture metadata".into()))
     }
 
-    /// One publication owns the complete immutable capture set. Per-capture
-    /// Queue publication commits its complete membership with the frame.
+    /// One queue commit records the complete capture set with the group's frame;
+    /// the set never changes afterwards.
     pub fn prepare_group(&self, frame: Ingress, captures: &[String]) -> Result<Prepared> {
         if !matches!(
             &frame,
@@ -827,12 +825,12 @@ impl Spool {
         if let Some(existing) = self.group_for_sorted(&group_hash)?
             && existing.identity != frame.frame()
         {
-            return invalid("capture group already has another immutable frame identity");
+            return invalid("capture group already has another frame identity");
         }
         for identity in &captures {
-            let raw = self.required(identity)?;
-            if raw.material().is_none() {
-                return invalid("capture group member is not a durable material");
+            let member = self.required(identity)?;
+            if member.material().is_none() {
+                return invalid("capture group member is not a spooled material");
             }
             if let Some(existing) = self.capture_group(identity)?
                 && existing.group().map(|group| &group.captures_hash) != Some(&group_hash)
@@ -912,34 +910,34 @@ impl Spool {
         }
     }
 
-    pub fn acquisition_headers(
+    pub fn capture_group_headers(
         &self,
         group: &str,
         after: Option<u64>,
         limit: usize,
     ) -> Result<(
-        Option<polylogue_store::primary::CaptureDisposition>,
+        Option<polylogue_store::primary::CaptureOutcome>,
         Vec<Prepared>,
         Option<u64>,
     )> {
         if limit == 0 {
-            return invalid("acquisition page limit is zero");
+            return invalid("capture group page limit is zero");
         }
-        let Some(disposition) = self.acquisition_disposition(group)? else {
+        let Some(outcome) = self.capture_group_outcome(group)? else {
             return Ok((None, Vec::new(), None));
         };
-        let mut entries = self
-            .queue
-            .acquisition_after(group, after, limit.saturating_add(1))?;
+        let mut entries =
+            self.queue
+                .capture_group_members_after(group, after, limit.saturating_add(1))?;
         let next = if entries.len() > limit {
             entries.truncate(limit);
             self.queue
-                .acquisition_ordinal(&entries.last().expect("nonempty page").identity)?
+                .member_ordinal(&entries.last().expect("nonempty page").identity)?
         } else {
             None
         };
         Ok((
-            Some(disposition),
+            Some(outcome),
             entries
                 .into_iter()
                 .map(|entry| self.prepared(entry))
@@ -948,10 +946,10 @@ impl Spool {
         ))
     }
 
-    pub fn source_heads(
+    pub fn latest_pending(
         &self,
         source: &polylogue_store::primary::SourceSelector,
-    ) -> Result<sources::Heads> {
+    ) -> Result<sources::LatestPending> {
         sources::get(self, source)
     }
 
@@ -997,13 +995,13 @@ impl Spool {
         boundary("ack_published");
         // The marker's modification time is when Sinex last acknowledged a
         // write; it outlives a restart and the removed operations.
-        // A crash may leave it at an earlier acknowledgement, never a later one.
+        // A crash may leave it at an earlier acknowledgment, never a later one.
         fs::write(self.root.join(ACKNOWLEDGED), &acknowledgment.frame)?;
         Ok(())
     }
 
     /// When Sinex last acknowledged a write this spool sent, as recorded by
-    /// the acknowledgement marker; `None` before the first acknowledgement.
+    /// the acknowledgment marker; `None` before the first acknowledgment.
     pub fn last_acknowledged(&self) -> Result<Option<std::time::SystemTime>> {
         match fs::metadata(self.root.join(ACKNOWLEDGED)) {
             Ok(metadata) => Ok(Some(metadata.modified()?)),
@@ -1012,7 +1010,7 @@ impl Spool {
         }
     }
 
-    /// Conflict evidence retains the owner's prior acknowledgment without acknowledging
+    /// A conflict record keeps Sinex's earlier acknowledgment without acknowledging
     /// the offered body. It uses the operation's existing atomic acknowledgment directory.
     pub fn record_conflict(
         &self,
@@ -1024,7 +1022,7 @@ impl Spool {
         validate_conflict(&prepared, offered_hash, acknowledgment)?;
         if let Some(old) = self.conflict_acknowledgment(identity)? {
             if encoded_hash(&old)? != encoded_hash(acknowledgment)? {
-                return invalid("conflicting acknowledgment evidence changed");
+                return invalid("conflicting acknowledgment changed");
             }
             if prepared.phase.is_pending() {
                 self.finish_acknowledgment(
@@ -1103,10 +1101,10 @@ impl Spool {
         Ok(Some(acknowledgment))
     }
 
-    /// The caller supplies only a head verified after publication acknowledgments
-    /// in this scope. Missing head evidence retains grouped source capture.
+    /// The caller supplies only a latest position observed after this scope's
+    /// acknowledgments. Without a latest position, grouped source capture stays in the spool.
     ///
-    /// `applied` answers whether `index.db` holds a fact for one Sinex event.
+    /// `applied` answers whether `index.db` holds a row for one Sinex event.
     /// An operation whose events were admitted is removed only when every one of
     /// them is in `index.db`: the applied position alone can pass positions the
     /// confirmed stream lost in a host crash, and removing then would drop the
@@ -1117,15 +1115,15 @@ impl Spool {
         applied: &dyn Fn(&str) -> Result<bool>,
     ) -> Result<()> {
         if state.applied_position.is_some_and(|position| position < 0)
-            || state.head.is_some_and(|position| position < 0)
+            || state.latest_position.is_some_and(|position| position < 0)
         {
             return invalid("confirmed position is negative");
         }
         let caught_up = state.scope.as_ref().is_some_and(|scope| !scope.is_empty())
             && state
                 .applied_position
-                .zip(state.head)
-                .is_some_and(|(applied, head)| applied >= head);
+                .zip(state.latest_position)
+                .is_some_and(|(applied, latest)| applied >= latest);
         let mut after = None;
         loop {
             let candidates = self.queue.confirmed_after(
@@ -1379,7 +1377,7 @@ impl Spool {
 
 fn remove_staging_database(directory: &Path) -> Result<()> {
     // Every accepted member is already in the main queue transaction. The
-    // closed private database is temporary metadata, not another authority.
+    // closed private database is temporary metadata; the main queue decides.
     for name in ["queue.db", "queue.db-wal", "queue.db-shm"] {
         match fs::remove_file(directory.join(name)) {
             Ok(()) => {}
@@ -1494,7 +1492,7 @@ fn operation(record: &Record, directory: String, frame: &Ingress) -> Result<queu
         operation.source = input
             .basis
             .as_ref()
-            .map(|basis| serde_json::to_vec(&basis.source))
+            .map(|base| serde_json::to_vec(&base.source))
             .transpose()?;
         operation.raw = input.raw_range.is_some();
         operation.raw_generation = if operation.raw {
@@ -1585,7 +1583,7 @@ fn validate_ack(prepared: &Prepared, acknowledgment: &Acknowledgment) -> Result<
     match (&acknowledgment.result, &prepared.payload) {
         (FrameResult::Refused { .. }, _) => Ok(()),
         (FrameResult::KindsRegistered { .. }, Payload::RegisterKinds) => {
-            exact_frame(prepared, acknowledgment)
+            matches_frame(prepared, acknowledgment)
         }
         (FrameResult::KindsRegistered { .. }, _) => {
             invalid("event acknowledgment claims kind registration")
@@ -1605,14 +1603,14 @@ fn validate_ack(prepared: &Prepared, acknowledgment: &Acknowledgment) -> Result<
             && admitted.is_empty()
             && *counts == sinex_model::AdmissionCounts::default() =>
         {
-            exact_frame(prepared, acknowledgment)
+            matches_frame(prepared, acknowledgment)
         }
         (_, Payload::RegisterKinds) => {
             invalid("kind registration acknowledgment claims an event admission outcome")
         }
         (FrameResult::Replayed { commit_seq, .. }, Payload::ReplaySequence { .. }) => {
             if commit_seq.is_none() {
-                exact_frame(prepared, acknowledgment)?;
+                matches_frame(prepared, acknowledgment)?;
                 if !acknowledgment.admitted().is_empty() {
                     return invalid("newly admitted or replaced events need a confirmed position");
                 }
@@ -1638,13 +1636,13 @@ fn validate_ack(prepared: &Prepared, acknowledgment: &Acknowledgment) -> Result<
             {
                 return invalid("material acknowledgment has another material identity");
             }
-            // An absent position is an explicit owner outcome, not an empty
+            // An absent position is an explicit Sinex outcome, not an empty
             // or partial acknowledgment.
             if commit_seq.is_none() && matches!(payload, Payload::Events { .. }) {
-                exact_frame(prepared, acknowledgment)?;
+                matches_frame(prepared, acknowledgment)?;
                 if !admitted.is_empty() || material.is_some() || !material_extents.is_empty() {
                     return invalid(
-                        "unpositioned acknowledgment lacks exact durable frame evidence",
+                        "unpositioned acknowledgment does not match the frame's number and hash",
                     );
                 }
                 if counts.admitted != 0 || counts.replaced != 0 {
@@ -1656,12 +1654,12 @@ fn validate_ack(prepared: &Prepared, acknowledgment: &Acknowledgment) -> Result<
     }
 }
 
-/// The acknowledgment is the owner's durable record of this exact frame body.
-fn exact_frame(prepared: &Prepared, acknowledgment: &Acknowledgment) -> Result<()> {
+/// The acknowledgment is Sinex's saved record of this frame body.
+fn matches_frame(prepared: &Prepared, acknowledgment: &Acknowledgment) -> Result<()> {
     if acknowledgment.number <= 0
         || acknowledgment.content_hash.as_deref() != Some(prepared.frame.blob.as_str())
     {
-        return invalid("unpositioned acknowledgment lacks exact durable frame evidence");
+        return invalid("unpositioned acknowledgment does not match the frame's number and hash");
     }
     Ok(())
 }
@@ -1676,7 +1674,7 @@ fn validate_conflict(
         || acknowledgment.number <= 0
         || acknowledgment.content_hash.as_deref() == Some(offered)
     {
-        return invalid("conflict evidence does not bind this exact offered operation");
+        return invalid("conflicting acknowledgment does not match the offered operation");
     }
     Ok(())
 }

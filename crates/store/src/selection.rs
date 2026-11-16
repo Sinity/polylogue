@@ -1,5 +1,5 @@
 //! Prepared questions and streaming rows bound to one Reader and access scope.
-pub use crate::query::{Param, Program, RowBasis};
+pub use crate::query::{Param, Program, RowKind};
 use crate::{ReadScopeToken, Reader, SqlValue, StoreError};
 use polylogue_model::read::ReadTarget;
 use polylogue_model::{DocumentId, MessageId, Reference, RevisionReference, SessionId};
@@ -121,7 +121,7 @@ impl PreparedSelection<'_> {
     }
 }
 /// Natural source coordinates emitted by the compiler's own selected relation.
-/// These are not Sinex parents; lifecycle evidence resolves their exact native facts.
+/// These are not Sinex parents; the lifecycle rows resolve the unit rows they name.
 #[derive(Debug, Clone)]
 pub struct SelectionFactKey {
     pub unit: Unit,
@@ -152,12 +152,12 @@ pub enum RowIdentity {
 }
 impl RowIdentity {
     fn from_row(program: &Program, row: &Value) -> Option<Self> {
-        Some(match &program.row_basis {
-            RowBasis::Native { unit, columns } => Self::Entity {
+        Some(match &program.row_kind {
+            RowKind::UnitRows { unit, columns } => Self::Entity {
                 unit: *unit,
                 key: columns.iter().map(|column| row[column].clone()).collect(),
             },
-            RowBasis::Group { columns } => Self::Group {
+            RowKind::Group { columns } => Self::Group {
                 keys: columns
                     .iter()
                     .map(|column| {
@@ -172,8 +172,8 @@ impl RowIdentity {
                     })
                     .collect(),
             },
-            RowBasis::Summary => Self::Summary,
-            RowBasis::Distinct { columns } if !program.ranked => Self::Distinct {
+            RowKind::Summary => Self::Summary,
+            RowKind::Distinct { columns } if !program.ranked => Self::Distinct {
                 values: columns
                     .iter()
                     .map(|column| {
@@ -195,7 +195,7 @@ impl RowIdentity {
 
 impl Reader<'_> {
     /// Bind a query at its declared grain using this Reader's immutable definitions.
-    /// Execution options and the captured clock remain outside semantic identity.
+    /// Execution options and the captured clock stay outside the query's identity.
     pub fn prepare_query_plan(
         &self,
         text: &str,
@@ -214,7 +214,7 @@ impl Reader<'_> {
         self.conn()?;
         plan
     }
-    /// Evaluate the full semantic row selection, including an atomic native
+    /// Evaluate the full row selection, including an atomic unit-row
     /// range. Read-target source grouping is a separate presentation input.
     pub fn prepare_query_selection<'read>(
         &'read self,
@@ -230,7 +230,7 @@ impl Reader<'_> {
     }
 
     /// Resolve names and references once against this pinned read. Incoming
-    /// saved/kept maps are replaced with the authoritative Reader snapshot.
+    /// saved/kept maps are replaced with the Reader snapshot.
     pub fn prepare_selection<'read>(
         &'read self,
         target: &str,
@@ -304,7 +304,7 @@ impl Reader<'_> {
         self.finish_selection(plan, program, direct, &options)
     }
 
-    /// Replay an acknowledged canonical object using its authenticated catalog
+    /// Replay an acknowledged saved object using its authenticated catalog
     /// version and the caller's already captured operation clock.
     pub fn prepare_query_object_selection<'read>(
         &'read self,
@@ -401,7 +401,7 @@ impl Reader<'_> {
     }
 
     /// Decode one row at a time. A callback break stops SQLite immediately;
-    /// no previous body or complete answer is materialized to seek a page.
+    /// no previous body or complete answer is built to seek a page.
     pub fn visit_selection<E>(
         &self,
         selection: &PreparedSelection<'_>,
@@ -554,8 +554,8 @@ impl Reader<'_> {
         })
     }
 
-    /// Stream the complete selected native population without answer projection
-    /// or body decoding. Aggregated populations need a retained compiler basis.
+    /// Stream the complete selected unit rows without answer field selection
+    /// or body decoding. Aggregated populations need a kept compiler base.
     pub fn visit_selection_facts<E>(
         &self,
         selection: &PreparedSelection<'_>,
@@ -577,10 +577,10 @@ impl Reader<'_> {
     where
         E: From<SelectionError>,
     {
-        let RowBasis::Native { unit, columns } = &selection.program.row_basis else {
+        let RowKind::UnitRows { unit, columns } = &selection.program.row_kind else {
             return Err(E::from(invalid(
                 "not_yet_available",
-                "the query does not retain its criterion population",
+                "the query does not keep its criterion population",
             )));
         };
         let sql = selection.program.statements.member_columns(columns);
@@ -605,15 +605,15 @@ impl Reader<'_> {
             Err(VisitError::Selection(e)) => Err(E::from(e)),
         }
     }
-    /// Visit all recorded native conversation memberships without hydrating
-    /// message bodies. The shown message's chosen session is not uniqueness proof.
+    /// Visit all recorded conversation memberships without hydrating
+    /// message bodies. The shown message's chosen session does not show it is the only one.
     pub fn visit_message_sessions(
         &self,
         message: &MessageId,
         mut visit: impl FnMut(SessionId) -> crate::Result<ControlFlow<()>>,
     ) -> crate::Result<()> {
         let conn = self.conn()?;
-        let message = crate::parser_context::canonical_message(conn, message)?.to_string();
+        let message = crate::parser_context::resolved_message(conn, message)?.to_string();
         let (sql, id) = crate::query::references::message_sessions(&message);
         let mut statement = conn.prepare_cached(sql)?;
         let mut rows = statement.query([id])?;
@@ -804,7 +804,7 @@ impl Reader<'_> {
     }
 }
 /// The kept results with these ids, through the one kept-column decoder that
-/// pinned readers and writer admission share; an id with no stored result is
+/// pinned readers and the writer share; an id with no stored result is
 /// absent from the map.
 pub(crate) fn kept_results_named<'a>(
     conn: &rusqlite::Connection,
@@ -949,7 +949,7 @@ fn reference_atom(target: &ReadTarget) -> String {
     let text = target.to_string();
     let (kind, value) = text
         .split_once(':')
-        .expect("native reference has a namespace");
+        .expect("a typed reference has a namespace");
     format!("{kind}:{}", polylogue_query::quoted(value))
 }
 fn direct_reference(
@@ -1036,7 +1036,7 @@ fn row_target(program: &Program, row: &Value) -> Option<ReadTarget> {
     if program.shape != Shape::Rows {
         return None;
     }
-    let RowBasis::Native { unit, columns } = &program.row_basis else {
+    let RowKind::UnitRows { unit, columns } = &program.row_kind else {
         return None;
     };
     identity_target(
@@ -1052,8 +1052,8 @@ fn aggregate_values(program: &Program, row: &Value) -> BTreeMap<String, Option<f
     if !matches!(program.shape, Shape::Groups | Shape::Summary) {
         return BTreeMap::new();
     }
-    let keys = match &program.row_basis {
-        RowBasis::Group { columns } => columns.as_slice(),
+    let keys = match &program.row_kind {
+        RowKind::Group { columns } => columns.as_slice(),
         _ => &[],
     };
     program

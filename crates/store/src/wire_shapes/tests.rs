@@ -6,7 +6,7 @@ fn database() -> Connection {
     conn.execute_batch(SCHEMA).unwrap();
     conn
 }
-fn source(input_pk: i64, chain: i64, length: u64, receipt: i64) -> Source<'static> {
+fn source(input_pk: i64, chain: i64, length: u64, occurrence: i64) -> Source<'static> {
     Source {
         input_pk,
         input: match input_pk {
@@ -17,14 +17,14 @@ fn source(input_pk: i64, chain: i64, length: u64, receipt: i64) -> Source<'stati
         format: if input_pk == 3 { "other" } else { "fixture" },
         chain,
         length,
-        receipt,
-        receipt_id: Some("reading-receipt"),
-        observation: Some(match receipt {
+        commit_sequence: occurrence,
+        commit_id: Some("reading-occurrence"),
+        observation: Some(match occurrence {
             1 => "observation-first",
             2 => "observation-second",
             _ => "observation-later",
         }),
-        observed_at_ms: Some(1000 - receipt),
+        observed_at_ms: Some(1000 - occurrence),
     }
 }
 fn shape(path: &str, kind: &str, expected: &[&str]) -> WireShape {
@@ -77,7 +77,7 @@ fn at<'a>(report: &'a Report, path: &str) -> &'a Observation {
         .unwrap()
 }
 #[test]
-fn wire_shape_partial_retry_is_idempotent_and_receipt_order_owns_first_last() {
+fn partial_retry_is_idempotent_and_keeps_first_last() {
     let mut conn = database();
     let first = step(
         "v1",
@@ -202,7 +202,7 @@ fn drift_reported_new_path_changed_type_and_stopped_optional_field() {
         .iter()
         .find(|row| row.kind == Kind::StoppedField && row.shape.path == "/gone")
         .unwrap();
-    assert_eq!(stopped.certainty, Certainty::OptionalPresence);
+    assert_eq!(stopped.reason, DriftReason::MaybeOptional);
     assert_eq!(stopped.compared_with.len(), 1);
     assert_eq!(
         stopped.compared_with[0].last.as_ref().unwrap().input,
@@ -322,7 +322,7 @@ fn wire_shape_reading_versions_and_input_chains_keep_their_history() {
     assert_eq!(history.coverage[0].current_readings, 1);
 }
 #[test]
-fn wire_shape_reset_replaces_counts_retaining_prior_complete_presence() {
+fn reset_replaces_counts_keeping_complete_presence() {
     let mut conn = database();
     store(
         &mut conn,
@@ -391,7 +391,7 @@ fn wire_shape_missing_prefix_remains_incomplete_after_later_eof() {
     );
 }
 #[test]
-fn wire_shape_unknown_discriminators_and_tables_use_explicit_metadata_without_values() {
+fn wire_shape_unknown_type_fields_and_tables_carry_no_values() {
     let mut conn = database();
     let mut kind = shape("/type", "string", &["string"]);
     kind.known_kinds = vec!["message".into()];
@@ -562,8 +562,8 @@ fn wire_shape_sql_aggregation_returns_schema_rows_and_exact_counts() {
             format: "fixture",
             chain: 1,
             length: 10,
-            receipt: index,
-            receipt_id: None,
+            commit_sequence: index,
+            commit_id: None,
             observation: None,
             observed_at_ms: None,
         };
@@ -590,7 +590,7 @@ fn wire_shape_sql_aggregation_returns_schema_rows_and_exact_counts() {
     assert_eq!(row.shape.last.sequence, 209);
 }
 #[test]
-fn wire_shape_native_tables_stay_distinct_and_unused_counts_are_explicit() {
+fn source_tables_stay_distinct_and_unused_counted() {
     let mut conn = database();
     let mut shapes = Vec::new();
     for table in ["table_a", "table_b"] {
@@ -631,7 +631,7 @@ fn wire_shape_native_tables_stay_distinct_and_unused_counts_are_explicit() {
 }
 
 #[test]
-fn wire_shape_writer_commits_source_receipts_and_retains_reparse_versions() {
+fn writer_stores_occurrences_and_reparse_versions() {
     let archive = crate::fixture::writer::WriterArchive::new();
     let mut batch = crate::fixture::writer::step(
         "wire-input",
@@ -671,14 +671,14 @@ fn wire_shape_writer_commits_source_receipts_and_retains_reparse_versions() {
     assert!(observed.last.observation.is_some());
     assert_eq!(observed.last.observed_at_ms, Some(1));
     let source = Connection::open(archive.archive.archive_db()).unwrap();
-    let native: i64 = source
+    let commit_seq: i64 = source
         .query_row(
             "SELECT commit_seq FROM revision WHERE input='wire-input'",
             [],
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(observed.last.sequence, native);
+    assert_eq!(observed.last.sequence, commit_seq);
     archive.writer.send(batch.clone()).unwrap();
     let report = archive.writer.flush().unwrap();
     assert!(report.errors.is_empty(), "{:?}", report.errors);
@@ -715,7 +715,7 @@ fn wire_shape_writer_commits_source_receipts_and_retains_reparse_versions() {
     assert_eq!(current.shapes.len(), 2);
     assert!(current.drift.is_empty());
     assert_eq!(current.shapes[0].reading_version, "v2");
-    assert_eq!(current.shapes[0].last.sequence, native);
+    assert_eq!(current.shapes[0].last.sequence, commit_seq);
     let history = pool
         .reader()
         .unwrap()
@@ -736,7 +736,7 @@ fn complete_chain_replacement_rebuilds_chunk_counts_and_rolls_back_overlaps() {
     let mut batch = crate::fixture::writer::step(
         "replacement-input",
         "fixture",
-        "native.json",
+        "harness.json",
         Output::default(),
         0,
         3,
@@ -764,7 +764,7 @@ fn complete_chain_replacement_rebuilds_chunk_counts_and_rolls_back_overlaps() {
             .unwrap()
     };
     let before = report();
-    let original_receipt = at(&before, "").first.clone();
+    let original_occurrence = at(&before, "").first.clone();
     let replacement = |tail_start, at_end| {
         let mut reading = crate::writer::ChainReading::new().unwrap();
         let mut first = step(
@@ -792,7 +792,7 @@ fn complete_chain_replacement_rebuilds_chunk_counts_and_rolls_back_overlaps() {
     assert_eq!(at(&after, "/kept").types["number"].count, 1);
     assert_eq!(at(&after, "/new").types["boolean"].count, 1);
     assert_eq!(at(&after, "/gone").types["string"].count, 0);
-    assert_eq!(at(&after, "").first, original_receipt);
+    assert_eq!(at(&after, "").first, original_occurrence);
     assert_eq!(at(&after, "/gone").last, at(&before, "/gone").last);
     assert_eq!(
         at(&after, "/gone").complete_presence,
@@ -843,7 +843,7 @@ fn wire_shape_confirmed_subset_keeps_partial_coverage_despite_scratch_reset() {
 }
 
 #[test]
-fn wire_coverage_diagnostics_survive_parser_activity_without_completion_promotion() {
+fn wire_coverage_survives_parser_status_changes() {
     // `Unknown` came only from the retired export reading marker.
     for wire in [
         CoverageStatus::Unreadable,
@@ -864,7 +864,7 @@ fn wire_coverage_diagnostics_survive_parser_activity_without_completion_promotio
             reading.counts.records = 1;
             reading.counts.add(
                 "record",
-                &polylogue_model::RecordOutcome::unreadable("retained source diagnostic"),
+                &polylogue_model::RecordOutcome::unreadable("stored source diagnostic"),
             );
         }
         if wire == CoverageStatus::NoParserYet {
@@ -909,12 +909,12 @@ fn wire_coverage_diagnostics_survive_parser_activity_without_completion_promotio
         }
     }
 }
-/// A reading's shapes cite its receipts by number, each receipt stored once
+/// A reading's shapes cite its occurrences by number, each occurrence stored once
 /// (docs/archive.md, format drift): two ranges of one chain over five paths
-/// store the two ranges' receipts and the whole chain's, and a read gives
-/// every shape its exact receipts back.
+/// store the two ranges' occurrences and the whole chain's, and a read gives
+/// every shape its own occurrences back.
 #[test]
-fn a_readings_receipts_are_stored_once_and_read_back_whole() {
+fn occurrences_are_stored_once_and_read_back_whole() {
     let mut conn = database();
     let paths = ["/a", "/b", "/c", "/d"];
     let shapes = || {
@@ -932,22 +932,22 @@ fn a_readings_receipts_are_stored_once_and_read_back_whole() {
         source(1, 1, 20, 2),
         &step("v1", 10..20, true, shapes()),
     );
-    let receipts: Vec<String> = conn
-        .prepare("SELECT receipt FROM wire_receipt ORDER BY number")
+    let occurrences: Vec<String> = conn
+        .prepare("SELECT occurrence FROM wire_occurrence ORDER BY number")
         .unwrap()
         .query_map([], |row| row.get(0))
         .unwrap()
         .collect::<rusqlite::Result<_>>()
         .unwrap();
-    let receipts: Vec<Receipt> = receipts
+    let occurrences: Vec<Occurrence> = occurrences
         .iter()
         .map(|json| serde_json::from_str(json).unwrap())
         .collect();
-    let range = |receipt: i64, start: u64, end: u64| Receipt {
-        footprint: ReadingFootprint::Bytes { start, end },
-        ..Receipt::from(source(1, 1, 20, receipt))
+    let range = |occurrence: i64, start: u64, end: u64| Occurrence {
+        covered: ReadRange::Bytes { start, end },
+        ..Occurrence::from(source(1, 1, 20, occurrence))
     };
-    assert_eq!(receipts, [range(1, 0, 10), range(2, 10, 20)]);
+    assert_eq!(occurrences, [range(1, 0, 10), range(2, 10, 20)]);
     let stored: i64 = conn
         .query_row("SELECT count(*) FROM wire_shape", [], |row| row.get(0))
         .unwrap();
@@ -959,7 +959,7 @@ fn a_readings_receipts_are_stored_once_and_read_back_whole() {
         assert_eq!(shape.last, range(2, 10, 20));
         assert_eq!(
             shape.complete_presence,
-            Some(Receipt::from(source(1, 1, 20, 2)))
+            Some(Occurrence::from(source(1, 1, 20, 2)))
         );
         assert_eq!(shape.types["string"].count, 2);
         assert_eq!(shape.types["string"].first, range(1, 0, 10));

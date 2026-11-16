@@ -29,7 +29,7 @@ impl Stored {
                 self.archive.prepare_bytes(bytes).unwrap(),
                 Batch {
                     basis: None,
-                    required_disposition: None,
+                    required_outcome: None,
                     input: InputKey {
                         id: input.into(),
                         format: format.into(),
@@ -65,7 +65,7 @@ impl Stored {
     fn read(&self, selection: Infer) -> Inference {
         observe(
             &ReadPool::open(&self.archive).unwrap(),
-            &Admission::default(),
+            &IdleGate::default(),
             selection,
         )
         .unwrap()
@@ -116,7 +116,7 @@ fn inventory(root: &Path) -> BTreeMap<std::path::PathBuf, Option<blake3::Hash>> 
 }
 
 #[test]
-fn schema_tools_no_values_exact_stored_revisions_and_unreadable_records() {
+fn schema_tools_no_values_stored_revisions_and_unreadable_records() {
     let stored = Stored::new();
     stored.put(
         "selected",
@@ -300,7 +300,7 @@ fn primary_inference_reads_owned_sinex_extents_without_a_standalone_blob_copy() 
     let pool = ReadPool::open(&archive).unwrap();
     let report = observe(
         &pool,
-        &Admission::default(),
+        &IdleGate::default(),
         selection(Some("claude-code"), &[], None),
     )
     .unwrap();
@@ -315,18 +315,18 @@ fn primary_inference_reads_owned_sinex_extents_without_a_standalone_blob_copy() 
 
 #[test]
 fn idle_inference_yields_at_stream_reads_and_cancellation_releases_its_lease() {
-    let admission = Admission::default();
-    let foreground = admission.foreground();
+    let gate = IdleGate::default();
+    let foreground = gate.foreground();
     let cancellation = polylogue_store::cancellation::Cancellation::default();
     let limit = ReadLimit::without_deadline(cancellation.clone());
     std::thread::scope(|scope| {
         let (started, waiting) = channel();
         let (done, finished) = channel();
-        let admission = &admission;
+        let gate = &gate;
         scope.spawn(move || {
             limit.scope(|| {
                 started.send(()).unwrap();
-                let result = admission.background();
+                let result = gate.background();
                 done.send(result.is_ok()).unwrap();
             })
         });
@@ -336,7 +336,7 @@ fn idle_inference_yields_at_stream_reads_and_cancellation_releases_its_lease() {
         assert!(!finished.recv_timeout(Duration::from_secs(2)).unwrap());
     });
     drop(foreground);
-    let _lease = admission.background().unwrap();
+    let _turn = gate.background().unwrap();
     let stored = Stored::new();
     stored.put("a", "claude-code", false, "/a.jsonl", 1, b"abcdef");
     // Frames written after the chain is loaded, still in the log: a
@@ -362,12 +362,12 @@ fn idle_inference_yields_at_stream_reads_and_cancellation_releases_its_lease() {
         let (first, started) = channel();
         let (next, proceed) = channel();
         let (done, finished) = channel();
-        let admission_ref = &admission;
+        let gate_ref = &gate;
         scope.spawn(move || {
             let count = std::cell::Cell::new(0);
             let mut stream = IdleRead {
                 source,
-                admission: admission_ref,
+                gate: gate_ref,
                 read: &count,
             };
             let mut byte = [0];
@@ -379,7 +379,7 @@ fn idle_inference_yields_at_stream_reads_and_cancellation_releases_its_lease() {
         });
         assert_eq!(started.recv().unwrap(), [b'a']);
         stored.put("c", "claude-code", false, "/c.jsonl", 1, b"mnopqr");
-        let foreground = admission.foreground();
+        let foreground = gate.foreground();
         next.send(()).unwrap();
         assert!(finished.recv_timeout(Duration::from_millis(40)).is_err());
         // The read waiting for foreground work holds no read transaction.

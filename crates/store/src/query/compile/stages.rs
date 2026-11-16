@@ -42,7 +42,7 @@ impl<'a> Compiler<'a> {
             .and_then(|id| id.declaration().column_reference())
     }
 
-    /// The same typed selector supplies query lowering and native facets.
+    /// The same typed selector supplies query lowering and unit facets.
     pub(super) fn expr(
         &mut self,
         field: &str,

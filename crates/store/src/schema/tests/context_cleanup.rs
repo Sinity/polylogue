@@ -21,14 +21,14 @@ fn repeated_source_upserts_keep_context_bodies_until_the_context_goes() {
                  INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,session_pk,version_pk,route,completion)
                     VALUES(1,1,17,0,4,'native',1,1,'live','finished');
                  INSERT INTO parser_context_state VALUES(1,17,'reading=1',4);
-                 INSERT INTO parser_context_response VALUES(1,17,'','claude-code:context','retained-key',1,0,4);
+                 INSERT INTO parser_context_response VALUES(1,17,'','claude-code:context','kept-key',1,0,4);
                  INSERT INTO parse_state(input_pk,chain,status,parsed_upto,reading_version,checkpoint)
                     VALUES(1,17,'partial',4,'reading=1',x'636865636b706f696e74');",
             ).unwrap();
-        let retained = snapshot(&conn);
+        let kept = snapshot(&conn);
         ensure(&conn).unwrap();
         assert_eq!(version(&conn).unwrap(), index_version(primary));
-        assert_eq!(snapshot(&conn), retained);
+        assert_eq!(snapshot(&conn), kept);
         // This is the same source-key UPSERT used for an assembled response.
         // Moving off a version the context keeps leaves its body.
         for hash in [vec![2u8], vec![1], vec![2]] {
@@ -45,7 +45,7 @@ fn repeated_source_upserts_keep_context_bodies_until_the_context_goes() {
             &crate::text_rows::TextIds::new(&conn, false).unwrap(),
         )
         .unwrap();
-        assert_eq!(snapshot(&conn), retained);
+        assert_eq!(snapshot(&conn), kept);
         assert_eq!(versions(&conn), ["01", "02"]);
         // Releasing the context leaves the earlier body without references.
         conn.execute_batch(

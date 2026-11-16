@@ -1,5 +1,5 @@
 //! Original references and UTF-8 body ranges identify presentation overlays.
-//! Canonical records and their source hashes are never rewritten.
+//! Stored records and their source hashes are never rewritten.
 use super::{ReadError, ReadOptions, Source, VariantMark};
 use crate::{Reference, VariantRelation};
 use serde::{Deserialize, Serialize};
@@ -223,7 +223,7 @@ fn overlap(a: &Patch, b: &Patch) -> bool {
         || a.start == b.start
 }
 fn invalid(why: &str) -> ReadError {
-    ReadError::InvalidEvidence(why.into())
+    ReadError::InvalidPreparedData(why.into())
 }
 impl TryFrom<BTreeMap<Reference, VariantText>> for PresentationMap {
     type Error = ReadError;

@@ -39,12 +39,12 @@ pub struct ClassCount {
     /// Kept only verbatim in the rows input: rows this archive recomputes,
     /// and requests whose effect is carried as a note or setting.
     pub kept: u64,
-    /// Rows of an input folded into another input of the older archive that
-    /// holds the same file with the same bytes (see [`FoldedInput`]): its
+    /// Rows of an input merged into another input of the older archive that
+    /// holds the same file with the same bytes (see [`MergedInput`]): its
     /// revisions and extents are that input's, and its observations are
     /// carried by that input.
     #[serde(default)]
-    pub folded: u64,
+    pub merged: u64,
 }
 
 /// An input of the older archive held here as part of another one. The older
@@ -55,7 +55,7 @@ pub struct ClassCount {
 /// does: the input whose path is the file's real path, with every
 /// observation of both, each with the path it was made at.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize, schemars::JsonSchema)]
-pub struct FoldedInput {
+pub struct MergedInput {
     pub input: String,
     pub into: String,
 }
@@ -92,7 +92,7 @@ pub struct OlderArchiveReport {
     pub refused_inputs: Option<String>,
     /// Inputs held here as part of another input of the older archive.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub folded_inputs: Vec<FoldedInput>,
+    pub merged_inputs: Vec<MergedInput>,
     /// What a dry run cannot tell.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dry_run_limits: Option<String>,
@@ -123,9 +123,9 @@ impl OlderArchiveReport {
         keep(&mut self.classes, class, n);
     }
 
-    /// Counts an input folded into `into`, with its revisions and extents.
+    /// Counts an input merged into `into`, with its revisions and extents.
     /// Its observations are counted with `into`, which carries them.
-    fn fold(&mut self, input: &older_archive::Input, into: &str) {
+    fn merge(&mut self, input: &older_archive::Input, into: &str) {
         for (class, n) in [
             ("input", 1),
             ("revision", input.revisions.len() as u64),
@@ -133,9 +133,9 @@ impl OlderArchiveReport {
         ] {
             let count = self.count(class);
             count.found += n;
-            count.folded += n;
+            count.merged += n;
         }
-        self.folded_inputs.push(FoldedInput {
+        self.merged_inputs.push(MergedInput {
             input: input.id.clone(),
             into: into.to_owned(),
         });
@@ -144,15 +144,15 @@ impl OlderArchiveReport {
 
 /// Which inputs of an older archive are held as part of another.
 #[derive(Default)]
-struct Folds {
-    /// Folded input → the input that holds it.
+struct Merges {
+    /// Merged input → the input that holds it.
     into: HashMap<String, String>,
-    /// Holding input → the observations of the inputs folded into it.
+    /// Holding input → the observations of the inputs merged into it.
     carried: HashMap<String, Vec<polylogue_store::input_rows::ObservationRow>>,
 }
 
 /// Whether two inputs hold the same bytes: the same format, revisions and
-/// extents. Revision times are not compared; the folded input's observations
+/// extents. Revision times are not compared; the merged input's observations
 /// keep when it saw each revision.
 fn same_bytes(a: &older_archive::Input, b: &older_archive::Input) -> bool {
     a.format == b.format
@@ -451,7 +451,7 @@ impl Engine {
         let mut blobs: HashMap<polylogue_model::BlobHash, BlobState> = HashMap::new();
         let mut cited: BTreeSet<polylogue_model::BlobHash> = BTreeSet::new();
         let mut machines_sent = false;
-        let folds = self.plan_folds(older)?;
+        let merges = self.plan_merges(older)?;
         let mut after: Option<String> = None;
         loop {
             // A stop ends the import between groups; written groups stay.
@@ -464,11 +464,11 @@ impl Engine {
             let mut inputs = Vec::with_capacity(ids.len());
             for id in &ids {
                 let mut input = older.input(id)?;
-                if let Some(into) = folds.into.get(id) {
-                    report.fold(&input, into);
+                if let Some(into) = merges.into.get(id) {
+                    report.merge(&input, into);
                     continue;
                 }
-                if let Some(carried) = folds.carried.get(id) {
+                if let Some(carried) = merges.carried.get(id) {
                     input.observations.extend(carried.iter().cloned());
                     // Still in the order they were made: the last is the
                     // input's latest observation.
@@ -588,7 +588,7 @@ impl Engine {
     /// through two paths, with the same bytes, and which input holds each.
     /// A group any of whose inputs this archive already holds (an earlier
     /// import kept them apart) is left as it is.
-    fn plan_folds(&self, older: &OlderArchive) -> Result<Folds, EngineError> {
+    fn plan_merges(&self, older: &OlderArchive) -> Result<Merges, EngineError> {
         // Inputs linked by a shared file, joined across groups: one input can
         // have seen several files over time, at one path.
         let groups = older.same_file_groups()?;
@@ -627,7 +627,7 @@ impl Engine {
             let r = root(&mut parent, &id);
             components.entry(r).or_default().push(id);
         }
-        let mut folds = Folds::default();
+        let mut merges = Merges::default();
         let reader = self.reads.reader()?;
         'component: for mut member_ids in components.into_values() {
             member_ids.sort();
@@ -643,28 +643,28 @@ impl Engine {
                 continue;
             }
             let holding = holder(&members);
-            let folding: Vec<usize> = (0..members.len())
+            let merging: Vec<usize> = (0..members.len())
                 .filter(|&index| index != holding && same_bytes(&members[index], &members[holding]))
                 .collect();
             // An earlier import that kept them apart stays as it is.
-            for &index in &folding {
+            for &index in &merging {
                 if reader.input_progress(&members[index].id)?.is_some() {
                     continue 'component;
                 }
             }
             let mut carried = Vec::new();
-            for &index in &folding {
+            for &index in &merging {
                 let input = &members[index];
-                folds
+                merges
                     .into
                     .insert(input.id.clone(), members[holding].id.clone());
                 carried.extend(input.observations.iter().cloned());
             }
             if !carried.is_empty() {
-                folds.carried.insert(members[holding].id.clone(), carried);
+                merges.carried.insert(members[holding].id.clone(), carried);
             }
         }
-        Ok(folds)
+        Ok(merges)
     }
 
     /// Checks one blob and, unless this archive holds it already, prepares

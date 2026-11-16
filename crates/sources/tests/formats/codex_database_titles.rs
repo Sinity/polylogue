@@ -18,7 +18,7 @@ fn thread(fields: Value) -> Session {
 }
 
 #[test]
-fn native_title_is_an_exact_summary_fallback_behind_an_explicit_name() {
+fn source_title_falls_back_to_summary_behind_a_name() {
     let title = "  Native caption λ\nsecond line  ";
     let session = thread(
         json!({"title":title,"first_user_message":"original prompt","agent_nickname":"Arden"}),

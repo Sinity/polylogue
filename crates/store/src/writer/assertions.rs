@@ -16,7 +16,7 @@ pub(super) fn restore_via(queue: &WriterQueue, restoration: Restoration) -> Resu
     wait.recv().map_err(|_| StoreError::WriterGone)?
 }
 
-/// Whether the fact is already stored; a different fact under its ID is a
+/// Whether the assertion is already stored; a different assertion under its ID is a
 /// conflict.
 fn stored(conn: &Connection, fact: &AssertionFact) -> Result<bool> {
     let Some(known) = crate::assertions::get(conn, &fact.id)? else {

@@ -103,12 +103,12 @@ pub(crate) fn pack_json(value: &impl Serialize) -> Result<Vec<u8>> {
     Ok(pack_bytes(&serde_json::to_vec(value)?)?)
 }
 
-/// Canonical source time; SQL milliseconds are only query caches.
+/// Source time; SQL milliseconds are only query caches.
 pub(crate) fn time_bytes(
     at: Option<Timestamp>,
-    evidence: polylogue_model::TimeEvidence,
+    accuracy: polylogue_model::TimeEvidence,
 ) -> Result<Vec<u8>> {
-    Ok(serde_json::to_vec(&(at, evidence))?)
+    Ok(serde_json::to_vec(&(at, accuracy))?)
 }
 
 /// A stored value the model cannot read back.
@@ -254,7 +254,7 @@ pub(crate) fn read_time(
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct PreparedMessage {
     pub(crate) id: MessageId,
-    pub(crate) projection: MessageProjection,
+    pub(crate) block_selection: MessageProjection,
     pub(crate) time: Vec<u8>,
     pub(crate) body: Vec<u8>,
     /// Item estimates from the typed content, before payloads are released.
@@ -314,8 +314,11 @@ impl PreparedMessage {
         RowPacker::new()?.pack_message(message)
     }
 
-    pub(crate) fn projected(message: &Message, projection: &MessageProjection) -> Result<Self> {
-        RowPacker::new()?.pack_projected_message(message, projection)
+    pub(crate) fn projected(
+        message: &Message,
+        block_selection: &MessageProjection,
+    ) -> Result<Self> {
+        RowPacker::new()?.pack_projected_message(message, block_selection)
     }
 }
 
@@ -365,44 +368,44 @@ impl RowPacker {
     }
 
     pub(crate) fn pack_message(&mut self, message: &Message) -> Result<PreparedMessage> {
-        let projection = MessageProjection {
+        let block_selection = MessageProjection {
             source_version: message.content_hash()?,
             block_count: message.blocks.len() as u64,
             block_ordinals: (0..message.blocks.len() as u64).collect(),
         };
-        self.pack_message_value(message, &projection)
+        self.pack_message_value(message, &block_selection)
     }
 
     pub(crate) fn pack_projected_message(
         &mut self,
         message: &Message,
-        projection: &MessageProjection,
+        block_selection: &MessageProjection,
     ) -> Result<PreparedMessage> {
-        projection.validate(message.blocks.len())?;
-        if projection.block_count == message.blocks.len() as u64
-            && message.content_hash()? != projection.source_version
+        block_selection.validate(message.blocks.len())?;
+        if block_selection.block_count == message.blocks.len() as u64
+            && message.content_hash()? != block_selection.source_version
         {
             return Err(polylogue_model::bundle::BundleError::SourceVersionMismatch.into());
         }
-        self.pack_message_value(message, projection)
+        self.pack_message_value(message, block_selection)
     }
 
     fn pack_message_value(
         &mut self,
         message: &Message,
-        projection: &MessageProjection,
+        block_selection: &MessageProjection,
     ) -> Result<PreparedMessage> {
         Ok(PreparedMessage {
             id: message.id.clone(),
-            projection: projection.clone(),
+            block_selection: block_selection.clone(),
             time: time_bytes(message.at, message.time_evidence())?,
             body: self.pack_version(message, &message.blocks)?,
             items: polylogue_model::read::message_entries(
                 message,
-                &projection.block_ordinals,
+                &block_selection.block_ordinals,
                 polylogue_model::read::MessagePlace::default(),
             ),
-            content: self.pack_content(&message.blocks, projection.source_version.0)?,
+            content: self.pack_content(&message.blocks, block_selection.source_version.0)?,
         })
     }
 
@@ -529,8 +532,8 @@ fn block_bytes(block: &Block) -> Result<Vec<u8>> {
 }
 
 /// An event's id is its session, kind, time, data and the message it follows:
-/// identical state recorded after different messages is distinct. Physical
-/// ranges do not change the fact's identity when another input supplies it.
+/// identical state recorded after different messages is distinct. Byte
+/// ranges do not change the event's identity when another input supplies it.
 #[cfg(test)]
 pub(crate) fn pack_event(e: &Event) -> Result<(String, Vec<u8>)> {
     let (id, data) = event_bytes(e)?;

@@ -15,12 +15,12 @@ fn unit_schema(unit: &str, catalog: &Catalog) -> Result<OutputSchema, QueryError
         if crate::units::DesignedUnit::named(&unit.name).is_some() {
             not_built(&format!("unit {}", unit.name))
         } else {
-            error(format!("unknown native output unit {:?}", unit.name))
+            error(format!("unknown built-in output unit {:?}", unit.name))
         }
     })?;
     let spec = crate::units::spec(product);
     // The queryable catalog also contains reference atoms and filter-only fields.
-    // Frozen output schemas describe exactly what the native producer emits.
+    // Saved output schemas describe what the built-in producer emits.
     let fields = spec
         .columns
         .iter()
@@ -94,8 +94,8 @@ pub(crate) fn bound_output_metadata(
             | TransformKind::Fields { .. } => {
                 let after = &typing.transforms[index].after;
                 schema.unit = after.unit.clone();
-                // SQL output order is product-owned; semantic field declarations
-                // always come from the shared scope captured for this exact stage.
+                // SQL output order is the product's; field declarations
+                // always come from the shared scope captured for this stage.
                 let columns = match &stage.kind {
                     TransformKind::Group { keys } => Some(
                         keys.iter()
@@ -146,7 +146,7 @@ pub(crate) fn bound_output_metadata(
                     }
                     _ => unreachable!(),
                 }
-                // These are product evidence columns alongside the semantic aggregate.
+                // These are extra product columns beside the aggregate.
                 // The shared scope supplies the aggregate's name and type.
                 if let TransformKind::Aggregate { aggregates } = &stage.kind {
                     for aggregate in aggregates {
@@ -178,13 +178,13 @@ pub(crate) fn bound_output_metadata(
                 let [unit] = units else {
                     return Err(error("matches has no unique step unit"));
                 };
-                let native = crate::units::Unit::from_name(unit)
+                let step_unit = crate::units::Unit::from_name(unit)
                     .ok_or_else(|| error("unknown matched unit"))?;
                 let names = ["parent", "match", "position", "step", "step.position"]
                     .into_iter()
                     .map(str::to_owned)
                     .chain(
-                        crate::units::spec(native)
+                        crate::units::spec(step_unit)
                             .columns
                             .iter()
                             .map(|column| format!("step.{}", column.name)),
@@ -251,7 +251,7 @@ pub(crate) fn bound_output_metadata(
     Ok((schema, scope))
 }
 
-/// Capture declarations from this exact bound tree, without retaining operand
+/// Capture declarations from this bound tree, without keeping operand
 /// paths or origins that would point into a different syntax tree on replay.
 pub(crate) fn relation_scope(
     bound: &query_language::bind::BoundQuery,
@@ -266,7 +266,7 @@ pub(crate) fn relation_scope(
         .last()
         .map_or(&typing.source, |stage| &stage.after);
     let mut fields: Vec<Field> = scope.fields.iter().map(|info| info.field.clone()).collect();
-    // Product evidence columns are supplied by the same actual projection.
+    // Extra product columns come from the same field selection.
     for field in &produced.fields {
         if !fields.iter().any(|known| known.name == field.name) {
             fields.push(field.clone());

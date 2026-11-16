@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use std::sync::atomic::Ordering;
 
 fn call_with_limit(w: &TestDaemon, id: &str, session: &str, limit: &ReadLimit) -> Value {
-    // This law tests persisted cooldown/history semantics, not warm latency.
+    // This test checks the stored cooldown and history, not warm latency.
     // Enter the unchanged context phase with a finite fixture budget, leaving
     // the typed operation's real 20 ms cap and hook deadline tests separate.
     let operation = w
@@ -60,7 +60,7 @@ fn positive(w: &TestDaemon, id: &str, session: &str) -> Value {
         }
         assert_eq!(answer["delivery"], Value::Null);
         assert_eq!(answer["prepared"]["empty"], true);
-        // A commit can still be publishing scope or handing over delivery
+        // A commit can still be changing the scope or handing over delivery
         // records. Wait on those existing locks before another positive attempt.
         w.daemon
             .scope
@@ -75,7 +75,7 @@ fn positive(w: &TestDaemon, id: &str, session: &str) -> Value {
 }
 
 #[test]
-fn a_busy_scope_publication_returns_empty_without_reserving_advice() {
+fn busy_scope_change_returns_empty_without_reserving_advice() {
     let (w, _) = fixture();
     statement(
         &w,
@@ -89,7 +89,7 @@ fn a_busy_scope_publication_returns_empty_without_reserving_advice() {
         .scope
         .read(None, |_| {
             assert!(w.daemon.scope.try_read(|_| ()).is_none());
-            let answer = call(&w, "busy-publication", "codex:advisory-test");
+            let answer = call(&w, "busy-scope", "codex:advisory-test");
             assert_eq!(answer["delivery"], Value::Null);
             assert_eq!(answer["prepared"]["empty"], true);
         })
@@ -99,13 +99,13 @@ fn a_busy_scope_publication_returns_empty_without_reserving_advice() {
             .reads
             .reader()
             .unwrap()
-            .delivery("busy-publication")
+            .delivery("busy-scope")
             .unwrap()
             .is_none()
     );
     assert_eq!(
-        positive(&w, "after-publication", "codex:advisory-test")["delivery"],
-        "after-publication"
+        positive(&w, "after-scope-change", "codex:advisory-test")["delivery"],
+        "after-scope-change"
     );
 }
 
@@ -179,7 +179,7 @@ fn advisory_cooldown_and_once_pair_history_have_distinct_lifetimes() {
     assert_eq!(
         positive(&w, "different-prefix-recipient", "codex:advisory")["delivery"],
         "different-prefix-recipient",
-        "a different exact identity is not a prefix alias of the original recipient"
+        "a different identity is not a prefix alias of the original recipient"
     );
     w.restart();
     assert_eq!(

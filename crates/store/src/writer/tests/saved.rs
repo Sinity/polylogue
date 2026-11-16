@@ -53,14 +53,14 @@ fn definition(name: &str, text: &str, plan: &polylogue_query::plan::Plan) -> New
 }
 
 #[test]
-fn saved_acceptance_retains_objects_and_frozen_dependencies_before_publishing_assertions() {
+fn saved_acceptance_keeps_objects_and_dependencies() {
     let archive = test_archive();
-    let mut native = bindings();
-    let alpha = plan("sessions", &native);
-    native
+    let mut saved_bindings = bindings();
+    let alpha = plan("sessions", &saved_bindings);
+    saved_bindings
         .add_saved("alpha", &alpha, "batch.1", "batch.1")
         .unwrap();
-    let beta = plan("query:alpha", &native);
+    let beta = plan("query:alpha", &saved_bindings);
     let batch = request(
         "batch",
         UserWrite::Assert {
@@ -76,13 +76,13 @@ fn saved_acceptance_retains_objects_and_frozen_dependencies_before_publishing_as
         .unwrap();
     let reads = ReadPool::open(&archive.archive).unwrap();
     for expected in [&alpha, &beta] {
-        let retained = reads
+        let kept = reads
             .reader()
             .unwrap()
             .query_object(&expected.question_id().to_string(), None)
             .unwrap()
             .unwrap();
-        assert_eq!(retained, expected.query_object().unwrap());
+        assert_eq!(kept, expected.query_object().unwrap());
     }
     let before = {
         let reader = reads.reader().unwrap();
@@ -104,7 +104,7 @@ fn saved_acceptance_retains_objects_and_frozen_dependencies_before_publishing_as
         .user_preparing(save("changed-alpha", "alpha", "messages"), context(), None)
         .unwrap();
     let reader = reads.reader().unwrap();
-    let frozen = crate::selection::prepare_query_plan_on(
+    let saved_plan = crate::selection::prepare_query_plan_on(
         reader.conn().unwrap(),
         reader.conn().unwrap(),
         "query:beta",
@@ -114,15 +114,15 @@ fn saved_acceptance_retains_objects_and_frozen_dependencies_before_publishing_as
         None,
     )
     .unwrap();
-    assert_eq!(frozen.query_object().unwrap(), before);
+    assert_eq!(saved_plan.query_object().unwrap(), before);
     drop(reader);
-    // A retry reuses the admitted batch, even after its dependencies change
+    // A retry reuses the committed batch, even after its dependencies change
     // and without a fresh preparation catalog.
     assert!(archive.writer.user(batch).unwrap().repeat);
 }
 
 #[test]
-fn invalid_ordered_saved_batch_does_not_ack_objects_or_publish_partial_assertions() {
+fn invalid_saved_batch_acks_no_objects_and_sends_no_assertions() {
     let archive = test_archive();
     let alpha = plan("sessions", &bindings());
     let mut wrong = definition("beta", "messages", &alpha);
@@ -160,7 +160,7 @@ fn invalid_ordered_saved_batch_does_not_ack_objects_or_publish_partial_assertion
 }
 
 #[test]
-fn missing_saved_preparation_context_refuses_new_writes_but_preserves_frozen_retries() {
+fn missing_preparation_context_refuses_new_writes_only() {
     let archive = test_archive();
     let original = save("saved", "everything", "sessions");
     assert!(matches!(
@@ -186,7 +186,7 @@ fn missing_saved_preparation_context_refuses_new_writes_but_preserves_frozen_ret
 }
 
 #[test]
-fn saved_figure_prepares_and_retains_its_denominator_as_a_separate_question() {
+fn saved_figure_keeps_its_denominator_as_a_separate_question() {
     let archive = test_archive();
     let figure = plan("sessions | count", &bindings());
     let population = plan("sessions", &bindings());
@@ -214,14 +214,14 @@ fn saved_figure_prepares_and_retains_its_denominator_as_a_separate_question() {
         .unwrap();
     let reads = ReadPool::open(&archive.archive).unwrap();
     let reader = reads.reader().unwrap();
-    let fact = reader
+    let assertion = reader
         .assertion(&polylogue_model::RevisionReference {
             root: "figure".into(),
             revision: Some("figure".into()),
         })
         .unwrap()
         .unwrap();
-    let value: SavedQuery = serde_json::from_value(fact.fact.value.unwrap()).unwrap();
+    let value: SavedQuery = serde_json::from_value(assertion.fact.value.unwrap()).unwrap();
     assert_eq!(value.hash, BlobHash(figure.question_id().0));
     assert_eq!(
         value.denominator,

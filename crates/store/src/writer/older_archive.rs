@@ -32,7 +32,7 @@ pub enum Restored {
     /// Its rows were written.
     Stored,
     /// No write is needed: the data is present, or a paid-vector address
-    /// already has an authoritative newer purchase.
+    /// already has a newer purchase.
     Present,
     /// Not written, for the reason given.
     Refused(String),
@@ -171,10 +171,10 @@ fn held(conn: &Connection, input: &Input) -> Result<Option<Option<String>>> {
 fn taken_observation(conn: &Connection, input: &Input) -> Result<Option<String>> {
     let mut statement = conn.prepare_cached("SELECT input FROM observation WHERE id = ?1")?;
     for o in &input.observations {
-        let owner: Option<String> = statement.query_row([&o.id], |r| r.get(0)).optional()?;
-        if let Some(owner) = owner {
+        let holder: Option<String> = statement.query_row([&o.id], |r| r.get(0)).optional()?;
+        if let Some(holder) = holder {
             return Ok(Some(format!(
-                "its observation {} is already the observation of input {owner} here",
+                "its observation {} is already the observation of input {holder} here",
                 o.id
             )));
         }

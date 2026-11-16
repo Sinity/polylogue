@@ -1,6 +1,6 @@
-//! Attachment claims transported separately from a message's source value.
+//! Stated attachments, carried separately from a message's source value.
 //!
-//! A candidate describes claimed bytes and their original sources. Receiving
+//! A candidate describes stated bytes and their original sources. Receiving
 //! archives establish availability through their own validated import members.
 
 use crate::BlobHash;
@@ -75,8 +75,8 @@ pub struct AttachmentSourceClaim {
 }
 
 impl AttachmentBinding {
-    /// Checks claim structure. Only ingress with actual bytes and a receiving
-    /// member can establish candidate truth or local availability.
+    /// Checks structure only. Only ingress holding the bytes and a receiving
+    /// member can confirm a candidate or show it is available here.
     pub fn validate(&self) -> Result<(), crate::bundle::BundleError> {
         use crate::bundle::BundleError;
         if self.source_id.is_empty()
@@ -146,10 +146,10 @@ pub(crate) fn validate_record(
     record: &crate::bundle::MessageRecord,
 ) -> Result<(), crate::bundle::BundleError> {
     use crate::{Block, bundle::BundleError};
-    let mut claims = std::collections::HashSet::new();
+    let mut seen = std::collections::HashSet::new();
     for binding in &record.bindings {
         binding.validate()?;
-        if binding.source_version != record.source_version || !claims.insert(binding) {
+        if binding.source_version != record.source_version || !seen.insert(binding) {
             return Err(BundleError::InvalidAttachmentBinding);
         }
         let position = record

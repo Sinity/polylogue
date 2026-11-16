@@ -1,4 +1,4 @@
-//! Primary mode: captured bytes and complete product facts go to Sinex
+//! Primary mode: captured bytes and the events parsed from them go to Sinex
 //! through its ingress, and one confirmed-stream consumer writes the local
 //! index. Captures and authored writes wait in the producer spool through
 //! outages and retries, under their original identities.
@@ -10,9 +10,9 @@ mod client;
 mod context;
 pub use context::{ContextFailure, ContextFailureKind, ResolvedContext};
 pub use sinex_protocol::PublicInterruptBudget;
+pub(crate) mod attribution;
 pub mod kinds;
 mod material;
-pub(crate) mod native;
 mod producer;
 mod products;
 mod sender;
@@ -50,7 +50,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 pub(crate) const SOURCE_VERSION: u32 = 8;
 
-/// This adapter declaration is installed by the owner, never self-registered
+/// This adapter declaration is installed by the operator, never self-registered
 /// from a producer's requested permissions.
 pub fn source_reference() -> sinex_protocol::SourceRef {
     sinex_protocol::SourceRef {
@@ -102,11 +102,11 @@ pub struct Config {
     #[serde(default)]
     pub store: PathBuf,
     /// Local encoded-upload scratch when Sinex does not share `store`.
-    /// Omit this on the same host to hand off frozen files directly.
+    /// Omit this on the same host to hand off recorded files directly.
     pub upload_root: Option<PathBuf>,
 }
 
-/// One decoded byte page; physical content-store locations stay inside the client.
+/// One decoded byte page; content-store paths stay inside the client.
 #[derive(Debug)]
 pub struct MaterialPage {
     pub material: sinex_protocol::MaterialFrame,
@@ -178,7 +178,7 @@ impl Config {
 }
 
 /// A connection to Sinex as the producer `config.producer`, used by the
-/// writer thread and the loop. Publication has its own bounded worker.
+/// writer thread and the loop. Sending has its own bounded worker.
 pub struct Sinex {
     config: Config,
     authentication: Authentication,
@@ -195,7 +195,7 @@ pub struct Sinex {
 }
 
 impl Sinex {
-    /// Opens the durable producer spool before making any network connection.
+    /// Opens the producer spool before making any network connection.
     /// Capture can prepare writes while Sinex is unavailable.
     pub fn open(config: &Config, authentication: &Authentication, host: &str) -> Result<Self> {
         if host.trim().is_empty() {
@@ -266,7 +266,7 @@ impl Sinex {
         Ok(sinex)
     }
 
-    /// Reads and connection checks own their outcome independently of publication.
+    /// Reads and connection checks record their outcome apart from sending.
     fn read_client<T>(&self, work: impl AsyncFnOnce(&mut Client) -> Result<T>) -> Result<T> {
         let result = self.client_operation(work);
         if let Ok(mut health) = self.health.lock() {
@@ -275,7 +275,7 @@ impl Sinex {
         result
     }
 
-    /// Executes one operation under this connection's lock. Publication uses its own connection.
+    /// Executes one operation under this connection's lock. Sending uses its own connection.
     fn client_operation<T>(&self, work: impl AsyncFnOnce(&mut Client) -> Result<T>) -> Result<T> {
         let mut client = self
             .client
@@ -377,17 +377,17 @@ impl Drop for Sinex {
 }
 
 impl polylogue_store::primary::Sinex for Sinex {
-    fn raw_acquisition_cursor(
+    fn byte_cursor(
         &self,
-        query: &polylogue_store::primary::RawAcquisitionQuery,
-    ) -> polylogue_store::Result<Option<polylogue_store::primary::RawAcquisitionCursor>> {
-        Ok(self.raw_acquisition_cursor(query)?)
+        query: &polylogue_store::primary::ByteCursorQuery,
+    ) -> polylogue_store::Result<Option<polylogue_store::primary::ByteCursor>> {
+        Ok(self.byte_cursor(query)?)
     }
     fn prepare_input_group(
         &self,
         plan: &polylogue_store::primary::CapturePlan,
         members: &mut polylogue_store::primary::CaptureMembers<'_>,
-    ) -> polylogue_store::Result<polylogue_store::primary::CaptureReceipt> {
+    ) -> polylogue_store::Result<polylogue_store::primary::CaptureResult> {
         Ok(self.prepare_input_group(plan, members)?)
     }
     fn pending_source(
@@ -503,7 +503,7 @@ impl polylogue_store::primary::Sinex for Sinex {
         state: &polylogue_store::primary::ReplayState,
         cache: &str,
     ) -> polylogue_store::Result<Vec<polylogue_store::primary::Confirmed>> {
-        // Publication has its own connection and worker. Reading confirmed
+        // Sending has its own connection and worker. Reading confirmed
         // pages never drains a producer backlog.
         Ok(self.read_client(async |client| client.confirmed(state, cache).await)?)
     }
@@ -520,7 +520,8 @@ impl polylogue_store::primary::Sinex for Sinex {
 #[cfg(test)]
 mod tests;
 
-/// Source-copy custody is scoped to the authenticated receiving producer.
+/// A material ID is scoped to the authenticated producer that received the
+/// source copy.
 fn material_id(producer: &str, frame: &str) -> sinex_model::MaterialId {
     let mut hash = blake3::Hasher::new();
     hash.update(b"polylogue-material-1\0");

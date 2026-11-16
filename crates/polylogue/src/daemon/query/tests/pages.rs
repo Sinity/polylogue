@@ -83,7 +83,7 @@ fn count_execution_plans_do_not_change_page_cursor_binding() {
     opts.random_seed = Some(cursor.context.random_seed);
     let mut program = polylogue_store::query::compile(request.text, &opts).unwrap();
     page::check(&cursor, &program, &opts, false).unwrap();
-    // Execution-plan spelling does not define semantic query identity.
+    // Execution-plan spelling does not define the query's identity.
     program.statements =
         polylogue_store::query::Statements::Derived(polylogue_store::query::DerivedRows {
             rows: "SELECT 1 AS _pk WHERE 0".into(),
@@ -219,7 +219,7 @@ fn pages_cover_every_shape_and_allow_new_page_sizes_and_the_original_clock() {
 }
 
 #[test]
-fn continuation_binds_fields_caller_zone_day_and_semantic_options() {
+fn continuation_binds_fields_zone_day_and_options() {
     let w = morrow();
     let mut first = ask("kind:*");
     first.page_size = Some(1);
@@ -685,7 +685,7 @@ fn rows_written_between_pages_continue_after_the_last_row_shown() {
                 }
             }
             let now = row_ids(&q(&w, text));
-            let anchor = now.iter().position(|id| Some(id) == shown.last()).unwrap();
+            let last_shown = now.iter().position(|id| Some(id) == shown.last()).unwrap();
             loop {
                 let page = next_page(&w, text, size, Some(&cursor));
                 assert_eq!(page["count"], now.len() as u64, "{text} by {size}");
@@ -699,7 +699,7 @@ fn rows_written_between_pages_continue_after_the_last_row_shown() {
                 let times = shown.iter().filter(|s| *s == id).count();
                 assert_eq!(times, 1, "{text} by {size}: {id} shown {times} times");
             }
-            for id in now[..anchor].iter().filter(|id| !before.contains(id)) {
+            for id in now[..last_shown].iter().filter(|id| !before.contains(id)) {
                 assert!(
                     !shown.contains(id),
                     "{text} by {size}: {id} sorts before the last row shown"
@@ -752,7 +752,7 @@ fn pages_of_relative_times_keep_the_first_pages_clock() {
 }
 
 #[test]
-fn continuation_refuses_a_changed_captured_ranking_basis() {
+fn continuation_refuses_changed_captured_ranking_inputs() {
     let w = morrow();
     let mut request = ask("messages | sort by id");
     request.page_size = Some(1);

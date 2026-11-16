@@ -189,7 +189,7 @@ fn derived_pages_and_fields_expose_the_same_validity_and_parameters() {
 }
 
 #[test]
-fn capabilities_publish_each_operation_with_its_tool_unlisted_arguments_and_answer() {
+fn capabilities_list_each_operation_with_unlisted_arguments_and_answer() {
     let capabilities = entries("capabilities", None).unwrap();
     let read = capabilities
         .iter()
@@ -197,7 +197,7 @@ fn capabilities_publish_each_operation_with_its_tool_unlisted_arguments_and_answ
         .unwrap();
     assert_eq!(read["tool"], "polylogue_read");
     let unlisted = read["unlisted"].as_array().unwrap();
-    // The fold table's `show` replaces the per-kind flags such as
+    // The show table's `show` replaces the per-kind flags such as
     // `thinking`; one argument form, so no `FullArguments` definition.
     assert!(unlisted.contains(&json!("show")), "{unlisted:?}");
     assert!(!unlisted.contains(&json!("target")), "{unlisted:?}");

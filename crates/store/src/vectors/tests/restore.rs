@@ -223,7 +223,7 @@ fn mixed_restore_uses_row_revisions_and_refreshes_replacements_in_the_same_snaps
     let held = newest.append(&metadata).unwrap();
     assert_eq!(
         held.rows_read, 0,
-        "unchanged revisions retain incremental no-op behavior"
+        "unchanged revisions keep incremental no-op behavior"
     );
 }
 
@@ -254,7 +254,7 @@ fn delete_reinsert_does_not_keep_the_old_run_and_plain_append_stays_incremental(
 }
 
 #[test]
-fn seeded_legacy_revision_and_failure_only_initial_loads_do_not_loop() {
+fn seeded_old_revision_and_failed_first_loads_do_not_loop() {
     let conn = Connection::open_in_memory().unwrap();
     conn.execute_batch(include_str!(
         "../../schema/tests/embeddings_before_revision.sql"

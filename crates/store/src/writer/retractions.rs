@@ -1,4 +1,4 @@
-//! Native lifecycle retracts source contributions through the ordinary writer.
+//! Sinex lifecycle changes retract source contributions through the writer.
 use super::*;
 use std::collections::BTreeSet;
 
@@ -10,7 +10,7 @@ pub(crate) fn prepare_source_retractions(
     for batch in batches.iter() {
         let Change::Reparse { chain } = batch.change else {
             return Err(StoreError::Invalid(
-                "source retraction has no exact chain".into(),
+                "source retraction names no chain".into(),
             ));
         };
         if chain < 1 || !distinct.insert((&batch.input.id, chain)) {
@@ -20,7 +20,7 @@ pub(crate) fn prepare_source_retractions(
         }
         let [step] = batch.parse.as_slice() else {
             return Err(StoreError::Invalid(
-                "source retraction needs one ordinary reset".into(),
+                "source retraction needs one plain reset".into(),
             ));
         };
         if !step.reset
@@ -32,7 +32,7 @@ pub(crate) fn prepare_source_retractions(
             || step.output != Output::default()
         {
             return Err(StoreError::Invalid(
-                "native lifecycle cannot reconstruct parser values".into(),
+                "a Sinex lifecycle change cannot rebuild parser values".into(),
             ));
         }
     }
@@ -49,7 +49,7 @@ pub(crate) fn apply_source_retractions(
     for batch in batches {
         let Change::Reparse { chain } = batch.change else {
             return Err(StoreError::Invalid(
-                "source retraction has no exact chain".into(),
+                "source retraction names no chain".into(),
             ));
         };
         for step in &batch.parse {

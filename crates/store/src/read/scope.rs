@@ -30,7 +30,7 @@ impl std::fmt::Debug for ReadScopeState {
     }
 }
 
-/// Retain this registration for the daemon lifetime while a derived cache pointer
+/// Keep this registration for the daemon lifetime while a derived cache pointer
 /// can be read, including times when its publisher is stopped.
 pub struct ScopeInvalidation {
     _state: Arc<ReadScopeState>,

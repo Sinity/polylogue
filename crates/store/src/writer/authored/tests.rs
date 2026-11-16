@@ -55,7 +55,7 @@ fn rendition() -> PreparedRequest {
     })
 }
 #[test]
-fn writer_restore_changes_the_snapshot_once_and_projects_frozen_variant_text() {
+fn writer_restore_changes_the_snapshot_once() {
     let original = rendition();
     let destination = crate::fixture::writer::WriterArchive::new();
     let pool = crate::ReadPool::open(&destination.archive).unwrap();
@@ -129,17 +129,17 @@ impl Producer {
     }
 }
 impl crate::primary::Sinex for Producer {
-    fn raw_acquisition_cursor(
+    fn byte_cursor(
         &self,
-        _: &crate::primary::RawAcquisitionQuery,
-    ) -> Result<Option<crate::primary::RawAcquisitionCursor>> {
+        _: &crate::primary::ByteCursorQuery,
+    ) -> Result<Option<crate::primary::ByteCursor>> {
         Ok(None)
     }
     fn prepare_input_group(
         &self,
         _: &crate::primary::CapturePlan,
         _: &mut crate::primary::CaptureMembers<'_>,
-    ) -> Result<crate::primary::CaptureReceipt> {
+    ) -> Result<crate::primary::CaptureResult> {
         Self::unavailable()
     }
     fn pending_source(
@@ -173,7 +173,7 @@ impl crate::primary::Sinex for Producer {
         _: usize,
     ) -> Result<crate::primary::PendingGroupPage> {
         Err(StoreError::Invalid(
-            "synthetic authored adapter has no acquisition journal".into(),
+            "synthetic authored adapter has no capture-read journal".into(),
         ))
     }
     fn capture(&self, _: &str) -> Result<Capture> {
@@ -192,7 +192,7 @@ impl crate::primary::Sinex for Producer {
         _: &[crate::primary::ProductWrite],
     ) -> Result<PreparedWrite> {
         Err(StoreError::Invalid(
-            "this synthetic adapter does not admit source interpretations".into(),
+            "this synthetic adapter does not accept parsed source events".into(),
         ))
     }
     fn prepare_products(&self, _: &[ProductWrite]) -> Result<PreparedWrite> {
@@ -301,7 +301,7 @@ impl crate::primary::Sinex for Producer {
             .into_iter()
             .enumerate()
             .map(|(n, write)| Confirmed {
-                native: None,
+                sinex_context: None,
                 position: 1,
                 output_index: n as u64,
                 event: format!("restoration-{n}"),
@@ -309,7 +309,7 @@ impl crate::primary::Sinex for Producer {
             })
             .collect::<Vec<_>>();
         events.push(Confirmed {
-            native: None,
+            sinex_context: None,
             position: 1,
             output_index: 0,
             event: String::new(),
@@ -329,7 +329,7 @@ impl crate::primary::Sinex for Producer {
     }
 }
 #[test]
-fn a_pending_scope_reset_cannot_resolve_or_publish_authored_work_from_old_cache() {
+fn pending_scope_reset_blocks_authored_work_from_old_cache() {
     let original = rendition();
     let directory = tempfile::tempdir().unwrap();
     let producer = Arc::new(Producer {
@@ -373,7 +373,7 @@ fn a_pending_scope_reset_cannot_resolve_or_publish_authored_work_from_old_cache(
 }
 
 #[test]
-fn primary_restore_stays_pending_across_reopen_and_cannot_publish_a_live_retry() {
+fn primary_restore_stays_pending_and_blocks_live_retry() {
     let original = prepared(UserWrite::ChatEnqueue(NewChatAction {
         id: "chat".into(),
         request_key: "original-key".into(),
@@ -387,7 +387,7 @@ fn primary_restore_stays_pending_across_reopen_and_cannot_publish_a_live_retry()
     let root = directory.path().join("cache");
     let bytes = directory.path().join("bytes");
     let producer = Arc::new(Producer {
-        path: directory.path().join("durable-product.json"),
+        path: directory.path().join("saved-product.json"),
         online: AtomicBool::new(false),
         live_calls: AtomicUsize::new(0),
         follow: Mutex::default(),
@@ -447,7 +447,7 @@ fn primary_restore_stays_pending_across_reopen_and_cannot_publish_a_live_retry()
 }
 
 #[test]
-fn commit_subscribers_wake_for_new_visible_facts_and_skip_exact_or_failed_user_retries() {
+fn commit_subscribers_wake_for_new_commits_and_skip_retries() {
     let archive = crate::fixture::writer::WriterArchive::new();
     let commits = archive.writer.sender().unwrap().completion_commits();
     let request = UserRequest {
@@ -491,7 +491,7 @@ fn one_follower_owns_confirmation_across_a_blocked_page_and_a_new_write() {
     let (ready, blocked) = sync_channel(1);
     let (release, held) = sync_channel(1);
     let producer = Arc::new(Producer {
-        path: directory.path().join("durable-product.json"),
+        path: directory.path().join("saved-product.json"),
         online: AtomicBool::new(true),
         live_calls: AtomicUsize::new(0),
         follow: Mutex::new(FollowProbe {
@@ -533,13 +533,13 @@ fn one_follower_owns_confirmation_across_a_blocked_page_and_a_new_write() {
     });
     let probe = producer.follow.lock().unwrap();
     assert!(probe.calls.len() >= 2);
-    let owner = probe.calls[0].0;
-    assert!(probe.calls.iter().all(|call| call.0 == owner));
+    let first_caller = probe.calls[0].0;
+    assert!(probe.calls.iter().all(|call| call.0 == first_caller));
     assert_eq!(probe.calls[0].1, None);
     assert_eq!(probe.calls[1].1, Some(1));
     assert!(
         probe.calls[1].2 > probe.calls[0].2,
-        "capture drain precedes the next owner page"
+        "capture drain precedes the next stream page"
     );
     drop(probe);
     let reads = crate::ReadPool::open(&archive).unwrap();
@@ -570,7 +570,7 @@ fn a_failed_later_position_reports_earlier_commits_without_inventing_progress() 
     .unwrap();
     let writer = Writer::start_on_sinex(&archive, producer).unwrap();
     let control = |control| Confirmed {
-        native: None,
+        sinex_context: None,
         position: 0,
         output_index: 0,
         event: String::new(),
@@ -582,9 +582,9 @@ fn a_failed_later_position_reports_earlier_commits_without_inventing_progress() 
         })])
         .unwrap();
     let connection = crate::archive::open_write(&archive.index_db(), 1024).unwrap();
-    connection.execute_batch("CREATE TRIGGER stop_projection BEFORE INSERT ON source_input WHEN new.id='second' BEGIN SELECT raise(ABORT,'stop second input'); END").unwrap();
+    connection.execute_batch("CREATE TRIGGER stop_confirmed_apply BEFORE INSERT ON source_input WHEN new.id='second' BEGIN SELECT raise(ABORT,'stop second input'); END").unwrap();
     let input = |position, id: &str| Confirmed {
-        native: None,
+        sinex_context: None,
         position,
         output_index: 0,
         event: format!("event-{id}"),
@@ -626,7 +626,7 @@ fn a_failed_later_position_reports_earlier_commits_without_inventing_progress() 
         "{report:?}"
     );
     assert_eq!(
-        crate::primary::projection::checkpoint(&connection).unwrap(),
+        crate::primary::confirmed::checkpoint(&connection).unwrap(),
         Some(1)
     );
     assert!(writer.apply_confirmed(vec![]).is_err());
@@ -635,18 +635,18 @@ fn a_failed_later_position_reports_earlier_commits_without_inventing_progress() 
         Err(std::sync::mpsc::TryRecvError::Empty)
     ));
     connection
-        .execute_batch("DROP TRIGGER stop_projection")
+        .execute_batch("DROP TRIGGER stop_confirmed_apply")
         .unwrap();
     assert_eq!(writer.apply_confirmed(vec![]).unwrap(), 2);
     commits.try_recv().unwrap();
     assert_eq!(
-        crate::primary::projection::checkpoint(&connection).unwrap(),
+        crate::primary::confirmed::checkpoint(&connection).unwrap(),
         Some(2)
     );
     // Planning the next complete position can fail too: a tombstone cannot
     // be restored. Its preceding committed position still has real progress.
     let lifecycle = |position, change| Confirmed {
-        native: None,
+        sinex_context: None,
         position,
         output_index: 0,
         event: "erased".into(),
@@ -676,7 +676,7 @@ fn a_failed_later_position_reports_earlier_commits_without_inventing_progress() 
     let report = writer.flush_rows().unwrap();
     assert!(report.errors.iter().any(|error| error.contains("after position 3") && error.contains("cannot be restored")), "{report:?}");
     assert_eq!(
-        crate::primary::projection::checkpoint(&connection).unwrap(),
+        crate::primary::confirmed::checkpoint(&connection).unwrap(),
         Some(3)
     );
     assert!(writer.apply_confirmed(vec![]).is_err());
@@ -691,7 +691,7 @@ fn imported(archive: &Archive, bytes: &[u8]) -> crate::staging::PreparedBatch {
     let (new_blob, file) = archive.prepare_blob(bytes).unwrap();
     crate::staging::PreparedBatch {
         batch: crate::Batch {
-            required_disposition: None,
+            required_outcome: None,
             // An import is named by its complete bytes.
             input: InputKey {
                 id: new_blob.hash.to_string(),
@@ -793,7 +793,7 @@ fn a_failed_sync_refuses_a_repeated_import_and_every_later_writer() {
 }
 
 #[test]
-fn literal_deliveries_keep_the_same_frozen_result_in_standalone_and_offline_primary() {
+fn literal_deliveries_keep_the_same_recorded_result() {
     for advice in [false, true] {
         let body = polylogue_model::user::Delivery {
             recipient_kind: "session".into(),
@@ -817,7 +817,7 @@ fn literal_deliveries_keep_the_same_frozen_result_in_standalone_and_offline_prim
         let root = directory.path().join("cache");
         let bytes = directory.path().join("bytes");
         let producer = Arc::new(Producer {
-            path: directory.path().join("durable-product.json"),
+            path: directory.path().join("saved-product.json"),
             online: AtomicBool::new(false),
             live_calls: AtomicUsize::new(0),
             follow: Mutex::default(),
@@ -846,8 +846,8 @@ fn literal_deliveries_keep_the_same_frozen_result_in_standalone_and_offline_prim
                     .is_none()
             );
         }
-        // A new adapter instance reads the durable body after the writer opens
-        // again. It is still pending until the authoritative stream is applied.
+        // A new adapter instance reads the saved body after the writer opens
+        // again. It is still pending until the stream is applied.
         let reopened = Arc::new(Producer {
             path: producer.path.clone(),
             online: AtomicBool::new(false),
@@ -904,8 +904,8 @@ fn literal_deliveries_preserve_variant_reads_without_rebuilding_other_work() {
     conn.execute("ATTACH DATABASE ?1 AS a", [&source_uri])
         .unwrap();
     crate::source::views(&conn).unwrap();
-    // A projection can lag after an interrupted prior write. Recording an
-    // unrelated delivery does not take ownership of that pending derive work.
+    // Variant derivation can lag after an interrupted prior write. Recording an
+    // unrelated delivery does not take over that pending derive work.
     conn.execute("DELETE FROM variant_indexed", []).unwrap();
     conn.execute_batch("CREATE TABLE test_variant_writes(n INTEGER NOT NULL); INSERT INTO test_variant_writes VALUES(0); CREATE TRIGGER test_variant_write AFTER DELETE ON variant_text BEGIN UPDATE test_variant_writes SET n=n+1; END;").unwrap();
     for advice in [false, true] {
@@ -942,7 +942,7 @@ fn literal_deliveries_preserve_variant_reads_without_rebuilding_other_work() {
             0
         );
     }
-    // The same projection routine remains live for the families that own it.
+    // The same derivation routine stays live for the families that need it.
     let steps = Arc::new(AtomicUsize::new(0));
     let observed = Arc::clone(&steps);
     conn.progress_handler(
@@ -964,7 +964,7 @@ fn literal_deliveries_preserve_variant_reads_without_rebuilding_other_work() {
     );
     assert_eq!(serde_json::to_value(read()).unwrap(), before);
     println!(
-        "variant projection positive control: {} VM steps",
+        "variant derivation positive control: {} VM steps",
         steps.load(Ordering::Relaxed)
     );
 }

@@ -67,14 +67,14 @@ fn provider_conversation_urls_read_original_capture_ids_and_ignore_page_fragment
         .spool_dir(polylogue_sources::browser_capture::ORIGIN)
         .join("chatgpt");
     std::fs::create_dir_all(&spool).unwrap();
-    for (index, native) in ["a%2Fb", "a%2fb", "a%61b", "a%25b", "a@b"]
+    for (index, native_id) in ["a%2Fb", "a%2fb", "a%61b", "a%25b", "a@b"]
         .into_iter()
         .enumerate()
     {
         let text = format!("original text {index}");
         let raw = (index % 2 == 0).then(|| {
             serde_json::json!({
-                "id": native, "conversation_id": native, "title": "original conversation",
+                "id": native_id, "conversation_id": native_id, "title": "original conversation",
                 "create_time": 1_700_000_000.0, "current_node": "n1",
                 "mapping": {"n1": {"id": "n1", "parent": null, "children": [],
                     "message": {"id": format!("turn-{index}"), "author": {"role": "user"},
@@ -86,7 +86,7 @@ fn provider_conversation_urls_read_original_capture_ids_and_ignore_page_fragment
         let collector_id = if raw.is_some() {
             "collector-metadata-id"
         } else {
-            native
+            native_id
         };
         let capture = serde_json::json!({
             "polylogue_capture_kind": "browser_llm_session", "schema_version": 1,
@@ -105,11 +105,11 @@ fn provider_conversation_urls_read_original_capture_ids_and_ignore_page_fragment
     daemon.wait_for(|status| {
         status["store"]["messages"] == 6 && status["store"]["search_pending"] == 0
     });
-    for (index, native) in ["a%2Fb", "a%2fb", "a%61b", "a%25b", "a@b"]
+    for (index, native_id) in ["a%2Fb", "a%2fb", "a%61b", "a%25b", "a@b"]
         .into_iter()
         .enumerate()
     {
-        let url = format!("https://chatgpt.com/g/project/c/{native}/?model=x#turn");
+        let url = format!("https://chatgpt.com/g/project/c/{native_id}/?model=x#turn");
         assert_eq!(
             all(&daemon.daemon, &url, false, View::Transcript),
             format!("original text {index}")
@@ -341,7 +341,7 @@ fn read_pages_survive_unrelated_writes_and_refuse_changed_earlier_content() {
 }
 
 #[test]
-fn native_display_order_and_original_references_survive_page_boundaries() {
+fn display_order_and_references_survive_page_breaks() {
     let d = test_daemon::start("placeholder");
     add_selected_session(
         &d,
@@ -382,7 +382,7 @@ fn native_display_order_and_original_references_survive_page_boundaries() {
 }
 
 #[test]
-fn paged_views_preserve_exact_source_text_across_credential_looking_boundaries() {
+fn paged_views_preserve_source_text_across_credential_looking_boundaries() {
     let d = test_daemon::start("placeholder");
     let texts = [
         (
@@ -419,7 +419,7 @@ fn paged_views_preserve_exact_source_text_across_credential_looking_boundaries()
 }
 
 #[test]
-fn direct_anchors_keep_their_own_original_text_and_refuse_missing_sources() {
+fn direct_references_keep_their_text_and_refuse_missing_sources() {
     let d = test_daemon::start("placeholder");
     let source = "-----BEGIN PRIVATE KEY-----synthetic-only-----END PRIVATE KEY-----";
     replace(&d, &[("u1", "before"), ("u2", source), ("u3", "after")]);
@@ -652,7 +652,7 @@ fn previous_pages_end_at_the_current_start_and_next_reopens_it() {
         ItemKind::MessageHeader { .. } | ItemKind::Text { .. }
     )));
     // Footer reservation may trim the earlier session card. The fixed upper
-    // content boundary must still reopen the exact next message page.
+    // content boundary must still reopen the next message page.
     let reopened = page(
         &d.daemon,
         target,
@@ -665,7 +665,7 @@ fn previous_pages_end_at_the_current_start_and_next_reopens_it() {
 }
 
 #[test]
-fn inherited_source_text_is_exact_across_parent_child_page_boundaries() {
+fn inherited_source_text_survives_parent_child_page_boundaries() {
     let parent = "inherited -----BEGIN VENDOR PRIVATE KEY-----synthetic";
     let child = "still synthetic -----END VENDOR PRIVATE KEY----- visible λ🙂";
     let d = test_daemon::start(parent);
@@ -835,7 +835,7 @@ fn entries_on(page: &ReadPage) -> u64 {
 }
 
 #[test]
-fn anchored_middle_page_does_not_visit_prefix() {
+fn middle_page_start_does_not_visit_prefix() {
     const MESSAGES: u64 = 400;
     let d = test_daemon::start("placeholder");
     let path = d.home.join(".claude/projects/-p/s2.jsonl");
@@ -886,9 +886,9 @@ fn anchored_middle_page_does_not_visit_prefix() {
     }
     assert_eq!(before, 2 * MESSAGES, "the pages tile the reading");
     assert!(pages.len() > 20);
-    // A page anchored in the middle reads its own entries and the unit it
+    // A page starting in the middle reads its own entries and the unit it
     // starts in, not the entries before it.
-    let (anchor, expected) = &pages[pages.len() * 3 / 4];
+    let (start, expected) = &pages[pages.len() * 3 / 4];
     let position = expected.document.footer.position.unwrap();
     assert!(position > MESSAGES);
     let decoded = polylogue_store::items::entries_decoded();
@@ -898,7 +898,7 @@ fn anchored_middle_page_does_not_visit_prefix() {
         false,
         View::Transcript,
         60,
-        anchor.as_ref(),
+        start.as_ref(),
     );
     let visited = polylogue_store::items::entries_decoded() - decoded;
     assert_eq!(again.document.items, expected.document.items);
@@ -917,7 +917,7 @@ fn anchored_middle_page_does_not_visit_prefix() {
         false,
         View::Transcript,
         60,
-        anchor.as_ref(),
+        start.as_ref(),
     );
     assert_eq!(last.document.footer.position, Some(position));
     assert_eq!(

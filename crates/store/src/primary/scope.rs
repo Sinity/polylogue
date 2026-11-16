@@ -42,7 +42,7 @@ pub(crate) fn reset(
 ) -> Result<bool> {
     if scope.is_empty() {
         return Err(StoreError::Invalid(
-            "a confirmed scope needs its owner identity".into(),
+            "a confirmed scope cannot be empty".into(),
         ));
     }
     if !replace && current(index)?.as_deref() == Some(scope) && require_readable(index).is_ok() {

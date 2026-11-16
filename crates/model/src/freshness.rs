@@ -1,0 +1,240 @@
+//! What a read cache knows about Sinex. A recent observation describes a
+//! completed position; it never says where Sinex's latest position is now.
+use serde::{Deserialize, Serialize};
+
+/// The Sinex status poll normally runs every second. Reads keep the age of
+/// the observation and stop presenting its lag after five seconds.
+pub const SINEX_OBSERVATION_MAX_AGE_SECONDS: f64 = 5.;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FreshnessState {
+    Current,
+    Behind,
+    Unknown,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum IndexFreshness {
+    Standalone,
+    Primary {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        applied_position: Option<i64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sinex_position: Option<i64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sinex_position_seconds_ago: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reachable: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lag_positions: Option<i64>,
+        state: FreshnessState,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+}
+impl IndexFreshness {
+    pub fn primary(
+        applied_position: Option<i64>,
+        sinex_position: Option<i64>,
+        age: Option<f64>,
+        reachable: Option<bool>,
+        error: Option<String>,
+    ) -> Self {
+        let age = age.filter(|age| age.is_finite() && *age >= 0.);
+        let lag_positions = if reachable == Some(true)
+            && age.is_some_and(|age| age <= SINEX_OBSERVATION_MAX_AGE_SECONDS)
+        {
+            applied_position
+                .zip(sinex_position)
+                .filter(|(applied, sinex)| *applied >= 0 && sinex >= applied)
+                .map(|(applied, sinex)| sinex - applied)
+        } else {
+            None
+        };
+        let state = match (reachable, lag_positions) {
+            (Some(false), _) => FreshnessState::Unavailable,
+            (_, Some(0)) => FreshnessState::Current,
+            (_, Some(_)) => FreshnessState::Behind,
+            _ => FreshnessState::Unknown,
+        };
+        Self::Primary {
+            scope: None,
+            applied_position,
+            sinex_position,
+            sinex_position_seconds_ago: age,
+            reachable,
+            lag_positions,
+            state,
+            error,
+        }
+    }
+    pub fn degraded(&self) -> bool {
+        matches!(
+            self,
+            Self::Primary {
+                state: FreshnessState::Behind
+                    | FreshnessState::Unknown
+                    | FreshnessState::Unavailable,
+                ..
+            }
+        )
+    }
+    pub fn with_scope(mut self, applied_scope: Option<String>) -> Self {
+        if let Self::Primary { scope, .. } = &mut self {
+            *scope = applied_scope;
+        }
+        self
+    }
+    pub fn scope(&self) -> Option<&str> {
+        match self {
+            Self::Standalone => None,
+            Self::Primary { scope, .. } => scope.as_deref(),
+        }
+    }
+}
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum CompletenessReason {
+    MissingDeclaration,
+    MissingCheckpoint,
+    ReadingVersionChanged,
+    ParserBehind,
+    MissingSourcePrefix,
+    KnownRawOnly,
+    DerivationBehind,
+    SearchPending,
+    FirstBuild,
+    /// Primary mode: the index has not yet applied the confirmed stream.
+    StreamNotApplied,
+    /// Primary mode: the index is behind Sinex's commit position; the lag is
+    /// in the read's position report.
+    StreamBehind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "state", content = "reasons", rename_all = "snake_case")]
+pub enum CompletenessDimension {
+    Complete,
+    Incomplete(Vec<CompletenessReason>),
+    Unknown(Vec<CompletenessReason>),
+    NotApplicable,
+}
+impl CompletenessDimension {
+    fn current(&self) -> bool {
+        matches!(self, Self::Complete | Self::NotApplicable)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ReadCompleteness {
+    pub parsing: CompletenessDimension,
+    pub derivation: CompletenessDimension,
+    pub search: CompletenessDimension,
+    pub confirmed_stream: CompletenessDimension,
+    /// Deliberately retained without promising parsed products.
+    pub kept_chains: u64,
+    /// Known nonparsed chains, independently of retained raw-byte coverage.
+    pub raw_only_chains: u64,
+}
+impl ReadCompleteness {
+    /// No outstanding local work, as in a newly created standalone archive.
+    pub const fn empty() -> Self {
+        Self {
+            parsing: CompletenessDimension::Complete,
+            derivation: CompletenessDimension::Complete,
+            search: CompletenessDimension::Complete,
+            confirmed_stream: CompletenessDimension::NotApplicable,
+            kept_chains: 0,
+            raw_only_chains: 0,
+        }
+    }
+    pub fn caught_up(&self) -> bool {
+        self.parsing.current()
+            && self.derivation.current()
+            && self.search.current()
+            && self.confirmed_stream.current()
+    }
+    pub fn degraded(&self) -> bool {
+        !self.caught_up()
+    }
+}
+
+/// Freshness of one answer, from that answer's index snapshot and the cached
+/// Sinex observation. Local parser/search work also matters in standalone mode.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReadFreshness {
+    pub local: ReadCompleteness,
+    pub sinex: IndexFreshness,
+}
+impl ReadFreshness {
+    pub fn up_to_date(&self) -> bool {
+        self.local.caught_up() && !self.sinex.degraded()
+    }
+    pub fn notes(&self) -> Vec<&'static str> {
+        let mut notes = std::collections::BTreeSet::new();
+        for dimension in [
+            &self.local.parsing,
+            &self.local.derivation,
+            &self.local.search,
+            &self.local.confirmed_stream,
+        ] {
+            if let CompletenessDimension::Incomplete(reasons)
+            | CompletenessDimension::Unknown(reasons) = dimension
+            {
+                for reason in reasons {
+                    notes.insert(match reason {
+                        CompletenessReason::MissingDeclaration => {
+                            "some stored inputs have no recorded reading declaration"
+                        }
+                        CompletenessReason::MissingCheckpoint => {
+                            "some stored inputs have not been parsed"
+                        }
+                        CompletenessReason::ReadingVersionChanged => {
+                            "some stored inputs await the current parser"
+                        }
+                        CompletenessReason::ParserBehind => "parsing is behind the stored bytes",
+                        CompletenessReason::MissingSourcePrefix => {
+                            "some stored inputs have missing earlier bytes"
+                        }
+                        CompletenessReason::KnownRawOnly => "some stored inputs have no parser",
+                        CompletenessReason::DerivationBehind => "derived values are pending",
+                        CompletenessReason::SearchPending => "search text is pending",
+                        CompletenessReason::FirstBuild => "the index is being built",
+                        CompletenessReason::StreamNotApplied => {
+                            "the confirmed stream has not been applied"
+                        }
+                        CompletenessReason::StreamBehind => {
+                            "the index is behind the confirmed stream"
+                        }
+                    });
+                }
+            }
+        }
+        if self.sinex.degraded() {
+            notes.insert(match &self.sinex {
+                IndexFreshness::Primary {
+                    state: FreshnessState::Behind,
+                    ..
+                } => "the index is behind the observed Sinex position",
+                IndexFreshness::Primary {
+                    state: FreshnessState::Unavailable,
+                    ..
+                } => "Sinex is unavailable",
+                _ => "the Sinex position is unknown",
+            });
+        }
+        notes.into_iter().collect()
+    }
+}
+
+#[cfg(test)]
+mod tests;

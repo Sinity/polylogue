@@ -1,10 +1,11 @@
-//! Primary writes prepare durable producer intents. Only confirmed facts write the cache.
+//! Primary writes prepare producer operations in the spool. Only confirmed
+//! events write the cache.
 use super::*;
 mod reading;
 use crate::primary::{Product, ProductWrite, SourceLocation};
 use polylogue_model::authored::PreparedRequest;
 
-/// What a page of confirmed facts changes. A lifecycle change, a refusal or
+/// What a page of confirmed events changes. A lifecycle change, a refusal or
 /// a control may concern any record, so it counts as every kind.
 fn confirmed_kinds(events: &[crate::primary::Confirmed]) -> crate::completion::Committed {
     use crate::completion::Committed;
@@ -36,17 +37,17 @@ impl Inner {
     pub(super) fn stage_confirmed(
         &mut self,
         events: &[crate::primary::Confirmed],
-    ) -> Result<crate::primary::projection::Step> {
+    ) -> Result<crate::primary::confirmed::Step> {
         if !self.location.is_primary() {
             return Err(StoreError::Invalid(
-                "confirmed facts require a primary cache".into(),
+                "confirmed events require a primary cache".into(),
             ));
         }
-        if let Some((scope, projection, reason)) =
+        if let Some((scope, snapshot_start, reason)) =
             events.iter().find_map(|event| match &event.change {
                 crate::primary::ConfirmedChange::Control(control) => match control.as_ref() {
                     crate::primary::ReplayControl::Reset { scope } => Some((scope, None, None)),
-                    crate::primary::ReplayControl::ProjectionStart {
+                    crate::primary::ReplayControl::SnapshotStart {
                         scope,
                         origin,
                         stream_instance,
@@ -62,14 +63,14 @@ impl Inner {
                     "a scope reset must be a separate control page".into(),
                 ));
             }
-            if projection.is_some_and(|(origin, instance)| origin < 0 || instance.is_empty()) {
+            if snapshot_start.is_some_and(|(origin, instance)| origin < 0 || instance.is_empty()) {
                 return Err(StoreError::Invalid(
-                    "a projection needs its native origin and incarnation".into(),
+                    "a snapshot needs its Sinex origin and stream instance".into(),
                 ));
             }
-            let replacing = projection.is_some()
-                || crate::primary::projection::replay_state(&self.index)?
-                    .projection
+            let replacing = snapshot_start.is_some()
+                || crate::primary::confirmed::replay_state(&self.index)?
+                    .snapshot_progress
                     .is_some();
             self.texts.discard_cached();
             let changed = match crate::primary::scope::reset(
@@ -81,21 +82,21 @@ impl Inner {
             ) {
                 Ok(changed) => changed,
                 Err(error) => {
-                    // Reads stay fenced after a failed reset. Publish its real
+                    // Reads stay fenced after a failed reset. Record its
                     // failure before replying, so a blocked turn can observe it.
                     self.stream_followed(Some(error.to_string()));
                     return Err(error);
                 }
             };
-            if let Some((origin, stream_instance)) = projection {
-                let mut state = crate::primary::projection::replay_state(&self.index)?;
-                state.projection = Some(crate::primary::ProjectionReplay {
+            if let Some((origin, stream_instance)) = snapshot_start {
+                let mut state = crate::primary::confirmed::replay_state(&self.index)?;
+                state.snapshot_progress = Some(crate::primary::SnapshotProgress {
                     origin,
                     stream_instance: stream_instance.clone(),
                     position: None,
                     cursor: None,
                 });
-                crate::primary::projection::save_replay(&self.index, &state)?;
+                crate::primary::confirmed::save_replay(&self.index, &state)?;
             }
             if changed {
                 self.commits.committed(crate::completion::Committed::EVERY);
@@ -106,27 +107,27 @@ impl Inner {
                 self.stream_followed(Some(error.to_string()));
                 return Err(error);
             }
-            return Ok(crate::primary::projection::Step::Complete(0));
+            return Ok(crate::primary::confirmed::Step::Complete(0));
         }
-        let result = crate::primary::projection::stage_next(&mut self.index, events)?;
+        let result = crate::primary::confirmed::stage_next(&mut self.index, events)?;
         Ok(result)
     }
 
     pub(super) fn apply_confirmed(
         &mut self,
-        prepared: crate::primary::projection::Preparation,
+        prepared: crate::primary::confirmed::Preparation,
         kinds: crate::completion::Committed,
-    ) -> Result<crate::primary::projection::Step> {
-        let before = crate::primary::projection::checkpoint(&self.index)?;
+    ) -> Result<crate::primary::confirmed::Step> {
+        let before = crate::primary::confirmed::checkpoint(&self.index)?;
         let result =
-            crate::primary::projection::apply_prepared(&self.texts, &mut self.index, prepared);
+            crate::primary::confirmed::apply_prepared(&self.texts, &mut self.index, prepared);
         // An earlier atomic application of this staged page may already have
         // committed. A later failure must remain visible even if this step
         // itself made no progress.
         if let Err(error) = &result {
             self.stream_followed(Some(error.to_string()));
         }
-        if crate::primary::projection::checkpoint(&self.index)? != before {
+        if crate::primary::confirmed::checkpoint(&self.index)? != before {
             self.commits.committed(kinds);
             self.search.wake();
             self.report.transactions += 1;
@@ -161,7 +162,7 @@ impl Inner {
         if let Some(outcome) = crate::primary::authored::pending_outcome(sinex.as_ref(), request)? {
             return Ok(outcome);
         }
-        // The durable local overlay remains available while the stream is behind or offline.
+        // The local overlay stays available while the stream is behind or offline.
         let prepared: PreparedRequest = crate::primary::authored::prepare(
             &self.index,
             request,
@@ -171,7 +172,7 @@ impl Inner {
             |apply| sinex.visit_pending_blobs(apply),
         )?;
         // Scope controls use this same serialized writer. Check after effect
-        // preparation, immediately before transferring durable outbox custody.
+        // preparation, immediately before the request is handed to the spool.
         scoped::require_current(&self.location, scope)?;
         sinex.prepare_request(&prepared)
     }
@@ -208,7 +209,7 @@ impl Inner {
         }
         let sinex = Arc::clone(self.sinex.as_ref().expect("primary writer"));
         let prepared = sinex.prepare_blob(new_blob.hash, new_blob.size, prepared.body()?)?;
-        // Captured bytes are durable before their temporary preparation is released.
+        // Captured bytes are saved before their temporary preparation is released.
         if let Err(error) = self.drain_primary_captures() {
             return Err(match error {
                 StoreError::Sinex(_) => StoreError::PrimaryPending {
@@ -246,7 +247,7 @@ pub(super) fn product_writes(
                 Product::Event { facts, .. } => facts.range.map_or(reading.start, |range| range.0),
                 _ => reading.start,
             };
-            let location = crate::primary::projection::material_at(
+            let location = crate::primary::confirmed::material_at(
                 index,
                 &reading.input.id,
                 reading.chain,
@@ -303,25 +304,25 @@ pub(super) fn validate_primary_reading(index: &Connection, batch: &Batch) -> Res
         || batch.observation.is_some()
         || batch.new_blob.is_some()
         || batch.basis.is_some()
-        || batch.required_disposition.is_some()
+        || batch.required_outcome.is_some()
         || batch.continues
     {
         return Err(StoreError::Invalid(
-            "a stored reading cannot acquire or rebind its source".into(),
+            "a stored reading cannot capture or rebind its source".into(),
         ));
     }
-    let exact: bool = index.query_row(
+    let known: bool = index.query_row(
         "SELECT EXISTS(SELECT 1 FROM source_input WHERE id=?1 AND format=?2)",
         params![batch.input.id, batch.input.format],
         |row| row.get(0),
     )?;
-    if !exact {
+    if !known {
         return Err(StoreError::Invalid(
             "stored reading input identity differs".into(),
         ));
     }
     crate::staging::require_range(index, "source_", &batch.input.id, chain, 0..batch.length)?;
-    if crate::source::Source::admitted_through(index, &batch.input.id, chain, batch.length)?
+    if crate::source::Source::committed_through(index, &batch.input.id, chain, batch.length)?
         .is_none()
     {
         return Err(StoreError::Invalid(
@@ -349,9 +350,9 @@ impl WriterQueue {
             let mut step = wait.recv().map_err(|_| StoreError::WriterGone)??;
             loop {
                 match step {
-                    crate::primary::projection::Step::Complete(position) => return Ok(position),
-                    crate::primary::projection::Step::Prepare(mut prepared) => {
-                        // Ordinary queued groups can hold these leases. Waiting here
+                    crate::primary::confirmed::Step::Complete(position) => return Ok(position),
+                    crate::primary::confirmed::Step::Prepare(mut prepared) => {
+                        // Queued groups can hold these key locks. Waiting here
                         // leaves the serial writer free to commit or reject them.
                         prepare_source_retractions(&self.resolver, &mut prepared.retractions)?;
                         let (reply, wait) = sync_channel(1);
@@ -364,7 +365,7 @@ impl WriterQueue {
         })();
         if let Err(error) = &result {
             // Staging or off-writer resolution can also fail after a preceding
-            // position committed. Use the same serialized stream error owner.
+            // position committed. Report it through the same serialized stream error.
             let _ = self.send(Msg::StreamFollowed(Some(error.to_string())));
         }
         result

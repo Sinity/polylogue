@@ -68,7 +68,7 @@ function verify(out, version, rawVersion, before) {
   return summary;
 }
 
-it.each(["zip", "python"])("builds exact artifacts with real %s without rewriting source", (backend) => {
+it.each(["zip", "python"])("builds artifacts with real %s without rewriting source", (backend) => {
   expect(tools.python3, "python3 is required to inspect real archives").toBeTruthy();
   expect(tools.zip, "zip is required to qualify both archive backends").toBeTruthy();
   const directory = mkdtempSync(join(tmpdir(), "polylogue-package-test-"));
@@ -78,7 +78,7 @@ it.each(["zip", "python"])("builds exact artifacts with real %s without rewritin
     mkdirSync(bin);
     symlinkSync(tools.python3, join(bin, "python3"));
     if (backend === "zip") symlinkSync(tools.zip, join(bin, "zip"));
-    // Node is invoked by absolute path. This PATH contains actual tools only;
+    // Node is invoked by absolute path. This PATH contains real tools only;
     // omitting zip exercises the production ENOENT fallback, not a fake archiver.
     const env = { ...process.env, PATH: bin };
     const before = sourceHashes();

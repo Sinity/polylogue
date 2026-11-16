@@ -1,4 +1,4 @@
-//! Source field evidence stays separate from canonical messages and their hashes.
+//! Hook fields found in the source stay separate from stored messages and their hashes.
 use crate::{BlobHash, MessageId};
 use serde::{Deserialize, Serialize};
 
@@ -40,8 +40,8 @@ pub struct InjectionEvidence {
     pub declared: Vec<NativeHookField>,
 }
 
-/// A producer's post-success emission claim. The invocation receipt is distinct
-/// from a native transcript reference; this does not attribute any Message.
+/// What a producer states it emitted after success. The invocation record is
+/// distinct from a reference into the source transcript; it attributes no Message.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HookContextEmission {
@@ -78,19 +78,19 @@ impl InjectionEvidence {
     pub fn validate_for(
         &self,
         message: &MessageId,
-        projection: &crate::bundle::MessageProjection,
+        block_selection: &crate::bundle::MessageProjection,
     ) -> Result<(), crate::bundle::BundleError> {
         if &self.message != message
-            || self.source_version != projection.source_version
-            || projection
+            || self.source_version != block_selection.source_version
+            || block_selection
                 .block_ordinals
                 .binary_search(&self.block)
                 .is_err()
         {
             return Err(crate::bundle::BundleError::InvalidInjectionEvidence);
         }
-        for claim in self.observed.iter().chain(&self.declared) {
-            claim.validate()?;
+        for field in self.observed.iter().chain(&self.declared) {
+            field.validate()?;
         }
         Ok(())
     }

@@ -13,7 +13,7 @@ fn events(w: &ClaudeHome) -> Vec<serde_json::Value> {
 }
 
 #[test]
-fn native_input_event_import_and_rebuild_preserve_exact_scope() {
+fn input_event_import_and_rebuild_keep_scope() {
     for chunk in [1, 7, 64] {
         let w = ClaudeHome::new();
         let path = w.dir.path().join("synthetic.atof.jsonl");

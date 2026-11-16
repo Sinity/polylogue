@@ -6,7 +6,7 @@
 //! export message they repeat (`duplicate_of`) and why (`duplicate_reason`).
 //!
 //! A turn is a prompt and the replies after it, in one input's order. Two
-//! turns are the same only on exact evidence: the prompt's text, with
+//! turns are the same only when all of these hold: the prompt's text, with
 //! whitespace runs read as one space, occurs once in each input; the
 //! paired prompts keep the same order in both inputs; and the turns have
 //! the same roles after the prompt. A repeated prompt ("continue") or a

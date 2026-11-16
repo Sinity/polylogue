@@ -28,7 +28,7 @@ pub fn parse_input(parser: &mut Parse, input: &str, bytes: &[u8]) -> Result<Step
     }
     let mut items: Vec<_> = sink.rows.into_iter().flatten().collect();
     items.sort_by(|a, b| a.1.cmp(&b.1));
-    let mut owners = polylogue_sources::export::MemoryState::default();
+    let mut first_sessions = polylogue_sources::export::MemoryState::default();
     let mut output = polylogue_sources::Output::default();
     let mut counts = polylogue_model::RecordCounts::default();
     let first = items.first().map(|(_, _, bytes)| bytes.as_slice());
@@ -41,7 +41,7 @@ pub fn parse_input(parser: &mut Parse, input: &str, bytes: &[u8]) -> Result<Step
             &mut **export,
             &raw,
             range,
-            &mut owners,
+            &mut first_sessions,
         )?);
     }
     for step in steps {
@@ -65,7 +65,7 @@ fn append_output(output: &mut polylogue_sources::Output, next: polylogue_sources
     let polylogue_sources::Output {
         mut sessions,
         mut messages,
-        native_hook_fields,
+        hook_fields,
         declared_injections,
         declared_attachment_bindings,
         mut documents,
@@ -74,7 +74,7 @@ fn append_output(output: &mut polylogue_sources::Output, next: polylogue_sources
         imported_events,
         event_ids,
         message_order,
-        message_projections,
+        block_selections,
         mut links,
         mut prefix_copies,
         mut prefix_members,
@@ -107,11 +107,11 @@ fn append_output(output: &mut polylogue_sources::Output, next: polylogue_sources
         blobs,
         repo_lookups
     );
-    shift!(native_hook_fields, message_base);
+    shift!(hook_fields, message_base);
     shift!(declared_injections, message_base);
     shift!(declared_attachment_bindings, message_base);
     shift!(message_order, message_base);
-    shift!(message_projections, message_base);
+    shift!(block_selections, message_base);
     shift!(imported_events, event_base);
     shift!(event_ids, event_base);
 }
@@ -164,7 +164,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn append_output_preserves_native_field_claim_coordinates() {
+    fn append_output_keeps_stated_hook_field_positions() {
         let parser =
             polylogue_sources::claude_code::open(std::path::Path::new("projects/p/s1.jsonl"))
                 .unwrap();
@@ -181,7 +181,7 @@ mod tests {
             append_output(&mut combined, output);
         }
         assert_eq!(combined.messages.len(), 2);
-        assert_eq!(combined.native_hook_fields[&1][0].start, 1000);
+        assert_eq!(combined.hook_fields[&1][0].start, 1000);
         assert_eq!(
             combined.messages[1].message.id.to_string(),
             "claude-code:second"

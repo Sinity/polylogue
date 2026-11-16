@@ -18,12 +18,12 @@ impl PreparedRows {
         if !self.released {
             return Err(StoreError::Invalid("reading rows were not prepared".into()));
         }
-        for (&index, projection) in &output.message_projections {
+        for (&index, block_selection) in &output.block_selections {
             let row = output
                 .messages
                 .get(index)
                 .ok_or(polylogue_model::bundle::BundleError::InvalidBlockSelection)?;
-            projection.validate(row.message.blocks.len())?;
+            block_selection.validate(row.message.blocks.len())?;
         }
         for (&index, identity) in &output.imported_events {
             if index >= output.events.len() {
@@ -47,7 +47,7 @@ impl PreparedRows {
                     .is_some_and(|identity| &identity.id != id)
             {
                 return Err(StoreError::Invalid(
-                    "event identity does not match its canonical fact".into(),
+                    "event identity does not match its imported identity".into(),
                 ));
             }
         }
@@ -56,7 +56,7 @@ impl PreparedRows {
                 source.input.is_empty() || source.chain < 1 || source.reading_version.is_empty()
             }) {
                 return Err(StoreError::Invalid(
-                    "copied-prefix member has no exact source reading".into(),
+                    "copied-prefix member names no source reading".into(),
                 ));
             }
         }
@@ -84,17 +84,17 @@ impl PreparedRows {
             ));
         }
         for (index, prepared) in self.messages.iter().enumerate() {
-            prepared.projection.validate(prepared.blocks.len())?;
-            if prepared.projection.source_version.0 != prepared.hash {
+            prepared.block_selection.validate(prepared.blocks.len())?;
+            if prepared.block_selection.source_version.0 != prepared.hash {
                 return Err(polylogue_model::bundle::BundleError::SourceVersionMismatch.into());
             }
-            match output.message_projections.get(&index) {
-                Some(projection) if projection != &prepared.projection => {
-                    return Err(polylogue_model::bundle::BundleError::ProjectionConflict.into());
+            match output.block_selections.get(&index) {
+                Some(block_selection) if block_selection != &prepared.block_selection => {
+                    return Err(polylogue_model::bundle::BundleError::BlockSelectionConflict.into());
                 }
-                None if prepared.projection.block_count != prepared.blocks.len() as u64
+                None if prepared.block_selection.block_count != prepared.blocks.len() as u64
                     || prepared
-                        .projection
+                        .block_selection
                         .block_ordinals
                         .iter()
                         .copied()
@@ -105,7 +105,7 @@ impl PreparedRows {
                 _ => {}
             }
         }
-        super::super::native_hook_fields::validate(output, &self.messages)?;
+        super::super::hook_fields::validate(output, &self.messages)?;
         Ok(())
     }
 }
@@ -126,8 +126,10 @@ impl ParseStep {
             .iter()
             .enumerate()
             .map(
-                |(index, r)| match self.output.message_projections.get(&index) {
-                    Some(projection) => packer.pack_projected_message(&r.message, projection),
+                |(index, r)| match self.output.block_selections.get(&index) {
+                    Some(block_selection) => {
+                        packer.pack_projected_message(&r.message, block_selection)
+                    }
                     None => packer.pack_message(&r.message),
                 },
             )
@@ -234,7 +236,7 @@ impl ParseStep {
 }
 
 impl ParseStep {
-    /// Restores complete domain facts for the primary producer from the worker's codecs.
+    /// Restores complete domain rows for the primary producer from the worker's codecs.
     pub fn complete_output(&self) -> Result<Output> {
         self.prepared.validate(&self.output)?;
         let mut output = self.output.clone();
@@ -254,8 +256,8 @@ impl ParseStep {
     }
 }
 impl ParseStep {
-    /// Native identities are derived once from the complete reading. Confirmed
-    /// fact subsets and portable imports retain their supplied canonical IDs.
+    /// Event identities are derived once from the complete reading. Subsets of
+    /// confirmed events and portable imports keep the IDs they were given.
     pub(crate) fn event_identities(&self, input: &str, chain: i64) -> Result<Vec<String>> {
         self.prepared.validate(&self.output)?;
         if let Some(ids) = &self.confirmed_event_ids {
@@ -273,7 +275,7 @@ impl ParseStep {
                     .any(|(&index, identity)| ids.get(index) != Some(&identity.id))
             {
                 return Err(StoreError::Invalid(
-                    "confirmed event identities do not match their canonical facts".into(),
+                    "confirmed event identities do not match their stored events".into(),
                 ));
             }
             return Ok(ids.clone());

@@ -1,5 +1,5 @@
 mod history;
-mod parent_admission;
+mod parent_check;
 
 use super::*;
 use crate::fixture::writer::WriterArchive;
@@ -72,7 +72,7 @@ pub(super) fn run(object: &QueryObject, id: &str, at: i64, position: ChangePosit
                 },
                 presentation: ExecutionPresentation::Query,
                 accepted_request: Some(
-                    serde_json::json!({"id":"actual-accepted-id","operation":"query","arguments":{"target":"sessions"}}),
+                    serde_json::json!({"id":"accepted-request-id","operation":"query","arguments":{"target":"sessions"}}),
                 ),
                 replay: ReplayBinding {
                     bound_ast: object.query.clone(),
@@ -112,7 +112,7 @@ fn outcome(run: &QueryRun, count: u64) -> QueryRunOutcome {
 }
 
 #[test]
-fn query_objects_keep_one_semantic_body_and_reject_forged_identity() {
+fn query_objects_keep_one_body_and_reject_forged_identity() {
     let archive = WriterArchive::new();
     let first = question("sessions where title:focus | limit 5");
     archive.writer.query_object(first.clone()).unwrap();
@@ -176,7 +176,7 @@ fn run_begin_is_visible_before_completion_and_both_facts_are_immutable() {
     let mut envelope = serde_json::Map::new();
     envelope.insert("operation".into(), serde_json::json!("query"));
     envelope.insert("arguments".into(), serde_json::json!({"target":"sessions"}));
-    envelope.insert("id".into(), serde_json::json!("actual-accepted-id"));
+    envelope.insert("id".into(), serde_json::json!("accepted-request-id"));
     reordered.accepted_request = Some(serde_json::Value::Object(envelope));
     assert_eq!(reordered.hash().unwrap(), expected.binding_hash().unwrap());
     let completed = outcome(&expected, 3);
@@ -240,7 +240,7 @@ fn run_begin_is_visible_before_completion_and_both_facts_are_immutable() {
 }
 
 #[test]
-fn first_run_follows_admission_order_instead_of_supplied_clock() {
+fn first_run_follows_commit_order_not_the_given_clock() {
     let archive = WriterArchive::new();
     let object = question("sessions");
     archive.writer.query_object(object.clone()).unwrap();
@@ -322,7 +322,7 @@ fn a_large_question_and_replay_body_survive_writer_restart_whole() {
 }
 
 #[test]
-fn composition_edges_are_read_from_the_canonical_source() {
+fn composition_edges_are_read_from_the_stored_source() {
     let archive = WriterArchive::new();
     let mut bindings = polylogue_query::Bindings::default();
     let definition =
@@ -353,7 +353,7 @@ fn composition_edges_are_read_from_the_canonical_source() {
 mod pending;
 
 #[test]
-fn result_output_schemas_require_the_canonical_kept_columns() {
+fn result_output_schemas_require_the_kept_columns() {
     let archive = WriterArchive::new();
     let columns = vec![polylogue_query::Column {
         name: "title".into(),
@@ -380,7 +380,7 @@ fn result_output_schemas_require_the_canonical_kept_columns() {
             match_columns: vec![],
         },
     );
-    let actual = polylogue_query::plan::prepare("result:kept", &bindings, |_| Ok(()))
+    let genuine = polylogue_query::plan::prepare("result:kept", &bindings, |_| Ok(()))
         .unwrap()
         .query_object()
         .unwrap();
@@ -389,23 +389,23 @@ fn result_output_schemas_require_the_canonical_kept_columns() {
         .unwrap()
         .query_object()
         .unwrap();
-    assert_eq!(forged.id, actual.id);
+    assert_eq!(forged.id, genuine.id);
     assert!(archive.writer.query_object(forged.clone()).is_err());
-    archive.writer.query_object(actual.clone()).unwrap();
+    archive.writer.query_object(genuine.clone()).unwrap();
     assert!(archive.writer.query_object(forged).is_err());
     let pool = crate::ReadPool::open(&archive.archive).unwrap();
     assert_eq!(
         pool.reader()
             .unwrap()
-            .query_object(&actual.id.to_string(), None)
+            .query_object(&genuine.id.to_string(), None)
             .unwrap()
             .unwrap(),
-        actual
+        genuine
     );
 }
 
 #[test]
-fn executed_selection_records_its_actual_clock_resolution_and_read_context() {
+fn executed_selection_records_its_clock_resolution_and_read_context() {
     let archive = WriterArchive::new();
     let pool = crate::ReadPool::open(&archive.archive).unwrap();
     let expected;
@@ -446,7 +446,7 @@ fn executed_selection_records_its_actual_clock_resolution_and_read_context() {
         let context = selection.cursor_context();
         assert!(context.resolved_times.is_empty());
         assert!(context.versions.contains_key("resolved_times"));
-        let mut execution = run(&object, "actual-execution", 1, read_at);
+        let mut execution = run(&object, "execution", 1, read_at);
         execution.at = Timestamp::from_unix_ns(options.clock.now.as_nanosecond()).unwrap();
         let original = execution.binding.original().unwrap();
         let binding = selection
@@ -517,7 +517,7 @@ fn writer_keeps_normalized_span_metadata_bound_to_the_accepted_direct_target() {
         },
         TextSourceVersion::ContentHash {
             record: polylogue_model::Reference::parse("message:codex:synthetic").unwrap(),
-            hash: polylogue_model::BlobHash::of(b"retained version metadata"),
+            hash: polylogue_model::BlobHash::of(b"kept version metadata"),
         },
         NativeSpanSeek {
             start: NativeTextPosition {
@@ -615,12 +615,12 @@ fn object_run_has_no_question_and_query_or_continuation_cannot_omit_one() {
     assert!(validate_run(&original).is_ok());
     original.question = None;
     assert!(validate_run(&original).is_err());
-    let mut exact = run(&object, "object", 1, position);
-    exact.question = None;
-    exact.binding = RunBinding::OriginalObject {
+    let mut object_run = run(&object, "object", 1, position);
+    object_run.question = None;
+    object_run.binding = RunBinding::OriginalObject {
         execution: Box::new(ObjectExecutionBinding {
             reference: polylogue_model::Reference::Request("accepted:opaque@#..id".into()),
-            content_hash: polylogue_model::BlobHash::of(b"retained original record and provenance"),
+            content_hash: polylogue_model::BlobHash::of(b"stored original record and source"),
             scope_fingerprint: None,
             versions: Default::default(),
             presentation: ExecutionPresentation::Read {
@@ -633,10 +633,10 @@ fn object_run_has_no_question_and_query_or_continuation_cannot_omit_one() {
             accepted_request: None,
         }),
     };
-    validate_run(&exact).unwrap();
+    validate_run(&object_run).unwrap();
     let conn = Connection::open_in_memory().unwrap();
     conn.execute_batch(crate::schema::QUERY_OBJECTS).unwrap();
-    apply_run(&conn, &exact, 1, 0).unwrap();
+    apply_run(&conn, &object_run, 1, 0).unwrap();
     assert_eq!(
         conn.query_row("SELECT count(*) FROM query", [], |row| row.get::<_, i64>(0))
             .unwrap(),
@@ -648,17 +648,17 @@ fn object_run_has_no_question_and_query_or_continuation_cannot_omit_one() {
         })
         .unwrap();
     assert_eq!(stored, (None, "request:accepted:opaque@#..id".into()));
-    let mut invalid = exact.clone();
+    let mut invalid = object_run.clone();
     invalid.question = Some(object.id);
     assert!(validate_run(&invalid).is_err());
-    let fetched = lookup_run(&conn, Source::Ledger, &exact.id, None)
+    let fetched = lookup_run(&conn, Source::Standalone, &object_run.id, None)
         .unwrap()
         .unwrap();
-    assert_eq!(fetched, exact);
+    assert_eq!(fetched, object_run);
 }
 
 #[test]
-fn query_admission_positions_share_the_source_cursor_and_rollback_without_cues() {
+fn query_commit_positions_share_the_source_cursor() {
     let archive = WriterArchive::new();
     let reads = crate::ReadPool::open(&archive.archive).unwrap();
     let subscription = archive.writer.sender().unwrap().completion_commits();
@@ -674,7 +674,7 @@ fn query_admission_positions_share_the_source_cursor_and_rollback_without_cues()
         std::collections::BTreeSet::from([first.id.to_string()])
     );
     drop(reader);
-    // An exact repeat retains its first position and emits no new commit cue.
+    // A repeat keeps its first position and emits no new commit cue.
     archive.writer.query_object(first.clone()).unwrap();
     assert!(matches!(
         subscription.try_recv(),

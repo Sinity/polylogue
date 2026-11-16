@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 pub struct Arguments {
     #[serde(default)]
     pub paths: Vec<std::path::PathBuf>,
-    /// The declared structure the paths are read as, or the predecessor store
-    /// they are (`predecessor-archive`, `predecessor-user-db`, `predecessor-vectors`).
+    /// The declared structure the paths are read as, or the Python Polylogue store
+    /// they are (`python-archive`, `python-user-db`, `python-vectors`).
     #[serde(default)]
     pub format: Option<String>,
     /// The folder of an archive in the older format, imported once in place of paths.

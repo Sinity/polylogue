@@ -8,7 +8,7 @@ fn environment(values: &[(&str, &str)]) -> BTreeMap<String, OsString> {
 }
 
 #[test]
-fn nearest_harness_ancestor_selects_the_identity_that_actually_launched_the_client() {
+fn nearest_harness_ancestor_selects_the_identity_that_launched_the_client() {
     let env = environment(&[
         ("CLAUDE_CODE_SESSION_ID", "outer"),
         ("CODEX_THREAD_ID", "inner"),
@@ -69,14 +69,14 @@ fn conflicting_environment_identities_without_a_harness_ancestor_stay_unattribut
 fn concurrent_request_identity_distinguishes_the_accepting_channel() {
     let directory = tempfile::tempdir().unwrap();
     let registry = hooks::Registry::new(directory.path().to_owned());
-    let evidence = CallerEvidence {
+    let details = CallerEvidence {
         controlling_terminal: true,
         ..Default::default()
     };
-    let cli = accept(&registry, &evidence, Channel::Cli, Default::default());
-    let web = accept(&registry, &evidence, Channel::Web, Default::default());
+    let cli = accept(&registry, &details, Channel::Cli, Default::default());
+    let web = accept(&registry, &details, Channel::Web, Default::default());
     assert_eq!(cli.authorship.author, web.authorship.author);
     assert_ne!(cli.scope(), web.scope());
-    let repeated_cli = accept(&registry, &evidence, Channel::Cli, Default::default());
+    let repeated_cli = accept(&registry, &details, Channel::Cli, Default::default());
     assert_eq!(cli.scope(), repeated_cli.scope());
 }

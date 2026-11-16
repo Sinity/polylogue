@@ -1,4 +1,4 @@
-//! Native retained context crosses parsing, writing and the stored item index.
+//! Kept context a harness records crosses parsing, writing and the stored item index.
 use super::*;
 use polylogue_model::read::{EntryKind, Part, Place, context_at};
 
@@ -30,7 +30,7 @@ fn matched(home: &ClaudeHome, text: &str) -> u64 {
 }
 
 #[test]
-fn native_compaction_kept_ids_and_ranges_reach_stored_context() {
+fn compaction_kept_ids_and_ranges_reach_context() {
     for (kept, expected, evicted) in [
         (
             serde_json::json!({"preservedMessages":{"uuids":["third","first"],"anchorUuid":"summary"}}),
@@ -45,7 +45,7 @@ fn native_compaction_kept_ids_and_ranges_reach_stored_context() {
     ] {
         let home = ClaudeHome::new();
         let boundary = serde_json::json!({"type":"system","subtype":"compact_boundary","uuid":"boundary","sessionId":"s","logicalParentUuid":"third","compactMetadata":kept});
-        let summary = serde_json::json!({"type":"user","uuid":"summary","sessionId":"s","parentUuid":"boundary","isCompactSummary":true,"message":{"role":"user","content":"Retained synthetic context."}});
+        let summary = serde_json::json!({"type":"user","uuid":"summary","sessionId":"s","parentUuid":"boundary","isCompactSummary":true,"message":{"role":"user","content":"Kept synthetic context."}});
         home.append(
             "s.jsonl",
             &(user("first", "s", "first")
@@ -90,19 +90,19 @@ fn native_compaction_kept_ids_and_ranges_reach_stored_context() {
         };
         assert_eq!(headers(&context.members), expected);
         assert_eq!(headers(&context.evicted), evicted);
-        assert_eq!(matched(&home, "\"Retained synthetic context\""), 1);
+        assert_eq!(matched(&home, "\"Kept synthetic context\""), 1);
         assert!(
             reader
                 .prose_texts(0, 20, Some(&["claude-code:s".to_owned()]))
                 .unwrap()
                 .iter()
-                .any(|text| text.text == "Retained synthetic context.")
+                .any(|text| text.text == "Kept synthetic context.")
         );
     }
 }
 
 #[test]
-fn unknown_compaction_replays_keep_native_uuid_ownership_in_both_arrival_orders() {
+fn unknown_compaction_replays_keep_sessions_in_any_order() {
     for subagent in [false, true] {
         for carrier_first in [false, true] {
             let home = ClaudeHome::new();
@@ -139,13 +139,13 @@ fn unknown_compaction_replays_keep_native_uuid_ownership_in_both_arrival_orders(
             let pool = home.reads();
             let reader = pool.reader().unwrap();
             let id = polylogue_model::MessageId::parse("claude-code:shared-native").unwrap();
-            let message = reader.message_with_projection(&id).unwrap().unwrap().0;
-            let owner = if subagent {
+            let message = reader.message_with_block_selection(&id).unwrap().unwrap().0;
+            let expected_session = if subagent {
                 "claude-code:agent-worker"
             } else {
                 "claude-code:known"
             };
-            assert_eq!(message.session.to_string(), owner);
+            assert_eq!(message.session.to_string(), expected_session);
             assert_eq!(message.text(), "known original prose");
             assert_eq!(reader.query("SELECT count(*) AS n FROM message_source s JOIN message m ON m.pk=s.message_pk WHERE m.id='claude-code:shared-native'",&[]).unwrap()[0]["n"],2);
             assert_eq!(matched(&home, "uniquecarrierword"), 1);

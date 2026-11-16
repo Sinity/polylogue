@@ -106,7 +106,7 @@ fn similar_steps_scale_with_selected_rows() {
     }
 }
 
-/// Queries paged key first (native rows, ranked or not) and whole (a
+/// Queries paged key first (unit rows, ranked or not) and whole (a
 /// relation after a sort stage).
 const PAGED: &[&str] = &[
     "sessions",
@@ -208,7 +208,7 @@ fn a_row_written_between_pages_skips_and_repeats_nothing() {
         };
         let paged = keys(&pages_after(&mut f, &program(text, 2), |f| {
             // A session and a message the defaults leave out, at times
-            // after the first page's anchor in both orders.
+            // after the first page's last row in both orders.
             let session = f
                 .session(SessionFacts {
                     id: "test:spawned",

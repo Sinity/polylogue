@@ -69,7 +69,7 @@ static MESSAGE_FIELDS: Fields = Fields::new(
         ("thoughts[].description", Rule::Read(T::String)),
         (
             "thoughts[].timestamp",
-            Rule::Excluded("native thought time not interpreted as message time"),
+            Rule::Excluded("Gemini thought time not interpreted as message time"),
         ),
         ("tokens.input", Rule::Read(T::Number)),
         ("tokens.output", Rule::Read(T::Number)),
@@ -77,11 +77,11 @@ static MESSAGE_FIELDS: Fields = Fields::new(
         ("tokens.thoughts", Rule::Read(T::Number)),
         (
             "tokens.tool",
-            Rule::Excluded("native tool-token lane has no domain usage lane"),
+            Rule::Excluded("Gemini tool-token kind has no matching usage token kind"),
         ),
         (
             "tokens.total",
-            Rule::Excluded("reported aggregate; individual lanes are read"),
+            Rule::Excluded("reported aggregate; individual token kinds are read"),
         ),
         ("id", Rule::Read(T::String)),
         ("timestamp", Rule::Read(T::StringOrNumber)),
@@ -100,7 +100,7 @@ static MESSAGE_FIELDS: Fields = Fields::new(
         ("toolCalls[].args", Rule::Kept("complete call input")),
         (
             "toolCalls[].result",
-            Rule::Kept("complete native result data"),
+            Rule::Kept("complete result data as written"),
         ),
         ("toolCalls[].status", Rule::Read(T::String)),
         (
@@ -109,7 +109,7 @@ static MESSAGE_FIELDS: Fields = Fields::new(
         ),
         (
             "toolCalls[].resultDisplay",
-            Rule::Kept("native result display data"),
+            Rule::Kept("Gemini result display data"),
         ),
         (
             "toolCalls[].displayName",
@@ -279,7 +279,7 @@ impl GeminiCli {
         }
         if let Some(at) = doc.get("startTime").and_then(time_of) {
             session
-                .offer_start(at.timestamp(), at.evidence())
+                .offer_start(at.timestamp(), at.accuracy())
                 .expect("decoded source time is valid");
         }
         for dir in doc

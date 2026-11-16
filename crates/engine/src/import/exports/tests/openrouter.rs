@@ -8,7 +8,7 @@ const ROOM: &str = r#"{"version":"example","messages":{
     "title":"Late header","characters":{"char":{"model":"example-model"}}}"#;
 
 #[test]
-fn keyed_room_replacements_choose_the_first_stored_message_and_rebuild_exactly() {
+fn keyed_room_replacements_choose_the_first_stored_message_and_rebuild() {
     let w = ClaudeHome::new();
     let path = w.dir.path().join("OpenRouter Chat example.json");
     fs::write(&path, ROOM).unwrap();

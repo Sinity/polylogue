@@ -65,7 +65,7 @@ fn unmarked_sessions_do_not_read_all_message_rows_and_withdrawn_capture_marks_cl
     let input: i64 = index
         .query_row("SELECT pk FROM input_ref LIMIT 1", [], |r| r.get(0))
         .unwrap();
-    let attrs = format!("{{\"retained\":\"{}\"}}", "x".repeat(2048));
+    let attrs = format!("{{\"kept\":\"{}\"}}", "x".repeat(2048));
     for session in sessions {
         index
             .execute(

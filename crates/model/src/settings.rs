@@ -1,5 +1,5 @@
 //! The declared runtime setting catalog. Deployment configuration and Sinex's
-//! primary attention context have their own owners and are not authored keys.
+//! primary attention context are set elsewhere and are not authored keys.
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -110,7 +110,7 @@ pub const CATALOG: &[Declaration] = &[
     },
 ];
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Owner {
+pub enum SettingMode {
     Standalone,
     Primary,
 }
@@ -138,15 +138,15 @@ fn buffered_value<'de, D: serde::Deserializer<'de>, T: serde::de::DeserializeOwn
 }
 
 impl Value {
-    /// The catalog parser remains the one type and constraint authority for
-    /// both surface text and a typed assertion payload.
-    pub fn validate_for(&self, key: &str, owner: Owner) -> Result<(), Error> {
+    /// The catalog parser alone decides type and constraints for both
+    /// surface text and a typed assertion payload.
+    pub fn validate_for(&self, key: &str, mode: SettingMode) -> Result<(), Error> {
         let invalid = || Error::Invalid {
             key: key.into(),
             expected: "the declared setting type and canonical value",
         };
         let text = self.text().map_err(|_| invalid())?;
-        if parse(key, &text, owner)? != *self {
+        if parse(key, &text, mode)? != *self {
             return Err(invalid());
         }
         Ok(())
@@ -192,15 +192,15 @@ impl Declaration {
         }
     }
 }
-/// One typed setting answer. A missing primary attention value names its
-/// Sinex owner instead of exposing a Polylogue default.
+/// One typed setting answer. A missing primary attention value names
+/// Sinex instead of exposing a Polylogue default.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Current {
     pub key: String,
     pub kind: Kind,
     pub default: Option<Value>,
     pub scope: Scope,
-    pub owner: String,
+    pub supplier: String,
     pub value: Option<Value>,
     pub authored: Option<Authored>,
     pub conflicts: Vec<crate::Reference>,
@@ -275,9 +275,9 @@ pub fn target_machine(
         }
     }
 }
-pub fn parse(key: &str, text: &str, owner: Owner) -> Result<Value, Error> {
+pub fn parse(key: &str, text: &str, mode: SettingMode) -> Result<Value, Error> {
     let spec = declaration(key)?;
-    if owner == Owner::Primary && spec.standalone_only {
+    if mode == SettingMode::Primary && spec.standalone_only {
         return Err(Error::SinexOwned(key.to_string()));
     }
     let text = text.trim();
@@ -350,22 +350,20 @@ pub fn parse(key: &str, text: &str, owner: Owner) -> Result<Value, Error> {
         Kind::Plan => {
             let value: Plan =
                 serde_json::from_str(text).map_err(|_| invalid("a typed subscription plan"))?;
-            value.validate().map_err(|_| {
-                invalid("an unambiguous plan with valid anchor day, lane and nonnegative amounts")
-            })?;
+            value.validate().map_err(|_| invalid(PLAN_EXPECTED))?;
             Value::Plan(value)
         }
     })
 }
-pub fn current(key: &str, stored: Option<&str>, owner: Owner) -> Result<Option<Value>, Error> {
+pub fn current(key: &str, stored: Option<&str>, mode: SettingMode) -> Result<Option<Value>, Error> {
     let spec = declaration(key)?;
-    // A primary consumer must never turn a missing owner value into a local default.
-    if owner == Owner::Primary && spec.standalone_only {
+    // A primary consumer must never turn a missing Sinex value into a local default.
+    if mode == SettingMode::Primary && spec.standalone_only {
         return Err(Error::SinexOwned(key.to_string()));
     }
     stored
         .or(spec.default)
-        .map(|text| parse(key, text, owner))
+        .map(|text| parse(key, text, mode))
         .transpose()
 }
 
@@ -436,6 +434,7 @@ impl Snapshot {
     }
 }
 
+const PLAN_EXPECTED: &str = "an unambiguous plan with a name, an origin, a valid cycle anchor day, a known budget unit and nonnegative amounts";
 pub const PLAN_UNITS: &[&str] = &[
     "api_nusd",
     "reported_nusd",
@@ -487,7 +486,7 @@ impl Plan {
         {
             return Err(Error::Invalid {
                 key: "plan.*".into(),
-                expected: "an unambiguous plan with valid anchor day, lane and nonnegative amounts",
+                expected: PLAN_EXPECTED,
             });
         }
         Ok(())

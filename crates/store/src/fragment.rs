@@ -1,5 +1,6 @@
-//! Captured partial-text claims. Their local source memberships and admissions
-//! are independent of every coordinate and receipt in the foreign payload.
+//! Captured partial-text fragments as their sender states them. Their local
+//! source memberships and commits are independent of every coordinate and
+//! commit the sender's payload states.
 use crate::{Result, StoreError};
 use polylogue_model::bundle::fragments::{TextFragmentError, TextSourceVersion};
 use polylogue_model::{BlobHash, Output, batch::FragmentRow};
@@ -77,7 +78,7 @@ impl PreparedFragments {
         input: i64,
         chain: i64,
         through: u64,
-        admission: impl Fn(&FragmentRow) -> Result<Option<i64>>,
+        commit: impl Fn(&FragmentRow) -> Result<Option<i64>>,
     ) -> Result<()> {
         for value in &self.0 {
             if value.row.end > through {
@@ -94,18 +95,18 @@ impl PreparedFragments {
                 params![value.hash.0.as_slice(),fragment.container.to_string(),value.version,start.as_slice(),end.as_slice(),total.as_ref().map(|n|n.as_slice()),value.body],
             )?;
             conn.execute(
-                "INSERT INTO text_fragment_source(hash,input_pk,chain,start,end,admitted) VALUES (?1,?2,?3,?4,?5,?6)
-                 ON CONFLICT(hash,input_pk,chain,start,end) DO UPDATE SET admitted=excluded.admitted
-                 WHERE admitted IS NULL AND excluded.admitted IS NOT NULL",
-                params![value.hash.0.as_slice(),input,chain,value.row.offset as i64,value.row.end as i64,admission(&value.row)?],
+                "INSERT INTO text_fragment_source(hash,input_pk,chain,start,end,committed) VALUES (?1,?2,?3,?4,?5,?6)
+                 ON CONFLICT(hash,input_pk,chain,start,end) DO UPDATE SET committed=excluded.committed
+                 WHERE committed IS NULL AND excluded.committed IS NOT NULL",
+                params![value.hash.0.as_slice(),input,chain,value.row.offset as i64,value.row.end as i64,commit(&value.row)?],
             )?;
         }
         Ok(())
     }
 }
 
-/// Ordinary replacement retracts this reading's membership, not captured bytes
-/// or a different input's claim. Unreferenced values belong to the derived cache.
+/// Replacing a reading retracts its membership, not captured bytes or a
+/// different input's stated fragment. Unreferenced values belong to the derived cache.
 pub(crate) fn retract(conn: &Connection, input: i64, chain: i64) -> Result<()> {
     conn.execute(
         "DELETE FROM text_fragment_source WHERE input_pk=?1 AND chain=?2",

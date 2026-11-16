@@ -15,7 +15,7 @@ pub(crate) struct Call<'q, 's> {
     pub unit: Unit,
     pub name: &'static str,
     /// The value as written, or for `since:`, `until:` and
-    /// `evidence_until:` the time binding resolved.
+    /// `seen_by:` the time binding resolved.
     pub test: &'q Test,
     pub scope: &'s RowContext,
     pub span: Span,
@@ -39,7 +39,7 @@ impl Call<'_, '_> {
         }
     }
 
-    /// The time a `since:`, `until:` or `evidence_until:` condition names.
+    /// The time a `since:`, `until:` or `seen_by:` condition names.
     fn time(&self, c: &Compiler<'_>) -> Result<Time, QueryError> {
         match self.test {
             Test::Time(TimeTest::Within(at)) => Ok(c.resolved(at)),
@@ -66,7 +66,7 @@ impl Call<'_, '_> {
         }
     }
 
-    /// Special fields retain their written comparisons at the binding boundary.
+    /// Special fields keep their written comparisons at the binding boundary.
     fn unknown(&self) -> bool {
         matches!(self.comparison(), Some(Comparison::Match(Value::Unknown)))
     }
@@ -210,18 +210,18 @@ pub(crate) fn since(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Qu
     let window = units::spec(x.unit)
         .since
         .ok_or_else(|| c.unknown_field(x.name, x.unit, x.span))?;
-    if let Some(native) = fields::native_window(x.unit, true, &x.scope.a) {
-        let exact = c.native_time_test(
-            &native,
-            time::NativePredicate::Overlap {
+    if let Some(stored) = fields::time_window(x.unit, true, &x.scope.a) {
+        let test = c.time_test(
+            &stored,
+            time::TimePredicate::Overlap {
                 since: Some(t.start()),
                 until: None,
             },
         );
         return Ok(if x.unit == Unit::ToolCalls {
-            format!("({exact} OR {}.result_block_pk IS NULL)", x.scope.a.t)
+            format!("({test} OR {}.result_block_pk IS NULL)", x.scope.a.t)
         } else {
-            exact
+            test
         });
     }
     Ok(x.scope
@@ -239,10 +239,10 @@ pub(crate) fn until(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Qu
     let window = units::spec(x.unit)
         .until
         .ok_or_else(|| c.unknown_field(x.name, x.unit, x.span))?;
-    if let Some(native) = fields::native_window(x.unit, false, &x.scope.a) {
-        return Ok(c.native_time_test(
-            &native,
-            time::NativePredicate::Overlap {
+    if let Some(stored) = fields::time_window(x.unit, false, &x.scope.a) {
+        return Ok(c.time_test(
+            &stored,
+            time::TimePredicate::Overlap {
                 since: None,
                 until: Some(t.until_bound()),
             },
@@ -252,10 +252,10 @@ pub(crate) fn until(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Qu
     Ok(x.scope.a.expand(window).replace("{v}", &bound.to_string()))
 }
 
-/// `evidence_until:T`: the evidence Polylogue had by T, read with today's
+/// `seen_by:T`: what Polylogue had seen by T, read with today's
 /// parsers and prices. Rows count when their bytes were first
 /// seen by then; notes as each family stood then.
-pub(crate) fn evidence_until(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn seen_by(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
     let end = x.time(c)?.end_ms()?;
     let a = &x.scope.a;
     let cutoff = match x.unit {
@@ -273,22 +273,21 @@ pub(crate) fn evidence_until(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<S
             )
         }
         // A session's counts, cost, times and title as they stood then
-        // would each need recomputing from that evidence; the rows of that
+        // would each need recomputing from those rows; the rows of that
         // time answer the question instead.
         other => {
             return Err(QueryError::Invalid {
                 message: format!(
-                    "evidence_until asks for rows as Polylogue had them; figures of {} are not recomputed \
+                    "seen_by asks for rows as Polylogue had them; figures of {} are not recomputed \
                      as they stood then: ask for the session's messages, tool calls or notes \
-                     (`messages where session:ID evidence_until:…`)",
+                     (`messages where session:ID seen_by:…`)",
                     other.name()
                 ),
                 position: x.span.start,
             });
         }
     };
-    let note =
-        "evidence_until: the rows Polylogue had by then, read with today's parsers and prices";
+    let note = "seen_by: the rows Polylogue had by then, read with today's parsers and prices";
     if !c.notes.iter().any(|n| n == note) {
         c.notes.push(note.into());
     }

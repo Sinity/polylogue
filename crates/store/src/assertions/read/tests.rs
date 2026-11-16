@@ -88,7 +88,7 @@ fn assertions_are_written_once_per_request_and_revised_in_families() {
 }
 
 #[test]
-fn a_withdrawal_names_its_family_and_keeps_exact_facts_readable() {
+fn withdrawal_names_its_family_and_keeps_facts_readable() {
     let (_dir, _a, _lock, writer, reads) = setup();
     let lesson = writer
         .user(crate::fixture::authored::operator_request(
@@ -150,7 +150,7 @@ fn a_withdrawal_names_its_family_and_keeps_exact_facts_readable() {
     );
     assert!(
         reader
-            .assertion_family_currency(&family)
+            .assertion_family_state(&family)
             .unwrap()
             .unwrap()
             .withdrawn()
@@ -366,7 +366,7 @@ fn resolved_saved_revisions_repeat_but_explicit_revisions_conflict() {
     writer
         .user_preparing(explicit.clone(), context(), None)
         .unwrap();
-    // A frozen retry remains available without a new preparation context.
+    // A recorded retry remains available without a new preparation context.
     assert!(writer.user(resolved.clone()).unwrap().repeat);
     let mut changed = explicit.clone();
     if let UserWrite::ReviseAssertions { bases, .. } = &mut changed.write {
@@ -457,7 +457,7 @@ fn a_missing_request_is_absent_and_request_content_cannot_be_removed() {
 }
 
 #[test]
-fn expiry_metadata_does_not_materialize_the_assertion_body() {
+fn expiry_check_does_not_load_the_assertion_body() {
     let (_dir, archive, _lock, writer, reads) = setup();
     let mut note = statement(AssertionKind::Note, "repo:morrow", "synthetic body");
     note.valid_until = Some(polylogue_model::Timestamp::from_unix_ms(10).unwrap());

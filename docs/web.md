@@ -1,6 +1,6 @@
 # Web workbench
 
-The workbench is the web interface the daemon serves: reading, searching, measuring and annotating the archive, working with Pages, and following and answering live agent sessions. It is one more client of the [command table](interfaces.md#command-table) and adds no semantics. This page owns its principles, visual baselines, frame, Polylogue's key bindings, inspector, live behaviour, state matrix, access, routes and every view. Shared web mechanics (visual tokens, the shared key table, palette and copy mechanics, the frame, SSE fragments, windowed lists) belong to the common [`web-shell`](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/web-shell/README.md) crate. The browser extension's own interface is [extension.md](extension.md); rendering rules for messages and read views are [reading.md](reading.md); live-session control operations are [agents.md](agents.md#live-sessions); status figures are [operations.md](operations.md#status).
+The workbench is the web interface the daemon serves: reading, searching, measuring and annotating the archive, working with Pages, and following and answering live agent sessions. It is one more client of the [command table](interfaces.md#command-table) and adds no behaviour of its own. This page owns its principles, visual baselines, frame, Polylogue's key bindings, inspector, live behaviour, state matrix, access, routes and every view. Shared web mechanics (visual tokens, the shared key table, palette and copy mechanics, the frame, SSE fragments, windowed lists) belong to the common [`web-shell`](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/web-shell/README.md) crate. The browser extension's own interface is [extension.md](extension.md); rendering rules for messages and read views are [reading.md](reading.md); live-session control operations are [agents.md](agents.md#live-sessions); status figures are [operations.md](operations.md#status).
 
 ## Principles
 
@@ -8,9 +8,9 @@ The workbench is the web interface the daemon serves: reading, searching, measur
 - **A shell over the same operations.** Every action is a command-table row reachable from the CLI and MCP; there is no web-only endpoint, and every view shows the CLI command that reproduces it.
 - **Where the operator works with agents.** Live sessions are followed, answered, approved, steered, interrupted, resumed and pinged from the web ([Running](#running-running), [live-session control](#live-session-control-panel)). (ruling 2026-06-18, journal 2026-06-18 21:56).
 - **Live, never polling.** Views update from the change feed. (ruling 2026-07-03, cc:30f5e650-7033-4423-9f91-2b66ebd1e6b2:e72e1c54-c67d-4f23-9649-c84390ffd442).
-- **Every visible fact has provenance.** A chip, figure or line opens where it came from ([inspector](#inspector-and-provenance)).
+- **Every visible fact shows its source.** A chip, figure or line opens where it came from ([inspector](#inspector-and-source)).
 - **Pages are the centre of work, and optional.** The model is [pages.md](pages.md); the views are [Pages](#pages-pages-ppage).
-- **Durable state lives in the archive.** The browser holds only view state in progress ([what the browser holds](#what-the-browser-holds)).
+- **State that must last lives in the archive.** The browser holds only view state in progress ([what the browser holds](#what-the-browser-holds)).
 - **Verified by running it.** Checks drive a real browser against the real daemon. (ruling 2026-05-03, cc-queued:d227b344-a871-4be1-bdf0-30c59ff1db7d@2026-05-03T18:16:47Z).
 - **Stored text is shown as it is.** No view masks, flags or reveals spans, and there is no delete action, because Polylogue has no deletion ([architecture.md](architecture.md#deletion)).
 - **No dependency on one desktop.** Desktop integration (opening an editor, a file manager, a terminal, the clipboard) goes through the desktop's own services; a desktop or window manager named on this page is an example of a deployment.
@@ -25,13 +25,13 @@ The boards and mockups in [`web/`](web/) are the visual baselines, drawn on the 
 
 ### Lineage
 
-Four generations of design feed the workbench. Each later one refines the earlier ones; none replaces an earlier one whole. An element of an earlier generation still binds unless a later board draws the same thing differently or this page says otherwise, and the tables below record which board governs each element.
+Four rounds of design feed the workbench. Each later one refines the earlier ones; none replaces an earlier one whole. An element of an earlier round still binds unless a later board draws the same thing differently or this page says otherwise, and the tables below record which board governs each element.
 
-| Generation | Board | What it contributes that still binds |
+| Round | Board | What it contributes that still binds |
 |---|---|---|
-| **MK2 "Cockpit"** (Claude Design, 2026-05-02) | [boards/mk2/](web/boards/mk2/index.html) | the cockpit layout (facet rail, result list, reader, side panel); provenance on every fact; the status strip; one keyboard model across web, CLI picker and palette; the empty, loading, degraded and failure states with a command as the way out; the daemon counting its own use; context bundles from selected messages; the data-flow invariants |
+| **MK2 "Cockpit"** (Claude Design, 2026-05-02) | [boards/mk2/](web/boards/mk2/index.html) | the cockpit layout (facet rail, result list, reader, side panel); the source of every fact; the status strip; one keyboard model across web, CLI picker and palette; the empty, loading, degraded and failure states with a command as the way out; the daemon counting its own use; context bundles from selected messages; the data-flow invariants |
 | **MK3 / MK3.1 "archive workbench"** (Claude Design, 2026-05-23) | [boards/mk3/](web/boards/mk3/index.html) | the information architecture; the search cockpit with score components and bulk selection; paste and attachment rendering; the message card and its copy menu; fold rules and match windows for huge sessions; the inspector in five selection contexts; the topology view; continue, fork and bundle flows; the tabs, stack, compare and timeline workspace modes; the palette with disabled reasons; the full state matrix; settings |
-| **MK4 concept** (2026-05-24, prose, no board) | — | continue elsewhere from any message; the context composer with its provenance manifest; observed lineage, never created by a UI act; every action shown with its availability and the reason when it is unavailable. These are written into the views below |
+| **MK4 concept** (2026-05-24, prose, no board) | — | continue elsewhere from any message; the context composer with its source manifest; observed lineage, never created by a UI act; every action shown with its availability and the reason when it is unavailable. These are written into the views below |
 | **The board canvas** (2026-10-12) and the static mockups (2026-10-11, 10-24) | [boards/](web/boards/), [mockups/](web/mockups/) | the current look (the joint tokens); the views they draw, on the Morrow archive. Where they draw a view an earlier board also drew, they govern |
 
 The visual style of MK2 (graphite and slate, dark only, Inter and JetBrains Mono) and of MK3.1 (the Sinex ANSI-16 palette) is replaced by the joint tokens; their layouts, panels, interactions and keyboard model are not.
@@ -62,21 +62,21 @@ Parts of MK3.1 that do not bind: the redaction policy, redacted paths and "copy 
 |---|---|
 | three panes (facet rail, result list, reader) with a side panel | MK2, for the wide search layout with a reading pane; MK3.1 02 for the hit rows |
 | facets `provider`, `repo`, `has: tool_use · thinking · paste`, saved queries in the facet rail | MK2; scoped counts from MK3.1 02 |
-| side panel tabs messages · raw · provenance | MK2 for the tab set (Outline · Raw · Provenance); MK3.1 08 for the panels inside |
-| provenance panel: arrival route, source path, byte cursor, hash, derived facts | MK2. The privacy line reads "local archive only"; derived facts never include guessed phases |
+| side panel tabs messages · raw · source | MK2 for the tab set (Outline · Raw · Source); MK3.1 08 for the panels inside |
+| source panel: arrival route, source path, byte cursor, hash, derived facts | MK2. The privacy line reads "local archive only"; derived facts never include guessed phases |
 | reader header actions `S` star, `P` pin, `A` annotate, `R` bundle, with the equivalent CLI command beside them | MK2; star and pin are tags |
 | status strip: daemon uptime, live lag per source, capture connection, index pending, key hints | MK2 |
 | `⌘K` and `:` palette, `g a` for annotations | MK2 for the keys; MK3.1 16 for the palette |
 | one keymap across web, CLI picker and palette ("Same verbs, same letters") | MK2 keymap, as the [keys](#keys) table. A delete key does not exist (Polylogue has no deletion) |
-| empty, loading, degraded and failure states on every surface; calm persistent status, never a blocking modal; the way out is always a command the user could run | MK2 for the rule; MK3.1 17 for the matrix. The ways out are ordinary commands; there are no repair commands ([architecture.md](architecture.md#principles)) |
+| empty, loading, degraded and failure states on every surface; calm persistent status, never a blocking modal; the way out is always a command the user could run | MK2 for the rule; MK3.1 17 for the matrix. The ways out are everyday commands; there are no repair commands ([architecture.md](architecture.md#principles)) |
 | the daemon counting its own use, local only, readable from every surface: query runs, reader opens by surface, time spent per session, per-component lag | MK2 telemetry, as Status's own-use panel. The counters live with the request log in `archive.db`, and nothing is purged |
-| status panels: archive counts, sources with lag, capture, recent, diagnostics | MK2's terminal cockpit, as the [Status](#status-status) view and the status strip. No terminal UI is built now, and diagnostics suggest ordinary commands only |
+| status panels: archive counts, sources with lag, capture, recent, diagnostics | MK2's terminal cockpit, as the [Status](#status-status) view and the status strip. No terminal UI is built now, and diagnostics suggest everyday commands only |
 | fuzzy selector: descriptor-driven, preview pane, multi-select, print or open the choice | MK2, for the CLI picker ([interfaces.md](interfaces.md#picker)) |
 | CLI: bare overview with source bars, completion popup with counts, opening the latest session in the web reader | MK2, for the CLI ([interfaces.md](interfaces.md#completion)) |
 | data-flow invariants: any surface renders anything by reference alone; nothing leaves the machine unless the user writes it out or configures a listen address | MK2 |
 | bundles from multi-select, message references without copied payloads | MK2; MK3.1 10 for the flow. The bundle's manifest carries references and content hashes |
 
-The MK2 board is drawn for the Python predecessor, so its command and module names (`polylogued`, `ops doctor`, `--fix` targets, Python file names) are the predecessor's; the commands are those in [interfaces.md](interfaces.md#commands), and there are no repair commands. Its roadmap and inventory artboards show the predecessor's plan, not views. MK2's MCP role gate (read, write, admin) and its MCP server with direct archive access do not apply: agents get every power ([architecture.md](architecture.md#principles)), and the daemon is the only process on the archive.
+The MK2 board is drawn for Python Polylogue, so its command and module names (`polylogued`, `ops doctor`, `--fix` targets, Python file names) are Python Polylogue's; the commands are those in [interfaces.md](interfaces.md#commands), and there are no repair commands. Its roadmap and inventory artboards show Python Polylogue's plan, not views. MK2's MCP role gate (read, write, admin) and its MCP server with direct archive access do not apply: agents get every power ([architecture.md](architecture.md#principles)), and the daemon is the only process on the archive.
 
 ### Views
 
@@ -120,19 +120,19 @@ The views without a board: the heatmap, the firehose, the note page, triage, ana
 │ Polylogue  Home  Running(2·1 waiting)  Notes  Pages  Timeline  Cost  Status [query…] │
 ├─ left rail (optional) ─┬─ main ───────────────────────────────┬─ inspector ──────────┤
 │ outline / facets /     │ view content                          │ facts · lineage ·    │
-│ toc / filters          │                                       │ notes · provenance … │
+│ toc / filters          │                                       │ notes · source …     │
 ├────────────────────────┴───────────────────────────────────────┴──────────────────────┤
 │ ● daemon 4h 12m · claude-code 0.4 s · codex 1.1 s · extension connected · index 1,210 pending · : palette  / query  ? keys │
 └────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 - **Header:** wordmark; navigation Home · Running · Notes · Pages · Timeline · Cost · Status; the persistent query field with completion on every page. The Running item carries `running · waiting` counts, so "waiting on you" is visible from every page.
-- **Status strip:** daemon state and uptime; **live lag per source** (time from the newest byte a live source wrote to its commit in the archive, per origin; `—` when the source is idle; a figure state when not measured); the extension's connection (from the native host's last contact); index work pending; in primary mode, the Sinex position lag. Each item links to its Status section. The strip is the daemon state indicator: `live`, `catching up · N inputs waiting`, `disconnected · retrying`, `stopped (start: <service command>)`.
+- **Status strip:** daemon state and uptime; **live lag per source** (time from the newest byte a live source wrote to its commit in the archive, per origin; `—` when the source is idle; a figure state when not measured); the extension's connection (from the host's last contact); index work pending; in primary mode, the Sinex position lag. Each item links to its Status section. The strip is the daemon state indicator: `live`, `catching up · N inputs waiting`, `disconnected · retrying`, `stopped (start: <service command>)`.
 - **Main column** up to 1,200 px; transcript text 75–90 characters per line.
 - **Inspector** (right rail, 280–320 px): the page's own facts by default, switching to the focused target with a "back to session" link.
 - **Left rail** only where it earns its width: session outline, search facets, a page's table of contents, timeline filters.
 - **Narrow widths** (under 900 px): rails become disclosures above the main column; tables scroll inside their box; there is no horizontal page scroll. Every view stays usable at 390 px.
-- **Footer line** on every page: the exact CLI command for what is shown, with **Copy as CLI command**; a page with several tables has one command per table. The command is computed from the request arguments that produced the page.
+- **Footer line** on every page: the CLI command for what is shown, with **Copy as CLI command**; a page with several tables has one command per table. The command is computed from the request arguments that produced the page.
 - **Result handle:** every query-backed view shows its `query:<hash>` handle (and `result:<id>` when kept) beside the footer command ([query.md](query.md#query-objects)).
 
 ### Visual use
@@ -145,7 +145,7 @@ The tokens, marks of meaning, value states and chips are `web-shell`'s. Polylogu
 - **Notes:** `◆` plus the kind word, `--note` ink on `--note-bg`.
 - **Check states:** `holds`, `fails`, `unknown`, `unchecked` badges; `unchecked` outlined.
 - **Live states:** the six states of [agents.md](agents.md#live-sessions), always as the word: `waiting` on `--pending-bg`, `working` on `--observed-bg`, `idle` and `unknown` on `--surface-sunk`, `stale` in `--failure-ink`, `ended` plain.
-- **Authorship:** typed text plain; a pasted span shaded with one evidence line; unknown authorship hatched. Authored records show their author (`operator`, `agent:<session>` as a link, `agent:<origin>`, `script:<unit>`, `unattributed` shown as "author unknown") and `via` ([assertions.md](assertions.md#authorship)).
+- **Authorship:** typed text plain; a pasted span shaded with one line saying where it came from; unknown authorship hatched. Authored records show their author (`operator`, `agent:<session>` as a link, `agent:<origin>`, `script:<unit>`, `unattributed` shown as "author unknown") and `via` ([assertions.md](assertions.md#authorship)).
 - **Density:** comfortable (default), compact, dense; a setting.
 - **Motion:** none except the live tick and progress; off under `prefers-reduced-motion`.
 - **Chips:** text first, ordered origin or harness · live state · repository, working directory, branch · lineage state · counts · cost · notes and tags; at most one row in a header.
@@ -164,7 +164,7 @@ Navigation, selection, the palette, help and the copy menu keys come from the sh
 | `t` / `T` | add / remove a tag | reader, lists |
 | `s` / `P` | star / pin mark on the focused session or message | reader, lists |
 | `n` / `N` | next / previous match of the active find | reader |
-| `m` `r` `p` | inspector tab Outline / Raw / Provenance | reader |
+| `m` `r` `p` | inspector tab Outline / Raw / Source | reader |
 | `v` then a letter | read view: `t`ranscript, `d`ialogue, `s`ummary, `c`ontext, `l`inks, `g` changes, `v` live, `r`aw; `f` opens the flow panel | reader |
 | `f` / `F` | fold or unfold the focused block / all blocks | reader |
 | `z e` `z t` `z h` `z i` `z b` | expand all tools, thinking in full, harness messages, include inherited, show branches | reader |
@@ -191,7 +191,7 @@ Inside the judge item card, `a`, `r` and `d` mean accept, reject and defer, and 
 
 When the browser cannot carry the bytes (exact bytes, non-text types), the menu offers **Put on the desktop clipboard**, a daemon row that writes them through the desktop's clipboard service.
 
-## Inspector and provenance
+## Inspector and source
 
 The inspector shows, for the page or the focused target:
 - **Facts:** ID, models, tools with counts and errors, tokens, cost with its money kind.
@@ -199,11 +199,11 @@ The inspector shows, for the page or the focused target:
 - **Notes:** every note on the target, newest first, each with author, `via`, judgments and check state; **Add a note**.
 - **Views:** links to the read views, the report and share.
 - **Referenced by:** pages, slots, kept results and notes that point here.
-- **Tabs Outline · Raw · Provenance:**
+- **Tabs Outline · Raw · Source:**
   - *Outline:* the session outline.
   - *Raw:* the stored input records behind the focused messages, as inert text, with each record's outcome (used, skipped with reason, unreadable).
-  - *Provenance:* the origin and route (`live`, `capture`, `recorded`, `export`, `copy`, `page_text`); the source location (the provider-side path, never the archive directory); the input, revision and chain; the record's byte range in its chain and, for a live input, the committed length against the file's length; the blob hash; the parser and its reading version; the observations (machine, when found); which of the row's stored versions is its main route and which input each other field group came from; for derived values, the derivation, its rule version and the rows it read; for authored records, author, `via`, revision and relations; in primary mode, the Sinex material and position. Each line links where a target exists. The CLI form is `REF trace`.
-- **Every chip and figure opens its provenance:** a cost chip opens the usage records and price entry it came from; a live-state chip opens its evidence; a count opens the query that produced it.
+  - *Source:* the origin and route (`live`, `capture`, `recorded`, `export`, `copy`, `page_text`); the source location (the provider-side path, never the archive directory); the input, revision and chain; the record's byte range in its chain and, for a live input, the committed length against the file's length; the blob hash; the parser and its reading version; the observations (machine, when found); which of the row's stored versions is its main route and which input each other field group came from; for derived values, the derivation, its rule version and the rows it read; for authored records, author, `via`, revision and relations; in primary mode, the Sinex material and position. Each line links where a target exists. The CLI form is `REF trace`.
+- **Every chip and figure opens its source:** a cost chip opens the usage records and price entry it came from; a live-state chip opens the live events behind it; a count opens the query that produced it.
 
 ## Live behaviour
 
@@ -216,7 +216,7 @@ The inspector shows, for the page or the focused target:
 ## Writes, availability and errors
 
 - **Writes** are POSTs of command-table requests with a client `request_id` reused on retry. The view shows the committed row the daemon returns, and a failed write keeps the editor text. Every write from the web is authored `operator` with `via: web`, computed by the daemon; the web sends no author.
-- **Availability:** every action carries `enabled`, `disabled (reason)`, `partial (reason)`, `loading` or `unavailable (reason)`, answered by the operation. A disabled action stays visible with its reason ("harness cannot interrupt this session", "needs paste evidence", "Sinex not configured").
+- **Availability:** every action carries `enabled`, `disabled (reason)`, `partial (reason)`, `loading` or `unavailable (reason)`, answered by the operation. A disabled action stays visible with its reason ("harness cannot interrupt this session", "needs a recorded paste", "Sinex not configured").
 - **Errors** say what failed, what still works and the next step, which is a command the operator could run. A failed optional panel shows `unavailable: <reason>`, never zero or empty.
 
 ## State matrix
@@ -276,7 +276,7 @@ The rows are the shipped saved query `query:running`.
 - **Window line:** `Anthropic 5h: $X API-equivalent so far · resets HH:MM · week N% (reported)`.
 - One section per repository (worktrees grouped under their repository), headed by its path, with a peer warning (`⚠ 2 agents in /home/op/morrow`) when several live sessions share it.
 - One row per session: state word and since; title; reference, start, pid; what it is doing (`waiting on you: permission for Bash: cargo test --all`, or `open tool call: exec, since 14:58:30`); the **process tree** from the sampler (`codex (pid 5202) → cargo test parser (pid 5230, 14:58:32)`), each child linked to the tool call whose pre and post hook events bracket its start; model; cost so far; task (a task or job identifier the transcript or hook line names); subagents nested as a tree.
-- Order: waiting, working, idle, unknown. **Stopped** lists `stale` sessions with their evidence (`process gone at 13:40, no end event`).
+- Order: waiting, working, idle, unknown. **Stopped** lists `stale` sessions with the reason (`process gone at 13:40, no end event`).
 - Footer: the state legend and `Same rows as polylogue query:running`.
 
 **Work tree and context flow.** A row expands into its logical session's physical sessions (subagents, forks, continuations) with what flowed on each edge: subagent instruction and final answer; brief, takeover and ping deliveries (prepared, delivered, used; size; references; what was left out); compaction boundaries with what they evicted. The same graph is the reader's flow panel. (ruling 2026-07-03, cc:30f5e650-7033-4423-9f91-2b66ebd1e6b2:e72e1c54-c67d-4f23-9649-c84390ffd442).
@@ -323,14 +323,14 @@ The most important surface. Message rendering and read views are [reading.md](re
 | Continuation | `↪ continued by claude-code:7f3a2c10-0004 (Oct 03 14:00, resume — repeats these 18 messages, adds 10)` |
 | Other events | dim lines: rate limit, away summary, model switch |
 | Turns | dividers with burst size, latency, tool calls and cost; abandoned turns say so |
-| Pastes | typed text plain; a pasted span shaded with its evidence line; unknown authorship hatched; a paste over 20 lines folds as `paste · 214 lines · copy · copy typed-only` |
+| Pastes | typed text plain; a pasted span shaded with its line saying where it came from; unknown authorship hatched; a paste over 20 lines folds as `paste · 214 lines · copy · copy typed-only` |
 | Attachments | images inline; other files `▣ name (media type, size)` with **Download** and **Reveal in file manager** (daemon rows using the desktop's services); SVG and HTML as links, never inline; the availability state and who supplied it ([sessions.md](sessions.md#attachments)) |
 
 **Tool families.** Each recognised tool family has its own expanded body, and every family still collapses to the one line above. A call's family comes from the tool-family table of the derived data ([measures.md](measures.md#catalog)); an unrecognised tool uses the generic body. (ruling 2026-07-03, cc:30f5e650-7033-4423-9f91-2b66ebd1e6b2:060b830b-16dc-4ac6-b463-7dd5deea1830).
 
 | Family | Expanded body |
 |---|---|
-| Shell (`Bash`, `exec_command`, …) | the command highlighted, working directory, exit code, duration, stdout and stderr each with first and last 100 lines and `… N lines skipped (open block)`; when the command ran through a declared wrapper (a job or task runner named in configuration), the wrapped command, the wrapper's job ID as the transcript shows it, and the exit status. This command and exit status are the verification evidence |
+| Shell (`Bash`, `exec_command`, …) | the command highlighted, working directory, exit code, duration, stdout and stderr each with first and last 100 lines and `… N lines skipped (open block)`; when the command ran through a declared wrapper (a job or task runner named in configuration), the wrapped command, the wrapper's job ID as the transcript shows it, and the exit status. This command and exit status are the verification record |
 | File read | path (opens in the editor at the range), line range, line count, the first lines |
 | File edit, write, patch | path; a unified diff with context; whether the edit applied; a failed edit says "may have changed the file" |
 | Search (`Grep`, `Glob`, ripgrep in a shell) | pattern, path scope, hit count, hits as `file:line` links with the matching line |
@@ -347,14 +347,14 @@ The most important surface. Message rendering and read views are [reading.md](re
 **Reading pages.** The reader reads a session in pages through the `read` row with a budget ([reading.md](reading.md#budgets)); the web default is 8,192 tokens. Paging links are First · Previous · Next · Latest; anchors are `/s/ID?message=MID`; changing the view starts a new read at the page's message anchor. The content cursor and the links cursor are independent URL parameters; the outline is the `turns` reading of the session, and the failure of an optional panel is shown beside the content. A stale cursor offers "Read changed · refresh from this message"; pages are never joined across a stale cursor. Long sessions keep a window of the DOM and fetch by anchor when scrolling past it.
 
 **Interactions.**
-- **Action rail** per message on hover and focus: **Copy**, **Annotate**, **Decision**, **Tag**, **Star**, **Add to page or bundle**, **Compare from here**, **Continue from here**, **Raw**, **Provenance**, **Permalink**.
+- **Action rail** per message on hover and focus: **Copy**, **Annotate**, **Decision**, **Tag**, **Star**, **Add to page or bundle**, **Compare from here**, **Continue from here**, **Raw**, **Source**, **Permalink**.
 - **Range selection** (shift-click two headers, or `x` on each): **Share excerpt**, **Add range to page**, **Copy range as Markdown**, **Copy as context**.
 - **Find in session:** a field in the view bar runs a message query scoped to the session, jumps by anchor and steps with `n`/`N`; matches inside folded blocks open a match window. The browser's own find sees only loaded pages.
 - **Outcome:** `1`/`2`/`3` and a select in the facts.
 - **Open in editor** (`o`): the session's working directory, or a tool line's file at its line, through the desktop's services; disabled with a reason when the path does not exist on this machine.
 
 **Continue elsewhere,** on the session and on every message:
-- **Resume this session** in its own harness (for a live session, the [controls](#live-session-control-panel) instead): runs the harness's resume command headlessly with an optional prompt, or opens it interactively in the operator's terminal; the exact command is shown before it runs ([agents.md](agents.md)).
+- **Resume this session** in its own harness (for a live session, the [controls](#live-session-control-panel) instead): runs the harness's resume command headlessly with an optional prompt, or opens it interactively in the operator's terminal; the full command is shown before it runs ([agents.md](agents.md)).
 - **Continue from here in another harness:** a new session seeded with the effective context at that message (`context --at MESSAGE`) and the message text, built by the pack builder and recorded as a delivery. It is never labelled "resume" and creates no lineage link by itself: a `reference` link appears only when the new session's transcript shows the delivery.
 - **Copy as prompt:** the same pack, copied. **Takeover brief:** the takeover pack for this session, copied or sent ([agents.md](agents.md#takeover)).
 
@@ -373,16 +373,16 @@ Rows: `read` with budget, slices, anchors, cursors and views (the outline is `tu
 ### Live-session control panel
 
 Shown under the transcript's end in the reader of a live session and inline in each Running row. The operations and their per-harness mechanisms are [agents.md](agents.md#live-sessions)'s; this is their web form.
-- **Composer:** a text field (`i`) with **Send**. While the session is working, Send steers it (the harness decides whether the input queues or interjects); while it is waiting or idle, Send answers. The composer shows which channel will carry the text and, for an ended session, the exact resume command it will run.
+- **Composer:** a text field (`i`) with **Send**. While the session is working, Send steers it (the harness decides whether the input queues or interjects); while it is waiting or idle, Send answers. The composer shows which channel will carry the text and, for an ended session, the full resume command it will run.
 - **Pending permission:** the request (tool, input in full) with **Approve** and **Deny**, and the harness's "always" variant where it has one.
 - **Interrupt**, **Resume** (ended or stale sessions) and **Ping** (with an address and an optional `about:` target).
-- **Branch from here:** from any message, start a new run seeded from that point (the harness's native fork where it has one, otherwise a new session seeded with `context --at MESSAGE`), shown as a sibling in the work tree once its transcript shows the link.
+- **Branch from here:** from any message, start a new run seeded from that point (the harness's own fork where it has one, otherwise a new session seeded with `context --at MESSAGE`), shown as a sibling in the work tree once its transcript shows the link.
 
 Each control shows its availability per harness, with the reason when disabled ("Codex: no approval channel from outside the terminal", "hooks not installed"). Every act is recorded with its author (`operator`, `via: web`) and appears in the session's flow as a delivery or control event. Each control is the same row as its CLI and MCP form.
 
 ### Session report `/s/SESSION/report`
 
-Header `Session report · computed from stored facts`; title; ID line; **Open transcript**, **Share an excerpt**. Cards: **Cost** (`$2.85` · `+ $0.16 in 1 subagent`), **Turns** (`3` · `3 prompts · 18 messages`), **Tool calls** (`13` · `1 error, fixed later`), **Files touched** (`3` · `all edits known`). **Timeline:** a time axis, turn bars labelled by their prompt, a subagent band, tool-call marks by outcome with labels on errors (`cargo test · exit 101 · 3m 43s`), claim marks with their state, a legend; drag to zoom. A **Tool calls** table (time, tool ×N, target, outcome, duration; error rows tinted). The rail holds **Files touched** (path, edits, certainty), **Agent notes, checked** (claim with its check badge, the check, anchor, author, `read why it said so`), **Lineage and notes**, and compactions and operator interventions when present. "Fixed later" is derived (a failing call followed by a success of the same command), never taken from text. Every mark and row opens the reader at its message.
+Header `Session report · computed from stored facts`; title; ID line; **Open transcript**, **Share an excerpt**. Cards: **Cost** (`$2.85` · `+ $0.16 in 1 subagent`), **Turns** (`3` · `3 prompts · 18 messages`), **Tool calls** (`13` · `1 error, fixed later`), **Files touched** (`3` · `all edits known`). **Timeline:** a time axis, turn bars labelled by their prompt, a subagent band, tool-call marks by outcome with labels on errors (`cargo test · exit 101 · 3m 43s`), claim marks with their state, a legend; drag to zoom. A **Tool calls** table (time, tool ×N, target, outcome, duration; error rows tinted). The rail holds **Files touched** (path, edits, certainty), **Agent notes, checked** (claim with its check badge, the check, target, author, `read why it said so`), **Lineage and notes**, and compactions and operator interventions when present. "Fixed later" is derived (a failing call followed by a success of the same command), never taken from text. Every mark and row opens the reader at its message.
 
 Rows: `read` with views `summary` and `changes`, the session's `tool_calls`, and the `claim` assertions on it with their check state.
 
@@ -394,7 +394,7 @@ A message list with a checkbox per message and note. **Before saving** lists wha
 
 - `/d/DOCUMENT`: title, purpose, authorship, text, the stored inputs it was read from; `full` and `dialogue` views; paging; the inspector.
 - `/m/MESSAGE` redirects to the reader anchor.
-- `/n/NOTE`: the revision (kind, author, `via`, target links, body, relations, check state for claims); **revision history** with diffs; a **conflict** view when two heads are current ([assertions.md](assertions.md#currency)), resolved by writing one revision that revises both; withdrawn state; **Referenced by**; judgments on this revision with their authors; actions **Revise**, **Withdraw**, **Judge**, **Add to page**. Revised and withdrawn revisions stay readable.
+- `/n/NOTE`: the revision (kind, author, `via`, target links, body, relations, check state for claims); **revision history** with diffs; a **conflict** view when two heads are current ([assertions.md](assertions.md#current-revisions)), resolved by writing one revision that revises both; withdrawn state; **Referenced by**; judgments on this revision with their authors; actions **Revise**, **Withdraw**, **Judge**, **Add to page**. Revised and withdrawn revisions stay readable.
 
 ### Notes, claims, judging, triage
 
@@ -402,7 +402,7 @@ A message list with a checkbox per message and note. **Before saving** lists wha
 - **`/claims`:** claims are `claim` assertions. Each shows its **check** badge (`holds`, `fails`, `unknown` with the reason, `unchecked`) with the check query, `expects rows · got N` and the failing rows linked; the verification it rests on is shown as the check command and exit status the transcript records (`cargo test · exit 101`, or a declared wrapper's `job 1234 · cargo test · exit 101`), never as the agent's words. The header reads `checks evaluated now, at read time · never stored · never a verdict`. An accepted claim that the archive now contradicts says so. "Claimed done, last check failed" is a shipped saved query and one filter here.
 - **`/judge`:** the command line (`polylogue judge --blind --sample 5 'assertions where rubric:outcomes@r2'`); the rubric card; the item card (`item 4 of 5 · order shuffled · author hidden until the verdict`) with its target and last messages, `a` accept · `r` reject · `d` defer; **This pass so far** (agreement with the operator's judgments on the same rubric revision, deferred, left); **withdraw the whole pass**; **revise the rubric and re-run**. Calibration figures of agent passes against operator-judged samples are shown here.
 - **`/triage`:** sessions ordered by the sum of named facts, each with its contribution; the tag `triaged` empties a row.
-- **Marks:** star and pin are tags (`tag star`, `tag pin`), shown as toggles on every session and message. "Pin" keeps an item on top of lists; a page slot that holds an exact revision is "fixed".
+- **Marks:** star and pin are tags (`tag star`, `tag pin`), shown as toggles on every session and message. "Pin" keeps an item on top of lists; a page slot that holds one revision is "fixed".
 
 Rows: `assertions` queries and `read assertion:…`; `assert`, `revise`, `withdraw`, `judge`; check evaluation in assertion reads; `triage`.
 
@@ -440,7 +440,7 @@ Editing a slot's note writes a revision; moving or removing a slot changes only 
 
 A workspace is a page with the `workspace` template whose slots are the open targets and whose values record mode, lane widths and focus; saving one is saving the page. An unsaved workspace lives in the URL (`/w/stack?ids=A,B,C&focus=B:msg42`).
 - **Tabs:** open targets as tabs; `Ctrl-click` opens in the background; tabs show the live state and a short title.
-- **Stack:** two to five lanes, each a compact reader with its own scroll and live chip, and one inspector locked to the active lane. **Stack builders:** parent chain, siblings and forks, subagents, same repository recent, selected search results, sessions sharing a file. More lanes collapse the oldest into tabs.
+- **Stack:** two to five token kinds, each a compact reader with its own scroll and live chip, and one inspector locked to the active lane. **Stack builders:** parent chain, siblings and forks, subagents, same repository recent, selected search results, sessions sharing a file. More lanes collapse the oldest into tabs.
 - **Compare:** [below](#compare-compare).
 - **Timeline:** a chronological merge of the lanes' messages, tool calls, notes and lineage events, ordered by time or by session; clock gaps and provider-relative times flagged; tool bursts collapsed (`… tool burst · 42 runs · 22m · expand`).
 
@@ -450,9 +450,9 @@ Left and right headers (title, origin, relation such as `fork @ msg 42`, counts)
 
 ### Timeline, days, firehose
 
-- **`/timeline`:** a year **calendar heatmap** (sessions, prompts, cost or tool errors per logical day, with an accessible table equivalent); below it a **scrubbable time axis** with lanes per repository or harness, sessions as bars, tool errors as marks and notes as `◆`; drag selects a window, the wheel zooms hour ↔ day ↔ week; the table below lists the window's sessions and events. Timeline, table and measures share three bindings: the time window, the focused evidence (opened at its neighbourhood, never by loading every earlier message), and the file at a moment. The header names the zone and the logical day start ([operations.md](operations.md#configuration)).
+- **`/timeline`:** a year **calendar heatmap** (sessions, prompts, cost or tool errors per logical day, with an accessible table equivalent); below it a **scrubbable time axis** with lanes per repository or harness, sessions as bars, tool errors as marks and notes as `◆`; drag selects a window, the wheel zooms hour ↔ day ↔ week; the table below lists the window's sessions and events. Timeline, table and measures share three bindings: the time window, the focused item (opened at its neighbourhood, never by loading every earlier message), and the file at a moment. The header names the zone and the logical day start ([operations.md](operations.md#configuration)).
 - **`/day/DATE`:** the logical day's activity by time (each with its time source), notes and decisions, cost and usage, previous and next, **This day in other years**, **Undated records**. In primary mode a wake-to-wake view of the day, read from Sinex, appears beside it.
-- **File at a moment:** a file's state graded by evidence: known (after a successful edit), possible (after a failed one), unknown; never by re-running commands.
+- **File at a moment:** a file's state graded by what is recorded: known (after a successful edit), possible (after a failed one), unknown; never by re-running commands.
 - **`/firehose`:** the timeline in follow mode with no window end, over AI-session records (messages, tool calls, notes, deliveries) at full detail. The cross-source firehose is Sinex's, a followed query over its confirmed stream; in primary mode `/firehose` links to it.
 
 Rows: `timeline` (window, grain, lanes, sessions and events); heatmap counts grouped by logical day; file at a moment from `changes` data.

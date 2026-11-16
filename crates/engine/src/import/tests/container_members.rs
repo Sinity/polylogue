@@ -115,7 +115,7 @@ fn unreadable_or_encrypted_zip_population_refuses_before_any_public_install() {
 }
 
 #[test]
-fn original_bytes_and_ordinal_preserve_raw_names_separately_from_decoded_projection() {
+fn raw_name_bytes_stay_apart_from_the_decoded_name() {
     let w = ClaudeHome::new();
     let (path, mut original) = archive(&w);
     original[7] &= !8;
@@ -144,7 +144,7 @@ fn original_bytes_and_ordinal_preserve_raw_names_separately_from_decoded_project
     assert_eq!(
         names[0]["name"],
         member.name(),
-        "the scalar is a decoded display projection, not raw name bytes"
+        "the scalar is a decoded display value, not raw name bytes"
     );
 }
 

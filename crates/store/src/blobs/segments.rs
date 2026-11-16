@@ -8,13 +8,13 @@ use std::sync::Mutex;
 #[derive(Debug, Clone, Copy)]
 pub enum BlobCatalog {
     Archive,
-    Projection,
+    PrimaryCache,
 }
 impl BlobCatalog {
     fn table(self) -> &'static str {
         match self {
             Self::Archive => "blob",
-            Self::Projection => "source_blob",
+            Self::PrimaryCache => "source_blob",
         }
     }
 }

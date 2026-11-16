@@ -57,7 +57,7 @@ fn hermes_atof_future_versions_and_bad_scope_phases_are_kept_as_unsupported() {
 }
 
 #[test]
-fn hermes_verification_ledger_preserves_native_evidence_without_chat_or_guessed_outcomes() {
+fn verification_rows_are_kept_without_guesses() {
     let rows = [
         json!({"schema":{"version":1},"source":{"machine":"synthetic","path":"/neutral/profile/verification_evidence.db"}}),
         json!({"t":"meta","k":["schema_version"],"r":{"key":"schema_version","value":"1"}}),
@@ -74,14 +74,14 @@ fn hermes_verification_ledger_preserves_native_evidence_without_chat_or_guessed_
     let parsed = parse("hermes", path, &raw);
     assert!(sessions(&parsed).is_empty());
     assert!(messages(&parsed).is_empty());
-    let facts = events(&parsed, "hermes_verification_event");
-    assert_eq!(facts.len(), 2);
-    for (fact, original) in facts.iter().zip(&rows[2..4]) {
-        assert!(fact.get("session").is_none());
-        assert_eq!(&fact["data"], original);
+    let found = events(&parsed, "hermes_verification_event");
+    assert_eq!(found.len(), 2);
+    for (event, original) in found.iter().zip(&rows[2..4]) {
+        assert!(event.get("session").is_none());
+        assert_eq!(&event["data"], original);
     }
-    assert!(facts[0].get("at").is_some());
-    assert!(facts[1].get("at").is_none());
+    assert!(found[0].get("at").is_some());
+    assert!(found[1].get("at").is_none());
     assert_eq!(events(&parsed, "hermes_import_diagnostic").len(), 1);
     let state = events(&parsed, "hermes_verification_state");
     assert_eq!(state[0]["data"], rows[4]);
@@ -91,7 +91,7 @@ fn hermes_verification_ledger_preserves_native_evidence_without_chat_or_guessed_
 }
 
 #[test]
-fn hermes_verification_requires_the_native_schema_and_never_opens_marker_paths() {
+fn hermes_verification_needs_its_schema_not_markers() {
     for version in [json!(null), json!(1), json!("2")] {
         let raw = crate::support::jsonl(&[
             json!({"t":"verification_events","k":[1],"r":{"id":1,"status":"passed","exit_code":0}}),
@@ -141,24 +141,24 @@ fn hermes_verification_history_keeps_row_occurrences_under_their_observed_schema
         }
         let raw = crate::support::jsonl(&rows);
         let parsed = parse("hermes", "verification_evidence.db.jsonl", &raw);
-        let facts = events(&parsed, "hermes_verification_event");
+        let found = events(&parsed, "hermes_verification_event");
         assert_eq!(
-            facts.len(),
+            found.len(),
             if phase == 2 { 2 } else { 1 },
-            "schema evidence applies at each original row occurrence"
+            "the schema applies at each original row occurrence"
         );
         if phase == 2 {
-            assert_eq!(facts[1]["data"]["r"]["id"], 3);
+            assert_eq!(found[1]["data"]["r"]["id"], 3);
             let deleted = events(&parsed, "hermes_verification_row_deleted");
             assert_eq!(deleted.len(), 1);
             assert_eq!(deleted[0]["data"], rows.last().unwrap().clone());
         }
-        assert_eq!(facts[0]["data"], first);
+        assert_eq!(found[0]["data"], first);
         let observed = events(&parsed, "hermes_verification_state");
         assert_eq!(
             observed.len(),
             2,
-            "row versions are recorded observations, not a guessed latest-only ledger"
+            "row versions are recorded observations, not a guessed latest-only table"
         );
         assert_eq!(observed[0]["data"], states[0]);
         assert_eq!(observed[1]["data"], states[1]);

@@ -1,11 +1,11 @@
 use super::*;
 
 fn body() -> BlobHash {
-    BlobHash::of(b"actual semantic body")
+    BlobHash::of(b"delivery body")
 }
 
 #[test]
-fn export_prefix_codec_binds_the_frozen_domain_and_json_tuple() {
+fn export_prefix_codec_binds_its_domain_and_json_tuple() {
     let seed = ExportDelivery::seed();
     assert_eq!(seed, BlobHash::of(b"polylogue.export-delivery.prefix.v1"));
     let delivery =
@@ -26,7 +26,7 @@ fn export_prefix_codec_binds_the_frozen_domain_and_json_tuple() {
 }
 
 #[test]
-fn export_ordinals_follow_callbacks_while_source_byte_ranges_can_move_backwards() {
+fn ordinals_follow_callbacks_while_ranges_move_back() {
     let header = ExportDelivery::new(
         0,
         ExportDeliverySource::ContainerHeader,
@@ -83,7 +83,7 @@ fn export_ordinals_follow_callbacks_while_source_byte_ranges_can_move_backwards(
 }
 
 #[test]
-fn verified_empty_exports_and_header_only_exports_have_distinct_valid_completion_counts() {
+fn empty_and_header_only_exports_count_differently() {
     let empty = ExportDelivery::new(
         0,
         ExportDeliverySource::Complete {
@@ -118,7 +118,7 @@ fn verified_empty_exports_and_header_only_exports_have_distinct_valid_completion
 }
 
 #[test]
-fn export_shape_refuses_reversed_ranges_inconsistent_counts_and_final_ordinal() {
+fn export_shape_refuses_bad_ranges_counts_and_ordinal() {
     for source in [
         ExportDeliverySource::Complete {
             length: 10,
@@ -137,7 +137,7 @@ fn export_shape_refuses_reversed_ranges_inconsistent_counts_and_final_ordinal() 
         );
     }
     assert_eq!(
-        ReadingFootprint::Bytes { start: 2, end: 1 }.validate(),
+        ReadRange::Bytes { start: 2, end: 1 }.validate(),
         Err(ExportDeliveryError::InvalidSourceRange)
     );
     assert_eq!(
@@ -206,7 +206,7 @@ fn export_cursor_extensions_refuse_replay_gaps_forks_and_overflow() {
 }
 
 #[test]
-fn export_control_round_trips_without_becoming_a_native_parser_checkpoint() {
+fn export_control_round_trips_without_checkpoint() {
     let delivery = ExportDelivery::new(
         0,
         ExportDeliverySource::ContainerHeader,
@@ -221,7 +221,7 @@ fn export_control_round_trips_without_becoming_a_native_parser_checkpoint() {
     );
     assert!(serde_json::from_value::<super::super::ParserCheckpoint>(value.clone()).is_err());
     let mut unknown = value;
-    unknown["native_admission"] = serde_json::json!(true);
+    unknown["unexpected_field"] = serde_json::json!(true);
     assert!(serde_json::from_value::<ExportDelivery>(unknown).is_err());
     let mut unsupported = delivery;
     unsupported.version = 2;
@@ -236,5 +236,5 @@ fn export_control_round_trips_without_becoming_a_native_parser_checkpoint() {
         Err(ExportDeliveryError::UnsupportedVersion { version: 2 })
     );
     serde_json::to_value(schemars::schema_for!(ExportDelivery)).unwrap();
-    serde_json::to_value(schemars::schema_for!(ReadingFootprint)).unwrap();
+    serde_json::to_value(schemars::schema_for!(ReadRange)).unwrap();
 }

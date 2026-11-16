@@ -158,7 +158,7 @@ fn answer(
 }
 
 #[test]
-fn native_mcp_records_only_nonempty_context_deliveries() {
+fn mcp_records_only_nonempty_context_deliveries() {
     let dir = tempfile::tempdir().unwrap();
     let env = crate::Fixture::new(
         &dir.path().join("archive"),

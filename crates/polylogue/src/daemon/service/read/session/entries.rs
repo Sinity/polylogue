@@ -5,7 +5,7 @@
 //! in, not the entries before it.
 use super::{Composed, Runs};
 use crate::daemon::service::Failure;
-use polylogue_model::read::{EntryKind, FoldProfile, IndexEntry, ItemCounts, View};
+use polylogue_model::read::{EntryKind, IndexEntry, ItemCounts, ShowProfile, View};
 use polylogue_store::Reader;
 
 /// One shown entry: its part, its place in the part's session, and itself.
@@ -41,7 +41,7 @@ struct Span {
 pub(super) struct ShownEntries<'r, 'c> {
     reader: &'r Reader<'r>,
     composed: &'c Composed,
-    profile: FoldProfile,
+    profile: ShowProfile,
     spans: Vec<Span>,
     total: u64,
 }
@@ -54,7 +54,7 @@ impl<'r, 'c> ShownEntries<'r, 'c> {
         reader: &'r Reader<'r>,
         composed: &'c Composed,
         runs: &Runs,
-        profile: FoldProfile,
+        profile: ShowProfile,
     ) -> Result<Self, Failure> {
         let mut out = Self {
             reader,

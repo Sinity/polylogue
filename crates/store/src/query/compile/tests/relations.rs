@@ -53,7 +53,7 @@ fn rows(fixture: &Fixture, text: &str) -> Vec<Value> {
 }
 
 #[test]
-fn projection_aliases_do_not_overwrite_native_identity_or_order_slots() {
+fn aliases_keep_row_identity_and_order_slots() {
     let (_directory, fixture) = fixture();
     assert_eq!(
         rows(
@@ -65,7 +65,7 @@ fn projection_aliases_do_not_overwrite_native_identity_or_order_slots() {
 }
 
 #[test]
-fn selected_groups_aggregate_their_original_rows_after_projection() {
+fn groups_aggregate_original_rows_after_field_selection() {
     let (_directory, fixture) = fixture();
     assert_eq!(
         rows(
@@ -175,7 +175,7 @@ fn step_order_counts_every_call_before_filtering_and_ignores_message_sequence_ga
 }
 
 #[test]
-fn distinct_uses_declared_row_identity_after_projection() {
+fn distinct_uses_row_identity_after_field_selection() {
     let (_directory, fixture) = fixture();
     assert_eq!(
         rows(&fixture, "sessions | sort by id | fields repo | distinct"),
@@ -213,7 +213,7 @@ fn historical_read_positions_refuse_without_substituting_current_membership() {
     ] {
         let error = compile(text, &opts(&[])).unwrap_err();
         assert_eq!(error.kind(), "not_yet_available", "{text}: {error}");
-        assert!(error.to_string().contains("evidence_until:"), "{error}");
+        assert!(error.to_string().contains("seen_by:"), "{error}");
     }
 }
 
@@ -232,7 +232,7 @@ fn selections_accept_the_full_unsigned_count_domain() {
 }
 
 #[test]
-fn explicit_witness_choice_keeps_the_outer_row_and_uses_only_its_requested_order() {
+fn explicit_pick_keeps_the_outer_row_and_its_order() {
     let directory = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(directory.path()).unwrap();
     let session = fixture
@@ -372,7 +372,7 @@ fn filters_read_a_grouped_join_column_from_its_materialized_slot() {
 }
 
 #[test]
-fn order_conditions_read_the_input_witness_and_publish_only_the_shared_exposure() {
+fn order_conditions_read_the_matching_input_row() {
     let directory = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(directory.path()).unwrap();
     let session = fixture
@@ -558,7 +558,7 @@ fn projected_natural_matches_follow_the_bound_field_kind_and_unicode_case_rules(
 }
 
 #[test]
-fn natural_text_matches_read_the_input_alias_beside_a_new_order_witness() {
+fn text_matches_read_the_input_alias_beside_order_row() {
     let directory = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(directory.path()).unwrap();
     let session = fixture
@@ -603,7 +603,7 @@ fn natural_text_matches_read_the_input_alias_beside_a_new_order_witness() {
 }
 
 #[test]
-fn grouped_reference_values_keep_field_metadata_without_native_row_targets() {
+fn grouped_references_keep_metadata_not_row_targets() {
     use crate::selection::{RowIdentity, SelectionError};
     use std::ops::ControlFlow;
     let (_directory, fixture) = fixture();
@@ -635,7 +635,7 @@ fn grouped_reference_values_keep_field_metadata_without_native_row_targets() {
 }
 
 #[test]
-fn native_aggregates_keep_child_rows_and_unknown_values() {
+fn unit_aggregates_keep_child_rows_and_unknowns() {
     let directory = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(directory.path()).unwrap();
     let session = fixture
@@ -743,7 +743,7 @@ fn expression_lowering_does_not_slice_formatted_text_at_original_positions() {
 }
 
 #[test]
-fn native_aggregate_aliases_remain_visible_to_fields_and_correlated_measures() {
+fn aggregate_aliases_stay_visible_to_measures() {
     let (_directory, fixture) = fixture();
     assert_eq!(
         rows(
@@ -771,7 +771,7 @@ fn native_aggregate_aliases_remain_visible_to_fields_and_correlated_measures() {
 }
 
 #[test]
-fn native_assertion_aggregates_keep_the_selected_rowid_scope() {
+fn assertion_aggregates_keep_the_selected_rowid_scope() {
     let (_directory, mut fixture) = fixture();
     fixture
         .note("note", None, Some("one"), "session:claude-code:a")

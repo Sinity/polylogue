@@ -1,6 +1,6 @@
 use super::*;
 #[test]
-fn object_urls_forward_exact_target_and_canonical_parameters() {
+fn object_urls_forward_target_and_parameters() {
     let parameters = vec![
         ("view".into(), "dialogue".into()),
         ("cursor".into(), "sealed +λ&?".into()),

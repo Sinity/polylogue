@@ -50,7 +50,7 @@ pub(crate) fn start(
 }
 
 /// The producer's writer: each write first checks the request's limit and
-/// the access scope it was admitted under, so a revoked scope or a
+/// the access scope it was accepted under, so a revoked scope or a
 /// cancellation stops production at the next event.
 pub(crate) struct GuardedWriter<'a> {
     output: &'a mut StreamOutput,

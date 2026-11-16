@@ -32,7 +32,7 @@ fn request_snapshots_keep_new_messages_and_repeat_a_shared_prefix_once() {
     assert_eq!(step.output.events[1].data["copied_prefix_messages"], 3);
 }
 #[test]
-fn markdown_is_a_companion_document_with_exact_text() {
+fn markdown_is_a_companion_document_with_unchanged_text() {
     let bytes = b"# aider chat started at 2026-01-01 10:00:00\n\n#### first\n\nanswer\n";
     let step =
         crate::export::fixture::parse(&mut open(Path::new(COMPANION)).unwrap(), bytes).unwrap();
@@ -44,7 +44,7 @@ fn markdown_is_a_companion_document_with_exact_text() {
     );
 }
 #[test]
-fn aider_ids_from_content_anchor() {
+fn aider_ids_come_from_content() {
     let ids = |bytes: &[u8]| -> Vec<String> {
         crate::export::fixture::parse(&mut open(Path::new(HISTORY)).unwrap(), bytes)
             .unwrap()

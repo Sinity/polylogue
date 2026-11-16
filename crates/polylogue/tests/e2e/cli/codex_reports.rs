@@ -4,7 +4,7 @@ use super::*;
 const THREAD: &str = "019a0000-0000-7000-8000-000000000001";
 
 #[test]
-fn native_codex_counts_usage_and_selected_items_preserve_exact_recorded_text() {
+fn codex_counts_usage_and_keeps_recorded_text() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
     let archive = dir.path().join("archive");
@@ -82,9 +82,9 @@ fn native_codex_counts_usage_and_selected_items_preserve_exact_recorded_text() {
     let id = format!("codex:{THREAD}");
     let read = reading(&env, &id, &["--view", "dialogue"]);
     assert!(!read.document.items.is_empty());
-    let canonical = messages(&env, &id);
-    assert_eq!(canonical.len(), 5);
-    let selected = canonical
+    let shown = messages(&env, &id);
+    assert_eq!(shown.len(), 5);
+    let selected = shown
         .iter()
         .find(|message| message["id"] == "codex:c1")
         .unwrap();
@@ -95,8 +95,8 @@ fn native_codex_counts_usage_and_selected_items_preserve_exact_recorded_text() {
         .messages(&polylogue_model::SessionId::parse(&id).unwrap(), false)
         .unwrap();
     assert_eq!(raw.len(), 5);
-    for (stored, canonical) in raw.iter().zip(&canonical) {
-        assert_eq!(serde_json::to_value(stored).unwrap(), *canonical);
+    for (stored, shown) in raw.iter().zip(&shown) {
+        assert_eq!(serde_json::to_value(stored).unwrap(), *shown);
     }
     assert!(raw.iter().any(|m| {
         m.id.to_string() == "codex:c1"

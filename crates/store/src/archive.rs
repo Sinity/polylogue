@@ -81,10 +81,10 @@ impl Archive {
         crate::read::scope::root_key(root)
     }
 
-    /// Register while holding writer custody of a live shared archive. Startup
-    /// uses the open-with-invalidator constructors to acquire that custody first.
+    /// Register while holding the writer lock of a live shared archive. Startup
+    /// uses the open-with-invalidator constructors to take that lock first.
     /// The callback runs immediately and at each reset, under the publication fence;
-    /// it must durably invalidate its pointer without acquiring archive readers
+    /// it must invalidate its pointer on disk without acquiring archive readers
     /// or re-entering the scope fence.
     pub fn register_scope_invalidator(
         root: &Path,
@@ -99,8 +99,8 @@ impl Archive {
         self.read_scope.token()
     }
 
-    /// Exercise the native generation transition in synthetic transport tests.
-    /// This changes cursor identity only; primary grant resets use confirmed facts.
+    /// Start a new index generation in synthetic transport tests.
+    /// This changes cursor identity only; primary grant resets use confirmed events.
     #[cfg(any(test, feature = "fixture"))]
     pub fn advance_generation_for_test(&self) -> Result<()> {
         let mut index = open_write(&self.index_db(), cache::SETUP)?;
@@ -115,7 +115,7 @@ impl Archive {
         Ok(())
     }
 
-    /// Where source rows are read: the standalone ledger or the primary index cache.
+    /// Where source rows are read: the standalone archive or the primary index cache.
     pub fn archive_db(&self) -> PathBuf {
         if self.is_primary() {
             self.index_db()
@@ -138,7 +138,7 @@ impl Archive {
     pub fn blob_reader(&self) -> Result<crate::blobs::Blobs> {
         let root = self.byte_root()?;
         let (catalog, layout) = if self.is_primary() {
-            (self.index_db(), crate::blobs::BlobCatalog::Projection)
+            (self.index_db(), crate::blobs::BlobCatalog::PrimaryCache)
         } else {
             (self.archive_db(), crate::blobs::BlobCatalog::Archive)
         };
@@ -201,7 +201,7 @@ impl Archive {
         }
     }
 
-    /// The primary cache remains readable when configuration cannot name its byte owner.
+    /// The primary cache remains readable when configuration cannot name its Sinex store.
     pub fn open_primary_cache(root: &Path) -> Result<(Self, ArchiveLock)> {
         let (archive, lock, ()) = Self::open_configured(Self::primary_cache(root), |_| Ok(()))?;
         Ok((archive, lock))
@@ -209,9 +209,9 @@ impl Archive {
 
     pub(crate) fn byte_root(&self) -> Result<&Path> {
         if self.is_primary() {
-            self.sinex_store
-                .as_deref()
-                .ok_or_else(|| StoreError::Sinex("the primary byte owner is unavailable".into()))
+            self.sinex_store.as_deref().ok_or_else(|| {
+                StoreError::Sinex("the Sinex store holding the bytes is unavailable".into())
+            })
         } else {
             Ok(&self.root)
         }
@@ -245,8 +245,8 @@ impl Archive {
         Ok((archive, lock))
     }
 
-    /// Acquire writer custody before registering cache invalidation and opening
-    /// the standalone archive. Retain the returned registration with the lock.
+    /// Take the writer lock before registering cache invalidation and opening
+    /// the standalone archive. Keep the returned registration with the lock.
     pub fn open_or_create_with_invalidator(
         root: &Path,
         invalidate: impl Fn() -> Result<()> + Send + Sync + 'static,
@@ -267,7 +267,7 @@ impl Archive {
         })
     }
 
-    /// Install invalidation while opening a cache whose byte owner is unavailable.
+    /// Install invalidation while opening a cache whose Sinex store is unavailable.
     pub fn open_primary_cache_with_invalidator(
         root: &Path,
         invalidate: impl Fn() -> Result<()> + Send + Sync + 'static,
@@ -308,7 +308,7 @@ impl Archive {
         Ok((archive, lock, setup))
     }
 
-    /// The archive's durable identity, read without opening or creating a database.
+    /// The archive's recorded mode, read without opening or creating a database.
     pub fn recorded_mode(root: &Path) -> Result<Option<Mode>> {
         metadata::read(root)
     }
@@ -383,7 +383,7 @@ impl Archive {
     /// private file and installed when its build ends ([`index_build`]). The
     /// primary cache from another format is set aside under its schema
     /// identity and rebuilt from the confirmed stream; the set-aside file is
-    /// removed once that rebuild reaches the stream's head ([`index_rebuild`]).
+    /// removed once that rebuild reaches the stream's latest position ([`index_rebuild`]).
     pub(crate) fn prepare_index(&self) -> Result<()> {
         if !self.is_primary() {
             return index_build::prepare(self);

@@ -90,7 +90,7 @@ impl Fixture {
 mod tests {
     use super::*;
     #[test]
-    fn synthetic_children_drop_foreign_sources_bus_and_home() {
+    fn synthetic_children_drop_other_sources_bus_and_home() {
         use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().unwrap();
         let fixture = Fixture::new(
@@ -111,13 +111,10 @@ mod tests {
         );
         let mut command = std::process::Command::new("env");
         command
-            .env("HOME", "/synthetic/foreign-home")
-            .env("CLAUDE_CONFIG_DIR", "/synthetic/foreign-provider")
-            .env(
-                "DBUS_SESSION_BUS_ADDRESS",
-                "unix:path=/synthetic/foreign-bus",
-            )
-            .env("CLAUDE_CODE_SESSION_ID", "foreign-session");
+            .env("HOME", "/synthetic/other-home")
+            .env("CLAUDE_CONFIG_DIR", "/synthetic/other-provider")
+            .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/synthetic/other-bus")
+            .env("CLAUDE_CODE_SESSION_ID", "other-session");
         fixture.environment(&mut command);
         let result = command.output().unwrap();
         assert!(result.status.success());

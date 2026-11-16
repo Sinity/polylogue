@@ -272,7 +272,7 @@ impl Binder<'_> {
                 return Err(invalid());
             }
             let session = polylogue_model::SessionId::parse(object.id()).map_err(|_| invalid())?;
-            // A conversation page fragment selects its browser view; ordinary
+            // A conversation page fragment selects its browser view; other
             // session selection keeps naming the complete physical session.
             Ok(Filter::Session {
                 id: session.to_string(),
@@ -388,7 +388,7 @@ impl Binder<'_> {
             comparison if def.kind != Kind::Special => {
                 self.test(def, def.kind, &comparison, span)?
             }
-            comparison if matches!(def.name, "since" | "until" | "evidence_until") => {
+            comparison if matches!(def.name, "since" | "until" | "seen_by") => {
                 let Comparison::Match(Value::Scalar { text, .. }) = &comparison else {
                     return Err(QueryError::Invalid {
                         message: format!("{0} takes {0}:VALUE", def.name),

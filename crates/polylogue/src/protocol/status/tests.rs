@@ -5,7 +5,7 @@ use serde_json::json;
 fn held_signal_observations_preserve_reasons_without_inventing_available_rules() {
     let failure = crate::daemon::service::error::<()>(
         "not_yet_available",
-        "owner context has not been obtained",
+        "Sinex context has not been obtained",
     );
     let observed =
         json!({"held":[{"reason":"the operation clock is unavailable","detail":failure}]});
@@ -20,7 +20,7 @@ fn held_signal_observations_preserve_reasons_without_inventing_available_rules()
 }
 
 #[test]
-fn ordinary_signal_summaries_retain_held_rule_identity() {
+fn signal_summaries_keep_held_rule_identity() {
     let observed = serde_json::to_value(Signals::Observed {
         rules: vec![],
         unusable: vec![],
@@ -48,7 +48,7 @@ fn the_status_line_counts_running_and_the_longest_wait() {
         stall: None,
         open_tool: None,
         task: None,
-        footprint: 0,
+        edited_files: 0,
         cwd: None,
     };
     let now = 10 * 60_000;

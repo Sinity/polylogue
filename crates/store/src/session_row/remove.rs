@@ -5,7 +5,7 @@ use rusqlite::{Transaction, params};
 /// Removes a session's derived rows within its reading-replacement transaction.
 pub(crate) fn remove(i: &Transaction<'_>, pk: i64, id: &str, counter: i64) -> Result<()> {
     // The completion/change feed shares this replacement transaction's index
-    // counter. It is derived index metadata, separate from source admissions.
+    // counter. It is derived index metadata, separate from source commits.
     i.execute(
         "INSERT INTO removed_session(session_id,changed) VALUES (?1,?2)
          ON CONFLICT(session_id) DO UPDATE SET changed=excluded.changed",

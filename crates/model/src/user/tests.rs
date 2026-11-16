@@ -38,7 +38,7 @@ fn write_intent_refuses_caller_supplied_identity() {
 }
 
 #[test]
-fn revision_bases_use_only_exact_natural_assertion_references() {
+fn revision_bases_are_pinned_assertion_references() {
     let write = UserWrite::ReviseAssertions {
         bases: vec![crate::RevisionReference::exact(
             "family".into(),
@@ -94,7 +94,7 @@ fn chat_action(events: Vec<ChatEvent>) -> ChatAction {
 }
 
 #[test]
-fn sending_history_survives_chat_progress_and_lease_expiry() {
+fn sending_survives_progress_and_claim_expiry() {
     for phase in ["sending", "claimed", "waiting", "capturing"] {
         let action = chat_action(vec![
             chat_event("claimed", "claimed", "tab-a", 0),
@@ -119,7 +119,7 @@ fn sending_history_survives_chat_progress_and_lease_expiry() {
 }
 
 #[test]
-fn only_the_owning_live_chat_claim_establishes_possible_submission() {
+fn only_the_live_claim_holder_can_start_a_send() {
     for stale in [
         chat_event("progress", "sending", "tab-b", 1),
         chat_event("progress", "sending", "tab-a", CHAT_CLAIM_MS + 1),
@@ -145,7 +145,7 @@ fn only_the_owning_live_chat_claim_establishes_possible_submission() {
 }
 
 #[test]
-fn a_reported_chat_outcome_keeps_its_state_after_sending_and_expiry() {
+fn reported_outcome_stays_after_claim_expiry() {
     for (kind, expected) in [
         ("submitted", ChatStatus::Submitted),
         ("drafted", ChatStatus::Drafted),
@@ -170,7 +170,7 @@ fn a_reported_chat_outcome_keeps_its_state_after_sending_and_expiry() {
 }
 
 #[test]
-fn a_later_claim_never_replaces_the_original_sending_owner() {
+fn later_claim_keeps_the_first_sender() {
     let action = chat_action(vec![
         chat_event("claimed", "claimed", "tab-a", 0),
         chat_event("progress", "sending", "tab-a", 1),

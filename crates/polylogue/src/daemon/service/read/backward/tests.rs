@@ -169,11 +169,11 @@ fn lineage_issue_coordinates_resume_and_reverse_at_both_family_boundaries() {
     );
     assert!(previous_record(&reader, &reference, false, &at(LinkIssue, 0)).is_err());
     let mut observed = Vec::new();
-    super::super::records::reference(&reader, &reference, true, Some(&at(LinkIssue, 0)), &mut |record, _, actual| {
+    super::super::records::reference(&reader, &reference, true, Some(&at(LinkIssue, 0)), &mut |record, _, position| {
         let super::super::records::SelectedRecord::LinkIssue { session, issue } = record else { panic!("issue coordinate resolved another family") };
         assert_eq!(session.to_string(), "test:child");
         assert!(matches!(*issue, polylogue_model::read::ParentIssue::MissingParent { parent, .. } if parent.to_string() == "test:missing"));
-        observed.push(actual);
+        observed.push(position);
         Ok(false)
     }).unwrap();
     assert_eq!(observed, [at(LinkIssue, 0)]);

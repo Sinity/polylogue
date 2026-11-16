@@ -21,7 +21,7 @@ const FORMATTED: &[&str] = &[
 ];
 
 /// Checks, warm builds and focused tests share the primary workspace graph.
-/// Package predicates select execution; native target flags bound compilation.
+/// Package predicates select execution; Cargo target flags bound compilation.
 /// The standalone Clippy pass also covers `cfg(not(feature = "sinex"))`.
 const FEATURES: &str =
     "polylogue/sinex,polylogue-engine/faults,polylogue-store/faults,polylogue-store/fixture";
@@ -59,8 +59,8 @@ enum Cli {
         no_run: bool,
         /// Further `cargo nextest run` arguments. Packages, exclusions,
         /// filtersets and changed-package filters select which tests run.
-        /// Native target flags such as `--lib` bound compilation while
-        /// retaining the workspace feature graph. Other flags pass through.
+        /// Cargo target flags such as `--lib` bound compilation while
+        /// keeping the workspace feature graph. Other flags pass through.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -75,7 +75,7 @@ enum Cli {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Corpus builds and native interactive read measurements.
+    /// Corpus builds and interactive read measurements of the real binary.
     Bench(bench::Bench),
     /// Build against a local checkout of polylogue-sinex-common instead of
     /// the commit Cargo.lock pins.
@@ -245,7 +245,7 @@ fn selects_test_targets(arg: &str) -> bool {
         })
 }
 
-/// Every selection retains the workspace graph so changing the executed tests
+/// Every selection keeps the workspace graph so changing the executed tests
 /// does not create new dependency compiler units. Target flags pass through;
 /// package, exclusion and filterset predicates intersect with `required`.
 fn test_arguments(args: &[String], required: Option<String>) -> Result<Vec<String>, String> {

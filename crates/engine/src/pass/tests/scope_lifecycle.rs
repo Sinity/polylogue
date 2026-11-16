@@ -32,23 +32,23 @@ fn a_completed_scope_reset_reloads_confirmed_state_without_recapturing() {
             &engine.inputs[&path].origin.reading_version(),
         )
         .unwrap();
-    let mut admitted_state = checkpoint
+    let mut committed_state = checkpoint
         .as_ref()
         .and_then(|stored| stored.checkpoint.as_ref())
         .and_then(|checkpoint| checkpoint.parser_state.as_ref())
-        .expect("Claude continuation is admitted with its cursor")
+        .expect("Claude continuation is committed with its cursor")
         .clone();
     // The kept state leaves out the keyed context's changes, which the
     // index holds (docs/architecture.md, pipeline).
-    admitted_state
+    committed_state
         .as_object_mut()
         .unwrap()
         .remove(polylogue_model::parser_context::FIELD);
     assert_eq!(
         engine.inputs[&path].parser_state.as_ref(),
-        Some(&admitted_state)
+        Some(&committed_state)
     );
-    // Fault only the process-local cache, leaving the admitted continuation
+    // Fault only the process-local cache, leaving the committed continuation
     // untouched. Exact equality after reset distinguishes restoration from reuse.
     engine
         .inputs
@@ -65,7 +65,7 @@ fn a_completed_scope_reset_reloads_confirmed_state_without_recapturing() {
         );
     assert_ne!(
         engine.inputs[&path].parser_state.as_ref(),
-        Some(&admitted_state)
+        Some(&committed_state)
     );
     engine.archive.advance_generation_for_test().unwrap();
     let (resumed, _) = engine.one_pass(false, &Default::default()).unwrap();
@@ -77,8 +77,8 @@ fn a_completed_scope_reset_reloads_confirmed_state_without_recapturing() {
     assert_eq!(engine.inputs[&path].parsed_upto, text.len() as u64);
     assert_eq!(
         engine.inputs[&path].parser_state.as_ref(),
-        Some(&admitted_state),
-        "the new scope restores admitted state instead of reusing the old cache"
+        Some(&committed_state),
+        "the new scope restores committed state instead of reusing the old cache"
     );
     assert_eq!(source_rows(&engine, &input), captured);
     assert_eq!(
@@ -101,7 +101,7 @@ fn a_cached_scope_cannot_be_rebound_after_its_entry_check() {
     let home = ClaudeHome::new();
     home.append(
         "scope-race.jsonl",
-        &claude_user("one", "scope-race", "admitted before the reset"),
+        &claude_user("one", "scope-race", "committed before the reset"),
     );
     let path = home.file("scope-race.jsonl");
     let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
@@ -109,7 +109,7 @@ fn a_cached_scope_cannot_be_rebound_after_its_entry_check() {
     let input = engine.inputs[&path].input_id.clone();
     let captured = source_rows(&engine, &input);
     // This is the valid entry check, followed by a complete reset before
-    // the shared load/turn token-acquisition seam runs.
+    // the shared load/turn step that takes the token runs.
     engine.read_scope.as_ref().unwrap().check().unwrap();
     engine.archive.advance_generation_for_test().unwrap();
     engine.archive.scope_token().unwrap().check().unwrap();
@@ -166,11 +166,11 @@ fn held(path: &Path) -> Option<Parse> {
     Some(Parse::Lines(Box::new(Held(parser, path.to_path_buf()))))
 }
 fn held_origin() -> &'static OriginSpec {
-    let native = polylogue_sources::origin::by_name("claude-code").unwrap();
+    let claude_code = polylogue_sources::origin::by_name("claude-code").unwrap();
     Box::leak(Box::new(OriginSpec {
-        name: native.name,
-        harness_prefixes: native.harness_prefixes,
-        modules: native.modules,
+        name: claude_code.name,
+        harness_prefixes: claude_code.harness_prefixes,
+        modules: claude_code.modules,
         support: Support::Parsed,
         arrival: Arrival::Live,
         route: polylogue_model::Route::Live,
@@ -179,7 +179,7 @@ fn held_origin() -> &'static OriginSpec {
         locations: &[],
         capture: Capture::Bytes,
         database: None,
-        recognize: native.recognize,
+        recognize: claude_code.recognize,
         open: held,
         resume: None,
         bare_uuid_ids: false,
@@ -199,7 +199,7 @@ fn a_scope_reset_during_preparation_cannot_complete_with_stale_state_or_capture_
     let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
     engine.config.live_every = Duration::ZERO;
     assert!(engine.run_pass().unwrap().errors.is_empty());
-    // Pause the actual Claude parser without changing its version or output.
+    // Pause the real Claude parser without changing its version or output.
     engine.inputs.get_mut(&path).unwrap().origin = held_origin();
     let input = engine.inputs[&path].input_id.clone();
     let chain = engine.inputs[&path].chain.unwrap();
@@ -222,7 +222,7 @@ fn a_scope_reset_during_preparation_cannot_complete_with_stale_state_or_capture_
         });
         waiting
             .recv_timeout(Duration::from_secs(10))
-            .expect("actual parser entered after acquiring the suffix");
+            .expect("real parser entered after reading the suffix");
         archive.advance_generation_for_test().unwrap();
         release.send(()).unwrap();
         work.join().unwrap()
@@ -267,15 +267,15 @@ fn a_scope_reset_during_preparation_cannot_complete_with_stale_state_or_capture_
 
 #[cfg(feature = "faults")]
 #[test]
-fn queued_import_yields_after_admitted_capture_or_replay_and_resumes_from_durable_positions() {
+fn queued_import_yields_then_resumes_from_saved_positions() {
     use polylogue_model::authorship::{Author, Authorship, Channel};
     use polylogue_store::fault::{self, Action};
     use std::sync::mpsc::sync_channel;
 
-    for (retained, reads_sources) in [(false, true), (true, false), (true, true)] {
+    for (kept, reads_sources) in [(false, true), (true, false), (true, true)] {
         for stop_after_import in [false, true] {
             let home = ClaudeHome::new();
-            let first = claude_user("first", "request-turn", "first retained record");
+            let first = claude_user("first", "request-turn", "first stored record");
             let suffix = (0..48)
                 .map(|n| {
                     claude_user(
@@ -287,18 +287,18 @@ fn queued_import_yields_after_admitted_capture_or_replay_and_resumes_from_durabl
                 .collect::<String>();
             let complete = format!("{first}{suffix}");
             home.append("request-turn.jsonl", &first);
-            if retained {
+            if kept {
                 home.append("request-turn.jsonl", &suffix);
             }
             let path = home.file("request-turn.jsonl");
             let (mut engine, mut lock) = crate::import::tests::engine(&home, 256);
             assert!(engine.run_pass().unwrap().errors.is_empty());
             let input = engine.inputs[&path].input_id.clone();
-            if retained {
+            if kept {
                 drop(engine);
                 drop(lock);
                 // Synthetic cold replay: every original byte stays in the
-                // register and the native reader cannot reopen the source.
+                // register and the file reader cannot reopen the source.
                 polylogue_testkit::delete_index(&home.root);
                 std::fs::remove_file(&path).unwrap();
                 (engine, lock) = crate::import::tests::engine(&home, 256);
@@ -307,7 +307,7 @@ fn queued_import_yields_after_admitted_capture_or_replay_and_resumes_from_durabl
             } else {
                 home.append("request-turn.jsonl", &suffix);
             }
-            let undiscovered = retained && reads_sources;
+            let undiscovered = kept && reads_sources;
             if undiscovered {
                 // This file predates run and needs no watcher event. The held
                 // stored replay precedes planning the full scan's new files.
@@ -390,7 +390,7 @@ fn queued_import_yields_after_admitted_capture_or_replay_and_resumes_from_durabl
             }
             let (mut engine, result) = worker.join().unwrap();
             fault::clear();
-            assert!(entered, "the native parser did not reach its held chunk");
+            assert!(entered, "the parser did not reach its held chunk");
             assert!(queued.is_ok());
             assert!(
                 imported,
@@ -400,13 +400,13 @@ fn queued_import_yields_after_admitted_capture_or_replay_and_resumes_from_durabl
                 cursor < complete.len() as u64,
                 "the import answered only after the whole input: {cursor}"
             );
-            if retained {
+            if kept {
                 assert_eq!(captured, complete.len() as u64);
                 assert_eq!(source_rows(&engine, &input), captured_before);
             } else {
                 assert!(
                     captured > first.len() as u64,
-                    "the admitted capture chunk must commit before yielding"
+                    "the committed capture chunk must commit before yielding"
                 );
                 assert!(captured < complete.len() as u64);
             }
@@ -534,7 +534,7 @@ fn an_import_answers_before_queued_captures_or_replays_start_and_the_next_turn_f
             .unwrap()
             .1
     };
-    for retained in [false, true] {
+    for kept in [false, true] {
         let home = ClaudeHome::new();
         let files: Vec<_> = (0..12)
             .map(|n| {
@@ -543,7 +543,7 @@ fn an_import_answers_before_queued_captures_or_replays_start_and_the_next_turn_f
                 let tail = claude_user(&format!("tail-{n:02}"), &session, "captured body");
                 let name = format!("{session}.jsonl");
                 home.append(&name, &first);
-                if retained {
+                if kept {
                     home.append(&name, &tail);
                 }
                 (session, name, first, tail)
@@ -556,7 +556,7 @@ fn an_import_answers_before_queued_captures_or_replays_start_and_the_next_turn_f
             .iter()
             .map(|(path, state)| (path.clone(), state.input_id.clone()))
             .collect();
-        if retained {
+        if kept {
             drop(engine);
             drop(lock);
             polylogue_testkit::delete_index(&home.root);
@@ -583,7 +583,7 @@ fn an_import_answers_before_queued_captures_or_replays_start_and_the_next_turn_f
                     path,
                     before: source_rows(&engine, &id),
                     id,
-                    captured_before: if retained {
+                    captured_before: if kept {
                         first.len() + tail.len()
                     } else {
                         first.len()
@@ -657,7 +657,7 @@ fn an_import_answers_before_queued_captures_or_replays_start_and_the_next_turn_f
         // installed index.
         let before_reply = home.read(|reader| {
             inputs.iter().map(|input| {
-                let claims = reader.query(
+                let message_sources = reader.query(
                     "SELECT count(*) AS n FROM message_source m JOIN input_ref i ON i.pk=m.input_pk WHERE i.id=?1",
                     &[polylogue_store::SqlValue::Text(input.id.clone())],
                 )?[0]["n"].as_u64().unwrap();
@@ -669,7 +669,7 @@ fn an_import_answers_before_queued_captures_or_replays_start_and_the_next_turn_f
                     "SELECT max(length) AS n FROM a.revision WHERE input=?1",
                     &[polylogue_store::SqlValue::Text(input.id.clone())],
                 )?[0]["n"].as_u64().unwrap();
-                Ok((input.path.clone(), claims, markers, captured))
+                Ok((input.path.clone(), message_sources, markers, captured))
             }).collect::<polylogue_store::Result<Vec<_>>>()
         });
         let response = answer.recv_timeout(Duration::from_secs(5));
@@ -687,10 +687,10 @@ fn an_import_answers_before_queued_captures_or_replays_start_and_the_next_turn_f
             "unstarted jobs stayed ahead of the request"
         );
         // One worker was held while every sibling left the queue. The
-        // committed claims independently identify exactly the completed job.
+        // committed message sources independently identify the completed job.
         let completed: Vec<_> = before_reply
             .iter()
-            .filter(|(_, claims, _, _)| *claims == 2)
+            .filter(|(_, message_sources, _, _)| *message_sources == 2)
             .collect();
         assert_eq!(
             completed.len(),
@@ -698,15 +698,11 @@ fn an_import_answers_before_queued_captures_or_replays_start_and_the_next_turn_f
             "unstarted reads ran before the import: {before_reply:?}"
         );
         let first = completed[0].0.clone();
-        for (path, claims, markers, captured) in before_reply {
+        for (path, message_sources, markers, captured) in before_reply {
             assert_eq!(markers, 0, "a request is not a stopped reading: {path:?}");
             assert_eq!(
-                claims,
-                if path == first {
-                    2
-                } else {
-                    u64::from(!retained)
-                }
+                message_sources,
+                if path == first { 2 } else { u64::from(!kept) }
             );
             let input = inputs.iter().find(|input| input.path == path).unwrap();
             assert_eq!(
@@ -744,7 +740,7 @@ fn an_import_answers_before_queued_captures_or_replays_start_and_the_next_turn_f
             );
             drop(reader);
             let captured = source_rows(&engine, &input.id);
-            if retained {
+            if kept {
                 assert_eq!(captured, input.before);
             } else {
                 assert_eq!(

@@ -1,10 +1,10 @@
-//! Honest attribution from gathered caller evidence. I/O gathers this evidence
+//! Honest attribution from gathered caller details. I/O gathers these details
 //! at the transport boundary; the decision is the same on every surface.
 use crate::{IdError, NativeId, Origin, SessionId};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 
-/// Honest attribution retained on every authored record.
+/// Honest attribution kept on every authored record.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Author {
     Operator,
@@ -12,7 +12,7 @@ pub enum Author {
     Agent(Option<SessionId>),
     /// The harness is known but no session identity was recorded.
     AgentOrigin(Origin),
-    /// No evidence identifies a person, agent or named program.
+    /// Nothing identifies a person, agent or named program.
     Unattributed,
     /// A program acting for the operator, by name.
     Script(String),
@@ -141,7 +141,7 @@ pub fn compute_authorship(
                     SessionId::new(
                         hook.session.origin().clone(),
                         NativeId::new(&format!("agent-{agent}"))
-                            .expect("prefixed native identity is nonempty"),
+                            .expect("prefixed native ID is nonempty"),
                     )
                 } else {
                     hook.session.clone()

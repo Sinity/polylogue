@@ -4,7 +4,7 @@ use polylogue_model::{
     capture::{Accessibility, RootCoverage},
 };
 #[test]
-fn completed_snapshots_replace_all_roots_without_treating_source_time_as_authority() {
+fn completed_snapshots_replace_all_roots_regardless_of_source_time() {
     let db = Connection::open_in_memory().unwrap();
     db.execute_batch(SCHEMA).unwrap();
     let mut fact = Coverage {

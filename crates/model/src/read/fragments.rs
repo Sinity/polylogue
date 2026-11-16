@@ -1,5 +1,6 @@
-//! Actual source classification is separate from portable fragment claims.
-use super::{Expansion, ProjectionEvidence, ReadError, ReadOptions, ValueState, View};
+//! How the source classifies a fragment is kept apart from what a portable
+//! fragment states.
+use super::{Expansion, LayoutFacts, ReadError, ReadOptions, ValueState, View};
 use crate::{BlockKind, PromptKind, Role, bundle::TextFragmentRecord};
 use serde::{Deserialize, Serialize};
 
@@ -29,8 +30,8 @@ pub struct FragmentBodyOrigin {
 impl FragmentOrigin {
     pub fn validate(&self, start: u64, end: u64) -> Result<(), ReadError> {
         let invalid = || {
-            ReadError::InvalidEvidence(
-                "fragment origin does not prove the selected source recipe".into(),
+            ReadError::InvalidPreparedData(
+                "fragment origin does not match the selected source recipe".into(),
             )
         };
         if start > end {
@@ -69,10 +70,10 @@ impl FragmentOrigin {
 pub(crate) fn project_fragment(
     row: &TextFragmentRecord,
     options: &ReadOptions,
-    evidence: &ProjectionEvidence,
+    facts: &LayoutFacts,
 ) -> Result<(), ReadError> {
     row.validate()
-        .map_err(|error| ReadError::InvalidEvidence(error.to_string()))?;
+        .map_err(|error| ReadError::InvalidPreparedData(error.to_string()))?;
     let unsupported = || ReadError::UnsupportedTarget {
         view: options.view,
         target: row.reference.clone(),
@@ -84,13 +85,13 @@ pub(crate) fn project_fragment(
     ) {
         return Err(unsupported());
     }
-    let ValueState::Value { value: origin } = &evidence.fragment_origin else {
+    let ValueState::Value { value: origin } = &facts.fragment_origin else {
         return if matches!(options.view, View::Transcript | View::Raw) {
             Ok(())
         } else {
-            Err(ReadError::MissingEvidence {
+            Err(ReadError::MissingPreparedData {
                 view: options.view,
-                evidence: "exact source role and body kinds".into(),
+                facts: "source role and body kinds".into(),
                 reference: row.reference.clone(),
             })
         };
@@ -102,7 +103,7 @@ pub(crate) fn project_fragment(
         crate::Reference::Message(_) | crate::Reference::Block { .. }
     );
     if message_container != origin.message.is_some() {
-        return Err(ReadError::InvalidEvidence(
+        return Err(ReadError::InvalidPreparedData(
             "fragment origin disagrees with its container family".into(),
         ));
     }
@@ -121,9 +122,9 @@ pub(crate) fn project_fragment(
     let harness = origin.message.as_ref().is_some_and(|message| {
         message.role == Role::System || message.prompt_kind.is_some_and(PromptKind::is_harness)
     });
-    let missing = |evidence: &str| ReadError::MissingEvidence {
+    let missing = |facts: &str| ReadError::MissingPreparedData {
         view: options.view,
-        evidence: evidence.into(),
+        facts: facts.into(),
         reference: row.reference.clone(),
     };
     if harness && options.harness() != Expansion::Full {
@@ -154,7 +155,7 @@ pub(crate) fn project_fragment(
         }
     }
     if options.view == View::Context {
-        let context = evidence
+        let context = facts
             .context
             .as_ref()
             .ok_or_else(|| missing("context membership"))?;

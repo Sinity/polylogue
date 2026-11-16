@@ -25,7 +25,7 @@ pub struct DeliveryRow {
     pub events: Vec<String>,
 }
 
-/// What a session left open: the evidence a resumable session is ranked
+/// What a session left open: what a resumable session is ranked
 /// on, rather than how its text ended.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct OpenItems {
@@ -318,7 +318,7 @@ impl Reader<'_> {
         Ok(Some((row, text)))
     }
 
-    /// Exact references recorded with a delivery, without reading its body.
+    /// The references recorded with a delivery, without reading its body.
     pub fn delivery_refs(&self, id: &str) -> Result<Option<Vec<String>>> {
         let refs: Option<String> = self
             .conn()?
@@ -360,7 +360,7 @@ impl Reader<'_> {
     }
 
     /// Pings and notices to `session` with no outcome yet, oldest first,
-    /// with their text: what its next context-accepting hook event claims.
+    /// with their text: what its next context-accepting hook event takes.
     pub fn pending_hook_deliveries(&self, session: &str) -> Result<Vec<(String, String)>> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare_cached(
@@ -413,7 +413,7 @@ impl Reader<'_> {
             .collect::<rusqlite::Result<_>>()?)
     }
 
-    /// One catalog-checked value. Defaults and primary ownership are resolved
+    /// One catalog-checked value. Defaults and the mode a setting applies in are resolved
     /// by the declared catalog, rather than by each consumer.
     pub fn setting_value(
         &self,
@@ -421,7 +421,7 @@ impl Reader<'_> {
         machine: &str,
     ) -> Result<Option<polylogue_model::settings::Value>> {
         let current = self.setting_current(key, machine)?;
-        if current.owner == "sinex" {
+        if current.supplier == "sinex" {
             return Err(crate::StoreError::Invalid(
                 polylogue_model::settings::Error::SinexOwned(key.into()).to_string(),
             ));
@@ -485,8 +485,8 @@ impl Reader<'_> {
     /// to this session. No delivery body is loaded until its entry is fitted.
     /// Any outcome excludes a notice, including an uncertain or failed send.
     /// The second value counts records needing scope/effect-state inspection.
-    /// NULL scope never proves a global target. Historical signal-effect
-    /// outboxes keep attempt/unknown state with their owner; they are not
+    /// NULL scope never proves a global target. Pending deliveries of
+    /// older signal effects keep their attempt/unknown state; they are not
     /// inferred to be unsent context notices from missing delivery ACKs.
     pub fn pending_notice_candidates(
         &self,

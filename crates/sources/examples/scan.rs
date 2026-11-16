@@ -7,7 +7,7 @@
 //! duplicates, has one ordered outcome. Failed/incomplete inputs exit nonzero;
 //! skipped and unreadable records remain separate record outcomes.
 //!
-//! Lines and capture logs use 64 MiB read steps and ordinary parser state.
+//! Lines and capture logs use 64 MiB read steps and parser state.
 //! Documents use the parser's whole-input contract. Exports require
 //! their item reader and are refused here. A trailing unconsumed suffix is
 //! incomplete input, not an invented skipped record. Counts include rows

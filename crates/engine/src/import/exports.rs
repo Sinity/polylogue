@@ -47,8 +47,8 @@ impl<F: FnMut() -> R, R: std::io::Read> export::Input for Counted<F, R> {
     }
 }
 
-/// A tail match is only a negative filter. Reuse requires every retained
-/// prefix byte and one unchanged descriptor/path generation through the read.
+/// A tail match is only a negative filter. Reuse requires every kept
+/// prefix byte and unchanged descriptor and path file facts through the read.
 fn prefix_matches(
     file: &mut std::fs::File,
     path: &Path,
@@ -138,10 +138,10 @@ impl StateLookup<'_> {
 impl ExportState for StateLookup<'_> {
     fn record_first_session(
         &mut self,
-        native: &str,
+        native_id: &str,
         session: &polylogue_model::SessionId,
     ) -> Result<Option<polylogue_model::SessionId>, String> {
-        let result = self.items.claim_owner(native, session);
+        let result = self.items.claim_session(native_id, session);
         self.note(result)
     }
     fn last_message(
@@ -202,7 +202,7 @@ impl Engine {
     ) -> Result<(), EngineError> {
         use std::io::{Read, Seek, SeekFrom};
         let context = if let Some(basis) = &plan.basis {
-            let mut context = self.acquisition_context(
+            let mut context = self.source_read_context(
                 &plan.path,
                 plan.origin.name,
                 polylogue_store::primary::AcquisitionRoute::NativeCapture,
@@ -221,8 +221,8 @@ impl Engine {
             return Err(std::io::Error::other("source changed before export capture").into());
         }
         if matches!(plan.change, Change::Appended { .. }) {
-            // Capture retained descriptors in a short source snapshot, then
-            // release it before provider IO. The original basis still gates custody.
+            // Capture kept descriptors in a short source snapshot, then
+            // release it before provider IO. The original base still decides what is spooled.
             let prior = {
                 let reader = self.reads.reader()?;
                 match reader.input_progress(&plan.input.id)? {
@@ -276,7 +276,7 @@ impl Engine {
         {
             return Err(std::io::Error::other("source changed during export capture").into());
         }
-        let acquisition = context.finish(
+        let source_read = context.finish(
             polylogue_store::primary::RawRange {
                 start: plan.stored_upto,
                 end: plan.size,
@@ -286,7 +286,7 @@ impl Engine {
         self.writer.store_bytes(
             prepared,
             Batch {
-                required_disposition: None,
+                required_outcome: None,
                 input: plan.input.clone(),
                 change: plan.change.clone(),
                 observation: Some(
@@ -299,7 +299,7 @@ impl Engine {
                 blobs: Vec::new(),
                 length: plan.size,
                 parse: Vec::new(),
-                acquisition: Some(acquisition),
+                acquisition: Some(source_read),
                 basis: context.basis,
                 release: Default::default(),
             },
@@ -327,8 +327,8 @@ impl Engine {
                 && let Some(state) = self.inputs.get_mut(&plan.path)
                 && state.input_id == plan.input.id
             {
-                // Confirmed raw custody survives a parse refusal. It is not a
-                // parser checkpoint, and cannot replace a newer source head.
+                // Confirmed spooled bytes survive a parse refusal. It is not a
+                // parser checkpoint, and cannot replace a newer source position.
                 state.facts = known.facts;
                 state.stored = known.stored;
                 state.chain = known.chain;
@@ -359,7 +359,7 @@ impl Engine {
     /// Items join the pending batch until it covers `chunk` bytes of the
     /// export, the same unit a line input is read and committed in. One
     /// transaction per item would rewrite the input's reading state and sync
-    /// once per record; each delivery is still admitted in order inside the
+    /// once per record; each delivery is still committed in order inside the
     /// batch's transaction, with its cursor, so a commit never holds part of
     /// a record and a later parse resumes after the last committed one.
     fn write_export_step(
@@ -405,7 +405,7 @@ impl Engine {
     ) -> Result<(), EngineError> {
         self.export_batch_committed(pass)?;
         let batch = Batch {
-            required_disposition: None,
+            required_outcome: None,
             input: plan.input.clone(),
             change: plan.change.clone(),
             observation: None,
@@ -479,7 +479,7 @@ impl ExportStep {
     }
 
     /// Extracted blobs are prepared by the caller before sealing. Delivery
-    /// metadata is identical for ordinary parsing and archived replacement.
+    /// metadata is identical for first parsing and archived replacement.
     /// The completing step of a row dump also commits the comparison of the
     /// whole stored chain, whether the rows were parsed on arrival or again
     /// for a replacement reading.
@@ -562,8 +562,8 @@ pub(crate) fn parse_export(
     };
     if let Some(error) = refusal {
         let step = export::refused(error.clone(), plan.size);
-        // A refusal has no complete source footprint or parser checkpoint.
-        // Staged prefix items remain unpublished until the entire scan succeeds.
+        // A refusal has no complete source range or parser checkpoint.
+        // Staged prefix items are not delivered until the entire scan succeeds.
         delivered(
             emit(ExportStep {
                 output: step.output,

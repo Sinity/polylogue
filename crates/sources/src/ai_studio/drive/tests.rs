@@ -124,7 +124,7 @@ fn collector(base: &str, dir: &Path) -> Drive {
 }
 
 #[test]
-fn a_revision_survives_repeated_sync_and_restart_until_exact_archive_acceptance() {
+fn revision_survives_repeated_sync_and_restart_until_archive_acceptance() {
     let FakeDrive { base, seen, .. } = serve_pages(
         owned(vec![
             ("r2", "2026-05-17T12:30:00Z"),
@@ -144,17 +144,20 @@ fn a_revision_survives_repeated_sync_and_restart_until_exact_archive_acceptance(
     assert!(listing.contains("Electrons"));
 
     let original = std::fs::read(&prompt).unwrap();
-    let retained = c.pending_revisions().unwrap().remove("1AbC").unwrap();
-    assert_eq!(std::fs::read(&retained.body).unwrap(), original);
+    let kept = c.pending_revisions().unwrap().remove("1AbC").unwrap();
+    assert_eq!(std::fs::read(&kept.body).unwrap(), original);
     assert!(c.load_state().unwrap().accepted.is_empty());
     assert_eq!(c.sync().unwrap().revisions_written, 0);
     assert_eq!(std::fs::read(&prompt).unwrap(), original);
     let c = collector(&base, dir.path());
-    c.settle(&|_, _, _| Ok(false)).unwrap();
-    assert!(c.settle(&|_, _, _| Err("archive rejected".into())).is_err());
+    c.advance(&|_, _, _| Ok(false)).unwrap();
+    assert!(
+        c.advance(&|_, _, _| Err("archive rejected".into()))
+            .is_err()
+    );
     assert_eq!(c.sync().unwrap().revisions_written, 0);
     assert_eq!(std::fs::read(&prompt).unwrap(), original);
-    assert_eq!(std::fs::read(&retained.body).unwrap(), original);
+    assert_eq!(std::fs::read(&kept.body).unwrap(), original);
     assert!(c.load_state().unwrap().accepted.is_empty());
     assert_eq!(
         seen.lock()
@@ -171,7 +174,7 @@ fn a_revision_survives_repeated_sync_and_restart_until_exact_archive_acceptance(
             .any(|path| path.contains("pageToken=1"))
     );
 
-    c.settle(&|path, hash, length| {
+    c.advance(&|path, hash, length| {
         assert_eq!(path, prompt);
         assert_eq!(hash, polylogue_model::BlobHash::of(&original));
         assert_eq!(length, original.len() as u64);
@@ -179,13 +182,13 @@ fn a_revision_survives_repeated_sync_and_restart_until_exact_archive_acceptance(
     })
     .unwrap();
     assert_eq!(c.load_state().unwrap().accepted.get("1AbC").unwrap(), "r1");
-    assert!(!retained.body.exists());
+    assert!(!kept.body.exists());
     assert_eq!(std::fs::read(&prompt).unwrap(), original);
     let second = c.sync().unwrap();
     assert_eq!((second.revisions_written, second.pending), (1, 1));
     assert!(std::fs::read_to_string(&prompt).unwrap().contains("\"r2\""));
 
-    c.settle(&|_, _, _| Ok(true)).unwrap();
+    c.advance(&|_, _, _| Ok(true)).unwrap();
     let third = c.sync().unwrap();
     assert_eq!(third.revisions_written, 0);
 }
@@ -207,35 +210,33 @@ fn an_unpublished_body_is_reused_and_conflicting_bytes_are_refused() {
     let dir = tempfile::tempdir().unwrap();
     let c = collector(&base, dir.path());
     let body = br#"{"runSettings":{},"chunkedPrompt":{"chunks":[]}}"#;
-    let retained = c
-        .retain_revision("1AbC", Some(revision("r1")), body)
-        .unwrap();
+    let kept = c.keep_revision("1AbC", Some(revision("r1")), body).unwrap();
     assert!(!c.spool.join("1AbC.json").exists());
     assert!(
-        c.retain_revision("1AbC", Some(revision("r1")), b"changed")
+        c.keep_revision("1AbC", Some(revision("r1")), b"changed")
             .is_err()
     );
     assert_eq!(c.sync().unwrap().revisions_written, 0);
     assert_eq!(std::fs::read(c.spool.join("1AbC.json")).unwrap(), body);
-    assert_eq!(std::fs::read(retained.body).unwrap(), body);
+    assert_eq!(std::fs::read(kept.body).unwrap(), body);
 }
 
 #[test]
 fn an_accepted_cursor_survives_restart_before_pending_cleanup() {
     let dir = tempfile::tempdir().unwrap();
     let c = collector("http://127.0.0.1:1", dir.path());
-    let retained = c
-        .retain_revision("1AbC", Some(revision("r1")), b"original")
+    let kept = c
+        .keep_revision("1AbC", Some(revision("r1")), b"original")
         .unwrap();
-    c.publish(&retained).unwrap();
+    c.publish(&kept).unwrap();
     c.save_state(&Cursor {
         accepted: BTreeMap::from([("1AbC".into(), "r1".into())]),
         modified: BTreeMap::new(),
     })
     .unwrap();
-    c.settle(&|_, _, _| panic!("durable acceptance was already saved"))
+    c.advance(&|_, _, _| panic!("acceptance was already saved"))
         .unwrap();
-    assert!(!retained.body.exists());
+    assert!(!kept.body.exists());
     assert_eq!(
         std::fs::read(c.spool.join("1AbC.json")).unwrap(),
         b"original"
@@ -244,7 +245,7 @@ fn an_accepted_cursor_survives_restart_before_pending_cleanup() {
 }
 
 #[test]
-fn the_predecessor_download_cursor_needs_archive_acceptance() {
+fn python_download_cursor_waits_for_archive_acceptance() {
     let (base, _) = serve(vec![
         ("r1", "2026-05-17T12:20:00Z"),
         ("r2", "2026-05-17T12:30:00Z"),
@@ -253,15 +254,15 @@ fn the_predecessor_download_cursor_needs_archive_acceptance() {
     let c = collector(&base, dir.path());
     std::fs::create_dir_all(&c.spool).unwrap();
     std::fs::write(c.spool.join(STATE), br#"{"1AbC":"r1"}"#).unwrap();
-    std::fs::write(c.spool.join("1AbC.json"), b"legacy bytes").unwrap();
+    std::fs::write(c.spool.join("1AbC.json"), b"older bytes").unwrap();
     assert_eq!(c.sync().unwrap().revisions_written, 0);
     assert!(c.load_state().unwrap().accepted.is_empty());
     assert_eq!(
         std::fs::read(c.spool.join("1AbC.json")).unwrap(),
-        b"legacy bytes"
+        b"older bytes"
     );
-    c.settle(&|_, hash, _| {
-        assert_eq!(hash, polylogue_model::BlobHash::of(b"legacy bytes"));
+    c.advance(&|_, hash, _| {
+        assert_eq!(hash, polylogue_model::BlobHash::of(b"older bytes"));
         Ok(true)
     })
     .unwrap();
@@ -272,7 +273,7 @@ fn the_predecessor_download_cursor_needs_archive_acceptance() {
             .unwrap()
             .contains("r1")
     );
-    c.settle(&|_, _, _| Ok(true)).unwrap();
+    c.advance(&|_, _, _| Ok(true)).unwrap();
     assert_eq!(c.sync().unwrap().revisions_written, 1);
     assert!(
         std::fs::read_to_string(c.spool.join("1AbC.json"))
@@ -298,7 +299,7 @@ fn corrupt_or_newer_revision_state_is_preserved_and_refused() {
 fn walk(c: &Drive) -> Vec<String> {
     let mut published = Vec::new();
     loop {
-        c.settle(&|_, _, _| Ok(true)).unwrap();
+        c.advance(&|_, _, _| Ok(true)).unwrap();
         if c.sync().unwrap().revisions_written == 0 {
             return published;
         }
@@ -355,9 +356,9 @@ fn resume_after_pruned_revision_continues_from_next_newer() {
     let dir = tempfile::tempdir().unwrap();
     let c = collector(&drive.base, dir.path());
     c.sync().unwrap();
-    c.settle(&|_, _, _| Ok(true)).unwrap();
+    c.advance(&|_, _, _| Ok(true)).unwrap();
     assert_eq!(c.sync().unwrap().revisions_written, 1);
-    c.settle(&|_, _, _| Ok(true)).unwrap();
+    c.advance(&|_, _, _| Ok(true)).unwrap();
     assert_eq!(c.load_state().unwrap().revision("1AbC"), Some("r2"));
     // Drive prunes the accepted revision and one older than it.
     drive

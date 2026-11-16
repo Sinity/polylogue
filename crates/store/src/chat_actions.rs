@@ -298,7 +298,7 @@ pub(crate) fn report(
     }
     if late_confirmation {
         // This is the existing trusted extension's captured-turn report, not
-        // renewed permission to act or an independent proof from the index.
+        // renewed permission to act or an independent check against the index.
         let field = |key| {
             receipt
                 .and_then(|receipt| receipt.get(key))

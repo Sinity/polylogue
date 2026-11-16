@@ -115,7 +115,7 @@ fn assert_available(env: &crate::Fixture, item: &ReadItem, descriptor: &Value) {
     };
     assert!(
         attachment.blob.is_none(),
-        "presentation must preserve the original canonical descriptor"
+        "presentation must keep the original descriptor"
     );
     assert_eq!(attachment.source_id.as_deref(), Some("file-Native"));
     assert_eq!(availability.value().map(String::as_str), Some("present"));
@@ -143,7 +143,7 @@ fn assert_available(env: &crate::Fixture, item: &ReadItem, descriptor: &Value) {
 }
 
 #[test]
-fn directory_and_zip_imports_describe_exact_stored_attachment_bytes() {
+fn directory_and_zip_imports_describe_stored_attachment_bytes() {
     for zip in [false, true] {
         let fixture = TestArchive::new(zip);
         let descriptor = fixture.descriptor();
@@ -163,7 +163,7 @@ fn directory_and_zip_imports_describe_exact_stored_attachment_bytes() {
         let page = typed_page(&read);
         let item = one_attachment(&page.document.items);
         assert_available(&fixture.env(), item, &descriptor);
-        let destination = fixture._dir.path().join("canonical");
+        let destination = fixture._dir.path().join("exported");
         std::fs::create_dir(&destination).unwrap();
         let delivered = cli(
             &fixture.env(),
@@ -206,7 +206,7 @@ fn directory_and_zip_imports_describe_exact_stored_attachment_bytes() {
         );
         assert!(
             !message.bindings.is_empty(),
-            "canonical attachment membership must survive export"
+            "attachment membership must survive export"
         );
         for binding in &message.bindings {
             assert_eq!(binding.source_version, message.source_version);
@@ -228,7 +228,7 @@ fn directory_and_zip_imports_describe_exact_stored_attachment_bytes() {
 }
 
 #[test]
-fn exact_attachment_output_is_available_to_agents_without_terminal_stdout() {
+fn attachment_output_is_available_to_agents_without_terminal_stdout() {
     let fixture = TestArchive::new(true);
     let target = fixture._dir.path().join("exact.bin");
     let args = [
@@ -254,7 +254,7 @@ fn exact_attachment_output_is_available_to_agents_without_terminal_stdout() {
 }
 
 #[test]
-fn changed_attachment_between_exact_ranges_does_not_replace_existing_output() {
+fn changed_attachment_between_ranges_does_not_replace_existing_output() {
     let bytes = vec![b'Q'; 64 * 1024];
     let fixture = TestArchive::with_bytes(false, &bytes);
     let directory = fixture._dir.path().join("output");
@@ -322,7 +322,7 @@ fn changed_attachment_between_exact_ranges_does_not_replace_existing_output() {
 }
 
 #[test]
-fn ordinary_attachment_pages_reconstruct_credential_shaped_binary_bytes() {
+fn attachment_pages_reconstruct_credential_shaped_binary_bytes() {
     use base64::Engine as _;
     let fixture = TestArchive::new(false);
     let mut bytes = Vec::new();
@@ -496,7 +496,7 @@ fn an_available_empty_attachment_installs_an_empty_verified_file() {
 }
 
 mod empty;
-mod promoted;
+mod export_folder;
 
 #[test]
 fn original_container_name_is_not_a_member_attachment_identity() {

@@ -87,7 +87,7 @@ pub(crate) fn message_key(conn: &Connection, hash: &[u8]) -> Result<i64> {
 }
 
 /// The body and text references written by this registration, if it changed
-/// the stored payload. An ignored duplicate has no new validation authority.
+/// the stored payload. An ignored duplicate validates nothing new.
 struct StoredValue {
     message_pk: Option<i64>,
     text_ids: Option<BTreeMap<usize, i64>>,
@@ -96,7 +96,7 @@ struct StoredValue {
 
 /// Keys and identity from this registration. Context can trust the prepared
 /// payload only when this call wrote both its body and every text payload.
-/// Reused text IDs, including cached IDs from another transaction, retain
+/// Reused text IDs, including cached IDs from another transaction, keep
 /// full stored-message validation.
 pub(crate) struct RegisteredMessage<'a> {
     pk: i64,
@@ -243,15 +243,15 @@ pub(crate) fn store_message<'a>(
     prepared: &'a encoding::PreparedMessage,
     text_rows: TextRows<'_>,
     replace: bool,
-    admitted: Option<u64>,
+    committed: Option<u64>,
 ) -> Result<RegisteredMessage<'a>> {
     if prepared.id != message.id {
         return Err(crate::StoreError::Invalid(
             "prepared version has another message identity".into(),
         ));
     }
-    prepared.projection.validate(message.blocks.len())?;
-    if prepared.hash != prepared.projection.source_version.0 {
+    prepared.block_selection.validate(message.blocks.len())?;
+    if prepared.hash != prepared.block_selection.source_version.0 {
         return Err(polylogue_model::bundle::BundleError::SourceVersionMismatch.into());
     }
     let stored = store_value(
@@ -269,24 +269,24 @@ pub(crate) fn store_message<'a>(
     let pk = stored
         .message_pk
         .expect("message versions have integer keys");
-    let layout = message_layout(&prepared.projection)?;
+    let layout = message_layout(&prepared.block_selection)?;
     conn.prepare_cached(
-        "INSERT INTO message_projection(version_pk,layout,admitted) VALUES (?1,?2,?3)
+        "INSERT INTO message_block_selection(version_pk,layout,committed) VALUES (?1,?2,?3)
          ON CONFLICT(version_pk) DO UPDATE SET layout=excluded.layout,
-         admitted=CASE WHEN message_projection.admitted IS NULL THEN excluded.admitted
-             WHEN excluded.admitted IS NULL THEN message_projection.admitted
-             ELSE max(message_projection.admitted,excluded.admitted) END
-         WHERE layout IS NOT excluded.layout OR (excluded.admitted IS NOT NULL
-             AND (message_projection.admitted IS NULL OR excluded.admitted>message_projection.admitted))",
+         committed=CASE WHEN message_block_selection.committed IS NULL THEN excluded.committed
+             WHEN excluded.committed IS NULL THEN message_block_selection.committed
+             ELSE max(message_block_selection.committed,excluded.committed) END
+         WHERE layout IS NOT excluded.layout OR (excluded.committed IS NOT NULL
+             AND (message_block_selection.committed IS NULL OR excluded.committed>message_block_selection.committed))",
     )?
     .execute(params![
             pk,
             layout,
-            admitted
+            committed
                 .map(i64::try_from)
                 .transpose()
                 .map_err(|_| crate::StoreError::Invalid(
-                    "message admission exceeds SQLite's integer range".into()
+                    "message commit position exceeds SQLite's integer range".into()
                 ))?
     ])?;
     Ok(RegisteredMessage {
@@ -309,10 +309,10 @@ pub(crate) fn unreferenced_message(conn: &Connection, pk: i64) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn message_layout(projection: &MessageProjection) -> Result<Vec<u8>> {
+pub(crate) fn message_layout(block_selection: &MessageProjection) -> Result<Vec<u8>> {
     Ok(serde_json::to_vec(&(
-        projection.block_count,
-        &projection.block_ordinals,
+        block_selection.block_count,
+        &block_selection.block_ordinals,
     ))?)
 }
 
@@ -365,7 +365,7 @@ pub(crate) fn read_message(
         .query_row(
             "SELECT b.body,p.layout,v.pk FROM message_version v
          LEFT JOIN message_version_body b ON b.version_pk=v.pk
-         LEFT JOIN message_projection p ON p.version_pk=v.pk WHERE v.version_hash=?1",
+         LEFT JOIN message_block_selection p ON p.version_pk=v.pk WHERE v.version_hash=?1",
             [hash],
             |row| {
                 Ok((
@@ -383,17 +383,17 @@ pub(crate) fn read_message(
         crate::StoreError::Invalid("stored message version has no payload".into())
     })?;
     let message: Message = read_body(conn, "message", &pk, &body)?;
-    let projection = message_projection(hash, layout.as_deref(), message.blocks.len())?;
-    projection.validate(message.blocks.len())?;
-    if projection.block_count == message.blocks.len() as u64
-        && message.content_hash()? != projection.source_version
+    let block_selection = message_block_selection(hash, layout.as_deref(), message.blocks.len())?;
+    block_selection.validate(message.blocks.len())?;
+    if block_selection.block_count == message.blocks.len() as u64
+        && message.content_hash()? != block_selection.source_version
     {
         return Err(polylogue_model::bundle::BundleError::SourceVersionMismatch.into());
     }
-    Ok(Some((message, projection)))
+    Ok(Some((message, block_selection)))
 }
 
-pub(crate) fn message_projection(
+pub(crate) fn message_block_selection(
     hash: &[u8],
     layout: Option<&[u8]>,
     blocks: usize,
@@ -405,13 +405,13 @@ pub(crate) fn message_projection(
         Some(layout) => encoding::read_json::<(u64, Vec<u64>)>(layout)?,
         None => (blocks as u64, (0..blocks as u64).collect()),
     };
-    let projection = MessageProjection {
+    let block_selection = MessageProjection {
         source_version,
         block_count,
         block_ordinals,
     };
-    projection.validate(projection.block_ordinals.len())?;
-    Ok(projection)
+    block_selection.validate(block_selection.block_ordinals.len())?;
+    Ok(block_selection)
 }
 
 /// Records, for the connection's current transaction, every version body,
@@ -562,7 +562,7 @@ pub(crate) fn remove_unreferenced(
         .execute([])?;
     conn.prepare_cached("DELETE FROM temp.unreferenced_value")?
         .execute([])?;
-    // Candidates drive the lookup. An ordinary JOIN can scan every retained
+    // Candidates drive the lookup. A plain JOIN can scan every kept
     // text and its references before checking even an empty candidate table.
     let unused_texts = conn
         .prepare_cached(

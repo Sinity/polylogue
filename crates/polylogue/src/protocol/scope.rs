@@ -1,4 +1,4 @@
-//! Publication retains the native scope captured for this request.
+//! An answer keeps the read scope captured for this request.
 use polylogue_store::{ReadScopeToken, Result};
 
 #[derive(Clone, Default)]
@@ -18,13 +18,13 @@ impl ReadScopes {
     pub(crate) fn has_scope(&self) -> bool {
         self.scope.is_some()
     }
-    pub(crate) fn with_current<T>(&self, publish: impl FnOnce() -> Result<T>) -> Result<T> {
+    pub(crate) fn with_current<T>(&self, respond: impl FnOnce() -> Result<T>) -> Result<T> {
         match self.scope.as_ref() {
             Some(scope) => scope.with_current(|| {
                 self.check()?;
-                publish()
+                respond()
             }),
-            None => publish(),
+            None => respond(),
         }
     }
 }

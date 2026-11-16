@@ -29,7 +29,7 @@ pub struct Job {
     pub input: InputKey,
     pub change: Change,
     pub observation: Option<Observation>,
-    pub(crate) acquisition: Option<crate::acquisition::AcquisitionContext>,
+    pub(crate) source_read: Option<crate::source_read::SourceReadContext>,
     pub continues: bool,
     /// Where parsing starts: after the last complete record parsed, or 0
     /// when parser state is rebuilt by parsing the input again.
@@ -86,7 +86,7 @@ impl Job {
 /// What a finished job tells the loop.
 #[derive(Debug)]
 pub struct Done {
-    /// The actual committed chain returned by the writer, never a guess.
+    /// The committed chain the writer returned, never a guess.
     pub chain: Option<i64>,
     pub path: PathBuf,
     pub start: u64,
@@ -109,11 +109,11 @@ pub struct Done {
     /// The batch carries a step that records the parser's failure.
     pub failure_recorded: bool,
     pub continuation_missing: bool,
-    /// Accepted SDK custody; this is neither failure nor confirmed admission.
+    /// Accepted by the SDK and held in the spool; neither a failure nor confirmed by Sinex.
     pub pending: Option<String>,
     pub checkpoint: Option<polylogue_model::batch::ParserCheckpoint>,
-    pub raw_custody: Option<polylogue_store::primary::RawCustodyReceipt>,
-    pub raw_acquisition: Option<polylogue_store::primary::AcquisitionReceipt>,
+    pub spooled_group: Option<polylogue_store::primary::SpooledGroup>,
+    pub source_read: Option<polylogue_store::primary::AcquisitionReceipt>,
 }
 
 struct Queue {
@@ -335,7 +335,7 @@ fn work(
                     break Some(j);
                 }
                 if !group.waiting.is_empty() {
-                    // Nothing waiting: make the group durable and hand it on
+                    // Nothing waiting: commit the group and hand it on
                     // now rather than hold it. The next job, which may well
                     // be this input's next range once the group commits, is
                     // this worker's; it looks at the queue again after the
@@ -403,9 +403,9 @@ fn acknowledge_groups(pending: Receiver<PendingGroup>, done: Sender<Done>) {
                                 result.pending = Some(identity);
                             }
                             Some(Err(polylogue_store::StoreError::UnresolvedBasisConflict {
-                                custody,
+                                spooled,
                             })) => {
-                                result.raw_custody = Some(custody);
+                                result.spooled_group = Some(spooled);
                                 result.stored = 0;
                                 result.checkpoint = None;
                                 result.parser_state = None;
@@ -470,9 +470,9 @@ fn flush(
     let mut batches = Vec::new();
     for (batch, _, size) in &mut waiting {
         if let Some(mut batch) = batch.take() {
-            let owner = Arc::clone(shared);
+            let shared = Arc::clone(shared);
             let bytes = *size;
-            batch.batch.release = InFlight::new(move || release(&owner, bytes));
+            batch.batch.release = InFlight::new(move || release(&shared, bytes));
             batches.push(batch);
         } else {
             release(shared, *size);
@@ -510,7 +510,7 @@ fn failed_step(job: &Job, error: String, prepare: bool) -> ParseStep {
 }
 
 /// Reads, stores and parses one job. The archive's stop request ends it
-/// between steps and inside each read; a stopped job keeps only the raw
+/// between steps and inside each read; a stopped job keeps only the original
 /// bytes it already prepared and makes no parser progress.
 pub(crate) fn run(
     mut job: Job,
@@ -537,8 +537,8 @@ pub(crate) fn run(
         continuation_missing: false,
         pending: None,
         checkpoint: None,
-        raw_custody: None,
-        raw_acquisition: None,
+        spooled_group: None,
+        source_read: None,
     };
     if stop.is_cancelled() {
         out.cancelled = true;
@@ -554,8 +554,8 @@ pub(crate) fn run(
         Bytes::Stored(chain) => chain
             .read_range(store, job.start, job.end)
             .map_err(std::io::Error::other),
-        Bytes::File => match &job.acquisition {
-            Some(context) => read::read_native_range(&job.path, job.start, job.end, context.facts)
+        Bytes::File => match &job.source_read {
+            Some(context) => read::read_source_range(&job.path, job.start, job.end, context.facts)
                 .map(|(bytes, observed)| {
                     file_snapshot = Some(observed);
                     bytes
@@ -613,15 +613,15 @@ pub(crate) fn run(
         },
         None => None,
     };
-    let acquisition = new_blob
+    let source_read = new_blob
         .as_ref()
-        .zip(job.acquisition.as_ref())
+        .zip(job.source_read.as_ref())
         .map(|(blob, context)| {
             let range = polylogue_store::primary::RawRange {
                 start: job.store_from.expect("new body has a source interval"),
                 end: job.store_from.expect("new body has a source interval") + blob.size,
             };
-            let mut receipt = match &file_snapshot {
+            let mut record = match &file_snapshot {
                 Some(observed) => context.finish_file(
                     range,
                     blob.hash,
@@ -630,7 +630,7 @@ pub(crate) fn run(
                     polylogue_store::primary::RawStreamRole::ProviderBytes,
                     polylogue_store::primary::RawRange {
                         // The earlier prefix belongs to its confirmed input;
-                        // this file snapshot owns the newly acquired tail.
+                        // this file snapshot holds the newly read tail.
                         start: match job.change {
                             Change::Appended { from } => from,
                             _ => 0,
@@ -640,10 +640,10 @@ pub(crate) fn run(
                 ),
                 None => context.finish(range, blob.hash),
             };
-            receipt.chunks = blob.chunks.clone();
-            receipt
+            record.chunks = blob.chunks.clone();
+            record
         });
-    out.raw_acquisition = acquisition.clone();
+    out.source_read = source_read.clone();
     out.cancelled = stop.is_cancelled();
     let context_overlay = if out.cancelled {
         None
@@ -710,7 +710,7 @@ pub(crate) fn run(
                 }
                 if expected != state {
                     out.error = Some(
-                        "reconstructed context differs from its admitted parser checkpoint".into(),
+                        "reconstructed context differs from its committed parser checkpoint".into(),
                     );
                     out.continuation_missing = true;
                 } else {
@@ -904,10 +904,10 @@ pub(crate) fn run(
         crate::parser_checkpoint::without_context_changes(state);
     }
     let batch = Batch {
-        required_disposition: job
-            .acquisition
+        required_outcome: job
+            .source_read
             .as_ref()
-            .and_then(|context| context.required_disposition),
+            .and_then(|context| context.required_outcome),
         input: job.input,
         change: job.change,
         observation: job.observation,
@@ -916,9 +916,9 @@ pub(crate) fn run(
         blobs: extra,
         length: job.length,
         parse,
-        acquisition,
+        acquisition: source_read,
         basis: job
-            .acquisition
+            .source_read
             .as_ref()
             .and_then(|context| context.basis.clone()),
         release: InFlight::default(),
@@ -926,7 +926,7 @@ pub(crate) fn run(
     (Some(PreparedBatch { batch, files }), out)
 }
 
-/// Exceptional reconstruction reads only archived, admitted bytes. Ordinary
+/// Exceptional reconstruction reads only archived, committed bytes. Normal
 /// resume opens the recorded keyed view and never enters this path.
 fn rebuild_context(
     job: &Job,
@@ -966,7 +966,7 @@ fn rebuild_context(
     }
     if cursor != job.start || !pending.is_empty() {
         return Err(crate::EngineError::Parse(
-            "context reconstruction did not reach its admitted checkpoint".into(),
+            "context reconstruction did not reach its committed checkpoint".into(),
         ));
     }
     Ok(state.unwrap_or(Json::Null))

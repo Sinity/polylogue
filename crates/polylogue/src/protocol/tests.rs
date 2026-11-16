@@ -3,17 +3,17 @@ use serde_json::{Value, json};
 
 #[test]
 fn a_pending_write_is_degraded_with_its_note_and_http_success() {
-    let receipt = json!({"id":"record:one", "pending":true});
-    let answer = written(receipt.clone(), true);
+    let write_result = json!({"id":"record:one", "pending":true});
+    let answer = written(write_result.clone(), true);
     assert_eq!(answer.exit_code(), 5);
     assert_eq!(answer.http_status(), Some(200));
-    assert_eq!(answer.value(), Some(&receipt));
+    assert_eq!(answer.value(), Some(&write_result));
     assert_eq!(
         crate::protocol::notes(&answer).collect::<Vec<_>>(),
         [AWAITING_CONFIRMATION]
     );
     assert!(matches!(
-        written(receipt, false),
+        written(write_result, false),
         command_surface::Answer {
             outcome: command_surface::Outcome::Ok(_),
             ..
@@ -66,22 +66,21 @@ fn a_degraded_answer_keeps_its_outcome_and_notes_on_the_socket_wire() {
 }
 
 #[test]
-fn projection_failures_distinguish_conflicts_from_invalid_input() {
+fn bundle_failures_distinguish_conflicts_from_invalid_input() {
     use polylogue_model::bundle::BundleError;
     for (issue, kind) in [
-        (BundleError::ProjectionConflict, FailureKind::Conflict),
+        (BundleError::BlockSelectionConflict, FailureKind::Conflict),
         (BundleError::SourceVersionMismatch, FailureKind::Conflict),
         (BundleError::InvalidBlockSelection, FailureKind::BadRequest),
     ] {
-        let answer = crate::daemon::service::store_error::<()>(
-            &polylogue_store::StoreError::Projection(issue),
-        );
+        let answer =
+            crate::daemon::service::store_error::<()>(&polylogue_store::StoreError::Bundle(issue));
         let command_surface::Answer {
             outcome: command_surface::Outcome::Error(error),
             ..
         } = answer
         else {
-            panic!("projection failure is not success")
+            panic!("block selection failure is not success")
         };
         assert_eq!(error.kind, kind);
     }
@@ -112,16 +111,16 @@ fn an_ambiguous_reference_names_every_candidate() {
 
 #[test]
 fn noncurrent_primary_reads_keep_their_data_and_say_why() {
-    use polylogue_model::currency::IndexCurrency;
-    for currency in [
-        IndexCurrency::primary(Some(5), Some(8), Some(0.5), Some(true), None),
-        IndexCurrency::primary(Some(5), Some(8), Some(9.0), Some(true), None),
-        IndexCurrency::primary(Some(5), None, None, Some(false), Some("unreachable".into())),
+    use polylogue_model::freshness::IndexFreshness;
+    for freshness in [
+        IndexFreshness::primary(Some(5), Some(8), Some(0.5), Some(true), None),
+        IndexFreshness::primary(Some(5), Some(8), Some(9.0), Some(true), None),
+        IndexFreshness::primary(Some(5), None, None, Some(false), Some("unreachable".into())),
     ] {
         let value = json!({"rows":[{"ref":"session:synthetic"}]});
-        let freshness = polylogue_model::currency::ReadFreshness {
-            local: polylogue_model::currency::ReadCompleteness::empty(),
-            owner: currency.clone(),
+        let freshness = polylogue_model::freshness::ReadFreshness {
+            local: polylogue_model::freshness::ReadCompleteness::empty(),
+            sinex: freshness.clone(),
         };
         let result = read(value.clone(), &freshness);
         assert_eq!(result.exit_code(), 5);
@@ -130,16 +129,16 @@ fn noncurrent_primary_reads_keep_their_data_and_say_why() {
         assert_eq!(
             crate::protocol::notes(&result).collect::<Vec<_>>().len(),
             1,
-            "{currency:?}"
+            "{freshness:?}"
         );
     }
-    let current = IndexCurrency::primary(Some(8), Some(8), Some(0.5), Some(true), None);
+    let current = IndexFreshness::primary(Some(8), Some(8), Some(0.5), Some(true), None);
     assert!(matches!(
         read(
             json!({}),
-            &polylogue_model::currency::ReadFreshness {
-                local: polylogue_model::currency::ReadCompleteness::empty(),
-                owner: current
+            &polylogue_model::freshness::ReadFreshness {
+                local: polylogue_model::freshness::ReadCompleteness::empty(),
+                sinex: current
             }
         ),
         command_surface::Answer {
@@ -150,7 +149,7 @@ fn noncurrent_primary_reads_keep_their_data_and_say_why() {
 }
 
 #[test]
-fn pending_browser_receipts_keep_their_declared_kind_on_the_wire() {
+fn pending_browser_results_keep_their_kind_on_the_wire() {
     use crate::protocol::browser::{ChatAnswer, PendingCapture};
     let capture = written(
         ChatAnswer::Capture(PendingCapture {
@@ -162,17 +161,19 @@ fn pending_browser_receipts_keep_their_declared_kind_on_the_wire() {
     let decoded: command_surface::Answer<ChatAnswer> = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(decoded.exit_code(), 5);
     assert!(
-        matches!(decoded.value(),Some(ChatAnswer::Capture(receipt)) if receipt.identity=="capture:synthetic")
+        matches!(decoded.value(),Some(ChatAnswer::Capture(write_result)) if write_result.identity=="capture:synthetic")
     );
     let outcome = polylogue_model::user::UserOutcome {
         id: "action:synthetic".into(),
         repeat: true,
         pending: true,
     };
-    let authored = written(ChatAnswer::Receipt(outcome.clone()), outcome.pending);
+    let authored = written(ChatAnswer::Outcome(outcome.clone()), outcome.pending);
     let bytes = serde_json::to_vec(&authored).unwrap();
     let decoded: command_surface::Answer<ChatAnswer> = serde_json::from_slice(&bytes).unwrap();
-    assert!(matches!(decoded.value(),Some(ChatAnswer::Receipt(receipt)) if receipt==&outcome));
+    assert!(
+        matches!(decoded.value(),Some(ChatAnswer::Outcome(write_result)) if write_result==&outcome)
+    );
     assert!(
         serde_json::from_value::<ChatAnswer>(json!({"identity":"capture:synthetic","action":null}))
             .is_err()

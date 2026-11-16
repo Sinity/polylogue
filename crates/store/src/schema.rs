@@ -50,7 +50,7 @@ pub(crate) const QUERY_OBJECTS: &str = concat!(
     "\n",
     include_str!("schema/query_runs.sql")
 );
-/// Physical indexes created at open; the writer defers only its query-only subset.
+/// Indexes created at open; the writer defers only its query-only subset.
 pub(crate) const OPEN_INDEXES: &str = include_str!("schema/open_indexes.sql");
 #[cfg(test)]
 pub(crate) const INDEX_SCHEMA: &[&str] = &[
@@ -79,9 +79,9 @@ const EMBEDDINGS_ADDITIONS: &[&str] = &[
 pub const ARCHIVE_VERSION: u32 = 3;
 
 /// The index schema and row encoding version. Reading versions are independent.
-pub const INDEX_VERSION: u32 = 5;
+pub const INDEX_VERSION: u32 = 6;
 /// The primary cache's schema and row encoding version.
-pub const PRIMARY_INDEX_VERSION: u32 = 7;
+pub const PRIMARY_INDEX_VERSION: u32 = 8;
 
 pub const fn index_version(primary: bool) -> u32 {
     if primary {
@@ -130,7 +130,7 @@ pub fn create_index(conn: &Connection) -> Result<()> {
 
 fn add_primary(conn: &Connection) -> Result<()> {
     conn.execute_batch(&crate::source::schema()?.ddl)?;
-    conn.execute_batch(crate::primary::projection::SCHEMA)?;
+    conn.execute_batch(crate::primary::confirmed::SCHEMA)?;
     Ok(())
 }
 
@@ -210,7 +210,7 @@ fn ensure_index_in(conn: &Connection, primary: bool, deferring: bool) -> Result<
             }
         }
         if primary {
-            tx.execute_batch(include_str!("primary/projection/read_indexes.sql"))?;
+            tx.execute_batch(include_str!("primary/confirmed/read_indexes.sql"))?;
         }
         let matches = if deferring {
             same_build_schema_in(&tx, primary)?
@@ -398,7 +398,7 @@ pub(crate) fn same_schema(conn: &Connection, sql: &[&str]) -> Result<bool> {
     Ok(shape(conn)? == shape(&expected)?)
 }
 
-/// Physical indexes created at open do not change the parsed table format.
+/// Indexes created at open do not change the parsed table format.
 fn same_index_schema_in(conn: &Connection, primary: bool) -> Result<bool> {
     let expected = Connection::open_in_memory()?;
     base_index(&expected)?;
@@ -514,7 +514,7 @@ fn statement(sql: &str) -> String {
     out
 }
 
-/// Ordinary tables in `index.db` and their column names.
+/// Tables in `index.db` and their column names.
 pub(crate) fn index_columns(
     i: &rusqlite::Transaction<'_>,
 ) -> Result<Vec<(String, HashSet<String>)>> {

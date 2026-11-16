@@ -51,7 +51,7 @@ pub fn call(
     let budget = connection_budget(request, None);
     let outgoing = crate::protocol::wire::Outgoing {
         request,
-        caller: crate::protocol::caller::evidence(),
+        caller: crate::protocol::caller::details(),
         parent_deadline_ms: None,
     };
     runtime()?.block_on(async {
@@ -152,7 +152,7 @@ pub(crate) fn call_with_budget(
 ) -> io::Result<Answer<Value>> {
     let outgoing = crate::protocol::wire::Outgoing {
         request,
-        caller: crate::protocol::caller::evidence(),
+        caller: crate::protocol::caller::details(),
         parent_deadline_ms: None,
     };
     runtime()?.block_on(async {
@@ -170,7 +170,7 @@ pub(crate) fn call_with_budget(
     })
 }
 
-/// Executes a declared typed operation and retains its entire shared answer.
+/// Executes a declared typed operation and keeps its entire shared answer.
 pub(crate) async fn call_ready_as(
     archive: &Archive,
     request: &command_surface::RunnableRequest,
@@ -228,6 +228,6 @@ pub(crate) fn call_ready(
         archive,
         request,
         &CancellationToken::new(),
-        crate::protocol::caller::evidence(),
+        crate::protocol::caller::details(),
     ))
 }

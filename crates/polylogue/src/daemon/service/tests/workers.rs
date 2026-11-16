@@ -10,7 +10,7 @@ async fn a_signal_checkpoint_failure_survives_worker_join_and_releases_the_archi
         crate::test_daemon::start_runtime(&root, engine, ArchiveMode::Standalone).unwrap();
     runtime.pause_signals().unwrap();
     let conn = rusqlite::Connection::open(runtime.daemon.archive.archive_db()).unwrap();
-    // Change only the synthetic checkpoint after ordinary startup, so setup
+    // Change only the synthetic checkpoint after startup, so setup
     // cannot fail through an unrelated initialization read of authored state.
     conn.execute(
         "INSERT OR REPLACE INTO signal_state(owner,body,commit_seq) VALUES(?1,?2,0)",

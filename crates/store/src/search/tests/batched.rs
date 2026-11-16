@@ -2,7 +2,7 @@ use super::*;
 use crate::fixture::{Fixture, MessageFacts, SessionFacts};
 
 #[test]
-fn batched_hits_preserve_query_priority_scope_eligibility_and_cyclic_ancestry() {
+fn batched_hits_keep_priority_scope_and_cyclic_ancestry() {
     let dir = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(dir.path()).unwrap();
     let mut session = |id, kind| {

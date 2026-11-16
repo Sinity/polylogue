@@ -12,13 +12,13 @@ fn live_refresh_keeps_each_queued_partial_first_plan_and_finishes_its_bytes() {
     engine.config.live_every = Duration::ZERO;
     let mut files = Vec::new();
     for name in ["a", "b"] {
-        let native = format!("partial-queue-{name}");
+        let native_id = format!("partial-queue-{name}");
         let text = format!("synthetic queued body {name} ").repeat(40);
         let payload = serde_json::to_vec(&json!({
             "polylogue_capture_kind":"browser_llm_session", "schema_version":1,
             "provenance":{"captured_at":"2026-10-01T00:00:00Z"},
-            "session":{"provider":"gemini", "provider_session_id":native,
-                "turns":[{"provider_turn_id":format!("m1-{native}"), "role":"user", "text":text}]}
+            "session":{"provider":"gemini", "provider_session_id":native_id,
+                "turns":[{"provider_turn_id":format!("m1-{native_id}"), "role":"user", "text":text}]}
         }))
         .unwrap();
         let mut bytes = capture_log::MAGIC.to_vec();
@@ -28,11 +28,11 @@ fn live_refresh_keeps_each_queued_partial_first_plan_and_finishes_its_bytes() {
         let path = engine
             .config
             .spool_dir("browser-capture")
-            .join(format!("gemini/{native}.json"));
+            .join(format!("gemini/{native_id}.json"));
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, &bytes).unwrap();
         let facts = FileFacts::of(&std::fs::metadata(&path).unwrap());
-        files.push((path, native, text, bytes, facts));
+        files.push((path, native_id, text, bytes, facts));
     }
     // Each frame fits in four geometrically growing reads, eight in total.
     // This existing fault only stops an old scheduler that keeps replacing
@@ -65,9 +65,9 @@ fn live_refresh_keeps_each_queued_partial_first_plan_and_finishes_its_bytes() {
         pass.errors.is_empty(),
         "correct work must finish before the escape fault: {pass:?}"
     );
-    for (path, native, text, expected, before) in files {
+    for (path, native_id, text, expected, before) in files {
         assert_eq!(FileFacts::of(&std::fs::metadata(&path).unwrap()), before);
-        let session = SessionId::parse(&format!("gemini-app:{native}")).unwrap();
+        let session = SessionId::parse(&format!("gemini-app:{native_id}")).unwrap();
         let messages = reader.messages(&session, false).unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(

@@ -98,8 +98,8 @@ pub(crate) struct MessageVersion {
     #[serde(with = "shared_message_value")]
     pub value: Arc<MessageValue>,
     pub replace: bool,
-    /// This step supplied a complete unmerged value. This controls selection
-    /// ownership, never payload validation or transaction authority.
+    /// This step supplied a complete unmerged value. This decides which source
+    /// is selected, never payload validation or transaction scope.
     complete_source: bool,
 }
 
@@ -140,10 +140,11 @@ impl Choices {
                 })?;
                 let value = version.value.as_ref();
                 if value.prepared.hash != hash.0
-                    || value.prepared.projection.source_version != hash
+                    || value.prepared.block_selection.source_version != hash
                     || value.prepared.id != value.message.id
                     || value.message.id != *message
-                    || value.prepared.projection.block_count != value.message.blocks.len() as u64
+                    || value.prepared.block_selection.block_count
+                        != value.message.blocks.len() as u64
                     || value.prepared.blocks.len() != value.message.blocks.len()
                     || version.replace
                     || !version.complete_source
@@ -275,7 +276,7 @@ struct MessageMember {
     end: i64,
     session: i64,
     main: bool,
-    explicit_owner: bool,
+    explicit_session: bool,
     route: Route,
     completion: Completion,
     seq: i64,
@@ -356,18 +357,18 @@ fn merge_message(
 ) -> Result<(Message, PreparedMessage)> {
     crate::writer::attachments::restore_values(&mut previous.0.blocks, &previous.1)?;
     crate::writer::attachments::restore_values(&mut incoming.0.blocks, &incoming.1)?;
-    let (message, projection) = previous
+    let (message, block_selection) = previous
         .1
-        .projection
-        .merge(&previous.0, &incoming.1.projection, &incoming.0)?
+        .block_selection
+        .merge(&previous.0, &incoming.1.block_selection, &incoming.0)?
         .ok_or(polylogue_model::bundle::BundleError::SourceVersionMismatch)?;
-    if projection == previous.1.projection {
+    if block_selection == previous.1.block_selection {
         return Ok(previous);
     }
-    if projection == incoming.1.projection {
+    if block_selection == incoming.1.block_selection {
         return Ok(incoming);
     }
-    let prepared = PreparedMessage::projected(&message, &projection)?;
+    let prepared = PreparedMessage::projected(&message, &block_selection)?;
     Ok((message, prepared))
 }
 
@@ -377,8 +378,8 @@ fn known_message(
     hash: &[u8],
 ) -> Result<Option<(Message, PreparedMessage)>> {
     let stored = crate::versions::read_message(index, hash)?
-        .map(|(message, projection)| {
-            let prepared = PreparedMessage::projected(&message, &projection)?;
+        .map(|(message, block_selection)| {
+            let prepared = PreparedMessage::projected(&message, &block_selection)?;
             Ok::<_, StoreError>((message, prepared))
         })
         .transpose()?;
@@ -418,7 +419,7 @@ fn load_message(
         .query_row(
             "SELECT (SELECT version_hash FROM message_version WHERE pk=s.version_pk),m.session_pk,p.layout FROM message m
              JOIN message_source s ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain
-             LEFT JOIN message_projection p ON p.version_pk=s.version_pk WHERE m.pk=?1",
+             LEFT JOIN message_block_selection p ON p.version_pk=s.version_pk WHERE m.pk=?1",
             [pk],
             |r| {
                 Ok(Shown {
@@ -458,7 +459,7 @@ fn load_message(
     let mut statement = index.prepare_cached(
         "SELECT s.input_pk,s.chain,s.source_start,s.source_end,s.session_pk,s.main,s.completion,s.route,s.seq,s.record_position,(SELECT version_hash FROM message_version WHERE pk=s.version_pk),s.id_kind,p.layout,i.id,s.order_time,s.at,coalesce((SELECT json_extract(facts,'$.kind')<>'compaction' FROM session_record f WHERE f.session_pk=s.session_pk AND f.input_pk=s.input_pk AND f.chain=s.chain),0)
          FROM message_source s JOIN input_ref i ON i.pk=s.input_pk
-         LEFT JOIN message_projection p ON p.version_pk=s.version_pk WHERE message_pk=?1",
+         LEFT JOIN message_block_selection p ON p.version_pk=s.version_pk WHERE message_pk=?1",
     )?;
     let rows = statement
         .query_map([pk], |r| {
@@ -471,7 +472,7 @@ fn load_message(
                     end: r.get(3)?,
                     session: r.get(4)?,
                     main: r.get(5)?,
-                    explicit_owner: r.get(16)?,
+                    explicit_session: r.get(16)?,
                     completion: named(r.get(6)?)?,
                     route: named(r.get(7)?)?,
                     seq: r.get(8)?,
@@ -515,7 +516,7 @@ fn load_document(index: &Connection, pk: i64) -> Result<Vec<DocumentMember>> {
 
 fn load_event(index: &Connection, pk: i64) -> Result<Vec<ValueMember>> {
     Ok(index
-        .prepare_cached("SELECT s.input_pk,s.chain,s.route,s.value_pk,v.hash,s.session_pk,s.seq,s.source_start,s.source_end,s.after_message_id,s.at,s.admitted,i.id FROM event_source s JOIN event_value v ON v.pk=s.value_pk JOIN input_ref i ON i.pk=s.input_pk WHERE s.event_pk=?1")?
+        .prepare_cached("SELECT s.input_pk,s.chain,s.route,s.value_pk,v.hash,s.session_pk,s.seq,s.source_start,s.source_end,s.after_message_id,s.at,s.committed,i.id FROM event_source s JOIN event_value v ON v.pk=s.value_pk JOIN input_ref i ON i.pk=s.input_pk WHERE s.event_pk=?1")?
         .query_map([pk], |r| {
             Ok(ValueMember {
                 input: r.get(0)?,
@@ -526,7 +527,7 @@ fn load_event(index: &Connection, pk: i64) -> Result<Vec<ValueMember>> {
                 hash: r.get(4)?,
                 body: Vec::new(),
                 event: Some(EventChoice {
-                    admitted: r.get(11)?,
+                    committed: r.get(11)?,
                     kind: String::new(),
                     fields: Vec::new(),
                     imported: String::new(),
@@ -564,7 +565,7 @@ fn load_link(index: &Connection, pk: i64) -> Result<Vec<ValueMember>> {
         .collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-pub(in crate::writer) struct Projection<'a> {
+pub(in crate::writer) struct MembershipState<'a> {
     resolver: &'a Resolver,
     index: &'a Connection,
     keys: &'a ResolvedKeys,
@@ -583,19 +584,19 @@ pub(in crate::writer) struct Projection<'a> {
     last_readings: BTreeMap<(i64, i64, i64), LastReading>,
     reset_inputs: BTreeSet<(i64, i64)>,
     /// Copies already joined to their session in this snapshot.
-    absorbed: BTreeSet<String>,
+    moved_copies: BTreeSet<String>,
     /// Joined copies already released in this snapshot.
     released: BTreeSet<String>,
     values: Option<&'a dyn ValueSource>,
 }
-impl<'a> Projection<'a> {
+impl<'a> MembershipState<'a> {
     pub(in crate::writer) fn new(
         resolver: &'a Resolver,
         index: &'a Connection,
         keys: &'a ResolvedKeys,
         values: Option<&'a dyn ValueSource>,
     ) -> Result<Self> {
-        let mut projection = Self {
+        let mut membership_state = Self {
             resolver,
             index,
             keys,
@@ -611,7 +612,7 @@ impl<'a> Projection<'a> {
             session_facts: BTreeMap::new(),
             last_readings: BTreeMap::new(),
             reset_inputs: BTreeSet::new(),
-            absorbed: BTreeSet::new(),
+            moved_copies: BTreeSet::new(),
             released: BTreeSet::new(),
             values,
         };
@@ -620,12 +621,12 @@ impl<'a> Projection<'a> {
             match key.kind {
                 Kind::Message if row.existing => {
                     let (members, shown) =
-                        load_message(index, pk, &mut projection.message_layouts)?;
-                    projection.shown_messages.insert(pk, shown);
-                    projection.messages.members.insert(pk, members);
+                        load_message(index, pk, &mut membership_state.message_layouts)?;
+                    membership_state.shown_messages.insert(pk, shown);
+                    membership_state.messages.members.insert(pk, members);
                 }
                 Kind::Document if row.existing => {
-                    projection.shown_documents.insert(
+                    membership_state.shown_documents.insert(
                         pk,
                         index
                             .query_row("SELECT version_hash FROM document WHERE pk=?1", [pk], |r| {
@@ -633,27 +634,33 @@ impl<'a> Projection<'a> {
                             })
                             .optional()?,
                     );
-                    projection
+                    membership_state
                         .documents
                         .members
                         .insert(pk, load_document(index, pk)?);
                 }
                 Kind::Event if row.existing => {
-                    projection.events.members.insert(pk, load_event(index, pk)?);
+                    membership_state
+                        .events
+                        .members
+                        .insert(pk, load_event(index, pk)?);
                 }
                 Kind::Link if row.existing => {
-                    projection.links.members.insert(pk, load_link(index, pk)?);
+                    membership_state
+                        .links
+                        .members
+                        .insert(pk, load_link(index, pk)?);
                 }
                 Kind::Message => {
-                    projection.messages.members.insert(pk, Vec::new());
+                    membership_state.messages.members.insert(pk, Vec::new());
                 }
                 Kind::Document => {
-                    projection.documents.members.insert(pk, Vec::new());
+                    membership_state.documents.members.insert(pk, Vec::new());
                 }
                 _ => {}
             }
         }
-        Ok(projection)
+        Ok(membership_state)
     }
 
     pub(in crate::writer) fn step(
@@ -676,7 +683,7 @@ impl<'a> Projection<'a> {
                 .retain(|(i, c, _), _| *i != input || *c != chain);
         }
         self.sessions(input, chain, step, &mut choices)?;
-        self.absorb(step, &mut choices)?;
+        self.apply_copy_moves(step, &mut choices)?;
         self.release(step, &mut choices)?;
         self.message_readings(input_key, input, chain, step, &mut choices)?;
         self.document_readings(input_key, input, chain, step, &mut choices)?;
@@ -716,30 +723,30 @@ impl<'a> Projection<'a> {
     /// alias takes the copy's message readings, each into its message with
     /// the ID it has in the session (docs/capture.md, AI Studio through
     /// Drive). The readings stay as stored; only the rows they belong to move.
-    fn absorb(&mut self, step: &ParseStep, choices: &mut Choices) -> Result<()> {
-        for absorbed in self.keys.identities.absorbed() {
-            if self.absorbed.contains(&absorbed.copy)
+    fn apply_copy_moves(&mut self, step: &ParseStep, choices: &mut Choices) -> Result<()> {
+        for copy_move in self.keys.identities.moved_copies() {
+            if self.moved_copies.contains(&copy_move.copy)
                 || !step
                     .output
                     .sessions
                     .iter()
-                    .any(|s| s.id.to_string() == absorbed.session)
+                    .any(|s| s.id.to_string() == copy_move.session)
             {
                 continue;
             }
-            self.absorbed.insert(absorbed.copy.clone());
+            self.moved_copies.insert(copy_move.copy.clone());
             let from = self
                 .keys
-                .stored(&Key::new(Kind::Session, absorbed.copy.as_bytes()))?
+                .stored(&Key::new(Kind::Session, copy_move.copy.as_bytes()))?
                 .pk;
             let to = self
                 .keys
-                .stored(&Key::new(Kind::Session, absorbed.session.as_bytes()))?
+                .stored(&Key::new(Kind::Session, copy_move.session.as_bytes()))?
                 .pk;
             choices
                 .absorbed_sessions
-                .push((from, to, absorbed.copy.clone()));
-            for (old, new) in &absorbed.messages {
+                .push((from, to, copy_move.copy.clone()));
+            for (old, new) in &copy_move.messages {
                 let source = self
                     .keys
                     .stored(&Key::new(Kind::Message, old.as_bytes()))?
@@ -761,7 +768,7 @@ impl<'a> Projection<'a> {
                     choices.moved_messages.push((source, target));
                 }
             }
-            for (old, new) in &absorbed.events {
+            for (old, new) in &copy_move.events {
                 let source = self.keys.stored(&Key::new(Kind::Event, old.as_bytes()))?.pk;
                 let target = self.keys.stored(&Key::new(Kind::Event, new.as_bytes()))?.pk;
                 let moved = std::mem::take(self.events.members.entry(source).or_default());
@@ -940,9 +947,9 @@ impl<'a> Projection<'a> {
             merged.merge(session);
             choices.sessions.insert(pk, merged.clone());
             let main = merged.kind == polylogue_model::SessionKind::Main;
-            let explicit_owner = merged.kind != polylogue_model::SessionKind::Compaction;
+            let explicit_session = merged.kind != polylogue_model::SessionKind::Compaction;
             // A portable header may arrive after its messages. Revisit only
-            // this exact source's indexed memberships, including unloaded rows.
+            // this source's indexed memberships, including unloaded rows.
             let stored_kind:Option<String>=self.index.query_row("SELECT json_extract(facts,'$.kind') FROM session_record WHERE session_pk=?1 AND input_pk=?2 AND chain=?3",params![pk,input,chain],|r|r.get(0)).optional()?;
             if !self.reset_inputs.contains(&(input, chain))
                 && stored_kind.as_deref() != Some(merged.kind.as_str())
@@ -963,11 +970,11 @@ impl<'a> Projection<'a> {
                     .iter_mut()
                     .filter(|m| m.session == pk && m.input == input && m.chain == chain)
                 {
-                    if member.main != main || member.explicit_owner != explicit_owner {
+                    if member.main != main || member.explicit_session != explicit_session {
                         self.messages.touched.insert(*message_pk);
                     }
                     member.main = main;
-                    member.explicit_owner = explicit_owner;
+                    member.explicit_session = explicit_session;
                 }
             }
         }
@@ -1011,11 +1018,11 @@ impl<'a> Projection<'a> {
             choices.message_order_times.push(None);
             // A non-selected source value still belongs to the archive. Keyed
             // parser continuation can cite it without changing shown membership.
-            let incoming_layout = crate::versions::message_layout(&prepared.projection)?;
+            let incoming_layout = crate::versions::message_layout(&prepared.block_selection)?;
             let prior_layout = self.message_layouts.get(prepared.hash.as_slice());
-            // Complete values already proved this hash. Sparse values alone
+            // Complete values already checked this hash. Sparse values alone
             // require payload comparison and enrichment of a known version.
-            let complete = prepared.projection.block_count == prepared.blocks.len() as u64;
+            let complete = prepared.block_selection.block_count == prepared.blocks.len() as u64;
             let previous_value = if prior_layout.is_none()
                 || (complete
                     && prior_layout.is_some_and(|layout| {
@@ -1040,7 +1047,7 @@ impl<'a> Projection<'a> {
                 }
                 None => incoming,
             }));
-            let layout = crate::versions::message_layout(&merged.prepared.projection)?;
+            let layout = crate::versions::message_layout(&merged.prepared.block_selection)?;
             let replace = prior_layout
                 .and_then(Option::as_ref)
                 .is_some_and(|before| before != &layout)
@@ -1088,7 +1095,7 @@ impl<'a> Projection<'a> {
                 None=>self.index.query_row("SELECT json_extract(facts,'$.kind') FROM session_record WHERE session_pk=?1 AND input_pk=?2 AND chain=?3",params![session,input,chain],|r|named(r.get(0)?)).optional()?,
             };
             let main = source_kind.is_none_or(|kind| kind == polylogue_model::SessionKind::Main);
-            let explicit_owner =
+            let explicit_session =
                 source_kind.is_some_and(|kind| kind != polylogue_model::SessionKind::Compaction);
             choices.message_mains.push(main);
             let (seq, position) = match step.message_position(i)? {
@@ -1111,7 +1118,7 @@ impl<'a> Projection<'a> {
                     end: row.end.max(row.offset) as i64,
                     session,
                     main,
-                    explicit_owner,
+                    explicit_session,
                     route,
                     completion: Completion::of(&row.message, route),
                     seq,
@@ -1523,7 +1530,7 @@ impl<'a> Projection<'a> {
             };
             let choice = EventChoice {
                 // A new source takes the step's material acknowledgment.
-                admitted: None,
+                committed: None,
                 kind: event.kind.clone(),
                 fields,
                 imported: serde_json::to_string(&original)?,
@@ -1637,7 +1644,7 @@ impl<'a> Projection<'a> {
                         input: &m.input_id,
                         route: m.route,
                         main: m.main,
-                        explicit_owner: m.explicit_owner,
+                        explicit_session: m.explicit_session,
                         completion: m.completion,
                         hash: &m.hash,
                         message: &message_values[&m.hash].message,
@@ -1667,7 +1674,7 @@ impl<'a> Projection<'a> {
             let shown = shown_messages.get(&pk).and_then(Option::as_ref);
             let layout = message_values
                 .get(&main.hash)
-                .map(|value| crate::versions::message_layout(&value.prepared.projection))
+                .map(|value| crate::versions::message_layout(&value.prepared.block_selection))
                 .transpose()?;
             let changed = shown.is_none_or(|shown| {
                 shown.hash != main.hash
@@ -1730,7 +1737,7 @@ impl<'a> Projection<'a> {
             };
             let layout = message_values
                 .get(&main.hash)
-                .map(|value| crate::versions::message_layout(&value.prepared.projection))
+                .map(|value| crate::versions::message_layout(&value.prepared.block_selection))
                 .transpose()?
                 .or_else(|| shown.and_then(|shown| shown.layout.clone()));
             shown_messages.insert(
@@ -1932,7 +1939,7 @@ pub(super) fn resolve(
     chains: &[i64],
     keys: &ResolvedKeys,
 ) -> Result<Vec<Vec<Choices>>> {
-    let mut projection = Projection::new(resolver, index, keys, None)?;
+    let mut membership_state = MembershipState::new(resolver, index, keys, None)?;
     let mut choices = Vec::with_capacity(batches.len());
     for (batch, &chain) in batches.iter_mut().zip(chains) {
         let input = &batch.input;
@@ -1940,7 +1947,7 @@ pub(super) fn resolve(
             batch
                 .parse
                 .iter_mut()
-                .map(|step| projection.step(input, chain, step))
+                .map(|step| membership_state.step(input, chain, step))
                 .collect::<Result<Vec<_>>>()?,
         );
     }
@@ -1949,7 +1956,7 @@ pub(super) fn resolve(
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct EventChoice {
-    pub admitted: Option<i64>,
+    pub committed: Option<i64>,
     pub kind: String,
     pub fields: Vec<u8>,
     pub imported: String,
@@ -1993,7 +2000,7 @@ impl ValueMember {
             return Ok(resolved);
         }
         let (fields, imported): (Vec<u8>, String) = index.query_row(
-            "SELECT fields,imported_provenance FROM event_source WHERE event_pk=?1 AND input_pk=?2 AND chain=?3",
+            "SELECT fields,imported_sources FROM event_source WHERE event_pk=?1 AND input_pk=?2 AND chain=?3",
             params![pk,self.input,self.chain], |row| Ok((row.get(0)?,row.get(1)?)))?;
         let canonical: Event = crate::encoding::unpack_json(&fields)?;
         event.kind = canonical.kind;

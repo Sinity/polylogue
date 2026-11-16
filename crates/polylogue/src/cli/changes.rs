@@ -48,7 +48,7 @@ pub(crate) fn arguments(
     values: &command_surface::ParsedCommand,
 ) -> Result<serde_json::Value, String> {
     if values.calling_process.contains_key("fields") || values.calling_process.contains_key("why") {
-        return Err("the change feed takes --since; use a changes query for filtering, fields or ordinary pages".into());
+        return Err("the change feed takes --since; use a changes query for filtering, fields or paged results".into());
     }
     Ok(values.request.arguments.clone())
 }

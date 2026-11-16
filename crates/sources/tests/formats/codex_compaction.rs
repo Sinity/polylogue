@@ -1,4 +1,4 @@
-//! Native compaction and turn-context cases from the Python version's
+//! Codex compaction and turn-context cases from the Python version's
 //! `test_codex_compaction_and_turn_context.py`, through the public parser.
 
 use crate::support::{events, jsonl, messages, parse};
@@ -33,7 +33,7 @@ fn run(records: &[Value]) -> Value {
 }
 
 #[test]
-fn compaction_keeps_large_native_history_and_materializes_only_the_summary() {
+fn compaction_keeps_history_and_shows_only_summary() {
     let payload = json!({
         "message": "compaction summary",
         "replacement_history": [{"id": "replacement-only", "type": "message", "role": "user",
@@ -121,7 +121,7 @@ fn compaction_preserves_supplied_unknown_history_shapes() {
 }
 
 #[test]
-fn compaction_keeps_parent_history_and_the_existing_fork_anchor() {
+fn compaction_keeps_parent_history_and_branch_point() {
     let payload = json!({"replacement_history": [
         {"id": "parent-message", "type": "message", "role": "user", "content": []},
         {"type": "future_context", "unknown_context": null}]});
@@ -199,7 +199,7 @@ fn compaction_does_not_reintroduce_a_skipped_self_parent() {
             meta(metadata),
             record(
                 "compacted",
-                json!({"replacement_history":[{"id":"retained","type":"message","role":"user","content":[]}]}),
+                json!({"replacement_history":[{"id":"kept","type":"message","role":"user","content":[]}]}),
             ),
             message("own", "user", "own tail"),
         ]);

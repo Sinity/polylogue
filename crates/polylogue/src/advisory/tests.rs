@@ -132,7 +132,7 @@ pub(crate) fn fixture() -> (TestDaemon, Arc<AtomicI64>) {
 }
 
 #[test]
-fn advisory_selection_requires_a_current_operator_judgment_and_exact_scoped_file() {
+fn advisory_selection_requires_a_current_operator_judgment_and_scoped_file() {
     let (w, _) = fixture();
     let reference = statement(
         &w,
@@ -220,7 +220,7 @@ fn advisory_bounds_intersect_parent_and_an_expired_request_prepares_nothing() {
 }
 
 #[test]
-fn a_pending_exact_pair_is_suppressed_without_assuming_history_application() {
+fn pending_pair_is_suppressed_without_assuming_history_application() {
     let (w, _) = fixture();
     let reference = statement(
         &w,
@@ -288,7 +288,7 @@ fn a_new_file_assertion_revision_requires_its_own_judgment_and_is_a_distinct_pai
             "revise",
             serde_json::json!({"bases": [Reference::Assertion(old.clone()).to_string()], "patch": polylogue_model::assertion::AssertionPatch {
                 value: polylogue_model::assertion::Change::Set(json!(
-                    "new exact authored decision"
+                    "new authored decision"
                 )),
                 ..Default::default()
             }}),
@@ -298,7 +298,7 @@ fn a_new_file_assertion_revision_requires_its_own_judgment_and_is_a_distinct_pai
     );
     assert!(
         selected(&w, "Inspect src/parser.rs", CWD).empty,
-        "the predecessor's acceptance does not judge its successor"
+        "accepting the previous revision does not judge the next one"
     );
     let reader = w.daemon.reads.reader().unwrap();
     let revised = query::assertions::ids(

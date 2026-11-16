@@ -73,18 +73,18 @@ mod tests;
 
 impl crate::Engine {
     /// The collector cursor follows archived bytes, independently of parsing.
-    /// Primary reads expose confirmed chains, so durable preparation alone
+    /// Primary reads expose confirmed chains, so a saved prepared write alone
     /// cannot release the collector's pending revision.
-    pub(crate) fn settle_collector(
+    pub(crate) fn advance_collector(
         &self,
         origin: &str,
         collector: &Collector,
         paths: &CollectorPaths<'_>,
     ) -> Result<(), String> {
-        let Some(settle) = collector.settle else {
+        let Some(advance) = collector.advance else {
             return Ok(());
         };
-        settle(paths, &|path, hash, length| {
+        advance(paths, &|path, hash, length| {
             let reader = self.reads.reader().map_err(|e| e.to_string())?;
             let known = reader
                 .known_watched_input_at(&self.config.machine, path.as_os_str().as_encoded_bytes())

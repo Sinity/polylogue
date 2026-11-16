@@ -1,6 +1,6 @@
 //! Original recorded text, before view filtering, masking or rendition. Source
-//! hashes stream these same chunks and never materialize a whole session.
-mod native;
+//! hashes stream these same chunks and never load a whole session at once.
+mod source_text;
 
 use crate::{Reader, Result, StoreError};
 use polylogue_model::{
@@ -107,16 +107,16 @@ impl Reader<'_> {
             })?
             .map(|_| BlobHash(*hash.finalize().as_bytes())))
     }
-    pub(crate) fn source_message_projection(
+    pub(crate) fn source_block_selection(
         &self,
         message: i64,
         reference: &Reference,
     ) -> Result<polylogue_model::bundle::MessageProjection> {
-        ReferenceText::new(self.conn()?, self.conn()?).source_message_projection(message, reference)
+        ReferenceText::new(self.conn()?, self.conn()?).source_block_selection(message, reference)
     }
 }
 
-/// A preparation view borrows native text from its pinned original source and
+/// A preparation view borrows source text from its pinned original store and
 /// authored text from its private overlay. Recursive spans keep that split.
 pub(crate) struct ReferenceText<'a> {
     original: &'a rusqlite::Connection,
@@ -129,19 +129,19 @@ impl<'a> ReferenceText<'a> {
     ) -> Self {
         Self { original, authored }
     }
-    pub(crate) fn source_message_projection(
+    pub(crate) fn source_block_selection(
         &self,
         message: i64,
         reference: &Reference,
     ) -> Result<polylogue_model::bundle::MessageProjection> {
         let conn = self.original;
         let (hash, layout, blocks): (Option<Vec<u8>>, Option<Vec<u8>>, i64) = conn.query_row(
-            "SELECT (SELECT version_hash FROM message_version WHERE pk=s.version_pk),p.layout,(SELECT count(*) FROM block WHERE message_pk=m.pk) FROM message m LEFT JOIN message_source s ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain LEFT JOIN message_projection p ON p.version_pk=s.version_pk WHERE m.pk=?1",
+            "SELECT (SELECT version_hash FROM message_version WHERE pk=s.version_pk),p.layout,(SELECT count(*) FROM block WHERE message_pk=m.pk) FROM message m LEFT JOIN message_source s ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain LEFT JOIN message_block_selection p ON p.version_pk=s.version_pk WHERE m.pk=?1",
             [message], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?;
-        let hash = hash
-            .ok_or_else(|| unavailable(reference, "the canonical source version is unavailable"))?;
-        crate::versions::message_projection(
+        let hash =
+            hash.ok_or_else(|| unavailable(reference, "the source version is unavailable"))?;
+        crate::versions::message_block_selection(
             &hash,
             layout.as_deref(),
             usize::try_from(blocks)
@@ -153,8 +153,8 @@ impl<'a> ReferenceText<'a> {
         message: i64,
         reference: &Reference,
     ) -> Result<()> {
-        let projection = self.source_message_projection(message, reference)?;
-        if projection.block_count != projection.block_ordinals.len() as u64 {
+        let block_selection = self.source_block_selection(message, reference)?;
+        if block_selection.block_count != block_selection.block_ordinals.len() as u64 {
             return Err(unavailable(
                 reference,
                 "some original source blocks are unavailable",
@@ -195,7 +195,7 @@ impl<'a> ReferenceText<'a> {
                 Ok(true)
             }
             Reference::Message(_) | Reference::Block { .. } | Reference::Document(_) => {
-                self.native_text_while(reference, complete, None, &mut |_, text| visit(text))
+                self.source_text_while(reference, complete, None, &mut |_, text| visit(text))
             }
             Reference::MessageRange { first, last } => self.range_text(first, last, visit),
             Reference::Variant { revision, part } => {
@@ -276,7 +276,7 @@ impl<'a> ReferenceText<'a> {
             if let Some(Reference::Assertion(head)) = heads.first() {
                 head.revision
                     .clone()
-                    .ok_or_else(|| StoreError::Invalid("assertion head is not exact".into()))?
+                    .ok_or_else(|| StoreError::Invalid("assertion head names no revision".into()))?
             } else {
                 if crate::assertions::family_present(self.authored, &revision.root)? {
                     return Err(unavailable(
@@ -396,7 +396,7 @@ impl<'a> ReferenceText<'a> {
     }
 }
 
-/// The quote a link to a span keeps: the span's exact text and up to 32
+/// The quote a link to a span keeps: the span's text and up to 32
 /// characters on either side, from the container's current text. `None` when
 /// the reference is not a span or its container has no recorded text yet.
 pub(crate) fn link_quote(
@@ -436,7 +436,7 @@ pub(crate) fn link_quote(
 }
 
 /// Full-text hashes require the caller's existing original-source snapshot.
-/// Scratch rows never stand in for native Message/Document source evidence.
+/// Scratch rows never stand in for source Message/Document text.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum LinkHash {
     Missing,
@@ -494,7 +494,7 @@ fn hash(
         )),
     }
 }
-/// Native link capture distinguishes an absent target from an existing,
+/// Link capture distinguishes an absent target from an existing,
 /// validated non-text assertion. Neither null state is a future text wildcard.
 pub(crate) fn link_hash(
     original: &rusqlite::Connection,

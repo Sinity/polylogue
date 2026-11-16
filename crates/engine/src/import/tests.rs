@@ -271,7 +271,7 @@ const SHOWN_FROM_COPY: &str = "SELECT count(*) AS n FROM message m JOIN message_
     WHERE s.route = 'copy'";
 
 #[test]
-fn replayed_import_does_not_replace_the_native_winner() {
+fn replayed_import_keeps_the_captured_winner() {
     use polylogue_testkit::{ClaudeHome, claude_user};
     let w = ClaudeHome::new();
     w.append("s1.jsonl", &claude_user("u1", "s1", "native winner"));

@@ -3,7 +3,7 @@ use polylogue_model::read::{ItemKind, ReadPage};
 
 #[test]
 fn mcp_reads_input_events_through_the_same_typed_reader_and_budget_cursor() {
-    let daemon = test_daemon::start("independent ordinary conversation");
+    let daemon = test_daemon::start("independent conversation");
     let source = daemon.home.join("synthetic.atof.jsonl");
     let text = " exact MCP λ🙂 evidence ".repeat(500);
     let credential = "--secret=\"unfinished --token=\"synthetic-later-value\" tail";

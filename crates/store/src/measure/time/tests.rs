@@ -16,12 +16,16 @@ fn m(id: &str, at: Option<i64>, author: &str, kind: &str, end: bool) -> Message 
         open_call: kind == "tool_call",
     }
 }
-fn lane(lanes: &[Lane], name: &str) -> i64 {
-    lanes.iter().filter(|l| l.lane == name).map(|l| l.ms).sum()
+fn party(parties: &[PartyTime], name: &str) -> i64 {
+    parties
+        .iter()
+        .filter(|l| l.party == name)
+        .map(|l| l.ms)
+        .sum()
 }
 
 #[test]
-fn span_and_lanes_match_a_hand_computed_session() {
+fn span_and_parties_match_a_hand_computed_session() {
     // Morrow #2's 18 own message times, including harness tool results.
     let seconds = [
         0, 390, 780, 1170, 1590, 1814, 2038, 2262, 2485, 2709, 2933, 3157, 3381, 3605, 3828, 4052,
@@ -77,7 +81,7 @@ fn span_and_lanes_match_a_hand_computed_session() {
             });
         }
     }
-    let (span, lanes) = calculate(&messages, &tools, CLUSTER_GAP_MS);
+    let (span, parties) = calculate(&messages, &tools, CLUSTER_GAP_MS);
     assert_eq!(span.wall_ms, Some(75 * MINUTE));
     assert_eq!(span.clustered_ms, Some(62 * MINUTE));
     assert_eq!(span.tool_sum_ms, Some(3_434_000));
@@ -85,21 +89,21 @@ fn span_and_lanes_match_a_hand_computed_session() {
     assert_eq!(span.tool_overlap_ms, Some(1_730_000));
     assert_eq!(
         (
-            lane(&lanes, "tool"),
-            lane(&lanes, "model"),
-            lane(&lanes, "human"),
-            lane(&lanes, "unattributed")
+            party(&parties, "tool"),
+            party(&parties, "model"),
+            party(&parties, "human"),
+            party(&parties, "unattributed")
         ),
         (1_704_000, 2_348_000, 448_000, 0)
     );
     assert_eq!(
-        lanes.iter().map(|l| l.ms).sum::<i64>(),
+        parties.iter().map(|l| l.ms).sum::<i64>(),
         span.wall_ms.unwrap()
     );
     assert_eq!(
         (RULE_VERSION, serde_json::to_value(&span).unwrap()),
         (
-            // 2: the human lane is unknown without a provider turn end.
+            // 2: the human party is unknown without a provider turn end.
             // 3: a stored prefix ends at a session order of the message.
             3,
             serde_json::json!({
@@ -168,19 +172,19 @@ fn tool_intervals_extend_clusters_and_share_overlap() {
             failed: false,
         },
     ];
-    let (span, lanes) = calculate(&messages, &tools, CLUSTER_GAP_MS);
+    let (span, parties) = calculate(&messages, &tools, CLUSTER_GAP_MS);
     assert_eq!(
         (span.tool_sum_ms, span.tool_union_ms, span.tool_overlap_ms),
         (Some(20 * MINUTE), Some(15 * MINUTE), Some(5 * MINUTE))
     );
     assert_eq!(span.clustered_ms, Some(15 * MINUTE));
-    let tool: Vec<_> = lanes.iter().filter(|l| l.lane == "tool").collect();
+    let tool: Vec<_> = parties.iter().filter(|l| l.party == "tool").collect();
     assert_eq!((tool[0].ms, tool[1].ms), (450_000, 450_000));
-    assert_eq!(lane(&lanes, "human"), 0);
+    assert_eq!(party(&parties, "human"), 0);
 }
 
 #[test]
-fn time_lanes_sum_to_wall_for_overlapping_intervals() {
+fn party_times_sum_to_wall_for_overlapping_intervals() {
     for start in 0..8 {
         for end in start..9 {
             for offset in 0..8 {
@@ -188,11 +192,11 @@ fn time_lanes_sum_to_wall_for_overlapping_intervals() {
                     (start, end, "first".into()),
                     (offset, offset + 5, "second".into()),
                 ];
-                let lanes = split(0, 12, &tools, &[(0, 6, "model"), (4, 12, "human")]);
-                assert_eq!(lanes.iter().map(|l| l.ms).sum::<i64>(), 12);
-                assert!(lanes.iter().all(|l| l.ms >= 0));
+                let parties = split(0, 12, &tools, &[(0, 6, "model"), (4, 12, "human")]);
+                assert_eq!(parties.iter().map(|l| l.ms).sum::<i64>(), 12);
+                assert!(parties.iter().all(|l| l.ms >= 0));
                 assert_eq!(
-                    lane(&lanes, "tool"),
+                    party(&parties, "tool"),
                     union_ms(tools.iter().map(|(a, b, _)| (*a, *b)).collect())
                 );
             }
@@ -237,7 +241,7 @@ fn invalid_tool_times_and_missing_message_clocks_stay_unknown() {
             failed: false,
         },
     ];
-    let (span, lanes) = calculate(&messages, &tools, CLUSTER_GAP_MS);
+    let (span, parties) = calculate(&messages, &tools, CLUSTER_GAP_MS);
     assert_eq!(
         (
             span.tool_untimed,
@@ -251,7 +255,7 @@ fn invalid_tool_times_and_missing_message_clocks_stay_unknown() {
     assert_eq!(span.clustered_ms, None);
     assert_eq!(span.wall_ms, None);
     assert_eq!(span.ends_with, "unknown");
-    assert!(lanes.is_empty());
+    assert!(parties.is_empty());
 }
 
 #[test]
@@ -278,7 +282,7 @@ fn writer_pairs_tools_and_behind_reads_equal_the_next_derivation() {
     let row = &times(&reader, &Selection::default()).unwrap()[0];
     assert_eq!(row.span.as_ref().unwrap().tool_sum_ms, Some(12 * MINUTE));
     assert_eq!(row.span.as_ref().unwrap().clustered_ms, Some(14 * MINUTE));
-    assert_eq!(lane(&row.lanes, "human"), 0);
+    assert_eq!(party(&row.parties, "human"), 0);
     drop(reader);
     drop(pool);
     f.write_underived("clock", prose("clock", 2, 15 * MINUTE, "Thanks"));
@@ -300,7 +304,7 @@ fn writer_pairs_tools_and_behind_reads_equal_the_next_derivation() {
         .unwrap();
     assert!(!stored.computed_at_read);
     assert_eq!(computed.span, stored.span);
-    assert_eq!(computed.lanes, stored.lanes);
+    assert_eq!(computed.parties, stored.parties);
 }
 
 #[test]
@@ -367,8 +371,8 @@ fn last_recorded_item_and_stop_reason_do_not_claim_task_outcomes() {
 fn waiting_human_is_unknown_without_a_provider_turn_end() {
     let prompt = |id, at| m(id, Some(at), "human", "text", false);
     let answer = |id, at, end| m(id, Some(at), "model", "text", end);
-    // A provider that marks turn ends: the human lane is measured.
-    let (_, lanes) = calculate(
+    // A provider that marks turn ends: the human party is measured.
+    let (_, parties) = calculate(
         &[
             prompt("p1", 0),
             answer("a1", MINUTE, true),
@@ -377,10 +381,10 @@ fn waiting_human_is_unknown_without_a_provider_turn_end() {
         &[],
         CLUSTER_GAP_MS,
     );
-    assert_eq!(lane(&lanes, "human"), 2 * MINUTE);
+    assert_eq!(party(&parties, "human"), 2 * MINUTE);
     // One that reports none: the same gap is unattributed and the human
-    // lane has no value, rather than 0.
-    let (_, lanes) = calculate(
+    // party has no value, rather than 0.
+    let (_, parties) = calculate(
         &[
             prompt("p1", 0),
             answer("a1", MINUTE, false),
@@ -389,12 +393,12 @@ fn waiting_human_is_unknown_without_a_provider_turn_end() {
         &[],
         CLUSTER_GAP_MS,
     );
-    assert!(lanes.iter().all(|l| l.lane != "human"), "{lanes:?}");
-    assert_eq!(lane(&lanes, "unattributed"), 2 * MINUTE);
-    assert_eq!(lane(&lanes, "model"), MINUTE);
+    assert!(parties.iter().all(|l| l.party != "human"), "{parties:?}");
+    assert_eq!(party(&parties, "unattributed"), 2 * MINUTE);
+    assert_eq!(party(&parties, "model"), MINUTE);
 }
 
-/// The stored span and lanes of the session, and the full calculation over
+/// The stored span and parties of the session, and the full calculation over
 /// its rows.
 fn stored_and_computed(conn: &rusqlite::Connection, session: &str) -> (Json, Json) {
     let pk: i64 = conn
@@ -404,12 +408,12 @@ fn stored_and_computed(conn: &rusqlite::Connection, session: &str) -> (Json, Jso
             |r| r.get(0),
         )
         .unwrap();
-    let lanes: Vec<Lane> = conn
-        .prepare("SELECT lane,key,ms FROM session_time WHERE session_pk=?1 ORDER BY lane,key")
+    let parties: Vec<PartyTime> = conn
+        .prepare("SELECT party,key,ms FROM session_time WHERE session_pk=?1 ORDER BY party,key")
         .unwrap()
         .query_map([pk], |r| {
-            Ok(Lane {
-                lane: r.get(0)?,
+            Ok(PartyTime {
+                party: r.get(0)?,
                 key: r.get(1)?,
                 ms: r.get(2)?,
             })
@@ -417,9 +421,9 @@ fn stored_and_computed(conn: &rusqlite::Connection, session: &str) -> (Json, Jso
         .unwrap()
         .collect::<rusqlite::Result<_>>()
         .unwrap();
-    let stored = json!([stored(conn, pk).unwrap(), lanes]);
-    let (span, lanes) = compute(conn, pk, CLUSTER_GAP_MS).unwrap();
-    (stored, json!([Some(span), lanes]))
+    let stored = json!([stored(conn, pk).unwrap(), parties]);
+    let (span, parties) = compute(conn, pk, CLUSTER_GAP_MS).unwrap();
+    (stored, json!([Some(span), parties]))
 }
 
 fn index(w: &WriterArchive) -> rusqlite::Connection {
@@ -441,7 +445,7 @@ fn answer(n: u32, at: i64) -> polylogue_model::Message {
 }
 
 #[test]
-fn span_fold_after_append_equals_full_recompute() {
+fn span_after_append_equals_full_recompute() {
     use crate::fixture::writer::sid;
     use polylogue_model::{
         BackgroundUpdate, Event, Output, Session, SessionKind, TimeQuality, ToolAction, ToolOutcome,
@@ -689,8 +693,8 @@ fn a_stored_prefix_changes_shape_only_with_a_new_rule_version() {
         stop_reported: true,
         last_model_stop: Some(Some("end_turn".into())),
         ends: Some(("model_text".into(), "m".into())),
-        lanes: vec![Lane {
-            lane: "tool".into(),
+        parties: vec![PartyTime {
+            party: "tool".into(),
             key: "bash".into(),
             ms: 22,
         }],
@@ -705,7 +709,7 @@ fn a_stored_prefix_changes_shape_only_with_a_new_rule_version() {
                 "tool_no_result":13,"tool_same_timestamp":14,"tool_reversed":15,"tool_sum_ms":16,
                 "tool_union_ms":17,"clustered_ms":18,"prompts":19,"failure":[20,21],"stop_reported":true,
                 "last_model_stop":"end_turn","ends":["model_text","m"],
-                "lanes":[{"lane":"tool","key":"bash","ms":22}]
+                "parties":[{"party":"tool","key":"bash","ms":22}]
             })
         )
     );

@@ -1047,7 +1047,7 @@ impl Handler for Setting {
                     machine,
                 },
             )
-            .map(protocol::setting::Answer::Receipt));
+            .map(protocol::setting::Answer::Outcome));
         }
         let reader = call.reader()?;
         let selected = machine.as_deref().unwrap_or(&invocation.machine);

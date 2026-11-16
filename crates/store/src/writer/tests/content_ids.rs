@@ -1,5 +1,5 @@
 //! Messages named by their content are shown only from their input's latest
-//! chain; natively named messages stay shown from an older chain.
+//! chain; messages named by native ID stay shown from an older chain.
 use super::*;
 
 fn content_row(offset: u64, id: &str, role: Role, text: &str) -> MessageRow {
@@ -73,9 +73,9 @@ fn ai_studio_deleted_chunk_reads_a_c_d() {
 }
 
 #[test]
-fn a_rewrite_keeps_natively_named_messages_it_no_longer_holds() {
+fn rewrite_keeps_native_id_messages_it_no_longer_holds() {
     let w = test_archive();
-    let native = |rows: Vec<MessageRow>| {
+    let with_native_ids = |rows: Vec<MessageRow>| {
         rows.into_iter()
             .map(|r| MessageRow {
                 page_text: false,
@@ -84,8 +84,12 @@ fn a_rewrite_keeps_natively_named_messages_it_no_longer_holds() {
             })
             .collect::<Vec<_>>()
     };
-    store(&w, native(chunks(&[("a", "A"), ("b", "B")])), false);
-    store(&w, native(chunks(&[("a", "A")])), true);
+    store(
+        &w,
+        with_native_ids(chunks(&[("a", "A"), ("b", "B")])),
+        false,
+    );
+    store(&w, with_native_ids(chunks(&[("a", "A")])), true);
     assert_eq!(shown(&w), ["A", "B"]);
 }
 

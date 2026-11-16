@@ -53,7 +53,7 @@ fn a_returning_file_does_not_continue_from_an_index_behind_the_engine() {
 }
 
 /// Rejoining the input's latest chain from another chain takes that
-/// chain's parser position and admitted state, not the path's own.
+/// chain's parser position and committed state, not the path's own.
 #[test]
 fn a_file_rejoining_another_chain_takes_that_chains_parser_position() {
     let stored = claude_user("u1", "back", "stored body");

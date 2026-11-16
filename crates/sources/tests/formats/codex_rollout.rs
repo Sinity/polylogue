@@ -62,7 +62,7 @@ fn outcome(text: &str) -> Value {
 }
 
 #[test]
-fn the_exec_envelope_header_gives_the_exit_code() {
+fn exec_output_header_gives_the_exit_code() {
     assert_eq!(
         outcome("Chunk ID: a\nWall time: 1.0 seconds\nProcess exited with code 0\nOutput:\nok"),
         json!({"kind": "ok"})
@@ -110,7 +110,7 @@ fn a_structural_timeout_is_an_error() {
 }
 
 #[test]
-fn a_json_envelope_exit_code_is_structural() {
+fn json_tool_output_gives_the_exit_code() {
     assert_eq!(
         outcome(r#"{"output":"x","metadata":{"exit_code":0}}"#),
         json!({"kind": "ok"})

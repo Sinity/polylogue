@@ -102,9 +102,9 @@ fn a_read_timeout_does_not_turn_a_write_reply_into_a_failure() {
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let answer: command_surface::Answer<polylogue_model::user::UserOutcome> =
         serde_json::from_value(value).unwrap();
-    let receipt = answer.value().expect("owned write reply");
-    assert_eq!(receipt.id, "synthetic-write");
-    assert!(!receipt.repeat && !receipt.pending);
+    let write_result = answer.value().expect("owned write reply");
+    assert_eq!(write_result.id, "synthetic-write");
+    assert!(!write_result.repeat && !write_result.pending);
 }
 
 /// A finished synthetic read stream and the document it delivers.
@@ -147,9 +147,9 @@ fn read_stream() -> (Vec<u8>, polylogue_model::read::ReadDocument) {
                 index: 1,
                 archive: 1,
             },
-            freshness: polylogue_model::currency::ReadFreshness {
-                local: polylogue_model::currency::ReadCompleteness::empty(),
-                owner: polylogue_model::currency::IndexCurrency::Standalone,
+            freshness: polylogue_model::freshness::ReadFreshness {
+                local: polylogue_model::freshness::ReadCompleteness::empty(),
+                sinex: polylogue_model::freshness::IndexFreshness::Standalone,
             },
             enabled_variants: vec![],
             author: polylogue_model::Author::Operator,
@@ -181,7 +181,7 @@ fn read_stream() -> (Vec<u8>, polylogue_model::read::ReadDocument) {
 }
 
 #[test]
-fn explicit_unbounded_read_stream_waits_beyond_the_read_default_and_finishes_exactly() {
+fn explicit_unbounded_read_stream_waits_beyond_the_read_default_and_finishes() {
     let (wire, expected) = read_stream();
     let output = answer(
         &[

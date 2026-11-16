@@ -188,8 +188,8 @@ pub(super) const DERIVE_COMPUTED: &str = "derive: computed";
 #[cfg(any(test, feature = "fixture"))]
 impl WriterSender {
     /// Holds the derive thread once it computed its next wave, before the
-    /// writer is sent anything, until the barrier is released.
-    pub fn pause_derive_for_test(&self) -> DispatchBarrier {
+    /// writer is sent anything, until the pause is released.
+    pub fn pause_derive_for_test(&self) -> DispatchPause {
         self.pause_user_dispatch_for_test(DERIVE_COMPUTED, DispatchPhase::Owned)
     }
 }

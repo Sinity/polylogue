@@ -1,4 +1,4 @@
-//! Empty members are backed by an exact receiving observation and encoded body.
+//! Empty members are backed by a receiving observation and encoded body.
 use super::*;
 use crate::primary::{AcquisitionReceipt, AcquisitionRoute, RawRange};
 use polylogue_model::BlobHash;
@@ -45,12 +45,13 @@ pub(crate) fn source(
             continue;
         };
         let details: serde_json::Value = serde_json::from_str(&details)?;
-        let (Some(import), Some(acquisition)) = (details.get("import"), details.get("acquisition"))
+        let (Some(import), Some(capture_read)) =
+            (details.get("import"), details.get("acquisition"))
         else {
             continue;
         };
         let import: ImportMember = serde_json::from_value(import.clone())?;
-        let receipt: AcquisitionReceipt = serde_json::from_value(acquisition.clone())?;
+        let read_record: AcquisitionReceipt = serde_json::from_value(capture_read.clone())?;
         let key = crate::InputKey {
             id: input.to_owned(),
             format: format.clone(),
@@ -64,20 +65,20 @@ pub(crate) fn source(
             || format.is_empty()
             || machine.is_empty()
             || path.is_empty()
-            || receipt.route != AcquisitionRoute::ExplicitImport
-            || receipt.source.origin != format
-            || receipt.source.machine != machine
-            || receipt.source.path_bytes != path
-            || receipt.range != (RawRange { start: 0, end: 0 })
-            || receipt.hash != BlobHash::of(b"")
+            || read_record.route != AcquisitionRoute::ExplicitImport
+            || read_record.source.origin != format
+            || read_record.source.machine != machine
+            || read_record.source.path_bytes != path
+            || read_record.range != (RawRange { start: 0, end: 0 })
+            || read_record.hash != BlobHash::of(b"")
         {
             continue;
         }
-        receipt.validate_for(&key)?;
+        read_record.validate_for(&key)?;
         let descriptor: Option<Vec<u8>> = conn
             .query_row(
                 &format!("SELECT storage FROM {prefix}blob WHERE hash=?1 AND size=0"),
-                [&receipt.hash.0[..]],
+                [&read_record.hash.0[..]],
                 |row| row.get(0),
             )
             .optional()?;
@@ -85,34 +86,39 @@ pub(crate) fn source(
             continue;
         };
         let extent = hashed_blobs::Extent::decode(&descriptor)?;
-        if extent.hash.0 != receipt.hash.0
+        if extent.hash.0 != read_record.hash.0
             || extent.decoded_len != 0
             || extent.len == 0
             || extent.kind != hashed_blobs::Kind::Plain
         {
-            return Err(StoreError::BlobCorrupt(receipt.hash));
+            return Err(StoreError::BlobCorrupt(read_record.hash));
         }
         let mut digest = blake3::Hasher::new();
         digest.update(b"polylogue.empty-import-member.v1\0");
         digest.update(&serde_json::to_vec(&(
-            input, chain, &id, &namespace, &member, &receipt,
+            input,
+            chain,
+            &id,
+            &namespace,
+            &member,
+            &read_record,
         ))?);
-        let actual = digest.finalize().to_hex().to_string();
-        if version.is_some_and(|expected| expected != actual) {
+        let computed = digest.finalize().to_hex().to_string();
+        if version.is_some_and(|expected| expected != computed) {
             continue;
         }
         return Ok(Some(AssetSource {
             chain,
             length: 0,
-            version: actual,
-            blob: Some(receipt.hash),
+            version: computed,
+            blob: Some(read_record.hash),
         }));
     }
     Ok(None)
 }
 
 /// A zero decoded length still opens and checks every committed frame. A
-/// zero-sized range on StoredChain cannot provide that physical verification.
+/// zero-sized range on StoredChain cannot provide that frame check.
 pub(crate) fn read(reader: &Reader<'_>, source: &AssetSource) -> Result<Vec<u8>> {
     let hash = source
         .blob

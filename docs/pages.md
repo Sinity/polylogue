@@ -11,7 +11,7 @@ A page is a place where work is organised: a group of sessions, messages, assert
   - `pos` is a fractional position, so inserting a slot never rewrites its siblings.
   - `mode` is `follow` (show the current revision) or `fixed` (show one exact revision, stored as `@rev`).
   - `x`, `y`, `w` and `h` are read only by the board layout.
-- **Edits are ordinary assertion edits.** Editing a slot's text revises the assertion it shows; moving a slot revises the slot; removing a slot withdraws the slot only, and what it showed survives. A move and a text edit by two writers both survive; two incompatible edits of one thing are a conflict ([assertions.md](assertions.md#currency)).
+- **Edits are plain assertion edits.** Editing a slot's text revises the assertion it shows; moving a slot revises the slot; removing a slot withdraws the slot only, and what it showed survives. A move and a text edit by two writers both survive; two incompatible edits of one thing are a conflict ([assertions.md](assertions.md#current-revisions)).
 - **Placing changes only the page.** One assertion can appear on several pages.
 
 ## Layouts
@@ -59,25 +59,25 @@ A live-query slot shows the query's current answer. A slot that cites a kept res
 
 ## Time
 
-- `page:X read --at T` renders the page from the revisions current at T, through the as-of read of [assertions.md](assertions.md#currency).
+- `page:X read --at T` renders the page from the revisions current at T, through the as-of read of [assertions.md](assertions.md#current-revisions).
 - **Checkpoint.** `page:X keep` writes one page revision in which every `follow` slot is fixed at its current revision and every live-query slot is replaced by a newly kept result. `page:X@<rev>` then shows exactly what was there.
 
 ## Investigations
 
-An investigation is a page made from the `investigation` template whose subject (a slot in section `subject`) is a `question`; it may start as a question plus a useful selection of sessions and messages. There is no separate investigation record. Four facts stay separate on it: whether a reference still resolves to the text it cited, whether something supports a claim (`supports` assertions), the editorial choice to place it (the slot), and standing authority (an accepted judgment of a `lesson` or `method`). An intact reference is not evidence that a claim is true.
+An investigation is a page made from the `investigation` template whose subject (a slot in section `subject`) is a `question`; it may start as a question plus a useful selection of sessions and messages. There is no separate investigation record. Four facts stay separate on it: whether a reference still resolves to the text it cited, whether something supports a claim (`supports` assertions), the editorial choice to place it (the slot), and standing acceptance (an accepted judgment of a `lesson` or `method`). An intact reference does not show that a claim is true.
 
 ## Experiments
 
 An experiment is a page made from the `experiment` template, for real comparisons only.
 - Its assignment is a `decision` on the page with value `{units: result:<id>, arms, method: list | seeded:<seed>, assignment: {unit: arm}}`, written before any exposure. A revision of the assignment after any assigned unit's exposure is refused.
 - Outcomes are `outcome` assertions or judgments per unit. Unresolved units stay in the denominator: `page:X analyze` reports, per arm, the interval `[satisfied/n, (satisfied+unresolved)/n]`, never a point estimate that drops unresolved units.
-- Polylogue's own output uses causal words only about a page with a frozen assignment.
+- Polylogue's own output uses causal words only about a page with a fixed assignment.
 
 ## Ping records
 
 A ping is an explicit address with text. It is how one session, or the operator, asks another session to do something.
 
 - **A ping is an assertion** of kind `ping`: `about` is the recipient session (resolved from an alias when sent), `scope` is the page it came from, and its value is `{text, subject?, reply_to?}`, where `subject` is an exact reference and `reply_to` a page and section. Its author is the sender.
-- **Typing an exact address sends it.** `@[<reference or @alias>] text` in a message written by the operator or an agent is a ping; so are the CLI `ping` verb, the MCP operation and the web composer. A bare `@reviewer` without brackets is ordinary text, so nobody pings by accident.
+- **Typing an exact address sends it.** `@[<reference or @alias>] text` in a message written by the operator or an agent is a ping; so are the CLI `ping` verb, the MCP operation and the web composer. A bare `@reviewer` without brackets is plain text, so nobody pings by accident.
 - **Once per ping.** A ping written as markup has a derived ID ([assertions.md](assertions.md#markup)), so re-parsing, re-importing, quoting or translating the text never sends it again; deliberately sending the same text again is a new ping.
 - **Delivery and replies** (live state, resume, starting a role instance, queueing, the reply link) are [agents.md](agents.md#pings). Each attempt is recorded as a delivery.

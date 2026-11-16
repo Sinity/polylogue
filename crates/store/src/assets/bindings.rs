@@ -1,7 +1,9 @@
-//! Source-scoped attachment claims and ingress-validated receiving members.
+//! Attachment bindings as each source states them, and receiving members
+//! checked when their bytes arrive.
 //!
-//! Canonical products preserve opaque witnesses. Reads require the same actual
-//! member observation and exact source pins; historical claims cannot mint one.
+//! Stored records keep byte matches. Reads require the same member observation
+//! and pinned source versions; a binding stated by an older reading cannot
+//! create one.
 use super::{AssetSource, AttachmentState, ObservedMember};
 use crate::{Reader, Result, StoreError};
 use polylogue_model::{
@@ -28,7 +30,7 @@ pub struct BindingContext {
 pub struct BindingSelection {
     pub context: BindingContext,
     /// Complete declared identity, including original slot and namespace. Equal
-    /// candidate bytes never merge different claims or export contexts.
+    /// candidate bytes never merge different stated bindings or export contexts.
     pub claim: AttachmentBinding,
 }
 
@@ -53,7 +55,7 @@ pub struct ReceivingMember {
 pub struct ValidatedMember {
     version: u8,
     member: ReceivingMember,
-    // Canonical source fact identity, not a local SQLite rowid.
+    // The source observation ID, not a local SQLite rowid.
     observation: String,
 }
 impl ValidatedMember {
@@ -81,7 +83,7 @@ impl CandidateMember {
     pub fn candidate(&self) -> u64 {
         self.candidate
     }
-    pub fn witness(&self) -> &ValidatedMember {
+    pub fn byte_match(&self) -> &ValidatedMember {
         &self.witness
     }
 }
@@ -139,7 +141,7 @@ impl AttachmentBindingRecord {
     pub(crate) fn validate(&self) -> Result<()> {
         self.claim
             .validate()
-            .map_err(|_| invalid("invalid attachment claim"))?;
+            .map_err(|_| invalid("invalid stated attachment binding"))?;
         if self.context.input.is_empty()
             || self.context.chain <= 0
             || self.context.import_id.is_empty()
@@ -149,23 +151,23 @@ impl AttachmentBindingRecord {
             return Err(invalid("invalid attachment binding context"));
         }
         for association in &self.members {
-            let witness = &association.witness;
+            let byte_match = &association.witness;
             let candidate = usize::try_from(association.candidate)
                 .ok()
                 .and_then(|index| self.claim.candidates.get(index))
-                .ok_or_else(|| invalid("attachment witness has no candidate"))?;
-            if witness.version != 1
-                || witness.observation.is_empty()
-                || witness.member.import_id != self.context.import_id
-                || witness.member.input.is_empty()
-                || witness.member.member.is_empty()
-                || witness.member.chain <= 0
-                || witness.member.source_version.is_empty()
-                || witness.member.hash != candidate.hash
-                || witness.member.size != candidate.size
+                .ok_or_else(|| invalid("attachment byte match has no candidate"))?;
+            if byte_match.version != 1
+                || byte_match.observation.is_empty()
+                || byte_match.member.import_id != self.context.import_id
+                || byte_match.member.input.is_empty()
+                || byte_match.member.member.is_empty()
+                || byte_match.member.chain <= 0
+                || byte_match.member.source_version.is_empty()
+                || byte_match.member.hash != candidate.hash
+                || byte_match.member.size != candidate.size
             {
                 return Err(invalid(
-                    "attachment witness differs from its receiving candidate",
+                    "attachment byte match differs from its receiving candidate",
                 ));
             }
         }
@@ -184,13 +186,13 @@ pub struct BindingResolution {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BindingContexts {
     pub state: AttachmentState,
-    /// Retained binding contexts, including distinct conflicting claim facts.
+    /// Stored binding contexts, including distinct conflicting stated bindings.
     pub namespace_count: u64,
     pub contexts: Vec<BindingResolution>,
 }
 
 /// The reader borrow pins both membership and extents to this read snapshot.
-/// Exposing its natural identity does not expose a proof constructor.
+/// Exposing its natural identity does not expose a byte-match constructor.
 pub struct PinnedMember<'reader, 'pool> {
     reader: &'reader Reader<'pool>,
     member: ReceivingMember,
@@ -238,7 +240,9 @@ impl PinnedMember<'_, '_> {
         .ok_or_else(|| invalid("pinned attachment source is unavailable"))?;
         let hash = hash_member(self.reader, &self.member.input, self.member.chain, &pin)?;
         if hash != self.member.hash {
-            return Err(invalid("pinned attachment hash differs from its witness"));
+            return Err(invalid(
+                "pinned attachment hash differs from its byte match",
+            ));
         }
         Ok(hash)
     }
@@ -266,12 +270,12 @@ fn invalid(message: &str) -> StoreError {
 }
 fn source_prefix(conn: &Connection) -> Result<&'static str> {
     Ok(match crate::source::Source::of(conn)? {
-        crate::source::Source::Ledger => "",
+        crate::source::Source::Standalone => "",
         crate::source::Source::Cache => "source_",
     })
 }
 
-/// The exact recorded endpoint is required; a later revision never selects a
+/// The recorded endpoint is required; a later revision never selects a
 /// different chain or silently extends the validated member's bytes.
 fn pinned_source(
     (index, conn): (&Connection, &Connection),
@@ -401,31 +405,31 @@ pub(super) fn hash_member(
     Ok(BlobHash(*digest.finalize().as_bytes()))
 }
 
-fn current_witness(
+fn check_member_is_current(
     index: &Connection,
     catalog: &Connection,
     prefix: &str,
-    witness: &ValidatedMember,
+    byte_match: &ValidatedMember,
 ) -> Result<bool> {
-    let actual: Option<(String, String, String)> = index
+    let recorded: Option<(String, String, String)> = index
         .query_row(
             "SELECT import_id,input,member FROM import_member WHERE observation=?1",
-            [&witness.observation],
+            [&byte_match.observation],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?;
-    let Some((namespace, input, member)) = actual else {
+    let Some((namespace, input, member)) = recorded else {
         return Ok(false);
     };
-    if namespace != witness.member.import_id
-        || input != witness.member.input
-        || member != witness.member.member
+    if namespace != byte_match.member.import_id
+        || input != byte_match.member.input
+        || member != byte_match.member.member
     {
         return Ok(false);
     }
-    // Authorship is already retained by the source observation. Match the exact
+    // The source observation already stores authorship. Match the
     // membership keys here without replacing its recorded attribution.
-    let row: Option<(Option<i64>,Option<i64>,Option<String>)> = catalog.query_row(&format!("SELECT coalesce(o.chain,r.chain),coalesce(o.length,r.length),o.details_json FROM {prefix}observation o LEFT JOIN {prefix}revision r ON r.input=o.input AND r.number=o.revision WHERE o.id=?1 AND o.input=?2"), params![witness.observation,witness.member.input], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?;
+    let row: Option<(Option<i64>,Option<i64>,Option<String>)> = catalog.query_row(&format!("SELECT coalesce(o.chain,r.chain),coalesce(o.length,r.length),o.details_json FROM {prefix}observation o LEFT JOIN {prefix}revision r ON r.input=o.input AND r.number=o.revision WHERE o.id=?1 AND o.input=?2"), params![byte_match.observation,byte_match.member.input], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?;
     let Some((Some(chain), Some(length), Some(details))) = row else {
         return Ok(false);
     };
@@ -434,25 +438,25 @@ fn current_witness(
         || details
             .pointer("/import/import_id")
             .and_then(|v| v.as_str())
-            != Some(witness.member.import_id.as_str())
+            != Some(byte_match.member.import_id.as_str())
         || details.pointer("/import/member").and_then(|v| v.as_str())
-            != Some(witness.member.member.as_str())
-        || chain != witness.member.chain
+            != Some(byte_match.member.member.as_str())
+        || chain != byte_match.member.chain
         || length < 0
-        || length as u64 != witness.member.size
+        || length as u64 != byte_match.member.size
     {
         return Ok(false);
     }
     Ok(pinned_source(
         (index, catalog),
         prefix,
-        &witness.member.input,
+        &byte_match.member.input,
         chain,
-        witness.member.size,
-        Some(&witness.observation),
-        Some(&witness.member.source_version),
+        byte_match.member.size,
+        Some(&byte_match.observation),
+        Some(&byte_match.member.source_version),
     )?
-    .is_some_and(|pin| pin.version == witness.member.source_version))
+    .is_some_and(|pin| pin.version == byte_match.member.source_version))
 }
 
 fn source_context(
@@ -520,8 +524,8 @@ pub(super) fn asset_match(
 }
 
 fn binding_body(conn: &Connection, selection: &BindingSelection) -> Result<Option<Vec<u8>>> {
-    // The key retains complete typed claim bytes, rather than a candidate hash
-    // or a digest that could silently coalesce different declared provenance.
+    // The key keeps the complete typed stated-binding bytes, rather than a
+    // candidate hash or a digest that could silently merge different sources.
     let claim = serde_json::to_vec(&selection.claim)?;
     Ok(conn
         .query_row(
@@ -546,7 +550,7 @@ fn binding_body(conn: &Connection, selection: &BindingSelection) -> Result<Optio
         .optional()?)
 }
 
-fn retained_bindings(
+fn stored_bindings(
     conn: &Connection,
     message: &MessageId,
     source_version: Option<BlobHash>,
@@ -581,7 +585,9 @@ fn retained_bindings(
         let encoded_claim: Vec<u8> = row.get(9)?;
         let claim: AttachmentBinding = serde_json::from_slice(&encoded_claim)?;
         if serde_json::to_vec(&claim)? != encoded_claim {
-            return Err(invalid("attachment claim key is not canonical"));
+            return Err(invalid(
+                "attachment binding key is not in canonical JSON form",
+            ));
         }
         if claim.block.to_string() != row.get::<_, String>(4)?
             || claim.attachment.to_string() != row.get::<_, String>(5)?
@@ -590,7 +596,7 @@ fn retained_bindings(
             || claim.namespace.import_id != row.get::<_, String>(8)?
         {
             return Err(invalid(
-                "attachment claim key differs from its declared namespace or slot",
+                "attachment binding key differs from its declared namespace or slot",
             ));
         }
         let selection = BindingSelection {
@@ -611,7 +617,9 @@ fn retained_bindings(
         let record: AttachmentBindingRecord = crate::encoding::unpack_json(&body)?;
         record.validate()?;
         if record.selection() != selection {
-            return Err(invalid("attachment projection key differs from its fact"));
+            return Err(invalid(
+                "attachment binding key differs from its stored record",
+            ));
         }
         records.push(record);
     }
@@ -626,7 +634,7 @@ pub(crate) fn known(conn: &Connection, record: &AttachmentBindingRecord) -> Resu
     let existing: AttachmentBindingRecord = crate::encoding::unpack_json(&body)?;
     if existing != *record {
         return Err(StoreError::Conflict(
-            "different attachment binding facts under one source context".into(),
+            "different attachment binding records under one source context".into(),
         ));
     }
     Ok(true)
@@ -644,7 +652,7 @@ pub(crate) fn project(
         return Ok(());
     }
     // Source/member absence is an unavailable association, not a reason to
-    // discard canonical claims or certify a different member by its hash.
+    // discard stated bindings or accept a different member by its hash.
     let (catalog, prefix) = if matches!(
         crate::source::Source::of(index)?,
         crate::source::Source::Cache
@@ -655,7 +663,7 @@ pub(crate) fn project(
     };
     let _present = source_context(index, catalog, prefix, &record.context)?;
     for association in &record.members {
-        let _present = current_witness(index, catalog, prefix, &association.witness)?;
+        let _present = check_member_is_current(index, catalog, prefix, &association.witness)?;
     }
     let packed = crate::encoding::pack_bytes(&body)?;
     index.execute(
@@ -679,7 +687,7 @@ pub(crate) fn project(
 }
 
 impl Reader<'_> {
-    /// Hashes actual stored bytes in fixed-size chunks before minting a witness.
+    /// Hashes the stored bytes in fixed-size chunks before recording a byte match.
     pub fn validate_attachment_member(
         &self,
         source: &ObservedMember,
@@ -693,7 +701,7 @@ impl Reader<'_> {
             return Err(invalid("invalid receiving import member"));
         }
         let Some((chain, length)) = observed_pin(self.conn()?, "source_", source)? else {
-            return Err(invalid("receiving member has no exact source observation"));
+            return Err(invalid("receiving member has no source observation"));
         };
         if length != size {
             return Err(invalid("receiving member size differs from its candidate"));
@@ -738,14 +746,16 @@ impl Reader<'_> {
         let record: AttachmentBindingRecord = crate::encoding::unpack_json(&body)?;
         record.validate()?;
         if record.selection() != *selection {
-            return Err(invalid("attachment projection key differs from its fact"));
+            return Err(invalid(
+                "attachment binding key differs from its stored record",
+            ));
         }
         if matches!(
             crate::source::Source::of(conn)?,
             crate::source::Source::Cache
         ) {
-            // Canonical serialization preserves the witness, but receiving
-            // authority requires authenticated original admission context.
+            // The stored record keeps its byte match, but only the original
+            // commit context can show which member received the bytes.
             return Ok(Some(BindingResolution {
                 selection: selection.clone(),
                 claim: record.claim,
@@ -758,7 +768,7 @@ impl Reader<'_> {
         let context_present = source_context(conn, conn, "source_", &record.context)?;
         if context_present {
             for association in &record.members {
-                if current_witness(conn, conn, "source_", &association.witness)?
+                if check_member_is_current(conn, conn, "source_", &association.witness)?
                     && seen.insert(serde_json::to_vec(&(
                         association.candidate,
                         &association.witness.member,
@@ -782,14 +792,14 @@ impl Reader<'_> {
         }))
     }
 
-    /// Frozen claims from every retained matching reading, including sources
+    /// Stated bindings from every stored matching reading, including sources
     /// not selected for display. This metadata never grants member availability.
-    pub fn attachment_binding_claims(
+    pub fn stated_attachment_bindings(
         &self,
         message: &MessageId,
         source_version: BlobHash,
     ) -> Result<Vec<AttachmentBindingRecord>> {
-        retained_bindings(self.conn()?, message, Some(source_version), None, false)
+        stored_bindings(self.conn()?, message, Some(source_version), None, false)
     }
 
     pub fn attachment_binding_contexts(
@@ -799,7 +809,7 @@ impl Reader<'_> {
         attachment: u64,
     ) -> Result<BindingContexts> {
         let records =
-            retained_bindings(self.conn()?, message, None, Some((block, attachment)), true)?;
+            stored_bindings(self.conn()?, message, None, Some((block, attachment)), true)?;
         let mut contexts = Vec::new();
         for record in records {
             if let Some(resolution) = self.attachment_binding(&record.selection())? {

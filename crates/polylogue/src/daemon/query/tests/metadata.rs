@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn explicit_money_projection_keeps_the_declared_dollar_unit() {
+fn selected_money_field_keeps_the_declared_dollar_unit() {
     let archive = morrow();
     let fields = vec!["id".into(), "cost".into()];
     let answer = run_q(
@@ -18,7 +18,7 @@ fn explicit_money_projection_keeps_the_declared_dollar_unit() {
 }
 
 #[test]
-fn empty_exists_and_scoped_matches_use_the_real_child_projection() {
+fn empty_exists_and_scoped_matches_use_real_child_fields() {
     let mut archive = morrow();
     archive
         .fx
@@ -74,7 +74,7 @@ fn empty_exists_and_scoped_matches_use_the_real_child_projection() {
 }
 
 #[test]
-fn grouped_aggregate_keeps_implicit_count_partial_evidence_and_nullable_keyset_order() {
+fn grouped_aggregate_keeps_partial_count_and_nullable_key_order() {
     let directory = tempfile::tempdir().unwrap();
     let mut fx = Fixture::new(&directory.path().join("archive")).unwrap();
     for (id, repo, cost) in [

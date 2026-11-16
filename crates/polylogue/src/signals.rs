@@ -50,7 +50,7 @@ impl From<&str> for Held {
 impl From<crate::daemon::Failure> for Held {
     fn from(failure: crate::daemon::Failure) -> Self {
         Self {
-            reason: "owner context is unavailable".into(),
+            reason: "Sinex context is unavailable".into(),
             detail: Some(Box::new(failure.answer())),
         }
     }
@@ -124,8 +124,8 @@ fn load(d: &Daemon) -> polylogue_store::Result<Option<Checkpoint>> {
         .and_then(|r| r.signal_checkpoint(d.config.requests.machine()))
 }
 
-/// The result distinguishes durable enqueue from confirmed state. Effects and
-/// worker acknowledgements are released only after the request is readable.
+/// The result distinguishes a queued write from confirmed state. Effects and
+/// worker acknowledgments are released only after the request is readable.
 fn persist(
     d: &Daemon,
     context: &crate::operation::Context,
@@ -191,7 +191,7 @@ fn tick(d: &Daemon) -> Result<Tick, Held> {
         None => initial(d, &context, attention.as_ref())?,
     };
     if clock.now.as_millisecond() < checkpoint.evaluator.now() {
-        return Err("clock precedes the durable evaluator checkpoint".into());
+        return Err("clock precedes the stored evaluator checkpoint".into());
     }
     let assertions = crate::daemon::query::assertions::list(&reader, "kind:signal", &context)
         .map_err(|e| e.to_string())?;
@@ -212,7 +212,7 @@ fn tick(d: &Daemon) -> Result<Tick, Held> {
         match rules::definition(&assertion, &d.config.signals.rule_configuration()) {
             Ok(definition) => {
                 let id = format!("authored:{}", definition.family);
-                held_rules.push(json!({"id":id,"reason":"canonical rule closure and native invocation eligibility are unavailable"}));
+                held_rules.push(json!({"id":id,"reason":"confirmed rule dependencies and whether the rule may run here are unknown"}));
                 definitions.push(json!({
                     "id":id,"name":definition.rule.name,"query":definition.rule.query,
                     "author":"unavailable",
@@ -221,14 +221,11 @@ fn tick(d: &Daemon) -> Result<Tick, Held> {
             Err(reason) => unusable.push(json!({"id":assertion.fact.id,"reason":reason})),
         }
     }
-    // A current-looking row set is not proof of the complete revision graph.
-    // In particular, an empty read cannot authorize withdrawal of retained work.
-    for retained in &checkpoint.rules {
-        if !held_rules
-            .iter()
-            .any(|row| row["id"] == retained.version.id)
-        {
-            held_rules.push(json!({"id":retained.version.id,"reason":"canonical rule closure and native invocation eligibility are unavailable"}));
+    // A current-looking row set does not show the complete revision graph.
+    // In particular, an empty read cannot authorize withdrawal of kept work.
+    for kept in &checkpoint.rules {
+        if !held_rules.iter().any(|row| row["id"] == kept.version.id) {
+            held_rules.push(json!({"id":kept.version.id,"reason":"confirmed rule dependencies and whether the rule may run here are unknown"}));
         }
     }
     if let Ok(mut status) = d.signals.lock() {
@@ -243,7 +240,7 @@ fn tick(d: &Daemon) -> Result<Tick, Held> {
         // Existing checkpoints remain byte-for-byte unchanged while held.
         let (_, confirmed) = persist(d, &context, None, checkpoint, vec![], vec![])?;
         if !confirmed {
-            return Err("signal checkpoint is durably pending canonical confirmation".into());
+            return Err("signal checkpoint is durably pending confirmation".into());
         }
     }
     #[cfg(test)]
@@ -281,7 +278,7 @@ pub fn run(
         report(&d, error);
     }
     result.map_err(|error| {
-        // Preserve structured owner-context failures as well as their reason.
+        // Preserve structured Sinex context failures as well as their reason.
         std::io::Error::other(serde_json::to_string(&error).unwrap_or(error.reason))
     })
 }

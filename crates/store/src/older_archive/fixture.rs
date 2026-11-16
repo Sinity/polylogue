@@ -700,8 +700,8 @@ pub const STANDARD_REFUSALS: [(&str, &str); 3] = [
     ("chat_action", "1 rows"),
 ];
 
-/// What [`linked_twins`] wrote.
-pub struct LinkedTwins {
+/// What [`linked_copies`] wrote.
+pub struct LinkedCopies {
     pub root: PathBuf,
     /// The input last seen at the file's real path.
     pub real: String,
@@ -715,7 +715,7 @@ pub struct LinkedTwins {
 /// the older format recorded a file reached through a linked directory: the
 /// same bytes, the same device and inode, observed at `real_dir/one.jsonl`
 /// and at `linked_dir/one.jsonl`, where `linked_dir` links to `real_dir`.
-pub fn linked_twins(root: &Path, real_dir: &Path, linked_dir: &Path) -> LinkedTwins {
+pub fn linked_copies(root: &Path, real_dir: &Path, linked_dir: &Path) -> LinkedCopies {
     let b = Builder::create(root, 4);
     let machine = "0123456789abcdef0123456789abcdef";
     b.machine(machine, "workstation", 1_000);
@@ -756,7 +756,7 @@ pub fn linked_twins(root: &Path, real_dir: &Path, linked_dir: &Path) -> LinkedTw
         observation,
         &[&"l1", &linked, &machine, &linked_path, &length, &2_001, &4],
     );
-    LinkedTwins {
+    LinkedCopies {
         root: b.finish(),
         real: real.to_owned(),
         linked: linked.to_owned(),

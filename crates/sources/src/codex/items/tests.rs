@@ -150,7 +150,7 @@ fn completed_items_give_exit_codes_and_durations() {
 }
 
 #[test]
-fn a_multi_file_change_path_projection_does_not_depend_on_json_object_order() {
+fn multi_file_change_paths_ignore_json_object_order() {
     for changes in [r#"{"z.rs":{},"a.rs":{}}"#, r#"{"a.rs":{},"z.rs":{}}"#] {
         let changes: Json = serde_json::from_str(changes).unwrap();
         let blocks = recovered_call(
@@ -190,7 +190,7 @@ fn recovered_mcp_result_keeps_media_and_structured_parts() {
 }
 
 #[test]
-fn patch_body_is_exact_for_native_and_namespaced_tools() {
+fn patch_body_kept_for_built_in_and_namespaced_tools() {
     let patch = "*** Begin Patch\n*** Add File: synthetic.txt\n+λ\n*** End Patch";
     for name in ["apply_patch", "functions.apply_patch"] {
         assert_eq!(written_text(name, &json!(patch)).as_deref(), Some(patch));

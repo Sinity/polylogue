@@ -144,7 +144,7 @@ fn outcome_event(
 /// Who an address names when it is sent.
 enum Recipients {
     /// Sessions: one reference, or every session a quoted query selects
-    /// then (a broadcast, frozen: sessions that start matching later
+    /// then (a broadcast fixed when sent: sessions that start matching later
     /// receive nothing).
     Sessions(Vec<SessionId>),
     /// A role with no running instance: a ping starts one; a notice does
@@ -202,7 +202,7 @@ fn role_instance(d: &Daemon, name: &str, now: i64) -> Result<Option<SessionId>, 
         let Ok(id) = SessionId::parse(&session) else {
             continue;
         };
-        // A session just started has no live evidence yet; its open
+        // A session just started has no live events yet; its open
         // connection says it runs.
         let running = d.acts.is_hosted(&id)
             || reader
@@ -261,7 +261,7 @@ fn recipients(
 
 /// A session's live state, live facts and directory for an act: from the
 /// archive, or, for a session Polylogue just started and still hosts, no
-/// evidence yet and state `unknown`.
+/// live events yet and state `unknown`.
 fn session_state(
     d: &Daemon,
     session: &SessionId,
@@ -417,7 +417,7 @@ fn ping(
             }
         };
         let pack = ping_text(&delivery, &ping, &author_name, text, about.as_deref());
-        // Held from before its row exists, so nothing settles or claims it
+        // Held from before its row exists, so nothing closes or claims it
         // until its channel is decided.
         {
             let _claims = d.acts.claim_lock();
@@ -510,7 +510,7 @@ fn claim(d: &Daemon, session: &SessionId) -> Result<Answer<Value>, Failure> {
 /// `everyone` reads every session with pending items (at start); otherwise
 /// only sessions whose flag is up are looked at. Items already handed out
 /// are left to their hook or run.
-pub(crate) fn settle_ended(d: &Daemon, now: i64, everyone: bool) {
+pub(crate) fn finish_ended(d: &Daemon, now: i64, everyone: bool) {
     let invocation = d.invocation(&crate::operation::Context::worker_authorship("mailbox"));
     let Ok(reader) = d.reads.reader() else {
         return;
@@ -894,7 +894,7 @@ fn resume_session(daemon: &std::sync::Arc<Daemon>, run: ResumeRun) {
         });
     if spawned.is_err() {
         // Nothing runs: the pings go back to the mailbox, where they are
-        // settled like any other.
+        // handled like any other.
         daemon.acts.release(&delivery);
         while let Some(queued) = daemon.acts.resume_finished(&session) {
             daemon.acts.release(&queued.delivery);

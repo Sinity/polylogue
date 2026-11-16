@@ -49,9 +49,9 @@ impl DefaultId {
                 "withdrawn",
                 "note",
                 "assertion",
-                "evidence_until",
+                "seen_by",
             ],
-            Self::NotWithdrawn => &["withdrawn", "note", "assertion", "evidence_until"],
+            Self::NotWithdrawn => &["withdrawn", "note", "assertion", "seen_by"],
             Self::VisibleIfSession => &[],
         }
     }

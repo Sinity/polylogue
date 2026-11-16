@@ -1,4 +1,4 @@
-//! Each leaf is read at its path, retained in row attributes, or reported unused.
+//! Each leaf is read at its path, kept in row attributes, or reported unused.
 
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 3;
@@ -33,7 +33,7 @@ pub struct KnownKinds {
 pub enum Rule {
     /// Reads this value. A container does not account for its children.
     Read(ExpectedType),
-    /// Retains this value, including its descendants, in row attributes.
+    /// Keeps this value, including its descendants, in row attributes.
     Kept(&'static str),
     /// A known field with no parsed representation. Its leaves remain unused.
     Excluded(&'static str),
@@ -243,7 +243,7 @@ fn escape(name: &str) -> String {
 }
 
 /// Parent records expose their own fields; each child record is accounted by
-/// its own parser table. Empty placeholders retain the container's wire type.
+/// its own parser table. Empty placeholders keep the container's wire type.
 pub fn header(value: &Json, records: &[&str]) -> Json {
     let Some(object) = value.as_object() else {
         return value.clone();
@@ -294,8 +294,8 @@ impl ExpectedType {
     }
 }
 
-/// Copies only fields declared retained. Attribute names are their full wire
-/// paths; array-bearing retained values are copied at their enclosing path.
+/// Copies only fields declared kept. Attribute names are their full wire
+/// paths; array-bearing stored values are copied at their enclosing path.
 pub fn attributes(value: &Json, fields: &Fields) -> serde_json::Map<String, Json> {
     fields
         .rules

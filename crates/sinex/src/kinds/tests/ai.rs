@@ -8,7 +8,7 @@ fn declaration(name: &str) -> sinex_model::KindDeclaration {
 }
 
 #[test]
-fn native_ai_fields_bind_without_reading_the_internal_product() {
+fn sinex_ai_fields_bind_without_reading_the_product() {
     let declaration = declaration("polylogue.message");
     let catalog = sinex_model::query::catalog::QueryCatalog::new([declaration.clone()]);
     for path in [
@@ -31,7 +31,7 @@ fn native_ai_fields_bind_without_reading_the_internal_product() {
             declaration.payload_schema.as_ref().unwrap()["properties"]
                 .get(field)
                 .is_some(),
-            "undeclared native message field {field}"
+            "undeclared message payload field {field}"
         );
     }
     assert_eq!(payload["message"], "codex:m");
@@ -56,10 +56,10 @@ fn native_ai_fields_bind_without_reading_the_internal_product() {
 }
 
 #[test]
-fn source_time_quality_and_precision_are_not_promoted_to_intrinsic_instants() {
+fn source_time_quality_does_not_become_an_instant() {
     let mut product = message("input-a", 0);
     let at = polylogue_model::Timestamp::parse_rfc3339("2026-01-02T03:04:05Z").unwrap();
-    for (timestamp, evidence, expected) in [
+    for (timestamp, accuracy, expected) in [
         (
             Some(at),
             polylogue_model::TimeEvidence::intrinsic(polylogue_model::Precision::Instant),
@@ -86,19 +86,19 @@ fn source_time_quality_and_precision_are_not_promoted_to_intrinsic_instants() {
         let Product::Message { facts, .. } = &mut product else {
             unreachable!()
         };
-        facts.message.set_time(timestamp, evidence).unwrap();
+        facts.message.set_time(timestamp, accuracy).unwrap();
         let mut document = polylogue_model::Document::new(
             polylogue_model::DocumentId::parse("codex:document").unwrap(),
             polylogue_model::DocumentPurpose::Context,
         );
-        document.set_time(timestamp, evidence).unwrap();
+        document.set_time(timestamp, accuracy).unwrap();
         let event = polylogue_model::Event {
             session: None,
             kind: "captured".into(),
             at: timestamp,
-            at_quality: evidence.quality,
-            at_precision: evidence.precision,
-            at_until: evidence.until,
+            at_quality: accuracy.quality,
+            at_precision: accuracy.precision,
+            at_until: accuracy.until,
             after: None,
             range: Some((0, 1)),
             data: json!({}),
@@ -122,7 +122,7 @@ fn source_time_quality_and_precision_are_not_promoted_to_intrinsic_instants() {
         ] {
             let payload = products::payload(&product, 0).unwrap();
             assert_eq!(payload["at"], json!(timestamp));
-            assert_eq!(payload["at_evidence"], json!(evidence));
+            assert_eq!(payload["at_evidence"], json!(accuracy));
             assert_eq!(
                 declaration(products::kind(&product))
                     .evaluate(&payload, sinex_model::Class::Open)
@@ -135,7 +135,7 @@ fn source_time_quality_and_precision_are_not_promoted_to_intrinsic_instants() {
 }
 
 #[test]
-fn session_identity_and_clock_evidence_are_declared_native_fields() {
+fn session_identity_and_time_accuracy_are_declared() {
     let mut session = polylogue_model::Session::new(
         polylogue_model::SessionId::parse("codex:s").unwrap(),
         polylogue_model::SessionKind::Main,
@@ -226,7 +226,7 @@ fn tool_facts_keep_original_coordinates_and_only_their_sessions_observed_context
         .into_iter()
         .enumerate()
         .map(|(index, product)| {
-            let anchor = match &product {
+            let offset = match &product {
                 Product::ToolCall { facts, .. } => facts.source_start,
                 Product::Message { facts, .. } => facts.offset,
                 _ => 0,
@@ -235,7 +235,7 @@ fn tool_facts_keep_original_coordinates_and_only_their_sessions_observed_context
                 product,
                 location: Some(SourceLocation {
                     material: "00000000-0000-0000-0000-000000000001".into(),
-                    anchor,
+                    anchor: offset,
                 }),
                 parents: vec![],
                 machine: Some("fixture-host".into()),
@@ -299,7 +299,7 @@ fn tool_facts_keep_original_coordinates_and_only_their_sessions_observed_context
         writes
             .iter()
             .find(|write| matches!(write.product, Product::ToolCall { .. }))
-            .map(|write| eligibility(&write.product))
+            .map(|write| interpreted_record(&write.product))
             .unwrap()
     );
 }

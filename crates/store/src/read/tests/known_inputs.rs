@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[test]
-fn known_inputs_choose_the_latest_eligible_observation_and_keep_parser_facts() {
+fn known_inputs_choose_the_latest_usable_observation() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let archive = Connection::open(fixture.archive.archive_db()).unwrap();
@@ -19,7 +19,7 @@ fn known_inputs_choose_the_latest_eligible_observation_and_keep_parser_facts() {
            ('facts','watched','m','/home/op/renamed.jsonl','back',9,10,20,11,12,'test',40),
            ('other','other','other-machine','/home/op/session.jsonl','first',13,14,99,15,16,'test',500);"
     ).unwrap();
-    // These fixture paths are explicitly synthetic UTF-8 native observations.
+    // These fixture paths are synthetic UTF-8 observations.
     archive
         .execute("UPDATE observation SET path_bytes=CAST(path AS BLOB)", [])
         .unwrap();

@@ -1,4 +1,4 @@
-//! Optional file pointers. Selection uses the ordinary assertion query and
+//! Optional file pointers. Selection uses the assertion query and
 //! delivery history; only uncommitted coordination lives in memory.
 use crate::briefing::Prepared;
 use crate::daemon::{query, scope::SharedScopeIndex};
@@ -132,7 +132,7 @@ fn already_given(
     target: &str,
     context: &Arc<crate::operation::Context>,
 ) -> Result<bool, StoreError> {
-    // This recipient is an exact typed identity supplied by the hook, not an
+    // This recipient is a typed identity supplied by the hook, not an
     // archive prefix: the first prompt can precede provider capture.
     let text = format!(
         "deliveries where event:advice bytes > 0 text(recipient) = {} refs:{} refs:{}",
@@ -211,7 +211,7 @@ pub fn prepare(
         return Ok(empty());
     };
     let now: Timestamp = context.clock.now.into();
-    // The query owns currency and the operator's latest exact-revision judgment.
+    // The query decides current revisions and the operator's latest judgment of a revision.
     let candidates = query::assertions::ids(
         reader,
         "(kind:decision OR kind:correction) judged:accepted current:true text(about) ~ \"file:\" | sort by created_at desc, id",

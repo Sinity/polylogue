@@ -39,11 +39,11 @@ fn msg<'a>(
 }
 
 /// A message ID in its session's origin, as every stored message has.
-fn scoped(session: &str, native: &str) -> String {
+fn scoped(session: &str, native_id: &str) -> String {
     use polylogue_model::{MessageId, NativeId, SessionId};
     MessageId::new(
         SessionId::parse(session).unwrap().origin().clone(),
-        NativeId::new(native).unwrap(),
+        NativeId::new(native_id).unwrap(),
     )
     .to_string()
 }
@@ -1320,7 +1320,7 @@ fn attached_rows_follow_each_session() {
 /// `[first:n, last:k]` keeps the last k of each parent's first n children,
 /// for every parent on the page at once; no field list attaches the child
 /// unit's own columns. The expectation reads each session's messages through
-/// an ordinary messages query (docs/query.md: Attached rows).
+/// a plain messages query (docs/query.md: Attached rows).
 #[test]
 fn attachment_windows_apply_per_parent_across_the_page() {
     let w = morrow();
@@ -1439,12 +1439,12 @@ fn a_short_commit_hash_the_command_printed_answers_a_full_hash_query() {
 mod agent_input;
 mod combine;
 mod day;
-mod evidence;
 mod generated;
 mod live;
 mod modes;
 mod morrow_examples;
 mod references;
+mod seen_by;
 mod sequences;
 mod unknowns;
 mod upstream;
@@ -1645,7 +1645,7 @@ fn a_query_document_carries_its_kind_in_its_fields_and_no_outcome() {
 }
 
 #[test]
-fn keep_retains_the_bound_logical_declarations_of_same_name_text_casts() {
+fn keep_holds_bound_declarations_of_same_name_text_casts() {
     use polylogue_model::kept::OutputMetadata;
     use query_language::catalog::FieldKind;
     let archive = morrow();
@@ -1664,7 +1664,7 @@ fn keep_retains_the_bound_logical_declarations_of_same_name_text_casts() {
         let body = keep(&reader, ask(text)).unwrap();
         let metadata: OutputMetadata =
             serde_json::from_value(body["output_metadata"].clone()).unwrap();
-        let schema = metadata.rows.as_ref().expect("actual producer declaration");
+        let schema = metadata.rows.as_ref().expect("producer declaration");
         assert_eq!(
             schema
                 .fields
@@ -1709,7 +1709,7 @@ fn optional_count_timeout_preserves_a_completed_query_answer() {
             let program = prepared.count.as_mut().unwrap();
             match &mut program.statements {
             polylogue_store::query::Statements::Keyed(rows) => rows.count = "WITH RECURSIVE slow(n) AS (SELECT 0 UNION ALL SELECT n+1 FROM slow WHERE n<1000000000) SELECT count(*), 0 FROM slow".into(),
-            _ => panic!("native session selection"),
+            _ => panic!("keyed session selection"),
         }
             crate::daemon::handler::finish_read_phase("optional query count").unwrap();
             let answer = prepared.complete().unwrap();

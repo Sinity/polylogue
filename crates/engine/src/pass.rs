@@ -76,7 +76,7 @@ impl Requests {
 }
 
 impl Engine {
-    /// Request admission pauses background parsing, never capture custody or
+    /// Taking a request pauses background parsing, never capture into the spool or
     /// the request currently being answered. Workers and writes drain before
     /// the loop takes the request; the next turn reads committed positions.
     pub(super) fn poll_request(&mut self) -> bool {
@@ -105,7 +105,7 @@ impl Engine {
         );
     }
 
-    /// Publish stopped progress at the plan's existing source cursor.
+    /// Record stopped progress at the plan's existing source cursor.
     pub(crate) fn record_stop(
         &mut self,
         plan: &mut Plan,
@@ -127,7 +127,7 @@ impl Engine {
         step.stopped_attempt = Some(self.stopped_attempt);
         step.prepare();
         let batch = polylogue_store::Batch {
-            required_disposition: None,
+            required_outcome: None,
             input: plan.input.clone(),
             // The bytes are stored: the record names the chain they are in.
             change: match plan.change {
@@ -242,7 +242,7 @@ impl Engine {
                 state_dir: &state_dir,
                 spool: &spool,
             };
-            if let Err(error) = self.settle_collector(origin.name, collector, &paths) {
+            if let Err(error) = self.advance_collector(origin.name, collector, &paths) {
                 errors.push(format!("{} collector: {error}", origin.name));
                 continue;
             }
@@ -290,7 +290,7 @@ impl Engine {
         self.read_scope = None;
         self.loaded = false;
         self.pass_open = true;
-        self.same_bytes.clear();
+        self.identical_chains.clear();
         self.capture_checked = None;
         self.collectors_at = None;
         self.lookups = repo_lookup::Cache::default();
@@ -479,8 +479,8 @@ impl Engine {
 
         let mut seen = HashSet::new();
         let mut plans = self.plan_found(found, &mut pass, &mut seen)?;
-        // Keep custody and stored parsing reachable when a provider disappears.
-        // Databases already observe their SDK heads in capture_databases.
+        // Keep spooled bytes and stored parsing reachable when a provider disappears.
+        // Databases already observe their pending SDK captures in capture_databases.
         let unseen: Vec<PathBuf> = self
             .inputs
             .iter()
@@ -498,7 +498,7 @@ impl Engine {
                 if self.archive.is_primary() && !self.inputs[&path].origin.is_row_dump(&path) {
                     self.refresh_confirmed_input(&path)?;
                     let source = self
-                        .acquisition_context(
+                        .source_read_context(
                             &path,
                             self.inputs[&path].origin.name,
                             polylogue_store::primary::AcquisitionRoute::NativeCapture,
@@ -518,7 +518,7 @@ impl Engine {
             let state = &self.inputs[&path];
             if sources && state.facts.is_some() && !path.try_exists()? {
                 // A gone observation names the confirmed source, never an old
-                // cached identity ahead of a pending acquisition or unreadable cut.
+                // cached identity ahead of a pending capture read or an unreadable range.
                 let ready = snapshot.as_ref().is_none_or(|snapshot| {
                     snapshot.basis.status == polylogue_store::primary::SourceStatus::Ready
                         && snapshot.pending.head.is_none()
@@ -529,7 +529,7 @@ impl Engine {
                 });
                 if ready {
                     let batch = polylogue_store::Batch {
-                        required_disposition: None,
+                        required_outcome: None,
                         input: InputKey {
                             id: state.input_id.clone(),
                             format: state.origin.name.into(),
@@ -547,8 +547,8 @@ impl Engine {
                         release: Default::default(),
                     };
                     if self.archive.is_primary() {
-                        // Observation-only acquisition uses the existing source
-                        // publication route; stored-reading writes cannot publish it.
+                        // An observation without new bytes takes the existing route for
+                        // sending a source to Sinex; stored-reading writes cannot send it.
                         let result = self
                             .writer
                             .sender()?
@@ -613,7 +613,7 @@ impl Engine {
             pass.seconds = started.elapsed().as_secs_f64();
             return Ok((pass, seen));
         }
-        self.copy_same_bytes(&mut pass)?;
+        self.copy_identical_readings(&mut pass)?;
         if self.poll_request() {
             pass.capture_pending = true;
             pass.seconds = started.elapsed().as_secs_f64();
@@ -678,7 +678,7 @@ impl Engine {
     }
 
     /// Reconcile the sampler with confirmed application after a pending capture.
-    /// Private raw custody never supplies these logical source coordinates.
+    /// Spooled bytes never supply these logical source coordinates.
     pub(crate) fn refresh_confirmed_input(&mut self, path: &Path) -> Result<(), EngineError> {
         let known = self
             .reads
@@ -840,7 +840,7 @@ impl Engine {
     ) -> Result<Option<Plan>, EngineError> {
         let state = &self.inputs[path];
         let batch = polylogue_store::Batch {
-            required_disposition: None,
+            required_outcome: None,
             input: InputKey {
                 id: state.input_id.clone(),
                 format: state.origin.name.into(),
@@ -872,7 +872,7 @@ impl Engine {
                 .expect("one observation");
             match result {
                 Ok(_) => self.refresh_confirmed_input(path)?,
-                // Observed again on the next pass, once the source is settled.
+                // Observed again on the next pass, once Sinex confirms the source.
                 Err(polylogue_store::StoreError::PrimaryPending { .. }) => return Ok(None),
                 Err(error) => return Err(error.into()),
             }
@@ -892,7 +892,7 @@ impl Engine {
         }
         let origin = self.inputs[path].origin;
         let source = self
-            .acquisition_context(
+            .source_read_context(
                 path,
                 origin.name,
                 polylogue_store::primary::AcquisitionRoute::NativeCapture,
@@ -901,11 +901,11 @@ impl Engine {
         let snapshot = self.writer.source_snapshot(source)?;
         let pending = snapshot.pending.head.as_ref();
         if let Some(working) = &self.inputs[path].working
-            && pending.is_some_and(|head| head.identity == working.capture)
+            && pending.is_some_and(|latest| latest.identity == working.capture)
             && working.facts == Some(now)
             && working.stored == now.size
         {
-            // This is a private-custody wait, not confirmed source progress.
+            // This waits on bytes held in the spool, not on confirmed source progress.
             let mut plan = Plan::stored(
                 path.to_path_buf(),
                 origin,
@@ -999,7 +999,7 @@ impl Engine {
                     // The chain this path last read may not be the input's
                     // latest (another path of a provider-named input read a
                     // later one): take that chain's parser position, and its
-                    // state from its admitted checkpoint below.
+                    // state from its committed checkpoint below.
                     st.parsed_upto = progress.parsed_upto;
                     st.parsed = progress.parsed;
                     st.waiting = progress.waiting;
@@ -1092,7 +1092,7 @@ impl Engine {
             _ => None,
         };
         Ok(Some(Plan {
-            raw: None,
+            byte_read: None,
             basis: Some(snapshot.basis),
             pending: None,
             checkpoint: None,
@@ -1133,7 +1133,7 @@ impl Engine {
     /// `chains` the index is behind, except the current chain of a watched
     /// location, which follows its file ([`Engine::stored_plan`]). The same
     /// loop builds the index from stored bytes as from files, so a rebuild
-    /// needs no command of its own; older chains go through the ordinary
+    /// needs no command of its own; older chains go through the same
     /// parser and writer, where a newer chain wins. A pass reads every
     /// input's newest chain before any older chain, so a first build ends
     /// once the newest chains are read. An older chain whose bytes begin
@@ -1166,7 +1166,7 @@ impl Engine {
             selected,
         )?;
         // Chains set aside by an earlier pass that ended early are found again.
-        self.same_bytes.clear();
+        self.identical_chains.clear();
         self.shared_prefixes.get_mut().clear();
         let mut replacements = Vec::new();
         let mut parse = Vec::new();
@@ -1245,7 +1245,7 @@ impl Engine {
                     continue;
                 };
                 let st = &self.inputs[path];
-                // Current ordinary work belongs to stored_plan. The query
+                // Current work belongs to stored_plan. The query
                 // also selects a stopped attempt whose dependencies changed.
                 if c.current
                     && ((!c.reading_changed && !c.stopped_at_length) || st.unread.is_some())
@@ -1266,8 +1266,8 @@ impl Engine {
                 .flatten();
             let mut reading_state = state.clone();
             if c.reading_changed || c.stopped_at_length {
-                // A newly eligible stopped attempt can have no checkpoint at
-                // its failed cursor. Replace its reading from retained bytes.
+                // A stopped attempt selected again can have no checkpoint at
+                // its failed cursor. Replace its reading from stored bytes.
                 reading_state.parsed = false;
                 reading_state.parsed_upto = 0;
             }
@@ -1310,7 +1310,7 @@ impl Engine {
                 // Parsing these bytes again gives a reading another chain
                 // has, or will have once read; it is copied after this pass
                 // reads the chains it parses.
-                self.same_bytes.push(plan);
+                self.identical_chains.push(plan);
                 continue;
             }
             parse.push(plan);
@@ -1354,15 +1354,15 @@ impl Engine {
     /// is parsed on from the copy; one whose copy would not equal its parse
     /// (its source stopped, or its reading writes rows shared by the input's
     /// chains) is parsed whole.
-    fn copy_same_bytes(&mut self, pass: &mut Pass) -> Result<(), EngineError> {
-        if self.same_bytes.is_empty() || self.poll_request() {
+    fn copy_identical_readings(&mut self, pass: &mut Pass) -> Result<(), EngineError> {
+        if self.identical_chains.is_empty() || self.poll_request() {
             return Ok(());
         }
         let report = self.flush_writes()?;
         pass.messages_written += report.messages;
         pass.errors.extend(report.errors);
         let mut parse = Vec::new();
-        for plan in std::mem::take(&mut self.same_bytes) {
+        for plan in std::mem::take(&mut self.identical_chains) {
             // Each answer commits one complete chain. A request between
             // copies yields now; uncopied chains are selected next pass.
             if self.poll_request() {
@@ -1385,7 +1385,7 @@ impl Engine {
                 continue;
             };
             let (reaches_end, upto) = (copy.reaches_end, copy.upto);
-            // A copy that would not be exact, or failed, is parsed instead,
+            // A copy that would differ, or failed, is parsed instead,
             // which gives the same reading. Transaction and stop errors
             // propagate rather than becoming another parse attempt.
             let answer = self.writer.sender()?.copy_reading(copy)?;
@@ -1577,15 +1577,15 @@ impl Engine {
         // runs serially only after preceding pool work has committed.
         let mut plans = plans;
         plans.sort_by_key(|p| (p.priority == Priority::Bulk, std::cmp::Reverse(p.size)));
-        let mut ordinary = Vec::new();
+        let mut pooled = Vec::new();
         let mut replacements = Vec::new();
         for mut plan in plans {
             if self.archive.stop().is_cancelled() || self.poll_request() {
                 break;
             }
-            self.prepare_raw_plan(&mut plan)?;
-            if plan.raw.is_some() && plan.finished() {
-                self.record_raw_status(&plan, None, pass)?;
+            self.prepare_byte_read(&mut plan)?;
+            if plan.byte_read.is_some() && plan.finished() {
+                self.record_byte_read_status(&plan, None, pass)?;
                 self.finish_plan(plan);
                 continue;
             }
@@ -1629,7 +1629,7 @@ impl Engine {
                 && plan.stored_upto > 0
                 && !matches!(plan.change, Change::First | Change::Rewritten);
             if plan.replace || store_first {
-                self.execute_pool(std::mem::take(&mut ordinary), pass)?;
+                self.execute_pool(std::mem::take(&mut pooled), pass)?;
                 if self.yielding() {
                     return Ok(());
                 }
@@ -1645,7 +1645,7 @@ impl Engine {
             if let Some(polylogue_sources::parse::Parse::Export(mut parser)) =
                 (plan.origin.open)(&plan.path)
             {
-                self.execute_pool(std::mem::take(&mut ordinary), pass)?;
+                self.execute_pool(std::mem::take(&mut pooled), pass)?;
                 if self.yielding() {
                     return Ok(());
                 }
@@ -1669,10 +1669,10 @@ impl Engine {
                 }
                 self.finish_plan(plan);
             } else {
-                ordinary.push(plan);
+                pooled.push(plan);
             }
         }
-        self.execute_pool(ordinary, pass)?;
+        self.execute_pool(pooled, pass)?;
         if self.yielding() {
             return Ok(());
         }
@@ -1793,33 +1793,35 @@ impl Engine {
                 }
                 let mut job = plan.next_job(&self.stopped_attempt);
                 if matches!(job.source, pool::Bytes::File) {
-                    let mut context =
-                        if plan.raw.is_none() && !plan.storing_started && plan.basis.is_some() {
-                            let mut context = self.acquisition_context(
-                                &job.path,
-                                &job.input.format,
-                                polylogue_store::primary::AcquisitionRoute::NativeCapture,
-                            );
-                            context.basis = plan.basis.clone();
-                            context
-                        } else {
-                            self.sampling_context(&job.path, &job.input.format)?
-                        };
+                    let mut context = if plan.byte_read.is_none()
+                        && !plan.storing_started
+                        && plan.basis.is_some()
+                    {
+                        let mut context = self.source_read_context(
+                            &job.path,
+                            &job.input.format,
+                            polylogue_store::primary::AcquisitionRoute::NativeCapture,
+                        );
+                        context.basis = plan.basis.clone();
+                        context
+                    } else {
+                        self.sampling_context(&job.path, &job.input.format)?
+                    };
                     context.facts = plan.facts;
-                    if let Some(raw) = &plan.raw {
+                    if let Some(byte_read) = &plan.byte_read {
                         job.observation = Some(self.observation(&plan.path, plan.facts));
-                        if let Some(cursor) = &raw.cursor {
+                        if let Some(cursor) = &byte_read.cursor {
                             if job.store_from == Some(cursor.range().end) {
-                                context.raw_predecessor = Some(cursor.last_body().into());
+                                context.previous_body = Some(cursor.last_body().into());
                             }
-                            if cursor.disposition()
-                                != Some(polylogue_store::primary::CaptureDisposition::Prepared)
+                            if cursor.outcome()
+                                != Some(polylogue_store::primary::CaptureOutcome::Prepared)
                             {
-                                context.required_disposition = Some(polylogue_store::primary::CaptureDisposition::UnresolvedBasisConflict);
+                                context.required_outcome = Some(polylogue_store::primary::CaptureOutcome::UnresolvedBasisConflict);
                             }
                         }
                     }
-                    job.acquisition = Some(context);
+                    job.source_read = Some(context);
                 }
                 let bytes = job.end - job.start;
                 if !pool.submit(job) {
@@ -1848,19 +1850,19 @@ impl Engine {
                 pass.errors.extend(d.error);
                 continue;
             }
-            if d.raw_custody.is_some()
-                || plan.raw.is_some()
+            if d.spooled_group.is_some()
+                || plan.byte_read.is_some()
                 || d.pending.is_some()
-                    && d.raw_acquisition.is_some()
+                    && d.source_read.is_some()
                     && plan.tracked
                     && matches!(plan.source, pool::Bytes::File)
             {
                 if let Some(error) = &d.error {
                     pass.errors.push(error.clone());
                 }
-                self.apply_raw_result(&mut plan, &d)?;
+                self.apply_byte_read_result(&mut plan, &d)?;
                 if plan.finished() {
-                    self.record_raw_status(&plan, d.raw_acquisition.as_ref(), pass)?;
+                    self.record_byte_read_status(&plan, d.source_read.as_ref(), pass)?;
                     self.finish_plan(plan);
                 } else {
                     waiting.push_front(plan);
@@ -1893,7 +1895,7 @@ impl Engine {
             pass.bytes_stored += d.stored;
             if d.continuation_missing && !plan.parser_deferred {
                 pass.errors.push(format!(
-                    "parser continuation unavailable at {}:{}; captured bytes retained",
+                    "parser continuation unavailable at {}:{}; captured bytes kept",
                     plan.input.id, plan.parse_pos
                 ));
             }
@@ -1944,11 +1946,11 @@ impl Engine {
 
     /// Records what a finished plan leaves for the next pass. Parser state
     /// is kept in memory only for files written recently; an older file's
-    /// state is restored from its admitted checkpoint if it grows.
+    /// state is restored from its committed checkpoint if it grows.
     pub(crate) fn finish_plan(&mut self, plan: Plan) {
-        if plan.raw.is_some() {
-            // A verified physical cursor never updates logical input facts,
-            // parser progress, or the latest accepted working source head.
+        if plan.byte_read.is_some() {
+            // A verified byte cursor never updates the input's file facts,
+            // parser progress, or the latest accepted working source.
             return;
         }
         if plan.pending.is_some() && !plan.tracked {
@@ -1961,8 +1963,8 @@ impl Engine {
                 path_bytes: plan.path.as_os_str().as_encoded_bytes().to_vec(),
             };
             let snapshot = self.writer.source_snapshot(source).ok();
-            let head = snapshot.and_then(|snapshot| snapshot.pending.head);
-            let capture = head.and_then(|head| match head.captured {
+            let latest = snapshot.and_then(|snapshot| snapshot.pending.head);
+            let capture = latest.and_then(|latest| match latest.captured {
                 polylogue_store::primary::Capture::Input(input)
                     if input.rows.input == plan.input.id
                         && input.group.as_ref().is_some_and(|g| &g.identity == group)
@@ -1970,11 +1972,11 @@ impl Engine {
                             .raw_range
                             .is_some_and(|range| range.end == plan.stored_upto) =>
                 {
-                    Some(head.identity)
+                    Some(latest.identity)
                 }
                 _ => None,
             });
-            // An exact accepted retry can return an older immutable receipt.
+            // An accepted retry of the same write can return an older immutable result.
             // Only its still-current header may update the sampler's working
             // state; a newer accepted source observation remains untouched.
             if let Some(capture) = capture
@@ -2132,8 +2134,8 @@ impl Engine {
                     pass
                 }
                 Err(e) => {
-                    // A failed turn cannot establish that previously pending
-                    // custody has settled. Only a completed pass updates it.
+                    // A failed turn cannot show that bytes previously held in the
+                    // spool were confirmed. Only a completed pass updates it.
                     pending = self.pass_open
                         || self.captures.pending()
                         || discover
@@ -2321,8 +2323,8 @@ impl Engine {
                 .yielding
                 .store(false, std::sync::atomic::Ordering::Release);
         }
-        // Queue waits belong to the producing transport. After
-        // admission the engine owns completion and its ACK.
+        // Queue waits belong to the producing transport. Once the import
+        // is taken, the engine owns completion and its ACK.
         let report = parent
             .as_ref()
             .map_or(Ok(()), |parent| parent.check())

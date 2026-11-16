@@ -51,7 +51,7 @@ fn message(id: &str, role: Role, text: &str) -> Message {
 }
 
 #[test]
-fn identical_lower_priority_event_claims_leave_selected_events_and_items_untouched() {
+fn identical_lower_priority_events_leave_items_unchanged() {
     let w = installed_archive();
     let mut main = batch(
         "a-events",
@@ -105,7 +105,7 @@ fn identical_lower_priority_event_claims_leave_selected_events_and_items_untouch
     assert_eq!(
         record.identity.sources.len(),
         2,
-        "both retained source claims are exported"
+        "both stored stated sources are exported"
     );
     assert_eq!(stored(&w, "s"), before);
     assert_matches_rows(&w, "s");
@@ -165,14 +165,14 @@ fn identical_lower_priority_event_claims_leave_selected_events_and_items_untouch
     let unindexed = work();
     assert!(
         unindexed > 8192,
-        "positive control did not scan unrelated headers: {unindexed}"
+        "the unindexed case did not scan unrelated headers: {unindexed}"
     );
     conn.execute_batch("ROLLBACK TO unrelated_headers; RELEASE unrelated_headers")
         .unwrap();
 }
 
 #[test]
-fn an_identical_event_claim_repairs_retained_old_item_metadata() {
+fn identical_event_repairs_old_item_metadata() {
     let w = test_archive();
     let mut input = batch("a-events", Route::Live, 0, vec![], &["s"]);
     input.parse[0].output.events.push(Event {
@@ -220,7 +220,7 @@ fn an_identical_event_claim_repairs_retained_old_item_metadata() {
     assert!(report.errors.is_empty(), "{:?}", report.errors);
     assert!(
         report.item_units_read > 0,
-        "retained stale items must be refreshed"
+        "kept stale items must be refreshed"
     );
     assert!(
         stored(&w, "s").rewrite_version > before.rewrite_version,
@@ -319,7 +319,7 @@ fn equal_length_context_boundary_changes_refresh_typed_event_items() {
             "typed {kind} payload must refresh"
         );
         assert_matches_rows(&w, "s");
-        // Reopen the exact older metadata-only cache shape: its event row
+        // Reopen the older metadata-only cache shape: its event row
         // is current, but its embedded typed item still has the old payload.
         let conn = rusqlite::Connection::open(w.archive.index_db()).unwrap();
         let (pk, bytes): (i64, u64) = conn
@@ -462,7 +462,7 @@ fn selected_event_changes_keep_their_payload_fields_and_placement() {
 }
 
 #[test]
-fn identical_lower_priority_claims_leave_shown_messages_and_items_untouched() {
+fn identical_lower_priority_messages_leave_items_unchanged() {
     let w = test_archive();
     let messages: Vec<_> = (0..256)
         .map(|n| {
@@ -615,7 +615,7 @@ fn unchanged_shown_message_still_moves_events_to_its_new_source_sequence() {
 }
 
 #[test]
-fn removing_a_redundant_content_claim_still_invalidates_session_derivations() {
+fn removing_a_redundant_source_invalidates_derivations() {
     let w = test_archive();
     let reading = MessageRow {
         id_kind: polylogue_model::IdKind::Content,
@@ -1158,7 +1158,7 @@ fn reply_batches_keep_changed_and_unchanged_parent_branch_points_current() {
     );
     assert_matches_rows(&w, "s");
     // A parent that changes in the same transaction is covered by its own
-    // old header, while the reply chain still contributes its ordinary rows.
+    // old header, while the reply chain still contributes its own rows.
     root.blocks = vec![Block::Text {
         text: "corrected question".into(),
     }];
@@ -1183,7 +1183,7 @@ fn reply_batches_keep_changed_and_unchanged_parent_branch_points_current() {
     let selected = pool
         .reader()
         .unwrap()
-        .message_with_projection(&root.id)
+        .message_with_block_selection(&root.id)
         .unwrap()
         .unwrap()
         .0;

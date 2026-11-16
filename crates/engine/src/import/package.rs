@@ -201,7 +201,7 @@ fn expand(
         }
         // A tar iterator stops at its end marker before the compression
         // footer. Drain the decoder so checksum/truncation failures still
-        // refuse the whole package before admission.
+        // refuse the whole package before it is imported.
         std::io::copy(&mut tar.into_inner(), &mut std::io::sink())?;
     }
     drop(file);
@@ -259,7 +259,7 @@ fn classify(members: &mut [Member], format: Option<&str>) -> std::io::Result<()>
         aider_md: bool,
         takeout: bool,
     }
-    let mut anchors = Vec::new();
+    let mut package_roots = Vec::new();
     for member in members.iter_mut().filter(|member| !member.container) {
         member.origin = super::recognition::declared(
             &member.path,
@@ -277,7 +277,7 @@ fn classify(members: &mut [Member], format: Option<&str>) -> std::io::Result<()>
                 "prod-grok-backend.json" | "codex.json" | polylogue_sources::aider::HISTORY
             )
         {
-            anchors.push((
+            package_roots.push((
                 member.parent.map(|parent| parent.0),
                 member.path.parent().unwrap_or(Path::new("")).to_path_buf(),
             ));
@@ -286,7 +286,7 @@ fn classify(members: &mut [Member], format: Option<&str>) -> std::io::Result<()>
         for part in member.path.components() {
             prefix.push(part);
             if part.as_os_str() == "Takeout" {
-                anchors.push((member.parent.map(|parent| parent.0), prefix));
+                package_roots.push((member.parent.map(|parent| parent.0), prefix));
                 break;
             }
         }
@@ -295,7 +295,7 @@ fn classify(members: &mut [Member], format: Option<&str>) -> std::io::Result<()>
         .iter()
         .map(|member| {
             let parent = member.parent.map(|parent| parent.0);
-            let root = anchors
+            let root = package_roots
                 .iter()
                 .filter(|(container, root)| *container == parent && member.path.starts_with(root))
                 .max_by_key(|(_, root)| root.components().count())

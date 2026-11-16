@@ -29,7 +29,7 @@ fn bindings() -> Bindings {
     bindings
 }
 #[test]
-fn canonical_object_replays_frozen_names_and_shapes_without_a_clock() {
+fn saved_object_replays_names_and_shapes_without_a_clock() {
     let plan = prepare("query:nested | where count > 1", &bindings(), |_| Ok(())).unwrap();
     let object = plan.query_object().unwrap();
     assert_eq!(object.definitions.len(), 2);
@@ -66,7 +66,7 @@ fn canonical_object_replays_frozen_names_and_shapes_without_a_clock() {
     validate_object(&decoded).unwrap();
 }
 #[test]
-fn canonical_object_ignores_alias_labels_and_registry_help() {
+fn saved_object_ignores_alias_labels_and_registry_help() {
     let a = prepare("query:project", &bindings(), |_| Ok(()))
         .unwrap()
         .query_object()
@@ -80,7 +80,7 @@ fn canonical_object_ignores_alias_labels_and_registry_help() {
     assert!(!serde_json::to_string(&a).unwrap().contains("root-a"));
 }
 #[test]
-fn object_validation_refuses_forged_ast_schema_and_missing_closure() {
+fn object_validation_refuses_forged_or_missing_dependencies() {
     let object = prepare("query:nested | where count > 1", &bindings(), |_| Ok(()))
         .unwrap()
         .query_object()
@@ -116,14 +116,14 @@ fn object_validation_refuses_forged_ast_schema_and_missing_closure() {
             }],
         },
     });
-    let native = crate::catalog::catalog(&[]);
-    changed.normal_form = identity::normal_form(&changed.query, &native).unwrap();
+    let catalog = crate::catalog::catalog(&[]);
+    changed.normal_form = identity::normal_form(&changed.query, &catalog).unwrap();
     changed.id =
         identity::question_id_from_normal_form(&changed.normal_form, &changed.parameters).unwrap();
     assert!(validate_object(&changed).is_err());
 }
 #[test]
-fn inline_composition_has_complete_frozen_bodies() {
+fn inline_composition_has_complete_saved_bodies() {
     for text in [
         "sessions | union (sessions where repo:morrow)",
         "sessions where id in (sessions where repo:morrow)",
@@ -135,7 +135,7 @@ fn inline_composition_has_complete_frozen_bodies() {
     }
 }
 #[test]
-fn native_saved_outputs_expose_only_columns_the_definition_produces() {
+fn saved_outputs_expose_only_defined_columns() {
     let schema = bindings().output_schema("query:project").unwrap();
     assert_eq!(
         schema
@@ -152,7 +152,7 @@ fn native_saved_outputs_expose_only_columns_the_definition_produces() {
 }
 
 #[test]
-fn canonical_kept_replay_retains_its_immutable_typed_columns() {
+fn kept_replay_keeps_its_typed_columns() {
     let mut bindings = Bindings::default();
     bindings.kept.insert(
         "kept-one".into(),
@@ -184,7 +184,7 @@ fn canonical_kept_replay_retains_its_immutable_typed_columns() {
     let plan = prepare("result:kept-one | where ready:true", &bindings, |_| Ok(())).unwrap();
     let object = plan.query_object().unwrap();
     let restored = replay(&object, catalog_fingerprint()).unwrap();
-    // The canonical object stores the schema the rows were read with; a kept
+    // The saved object stores the schema the rows were read with; a kept
     // result without a declaration reads with its physical column types, so
     // replay restores that schema as the declaration.
     let mut expected = bindings.kept.clone();
@@ -195,7 +195,7 @@ fn canonical_kept_replay_retains_its_immutable_typed_columns() {
 }
 
 #[test]
-fn native_addresses_bind_in_explicit_row_domains_without_stealing_scoped_fields() {
+fn typed_addresses_bind_in_their_row_domains() {
     for (text, expected) in [
         ("events where event:native-event", "events"),
         ("documents where document:test:document", "documents"),
@@ -204,7 +204,7 @@ fn native_addresses_bind_in_explicit_row_domains_without_stealing_scoped_fields(
     ] {
         let plan = prepare(text, &Bindings::default(), |_| Ok(())).unwrap();
         let Source::Unit { unit, .. } = &plan.bound_query().query().source else {
-            panic!("native unit")
+            panic!("unit source")
         };
         assert_eq!(unit, expected);
         let object = plan.query_object().unwrap();
@@ -234,7 +234,7 @@ fn native_addresses_bind_in_explicit_row_domains_without_stealing_scoped_fields(
 }
 
 #[test]
-fn saved_names_retain_frozen_dependencies_after_current_name_changes() {
+fn saved_names_keep_their_dependencies_after_renames() {
     let mut original = bindings();
     let before = prepare("query:nested | where count > 1", &original, |_| Ok(())).unwrap();
     let changed = prepare(
@@ -259,15 +259,15 @@ fn saved_names_retain_frozen_dependencies_after_current_name_changes() {
         prepare("query:nested", &forged, |_| Ok(()))
             .unwrap_err()
             .to_string()
-            .contains("declared semantic hash")
+            .contains("declared hash")
     );
 }
 
 #[test]
-fn saved_custody_and_cross_name_forks_are_explicit_without_poisoning_native_queries() {
+fn saved_forks_do_not_poison_unit_queries() {
     let mut snapshot = bindings();
     snapshot.saved.get_mut("project").unwrap()[0].body = crate::SavedQueryBody::Unavailable {
-        reason: "retained body is absent".into(),
+        reason: "stored body is absent".into(),
     };
     assert_eq!(
         prepare("query:project", &snapshot, |_| Ok(()))
@@ -319,7 +319,7 @@ fn denominator_classification_and_reference_use_the_pure_validated_plan() {
 }
 
 #[test]
-fn exact_object_requirements_follow_typed_sources_not_scalar_spelling() {
+fn object_requirements_follow_typed_sources_not_scalar_spelling() {
     let id = prepare("sessions", &Bindings::default(), |_| Ok(()))
         .unwrap()
         .question_id();

@@ -341,7 +341,7 @@ fn invalid_reader_resource_configuration_refuses_startup_and_releases_the_lock()
 }
 
 #[test]
-fn read_and_session_query_share_stored_titles_without_changing_source_or_canonical_records() {
+fn read_and_query_share_stored_titles() {
     let w = test_daemon::start("First human question\nMore details");
     let source = w.home.join(".claude/projects/-p/s1.jsonl");
     let original = std::fs::read(&source).unwrap();
@@ -391,7 +391,7 @@ fn read_and_session_query_share_stored_titles_without_changing_source_or_canonic
         records
     };
     let before = records();
-    let canonical = before
+    let stored = before
         .iter()
         .find_map(|record| {
             if let polylogue_model::bundle::Record::Session(record) = record {
@@ -401,7 +401,7 @@ fn read_and_session_query_share_stored_titles_without_changing_source_or_canonic
             }
         })
         .unwrap();
-    assert!(canonical.title.is_none());
+    assert!(stored.title.is_none());
     let response = crate::test_daemon::Call::new("query", serde_json::json!({"query": "sessions"}))
         .answer(&w.daemon);
     let Some(data) = response.value().cloned() else {
@@ -450,7 +450,7 @@ mod workers;
 
 #[test]
 fn an_invalidated_read_phase_does_not_enter_the_authored_writer() {
-    let daemon = crate::test_daemon::start("native write admission scope");
+    let daemon = crate::test_daemon::start("write scope check");
     let invocation = daemon
         .daemon
         .invocation(&crate::operation::Context::worker_authorship(
@@ -488,7 +488,7 @@ fn an_invalidated_read_phase_does_not_enter_the_authored_writer() {
 
 #[test]
 fn read_derived_write_keeps_its_selected_scope_after_reader_release() {
-    let daemon = crate::test_daemon::start("pinned authored admission");
+    let daemon = crate::test_daemon::start("pinned authored write");
     let invocation = daemon
         .daemon
         .invocation(&crate::operation::Context::worker_authorship(
@@ -498,7 +498,7 @@ fn read_derived_write_keeps_its_selected_scope_after_reader_release() {
     let selected_scope = reader.scope_token();
     drop(reader);
     daemon.daemon.archive.advance_generation_for_test().unwrap();
-    // No active ReadLimit: the queued native token is the authority here.
+    // No active ReadLimit: the queued read scope token decides here.
     let response = write_from_read(
         &daemon.daemon,
         &invocation,

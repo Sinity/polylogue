@@ -79,7 +79,7 @@ pub static TOOLS: &[Tool] = &[
             ("**/*-journal", "database sidecar"),
             ("auth.json", "secret or account state"),
             ("logs_*.sqlite*", "diagnostic log"),
-            ("thread_history_*.sqlite*", "projection of rollouts"),
+            ("thread_history_*.sqlite*", "derived copy of rollouts"),
             ("sqlite/codex-dev.db*", "developer database"),
             ("worktrees/**", "program files"),
             ("packages/**", "program files"),

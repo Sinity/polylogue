@@ -12,7 +12,7 @@ fn result(full: bool) -> Value {
 }
 
 #[test]
-fn native_measurement_requires_completed_work_and_matching_population() {
+fn bench_needs_finished_work_and_matching_population() {
     for full in [false, true] {
         let good = result(full);
         assert_eq!(read_result(&good.to_string(), 2, full).unwrap(), good);

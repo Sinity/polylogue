@@ -4,7 +4,7 @@
 use super::*;
 use std::sync::mpsc::{RecvTimeoutError, Sender, channel};
 
-/// How long the follower waits after reaching the current stream cut.
+/// How long the follower waits after reaching the current stream position.
 const STREAM_POLL: std::time::Duration = std::time::Duration::from_secs(2);
 /// The longest wait while reading the stream keeps failing.
 const STREAM_POLL_LONGEST: std::time::Duration = std::time::Duration::from_secs(60);
@@ -98,19 +98,19 @@ fn follow_once(
     queue: &WriterQueue,
     index: &Connection,
 ) -> Result<Followed> {
-    let state = crate::primary::projection::replay_state(index)?;
+    let state = crate::primary::confirmed::replay_state(index)?;
     let cache = crate::primary::cache_identity(index)?;
     let page = sinex.confirmed(&state, &cache)?;
     queue.apply_confirmed(page)?;
-    let applied = crate::primary::projection::replay_state(index)?;
+    let applied = crate::primary::confirmed::replay_state(index)?;
     sinex.acknowledge(&applied, &|event| {
-        crate::primary::projection::has_fact(index, event)
+        crate::primary::confirmed::has_confirmed_event(index, event)
     })?;
     // A reprovisioned consumer also replays deliveries at applied positions.
-    // Drain receipt progress, then wait only once a probe no longer advances.
+    // Drain acknowledgment progress, then wait only once a probe no longer advances.
     let backlog = applied.staged_delivery != state.staged_delivery
         || applied.scope != state.scope
-        || applied.projection != state.projection;
+        || applied.snapshot_progress != state.snapshot_progress;
     Ok(Followed {
         position: applied.applied_position.unwrap_or(0),
         backlog,

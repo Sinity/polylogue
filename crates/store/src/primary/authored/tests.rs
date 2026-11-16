@@ -107,7 +107,7 @@ fn enqueue(conn: &mut Connection, id: &str, at: i64) {
 }
 
 #[test]
-fn prepared_effect_is_private_and_preserves_full_assertion_provenance() {
+fn prepared_effect_is_private_and_keeps_its_source() {
     let mut conn = cache();
     let mut r = request(
         "note-a",
@@ -137,10 +137,10 @@ fn prepared_effect_is_private_and_preserves_full_assertion_provenance() {
     assert_eq!(known_request(&conn, &r).unwrap(), Some(p));
 }
 #[test]
-fn saved_family_and_revision_are_frozen_across_pending_overlay_and_replay() {
+fn saved_family_and_revision_stay_fixed_across_replay() {
     let conn = cache();
-    // This focused cache fixture retains real binder-produced question bodies.
-    // The Writer tests separately exercise their native ACK boundary.
+    // This cache fixture keeps real binder-produced question bodies. The
+    // writer tests cover their Sinex acknowledgment separately.
     for text in ["sessions", "messages", "events"] {
         let plan = polylogue_query::plan::prepare(
             text,
@@ -339,7 +339,7 @@ fn duplicate_and_conflicting_retries_preserve_original_effect_and_outcome() {
     ));
 }
 #[test]
-fn canonical_refusal_creates_no_prepared_or_applied_state() {
+fn refusal_creates_no_prepared_or_applied_state() {
     let conn = cache();
     let mut assertion = statement("invalid");
     assertion.links.clear();
@@ -458,7 +458,7 @@ fn backfill_claim_replays_its_original_job_and_preserves_reports() {
     assert_eq!(got, ("cursor".into(), 2, "progress".into()));
 }
 #[test]
-fn complete_authored_records_roundtrip_and_pending_is_never_canonical() {
+fn pending_authored_records_are_never_confirmed() {
     let mut conn = cache();
     let writes = [
         request(
@@ -615,7 +615,7 @@ fn restored_actions_keep_their_history_but_never_run() {
 }
 
 #[test]
-fn retry_reuses_frozen_annotation_targets_and_rejects_changed_machine() {
+fn retry_reuses_stored_annotation_targets() {
     let mut conn = cache();
     let mut assertion = statement("example");
     assertion.links.clear();
@@ -691,7 +691,7 @@ fn inconsistent_event_delta_is_refused_before_application() {
 }
 
 #[test]
-fn repeated_import_changes_no_frozen_state() {
+fn repeated_import_changes_no_recorded_state() {
     let source = cache();
     let p = prepare_with(
         &source,
@@ -967,8 +967,8 @@ fn two_hosts_first_setting_show_conflict_in_primary() {
     commit(&mut conn, &desktop, 2);
     assert_eq!(in_conflict(&conn), 2);
     // The next setting from either host revises both heads.
-    let settled = prepare_with(&conn, &set("settled", 3, "on"), &[], &[]).unwrap();
-    commit(&mut conn, &settled, 3);
+    let resolved = prepare_with(&conn, &set("resolved", 3, "on"), &[], &[]).unwrap();
+    commit(&mut conn, &resolved, 3);
     assert_eq!(in_conflict(&conn), 0);
     let current: i64 = conn
         .query_row(
@@ -1057,7 +1057,7 @@ fn counted_delivery_preparation(
         None,
         None,
         |_| Ok(()),
-        |_| panic!("a literal delivery has no attachment acquisition"),
+        |_| panic!("a literal delivery reads no attachment"),
     );
     conn.progress_handler(0, None::<fn() -> bool>).unwrap();
     (prepared.unwrap(), instructions.load(Ordering::Relaxed))
@@ -1143,7 +1143,7 @@ fn literal_delivery_retry_keeps_pending_body_and_refuses_changed_intent() {
 }
 
 #[test]
-fn restored_literal_deliveries_keep_later_history_without_admitting_it_as_live() {
+fn restored_delivery_keeps_later_history_not_live() {
     for advice in [false, true] {
         let request = literal_delivery(advice);
         let conn = cache();
@@ -1152,7 +1152,7 @@ fn restored_literal_deliveries_keep_later_history_without_admitting_it_as_live()
             request: "later-receipt".into(),
             what: polylogue_model::DeliveryOutcome::Used,
             at: Timestamp::from_unix_ms(100).unwrap(),
-            detail: Some("a later report retained by the predecessor".into()),
+            detail: Some("a later report from the restored history".into()),
         };
         prepared.effect.deliveries[0].delivery.events.push(later);
         validate(&prepared).unwrap();
@@ -1197,7 +1197,7 @@ fn restored_literal_deliveries_keep_later_history_without_admitting_it_as_live()
         restore(&tx, &prepared, 1).unwrap();
         tx.commit().unwrap();
         assert_eq!(
-            frozen_request(&target, &request.id).unwrap(),
+            stored_request(&target, &request.id).unwrap(),
             Some(prepared.clone())
         );
         let actual = records::delivery_from(&target, Source::Cache, &request.id).unwrap();
@@ -1310,7 +1310,7 @@ fn literal_deliveries_refuse_existing_identity_in_cache_or_pending_snapshots() {
                 &conn,
                 &request,
                 2,
-                crate::user_writes::Preparation::native(None, None)
+                crate::user_writes::Preparation::plain(None, None)
             ),
             Err(StoreError::Conflict(_))
         ));

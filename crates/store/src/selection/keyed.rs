@@ -1,5 +1,5 @@
 //! Read continuations resume a selection by a row's order values, never by
-//! a row number: a row added before the anchor never shifts a page.
+//! a row number: a row added before the page start never shifts a page.
 use super::*;
 
 impl Reader<'_> {

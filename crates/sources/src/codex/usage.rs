@@ -1,5 +1,5 @@
 //! Recorded usage is independent of output-item membership. The producer
-//! persists items before completion and can retry without a durable boundary.
+//! persists items before completion and can retry without writing a boundary.
 use super::*;
 use polylogue_model::{BlobHash, UsageReport};
 
@@ -30,7 +30,7 @@ impl Counters {
         .then_some(counters)
     }
 
-    fn ordinary(self) -> bool {
+    fn consistent(self) -> bool {
         self.cached <= self.input
             && self.reasoning <= self.output
             && self.input.checked_add(self.output) == Some(self.total)
@@ -104,11 +104,11 @@ impl Observer {
         if self.report.replace(report.clone()).as_ref() == Some(&report) {
             return None;
         }
-        if total.is_some() && total == previous && last.is_some_and(Counters::ordinary) {
+        if total.is_some() && total == previous && last.is_some_and(Counters::consistent) {
             return None;
         }
         let raw = last_value.filter(|value| value.is_object())?;
-        // These helpers put context size only in total, with ordinary
+        // These helpers put context size only in total, with the other
         // counters zero. They are not measured usage or completion reports.
         if last.is_some_and(|last| last.input == 0 && last.output == 0 && last.total > 0) {
             return None;
@@ -129,8 +129,8 @@ impl Observer {
                 .zip(cached)
                 .and_then(|(input, cached)| input.checked_sub(cached)),
             cached_input: cached,
-            // OpenAI does not bill cache writes. The native token Event
-            // preserves any supplied field without inventing a charged lane.
+            // OpenAI does not bill cache writes. Codex's token event
+            // keeps any supplied field without inventing a charged token kind.
             cache_write: None,
             // Output excludes reasoning. Unreported reasoning leaves reasoning
             // unknown and output whole; reasoning above output leaves output
@@ -161,7 +161,7 @@ impl Observer {
         let completion = match (total, previous, last) {
             (Some(total), Some(previous), Some(last)) => {
                 self.continuous
-                    && last.ordinary()
+                    && last.consistent()
                     && total.follows(previous, last)
                     && self.consumed != Some(total)
             }

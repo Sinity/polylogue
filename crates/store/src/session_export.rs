@@ -62,11 +62,11 @@ impl Reader<'_> {
                 position: [coordinate(sequence)?, coordinate(position)?],
             });
         }
-        // Bind the owner before expanding the UNION in session_prefix. A join
-        // from the selected message leaves that view materializing every edge.
-        // Use the exact stored ID here: explicit evidence above can also name a
-        // message absent from the selected rows, and aliases do not own copies.
-        let owner: Option<String> = conn
+        // Bind the message's session before expanding the UNION in session_prefix. A join
+        // from the selected message leaves that view computing every edge.
+        // Use the stored ID here: explicit links above can also name a
+        // message absent from the selected rows, and aliases hold no copies.
+        let session: Option<String> = conn
             .query_row(
                 "SELECT s.id FROM message m JOIN session s ON s.pk=m.session_pk
                  WHERE m.id=?1 AND m.duplicate_of IS NULL",
@@ -75,7 +75,7 @@ impl Reader<'_> {
             )
             .optional()?;
         let mut inferred = conn.prepare_cached("SELECT DISTINCT p.child_id,ir.id,s.chain,ps.reading_version,s.seq,s.record_position,p.parent_id FROM message m JOIN session_prefix p ON p.parent_id=?2 AND p.copies_prefix=1 AND p.branch_point IS NULL JOIN message_source s ON s.message_pk=m.pk JOIN input_ref ir ON ir.pk=s.input_pk JOIN parse_state ps ON ps.input_pk=s.input_pk AND ps.chain=s.chain WHERE m.id=?1 AND m.duplicate_of IS NULL AND EXISTS(SELECT 1 FROM prefix_copy x WHERE x.input_pk=s.input_pk AND x.chain=s.chain AND x.child_id=p.child_id AND x.parent_id=p.parent_id AND x.explicit_members=0) AND NOT EXISTS(SELECT 1 FROM prefix_copy x WHERE x.input_pk=s.input_pk AND x.chain=s.chain AND x.child_id=p.child_id AND x.parent_id=p.parent_id AND x.explicit_members=1)")?;
-        for row in inferred.query_map(rusqlite::params![id.to_string(), owner], |r| {
+        for row in inferred.query_map(rusqlite::params![id.to_string(), session], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
@@ -123,7 +123,7 @@ impl Reader<'_> {
         })?;
         rows.map(|row| {
             let (fields, data) = row?;
-            crate::events::canonical_event(&fields, &data)
+            crate::events::decode_event(&fields, &data)
         })
         .collect()
     }
@@ -150,7 +150,7 @@ impl Reader<'_> {
             .query_row([pk], |r| Ok((r.get(0)?, r.get(1)?)))
             .optional()?;
         if let Some((fields, data)) = relocated {
-            let event = crate::events::canonical_event(&fields, &data)?;
+            let event = crate::events::decode_event(&fields, &data)?;
             if let Some(dir) = event
                 .data
                 .get("relocatedCwd")
@@ -188,7 +188,7 @@ impl Reader<'_> {
         self.visit_links_from_ordinal(id, 0, visit)
     }
 
-    /// Seek within the physical session's canonical link order before decoding.
+    /// Seek within the physical session's stored link order before decoding.
     pub fn visit_links_from_ordinal(
         &self,
         id: &SessionId,

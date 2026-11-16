@@ -1,4 +1,4 @@
-//! Opt-in native measurements use the existing end-to-end test owner and devkit history.
+//! Opt-in read measurements run the real binary through its end-to-end test and record devkit history.
 
 use super::*;
 use devkit::{Nextest, Run};
@@ -14,7 +14,7 @@ pub(super) fn execute(root: &Path, repetitions: u32, full_walk: bool) -> ExitCod
     let mut run = Run::start("polylogue", "bench reads", &args);
     let _ = run.step("reads", |run| {
         if !cfg!(target_os = "linux") {
-            return Err("native read measurements require Linux process RSS counters".into());
+            return Err("read measurements require Linux process RSS counters".into());
         }
         let id = run.id().ok_or("benchmark history is unavailable")?;
         let out = run.root.join(root).join("reads");
@@ -25,7 +25,7 @@ pub(super) fn execute(root: &Path, repetitions: u32, full_walk: bool) -> ExitCod
         }
         let load = LoadMonitor::start()?;
         run.nextest(
-            "native reads",
+            "reads",
             &Nextest {
                 args: [
                     "--locked", "--release", "-p", "polylogue", "--test", "e2e",
@@ -59,20 +59,19 @@ fn read_result(text: &str, repetitions: u32, full_walk: bool) -> Result<Value, S
         || result["mode"] != if full_walk { "full_walk" } else { "windows" }
     {
         return Err(
-            "native read benchmark omitted its matching population or completed answer checks"
-                .into(),
+            "read benchmark omitted its matching population or completed answer checks".into(),
         );
     }
     let population = &result["population"];
     let messages = population["large_messages"]
         .as_u64()
         .filter(|n| *n > 0)
-        .ok_or("native read population has no messages")?;
+        .ok_or("read population has no messages")?;
     let source_bytes = population["body_bytes"]
         .as_u64()
         .and_then(|bytes| bytes.checked_mul(messages))
         .filter(|n| *n > 0)
-        .ok_or("native read population has no source bytes")?;
+        .ok_or("read population has no source bytes")?;
     let groups: Vec<&Value> = if full_walk {
         vec![&result["read"]]
     } else {
@@ -82,7 +81,7 @@ fn read_result(text: &str, repetitions: u32, full_walk: bool) -> Result<Value, S
                 .as_u64()
                 .is_none_or(|n| n < source_bytes)
         {
-            return Err("native reference read omitted source content".into());
+            return Err("reference read omitted source content".into());
         }
         ["first", "middle", "tail"]
             .iter()
@@ -90,16 +89,14 @@ fn read_result(text: &str, repetitions: u32, full_walk: bool) -> Result<Value, S
             .collect()
     };
     for group in groups {
-        let walks = group["walks"]
-            .as_array()
-            .ok_or("native read walks are missing")?;
+        let walks = group["walks"].as_array().ok_or("read walks are missing")?;
         if walks.len() != repetitions as usize + 1 {
-            return Err("native read repetitions are incomplete".into());
+            return Err("read repetitions are incomplete".into());
         }
         let digest = walks[0]["rendered_blake3"]
             .as_str()
             .filter(|s| s.len() == 64)
-            .ok_or("native read digest is missing")?;
+            .ok_or("read digest is missing")?;
         for walk in walks {
             if walk["pages"].as_u64().is_none_or(|n| n < 2)
                 || walk["rendered_blake3"] != digest
@@ -116,9 +113,7 @@ fn read_result(text: &str, repetitions: u32, full_walk: bool) -> Result<Value, S
                         || walk["rendered_bytes"].as_u64().is_none_or(|n| n == 0)
                 }
             {
-                return Err(
-                    "native read walk omitted matching content, bounded pages or RSS".into(),
-                );
+                return Err("read walk omitted matching content, bounded pages or RSS".into());
             }
         }
     }

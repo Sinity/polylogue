@@ -51,7 +51,7 @@ claude.ai data export) are brought in with `polylogue import`.
 Morrow is a synthetic week of work on a fictional Rust library, in Claude Code,
 Codex, ChatGPT and claude.ai, shipped with Polylogue for examples and tests
 ([`examples/morrow/`](examples/morrow/)). The tour builds a separate archive
-from it in a new directory and walks through ordinary commands, with each
+from it in a new directory and walks through everyday commands, with each
 command and its answer written to `transcript.md`:
 
 ```sh
@@ -88,5 +88,5 @@ MCP and HTTP too.
 
 See [LICENSE](LICENSE).
 
-Cloud setup and shell startup, including the explicit native backend, are described in
+Cloud setup and shell startup, including the explicit `native` backend, are described in
 [the shared setup guide](https://github.com/Sinity/polylogue-sinex-common/blob/master/dev/cloud/README.md).

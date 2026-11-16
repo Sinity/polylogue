@@ -38,8 +38,8 @@ impl PartialEq for ClaimValue {
 }
 
 record!(Setting {machine:Option<String>,value:crate::settings::Value});
-/// Historical fields are a declaration carried beside the canonical value.
-/// They never participate in its schema checks or semantic equality.
+/// Historical fields are a declaration carried beside the stored value.
+/// They never take part in its schema checks or its equality.
 #[derive(Debug, Clone)]
 pub struct Structured<T> {
     pub fields: T,
@@ -495,14 +495,14 @@ mod tests;
 
 impl Setting {
     /// Resolves authored destination once, preserving the accepting machine
-    /// separately on Assertion. Frozen records retain this resolved payload.
+    /// separately on Assertion. Saved records keep this resolved payload.
     pub fn resolve(
         mut self,
         key: &str,
         accepting_machine: &str,
-        owner: crate::settings::Owner,
+        mode: crate::settings::SettingMode,
     ) -> Result<Self, crate::settings::Error> {
-        self.value.validate_for(key, owner)?;
+        self.value.validate_for(key, mode)?;
         self.machine =
             crate::settings::target_machine(key, self.machine.as_deref(), accepting_machine)?;
         Ok(self)
@@ -544,7 +544,7 @@ impl PartialEq for DecisionValue {
     }
 }
 
-/// A checked shape retains structured values needed by the accepting store's
+/// A checked shape keeps structured values needed by the accepting store's
 /// reference, rubric, configuration and stale-base checks.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -559,7 +559,7 @@ pub enum Value {
     Comparison(Box<Structured<Comparison>>),
     Rubric(Box<Structured<Rubric>>),
     Pass(Box<Structured<Pass>>),
-    /// The exact field type is supplied by the linked rubric revision.
+    /// The field type is supplied by the linked rubric revision.
     Annotation(Box<Structured<Annotation>>),
     Method(Box<Structured<Method>>),
     SavedQuery(Box<Structured<SavedQuery>>),
@@ -809,8 +809,8 @@ impl Check {
     }
 }
 
-/// Ordinary writes use the live value form. Only the predecessor import
-/// introduces predecessor metadata; canonical replay uses decode unchanged.
+/// Writes use the live value form. Only the Python Polylogue import adds
+/// `predecessor` metadata; replay of stored records uses decode unchanged.
 pub fn decode_live(
     kind: super::AssertionKind,
     key: Option<&str>,
@@ -822,7 +822,7 @@ pub fn decode_live(
     {
         return Err(ShapeError {
             kind: kind.as_str().into(),
-            message: "predecessor metadata belongs to the predecessor import".into(),
+            message: "predecessor metadata belongs to the Python Polylogue import".into(),
         });
     }
     decode(kind, key, value)

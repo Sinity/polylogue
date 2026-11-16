@@ -1,20 +1,20 @@
-//! One-record projection and transfer over a caller-owned pinned selection.
+//! One-record view filtering and transfer over a caller-owned pinned selection.
 use super::super::Failure;
 use polylogue_model::bundle::{Counts, Record};
 use polylogue_model::read::*;
 use std::io::Write;
 
-/// Canonical rows are kept separate from layout-only omissions. A mixed query
+/// Original rows are kept separate from layout-only omissions. A mixed query
 /// can report unsupported targets without exporting their hidden source bodies.
 pub(super) fn project(
     selected: super::records::SelectedRecord,
     options: &ReadOptions,
-    evidence: &ProjectionEvidence,
+    facts: &LayoutFacts,
     mixed: bool,
     footer: &mut ReadFooter,
 ) -> Result<Option<ReadRecord>, Failure> {
     let record = match selected {
-        super::records::SelectedRecord::Canonical(record) => *record,
+        super::records::SelectedRecord::Original(record) => *record,
         super::records::SelectedRecord::LinkIssue { session, issue } => {
             return Ok(Some(ReadRecord::Presentation {
                 parts: vec![ReadPart::Item(ReadItem {
@@ -30,18 +30,18 @@ pub(super) fn project(
         Record::TextFragment(_) => Some(TargetKind::TextFragment),
         _ => None,
     };
-    match project_record(record, options, evidence) {
-        Ok(Some(record)) => Ok(Some(ReadRecord::Canonical {
+    match project_record(record, options, facts) {
+        Ok(Some(record)) => Ok(Some(ReadRecord::Original {
             record: Box::new(record),
             parts: Vec::new(),
         })),
         Ok(None) => Ok(None),
-        Err(error) => projection_error(reference, target_kind, error, mixed, footer),
+        Err(error) => view_error(reference, target_kind, error, mixed, footer),
     }
 }
 
 /// A page can report unsupported document presentation before hydrating bodies.
-/// The same omission and error policy serves full canonical projection.
+/// The same omission and error policy serves the full view.
 pub(super) fn document_omission(
     reference: &str,
     options: &ReadOptions,
@@ -51,7 +51,7 @@ pub(super) fn document_omission(
     if options.view != View::Dialogue {
         return Ok(None);
     }
-    projection_error(
+    view_error(
         reference.into(),
         Some(TargetKind::Document),
         ReadError::UnsupportedTarget {
@@ -64,7 +64,7 @@ pub(super) fn document_omission(
     )
 }
 
-fn projection_error(
+fn view_error(
     reference: String,
     target_kind: Option<TargetKind>,
     error: ReadError,
@@ -100,7 +100,7 @@ fn projection_error(
                         unit: match target_kind {
                             TargetKind::Document => "document",
                             TargetKind::TextFragment => "text fragment",
-                            _ => unreachable!("mixed canonical family"),
+                            _ => unreachable!("mixed shown family"),
                         }
                         .into(),
                         why: ReadError::UnsupportedTarget {
@@ -122,13 +122,13 @@ pub(super) fn emit_record(
     reader: &polylogue_store::Reader<'_>,
     record: &ReadRecord,
     at: SelectionLocator,
-    layout: &super::evidence::Layout<'_>,
+    layout: &super::layout_facts::Layout<'_>,
     emit: &mut super::Emit<'_>,
 ) -> Result<bool, Failure> {
     if record.record().is_some() && !emit(record, at, None)? {
         return Ok(false);
     }
-    super::evidence::visit_parts(reader, record, layout, |item, ordinal| {
+    super::layout_facts::visit_parts(reader, record, layout, |item, ordinal| {
         emit(
             &ReadRecord::Presentation {
                 parts: vec![ReadPart::Item(item)],
@@ -237,7 +237,7 @@ pub(super) fn read_error(error: ReadError) -> Failure {
         ReadError::RequiredExpansion { option, .. } => {
             ("bad_request", Some(format!("set {option} to full")))
         }
-        ReadError::MissingEvidence { .. } => ("not_yet_available", None),
+        ReadError::MissingPreparedData { .. } => ("not_yet_available", None),
         _ => ("bad_request", None),
     };
     let mut failure = Failure::new(code, &error);

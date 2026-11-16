@@ -1,4 +1,4 @@
-//! Current producer observations; the confirmed position remains owned by the cache.
+//! Current producer observations; the cache keeps the confirmed position.
 use crate::{Result, Sinex};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
@@ -10,27 +10,23 @@ pub(crate) struct Health {
     pub family: Option<String>,
     /// The current read or connection outcome.
     pub error: Option<String>,
-    /// The last complete publication retry, independent of reads.
-    pub publication_error: Option<String>,
-    /// This run's last acknowledgement on the monotonic clock, which
-    /// confirmed removal compares with when the owner head was observed. Status
+    /// The last complete send retry, independent of reads.
+    pub send_error: Option<String>,
+    /// This run's last acknowledgment on the monotonic clock, which
+    /// confirmed removal compares with when the latest Sinex position was observed. Status
     /// reads the spool's record instead, which survives a restart.
     pub last_ack: Option<Instant>,
-    pub owner_position: Option<i64>,
+    pub sinex_position: Option<i64>,
     pub position_observed: Option<Instant>,
-    pub owner_scope: Option<String>,
+    pub sinex_scope: Option<String>,
 }
 
 impl Health {
     fn error(&self) -> Option<String> {
-        match (&self.publication_error, &self.error) {
-            (Some(publication), Some(read)) if publication == read => {
-                Some(format!("publication and read: {publication}"))
-            }
-            (Some(publication), Some(read)) => {
-                Some(format!("publication: {publication}; read: {read}"))
-            }
-            (Some(publication), None) => Some(format!("publication: {publication}")),
+        match (&self.send_error, &self.error) {
+            (Some(send), Some(read)) if send == read => Some(format!("send and read: {send}")),
+            (Some(send), Some(read)) => Some(format!("send: {send}; read: {read}")),
+            (Some(send), None) => Some(format!("send: {send}")),
             (None, read) => read.clone(),
         }
     }
@@ -44,8 +40,8 @@ pub struct Status {
     pub reachable: Option<bool>,
     pub error: Option<String>,
     pub last_ack_seconds_ago: Option<f64>,
-    pub owner_position: Option<i64>,
-    pub owner_position_seconds_ago: Option<f64>,
+    pub sinex_position: Option<i64>,
+    pub sinex_position_seconds_ago: Option<f64>,
     pub prepared_materials: u64,
     pub prepared_writes: u64,
     pub prepared_bytes: u64,
@@ -54,21 +50,21 @@ pub struct Status {
 }
 
 impl Sinex {
-    pub fn currency(
+    pub fn freshness(
         &self,
         applied_position: Option<i64>,
         applied_scope: Option<String>,
-    ) -> Result<polylogue_model::currency::IndexCurrency> {
+    ) -> Result<polylogue_model::freshness::IndexFreshness> {
         let health = self
             .health
             .lock()
             .map_err(|_| crate::Error::Invalid("producer health panicked".into()))?;
         let same_scope = applied_scope
             .as_ref()
-            .is_some_and(|scope| health.owner_scope.as_ref() == Some(scope));
-        Ok(polylogue_model::currency::IndexCurrency::primary(
+            .is_some_and(|scope| health.sinex_scope.as_ref() == Some(scope));
+        Ok(polylogue_model::freshness::IndexFreshness::primary(
             applied_position,
-            same_scope.then_some(health.owner_position).flatten(),
+            same_scope.then_some(health.sinex_position).flatten(),
             health
                 .position_observed
                 .map(|at| at.elapsed().as_secs_f64()),
@@ -81,7 +77,7 @@ impl Sinex {
         .with_scope(applied_scope))
     }
     pub fn status(&self) -> Result<Status> {
-        let (reachable, error, owner_position, owner_position_seconds_ago, family) = {
+        let (reachable, error, sinex_position, sinex_position_seconds_ago, family) = {
             let health = self
                 .health
                 .lock()
@@ -89,7 +85,7 @@ impl Sinex {
             (
                 health.reachable,
                 health.error(),
-                health.owner_position,
+                health.sinex_position,
                 health
                     .position_observed
                     .map(|at| at.elapsed().as_secs_f64()),
@@ -137,8 +133,8 @@ impl Sinex {
             reachable,
             error,
             last_ack_seconds_ago,
-            owner_position,
-            owner_position_seconds_ago,
+            sinex_position,
+            sinex_position_seconds_ago,
             prepared_materials: counts.0,
             prepared_writes: counts.1,
             prepared_bytes: counts.2,

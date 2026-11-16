@@ -1,4 +1,4 @@
-//! A bound question retains its source references instead of replacing identity with a plan hash.
+//! A bound question keeps its source references instead of replacing identity with a plan hash.
 use crate::{Bindings, QueryError, ast::*};
 use query_language::{
     bind::BoundQuery,
@@ -24,7 +24,7 @@ pub struct ResolvedDefinition {
 }
 #[derive(Clone, Debug)]
 pub struct Plan {
-    retained_object: Option<polylogue_model::query_objects::QueryObject>,
+    saved_object: Option<polylogue_model::query_objects::QueryObject>,
     original: BoundQuery,
     expanded: BoundQuery,
     text: String,
@@ -32,7 +32,7 @@ pub struct Plan {
     catalog: Arc<Catalog>,
     definitions: Vec<ResolvedDefinition>,
     bindings: Bindings,
-    frozen: Vec<polylogue_model::query_objects::FrozenQueryDefinition>,
+    saved_definitions: Vec<polylogue_model::query_objects::FrozenQueryDefinition>,
     identity_catalog: Arc<Catalog>,
     question_id: QuestionId,
 }
@@ -42,7 +42,7 @@ impl Plan {
         crate::compile::schema::bound_output_metadata(&self.expanded, &self.catalog)
             .map(|(produced, _)| produced)
     }
-    /// Declarations of the physical columns this producer actually emits.
+    /// Declarations of the physical columns this producer emits.
     pub fn output_schema_for_columns(
         &self,
         columns: &[crate::Column],
@@ -80,7 +80,7 @@ impl Plan {
             })?;
             field.name = column.name.clone();
             if column.reference.is_some() {
-                // The physical producer proves the reference target. Filter-only
+                // The producer's column fixes the reference target. Filter-only
                 // catalog matching rules need not describe its emitted value.
                 field.kind = FieldKind::Reference;
                 field.unit = column.reference.map(|reference| reference.unit().into());
@@ -93,7 +93,7 @@ impl Plan {
             .filter(|name| produced.fields.iter().any(|field| &field.name == name));
         Ok(produced)
     }
-    /// Queryable fields of this exact resolved relation, separate from columns.
+    /// Queryable fields of this resolved relation, separate from columns.
     pub fn relation_scope(&self) -> Result<query_language::catalog::OutputSchema, QueryError> {
         let produced = self.output_schema()?;
         crate::compile::schema::relation_scope(&self.expanded, &produced)
@@ -142,7 +142,7 @@ impl Plan {
         self.question_id
     }
     /// Figures declare the denominator of the root measurement, independently
-    /// of count predicates used merely to select ordinary rows.
+    /// of count predicates used only to select rows.
     pub fn requires_denominator(&self) -> bool {
         self.expanded.query().transforms.iter().any(|transform| {
             matches!(transform.kind, TransformKind::Aggregate { .. })
@@ -172,7 +172,8 @@ fn prepare_inner(
         let mut catalog = options.catalog();
         let mut query = crate::parse::with_catalog(text, &catalog)?;
         let mut definitions = Vec::new();
-        let mut frozen: Vec<polylogue_model::query_objects::FrozenQueryDefinition> = Vec::new();
+        let mut saved_definitions: Vec<polylogue_model::query_objects::FrozenQueryDefinition> =
+            Vec::new();
         let mut identities = BTreeMap::<String, QuestionId>::new();
         walk(
             &mut query,
@@ -204,7 +205,7 @@ fn prepare_inner(
             },
             &mut |_| Ok(()),
         )?;
-        canonical_references(&mut query)?;
+        normalize_references(&mut query)?;
 
         let bound = query_language::bind::bind(&query, &catalog)
             .map_err(|e| QueryError::language(e, text))?;
@@ -212,7 +213,7 @@ fn prepare_inner(
         walk(&mut query, &mut |_| Ok(()), &mut |condition| {
             resolve(&mut condition.kind)
         })?;
-        canonical_references(&mut query)?;
+        normalize_references(&mut query)?;
         let original = query_language::bind::bind(&query, &catalog)
             .map_err(|e| QueryError::language(e, text))?;
         values::check(&original)?;
@@ -244,26 +245,27 @@ fn prepare_inner(
                 });
             }
             let definition = crate::compile::saved_definition(text, 0, &name, options)?;
-            if let crate::SavedQueryBody::Frozen {
+            if let crate::SavedQueryBody::Available {
                 object: Some(object),
                 ..
             } = &definition.body
             {
-                let (node, closure) = objects::retained_definition(object, definition.hash)?;
-                for node in std::iter::once(node).chain(closure) {
-                    if let Some(existing) = frozen
+                let (node, dependency_nodes) =
+                    objects::definition_with_dependencies(object, definition.hash)?;
+                for node in std::iter::once(node).chain(dependency_nodes) {
+                    if let Some(existing) = saved_definitions
                         .iter()
                         .find(|existing| existing.question == node.question)
                     {
                         if *existing != node {
                             return Err(QueryError::Invalid {
-                                message: "one retained question has conflicting captured bodies"
+                                message: "one saved question has conflicting captured bodies"
                                     .into(),
                                 position: 0,
                             });
                         }
                     } else {
-                        frozen.push(node);
+                        saved_definitions.push(node);
                     }
                 }
                 definitions.push(ResolvedDefinition {
@@ -280,20 +282,18 @@ fn prepare_inner(
             stack.pop();
             if nested.question_id != definition.hash {
                 return Err(QueryError::Invalid {
-                    message: format!(
-                        "saved query {name:?} differs from its declared semantic hash"
-                    ),
+                    message: format!("saved query {name:?} differs from its declared hash"),
                     position: 0,
                 });
             }
             let object = nested.query_object()?;
-            frozen.push(objects::frozen_root(&object));
+            saved_definitions.push(objects::root_definition(&object));
             for dependency in object.definitions {
-                if !frozen
+                if !saved_definitions
                     .iter()
                     .any(|known| known.question == dependency.question)
                 {
-                    frozen.push(dependency);
+                    saved_definitions.push(dependency);
                 }
             }
             definitions.push(ResolvedDefinition {
@@ -353,7 +353,7 @@ fn prepare_inner(
         let expanded = query_language::bind::bind(&expanded, &catalog)
             .map_err(|e| QueryError::language(e, text))?;
         Ok(Plan {
-            retained_object: None,
+            saved_object: None,
             expanded,
             text: text.to_owned(),
             original,
@@ -361,7 +361,7 @@ fn prepare_inner(
             catalog,
             definitions,
             bindings: options.clone(),
-            frozen,
+            saved_definitions,
             identity_catalog,
             question_id,
         })
@@ -466,7 +466,7 @@ fn visit_extensions(
     })
 }
 
-fn canonical_references(query: &mut Query) -> Result<(), QueryError> {
+fn normalize_references(query: &mut Query) -> Result<(), QueryError> {
     walk(query, &mut |_| Ok(()), &mut |condition| {
         let ConditionKind::Reference { reference: text } = &condition.kind else {
             return Ok(());

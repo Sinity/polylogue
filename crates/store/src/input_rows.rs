@@ -106,14 +106,15 @@ impl InputRows {
         self.insert_rows(tx, seq, true)
     }
 
-    /// Confirmed historical observations retain their original admission proof
-    /// when a source dependency is temporarily absent from the live projection.
+    /// Inserts confirmed observations without checking that a prefix
+    /// observation's chain prefix is committed: a source they depend on may be
+    /// missing from the index for a while.
     pub(crate) fn insert_confirmed(&self, tx: &Connection, seq: i64) -> Result<()> {
         self.insert_rows(tx, seq, false)
     }
 
-    fn insert_rows(&self, tx: &Connection, seq: i64, prove_prefix: bool) -> Result<()> {
-        self.validate_acquisition()?;
+    fn insert_rows(&self, tx: &Connection, seq: i64, check_prefix: bool) -> Result<()> {
+        self.validate_source_read()?;
         let source = crate::source::Source::of(tx)?;
         tx.prepare_cached(
             &source.sql("INSERT OR IGNORE INTO @source.input(id, format) VALUES (?1, ?2)"),
@@ -160,12 +161,12 @@ impl InputRows {
                     })?;
                 if o.revision.is_some()
                     || chain < 1
-                    || prove_prefix
-                        && crate::source::Source::admitted_through(tx, &self.input, chain, length)?
+                    || check_prefix
+                        && crate::source::Source::committed_through(tx, &self.input, chain, length)?
                             .is_none()
                 {
                     return Err(crate::StoreError::Invalid(
-                        "a prefix observation needs a committed chain prefix and no revision claim"
+                        "a prefix observation needs a committed chain prefix and no revision number"
                             .into(),
                     ));
                 }
@@ -215,30 +216,30 @@ impl InputRows {
         }
         Ok(())
     }
-    fn validate_acquisition(&self) -> Result<()> {
-        let Some(receipt) = &self.acquisition else {
+    fn validate_source_read(&self) -> Result<()> {
+        let Some(source_read) = &self.acquisition else {
             return Ok(());
         };
-        receipt.validate_for(&crate::InputKey {
+        source_read.validate_for(&crate::InputKey {
             format: self.format.clone(),
             id: self.input.clone(),
             route: polylogue_model::Route::Live,
         })?;
-        let length = receipt.range.length()?;
+        let length = source_read.range.length()?;
         let invalid = || {
             crate::StoreError::Invalid(
-                "acquisition evidence does not describe these source rows".into(),
+                "the capture read does not describe these source rows".into(),
             )
         };
-        if receipt.version != crate::primary::AcquisitionReceipt::VERSION
-            || receipt.source.origin != self.format
-            || receipt.source.machine.is_empty()
+        if source_read.version != crate::primary::AcquisitionReceipt::VERSION
+            || source_read.source.origin != self.format
+            || source_read.source.machine.is_empty()
         {
             return Err(invalid());
         }
         if let Some(observation) = &self.observation
-            && (observation.machine != receipt.source.machine
-                || observation.path_bytes.as_ref() != Some(&receipt.source.path_bytes))
+            && (observation.machine != source_read.source.machine
+                || observation.path_bytes.as_ref() != Some(&source_read.source.path_bytes))
         {
             return Err(invalid());
         }
@@ -248,13 +249,13 @@ impl InputRows {
         // Each extent lies inside one blob of the acquired body, at its
         // place: the body itself, or the chunk the body was stored as there.
         let whole = [crate::Chunk {
-            hash: receipt.hash,
+            hash: source_read.hash,
             size: length,
         }];
-        let blobs = if receipt.chunks.is_empty() {
+        let blobs = if source_read.chunks.is_empty() {
             &whole[..]
         } else {
-            &receipt.chunks[..]
+            &source_read.chunks[..]
         };
         if blobs.iter().map(|chunk| chunk.size).sum::<u64>() != length {
             return Err(invalid());
@@ -264,7 +265,9 @@ impl InputRows {
             let start = u64::try_from(extent.offset).map_err(|_| invalid())?;
             let size = u64::try_from(extent.length).map_err(|_| invalid())?;
             let offset = u64::try_from(extent.blob_offset).map_err(|_| invalid())?;
-            let at = start.checked_sub(receipt.range.start).ok_or_else(invalid)?;
+            let at = start
+                .checked_sub(source_read.range.start)
+                .ok_or_else(invalid)?;
             let end = at.checked_add(size).ok_or_else(invalid)?;
             let mut blob_start = 0u64;
             let placed = blobs.iter().any(|blob| {
@@ -281,7 +284,7 @@ impl InputRows {
     }
 
     fn observation_details(&self, observation: &ObservationRow) -> Result<Option<String>> {
-        let Some(receipt) = self
+        let Some(source_read) = self
             .acquisition
             .as_ref()
             .filter(|_| self.extents.is_empty())
@@ -297,16 +300,16 @@ impl InputRows {
         let object = details.as_object_mut().ok_or_else(|| {
             crate::StoreError::Invalid("observation details must be an object".into())
         })?;
-        let receipt = serde_json::to_value(receipt)?;
+        let source_read = serde_json::to_value(source_read)?;
         if object
             .get("acquisition")
-            .is_some_and(|prior| prior != &receipt)
+            .is_some_and(|prior| prior != &source_read)
         {
             return Err(crate::StoreError::Invalid(
-                "observation acquisition evidence conflicts".into(),
+                "the observation's capture read conflicts".into(),
             ));
         }
-        object.insert("acquisition".into(), receipt);
+        object.insert("acquisition".into(), source_read);
         Ok(Some(serde_json::to_string(&details)?))
     }
 }

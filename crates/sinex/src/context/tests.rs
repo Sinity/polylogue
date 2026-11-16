@@ -23,7 +23,7 @@ fn available() -> PublicContext {
 }
 
 #[test]
-fn unavailable_owner_never_promotes_a_known_context_to_current() {
+fn unavailable_sinex_never_makes_a_known_context_current() {
     let mut cache = Cache::default();
     assert_eq!(
         cache.resolve(|_| unreachable!()).unwrap_err().kind,
@@ -33,9 +33,9 @@ fn unavailable_owner_never_promotes_a_known_context_to_current() {
     let first = cache
         .resolve(|name| jiff::tz::TimeZone::get(name).map_err(|e| e.to_string()))
         .unwrap();
-    assert_eq!(first.owner_revision, 7);
+    assert_eq!(first.settings_revision, 7);
     assert_eq!(first.interrupt_budget.remaining, 2);
-    cache.record(Err("owner offline".into()));
+    cache.record(Err("Sinex offline".into()));
     let failure = cache.resolve(|_| unreachable!()).unwrap_err();
     assert_eq!(failure.kind, ContextFailureKind::Unavailable);
     assert_eq!(failure.last_known_identity.as_deref(), Some("settings-1"));
@@ -50,7 +50,7 @@ fn unavailable_owner_never_promotes_a_known_context_to_current() {
 }
 
 #[test]
-fn current_context_requires_its_exact_resolved_zone_and_observation_age() {
+fn current_context_requires_its_resolved_zone_and_observation_age() {
     let mut cache = Cache::default();
     cache.record(Ok(available()));
     let wrong = cache

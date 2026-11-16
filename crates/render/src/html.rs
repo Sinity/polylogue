@@ -20,7 +20,7 @@ pub fn encode_path_segment(id: &str) -> String {
     }
     out
 }
-/// Only ordinary web URLs and local references may enter an href. Control
+/// Only web URLs and local references may enter an href. Control
 /// characters and protocol-relative URLs are refused before scheme checks.
 pub fn safe_url(url: &str) -> bool {
     if url.is_empty()
@@ -134,7 +134,8 @@ fn card(
         Card::Session { session,open,lineage_complete } => { @if lineage_complete == &ValueState::known(false) { p class="lineage-incomplete" { "Parents incomplete" } } h3 { "session:" (&session.id) " · " (session.title.as_ref().map(|title| title.text.as_str()).unwrap_or("title unknown")) } @for line in crate::encode::session_lines(session, zone) { p { (line) } } @if let Some(call)=open { (ready(call, commands)?) } },
         Card::LinkNode { reference,lineage,title,parents,own_messages,inherited_messages,own_cost,tree_cost,seed,open } => { h3 { @if *seed { "▶ " } (reference) " · " (value(title)) } p { "parents: " (parents.join(", ")) } @if let Some(lineage)=lineage { p { (crate::encode::lineage_text(lineage)) } } p { (value(own_messages)) " own + " (value(inherited_messages)) " inherited · cost " (value(own_cost)) " own / " (value(tree_cost)) " tree" } @if let Some(call)=open { (ready(call, commands)?) } },
         Card::LinkEdge { from,to,relation,how,branch_point,spawning_call,copies_prefix,cross_link } => {
-            // Stable session object URLs preserve recorded references without an execution envelope.
+            // Stable session object URLs keep recorded references without wrapping
+            // them in an execution call.
             @let href = |reference: &str| match polylogue_model::Reference::parse(reference) {
                 Ok(polylogue_model::Reference::Session(id)) => Some(format!("/s/{}", encode_path_segment(&id.to_string()))),
                 _ => None,
@@ -192,7 +193,7 @@ fn item_markup(
         } } },
     )
 }
-/// Ordinary navigation consumes the daemon's sealed calls, never guesses URLs.
+/// Navigation consumes the daemon's sealed calls, never guesses URLs.
 pub fn footer(
     footer: &ReadFooter,
     commands: Option<&OperationDeclarations>,

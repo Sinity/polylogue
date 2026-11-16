@@ -70,17 +70,18 @@ pub(super) fn restore(
     Ok(())
 }
 
-/// Sender claims remain declared; only `restore` can record observed ingress.
+/// What a sender states stays declared; only `restore` can record how an import
+/// was observed.
 pub fn declare_imports(
     conn: &Connection,
     reference: &Reference,
-    claims: &[ImportAttribution],
+    attributions: &[ImportAttribution],
     counter: i64,
 ) -> Result<()> {
     let id =
         identify(conn, reference)?.ok_or_else(|| StoreError::NotFound(reference.to_string()))?;
-    for claim in claims {
-        insert(conn, reference, &id, claim, false, counter)?;
+    for attribution in attributions {
+        insert(conn, reference, &id, attribution, false, counter)?;
     }
     Ok(())
 }
@@ -94,7 +95,7 @@ pub(super) fn history(conn: &Connection, reference: &Reference) -> Result<Option
     let mut history = ImportHistory::default();
     while let Some(row) = rows.next()? {
         let at: String = row.get(5)?;
-        let claim = ImportAttribution {
+        let attribution = ImportAttribution {
             input: row.get(1)?,
             chain: row.get(2)?,
             machine: row.get(3)?,
@@ -103,9 +104,9 @@ pub(super) fn history(conn: &Connection, reference: &Reference) -> Result<Option
                 .ok_or_else(|| StoreError::stored(5, "import time is not an RFC 3339 time"))?,
         };
         if row.get::<_, bool>(0)? {
-            history.observed.push(claim);
+            history.observed.push(attribution);
         } else {
-            history.declared.push(claim);
+            history.declared.push(attribution);
         }
     }
     Ok(Some(history))
@@ -120,7 +121,7 @@ pub(super) fn copy(from: &Connection, to: &Connection) -> Result<()> {
         let at: String = row.get(7)?;
         let reference = Reference::parse(&reference)
             .map_err(|error| StoreError::stored(0, error.to_string()))?;
-        let claim = ImportAttribution {
+        let attribution = ImportAttribution {
             input: row.get(3)?,
             chain: row.get(4)?,
             machine: row.get(5)?,
@@ -128,7 +129,7 @@ pub(super) fn copy(from: &Connection, to: &Connection) -> Result<()> {
             at: Timestamp::parse_rfc3339(&at)
                 .ok_or_else(|| StoreError::stored(7, "import time is not an RFC 3339 time"))?,
         };
-        insert(to, &reference, &variant, &claim, row.get(2)?, 0)?;
+        insert(to, &reference, &variant, &attribution, row.get(2)?, 0)?;
     }
     Ok(())
 }

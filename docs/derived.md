@@ -38,9 +38,9 @@ Reads: message.at, message.written_by, message.prompt_kind, message.stop_reason,
 
 Parameter: cluster_gap = 300000 milliseconds.
 
-Tests: span_and_lanes_match_a_hand_computed_session, tool_intervals_extend_clusters_and_share_overlap, clustering_sensitivity_matches_the_morrow_shaped_sample.
+Tests: span_and_parties_match_a_hand_computed_session, tool_intervals_extend_clusters_and_share_overlap, clustering_sensitivity_matches_the_morrow_shaped_sample.
 
-Evidence: Morrow #2, 18 own messages: clustered 62 minutes at a 5-minute gap, 75 minutes at a 10-minute gap. Time lanes at both gaps: tools 1704000 ms, model 2348000 ms, human 448000 ms (2026-10-28).
+Evidence: Morrow #2, 18 own messages: clustered 62 minutes at a 5-minute gap, 75 minutes at a 10-minute gap. Time per party at both gaps: tools 1704000 ms, model 2348000 ms, human 448000 ms (2026-10-28).
 
 ## session_time (K16)
 
@@ -54,9 +54,9 @@ Reads: message.at, message.written_by, message.prompt_kind, message.stop_reason,
 
 Parameter: cluster_gap = 300000 milliseconds.
 
-Tests: span_and_lanes_match_a_hand_computed_session, tool_intervals_extend_clusters_and_share_overlap, time_lanes_sum_to_wall_for_overlapping_intervals.
+Tests: span_and_parties_match_a_hand_computed_session, tool_intervals_extend_clusters_and_share_overlap, party_times_sum_to_wall_for_overlapping_intervals.
 
-Evidence: Morrow #2, 18 own messages: clustered 62 minutes at a 5-minute gap, 75 minutes at a 10-minute gap. Time lanes at both gaps: tools 1704000 ms, model 2348000 ms, human 448000 ms (2026-10-28).
+Evidence: Morrow #2, 18 own messages: clustered 62 minutes at a 5-minute gap, 75 minutes at a 10-minute gap. Time per party at both gaps: tools 1704000 ms, model 2348000 ms, human 448000 ms (2026-10-28).
 
 ## billing-cycle outlook (K12)
 
@@ -66,7 +66,7 @@ Kind: Parameterized. Unit: nano-USD; tokens. Denominator: one UTC billing cycle,
 
 Unknown: Each unit counts known and unknown items; absent usage stays null; untimed items stay outside the cycle.
 
-Reads: setting.set_at, setting.value, message.at, message.cost_nusd, message.provider_cost_nusd, message token lanes, usage_report.
+Reads: setting.set_at, setting.value, message.at, message.cost_nusd, message.provider_cost_nusd, message token kinds, usage_report.
 
 Parameter: trailing_observed_days = 7 observed UTC days.
 

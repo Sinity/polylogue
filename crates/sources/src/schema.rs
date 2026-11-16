@@ -38,14 +38,14 @@ pub struct Schema {
     pub origin: String,
     /// Names forced into paths even when they look like dynamic keys.
     pub named_fields: BTreeSet<String>,
-    /// Explicit input selection is a sample, with no claim of origin coverage.
+    /// Explicit input selection is a sample and does not cover the whole origin.
     pub sample: bool,
     pub selection: Vec<Selection>,
     pub records: u64,
     pub unreadable_inputs: u64,
     pub unreadable_records: u64,
     pub fields: BTreeMap<String, Field>,
-    /// Native row-dump table identities; scalar cell values and SQL are discarded.
+    /// Row-dump table identities; scalar cell values and SQL are discarded.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tables: BTreeMap<String, Table>,
 }
@@ -82,7 +82,7 @@ pub struct Table {
     /// Distinct producer declarations, separate from observed JSON types.
     pub metadata: BTreeSet<TableMetadata>,
     pub unobserved_columns: bool,
-    /// Declared native columns with no captured row-field observation.
+    /// Declared columns with no captured row-field observation.
     pub unobserved_declared_columns: BTreeSet<String>,
     pub fields: BTreeMap<String, Field>,
 }

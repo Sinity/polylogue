@@ -2,7 +2,7 @@ use super::*;
 use std::io::Write;
 use std::time::Duration;
 
-/// Protocol tests inspect the canonical envelope before any domain projection.
+/// Protocol tests inspect the request envelope before any domain handler runs.
 async fn send_wire(r: &Reader, request: Http<Body>) -> (StatusCode, HeaderMap, String) {
     let response = router(Arc::clone(&r.web)).oneshot(request).await.unwrap();
     let status = response.status();
@@ -133,7 +133,7 @@ fn no_header_status_keeps_default_null_and_finite_envelope_deadlines() {
 }
 
 #[test]
-fn outer_parent_expires_during_actual_sql_under_a_null_envelope() {
+fn outer_parent_expires_during_sql_under_a_null_envelope() {
     let r = reader();
     let reads = r.w.watch_reads();
     let path = typed_url(
@@ -171,7 +171,7 @@ fn outer_parent_expires_during_actual_sql_under_a_null_envelope() {
     };
     assert_eq!(error.kind, command_surface::FailureKind::Timeout);
     assert_eq!(error.code.as_deref(), Some("deadline_exceeded"));
-    assert!(observed.sqlite_steps() >= 10_000, "no SQL-phase evidence");
+    assert!(observed.sqlite_steps() >= 10_000, "no SQL steps observed");
     r.w.assert_read_released(&observed);
 }
 
@@ -239,7 +239,7 @@ fn an_expired_http_parent_never_submits_a_new_pure_write() {
             ..
         } = answer
         else {
-            panic!("expired admission cannot yield a receipt: {body}")
+            panic!("expired acceptance cannot yield a write result: {body}")
         };
         assert_eq!(error.kind, command_surface::FailureKind::Timeout);
     });
@@ -280,7 +280,7 @@ fn no_header_null_sql_has_no_implicit_read_cap_and_disconnect_still_cleans_up() 
     .unwrap();
     let observed = reads.recv_timeout(Duration::from_secs(5)).unwrap();
     TestDaemon::wait_for_sql(&observed);
-    // Exceed this operation's actual class default without adding it to null.
+    // Exceed this operation's class default without adding it to null.
     let default = crate::commands::deadlines()
         .get(crate::commands::command("sql").unwrap().latency)
         .expect("SQL has a finite class default");
@@ -295,11 +295,11 @@ fn no_header_null_sql_has_no_implicit_read_cap_and_disconnect_still_cleans_up() 
 #[test]
 fn an_expired_http_read_parent_creates_no_query_object_begin_or_outcome() {
     let r = reader();
-    let custody = || {
+    let stored_counts = || {
         r.w.daemon.reads.reader().unwrap().query(
         "SELECT (SELECT count(*) FROM source_query) AS objects, (SELECT count(*) FROM source_query_run WHERE run IS NOT NULL) AS begins, (SELECT count(*) FROM source_query_run WHERE completion IS NOT NULL) AS outcomes", &[]).unwrap()
     };
-    let before = custody();
+    let before = stored_counts();
     let reads = r.w.watch_reads();
     rt().block_on(async {
         let path = typed_url(
@@ -329,8 +329,8 @@ fn an_expired_http_read_parent_creates_no_query_object_begin_or_outcome() {
         };
         assert_eq!(error.kind, command_surface::FailureKind::Timeout);
     });
-    assert_eq!(custody(), before);
-    // Admission observes the limit but does not start a statement or read body.
+    assert_eq!(stored_counts(), before);
+    // Accepting the request observes the limit but does not start a statement or read body.
     let observed = reads.recv_timeout(Duration::from_secs(2)).unwrap();
     assert_eq!(observed.sqlite_steps(), 0);
 }

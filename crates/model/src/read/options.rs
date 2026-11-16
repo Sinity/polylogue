@@ -186,23 +186,23 @@ impl Default for ReadOptions {
     }
 }
 
-/// One row per fold kind: the variant, its word and its levels, fullest
+/// One row per show kind: the variant, its word and its levels, fullest
 /// last. The table gives the enum, its words and the `--show` help text, so
-/// the CLI, MCP and the web's fold keys cannot drift from it.
-macro_rules! fold_table {
+/// the CLI, MCP and the web's show and hide keys cannot drift from it.
+macro_rules! show_hide_table {
     ($($kind:ident $name:literal [$($level:literal),+] $depth:tt;)+) => {
-        /// The closed set of item kinds a reading folds, one table for the
-        /// CLI's `--show`/`--hide`, MCP's `show`/`hide` and the web's fold keys.
+        /// The closed set of item kinds a reading shows or hides, one table for the
+        /// CLI's `--show`/`--hide`, MCP's `show`/`hide` and the web's show and hide keys.
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-        pub enum FoldKind {
+        pub enum ShowKind {
             $($kind,)+
         }
-        impl FoldKind {
+        impl ShowKind {
             pub const ALL: [Self; [$(stringify!($kind)),+].len()] = [$(Self::$kind,)+];
             /// The `--show` help: every kind with its levels.
             pub const HELP: &'static str = concat!(
                 "Item kinds to show, each with an optional level (the fullest when omitted):"
-                $(, " ", $name, "[:", fold_table!(@levels $($level),+), fold_table!(@depth $depth), "]")+
+                $(, " ", $name, "[:", show_hide_table!(@levels $($level),+), show_hide_table!(@depth $depth), "]")+
             );
             pub const fn name(self) -> &'static str {
                 match self {
@@ -234,7 +234,7 @@ macro_rules! fold_table {
         ""
     };
 }
-fold_table! {
+show_hide_table! {
     Tools "tools" ["line", "full"] false;
     Thinking "thinking" ["line", "full"] false;
     Harness "harness" ["line", "full"] false;
@@ -245,7 +245,7 @@ fold_table! {
     Turns "turns" ["dividers"] false;
     Context "context" ["meter"] false;
 }
-impl FoldKind {
+impl ShowKind {
     pub fn parse(name: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|kind| kind.name() == name)
     }
@@ -268,10 +268,10 @@ pub enum SpawnFold {
 impl ReadOptions {
     /// Apply `--show KIND[:LEVEL]` and `--hide KIND` words. A kind or level
     /// outside the table is refused with the table's words.
-    pub fn apply_fold(&mut self, show: &[String], hide: &[String]) -> Result<(), ReadError> {
-        let unknown = |word: &str| ReadError::UnknownFold {
+    pub fn apply_show_hide(&mut self, show: &[String], hide: &[String]) -> Result<(), ReadError> {
+        let unknown = |word: &str| ReadError::UnknownShowWord {
             word: word.into(),
-            kinds: FoldKind::ALL
+            kinds: ShowKind::ALL
                 .iter()
                 .map(|kind| {
                     format!(
@@ -288,7 +288,7 @@ impl ReadOptions {
             let (name, level) = word
                 .split_once(':')
                 .map_or((word.as_str(), None), |(n, l)| (n, Some(l)));
-            let kind = FoldKind::parse(name).ok_or_else(|| unknown(word))?;
+            let kind = ShowKind::parse(name).ok_or_else(|| unknown(word))?;
             let level = level.unwrap_or(kind.levels()[kind.levels().len() - 1]);
             let depth = kind
                 .takes_depth()
@@ -303,43 +303,43 @@ impl ReadOptions {
                 Expansion::Collapsed
             };
             match kind {
-                FoldKind::Tools => self.tools = Some(expansion),
-                FoldKind::Thinking => self.thinking = Some(expansion),
-                FoldKind::Harness => self.harness = Some(expansion),
-                FoldKind::Inherited => self.inherited = true,
-                FoldKind::Branches => self.branches = true,
-                FoldKind::Spawns => {
+                ShowKind::Tools => self.tools = Some(expansion),
+                ShowKind::Thinking => self.thinking = Some(expansion),
+                ShowKind::Harness => self.harness = Some(expansion),
+                ShowKind::Inherited => self.inherited = true,
+                ShowKind::Branches => self.branches = true,
+                ShowKind::Spawns => {
                     self.spawns = match (level, depth) {
                         ("card", _) => SpawnFold::Card,
                         (_, Some(depth)) => SpawnFold::Inline { depth: Some(depth) },
                         _ => SpawnFold::Inline { depth: None },
                     }
                 }
-                FoldKind::Assertions => self.assertions = true,
-                FoldKind::Turns => self.turns = true,
-                FoldKind::Context => self.context_meter = true,
+                ShowKind::Assertions => self.assertions = true,
+                ShowKind::Turns => self.turns = true,
+                ShowKind::Context => self.context_meter = true,
             }
         }
         for word in hide {
-            let kind = FoldKind::parse(word).ok_or_else(|| unknown(word))?;
+            let kind = ShowKind::parse(word).ok_or_else(|| unknown(word))?;
             match kind {
-                FoldKind::Tools => self.tools = Some(Expansion::None),
-                FoldKind::Thinking => self.thinking = Some(Expansion::None),
-                FoldKind::Harness => self.harness = Some(Expansion::None),
-                FoldKind::Inherited => self.inherited = false,
-                FoldKind::Branches => self.branches = false,
-                FoldKind::Spawns => self.spawns = SpawnFold::Hidden,
-                FoldKind::Assertions => self.assertions = false,
-                FoldKind::Turns => self.turns = false,
-                FoldKind::Context => self.context_meter = false,
+                ShowKind::Tools => self.tools = Some(Expansion::None),
+                ShowKind::Thinking => self.thinking = Some(Expansion::None),
+                ShowKind::Harness => self.harness = Some(Expansion::None),
+                ShowKind::Inherited => self.inherited = false,
+                ShowKind::Branches => self.branches = false,
+                ShowKind::Spawns => self.spawns = SpawnFold::Hidden,
+                ShowKind::Assertions => self.assertions = false,
+                ShowKind::Turns => self.turns = false,
+                ShowKind::Context => self.context_meter = false,
             }
         }
         Ok(())
     }
 
     /// The `show` and `hide` words that give these options from the
-    /// defaults: the inverse of [`Self::apply_fold`].
-    pub fn fold_words(&self) -> (Vec<String>, Vec<String>) {
+    /// defaults: the inverse of [`Self::apply_show_hide`].
+    pub fn show_hide_words(&self) -> (Vec<String>, Vec<String>) {
         let mut show = Vec::new();
         let mut hide = Vec::new();
         for (name, level) in [
@@ -379,8 +379,8 @@ impl ReadOptions {
     }
 }
 impl ReadOptions {
-    /// Visibility of an available original reference-text body. Availability
-    /// itself remains evidence owned by the caller.
+    /// Visibility of an available original reference-text body. The caller
+    /// decides whether the body is available.
     pub fn text_kind_visible(&self, kind: BlockKind) -> bool {
         self.view.block_kinds().contains(&kind)
             && match kind {

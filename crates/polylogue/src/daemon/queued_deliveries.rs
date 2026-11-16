@@ -109,7 +109,7 @@ impl QueuedDeliveries {
         hand_over(&mut state, writes)
     }
 
-    /// Positive proof only: absence says nothing about a preparation already
+    /// Only a true answer means anything: false says nothing about a preparation already
     /// committed or an invocation still running. Never acquires an archive reader.
     pub fn owns_preparation(&self, id: &str) -> bool {
         let state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
@@ -240,7 +240,7 @@ fn hand_over(state: &mut State, writes: &WriterSender) -> Result<(), StoreError>
 fn prune(state: &mut State) {
     state.advice.retain(|_, advice| match &advice.committed {
         None => true,
-        // A failed acknowledgement cannot establish stored history. Retain
+        // A failed acknowledgment cannot establish stored history. Keep
         // that uncertain pair; it is never permission to prepare it again.
         Some(committed) => !matches!(committed.try_recv(), Ok(Ok(outcome)) if !outcome.pending),
     });

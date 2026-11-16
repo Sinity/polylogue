@@ -26,7 +26,7 @@ fn database(unrelated: i64) -> Connection {
     conn.pragma_update(None, "foreign_keys", true).unwrap();
     track_unreferenced(&conn).unwrap();
     for id in 1..=unrelated {
-        let text = format!("retained synthetic text {id}");
+        let text = format!("kept synthetic text {id}");
         let hash = blake3::hash(text.as_bytes());
         crate::text_rows::insert_alone(&conn, Some(id), hash.as_bytes(), hash.as_bytes(), &text, 0);
     }
@@ -84,7 +84,7 @@ fn context_reference_cleanup_steps(unrelated: i64, without_index: bool) -> u64 {
     let mut protected = [0u8; 32];
     protected[..8].copy_from_slice(&1i64.to_le_bytes());
     conn.execute_batch("SAVEPOINT reading").unwrap();
-    // Actual source-reference changes queue both versions for collection.
+    // Changing the source reference queues both versions for collection.
     for hash in [protected, winner] {
         conn.execute(
             "UPDATE message_source SET version_pk=(SELECT pk FROM message_version WHERE version_hash=?1) WHERE message_pk=1",
@@ -167,7 +167,7 @@ fn version_cleanup_checks_context_references_without_scanning_history() {
     let unindexed = context_reference_cleanup_steps(8192, true);
     assert!(
         unindexed >= 8192 * 4,
-        "missing-index positive control used only {unindexed} steps"
+        "the unindexed case used only {unindexed} steps"
     );
 }
 
@@ -204,14 +204,14 @@ fn text_cleanup_checks_only_candidates_and_keeps_all_reference_kinds() {
          INSERT INTO temp.unreferenced_text VALUES(1),(2),(3),(4),(5),(9000);",
     ).unwrap();
     let steps = cleanup_steps(&conn);
-    let retained: Vec<i64> = conn
+    let kept: Vec<i64> = conn
         .prepare("SELECT id FROM text WHERE id<=6 ORDER BY id")
         .unwrap()
         .query_map([], |r| r.get(0))
         .unwrap()
         .collect::<rusqlite::Result<_>>()
         .unwrap();
-    assert_eq!(retained, [1, 2, 3, 4, 6]);
+    assert_eq!(kept, [1, 2, 3, 4, 6]);
     assert!(steps < 2000, "fixed six candidates used {steps} VM steps");
     assert_eq!(
         conn.query_row("SELECT count(*) FROM temp.unreferenced_text", [], |r| r
@@ -270,7 +270,7 @@ fn removing_the_last_text_reference_and_its_cleanup_roll_back_together() {
 }
 
 #[test]
-fn first_build_cleanup_retains_version_text_and_forgets_deleted_identity() {
+fn first_build_cleanup_keeps_text_and_forgets_deleted_ids() {
     let mut conn = database(0);
     let first = FirstBuild::load(&conn).unwrap();
     let identities = crate::text_rows::TextIds::new(&conn, true).unwrap();
@@ -338,7 +338,7 @@ fn first_build_cleanup_retains_version_text_and_forgets_deleted_identity() {
 }
 
 #[test]
-fn exact_version_keys_and_payload_children_survive_failed_removal() {
+fn version_keys_and_payload_children_survive_failed_removal() {
     let conn = database(1);
     let mut hashes = [[42u8; 32]; 2];
     hashes[1][31] = 43; // Same long prefix must not alias a different canonical hash.
@@ -360,7 +360,7 @@ fn exact_version_keys_and_payload_children_survive_failed_removal() {
         INSERT INTO message(pk,id,session_pk,session_order,role,written_by,input_pk) VALUES(1,'codex:message',1,'0','assistant','model',1);").unwrap();
     conn.execute("INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,session_pk,route,completion,version_pk) VALUES(1,1,1,4,91,'native',1,'live','finished',?1)",[keys[0]]).unwrap();
     conn.execute(
-        "INSERT INTO message_projection VALUES(?1,?2,7)",
+        "INSERT INTO message_block_selection VALUES(?1,?2,7)",
         params![keys[0], serde_json::to_vec(&(9u64, vec![2u64, 8])).unwrap()],
     )
     .unwrap();
@@ -381,7 +381,7 @@ fn exact_version_keys_and_payload_children_survive_failed_removal() {
             .is_err()
     );
     let snapshot = || {
-        conn.query_row("SELECT v.version_hash,b.body,s.source_start,s.source_end,p.layout,p.admitted FROM message_source s JOIN message_version v ON v.pk=s.version_pk JOIN message_version_body b ON b.version_pk=v.pk JOIN message_projection p ON p.version_pk=v.pk",[],|r|Ok((r.get::<_,Vec<u8>>(0)?,r.get::<_,Vec<u8>>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,Vec<u8>>(4)?,r.get::<_,i64>(5)?))).unwrap()
+        conn.query_row("SELECT v.version_hash,b.body,s.source_start,s.source_end,p.layout,p.committed FROM message_source s JOIN message_version v ON v.pk=s.version_pk JOIN message_version_body b ON b.version_pk=v.pk JOIN message_block_selection p ON p.version_pk=v.pk",[],|r|Ok((r.get::<_,Vec<u8>>(0)?,r.get::<_,Vec<u8>>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,Vec<u8>>(4)?,r.get::<_,i64>(5)?))).unwrap()
     };
     let original = snapshot();
     assert_eq!(original.0, hashes[0]);
@@ -400,14 +400,14 @@ fn exact_version_keys_and_payload_children_survive_failed_removal() {
         )
         .unwrap(),
         1,
-        "retained parser context owns the old payload"
+        "kept parser context owns the old payload"
     );
     conn.execute_batch("DELETE FROM parser_context_response")
         .unwrap();
     remove_unreferenced(&conn, Some(&FirstBuild::default()), &ids).unwrap();
     for table in [
         "message_version_body",
-        "message_projection",
+        "message_block_selection",
         "message_version_text",
         "message_version_blob",
     ] {

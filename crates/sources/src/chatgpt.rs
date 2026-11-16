@@ -106,11 +106,11 @@ impl crate::export::ExportParser for Export {
         &mut self,
         bytes: &[u8],
         sink: &mut Sink<'_>,
-        owners: &mut dyn crate::export::ExportState,
+        first_sessions: &mut dyn crate::export::ExportState,
     ) -> Result<(), String> {
         let value: Json = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
         let value = &value;
-        conversation_with_owners(value, sink, owners)
+        conversation_with_sessions(value, sink, first_sessions)
     }
 }
 
@@ -210,14 +210,18 @@ static CONVERSATION_FIELDS: Fields = Fields::new(
 /// One conversation object: its session, messages and events. Shared by
 /// the export and by browser captures of the same conversation, so both
 /// arrivals produce the same IDs and unite.
-pub fn conversation(conv: &Json, sink: &mut Sink<'_>, owners: &mut crate::export::MemoryState) {
-    conversation_with_owners(conv, sink, owners).expect("in-memory message ownership");
-}
-
-fn conversation_with_owners(
+pub fn conversation(
     conv: &Json,
     sink: &mut Sink<'_>,
-    owners: &mut dyn crate::export::ExportState,
+    first_sessions: &mut crate::export::MemoryState,
+) {
+    conversation_with_sessions(conv, sink, first_sessions).expect("in-memory session state");
+}
+
+fn conversation_with_sessions(
+    conv: &Json,
+    sink: &mut Sink<'_>,
+    first_sessions: &mut dyn crate::export::ExportState,
 ) -> Result<(), String> {
     let Some(obj) = conv.as_object() else {
         sink.records
@@ -257,7 +261,7 @@ fn conversation_with_owners(
     }
     if let Some(at) = conv.get("create_time").and_then(time_of) {
         session
-            .offer_start(at.timestamp(), at.evidence())
+            .offer_start(at.timestamp(), at.accuracy())
             .expect("decoded source time is valid");
     }
     sink.out.sessions.push(session);
@@ -340,28 +344,28 @@ fn conversation_with_owners(
     let mut branch: Option<(polylogue_model::SessionId, Message)> = None;
     for (position, (_, _, message)) in rows.into_iter().enumerate() {
         let native = message.id.native().as_str().to_owned();
-        match owners.record_first_session(&native, &sid)? {
-            Some(owner) if owner != sid => {
+        match first_sessions.record_first_session(&native, &sid)? {
+            Some(first_session) if first_session != sid => {
                 if !sink
                     .out
                     .prefix_copies
                     .iter()
-                    .any(|copy| copy.parent == owner && copy.child == sid)
+                    .any(|copy| copy.parent == first_session && copy.child == sid)
                 {
                     sink.out.prefix_copies.push(polylogue_model::PrefixCopy {
-                        parent: owner.clone(),
+                        parent: first_session.clone(),
                         child: sid.clone(),
                         explicit_members: true,
                     });
                 }
                 sink.out.prefix_members.push(polylogue_model::PrefixMember {
-                    parent: owner.clone(),
+                    parent: first_session.clone(),
                     child: sid.clone(),
                     message: message.id.clone(),
                     source: None,
                     position: [0, position as u64],
                 });
-                branch = Some((owner, message));
+                branch = Some((first_session, message));
             }
             _ => {
                 let offset = sink.position();
@@ -409,7 +413,7 @@ fn conversation_with_owners(
     Ok(())
 }
 
-/// The mapping as a tree of node IDs, for parents and tool owners.
+/// The mapping as a tree of node IDs, for parents and the calls that tool results answer.
 struct Tree<'a> {
     nodes: &'a serde_json::Map<String, Json>,
 }
@@ -508,7 +512,7 @@ impl<'a> Tree<'a> {
     /// The call a `role: tool` node answers: the first ancestor that is
     /// not itself a tool message. Several results of one call chain off
     /// each other, and all of them answer the same call.
-    fn tool_owner(&self, node: &str) -> Option<String> {
+    fn answered_call(&self, node: &str) -> Option<String> {
         let mut seen = HashSet::new();
         let mut at = self.parent(node);
         while let Some(n) = at {
@@ -574,7 +578,7 @@ fn message(
     };
 
     let mut blocks = if role_name == "tool" {
-        let call_id = tree.tool_owner(node_id);
+        let call_id = tree.answered_call(node_id);
         vec![tool_result(content, msg, meta, call_id, direction)]
     } else if let Some(tool) = recipient {
         vec![tool_call(native, tool, content)]
