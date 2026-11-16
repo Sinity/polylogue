@@ -55,7 +55,7 @@ fn a_failed_register_sync_stops_the_daemon_and_names_the_log() {
     );
     let context = daemon
         .daemon
-        .operation_context(&crate::operation::Context::worker_authorship(
+        .operation_context(&polylogue_reading::operation::Context::worker_authorship(
             "storage-test",
         ))
         .unwrap();

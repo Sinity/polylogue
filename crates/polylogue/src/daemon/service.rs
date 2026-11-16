@@ -1,15 +1,15 @@
 //! Application operations and their shared archive state. Socket, HTTP and
 //! MCP adapters use the same typed requests; transport framing stays outside.
 
-mod execution;
+use polylogue_reading::execution;
 mod status;
 
 use super::Failure;
 use crate::briefing::{self, Ask};
-use crate::operation::{Context, Invocation};
 use command_surface::Answer;
 use polylogue_engine::{Config, Engine, Lifetime, LoopMsg, LoopStatus, RunSummary};
 use polylogue_model::user::{Delivery, UserWrite};
+use polylogue_reading::operation::{Context, Invocation};
 use polylogue_store::user_writes;
 use polylogue_store::{Archive, ReadPool, StoreError, WriterSender};
 use serde_json::Value;
@@ -64,21 +64,21 @@ impl Daemon {
     pub(crate) fn invocation(
         &self,
         authorship: &polylogue_model::authorship::Authorship,
-    ) -> crate::operation::Invocation {
-        crate::operation::Invocation::capture(&self.config.requests, authorship)
+    ) -> polylogue_reading::operation::Invocation {
+        polylogue_reading::operation::Invocation::capture(&self.config.requests, authorship)
     }
     pub(crate) fn operation_context(
         &self,
         authorship: &polylogue_model::authorship::Authorship,
-    ) -> Result<Arc<crate::operation::Context>, Failure> {
+    ) -> Result<Arc<polylogue_reading::operation::Context>, Failure> {
         self.resolve_operation_context(self.invocation(authorship))
     }
     pub(crate) fn resolve_operation_context(
         &self,
-        invocation: crate::operation::Invocation,
-    ) -> Result<Arc<crate::operation::Context>, Failure> {
+        invocation: polylogue_reading::operation::Invocation,
+    ) -> Result<Arc<polylogue_reading::operation::Context>, Failure> {
         let context = match &self.mode {
-            ModeState::Standalone => crate::operation::Context::standalone(
+            ModeState::Standalone => polylogue_reading::operation::Context::standalone(
                 invocation,
                 self.config
                     .standalone_day()
@@ -92,7 +92,20 @@ impl Daemon {
                         jiff::tz::TimeZone::get(name).map_err(|error| error.to_string())
                     })
                     .map_err(crate::protocol::context_failure)?;
-                crate::operation::Context::primary(invocation, policy)?
+                let observed_at =
+                    polylogue_model::Timestamp::from_unix_ns(policy.observed_at.unix_ns())
+                        .ok_or_else(|| {
+                            Failure::primary_context_invalid(
+                                "the Sinex observation time is outside the supported range",
+                            )
+                        })?;
+                let sinex = polylogue_model::context::SinexContext::Primary {
+                    settings_identity: policy.settings_identity,
+                    settings_revision: policy.settings_revision,
+                    observed_at,
+                    received_seconds_ago: policy.received_seconds_ago,
+                };
+                polylogue_reading::operation::Context::primary(invocation, policy.day, sinex)
             }
             ModeState::Blocked { error: reason, .. } => {
                 return Err(Failure::sinex_unavailable(reason.clone()));
@@ -693,7 +706,7 @@ fn query_targets(
     d: &Daemon,
     reader: &polylogue_store::Reader<'_>,
     query: &str,
-    invocation: &crate::operation::Invocation,
+    invocation: &polylogue_reading::operation::Invocation,
 ) -> Result<Vec<polylogue_model::Reference>, Failure> {
     query_targets_in(d, reader, query, invocation, None)
 }
@@ -704,7 +717,7 @@ fn query_targets_in(
     d: &Daemon,
     reader: &polylogue_store::Reader<'_>,
     query: &str,
-    invocation: &crate::operation::Invocation,
+    invocation: &polylogue_reading::operation::Invocation,
     container: Option<&polylogue_model::Reference>,
 ) -> Result<Vec<polylogue_model::Reference>, Failure> {
     use polylogue_model::query_objects::{ExecutionPresentation, QueryRun, RunBinding};
@@ -756,7 +769,7 @@ fn query_targets_in(
                 .versions
                 .extend(operation.cursor_versions());
             let run = QueryRun {
-                id: crate::operation::new_run_id(),
+                id: polylogue_reading::operation::new_run_id(),
                 question: Some(selection.question_id()),
                 at: operation.ran_at,
                 read_at: reader.change_position()?,
@@ -776,7 +789,7 @@ fn query_targets_in(
                 run,
                 hash,
                 || d.config.requests.now(),
-                || {
+                || (|| {
                     if !selection.program().incomplete.is_empty() {
                         return Err(Failure::not_yet_available(
                             "the query population is incomplete; no assertion was written",
@@ -852,8 +865,8 @@ fn query_targets_in(
                         exact: selection.program().incomplete.is_empty(),
                         next: None,
                     })
-                },
-            )
+                })().map_err(|failure: Failure| polylogue_reading::Error::Operation(failure.error)),
+            ).map_err(Failure::from)
         },
     )
 }

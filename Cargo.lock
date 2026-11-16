@@ -2041,6 +2041,7 @@ dependencies = [
  "polylogue-engine",
  "polylogue-model",
  "polylogue-query",
+ "polylogue-reading",
  "polylogue-render",
  "polylogue-sinex",
  "polylogue-sources",
@@ -2137,6 +2138,27 @@ dependencies = [
  "serde_json",
  "strsim",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "polylogue-reading"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "canonical-json",
+ "command-surface",
+ "hashed-blobs",
+ "jiff",
+ "polylogue-model",
+ "polylogue-render",
+ "polylogue-store",
+ "polylogue-testkit",
+ "query-language",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "uuid",
 ]
 
 [[package]]

@@ -328,7 +328,9 @@ fn protocol_send(
 /// Records what happened to a message that waited for a hosted session's
 /// running prompt.
 fn record_sent(d: &Daemon, delivery: &str, sent: Result<(), String>) {
-    let invocation = d.invocation(&crate::operation::Context::worker_authorship("hosted"));
+    let invocation = d.invocation(&polylogue_reading::operation::Context::worker_authorship(
+        "hosted",
+    ));
     let (what, detail) = match sent {
         Ok(()) => (
             DeliveryOutcome::Delivered,
@@ -518,7 +520,9 @@ fn claim(d: &Daemon, session: &SessionId) -> Result<Answer<Value>, Failure> {
 /// only sessions whose flag is up are looked at. Items already handed out
 /// are left to their hook or run.
 pub(crate) fn finish_ended(d: &Daemon, now: i64, everyone: bool) {
-    let invocation = d.invocation(&crate::operation::Context::worker_authorship("mailbox"));
+    let invocation = d.invocation(&polylogue_reading::operation::Context::worker_authorship(
+        "mailbox",
+    ));
     let Ok(reader) = d.reads.reader() else {
         return;
     };
@@ -922,7 +926,9 @@ fn resume_session(daemon: &std::sync::Arc<Daemon>, run: ResumeRun) {
 /// `not_sent` (`directory_unknown`, `directory_missing(DIR)`) without one:
 /// the daemon's own directory is never borrowed.
 fn resume_once(d: &Daemon, run: &ResumeRun) {
-    let invocation = d.invocation(&crate::operation::Context::worker_authorship("resume"));
+    let invocation = d.invocation(&polylogue_reading::operation::Context::worker_authorship(
+        "resume",
+    ));
     let record = |what, detail: String| {
         let _ = outcome_event(d, &invocation, &run.delivery, what, detail);
     };

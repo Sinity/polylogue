@@ -143,7 +143,7 @@ impl crate::daemon::handler::Streams for Read {
     fn produce(
         arguments: Self::Arguments,
         call: &crate::daemon::handler::Call<'_>,
-        context: &Arc<crate::operation::Context>,
+        context: &Arc<polylogue_reading::operation::Context>,
         output: &mut dyn Write,
     ) -> Result<(), Failure> {
         let request = ReadRequest::from_arguments(arguments, None).map_err(Failure::bad_request)?;
@@ -281,7 +281,7 @@ struct Compiled<'a> {
 fn prepared<T>(
     reader: &Reader<'_>,
     d: &Daemon,
-    operation: &Arc<crate::operation::Context>,
+    operation: &Arc<polylogue_reading::operation::Context>,
     reading: &Reading,
     run: impl FnOnce(
         &Compiled<'_>,
@@ -618,7 +618,7 @@ fn attachment_call(
 fn record_run(
     reader: &Reader<'_>,
     d: &Daemon,
-    operation: &Arc<crate::operation::Context>,
+    operation: &Arc<polylogue_reading::operation::Context>,
     request: &ReadRequest,
     reading: &Reading,
     history: Option<polylogue_store::writer::HistorySlot>,
@@ -670,7 +670,7 @@ fn record_run(
 fn record_compiled(
     reader: &Reader<'_>,
     d: &Daemon,
-    operation: &Arc<crate::operation::Context>,
+    operation: &Arc<polylogue_reading::operation::Context>,
     request: &ReadRequest,
     reading: &Reading,
     compiled: &Compiled<'_>,
@@ -716,7 +716,7 @@ fn record_compiled(
         .versions
         .extend(operation.cursor_versions());
     let run = QueryRun {
-        id: crate::operation::new_run_id(),
+        id: polylogue_reading::operation::new_run_id(),
         question: Some(selection.question_id()),
         at: operation.ran_at,
         read_at: reader.change_position()?,
@@ -750,7 +750,7 @@ fn seed(target: &str) -> u64 {
 }
 
 /// The deadline the caller asked for, carried to every continuation.
-fn deadline(operation: &crate::operation::Context) -> command_surface::Deadline {
+fn deadline(operation: &polylogue_reading::operation::Context) -> command_surface::Deadline {
     operation
         .accepted_request()
         .map_or(command_surface::Deadline::Default, |request| {
@@ -806,7 +806,7 @@ pub(crate) fn page(
     reader: &Reader<'_>,
     d: &Daemon,
     request: &ReadRequest,
-    operation: &Arc<crate::operation::Context>,
+    operation: &Arc<polylogue_reading::operation::Context>,
     history: Option<polylogue_store::writer::HistorySlot>,
 ) -> Answer<crate::protocol::read::Answer> {
     if matches!(
@@ -869,7 +869,7 @@ fn rows_page(
     reader: &Reader<'_>,
     d: &Daemon,
     request: &ReadRequest,
-    operation: &Arc<crate::operation::Context>,
+    operation: &Arc<polylogue_reading::operation::Context>,
     reading: &Reading,
     cursor: Option<&str>,
     history: Option<polylogue_store::writer::HistorySlot>,
@@ -1055,7 +1055,7 @@ fn rows_page(
 pub(crate) fn produce(
     request: &ReadRequest,
     d: &Daemon,
-    operation: &Arc<crate::operation::Context>,
+    operation: &Arc<polylogue_reading::operation::Context>,
     output: &mut dyn Write,
 ) -> Option<Result<(), Failure>> {
     if let Some(result) = self::object::produce(request, d, operation, output) {

@@ -156,7 +156,7 @@ impl AllItems {
         request.with_blobs = false;
         let operation = daemon
             .daemon
-            .operation_context(&crate::operation::Context::worker_authorship(
+            .operation_context(&polylogue_reading::operation::Context::worker_authorship(
                 "polylogue-page-oracle",
             ))
             .unwrap();

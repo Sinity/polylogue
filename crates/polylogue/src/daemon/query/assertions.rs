@@ -9,7 +9,7 @@ use polylogue_store::{Reader, StoreError};
 pub fn list(
     reader: &Reader<'_>,
     conditions: &str,
-    context: &std::sync::Arc<crate::operation::Context>,
+    context: &std::sync::Arc<polylogue_reading::operation::Context>,
 ) -> Result<Vec<Assertion>, StoreError> {
     let mut notes = Vec::new();
     for id in ids(reader, conditions, context)? {
@@ -24,7 +24,7 @@ pub fn list(
 pub fn count(
     reader: &Reader<'_>,
     conditions: &str,
-    context: &std::sync::Arc<crate::operation::Context>,
+    context: &std::sync::Arc<polylogue_reading::operation::Context>,
 ) -> Result<u64, StoreError> {
     let page = page(reader, &text(conditions), None, context)?;
     page.count.ok_or(StoreError::ReadDeadlineExceeded)
@@ -53,7 +53,7 @@ fn text(conditions: &str) -> String {
 pub(crate) fn ids(
     reader: &Reader<'_>,
     conditions: &str,
-    context: &std::sync::Arc<crate::operation::Context>,
+    context: &std::sync::Arc<polylogue_reading::operation::Context>,
 ) -> Result<Vec<RevisionReference>, StoreError> {
     let text = text(conditions);
     let mut ids = Vec::new();
@@ -77,7 +77,7 @@ fn page(
     reader: &Reader<'_>,
     text: &str,
     cursor: Option<&str>,
-    context: &std::sync::Arc<crate::operation::Context>,
+    context: &std::sync::Arc<polylogue_reading::operation::Context>,
 ) -> Result<crate::protocol::query::Rows, StoreError> {
     run(
         reader,

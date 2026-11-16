@@ -384,7 +384,7 @@ pub(super) fn page(
     reader: &Reader<'_>,
     d: &Daemon,
     request: &ReadRequest,
-    operation: &Arc<crate::operation::Context>,
+    operation: &Arc<polylogue_reading::operation::Context>,
     scope: super::session::Scope,
 ) -> Result<ReadPage, Failure> {
     let ReadRequest {

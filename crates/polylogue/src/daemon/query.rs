@@ -25,7 +25,7 @@ pub struct Ask<'a> {
     pub why: bool,
     pub session: Option<String>,
     /// One captured invocation and its policy for the complete operation.
-    pub context: std::sync::Arc<crate::operation::Context>,
+    pub context: std::sync::Arc<polylogue_reading::operation::Context>,
     pub embeddings: bool,
     /// Captured provider and vector identity; never inferred from availability.
     pub ranking_identity: Option<String>,
@@ -681,7 +681,7 @@ pub(crate) use polylogue_store::query::execute::{attach, present, snippets, why}
 pub(crate) fn prepare_usage(
     reader: &Reader<'_>,
     text: &str,
-    context: std::sync::Arc<crate::operation::Context>,
+    context: std::sync::Arc<polylogue_reading::operation::Context>,
     embeddings: bool,
     ranking_identity: Option<String>,
 ) -> Result<(polylogue_query::plan::Plan, Options), Failure> {
@@ -737,7 +737,7 @@ pub(crate) fn select_usage(
 pub(crate) fn usage_selection(
     reader: &Reader<'_>,
     text: &str,
-    context: std::sync::Arc<crate::operation::Context>,
+    context: std::sync::Arc<polylogue_reading::operation::Context>,
     embeddings: bool,
     ranking_identity: Option<String>,
     near: Option<&NearFn<'_>>,

@@ -52,44 +52,6 @@ fn replayed_evaluation_time_never_rewrites_the_accepting_invocation() {
     assert!(context.replay_clock(changed).is_err());
 }
 
-#[cfg(feature = "sinex")]
-#[test]
-fn sinex_context_records_its_settings_revision() {
-    let at = Timestamp::parse_rfc3339("2026-10-29T08:00:00Z").unwrap();
-    let invocation = Invocation::new(
-        at,
-        "synthetic-machine".into(),
-        Context::worker_authorship("polylogue-signals"),
-    );
-    let policy = polylogue_sinex::ResolvedContext {
-        settings_identity: "public-settings:17".into(),
-        settings_revision: 17,
-        day: DaySetting::new(
-            jiff::tz::TimeZone::UTC,
-            jiff::civil::Time::constant(4, 0, 0, 0),
-        )
-        .unwrap(),
-        quiet_hours: None,
-        interrupt_budget: polylogue_sinex::PublicInterruptBudget {
-            per_hour: 7,
-            used: 2,
-            remaining: 5,
-            window_ms: 3_600_000,
-        },
-        observed_at: serde_json::from_value(serde_json::json!("2026-10-29T07:59:59Z")).unwrap(),
-        received_seconds_ago: 1.0,
-    };
-    let context = Context::primary(invocation, policy).unwrap();
-    assert_eq!(context.run_context().machine, "synthetic-machine");
-    assert!(matches!(
-        context.run_context().sinex,
-        SinexContext::Primary {
-            settings_revision: 17,
-            ..
-        }
-    ));
-}
-
 #[test]
 fn accepted_request_survives_context_replay() {
     let at = Timestamp::parse_rfc3339("2026-10-29T08:00:00Z").unwrap();

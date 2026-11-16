@@ -451,11 +451,12 @@ mod workers;
 #[test]
 fn an_invalidated_read_phase_does_not_enter_the_authored_writer() {
     let daemon = crate::test_daemon::start("write scope check");
-    let invocation = daemon
-        .daemon
-        .invocation(&crate::operation::Context::worker_authorship(
-            "scope-write-fixture",
-        ));
+    let invocation =
+        daemon
+            .daemon
+            .invocation(&polylogue_reading::operation::Context::worker_authorship(
+                "scope-write-fixture",
+            ));
     let limit = polylogue_store::read::limit::ReadLimit::without_deadline(Default::default());
     let response = limit.scope(|| {
         drop(daemon.daemon.reads.reader().unwrap());
@@ -489,11 +490,12 @@ fn an_invalidated_read_phase_does_not_enter_the_authored_writer() {
 #[test]
 fn read_derived_write_keeps_its_selected_scope_after_reader_release() {
     let daemon = crate::test_daemon::start("pinned authored write");
-    let invocation = daemon
-        .daemon
-        .invocation(&crate::operation::Context::worker_authorship(
-            "pinned-write-fixture",
-        ));
+    let invocation =
+        daemon
+            .daemon
+            .invocation(&polylogue_reading::operation::Context::worker_authorship(
+                "pinned-write-fixture",
+            ));
     let reader = daemon.daemon.reads.reader().unwrap();
     let selected_scope = reader.scope_token();
     drop(reader);

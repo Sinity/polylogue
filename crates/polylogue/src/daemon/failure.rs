@@ -128,3 +128,19 @@ impl<T> From<Failure> for command_surface::Answer<T> {
         failure.answer()
     }
 }
+
+impl From<polylogue_reading::Error> for Failure {
+    fn from(error: polylogue_reading::Error) -> Self {
+        use polylogue_reading::Error;
+        match error {
+            Error::Store(error) => Self::from(error),
+            Error::Selection(error) => Self::from(error),
+            Error::Operation(error) => Self::from(error),
+            error => {
+                let code = polylogue_model::Code::parse(error.code())
+                    .expect("reading error has a product code");
+                Self::new(code, error)
+            }
+        }
+    }
+}

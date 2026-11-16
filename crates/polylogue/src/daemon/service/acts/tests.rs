@@ -11,7 +11,9 @@ fn s1() -> SessionId {
 
 fn invocation(d: &test_daemon::TestDaemon) -> Invocation {
     d.daemon
-        .invocation(&crate::operation::Context::worker_authorship("acts-test"))
+        .invocation(&polylogue_reading::operation::Context::worker_authorship(
+            "acts-test",
+        ))
 }
 
 /// A prepared ping to `s1`, as a ping to a running session leaves it.

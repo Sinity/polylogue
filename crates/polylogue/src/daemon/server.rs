@@ -249,7 +249,7 @@ fn serve_client(stream: UnixStream, shared: &Shared) {
         let mut accepted =
             crate::operation::Accepted::new(&d.callers, &details, via, cancellation.clone());
         accepted.parent = parent_deadline_ms.map(|deadline| {
-            crate::operation::ParentLifetime::capture(
+            polylogue_reading::operation::ParentLifetime::capture(
                 super::execution::limit(Some(deadline), cancellation.clone()).deadline(),
                 cancellation.clone(),
             )

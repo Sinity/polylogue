@@ -73,7 +73,7 @@ fn shutdown_cancels_a_stream_read_and_keeps_its_producers_writes_admissible() {
         .unwrap();
     // A write its producer already handed over is still accepted.
     assert!(
-        crate::operation::ParentLifetime::capture(None, parent)
+        polylogue_reading::operation::ParentLifetime::capture(None, parent)
             .check()
             .is_ok()
     );

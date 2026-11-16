@@ -4,7 +4,9 @@ use super::*;
 use polylogue_model::{Reference, RunId, query_objects::*};
 use std::num::NonZeroU64;
 
-fn accepted(operation: &crate::operation::Context) -> Result<Option<serde_json::Value>, Failure> {
+fn accepted(
+    operation: &polylogue_reading::operation::Context,
+) -> Result<Option<serde_json::Value>, Failure> {
     operation
         .accepted_request()
         .map(serde_json::to_value)
@@ -24,7 +26,7 @@ fn execute<T>(
     reader: &Reader<'_>,
     d: &Daemon,
     request: &ReadRequest,
-    operation: &Arc<crate::operation::Context>,
+    operation: &Arc<polylogue_reading::operation::Context>,
     reference: Reference,
     run: impl FnOnce(
         ReadRecord,
@@ -77,7 +79,7 @@ fn execute<T>(
         accepted_request: accepted(operation)?,
     };
     binding.validate().map_err(Failure::bad_request)?;
-    let id = crate::operation::new_run_id();
+    let id = polylogue_reading::operation::new_run_id();
     let hash = binding.hash().map_err(Failure::internal)?;
     let begin = QueryRun {
         id: id.clone(),
@@ -166,7 +168,7 @@ pub(super) fn page(
     reader: &Reader<'_>,
     d: &Daemon,
     request: &ReadRequest,
-    operation: &Arc<crate::operation::Context>,
+    operation: &Arc<polylogue_reading::operation::Context>,
 ) -> Option<Answer<polylogue_model::read::ReadPage>> {
     let reference = match target(request)? {
         Ok(reference) => reference,
@@ -248,7 +250,7 @@ pub(super) fn page(
 pub(super) fn produce(
     request: &ReadRequest,
     d: &Daemon,
-    operation: &Arc<crate::operation::Context>,
+    operation: &Arc<polylogue_reading::operation::Context>,
     output: &mut dyn Write,
 ) -> Option<Result<(), Failure>> {
     let ReadRequest {

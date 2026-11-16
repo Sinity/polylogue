@@ -17,7 +17,7 @@ impl crate::daemon::handler::Feed for Changes {
     fn produce(
         arguments: Self::Arguments,
         d: &Daemon,
-        operation: &Arc<crate::operation::Context>,
+        operation: &Arc<polylogue_reading::operation::Context>,
         output: &mut dyn std::io::Write,
     ) -> Result<(), Failure> {
         let mut file = read(d, arguments.since.as_deref(), operation)?;
@@ -29,7 +29,7 @@ impl crate::daemon::handler::Feed for Changes {
 fn read(
     d: &Daemon,
     since: Option<&str>,
-    operation: &Arc<crate::operation::Context>,
+    operation: &Arc<polylogue_reading::operation::Context>,
 ) -> Result<std::fs::File, Failure> {
     let reader = d.reads.reader()?;
     let file = tempfile::NamedTempFile::new_in(d.archive.staging_dir()).map_err(Failure::io)?;

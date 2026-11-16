@@ -385,10 +385,10 @@ pub(super) fn parent_deadline() -> Option<std::time::Instant> {
         .flatten()
 }
 
-pub(super) fn parent_lifetime() -> Option<Arc<crate::operation::ParentLifetime>> {
+pub(super) fn parent_lifetime() -> Option<Arc<polylogue_reading::operation::ParentLifetime>> {
     READ_LIMIT
         .try_with(|(deadline, cancellation)| {
-            crate::operation::ParentLifetime::capture(*deadline, cancellation.clone())
+            polylogue_reading::operation::ParentLifetime::capture(*deadline, cancellation.clone())
         })
         .ok()
 }

@@ -84,7 +84,7 @@ pub fn resumable(
     scope: &crate::daemon::scope::SharedScopeIndex,
     cwd: &Path,
     limit: u64,
-    context: &std::sync::Arc<crate::operation::Context>,
+    context: &std::sync::Arc<polylogue_reading::operation::Context>,
 ) -> Result<Vec<ResumableSession>, StoreError> {
     use crate::daemon::query::assertions;
     use polylogue_model::{Reference, assertion::AssertionKind};

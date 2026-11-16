@@ -8,11 +8,11 @@
 use super::Failure;
 use super::service::Daemon;
 use crate::commands::{Caller, Command, Surface};
-use crate::operation::{Context, Invocation};
 use command_surface::{
     Access, Answer, DeclarationsBuilder, FailureKind, JsonSchema, Operation, OperationFuture,
     OperationTable, RequestContext, TextStyle, TokenBudget,
 };
+use polylogue_reading::operation::{Context, Invocation};
 use polylogue_store::{cancellation::Cancellation, read::limit::ReadLimit};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;

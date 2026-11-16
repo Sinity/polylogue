@@ -1,6 +1,6 @@
 //! The begin record and the fixed outcome of one accepted execution, both
 //! committed before the execution's answer returns.
-use super::Failure;
+use crate::Error;
 use polylogue_model::{
     BlobHash, Timestamp,
     query_objects::{QueryRun, QueryRunOutcome, RunOutcome},
@@ -9,27 +9,29 @@ use polylogue_model::{
 use polylogue_store::WriterSender;
 
 /// The observed result of this invocation, without changing its recorded inputs.
-pub(super) struct Completed<T> {
+pub struct Completed<T> {
     pub value: T,
     pub count: Option<u64>,
     pub exact: bool,
     pub next: Option<ReadyCall>,
 }
 
-pub(super) fn record<T>(
+pub fn record<T>(
     writer: &WriterSender,
     parent: Option<std::sync::Arc<polylogue_store::writer::ParentLifetime>>,
     run: QueryRun,
     binding_hash: BlobHash,
     completed_at: impl FnOnce() -> Timestamp,
-    execute: impl FnOnce() -> Result<Completed<T>, Failure>,
-) -> Result<T, Failure> {
+    execute: impl FnOnce() -> Result<Completed<T>, Error>,
+) -> Result<T, Error> {
     writer.begin_query_run(run.clone(), parent)?;
     let result = execute();
     let outcome = QueryRunOutcome {
         run: run.id.clone(),
         binding_hash,
-        run_hash: run.record_hash().map_err(Failure::internal)?,
+        run_hash: run
+            .record_hash()
+            .map_err(|error| Error::Internal(error.to_string()))?,
         at: completed_at(),
         outcome: match &result {
             Ok(_) => RunOutcome::Ok,
