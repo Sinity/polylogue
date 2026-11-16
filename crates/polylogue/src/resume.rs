@@ -12,13 +12,15 @@
 
 use polylogue_model::SessionId;
 use polylogue_store::{OpenItems, Reader, StoreError};
-use serde::Serialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// A command line to run in a directory. A harness resume runs in the
 /// session's resume directory ([`Reader::resume_directory`]); without one it
 /// is refused, never run in the caller's directory.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Command {
     pub program: String,
     pub args: Vec<String>,
@@ -39,7 +41,8 @@ pub fn harness_resume(session: &SessionId, cwd: Option<&str>) -> Option<Command>
 
 /// How to continue a session: its harness resume command if any, and the
 /// context-assisted way, which always exists.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Plan {
     pub session: SessionId,
     pub harness_command: Option<Command>,
@@ -63,7 +66,8 @@ pub fn plan(reader: &Reader<'_>, session: &SessionId) -> Result<Plan, StoreError
 }
 
 /// A session worth resuming and why.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ResumableSession {
     pub session: polylogue_store::NearbySession,
     pub open: OpenItems,

@@ -1,103 +1,6 @@
 use super::*;
 
 #[test]
-fn computed_authorship_preserves_channel_and_observed_identity() {
-    let blank = CallerEvidence::default();
-    assert_eq!(
-        compute_authorship(Channel::Cli, &blank, None).author,
-        Author::Unattributed
-    );
-    assert_eq!(
-        compute_authorship(Channel::Mcp, &blank, None).author,
-        Author::Agent(None)
-    );
-    let terminal = CallerEvidence {
-        controlling_terminal: true,
-        ..blank.clone()
-    };
-    assert_eq!(
-        compute_authorship(Channel::Cli, &terminal, None).author,
-        Author::Operator
-    );
-    assert!(
-        compute_authorship(Channel::Mcp, &terminal, None)
-            .author
-            .is_agent()
-    );
-    let script = CallerEvidence {
-        unit: Some("worker.service".into()),
-        ..blank.clone()
-    };
-    assert_eq!(
-        compute_authorship(Channel::Cli, &script, None).author,
-        Author::Script("worker.service".into())
-    );
-    let harness = CallerEvidence {
-        harness: Some(Origin::new("gemini-cli").unwrap()),
-        controlling_terminal: true,
-        ..blank
-    };
-    assert_eq!(
-        compute_authorship(Channel::Cli, &harness, None)
-            .author
-            .to_string(),
-        "agent:gemini-cli"
-    );
-    for via in [Channel::Web, Channel::Extension, Channel::Desktop] {
-        assert_eq!(
-            compute_authorship(via, &harness, None),
-            Authorship {
-                author: Author::Operator,
-                via
-            }
-        );
-    }
-}
-#[test]
-fn hook_refinement_requires_the_recorded_parent_and_tool_call() {
-    let caller = CallerEvidence {
-        harness: Some(Origin::new("claude-code").unwrap()),
-        session: Some(SessionId::parse("claude-code:main").unwrap()),
-        harness_pid: Some(42),
-        tool_call_id: Some("call1".into()),
-        ..CallerEvidence::default()
-    };
-    let mut hook = HookIdentity {
-        harness_pid: 42,
-        tool_call_id: Some("call1".into()),
-        session: SessionId::parse("claude-code:resumed").unwrap(),
-        agent_id: Some("worker".into()),
-    };
-    assert_eq!(
-        compute_authorship(Channel::Mcp, &caller, Some(&hook))
-            .author
-            .to_string(),
-        "agent:claude-code:agent-worker"
-    );
-    hook.tool_call_id = Some("other".into());
-    assert_eq!(
-        compute_authorship(Channel::Mcp, &caller, Some(&hook))
-            .author
-            .to_string(),
-        "agent:claude-code:main"
-    );
-    hook.tool_call_id = None;
-    hook.agent_id = None;
-    assert_eq!(
-        compute_authorship(Channel::Mcp, &caller, Some(&hook))
-            .author
-            .to_string(),
-        "agent:claude-code:resumed"
-    );
-    hook.harness_pid = 43;
-    assert_eq!(
-        compute_authorship(Channel::Mcp, &caller, Some(&hook))
-            .author
-            .to_string(),
-        "agent:claude-code:main"
-    );
-}
-#[test]
 fn honest_author_forms_round_trip_without_turning_unknowns_into_operator() {
     for text in [
         "operator",
@@ -114,20 +17,6 @@ fn honest_author_forms_round_trip_without_turning_unknowns_into_operator() {
             author
         );
     }
-}
-
-#[test]
-fn conflicting_harness_identity_is_not_operator_or_script() {
-    let caller = CallerEvidence {
-        ambiguous_harness: true,
-        controlling_terminal: true,
-        unit: Some("shell.scope".into()),
-        ..Default::default()
-    };
-    assert_eq!(
-        compute_authorship(Channel::Cli, &caller, None).author,
-        Author::Unattributed
-    );
 }
 
 #[test]
@@ -149,4 +38,35 @@ fn malformed_authorship_is_an_error_without_fallback_attribution() {
         Author::parse("person:synthetic"),
         Err(AuthorError::Unknown(_))
     ));
+}
+
+#[test]
+fn each_computed_author_keeps_its_stored_text() {
+    use command_surface::{AgentSession, Author as Computed, Harness, Via};
+    let harness = |name: &str| Harness::new(name).unwrap();
+    for (computed, stored) in [
+        (Computed::Operator, "operator"),
+        (
+            Computed::Agent(AgentSession::new(harness("codex"), "thread").unwrap()),
+            "agent:codex:thread",
+        ),
+        (
+            Computed::AgentOfHarness(harness("gemini-cli")),
+            "agent:gemini-cli",
+        ),
+        (Computed::UnidentifiedAgent, "agent"),
+        (
+            Computed::Script("worker.service".into()),
+            "script:worker.service",
+        ),
+        (Computed::Unattributed, "unattributed"),
+    ] {
+        let kept = Authorship::from(command_surface::Authorship {
+            author: computed.clone(),
+            via: Via::Mcp,
+        });
+        assert_eq!(kept.author.to_string(), stored);
+        assert_eq!(kept.author.to_string(), computed.to_string());
+        assert_eq!(kept.via, Channel::Mcp);
+    }
 }

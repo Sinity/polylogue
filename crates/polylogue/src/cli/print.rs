@@ -3,6 +3,7 @@
 //! command names its printer in the command table; `--json` prints the
 //! answer itself.
 
+use command_surface::TextStyle;
 use polylogue_render::shell_quote;
 use serde_json::Value;
 use std::fmt::Write as _;
@@ -12,8 +13,9 @@ fn s(v: &Value) -> String {
 }
 
 /// The answer as indented JSON: commands without a text view.
-pub fn json(data: &Value, _color: bool) -> String {
-    format!("{}\n", polylogue_render::terminal::json(data, true))
+pub fn json<T: serde::Serialize>(answer: &T, _style: TextStyle) -> String {
+    let value = serde_json::to_value(answer).expect("typed answer serializes");
+    format!("{}\n", polylogue_render::terminal::json(&value, true))
 }
 
 /// A query's rows as a table, or a measurement in its

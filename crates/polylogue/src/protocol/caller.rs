@@ -1,5 +1,4 @@
 //! Caller facts gathered from this process, without accepting an author label.
-pub mod hooks;
 use polylogue_model::authorship::{Authorship, CallerEvidence, Channel};
 use polylogue_model::{Origin, SessionId};
 use std::os::unix::ffi::OsStringExt;

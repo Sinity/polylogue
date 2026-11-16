@@ -21,6 +21,8 @@
 //! open: a timeout emits an unreferenced failure notice and the harness
 //! carries on. The original preparation is acknowledged only once it is confirmed.
 
+pub(crate) mod open_calls;
+
 use crate::briefing::{Ask, StartSource};
 use crate::config::Startup;
 use command_surface::Answer;
@@ -278,6 +280,29 @@ fn ask_daemon(
         budget,
     )
     .ok()
+}
+
+/// A Hermes caller's session as Polylogue names it: Hermes's own session ID
+/// is qualified by the profile of its `state.db` (under `HERMES_HOME`, else
+/// `HOME/.hermes`); a session no profile names is left unknown.
+pub(crate) fn hermes_session(
+    caller: &mut command_surface::CallerEvidence,
+    variable: impl Fn(&str) -> Option<std::ffi::OsString>,
+) {
+    let Some(native) = caller
+        .session
+        .as_ref()
+        .filter(|session| session.harness.as_str() == polylogue_sources::hermes::ORIGIN)
+        .map(|session| session.native.clone())
+    else {
+        return;
+    };
+    let state = variable("HERMES_HOME")
+        .map(|home| Path::new(&home).join("state.db"))
+        .or_else(|| variable("HOME").map(|home| Path::new(&home).join(".hermes/state.db")));
+    caller.session = state
+        .and_then(|state| polylogue_sources::hermes::session_at(&state, &native))
+        .and_then(|session| command_surface::AgentSession::parse(&session.to_string()));
 }
 
 /// The session a hook payload names, as Polylogue names it.

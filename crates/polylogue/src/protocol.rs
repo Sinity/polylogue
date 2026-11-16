@@ -132,6 +132,14 @@ pub mod resume {
         /// At most this many sessions.
         pub limit: Option<u64>,
     }
+
+    /// The sessions in a directory worth resuming, or one session's plan.
+    #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+    #[serde(untagged)]
+    pub enum Answer {
+        Sessions(Vec<crate::resume::ResumableSession>),
+        Plan(crate::resume::Plan),
+    }
 }
 
 pub mod saved;

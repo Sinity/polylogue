@@ -18,7 +18,8 @@ use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// A session that worked in or below a directory.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct NearbySession {
     pub id: SessionId,
     pub kind: SessionKind,

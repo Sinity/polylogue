@@ -24,6 +24,22 @@ fn runtime() -> io::Result<&'static tokio::runtime::Runtime> {
         .map_err(|error| io::Error::other(error.clone()))
 }
 
+static THIS_PROCESS: OnceLock<command_surface::CallerEvidence> = OnceLock::new();
+
+/// Gathers the facts about this process once, from `main`: its harness
+/// variables, harness ancestors, terminal and unit.
+pub fn remember_this_process(environment: &crate::config::EnvSnapshot) {
+    let variable = |name: &str| environment.get_os(name).map(Into::into);
+    let mut caller = command_surface::gather_current(variable);
+    crate::hook::hermes_session(&mut caller, variable);
+    let _ = THIS_PROCESS.set(caller);
+}
+
+/// The facts about this process every request it sends carries.
+pub fn this_process() -> command_surface::CallerEvidence {
+    THIS_PROCESS.get().cloned().unwrap_or_default()
+}
+
 /// A new request for `operation` with these arguments and the default deadline.
 pub fn request(
     operation: &str,
@@ -51,7 +67,7 @@ pub fn call(
     let budget = connection_budget(request, None);
     let outgoing = crate::protocol::wire::Outgoing {
         request,
-        caller: crate::protocol::caller::details(),
+        caller: this_process(),
         parent_deadline_ms: None,
     };
     runtime()?.block_on(async {
@@ -152,7 +168,7 @@ pub(crate) fn call_with_budget(
 ) -> io::Result<Answer<Value>> {
     let outgoing = crate::protocol::wire::Outgoing {
         request,
-        caller: crate::protocol::caller::details(),
+        caller: this_process(),
         parent_deadline_ms: None,
     };
     runtime()?.block_on(async {
@@ -175,7 +191,7 @@ pub(crate) async fn call_ready_as(
     archive: &Archive,
     request: &command_surface::RunnableRequest,
     cancelled: &CancellationToken,
-    caller: polylogue_model::authorship::CallerEvidence,
+    caller: command_surface::CallerEvidence,
 ) -> io::Result<command_surface::Answer<serde_json::Value>> {
     call_ready_as_bounded(archive, request, cancelled, caller, None).await
 }
@@ -184,7 +200,7 @@ pub(crate) async fn call_ready_as_bounded(
     archive: &Archive,
     request: &command_surface::RunnableRequest,
     cancelled: &CancellationToken,
-    caller: polylogue_model::authorship::CallerEvidence,
+    caller: command_surface::CallerEvidence,
     parent_deadline_ms: Option<i64>,
 ) -> io::Result<Answer<Value>> {
     let budget = connection_budget(request, parent_deadline_ms);
@@ -228,6 +244,6 @@ pub(crate) fn call_ready(
         archive,
         request,
         &CancellationToken::new(),
-        crate::protocol::caller::details(),
+        this_process(),
     ))
 }

@@ -4,6 +4,7 @@
 
 use polylogue_model::JsonExt as _;
 pub(crate) mod attachment;
+pub(crate) mod calling_process;
 pub mod changes;
 pub(crate) mod completion;
 pub(crate) mod follow;

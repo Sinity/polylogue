@@ -1,15 +1,12 @@
 use super::*;
-use polylogue_model::{
-    Origin,
-    authorship::{Channel, compute_authorship},
-};
+use command_surface::{Via, author_of};
 use serde_json::json;
 use std::io::Write;
 
 fn caller_details(tool: Option<&str>) -> CallerEvidence {
     CallerEvidence {
-        harness: Some(Origin::new("claude-code").unwrap()),
-        session: Some(SessionId::parse("claude-code:stale-startup").unwrap()),
+        harness: Harness::new("claude-code"),
+        session: AgentSession::parse("claude-code:stale-startup"),
         harness_pid: Some(17),
         tool_call_id: tool.map(str::to_owned),
         ..Default::default()
@@ -32,7 +29,7 @@ fn event(kind: &str, session: &str, tool: Option<&str>, agent: Option<&str>) -> 
 fn caller_tool_call_selects_the_worker_session() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("17.ndjson");
-    let registry = Registry::new(directory.path().into());
+    let registry = OpenCalls::new(directory.path().into());
     append(&path, event("SessionStart", "resumed", None, None));
     append(
         &path,
@@ -54,7 +51,7 @@ fn caller_tool_call_selects_the_worker_session() {
     );
     let caller = caller_details(Some("call-two"));
     let selected = registry.identity(&caller).unwrap();
-    let accepted = compute_authorship(Channel::Mcp, &caller, Some(&selected));
+    let accepted = author_of(&caller, Via::Mcp, Some(&selected));
     assert_eq!(
         accepted.author.to_string(),
         "agent:claude-code:agent-worker-two"
@@ -75,13 +72,11 @@ fn caller_tool_call_selects_the_worker_session() {
             .is_none()
     );
     let session_only = CallerEvidence {
-        session: Some(SessionId::parse("claude-code:explicit-session").unwrap()),
+        session: AgentSession::parse("claude-code:explicit-session"),
         ..caller
     };
     assert_eq!(
-        compute_authorship(Channel::Cli, &session_only, None)
-            .author
-            .to_string(),
+        author_of(&session_only, Via::Cli, None).author.to_string(),
         "agent:claude-code:explicit-session"
     );
 }
@@ -90,7 +85,7 @@ fn caller_tool_call_selects_the_worker_session() {
 fn partial_hook_record_is_observed_only_after_its_newline_and_file_replacement_resets_identity() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("17.ndjson");
-    let registry = Registry::new(directory.path().into());
+    let registry = OpenCalls::new(directory.path().into());
     let caller = caller_details(Some("call-one"));
     let next = serde_json::to_vec(&event("PreToolUse", "first", Some("call-one"), None)).unwrap();
     let mut output = std::fs::OpenOptions::new()
@@ -126,7 +121,7 @@ fn partial_hook_record_is_observed_only_after_its_newline_and_file_replacement_r
 fn a_reused_pid_never_applies_another_harnesses_hook_identity() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("17.ndjson");
-    let registry = Registry::new(directory.path().into());
+    let registry = OpenCalls::new(directory.path().into());
     append(&path, event("PreToolUse", "old", Some("call-one"), None));
     assert!(
         registry
@@ -134,7 +129,7 @@ fn a_reused_pid_never_applies_another_harnesses_hook_identity() {
             .is_some()
     );
     let caller = CallerEvidence {
-        harness: Some(Origin::new("codex").unwrap()),
+        harness: Harness::new("codex"),
         harness_pid: Some(17),
         tool_call_id: Some("call-one".into()),
         ..Default::default()

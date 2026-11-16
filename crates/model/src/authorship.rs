@@ -1,6 +1,7 @@
-//! Honest attribution from gathered caller details. I/O gathers these details
-//! at the transport boundary; the decision is the same on every surface.
-use crate::{IdError, NativeId, Origin, SessionId};
+//! Honest attribution kept on authored records. The caller's facts are
+//! gathered at the transport boundary and turned into an author by
+//! `command_surface::author_of`, the same on every surface.
+use crate::{IdError, Origin, SessionId};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 
@@ -90,19 +91,6 @@ pub enum Channel {
 }
 stored_names!(Channel {Mcp=>"mcp",Cli=>"cli",Web=>"web",Extension=>"extension",Desktop=>"desktop",Hook=>"hook",Markup=>"markup",Import=>"import",Daemon=>"daemon"});
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct CallerEvidence {
-    pub harness: Option<Origin>,
-    pub session: Option<SessionId>,
-    pub tool_call_id: Option<String>,
-    pub harness_pid: Option<u32>,
-    pub controlling_terminal: bool,
-    pub unit: Option<String>,
-    #[serde(default)]
-    pub ambiguous_harness: bool,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Authorship {
@@ -110,61 +98,38 @@ pub struct Authorship {
     pub via: Channel,
 }
 
-/// One selected hook-spool identity. A tool call refines the matching call;
-/// a SessionStart identity (no tool_call_id) follows the matching parent pid.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HookIdentity {
-    pub harness_pid: u32,
-    pub tool_call_id: Option<String>,
-    pub session: SessionId,
-    pub agent_id: Option<String>,
+/// The shared crate computes authorship from the caller's facts; an agent
+/// session that is not a Polylogue session ID is kept as its harness.
+impl From<command_surface::Authorship> for Authorship {
+    fn from(computed: command_surface::Authorship) -> Self {
+        use command_surface::{Author as Computed, Via};
+        let harness =
+            |name: &str| Origin::new(name).map_or(Author::Agent(None), Author::AgentOrigin);
+        let author = match computed.author {
+            Computed::Operator => Author::Operator,
+            Computed::Agent(session) => SessionId::parse(&session.to_string()).map_or_else(
+                |_| harness(session.harness.as_str()),
+                |id| Author::Agent(Some(id)),
+            ),
+            Computed::AgentOfHarness(name) => harness(name.as_str()),
+            Computed::UnidentifiedAgent => Author::Agent(None),
+            Computed::Script(unit) => Author::Script(unit),
+            Computed::Unattributed => Author::Unattributed,
+        };
+        let via = match computed.via {
+            Via::Cli => Channel::Cli,
+            Via::Mcp => Channel::Mcp,
+            Via::Web => Channel::Web,
+            Via::Extension => Channel::Extension,
+            Via::Desktop => Channel::Desktop,
+            Via::Hook => Channel::Hook,
+            Via::Markup => Channel::Markup,
+            Via::Import => Channel::Import,
+            Via::Daemon => Channel::Daemon,
+        };
+        Self { author, via }
+    }
 }
 
-pub fn compute_authorship(
-    via: Channel,
-    caller: &CallerEvidence,
-    hook: Option<&HookIdentity>,
-) -> Authorship {
-    let author = if matches!(via, Channel::Web | Channel::Extension | Channel::Desktop) {
-        Author::Operator
-    } else {
-        let hook = hook.filter(|hook| {
-            caller.harness_pid == Some(hook.harness_pid)
-                && hook
-                    .tool_call_id
-                    .as_ref()
-                    .is_none_or(|id| caller.tool_call_id.as_ref() == Some(id))
-        });
-        let session = hook
-            .map(|hook| {
-                if let Some(agent) = hook.agent_id.as_ref().filter(|agent| !agent.is_empty()) {
-                    SessionId::new(
-                        hook.session.origin().clone(),
-                        NativeId::new(&format!("agent-{agent}"))
-                            .expect("prefixed native ID is nonempty"),
-                    )
-                } else {
-                    hook.session.clone()
-                }
-            })
-            .or_else(|| caller.session.clone());
-        if via == Channel::Cli && caller.ambiguous_harness && hook.is_none() {
-            Author::Unattributed
-        } else if let Some(session) = session {
-            Author::Agent(Some(session))
-        } else if let Some(origin) = &caller.harness {
-            Author::AgentOrigin(origin.clone())
-        } else if via == Channel::Mcp {
-            Author::Agent(None)
-        } else if via == Channel::Cli && caller.controlling_terminal {
-            Author::Operator
-        } else if let Some(unit) = caller.unit.as_ref().filter(|unit| !unit.is_empty()) {
-            Author::Script(unit.clone())
-        } else {
-            Author::Unattributed
-        }
-    };
-    Authorship { author, via }
-}
 #[cfg(test)]
 mod tests;

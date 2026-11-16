@@ -28,7 +28,10 @@ pub struct DeliveryRow {
 
 /// What a session left open: what a resumable session is ranked
 /// on, rather than how its text ended.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(
+    Debug, Clone, Default, PartialEq, Eq, Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(deny_unknown_fields)]
 pub struct OpenItems {
     /// The last message was a person's prompt with no answer after it.
     pub unanswered_prompt: bool,
