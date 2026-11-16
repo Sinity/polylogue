@@ -65,7 +65,18 @@ pub use layout::{
     layout_record, presentation_text_visible, visit_document_root, visit_record, visit_source_block,
 };
 pub use polylogue_model::read;
-pub use polylogue_model::read::Format;
+pub use polylogue_model::read::{Format, ReadError};
+
+/// `45s`, `7m`, `3h12m`, `2d4h`.
+pub fn short_duration(ms: i64) -> String {
+    let s = ms.max(0) / 1000;
+    match s {
+        0..60 => format!("{s}s"),
+        60..3600 => format!("{}m", s / 60),
+        3600..86400 => format!("{}h{}m", s / 3600, s % 3600 / 60),
+        _ => format!("{}d{}h", s / 86400, s % 86400 / 3600),
+    }
+}
 
 /// One argument as a POSIX shell reads it. This only formats stored arguments.
 pub fn shell_quote(word: &str) -> String {

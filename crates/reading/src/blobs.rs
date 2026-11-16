@@ -1,6 +1,6 @@
 //! Inline attachment bytes share one bounded transfer and disk-backed dedup.
-use super::super::Failure;
 use super::output::Stream;
+use crate::Error;
 use base64::Engine as _;
 use polylogue_model::{Attachment, BlobHash, Block, bundle::*, read::*};
 use polylogue_store::{Reader, export_items::ExportItems};
@@ -11,7 +11,7 @@ pub(super) struct Blobs {
     source: polylogue_store::blobs::Blobs,
 }
 impl Blobs {
-    pub(super) fn new(reader: &Reader<'_>) -> Result<Self, Failure> {
+    pub(super) fn new(reader: &Reader<'_>) -> Result<Self, Error> {
         Ok(Self {
             seen: ExportItems::new()?,
             source: reader.blob_reader()?,
@@ -21,8 +21,8 @@ impl Blobs {
         &mut self,
         record: &ReadRecord,
         stream: &mut Stream<'_>,
-        check: &dyn Fn() -> Result<(), Failure>,
-    ) -> Result<(), Failure> {
+        check: &dyn Fn() -> Result<(), Error>,
+    ) -> Result<(), Error> {
         let Some(record) = record.record() else {
             return Ok(());
         };
@@ -37,8 +37,8 @@ impl Blobs {
         &mut self,
         effect: &polylogue_model::authored::AuthoredEffect,
         stream: &mut Stream<'_>,
-        check: &dyn Fn() -> Result<(), Failure>,
-    ) -> Result<(), Failure> {
+        check: &dyn Fn() -> Result<(), Error>,
+    ) -> Result<(), Error> {
         for change in &effect.chats {
             for attachment in &change.action.attachments {
                 self.blob(attachment.blob, Some(attachment.size), stream, check)?;
@@ -50,8 +50,8 @@ impl Blobs {
         &mut self,
         blocks: &[Block],
         stream: &mut Stream<'_>,
-        check: &dyn Fn() -> Result<(), Failure>,
-    ) -> Result<(), Failure> {
+        check: &dyn Fn() -> Result<(), Error>,
+    ) -> Result<(), Error> {
         for block in blocks {
             for attachment in block.attachments() {
                 self.attachment(attachment, stream, check)?;
@@ -63,8 +63,8 @@ impl Blobs {
         &mut self,
         attachment: &Attachment,
         stream: &mut Stream<'_>,
-        check: &dyn Fn() -> Result<(), Failure>,
-    ) -> Result<(), Failure> {
+        check: &dyn Fn() -> Result<(), Error>,
+    ) -> Result<(), Error> {
         if let Some(hash) = attachment.blob {
             self.blob(hash, attachment.size, stream, check)?;
         }
@@ -75,8 +75,8 @@ impl Blobs {
         hash: BlobHash,
         size: Option<u64>,
         stream: &mut Stream<'_>,
-        check: &dyn Fn() -> Result<(), Failure>,
-    ) -> Result<(), Failure> {
+        check: &dyn Fn() -> Result<(), Error>,
+    ) -> Result<(), Error> {
         check()?;
         let key = hash.to_string();
         if self.seen.source_item(&key)?.is_some() {
@@ -104,7 +104,7 @@ impl Blobs {
         let mut buffer = [0_u8; 16 << 10];
         loop {
             check()?;
-            let length = bytes.read(&mut buffer).map_err(Failure::io)?;
+            let length = bytes.read(&mut buffer).map_err(Error::io)?;
             if length == 0 {
                 break;
             }
@@ -114,13 +114,13 @@ impl Blobs {
                 offset,
                 base64: base64::engine::general_purpose::STANDARD.encode(&buffer[..length]),
             })?;
-            offset = offset
-                .checked_add(length as u64)
-                .ok_or_else(|| Failure::io("blob offset overflow"))?;
+            offset = offset.checked_add(length as u64).ok_or_else(|| {
+                Error::internal("a stored file exceeds the supported byte offset")
+            })?;
         }
         check()?;
         if offset != size || digest.finalize().as_bytes() != &hash.0 {
-            return Err(Failure::io(format!(
+            return Err(Error::io(format!(
                 "stored blob {hash} failed its size or content hash"
             )));
         }

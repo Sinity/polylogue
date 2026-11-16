@@ -206,7 +206,7 @@ fn one_operation_makes_one_request_on_every_surface() {
     let resolved = |arguments: serde_json::Value| {
         let arguments: crate::protocol::read::Arguments =
             serde_json::from_value(arguments).unwrap();
-        crate::daemon::service::read::ReadRequest::from_arguments(arguments, None).unwrap()
+        crate::daemon::service::read::request_of(arguments, None).unwrap()
     };
     let a = resolved(from_cli);
     for other in [resolved(from_mcp), resolved(from_http)] {
@@ -246,9 +246,7 @@ fn typed_read_validation_owns_defaults_and_conditional_requirements() {
     let decode = |arguments: serde_json::Value| {
         serde_json::from_value::<crate::protocol::read::Arguments>(arguments)
             .map_err(|e| e.to_string())
-            .and_then(|arguments| {
-                crate::daemon::service::read::ReadRequest::from_arguments(arguments, None)
-            })
+            .and_then(|arguments| crate::daemon::service::read::request_of(arguments, None))
     };
     for invalid in [
         json!({"target":"claude-code:s1","pages":2}),

@@ -32,19 +32,6 @@ fn fixture() -> (WriterArchive, DocumentId) {
     (writer, id)
 }
 
-fn corrupt(writer: &WriterArchive, ordinal: u64) {
-    let index = rusqlite::Connection::open(writer.archive.index_db()).unwrap();
-    assert_eq!(
-        index
-            .execute(
-                "UPDATE document_block SET body=x'00' WHERE idx=?1",
-                [i64::try_from(ordinal).unwrap()],
-            )
-            .unwrap(),
-        1
-    );
-}
-
 fn options() -> ReadOptions {
     ReadOptions {
         view: View::Transcript,
@@ -52,7 +39,7 @@ fn options() -> ReadOptions {
     }
 }
 
-fn selected(_: &Source) -> Result<bool, crate::daemon::Failure> {
+fn selected(_: &Source) -> Result<bool, crate::Error> {
     Ok(false)
 }
 fn ready(
@@ -60,7 +47,7 @@ fn ready(
     _: u64,
     _: u64,
     _: Option<&str>,
-) -> Result<ReadyCall, crate::daemon::Failure> {
+) -> Result<ReadyCall, crate::Error> {
     panic!("a plain document block has no receiving attachment action")
 }
 fn layout<'a>(
@@ -101,7 +88,7 @@ fn expected(id: &DocumentId, ordinal: u64, text: &str) -> ReadItem {
 #[test]
 fn a_document_page_stops_before_corrupt_later_blocks_but_full_transfer_refuses() {
     let (writer, id) = fixture();
-    corrupt(&writer, 2);
+    writer.corrupt_document_block(2);
     let pool = ReadPool::open(&writer.archive).unwrap();
     let reader = pool.reader().unwrap();
     let options = options();
@@ -178,7 +165,7 @@ fn header(id: &DocumentId) -> ReadHeader {
 fn document_after_and_before_seek_original_blocks_and_keep_full_item_digest_checks() {
     for backwards in [false, true] {
         let (writer, id) = fixture();
-        corrupt(&writer, if backwards { 2 } else { 0 });
+        writer.corrupt_document_block(if backwards { 2 } else { 0 });
         let pool = ReadPool::open(&writer.archive).unwrap();
         let reader = pool.reader().unwrap();
         let ordinal = if backwards { 1 } else { 2 };
@@ -264,7 +251,7 @@ fn document_block_decode_obeys_cancellation_and_generation_changes_between_items
     use polylogue_store::{cancellation::Cancellation, read::limit::ReadLimit};
     for reset in [false, true] {
         let (writer, id) = fixture();
-        corrupt(&writer, 1);
+        writer.corrupt_document_block(1);
         let cancellation = Cancellation::default();
         ReadLimit::without_deadline(cancellation.clone()).scope(|| {
             let pool = ReadPool::open(&writer.archive).unwrap();

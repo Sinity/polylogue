@@ -1,0 +1,677 @@
+//! Typed answers and the authored writes they perform.
+use super::{Daemon, ModeState};
+use crate::briefing::{self, Ask};
+use crate::daemon::Failure;
+use command_surface::Answer;
+use polylogue_model::user::{Delivery, UserWrite};
+use polylogue_reading::operation::{Context, Invocation};
+use polylogue_store::{StoreError, WriterSender, user_writes};
+use serde_json::Value;
+use std::collections::HashSet;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+
+/// A query's answer over a snapshot of the given freshness: degraded, with a
+/// note, when the index is not current or a part is incomplete; empty when
+/// it matched nothing; ok otherwise.
+pub(crate) fn query_outcome(
+    answer: crate::daemon::query::QueryAnswer,
+    freshness: &polylogue_model::freshness::ReadFreshness,
+) -> Answer<crate::protocol::query::Answer> {
+    let crate::daemon::query::QueryAnswer {
+        mut value,
+        outcome,
+        notes,
+    } = answer;
+    value.read_at_mut().freshness = Some(freshness.clone());
+    let mut notes = notes;
+    notes.extend(freshness.notes().into_iter().map(str::to_owned));
+    let degraded = !freshness.up_to_date() || outcome == crate::daemon::query::Outcome::Incomplete;
+    if degraded {
+        command_surface::Answer {
+            outcome: command_surface::Outcome::Degraded {
+                value,
+                missing: notes,
+            },
+            envelope: command_surface::Envelope {
+                next: vec![],
+                ..Default::default()
+            },
+        }
+    } else if outcome == crate::daemon::query::Outcome::Empty {
+        command_surface::Answer {
+            outcome: command_surface::Outcome::Empty(value),
+            envelope: command_surface::Envelope {
+                notes,
+                next: vec![],
+                ..Default::default()
+            },
+        }
+    } else {
+        command_surface::Answer {
+            outcome: command_surface::Outcome::Ok(value),
+            envelope: command_surface::Envelope {
+                notes,
+                next: vec![],
+                ..Default::default()
+            },
+        }
+    }
+}
+
+/// An import whose restored user state Sinex has not confirmed yet is
+/// degraded, with the awaiting-confirmation note.
+pub(crate) fn import_answer(
+    report: polylogue_engine::ImportReport,
+) -> Answer<polylogue_engine::ImportReport> {
+    let pending = report.user_state.pending > 0;
+    crate::protocol::written(report, pending)
+}
+
+pub(crate) fn error<T>(code: polylogue_model::Code, message: impl ToString) -> Answer<T> {
+    Failure::new(code, message).answer()
+}
+
+/// A failed store operation. Saved preparations have their operation's
+/// own declared result and are handled where that preparation is made.
+pub(crate) fn store_error<T>(e: &StoreError) -> Answer<T> {
+    Failure::store(e).answer()
+}
+
+/// How much of a session-start brief's remaining time its sections leave
+/// for the answer to reach the caller: a fifth, at most a second.
+pub(crate) fn answer_reserve(left: std::time::Duration) -> std::time::Duration {
+    (left / 5).min(std::time::Duration::from_secs(1))
+}
+
+/// Prepares context and, when a sender is named, queues its delivery record
+/// and answers without waiting for the writer, so a busy writer never delays
+/// a brief. The delivery ID is the request ID, chosen before the text is
+/// prepared and written into it; the writer records the delivery, and any
+/// later outcome event for it, in queue order. A session-start brief stops
+/// its sections early enough to answer before the request's deadline.
+/// The answer of an advisory that has nothing to offer: also its answer
+/// when preparation cannot finish within its cap, on every surface.
+pub(crate) fn advisory_silence() -> Answer<crate::protocol::context::Answer> {
+    crate::protocol::written(
+        crate::protocol::context::Answer {
+            delivery: None,
+            prepared: crate::advisory::empty(),
+        },
+        false,
+    )
+}
+
+pub(crate) fn context(
+    d: &Daemon,
+    request_id: String,
+    ask: &Ask,
+    sender: Option<String>,
+    budget_tokens: command_surface::TokenBudget,
+    operation: &Arc<Context>,
+) -> Answer<crate::protocol::context::Answer> {
+    use polylogue_store::read::limit::ReadLimit;
+    let is_advisory = matches!(ask, Ask::Advisory { .. });
+    #[cfg(feature = "sinex")]
+    if is_advisory
+        && let ModeState::Primary { connection } = &d.mode
+        && !connection.advisory_history_ready()
+    {
+        return crate::protocol::written(
+            crate::protocol::context::Answer {
+                delivery: None,
+                prepared: crate::advisory::empty(),
+            },
+            false,
+        );
+    }
+    let mut cooldown = if let Ask::Advisory { session, .. } = ask {
+        match d
+            .advisories
+            .available(session, operation.clock.now.as_millisecond())
+        {
+            Some(cooldown) => Some(cooldown),
+            None => {
+                return crate::protocol::written(
+                    crate::protocol::context::Answer {
+                        delivery: None,
+                        prepared: crate::advisory::empty(),
+                    },
+                    false,
+                );
+            }
+        }
+    } else {
+        None
+    };
+    let pending_advice = if let Ask::Advisory { session, .. } = ask {
+        match d.queued_deliveries.pending_advice(&session.to_string()) {
+            Some(pending) => pending,
+            None => {
+                return crate::protocol::written(
+                    crate::protocol::context::Answer {
+                        delivery: None,
+                        prepared: crate::advisory::empty(),
+                    },
+                    false,
+                );
+            }
+        }
+    } else {
+        Vec::new()
+    };
+    let request_limit = ReadLimit::current();
+    let brief_limit = match (ask, &request_limit) {
+        (Ask::SessionStart { .. }, Some(limit)) => limit.deadline().map(|deadline| {
+            let left = deadline.saturating_duration_since(Instant::now());
+            ReadLimit::at(
+                deadline
+                    .checked_sub(answer_reserve(left))
+                    .unwrap_or(deadline),
+                limit.cancellation.child(),
+            )
+        }),
+        _ => None,
+    };
+    let queued = (!is_advisory)
+        .then(|| {
+            ask.recipient()
+                .and_then(|recipient| d.queued_deliveries.latest(&recipient.to_string()))
+        })
+        .flatten();
+    let prepare = || -> Result<_, Box<Answer<crate::protocol::context::Answer>>> {
+        let reader = d.reads.reader().map_err(|e| Box::new(store_error(&e)))?;
+        let mut applied_advice = Vec::new();
+        for (id, _) in &pending_advice {
+            if reader
+                .delivery_refs(id)
+                .map_err(|error| Box::new(store_error(&error)))?
+                .is_some()
+            {
+                applied_advice.push(id.clone());
+            }
+        }
+        d.queued_deliveries.advice_applied(&applied_advice);
+        let pending_refs: Vec<_> = pending_advice
+            .iter()
+            .map(|(_, refs)| refs.clone())
+            .collect();
+        let provider = if is_advisory {
+            None
+        } else {
+            let settings = reader
+                .settings_snapshot(&operation.machine)
+                .map_err(|error| Box::new(store_error(&error)))?;
+            crate::embeddings::Provider::from_settings(&settings, &d.config.embedding_credentials)
+                .ok()
+                .flatten()
+        };
+        let near = |q: &str| match &provider {
+            Some(p) => d.warm.similarity(&reader, p, q),
+            None => Err("embeddings are off".into()),
+        };
+        let near: Option<&crate::daemon::query::NearFn<'_>> = provider.is_some().then_some(&near);
+        let ranking_identity = crate::embeddings::ranking_key(&reader, provider.as_ref());
+        // Assertions written after this are the next brief's delta.
+        let written_up_to = reader
+            .change_position()
+            .map_err(|e| Box::new(store_error(&e)))?
+            .archive;
+        let prepared = briefing::prepare(
+            crate::briefing::BriefContext {
+                reader: &reader,
+                delivery_id: &request_id,
+                context: operation,
+                ranking_identity: ranking_identity.as_deref(),
+                near,
+            },
+            &d.scope,
+            queued,
+            &pending_refs,
+            ask,
+            budget_tokens,
+        )
+        .map_err(|e| match &request_limit {
+            Some(limit) if limit.check().is_err() => {
+                let text = match ask {
+                    Ask::Recall { text, .. } => Some(text.as_str()),
+                    _ => None,
+                };
+                Box::new(crate::daemon::execution::refusal(
+                    &e, "context", text, limit,
+                ))
+            }
+            _ => Box::new(store_error(&e)),
+        })?;
+        Ok((prepared, reader.scope_token(), written_up_to))
+    };
+    let prepared = match &brief_limit {
+        Some(limit) => limit.scope(prepare),
+        None => prepare(),
+    };
+    // An advisory never blocks and fails open: preparation that runs out of
+    // its 20 ms cap (intersected with the caller's bound), or finds its
+    // delivery history incomplete, answers with nothing on every surface.
+    let silent = advisory_silence;
+    let (prepared, selected_scope, written_up_to) = match prepared {
+        Ok(prepared) => prepared,
+        Err(_) if is_advisory => return silent(),
+        Err(answer) => return *answer,
+    };
+    if is_advisory
+        && request_limit
+            .as_ref()
+            .is_some_and(|limit| limit.check().is_err())
+    {
+        return silent();
+    }
+    // The request's own deadline and cancellation still apply.
+    if let Some(limit) = &request_limit
+        && let Err(error) = limit.check()
+    {
+        let text = match ask {
+            Ask::Recall { text, .. } => Some(text.as_str()),
+            _ => None,
+        };
+        return crate::daemon::execution::refusal(&error, "context", text, limit);
+    }
+    let mut delivery = None;
+    if let Some(sender) = sender
+        && !prepared.empty
+    {
+        let write = UserWrite::Deliver(Delivery {
+            recipient_kind: if ask.recipient().is_some() {
+                "session".into()
+            } else {
+                "operator".into()
+            },
+            recipient_id: ask.recipient().map(ToString::to_string),
+            sender,
+            event: prepared.event.clone(),
+            cwd: ask.cwd().map(|c| c.to_string_lossy().into_owned()),
+            text: prepared.text.clone(),
+            refs: prepared.refs.clone(),
+            left_out: prepared.left_out.clone(),
+        });
+        let writes = match writer(d) {
+            Ok(writes) => writes,
+            Err(failure) => return failure.answer(),
+        };
+        if let Err(error) = operation.check_parent_lifetime() {
+            return store_error(&error);
+        }
+        if let Err(failure) = crate::daemon::handler::finish_read_phase("record delivery") {
+            return failure.answer();
+        }
+        // Queued without the caller's lifetime: the text has been handed
+        // over, so its record is written even when the caller has gone.
+        let request = operation.request(request_id.clone(), write);
+        let since = briefing::LastBrief {
+            at: request.at,
+            seq: written_up_to,
+        };
+        if is_advisory {
+            // A non-empty preparation reserves this session while its record or acknowledgment
+            // is unconfirmed. The stored outcome is still prepared until emitted.
+            let session = ask.recipient().expect("advisory recipient");
+            let recent = cooldown.as_mut().expect("advisory cooldown held");
+            recent.insert(session.to_string(), operation.clock.now.as_millisecond());
+            match d
+                .queued_deliveries
+                .try_submit(writes, request, Some(selected_scope))
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    recent.remove(&session.to_string());
+                    return crate::protocol::written(
+                        crate::protocol::context::Answer {
+                            delivery: None,
+                            prepared: crate::advisory::empty(),
+                        },
+                        false,
+                    );
+                }
+                Err(error) => return store_error(&error),
+            }
+        } else {
+            let recipient = ask.recipient().map(|r| (r.to_string(), since));
+            if let Err(error) =
+                d.queued_deliveries
+                    .submit(writes, request, Some(selected_scope), recipient)
+            {
+                return store_error(&error);
+            }
+        }
+        delivery = Some(request_id);
+    }
+    crate::protocol::written(
+        crate::protocol::context::Answer { delivery, prepared },
+        false,
+    )
+}
+
+/// Queues what happened to a delivery and answers at once: the writer
+/// applies it after the delivery it names, and a repeated request ID is
+/// applied once. The hook waits only for the hand-over and may have exited
+/// before the daemon reads its request; the outcome it reports has happened,
+/// so it is recorded whether or not the caller is still connected.
+pub(crate) fn delivery_event(
+    d: &Daemon,
+    invocation: &Invocation,
+    request_id: String,
+    write: UserWrite,
+) -> Answer<Value> {
+    if let UserWrite::DeliveryEvent {
+        delivery,
+        what: polylogue_model::DeliveryOutcome::NotSent,
+        detail,
+    } = &write
+        && detail.as_deref() == Some("timeout")
+        && !d.queued_deliveries.owns_preparation(delivery)
+    {
+        return ok(serde_json::json!({ "queued": false, "preparation": "unconfirmed" }));
+    }
+    let writes = match writer(d) {
+        Ok(writes) => writes,
+        Err(failure) => return failure.answer(),
+    };
+    match d.queued_deliveries.submit(
+        writes,
+        invocation.request(request_id.clone(), write),
+        None,
+        None,
+    ) {
+        Ok(()) => crate::protocol::written(
+            serde_json::json!({ "id": request_id, "queued": true }),
+            false,
+        ),
+        Err(error) => store_error(&error),
+    }
+}
+
+pub(crate) fn writer(d: &Daemon) -> Result<&WriterSender, Failure> {
+    d.writes.as_ref().ok_or_else(|| d.mode.write_refusal())
+}
+
+pub(crate) fn authored_preparation() -> user_writes::PreparationContext {
+    user_writes::PreparationContext::new(
+        polylogue_sources::origin::ORIGINS
+            .iter()
+            .map(|origin| origin.name.to_owned())
+            .collect(),
+    )
+}
+
+/// Submits one authored write; a write prepared from a read carries the
+/// selected generation through the writer queue to its commit. A write
+/// accepted locally but not yet confirmed by Sinex is a degraded answer.
+pub(crate) fn submit<T: serde::Serialize>(
+    d: &Daemon,
+    invocation: &Invocation,
+    request_id: String,
+    w: UserWrite,
+    selected_scope: Option<polylogue_store::ReadScopeToken>,
+    present: impl FnOnce(polylogue_model::user::UserOutcome) -> T,
+) -> Answer<T> {
+    let accepted = || -> Result<_, Failure> {
+        let writes = writer(d)?;
+        invocation.check_parent_lifetime()?;
+        crate::daemon::handler::finish_read_phase("write")?;
+        Ok(writes)
+    };
+    let writes = match accepted() {
+        Ok(writes) => writes,
+        Err(failure) => return failure.answer(),
+    };
+    let request = invocation.request(request_id, w);
+    let preparation = authored_preparation();
+    let result = writes.user(polylogue_store::writer::UserSubmission {
+        request,
+        scope: selected_scope,
+        preparation: Some(preparation),
+        parent: invocation.parent_lifetime(),
+    });
+    match result {
+        Ok(outcome) => {
+            let pending = outcome.pending;
+            crate::protocol::written(present(outcome), pending)
+        }
+        Err(error) => store_error(&error),
+    }
+}
+
+pub(crate) fn write(
+    d: &Daemon,
+    invocation: &Invocation,
+    request_id: String,
+    w: UserWrite,
+) -> Answer<polylogue_model::user::UserOutcome> {
+    submit(d, invocation, request_id, w, None, |outcome| outcome)
+}
+
+pub(crate) fn write_from_read(
+    d: &Daemon,
+    invocation: &Invocation,
+    request_id: String,
+    w: UserWrite,
+    selected_scope: polylogue_store::ReadScopeToken,
+) -> Answer<polylogue_model::user::UserOutcome> {
+    submit(
+        d,
+        invocation,
+        request_id,
+        w,
+        Some(selected_scope),
+        |outcome| outcome,
+    )
+}
+
+pub(crate) fn browser_refusal<T>(refused: crate::browser::actions::Refused) -> Answer<T> {
+    error(refused.0, refused.0.as_str())
+}
+
+pub(crate) fn ok(data: impl serde::Serialize) -> Answer<Value> {
+    match serde_json::to_value(data) {
+        Ok(data) => Answer::ok(data),
+        Err(cause) => error(polylogue_model::Code::Internal, cause),
+    }
+}
+
+pub(crate) fn repeated_request(
+    reader: &polylogue_store::Reader<'_>,
+    id: &str,
+    intended: &UserWrite,
+    invocation: &Invocation,
+) -> Result<Option<UserWrite>, Failure> {
+    match reader.user_request(id)? {
+        Some(previous)
+            if previous.machine == invocation.machine
+                && previous.authorship == invocation.authorship
+                && intended.intent() == previous.write.intent() =>
+        {
+            Ok(Some(previous.write))
+        }
+        Some(_) => Err(StoreError::Conflict(id.into()).into()),
+        None => Ok(None),
+    }
+}
+
+/// Refuses new requests once the daemon is stopping.
+pub(crate) fn accepting(d: &Daemon) -> Result<(), Failure> {
+    if d.stopping.load(Ordering::Acquire) {
+        return Err(shutting_down());
+    }
+    Ok(())
+}
+
+/// The refusal of a request that arrives, or was queued, while the daemon
+/// stops.
+pub(crate) fn shutting_down() -> Failure {
+    Failure::shutting_down("the daemon has stopped accepting requests")
+}
+
+/// Resolve bulk targets through the same pinned selection and acknowledged
+/// execution lifecycle used by reads. The returned references keep the rows' own grain.
+pub(crate) fn query_targets(
+    d: &Daemon,
+    reader: &polylogue_store::Reader<'_>,
+    query: &str,
+    invocation: &polylogue_reading::operation::Invocation,
+) -> Result<Vec<polylogue_model::Reference>, Failure> {
+    query_targets_in(d, reader, query, invocation, None)
+}
+
+/// A browser selection additionally requires one stored row in its supplied
+/// conversation. Membership is decided by the same prepared population.
+pub(crate) fn query_targets_in(
+    d: &Daemon,
+    reader: &polylogue_store::Reader<'_>,
+    query: &str,
+    invocation: &polylogue_reading::operation::Invocation,
+    container: Option<&polylogue_model::Reference>,
+) -> Result<Vec<polylogue_model::Reference>, Failure> {
+    use polylogue_model::query_objects::{ExecutionPresentation, QueryRun, RunBinding};
+    crate::daemon::query::with_ranking(
+        reader,
+        &d.warm,
+        &d.config,
+        |embeddings, ranking_identity, near| {
+            let operation = d.resolve_operation_context(invocation.clone())?;
+            let ask = crate::daemon::query::Ask {
+                text: query,
+                cursor: None,
+                page_size: None,
+                why: false,
+                session: None,
+                context: Arc::clone(&operation),
+                embeddings,
+                ranking_identity: ranking_identity.clone(),
+                near: Some(near),
+                fields: &[],
+            };
+            let options =
+                crate::daemon::query::options(reader, &ask, uuid::Uuid::new_v4().as_u128() as u64)?;
+            let selection = reader.prepare_query_selection(query, &options)?;
+            if selection.program().shape != polylogue_query::Shape::Rows {
+                return Err(Failure::bad_request(
+                    "assertions require identifiable rows, not a grouped or aggregate population",
+                ));
+            }
+            let object = selection.query_object()?;
+            let query_options = polylogue_store::query::execute::options_snapshot(
+                &options,
+                false,
+                ranking_identity,
+            )?;
+            let accepted = operation
+                .accepted_request()
+                .map(serde_json::to_value)
+                .transpose()
+                .map_err(Failure::internal)?;
+            let mut binding = selection.execution_binding(
+                query_options,
+                ExecutionPresentation::Query,
+                accepted,
+            )?;
+            binding
+                .replay
+                .context
+                .versions
+                .extend(operation.cursor_versions());
+            let run = QueryRun {
+                id: polylogue_reading::operation::new_run_id(),
+                question: Some(selection.question_id()),
+                at: operation.ran_at,
+                read_at: reader.change_position()?,
+                machine: operation.machine.clone(),
+                authorship: operation.authorship.clone(),
+                binding: RunBinding::Original {
+                    execution: Box::new(binding),
+                },
+            };
+            let hash = run.binding_hash().map_err(Failure::internal)?;
+            let writes = writer(d)?;
+            operation.check_parent_lifetime()?;
+            writes.query_object(object, operation.parent_lifetime())?;
+            polylogue_reading::execution::record(
+                writes,
+                operation.parent_lifetime(),
+                run,
+                hash,
+                || d.config.requests.now(),
+                || (|| {
+                    if !selection.program().incomplete.is_empty() {
+                        return Err(Failure::not_yet_available(
+                            "the query population is incomplete; no assertion was written",
+                        ));
+                    }
+                    let mut row_count = 0_u64;
+                    let mut targets = Vec::new();
+                    let mut seen = HashSet::new();
+                    reader.visit_selection::<Failure>(&selection, polylogue_store::read::VisitFrom::First, Some(near), |row| {
+                        row_count = row_count
+                            .checked_add(1)
+                            .ok_or_else(|| Failure::internal("selected row count exceeds u64"))?;
+                        let reference = row
+                            .target
+                            .as_ref()
+                            .map(polylogue_model::read::ReadTarget::reference)
+                            .ok_or_else(|| {
+                                Failure::not_yet_available(
+                                    "the selected row has no source reference",
+                                )
+                            })?;
+                        if seen.insert(reference.clone()) {
+                            targets.push(reference);
+                        }
+                        Ok(std::ops::ControlFlow::Continue(()))
+                    })?;
+                    if let Some(polylogue_model::Reference::Session(expected)) = container {
+                        let Some(polylogue_model::Reference::Message(message)) = targets.first()
+                        else {
+                            return Err(Failure::conflict(format!(
+                                "the supplied source is not a recorded message; the query selected {row_count} rows, first {:?}",
+                                targets.first()
+                            )));
+                        };
+                        let mut memberships = 0_u8;
+                        let mut matches = false;
+                        reader.visit_message_sessions(message, |session| {
+                            memberships += 1;
+                            matches = &session == expected;
+                            Ok(if memberships == 2 {
+                                std::ops::ControlFlow::Break(())
+                            } else {
+                                std::ops::ControlFlow::Continue(())
+                            })
+                        })?;
+                        if memberships != 1 || !matches {
+                            return Err(Failure::conflict(
+                                "the message has missing, ambiguous or mismatching recorded conversation membership",
+                            ));
+                        }
+                    }
+                    if container.is_some() && row_count != 1 {
+                        return Err(Failure::conflict(
+                            "the supplied message is missing or ambiguous; capture the conversation and retry",
+                        ));
+                    }
+                    if targets.is_empty() {
+                        return Err(Failure::new(
+                            polylogue_model::Code::Empty,
+                            "the query returns no rows; no assertion was written",
+                        ));
+                    }
+                    let count = u64::try_from(targets.len())
+                        .map_err(|_| Failure::internal("selected row count exceeds u64"))?;
+                    Ok(polylogue_reading::execution::Completed {
+                        value: targets,
+                        count: Some(count),
+                        exact: selection.program().incomplete.is_empty(),
+                        next: None,
+                    })
+                })().map_err(|failure: Failure| polylogue_reading::Error::Operation(failure.error)),
+            ).map_err(Failure::from)
+        },
+    )
+}

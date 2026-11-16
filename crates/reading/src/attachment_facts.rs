@@ -1,11 +1,11 @@
 //! Attachment pages use stored file metadata. The byte operation checks bodies.
 //! Stored descriptors and the names their sources gave stay unchanged.
-use super::Failure;
+use super::Error;
 use polylogue_model::{Attachment, MessageId, read::*};
 use polylogue_store::{Reader, StoreError, assets::AttachmentState};
 
 pub(super) type ReadyAttachment<'a> =
-    dyn Fn(&MessageId, u64, u64, Option<&str>) -> Result<ReadyCall, Failure> + 'a;
+    dyn Fn(&MessageId, u64, u64, Option<&str>) -> Result<ReadyCall, Error> + 'a;
 
 enum Availability {
     Present { input: Option<String> },
@@ -69,7 +69,7 @@ pub(super) fn prepare(
     mut item: ReadItem,
     index: u64,
     ready: &ReadyAttachment<'_>,
-) -> Result<ReadItem, Failure> {
+) -> Result<ReadItem, Error> {
     let ItemKind::Attachment {
         attachment,
         availability,
@@ -105,7 +105,7 @@ pub(super) fn prepare(
             reader.check()?;
             Availability::Unavailable(error.to_string())
         }
-        Err(error) => return Err(Failure::store(&error)),
+        Err(error) => return Err(Error::Store(error)),
     };
     // A page never reads a body or claims to have verified its hash. The
     // attachment operation checks the bytes when the caller asks for them.

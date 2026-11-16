@@ -7,7 +7,7 @@
 //! [`polylogue_model::live::channel::channel`] chooses; a new session
 //! starts on the protocol [`polylogue_model::live::channel::host_channel`]
 //! names.
-use super::{Daemon, Failure, Invocation, authored_preparation, error, ok, writer};
+use super::{Daemon, Failure, authored_preparation, error, ok, writer};
 use crate::daemon::handler::{Call, Handler};
 use crate::live_acts::{ResumeRun, probe};
 use crate::protocol::act as protocol;
@@ -15,6 +15,7 @@ use command_surface::Answer;
 use polylogue_model::live::channel::{Act, Channel, channel};
 use polylogue_model::user::{Delivery, UserOutcome, UserWrite};
 use polylogue_model::{DeliveryEvent, DeliveryOutcome, DeliverySender, SessionId};
+use polylogue_reading::operation::Invocation;
 use serde_json::{Value, json};
 
 #[cfg(test)]

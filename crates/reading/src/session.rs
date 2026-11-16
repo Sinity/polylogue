@@ -6,10 +6,10 @@
 //! continuation names its first entry by key and binds the rewrite version
 //! of every composed session, so appends never stale it and rewrites always
 //! do. Nothing is written.
-use super::super::{Daemon, Failure};
 use super::ReadRequest;
 use super::records::{SelectedRecord, message_record};
 use super::{layout_facts, output};
+use crate::{Error, ReadServices};
 use polylogue_model::{MessageId, Reference, SessionId, bundle::Record, read::*};
 use polylogue_store::Reader;
 use polylogue_store::items::{ItemLookup, ItemVersions};
@@ -32,12 +32,11 @@ pub(super) struct Scope {
 
 /// The session read a reference names, when it names one. `root:REF` names
 /// the logical session whose root is REF.
-pub(super) fn scope(reader: &Reader<'_>, target: &str) -> Result<Option<Scope>, Failure> {
+pub(super) fn scope(reader: &Reader<'_>, target: &str) -> Result<Option<Scope>, Error> {
     if let Some(root) = target.strip_prefix("root:") {
-        let reference =
-            Reference::parse(&format!("session:{root}")).map_err(Failure::bad_request)?;
+        let reference = Reference::parse(&format!("session:{root}")).map_err(Error::bad_request)?;
         let Reference::Session(session) = reference else {
-            return Err(Failure::bad_request(
+            return Err(Error::bad_request(
                 "root: names a session, the root of a logical session",
             ));
         };
@@ -50,10 +49,10 @@ pub(super) fn scope(reader: &Reader<'_>, target: &str) -> Result<Option<Scope>, 
     let Ok(reference) = Reference::parse(target) else {
         return Ok(None);
     };
-    let session_of = |message: &MessageId| -> Result<SessionId, Failure> {
+    let session_of = |message: &MessageId| -> Result<SessionId, Error> {
         reader
             .message_session(message)?
-            .ok_or_else(|| Failure::not_found(format!("no message {message}")))
+            .ok_or_else(|| Error::not_found(format!("no message {message}")))
     };
     Ok(match reference {
         Reference::Session(session) => Some(Scope {
@@ -69,7 +68,7 @@ pub(super) fn scope(reader: &Reader<'_>, target: &str) -> Result<Option<Scope>, 
         Reference::MessageRange { first, last } => {
             let session = session_of(&first)?;
             if session_of(&last)? != session {
-                return Err(Failure::bad_request(
+                return Err(Error::bad_request(
                     "a message range is read inside one session",
                 ));
             }
@@ -96,7 +95,7 @@ pub(super) struct SessionIndex {
 fn session_index(
     reader: &Reader<'_>,
     session: &SessionId,
-) -> Result<Option<Arc<SessionIndex>>, Failure> {
+) -> Result<Option<Arc<SessionIndex>>, Error> {
     Ok(reader.item_state(session)?.map(|state| {
         Arc::new(SessionIndex {
             pk: state.session_pk,
@@ -132,12 +131,7 @@ fn spawned(part: &Part) -> bool {
 
 impl Composed {
     /// The counts of a part's session before `seq`.
-    fn counts_at(
-        &self,
-        reader: &Reader<'_>,
-        part: usize,
-        seq: usize,
-    ) -> Result<ItemCounts, Failure> {
+    fn counts_at(&self, reader: &Reader<'_>, part: usize, seq: usize) -> Result<ItemCounts, Error> {
         entries::counts_before(reader, &self.indexes[part], seq)
     }
     /// The entries of a part's session in `start..end` whose class `which`
@@ -148,7 +142,7 @@ impl Composed {
         part: usize,
         (start, end): (usize, usize),
         which: impl Fn(EntryClass) -> bool,
-    ) -> Result<u64, Failure> {
+    ) -> Result<u64, Error> {
         if start >= end {
             return Ok(0);
         }
@@ -163,7 +157,7 @@ impl Composed {
         reader: &Reader<'_>,
         part: usize,
         seq: usize,
-    ) -> Result<Option<IndexEntry>, Failure> {
+    ) -> Result<Option<IndexEntry>, Error> {
         Ok(reader
             .item_window(
                 self.indexes[part].pk,
@@ -205,7 +199,7 @@ impl Composed {
             })
             .collect()
     }
-    fn versions(&self, reader: &Reader<'_>) -> Result<Vec<SessionVersion>, Failure> {
+    fn versions(&self, reader: &Reader<'_>) -> Result<Vec<SessionVersion>, Error> {
         let mut seen = HashSet::new();
         self.parts
             .iter()
@@ -227,7 +221,7 @@ fn spawning_call(
     reader: &Reader<'_>,
     index: &SessionIndex,
     call: &str,
-) -> Result<Option<(usize, IndexEntry)>, Failure> {
+) -> Result<Option<(usize, IndexEntry)>, Error> {
     Ok(reader
         .item_calls(index.pk, call)?
         .into_iter()
@@ -239,11 +233,7 @@ fn spawning_call(
 /// parent sessions, all marked inherited. The walk is iterative over
 /// sessions already on the path; problems are reported, never resolved by
 /// choosing one link.
-fn prefix(
-    reader: &Reader<'_>,
-    session: &SessionId,
-    composed: &mut Composed,
-) -> Result<(), Failure> {
+fn prefix(reader: &Reader<'_>, session: &SessionId, composed: &mut Composed) -> Result<(), Error> {
     let mut chain: Vec<(SessionId, Option<String>)> = Vec::new();
     let mut on_path: HashSet<SessionId> = HashSet::from([session.clone()]);
     let mut current = session.clone();
@@ -380,15 +370,14 @@ fn prefix(
 }
 
 fn compose(
-    d: &Daemon,
+    d: &impl ReadServices,
     reader: &Reader<'_>,
     scope: &Scope,
     options: &ReadOptions,
-    target: &str,
-) -> Result<Composed, Failure> {
+) -> Result<Composed, Error> {
     let around = options.around.unwrap_or(0) as usize;
     let own = session_index(reader, &scope.session)?
-        .ok_or_else(|| Failure::not_found(format!("no session {}", scope.session)))?;
+        .ok_or_else(|| Error::not_found(format!("no session {}", scope.session)))?;
     let mut composed = Composed {
         parts: Vec::new(),
         indexes: Vec::new(),
@@ -403,20 +392,18 @@ fn compose(
     let (start, end) = match &scope.range {
         None => (0, own.entries as usize),
         Some((first, last)) => {
-            let header = |message: &MessageId| -> Result<usize, Failure> {
+            let header = |message: &MessageId| -> Result<usize, Error> {
                 reader
                     .item_place(own.pk, &EntryKey::header(message))?
                     .map(|seq| seq as usize)
                     .ok_or_else(|| {
-                        Failure::not_found(format!("message {message} is not in the reading"))
+                        Error::not_found(format!("message {message} is not in the reading"))
                     })
             };
             let start = header(first)?;
             let last_at = header(last)?;
             if last_at < start {
-                return Err(Failure::bad_request(
-                    "a message range ends before it starts",
-                ));
+                return Err(Error::bad_request("a message range ends before it starts"));
             }
             // `--around N`: N messages either side, as far as there are.
             let (start, last_at) = if around > 0 {
@@ -446,9 +433,9 @@ fn compose(
         joined_by: None,
     });
     composed.indexes.push(own);
-    children(d, reader, scope, &mut composed, options.view, target)?;
+    children(d, reader, scope, &mut composed, options.view)?;
     if let SpawnFold::Inline { depth } = options.spawns {
-        inline_spawns(d, reader, &mut composed, depth, options.view, target)?;
+        inline_spawns(d, reader, &mut composed, depth, options.view)?;
     }
     Ok(composed)
 }
@@ -458,13 +445,12 @@ fn compose(
 /// at their branch point or spawning call. The walk is iterative and visits
 /// each session once.
 fn children(
-    d: &Daemon,
+    d: &impl ReadServices,
     reader: &Reader<'_>,
     scope: &Scope,
     composed: &mut Composed,
     view: View,
-    target: &str,
-) -> Result<(), Failure> {
+) -> Result<(), Error> {
     let mut visited: HashSet<SessionId> = HashSet::from([scope.session.clone()]);
     let mut at = composed.parts.len() - 1;
     while at < composed.parts.len() {
@@ -548,7 +534,7 @@ fn children(
                 }
             };
             let Some(slot) = slot else { continue };
-            let card = card(d, reader, &link, &child, call.as_ref(), view, target)?;
+            let card = card(d, reader, &link, &child, call.as_ref(), view)?;
             composed.after.push(CardsAfterEntry {
                 session: session.clone(),
                 seq: slot,
@@ -565,13 +551,12 @@ fn children(
 /// levels and are cards below it; a session already in the reading stays a
 /// card, so the walk ends.
 fn inline_spawns(
-    d: &Daemon,
+    d: &impl ReadServices,
     reader: &Reader<'_>,
     composed: &mut Composed,
     depth: Option<u32>,
     view: View,
-    target: &str,
-) -> Result<(), Failure> {
+) -> Result<(), Error> {
     let deepest = depth.unwrap_or(u32::MAX);
     let mut levels: Vec<u32> = vec![0; composed.parts.len()];
     // Parts whose spawns are already placed: the pieces of a split part.
@@ -618,7 +603,7 @@ fn inline_spawns(
             // The first level's cards come from composition; deeper levels
             // place their own.
             if level > 0 {
-                let card = card(d, reader, &link, &child, Some(&call), view, target)?;
+                let card = card(d, reader, &link, &child, Some(&call), view)?;
                 composed.after.push(CardsAfterEntry {
                     session: part.session.clone(),
                     seq: entry,
@@ -698,8 +683,8 @@ fn logical_header(
     reader: &Reader<'_>,
     root: &SessionId,
     composed: &Composed,
-) -> Result<HeaderKind, Failure> {
-    let messages = |inherited: bool| -> Result<u64, Failure> {
+) -> Result<HeaderKind, Error> {
+    let messages = |inherited: bool| -> Result<u64, Error> {
         let mut total = 0;
         for (at, part) in composed.parts.iter().enumerate() {
             if part.inherited == inherited && !spawned(part) {
@@ -727,30 +712,30 @@ fn logical_header(
 /// spawn, a session card for a fork, each with the call that reads it in
 /// the reading's view.
 fn card(
-    d: &Daemon,
+    d: &impl ReadServices,
     reader: &Reader<'_>,
     link: &polylogue_store::lineage::SessionLink,
     child: &SessionId,
     call: Option<&IndexEntry>,
     view: View,
-    target: &str,
-) -> Result<ReadItem, Failure> {
+) -> Result<ReadItem, Error> {
     let reference = format!("session:{child}");
-    let open = d
-        .ready_call(&command_surface::RunnableRequest {
-            operation: "read".into(),
-            arguments: serde_json::json!({ "target": reference, "view": view }),
-            request_id: format!(
-                "read-child-{}",
-                blake3::hash(format!("{target}\0{reference}").as_bytes()).to_hex()
-            ),
-            deadline: command_surface::Deadline::Default,
-            budget_tokens: Default::default(),
+    let open = d.continuation(
+        &ReadRequest {
+            target: reference.clone(),
+            options: ReadOptions {
+                view,
+                ..ReadOptions::default()
+            },
+            delivery: ReadDelivery::Page,
+            format: Format::Json.name().into(),
+            budget: None,
+            with_blobs: false,
             cursor: None,
-            fresh: false,
-            format: Default::default(),
-        })
-        .map_err(Failure::from)?;
+        },
+        None,
+        command_surface::Deadline::Default,
+    )?;
     let kind = if link.kind == "spawn" {
         let objective = call
             .and_then(|entry| entry.target.clone())
@@ -801,7 +786,7 @@ struct Runs {
     left: bool,
 }
 
-fn runs(reader: &Reader<'_>, composed: &Composed, options: &ReadOptions) -> Result<Runs, Failure> {
+fn runs(reader: &Reader<'_>, composed: &Composed, options: &ReadOptions) -> Result<Runs, Error> {
     if options.view != View::Context || composed.parts.is_empty() {
         return Ok(Runs {
             spans: composed
@@ -829,7 +814,7 @@ fn runs(reader: &Reader<'_>, composed: &Composed, options: &ReadOptions) -> Resu
                 .map(|stored| stored.entry)
                 .collect())
         })
-        .collect::<Result<_, Failure>>()?;
+        .collect::<Result<_, Error>>()?;
     let entries = |part: usize| loaded[part].as_slice();
     let keys = |places: &[Place]| -> Vec<EntryKey> {
         places
@@ -842,9 +827,9 @@ fn runs(reader: &Reader<'_>, composed: &Composed, options: &ReadOptions) -> Resu
         part: last,
         entry: composed.parts[last].end.saturating_sub(1),
     };
-    let place_of = |message: &MessageId| -> Result<Place, Failure> {
+    let place_of = |message: &MessageId| -> Result<Place, Error> {
         find(&composed.parts, entries, &EntryKey::header(message))
-            .ok_or_else(|| Failure::not_found(format!("message {message} is not in the reading")))
+            .ok_or_else(|| Error::not_found(format!("message {message} is not in the reading")))
     };
     let at = match &options.at {
         Some(message) => place_of(message)?,
@@ -864,12 +849,10 @@ fn runs(reader: &Reader<'_>, composed: &Composed, options: &ReadOptions) -> Resu
         let back: usize = match rest.strip_prefix(':') {
             Some(n) => n
                 .parse()
-                .map_err(|_| Failure::bad_request("compaction:N takes a count"))?,
+                .map_err(|_| Error::bad_request("compaction:N takes a count"))?,
             None if rest.is_empty() => 1,
             None => {
-                return Err(Failure::bad_request(
-                    "diff takes a message or compaction[:N]",
-                ));
+                return Err(Error::bad_request("diff takes a message or compaction[:N]"));
             }
         };
         let mut boundaries = Vec::new();
@@ -887,16 +870,16 @@ fn runs(reader: &Reader<'_>, composed: &Composed, options: &ReadOptions) -> Resu
         let boundary = back
             .checked_sub(1)
             .and_then(|from_end| boundaries.iter().rev().nth(from_end))
-            .ok_or_else(|| Failure::not_found("the reading has no such compaction"))?;
+            .ok_or_else(|| Error::not_found("the reading has no such compaction"))?;
         if boundary.entry == composed.parts[boundary.part].start {
-            return Err(Failure::not_found("the compaction is the first entry"));
+            return Err(Error::not_found("the compaction is the first entry"));
         }
         Place {
             part: boundary.part,
             entry: boundary.entry - 1,
         }
     } else {
-        place_of(&MessageId::parse(diff).map_err(Failure::bad_request)?)?
+        place_of(&MessageId::parse(diff).map_err(Error::bad_request)?)?
     };
     let (earlier, later) = if other < at {
         (context_at(&composed.parts, entries, other), context)
@@ -927,7 +910,7 @@ fn spans(places: &[Place]) -> Vec<(usize, usize, usize)> {
 
 /// Stops a read whose client has gone or whose deadline has passed. SQLite
 /// steps are interrupted by the store; this covers the work between them.
-fn still_wanted() -> Result<(), Failure> {
+fn still_wanted() -> Result<(), Error> {
     if let Some(limit) = ReadLimit::current() {
         limit.check()?;
     }
@@ -936,11 +919,11 @@ fn still_wanted() -> Result<(), Failure> {
 
 pub(super) fn page(
     reader: &Reader<'_>,
-    d: &Daemon,
+    d: &impl ReadServices,
     request: &ReadRequest,
-    operation: &Arc<polylogue_reading::operation::Context>,
+    operation: &Arc<crate::operation::Context>,
     scope: Scope,
-) -> Result<ReadPage, Failure> {
+) -> Result<ReadPage, Error> {
     let ReadRequest {
         target,
         options,
@@ -949,12 +932,11 @@ pub(super) fn page(
         cursor,
         ..
     } = request;
-    let format =
-        Format::parse(format).ok_or_else(|| Failure::bad_request("unknown read format"))?;
+    let format = Format::parse(format).ok_or_else(|| Error::bad_request("unknown read format"))?;
     let mut limits = PageBudget::default();
     if let Some(tokens) = budget {
         limits.tokens = std::num::NonZeroU64::new(*tokens as u64)
-            .ok_or_else(|| Failure::bad_request("read budget must be positive"))?;
+            .ok_or_else(|| Error::bad_request("read budget must be positive"))?;
     }
     let digest = options_digest(&(options, format));
     let key = super::cursor_seal(reader)?;
@@ -963,11 +945,11 @@ pub(super) fn page(
         .map(|text| {
             let opened = PageCursor::open(text, &key).map_err(cursor_failure)?;
             opened.check(target, &digest).map_err(cursor_failure)?;
-            Ok::<_, Failure>(opened)
+            Ok::<_, Error>(opened)
         })
         .transpose()?;
     if options.physical && !target.starts_with("root:") {
-        return Err(Failure::bad_request(
+        return Err(Error::bad_request(
             "--physical applies to root:REF; a session reference is already one physical session",
         ));
     }
@@ -975,18 +957,18 @@ pub(super) fn page(
         logical: scope.logical && !options.physical,
         ..scope
     };
-    let composed = compose(d, reader, &scope, options, target)?;
+    let composed = compose(d, reader, &scope, options)?;
     still_wanted()?;
     let read_session = reader
         .session(&scope.session)?
-        .ok_or_else(|| Failure::not_found(format!("no session {}", scope.session)))?;
+        .ok_or_else(|| Error::not_found(format!("no session {}", scope.session)))?;
     let versions = PageCursor::version(&composed.versions(reader)?);
     if let Some(opened) = &opened
         && opened.rewritten(&versions)
     {
-        return Err(Failure::stale_cursor(format!(
-            "the composed reading changed since this cursor was issued; read {target} again"
-        )));
+        return Err(Error::stale_cursor(
+            "this session or one of its linked sessions changed since this page was issued",
+        ));
     }
     still_wanted()?;
     let runs = runs(reader, &composed, options)?;
@@ -994,7 +976,7 @@ pub(super) fn page(
     let shown = ShownEntries::new(reader, &composed, &runs, ShowProfile::of(options))?;
     still_wanted()?;
     // Where a key sits in the reading: the first part that holds it.
-    let locate = |key: &EntryKey| -> Result<Option<(usize, usize)>, Failure> {
+    let locate = |key: &EntryKey| -> Result<Option<(usize, usize)>, Error> {
         for (at, (part, index)) in composed.parts.iter().zip(&composed.indexes).enumerate() {
             if let Some(seq) = reader.item_place(index.pk, key)?
                 && (part.start..part.end).contains(&(seq as usize))
@@ -1047,12 +1029,14 @@ pub(super) fn page(
         }
         Some(opened) => {
             let PagePosition::Entry { key, inside } = &opened.position else {
-                return Err(Failure::invalid_query(
+                return Err(Error::invalid_query(
                     "the cursor names a row position, not a session entry",
                 ));
             };
             let place = locate(key)?.ok_or_else(|| {
-                Failure::stale_cursor("the cursor's entry is no longer in the reading")
+                Error::stale_cursor(
+                    "the message or event this page continues from is no longer in the reading",
+                )
             })?;
             let after = (place.0, place.1 + 1);
             match opened.direction {
@@ -1063,7 +1047,7 @@ pub(super) fn page(
                         .first_at(place)?
                         .filter(|entry| entry.place() == place)
                         .ok_or_else(|| {
-                            Failure::stale_cursor("the cursor's entry is no longer shown")
+                            Error::stale_cursor("the message or event this page continues from is no longer shown by these options")
                         })?;
                     (vec![entry], shown.first_at(after)?)
                 }
@@ -1191,7 +1175,7 @@ pub(super) fn page(
     // The entry after the page: the first one left out, or the one after
     // every entry read.
     let after_page = page_entries.get(keep.end).or(next_entry.as_ref());
-    let call = |entry: &PageEntry, direction: ReadDirection| -> Result<ReadyCall, Failure> {
+    let call = |entry: &PageEntry, direction: ReadDirection| -> Result<ReadyCall, Error> {
         let next = PageCursor {
             target: target.clone(),
             options: digest.clone(),
@@ -1273,10 +1257,10 @@ pub(super) fn header(
     session: &SessionId,
     target: &str,
     options: &ReadOptions,
-) -> Result<ReadHeader, Failure> {
+) -> Result<ReadHeader, Error> {
     let stored = reader
         .session(session)?
-        .ok_or_else(|| Failure::not_found(format!("no session {session}")))?;
+        .ok_or_else(|| Error::not_found(format!("no session {session}")))?;
     let title = reader
         .display_title(session)?
         .map(ValueState::known)
@@ -1404,18 +1388,18 @@ fn fragments(
     room: usize,
     tokens: u64,
     out: &mut Vec<ReadItem>,
-) -> Result<Option<ItemPlace>, Failure> {
+) -> Result<Option<ItemPlace>, Error> {
     let first = from.map_or(0, |place| place.item as usize);
     if first >= items.len() && !items.is_empty() {
-        return Err(Failure::stale_cursor(
-            "the cursor's item is no longer in its entry",
+        return Err(Error::stale_cursor(
+            "the part this page continues from is no longer in its message or event",
         ));
     }
     let mut used = 0;
     let mut placed = false;
     for (index, item) in items.into_iter().enumerate().skip(first) {
-        let encoded = polylogue_render::json_bytes(&item).map_err(Failure::internal)?;
-        let text = String::from_utf8(encoded).map_err(Failure::internal)?;
+        let encoded = polylogue_render::json_bytes(&item).map_err(Error::internal)?;
+        let text = String::from_utf8(encoded).map_err(Error::internal)?;
         let item_hash = polylogue_model::BlobHash::of(text.as_bytes());
         let place = |character: usize| ItemPlace {
             selection: SelectionLocator {
@@ -1429,8 +1413,8 @@ fn fragments(
         let start = match from {
             Some(from) if index == first => {
                 if from.item_hash != item_hash {
-                    return Err(Failure::stale_cursor(
-                        "the cursor's item changed since the cursor was issued",
+                    return Err(Error::stale_cursor(
+                        "the part this page continues from changed since this page was issued",
                     ));
                 }
                 from.character as usize
@@ -1453,7 +1437,9 @@ fn fragments(
             .collect();
         let total = boundaries.len() - 1;
         if start >= total {
-            return Err(Failure::stale_cursor("the cursor is past its item"));
+            return Err(Error::stale_cursor(
+                "the part this page continues from is shorter than when this page was issued",
+            ));
         }
         // A fragment is sourced at the reading, as the row pager's are;
         // its position names the item.
@@ -1466,9 +1452,8 @@ fn fragments(
                 total: total as u64,
             },
         };
-        let fits = |until: usize| -> Result<bool, Failure> {
-            let candidate =
-                polylogue_render::json_bytes(&make(until)).map_err(Failure::internal)?;
+        let fits = |until: usize| -> Result<bool, Error> {
+            let candidate = polylogue_render::json_bytes(&make(until)).map_err(Error::internal)?;
             let payload = &text[boundaries[start]..boundaries[until]];
             Ok(used + candidate.len() <= room && estimate_tokens(payload) as u64 <= tokens)
         };
@@ -1484,7 +1469,7 @@ fn fragments(
         }
         let fragment = make(low);
         used += polylogue_render::json_bytes(&fragment)
-            .map_err(Failure::internal)?
+            .map_err(Error::internal)?
             .len();
         placed = true;
         out.push(fragment);
@@ -1524,12 +1509,12 @@ fn item_key(item: &ReadItem) -> Option<EntryKey> {
 /// messages and events of the page are read.
 fn lay_out(
     reader: &Reader<'_>,
-    d: &Daemon,
+    d: &impl ReadServices,
     composed: &Composed,
     reading: &Runs,
     page: &[PageEntry],
     options: &ReadOptions,
-) -> Result<Vec<Vec<ReadItem>>, Failure> {
+) -> Result<Vec<Vec<ReadItem>>, Error> {
     // A raw reading is the stored records, which `decorate` adds.
     if options.view == View::Raw {
         return Ok(vec![Vec::new(); page.len()]);
@@ -1547,7 +1532,7 @@ fn lay_out(
             _ => runs.push((entry.part, vec![&entry.entry])),
         }
     }
-    let selected = |source: &Source| -> Result<bool, Failure> {
+    let selected = |source: &Source| -> Result<bool, Error> {
         let Some(message) = &source.message else {
             return Ok(false);
         };
@@ -1569,27 +1554,12 @@ fn lay_out(
         Ok(false)
     };
     let ready_attachment = |message: &MessageId, block, index, input: Option<&str>| {
-        let arguments = serde_json::to_value(crate::protocol::attachment::Arguments {
-            message: message.to_string(),
+        d.attachment_call(&crate::AttachmentPlace {
+            message: message.clone(),
             block,
             attachment: index,
             input: input.map(str::to_owned),
-            length: crate::daemon::attachment::PAGE_BYTES as u64,
         })
-        .map_err(Failure::internal)?;
-        let identity = canonical_json::canonical_hash("polylogue-attachment-call", &arguments)
-            .map_err(Failure::internal)?;
-        d.ready_call(&command_surface::RunnableRequest {
-            operation: "attachment".into(),
-            arguments,
-            request_id: format!("read-attachment-{}", identity.to_hex()),
-            deadline: command_surface::Deadline::Default,
-            budget_tokens: Default::default(),
-            cursor: None,
-            fresh: false,
-            format: Default::default(),
-        })
-        .map_err(Failure::from)
     };
     let mut footer = ReadFooter::default();
     // Each item goes to the entry its source names; items of entries not on
@@ -1614,9 +1584,9 @@ fn lay_out(
                     }
                 }
                 EntryKey::Event { event } => {
-                    let record = reader
-                        .event_record(event)?
-                        .ok_or_else(|| Failure::stale_cursor(format!("event {event} is gone")))?;
+                    let record = reader.event_record(event)?.ok_or_else(|| {
+                        Error::stale_cursor(format!("event {event} is no longer in this session"))
+                    })?;
                     emit(
                         reader,
                         Record::Event(record),
@@ -1638,9 +1608,12 @@ fn lay_out(
             continue;
         }
         let selection = reader.select_messages(&part.session, false)?;
-        let start = selection
-            .locate(Some(&messages[0]))?
-            .ok_or_else(|| Failure::stale_cursor(format!("message {} is gone", messages[0])))?;
+        let start = selection.locate(Some(&messages[0]))?.ok_or_else(|| {
+            Error::stale_cursor(format!(
+                "message {} is no longer in this session",
+                messages[0]
+            ))
+        })?;
         let wanted_messages: HashSet<&MessageId> = messages.iter().collect();
         let last_message = messages.last().expect("one message").clone();
         let mut result = Ok(());
@@ -1656,7 +1629,7 @@ fn lay_out(
                 if wanted_messages.contains(&id) {
                     let step = (|| {
                         let commit = commit.ok_or_else(|| {
-                            Failure::not_yet_available(format!(
+                            Error::not_yet_available(format!(
                                 "message:{id} has no stored commit position for its source"
                             ))
                         })?;
@@ -1705,7 +1678,7 @@ fn decorate(
     page: &[PageEntry],
     laid: &mut [Vec<ReadItem>],
     options: &ReadOptions,
-) -> Result<(), Failure> {
+) -> Result<(), Error> {
     let human_prompt = |entry: &IndexEntry| {
         entry.kind == EntryKind::Header
             && entry.written_by == polylogue_model::WrittenBy::Human
@@ -1762,7 +1735,7 @@ fn decorate(
             };
             if let Some((table, id)) = record {
                 let stored = reader.stored_record(table, &id)?.ok_or_else(|| {
-                    Failure::not_yet_available(format!(
+                    Error::not_yet_available(format!(
                         "{} has no stored record",
                         entry.key.reference()
                     ))
@@ -1804,7 +1777,7 @@ fn turn(
     composed: &Composed,
     part: usize,
     at: usize,
-) -> Result<(u64, u64), Failure> {
+) -> Result<(u64, u64), Error> {
     let bounds = &composed.parts[part];
     let same = composed.same_context(part);
     let mut earlier = 0;
@@ -1856,7 +1829,7 @@ fn context_meter(
     part: usize,
     at: usize,
     entry: &IndexEntry,
-) -> Result<ContextMeter, Failure> {
+) -> Result<ContextMeter, Error> {
     if let Some(tokens) = entry.context_tokens {
         return Ok(ContextMeter::Reported(tokens));
     }
@@ -1946,7 +1919,7 @@ fn place_cards(
     shown: &ShownEntries,
     page: &[PageEntry],
     options: &ReadOptions,
-) -> Result<PlacedCards, Failure> {
+) -> Result<PlacedCards, Error> {
     let mut placed = PlacedCards::new();
     let (Some(first), Some(last)) = (page.first(), page.last()) else {
         return Ok(placed);
@@ -1991,11 +1964,11 @@ fn emit(
     record: Record,
     facts: LayoutFacts,
     options: &ReadOptions,
-    selected: &dyn Fn(&Source) -> Result<bool, Failure>,
+    selected: &dyn Fn(&Source) -> Result<bool, Error>,
     ready_attachment: &super::attachment_facts::ReadyAttachment<'_>,
     footer: &mut ReadFooter,
     out: &mut dyn FnMut(ReadItem),
-) -> Result<(), Failure> {
+) -> Result<(), Error> {
     // A context reading's entries were chosen from the index as members, so
     // each one laid out is selected; what it leaves out is said once, in
     // the reading's first lines.

@@ -1,5 +1,5 @@
 //! One-record view filtering and transfer over a caller-owned pinned selection.
-use super::super::Failure;
+use crate::Error;
 use polylogue_model::bundle::{Counts, Record};
 use polylogue_model::read::*;
 use std::io::Write;
@@ -12,7 +12,7 @@ pub(super) fn project(
     facts: &LayoutFacts,
     mixed: bool,
     footer: &mut ReadFooter,
-) -> Result<Option<ReadRecord>, Failure> {
+) -> Result<Option<ReadRecord>, Error> {
     let record = match selected {
         super::records::SelectedRecord::Original(record) => *record,
         super::records::SelectedRecord::LinkIssue { session, issue } => {
@@ -47,7 +47,7 @@ pub(super) fn document_omission(
     options: &ReadOptions,
     mixed: bool,
     footer: &mut ReadFooter,
-) -> Result<Option<ReadRecord>, Failure> {
+) -> Result<Option<ReadRecord>, Error> {
     if options.view != View::Dialogue {
         return Ok(None);
     }
@@ -70,7 +70,7 @@ fn view_error(
     error: ReadError,
     mixed: bool,
     footer: &mut ReadFooter,
-) -> Result<Option<ReadRecord>, Failure> {
+) -> Result<Option<ReadRecord>, Error> {
     match error {
         ReadError::UnsupportedTarget {
             view,
@@ -124,7 +124,7 @@ pub(super) fn emit_record(
     at: SelectionLocator,
     layout: &super::layout_facts::Layout<'_>,
     emit: &mut super::Emit<'_>,
-) -> Result<bool, Failure> {
+) -> Result<bool, Error> {
     if record.record().is_some() && !emit(record, at, None)? {
         return Ok(false);
     }
@@ -143,16 +143,16 @@ pub(super) fn emit_record(
 /// The callback remains valid after a Reader has released a prepared spool.
 pub(super) struct Stream<'a> {
     output: &'a mut dyn Write,
-    check: &'a dyn Fn() -> Result<(), Failure>,
+    check: &'a dyn Fn() -> Result<(), Error>,
     counts: Counts,
     shown: u64,
 }
 impl<'a> Stream<'a> {
     pub(super) fn begin(
         output: &'a mut dyn Write,
-        check: &'a dyn Fn() -> Result<(), Failure>,
+        check: &'a dyn Fn() -> Result<(), Error>,
         begin: &ReadBegin,
-    ) -> Result<Self, Failure> {
+    ) -> Result<Self, Error> {
         let mut stream = Self {
             output,
             check,
@@ -163,16 +163,23 @@ impl<'a> Stream<'a> {
         Ok(stream)
     }
 
-    fn emit(&mut self, name: &str, payload: &impl serde::Serialize) -> Result<(), Failure> {
+    fn emit(&mut self, name: &str, payload: &impl serde::Serialize) -> Result<(), Error> {
         (self.check)()?;
-        crate::protocol::stream::event(self.output, name, payload).map_err(Failure::io)
+        let frame = command_surface::SseEvent {
+            id: None,
+            event: name.into(),
+            data: serde_json::to_string(payload).map_err(Error::internal)?,
+            retry: None,
+        }
+        .encode()
+        .map_err(Error::Operation)?;
+        self.output.write_all(frame.as_bytes()).map_err(Error::io)?;
+        self.output.flush().map_err(Error::io)
     }
 
-    pub(super) fn record(&mut self, record: &ReadRecord) -> Result<(), Failure> {
+    pub(super) fn record(&mut self, record: &ReadRecord) -> Result<(), Error> {
         if matches!(record.record(), Some(Record::Manifest(_))) {
-            return Err(Failure::bad_request(
-                "a read cannot emit an embedded manifest",
-            ));
+            return Err(Error::internal("a read cannot emit an embedded manifest"));
         }
         self.emit("record", record)?;
         if let Some(record) = record.record() {
@@ -189,9 +196,7 @@ impl<'a> Stream<'a> {
                 Record::TextFragment(_) => self.counts.text_fragments += 1,
                 Record::Blob(_) => self.counts.blobs += 1,
                 Record::Manifest(_) => {
-                    return Err(Failure::bad_request(
-                        "a read cannot emit an embedded manifest",
-                    ));
+                    return Err(Error::internal("a read cannot emit an embedded manifest"));
                 }
             }
         }
@@ -203,11 +208,11 @@ impl<'a> Stream<'a> {
         Ok(())
     }
 
-    pub(super) fn blob(&mut self, chunk: &ReadBlobChunk) -> Result<(), Failure> {
+    pub(super) fn blob(&mut self, chunk: &ReadBlobChunk) -> Result<(), Error> {
         self.emit("blob", chunk)
     }
 
-    pub(super) fn finish(mut self, mut footer: ReadFooter) -> Result<(), Failure> {
+    pub(super) fn finish(mut self, mut footer: ReadFooter) -> Result<(), Error> {
         footer.shown = self.shown;
         footer.count = ValueState::known(self.shown);
         let complete = ReadComplete {
@@ -216,29 +221,4 @@ impl<'a> Stream<'a> {
         };
         self.emit("complete", &complete)
     }
-}
-
-pub(super) fn read_error(error: ReadError) -> Failure {
-    let (code, hint) = match &error {
-        ReadError::UnsupportedTarget { accepted_views, .. } => (
-            polylogue_model::Code::BadRequest,
-            Some(format!(
-                "views that read it: {}",
-                accepted_views
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )),
-        ),
-        ReadError::RequiredExpansion { option, .. } => (
-            polylogue_model::Code::BadRequest,
-            Some(format!("set {option} to full")),
-        ),
-        ReadError::MissingPreparedData { .. } => (polylogue_model::Code::NotYetAvailable, None),
-        _ => (polylogue_model::Code::BadRequest, None),
-    };
-    let mut failure = Failure::new(code, error);
-    failure.error.hint = hint;
-    failure
 }

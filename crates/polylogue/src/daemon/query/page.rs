@@ -13,10 +13,7 @@ use std::collections::BTreeMap;
 const COMPILER_VERSION: &str = "shared-query-v3";
 
 fn stale(message: &str) -> Failure {
-    Failure::from(
-        Error::new(ErrorKind::StaleCursor, message, 0)
-            .hint("run the query again without its cursor"),
-    )
+    Failure::stale_cursor(format!("{message}; run the query again without its cursor"))
 }
 
 /// The caller supplies the secret from its current reader; it never enters a
@@ -50,7 +47,7 @@ pub(super) fn open(
             } else {
                 Err(Error::new(
                     ErrorKind::StaleCursor,
-                    "the configured query zone changed",
+                    "the configured query zone changed; run the query again without its cursor",
                     0,
                 ))
             }
@@ -75,7 +72,18 @@ pub(super) fn open(
                 })
         },
     )
-    .map_err(Failure::from)
+    .map_err(|error| {
+        let failure = Failure::from(error);
+        if failure.code() == "stale_cursor"
+            && !failure
+                .message
+                .ends_with("; run the query again without its cursor")
+        {
+            stale(&failure.message)
+        } else {
+            failure
+        }
+    })
 }
 
 fn context_digest(domain: &str, value: &impl Serialize) -> Result<String, Failure> {

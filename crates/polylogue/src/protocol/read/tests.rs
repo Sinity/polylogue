@@ -18,11 +18,10 @@ fn a_read_keeps_the_request_cursor_beside_its_reading_options() {
     let arguments: Arguments =
         serde_json::from_value(json!({"target":"session:test:one","view":"dialogue"})).unwrap();
     let request =
-        crate::daemon::service::read::ReadRequest::from_arguments(arguments, Some("sealed".into()))
-            .unwrap();
+        crate::daemon::service::read::request_of(arguments, Some("sealed".into())).unwrap();
     assert_eq!(request.options.view, polylogue_model::read::View::Dialogue);
     assert_eq!(request.cursor.as_deref(), Some("sealed"));
-    let round = Arguments::from_request(&request).unwrap();
+    let round = crate::daemon::service::read::arguments_of(&request).unwrap();
     assert!(serde_json::to_value(round).unwrap().get("cursor").is_none());
     // The command line sends the cursor beside the arguments too.
     let (_, values, arguments) = crate::cli::request_arguments(

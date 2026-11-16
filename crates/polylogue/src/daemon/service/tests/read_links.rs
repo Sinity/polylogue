@@ -45,7 +45,7 @@ fn read_target(
             resume.arguments["page_tokens"] = serde_json::json!(budget);
             test_daemon::Call::from_request(&resume)
         }
-        None => test_daemon::read(crate::daemon::service::read::ReadRequest {
+        None => test_daemon::read(polylogue_reading::ReadRequest {
             target: target.into(),
             options: ReadOptions {
                 view: View::Links,
@@ -499,7 +499,10 @@ fn links_cursor_survives_body_append_but_not_an_unrelated_relationship_edit() {
     d.wait_for(|status| status["store"]["messages"] == 4);
     assert_eq!(read(&d, 60, Some(&cursor)).document.items, expected);
     let reader = d.daemon.reads.reader().unwrap();
-    let seal = super::super::cursor_seal(&reader).unwrap();
+    let seal = polylogue_model::read::CursorSeal {
+        key: reader.cursor_key().unwrap(),
+        generation: reader.change_position().unwrap().generation,
+    };
     let mut old =
         polylogue_model::read::PageCursor::open(cursor.cursor.as_deref().unwrap(), &seal).unwrap();
     old.versions = polylogue_model::read::PageCursor::version(&[]);

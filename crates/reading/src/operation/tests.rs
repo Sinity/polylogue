@@ -165,3 +165,27 @@ fn parent_lifetime_survives_context_conversion_and_replay_without_becoming_publi
             .is_err()
     );
 }
+
+#[test]
+fn sinex_context_records_its_settings_revision() {
+    let at = Timestamp::parse_rfc3339("2026-10-29T08:00:00Z").unwrap();
+    let invocation = Invocation::new(
+        at,
+        "synthetic-machine".into(),
+        Context::worker_authorship("polylogue-signals"),
+    );
+    let day = DaySetting::new(
+        jiff::tz::TimeZone::UTC,
+        jiff::civil::Time::constant(4, 0, 0, 0),
+    )
+    .unwrap();
+    let sinex = SinexContext::Primary {
+        settings_identity: "public-settings:17".into(),
+        settings_revision: 17,
+        observed_at: Timestamp::parse_rfc3339("2026-10-29T07:59:59Z").unwrap(),
+        received_seconds_ago: 1.0,
+    };
+    let context = Context::primary(invocation, day, sinex.clone());
+    assert_eq!(context.run_context().machine, "synthetic-machine");
+    assert_eq!(context.run_context().sinex, sinex);
+}

@@ -1,6 +1,6 @@
-use super::*;
 use crate::test_daemon;
-use polylogue_model::SessionId;
+use polylogue_model::{MessageId, SessionId, read::*};
+use polylogue_store::{Reader, assets::AttachmentState};
 use std::io::{Read, Seek, SeekFrom, Write};
 
 fn item(reader: &Reader<'_>, message: &MessageId) -> ReadItem {
@@ -23,33 +23,19 @@ fn item(reader: &Reader<'_>, message: &MessageId) -> ReadItem {
         },
     }
 }
-fn ready(
-    daemon: &test_daemon::TestDaemon,
-    message: &MessageId,
-    block: u64,
-    index: u64,
-    input: Option<&str>,
-) -> Result<ReadyCall, crate::daemon::Failure> {
-    let arguments = crate::protocol::attachment::Arguments {
-        message: message.to_string(),
-        block,
-        attachment: index,
-        input: input.map(str::to_owned),
-        length: crate::daemon::attachment::PAGE_BYTES as u64,
-    };
-    daemon
-        .daemon
-        .ready_call(&command_surface::RunnableRequest {
-            operation: "attachment".into(),
-            arguments: serde_json::to_value(arguments).unwrap(),
-            request_id: "synthetic-attachment-facts".into(),
-            deadline: command_surface::Deadline::Default,
-            budget_tokens: Default::default(),
-            cursor: None,
-            fresh: false,
-            format: Default::default(),
-        })
-        .map_err(crate::daemon::Failure::from)
+fn prepared(daemon: &test_daemon::TestDaemon, message: &MessageId) -> ReadItem {
+    let response = test_daemon::Call::new(
+        "read",
+        serde_json::json!({"target": format!("message:{message}")}),
+    )
+    .answer(&daemon.daemon);
+    let page: ReadPage =
+        serde_json::from_value(response.value().expect("metadata page").clone()).unwrap();
+    page.document
+        .items
+        .into_iter()
+        .find(|item| matches!(item.kind, ItemKind::Attachment { .. }))
+        .expect("attachment in page")
 }
 
 #[test]
@@ -59,10 +45,7 @@ fn stored_attachment_metadata_keeps_the_original_descriptor() {
         let message = MessageId::parse(test_daemon::assets::seed_bytes(&daemon, &bytes)).unwrap();
         let reader = daemon.daemon.reads.reader().unwrap();
         let original = item(&reader, &message);
-        let prepared = prepare(&reader, original.clone(), 0, &|m, b, a, i| {
-            ready(&daemon, m, b, a, i)
-        })
-        .unwrap();
+        let prepared = prepared(&daemon, &message);
         assert_eq!(prepared.source, original.source);
         let (
             ItemKind::Attachment {
@@ -99,36 +82,6 @@ fn stored_attachment_metadata_keeps_the_original_descriptor() {
             arguments.input.as_deref(),
             Some(resolution.matches[0].input.as_str())
         );
-    }
-}
-
-#[test]
-fn another_slot_or_descriptor_cannot_select_a_stored_file() {
-    let daemon = test_daemon::start("synthetic attachment slot");
-    let message = MessageId::parse(test_daemon::assets::seed(&daemon)).unwrap();
-    let reader = daemon.daemon.reads.reader().unwrap();
-    let original = item(&reader, &message);
-    let mut changed = original.clone();
-    if let ItemKind::Attachment { attachment, .. } = &mut changed.kind {
-        attachment.source_id = Some("file-Unrelated".into());
-    }
-    for (item, index) in [(original, 1), (changed, 0)] {
-        let prepared = prepare(&reader, item, index, &|_, _, _, _| {
-            panic!("an unrelated slot must not receive an open action")
-        })
-        .unwrap();
-        let ItemKind::Attachment {
-            availability,
-            verified_hash,
-            open,
-            ..
-        } = prepared.kind
-        else {
-            unreachable!()
-        };
-        assert!(matches!(availability, ValueState::Unavailable { .. }));
-        assert!(verified_hash.is_none());
-        assert!(open.is_none());
     }
 }
 
@@ -207,26 +160,4 @@ fn page_read_never_touches_blob_bodies() {
         matches!(refused.outcome, command_surface::Outcome::Error(_)),
         "{refused:?}"
     );
-}
-
-#[test]
-fn attachment_metadata_preserves_parent_cancellation() {
-    use polylogue_store::{cancellation::Cancellation, read::limit::ReadLimit};
-    let daemon = test_daemon::start("synthetic cancelled attachment facts");
-    let bytes = vec![b'X'; 64 * 1024 + 1];
-    let message = MessageId::parse(test_daemon::assets::seed_bytes(&daemon, &bytes)).unwrap();
-    let cancelled = Cancellation::default();
-    ReadLimit::without_deadline(cancelled.clone()).scope(|| {
-        let reader = daemon.daemon.reads.reader().unwrap();
-        let original = item(&reader, &message);
-        cancelled.cancel();
-        let result = prepare(&reader, original, 0, &|m, b, a, i| {
-            ready(&daemon, m, b, a, i)
-        });
-        let Err(failure) = &result else {
-            panic!("cancelled attachment preparation did not refuse: {result:?}");
-        };
-        let kind = failure.code().to_owned();
-        assert_eq!(kind, StoreError::ReadCancelled.code().as_str());
-    });
 }

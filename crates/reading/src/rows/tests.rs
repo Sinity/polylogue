@@ -1,8 +1,24 @@
 use super::*;
+use crate::records::{SelectedRecord, step};
 use polylogue_model::SessionId;
 use polylogue_model::read::ReadTarget;
 use polylogue_store::fixture::{Fixture, MessageFacts, SessionFacts};
 
+fn last_record(
+    reader: &Reader<'_>,
+    target: &ReadTarget,
+    inherited: bool,
+) -> Result<Option<ReadRecordLocator>, Error> {
+    step(reader, target, inherited, None, ReadDirection::Before)
+}
+fn previous_record(
+    reader: &Reader<'_>,
+    target: &ReadTarget,
+    inherited: bool,
+    from: &ReadRecordLocator,
+) -> Result<Option<ReadRecordLocator>, Error> {
+    step(reader, target, inherited, Some(from), ReadDirection::Before)
+}
 fn read_target(text: &str) -> Result<ReadTarget, polylogue_model::read::NotReadTarget> {
     ReadTarget::try_from(polylogue_model::Reference::parse(text).unwrap())
 }
@@ -62,6 +78,30 @@ fn previous_coordinates_invert_the_existing_session_family_order() {
             at(Message, 1),
             at(Message, 0),
             at(Session, 0)
+        ]
+    );
+    let mut current = step(&reader, &reference, false, None, ReadDirection::After).unwrap();
+    let mut forward = Vec::new();
+    while let Some(position) = current {
+        forward.push(position);
+        current = step(
+            &reader,
+            &reference,
+            false,
+            Some(&position),
+            ReadDirection::After,
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        forward,
+        vec![
+            at(Session, 0),
+            at(Message, 0),
+            at(Message, 1),
+            at(Event, 0),
+            at(Event, 1),
+            at(Link, 0)
         ]
     );
     assert!(previous_record(&reader, &reference, false, &at(Message, 2)).is_err());
@@ -169,8 +209,8 @@ fn lineage_issue_coordinates_resume_and_reverse_at_both_family_boundaries() {
     );
     assert!(previous_record(&reader, &reference, false, &at(LinkIssue, 0)).is_err());
     let mut observed = Vec::new();
-    super::super::records::reference(&reader, &reference, true, Some(&at(LinkIssue, 0)), &mut |record, _, position| {
-        let super::super::records::SelectedRecord::LinkIssue { session, issue } = record else { panic!("issue coordinate resolved another family") };
+    crate::records::reference(&reader, &reference, true, Some(&at(LinkIssue, 0)), &mut |record, _, position| {
+        let SelectedRecord::LinkIssue { session, issue } = record else { panic!("issue coordinate resolved another family") };
         assert_eq!(session.to_string(), "test:child");
         assert!(matches!(*issue, polylogue_model::read::ParentIssue::MissingParent { parent, .. } if parent.to_string() == "test:missing"));
         observed.push(position);

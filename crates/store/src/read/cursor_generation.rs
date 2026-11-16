@@ -30,10 +30,10 @@ pub fn open_cursor(
         Err(error) if error.kind == ErrorKind::InvalidQuery => match sealed_generation(cursor) {
             Some(generation) if generation != current => Err(Error::new(
                 ErrorKind::StaleCursor,
-                "the cursor is from an earlier index generation",
+                "the index was rebuilt since this cursor was issued; run the query again without its cursor",
                 0,
             )
-            .hint("restart the question without its cursor")),
+            .hint("run the query again without its cursor")),
             _ => Err(error),
         },
         opened => opened,

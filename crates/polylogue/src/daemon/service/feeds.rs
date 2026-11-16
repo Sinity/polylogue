@@ -1,5 +1,6 @@
 //! Finite feed batches use the accepting operation's captured evaluation clock.
-use super::*;
+use super::{Daemon, Failure};
+use std::sync::Arc;
 
 /// One finite change-feed batch from the last applied position.
 pub(crate) struct Changes;

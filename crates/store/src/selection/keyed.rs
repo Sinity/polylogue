@@ -14,7 +14,7 @@ impl Reader<'_> {
         if program.order.is_empty() {
             return Err(SelectionError::invalid(
                 polylogue_model::Code::StaleCursor,
-                "the selected row position is unavailable",
+                "the selected row is no longer available; run the query again without its cursor",
             ));
         }
         if at.values.len() != program.order.len() {

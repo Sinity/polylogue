@@ -1,5 +1,6 @@
 //! Status answer types shared by discovery, transports and rendering.
 use command_surface::JsonSchema;
+use polylogue_render::short_duration;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -178,16 +179,5 @@ impl Running {
             }
         }
         line
-    }
-}
-
-/// `45s`, `7m`, `3h12m`, `2d4h`.
-pub fn short_duration(ms: i64) -> String {
-    let s = ms.max(0) / 1000;
-    match s {
-        0..60 => format!("{s}s"),
-        60..3600 => format!("{}m", s / 60),
-        3600..86400 => format!("{}h{}m", s / 3600, s % 3600 / 60),
-        _ => format!("{}d{}h", s / 86400, s % 86400 / 3600),
     }
 }

@@ -4,7 +4,7 @@
 //! middle of a long session reads its own entries and the unit it starts
 //! in, not the entries before it.
 use super::{Composed, Runs};
-use crate::daemon::service::Failure;
+use crate::Error;
 use polylogue_model::read::{EntryKind, IndexEntry, ItemCounts, ShowProfile, View};
 use polylogue_store::Reader;
 
@@ -55,7 +55,7 @@ impl<'r, 'c> ShownEntries<'r, 'c> {
         composed: &'c Composed,
         runs: &Runs,
         profile: ShowProfile,
-    ) -> Result<Self, Failure> {
+    ) -> Result<Self, Error> {
         let mut out = Self {
             reader,
             composed,
@@ -106,7 +106,7 @@ impl<'r, 'c> ShownEntries<'r, 'c> {
     }
 
     /// The shown entries before a place.
-    pub(super) fn position(&self, (part, seq): (usize, usize)) -> Result<u64, Failure> {
+    pub(super) fn position(&self, (part, seq): (usize, usize)) -> Result<u64, Error> {
         let Some(at) = self.span_at(part, seq) else {
             return Ok(self.total);
         };
@@ -136,7 +136,7 @@ impl<'r, 'c> ShownEntries<'r, 'c> {
         &self,
         from: (usize, usize),
         mut more: impl FnMut(&PageEntry) -> bool,
-    ) -> Result<(), Failure> {
+    ) -> Result<(), Error> {
         let Some(first) = self.span_at(from.0, from.1) else {
             return Ok(());
         };
@@ -182,7 +182,7 @@ impl<'r, 'c> ShownEntries<'r, 'c> {
         &self,
         before: (usize, usize),
         mut more: impl FnMut(&PageEntry) -> bool,
-    ) -> Result<(), Failure> {
+    ) -> Result<(), Error> {
         let last = match self.span_at(before.0, before.1) {
             Some(at) => at + 1,
             None => self.spans.len(),
@@ -238,7 +238,7 @@ impl<'r, 'c> ShownEntries<'r, 'c> {
         from: (usize, usize),
         tokens: u64,
         items: usize,
-    ) -> Result<Page, Failure> {
+    ) -> Result<Page, Error> {
         let items = items.max(1);
         let mut page = Page {
             entries: Vec::new(),
@@ -261,7 +261,7 @@ impl<'r, 'c> ShownEntries<'r, 'c> {
     }
 
     /// The first shown entry at or after a place.
-    pub(super) fn first_at(&self, from: (usize, usize)) -> Result<Option<PageEntry>, Failure> {
+    pub(super) fn first_at(&self, from: (usize, usize)) -> Result<Option<PageEntry>, Error> {
         let mut found = None;
         self.walk(from, |entry| {
             found = Some(entry.clone());
@@ -271,7 +271,7 @@ impl<'r, 'c> ShownEntries<'r, 'c> {
     }
 
     /// The last shown entry before a place.
-    pub(super) fn last_before(&self, before: (usize, usize)) -> Result<Option<PageEntry>, Failure> {
+    pub(super) fn last_before(&self, before: (usize, usize)) -> Result<Option<PageEntry>, Error> {
         let mut found = None;
         self.walk_back(before, |entry| {
             found = Some(entry.clone());
@@ -287,7 +287,7 @@ impl<'r, 'c> ShownEntries<'r, 'c> {
         before: (usize, usize),
         tokens: u64,
         items: usize,
-    ) -> Result<Vec<PageEntry>, Failure> {
+    ) -> Result<Vec<PageEntry>, Error> {
         let items = items.max(1);
         let mut out: Vec<PageEntry> = Vec::new();
         let mut used = 0u64;
@@ -322,7 +322,7 @@ pub(super) fn counts_before(
     reader: &Reader<'_>,
     index: &super::SessionIndex,
     seq: usize,
-) -> Result<ItemCounts, Failure> {
+) -> Result<ItemCounts, Error> {
     Ok(if seq == 0 {
         ItemCounts::default()
     } else if seq as u64 >= index.entries {

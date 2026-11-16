@@ -1,5 +1,8 @@
 use super::*;
 use crate::test_daemon;
+use polylogue_engine::Config;
+use polylogue_store::{Archive, StoreError};
+use std::sync::Arc;
 
 fn read(
     d: &Daemon,
@@ -23,7 +26,7 @@ fn read(
         resume.arguments = serde_json::to_value(arguments).unwrap();
         crate::test_daemon::Call::from_request(&resume)
     } else {
-        crate::test_daemon::read(crate::daemon::service::read::ReadRequest {
+        crate::test_daemon::read(polylogue_reading::ReadRequest {
             target: "session:claude-code:s1".into(),
             options: polylogue_model::read::ReadOptions {
                 view,
@@ -141,7 +144,7 @@ fn reading_variants_setting_is_the_default_and_is_bound_in_the_cursor() {
     assert!(variants(&fresh).is_empty());
     // `none` asks for the originals whatever the setting holds.
     set(r#"["translation:pl"]"#);
-    let originals = crate::test_daemon::read(crate::daemon::service::read::ReadRequest {
+    let originals = crate::test_daemon::read(polylogue_reading::ReadRequest {
         target: "session:claude-code:s1".into(),
         options: polylogue_model::read::ReadOptions {
             variants: vec!["none".into()],
@@ -554,3 +557,9 @@ fn read_derived_write_keeps_its_selected_scope_after_reader_release() {
 }
 
 mod advisory;
+
+mod read_attachments;
+mod read_links;
+mod read_objects;
+
+mod read_failures;

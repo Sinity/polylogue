@@ -1,6 +1,6 @@
 //! Indexed tool relationships enrich layout one pair at a time. Stored
 //! records remain unchanged; offsets describe the existing emitted item order.
-use super::{Failure, output};
+use super::{Error, output};
 use polylogue_model::{MessageId, PromptKind, Role, read::*};
 use polylogue_store::Reader;
 use std::ops::ControlFlow;
@@ -8,7 +8,7 @@ use std::ops::ControlFlow;
 pub(super) struct Layout<'a> {
     pub options: &'a ReadOptions,
     pub facts: &'a LayoutFacts,
-    pub selected: &'a dyn Fn(&Source) -> Result<bool, Failure>,
+    pub selected: &'a dyn Fn(&Source) -> Result<bool, Error>,
     pub ready_attachment: &'a super::attachment_facts::ReadyAttachment<'a>,
     pub backwards: bool,
     pub page_start: Option<u64>,
@@ -20,17 +20,17 @@ struct Segment {
     count: u64,
     attachment_index: Option<u64>,
 }
-fn check(reader: &Reader<'_>) -> Result<(), Failure> {
+fn check(reader: &Reader<'_>) -> Result<(), Error> {
     reader.scope_token().check()?;
     if let Some(limit) = polylogue_store::read::limit::ReadLimit::current() {
         limit.check()?;
     }
     Ok(())
 }
-fn visible(reader: &Reader<'_>, source: &Source, options: &ReadOptions) -> Result<bool, Failure> {
+fn visible(reader: &Reader<'_>, source: &Source, options: &ReadOptions) -> Result<bool, Error> {
     let (Some(message), Some(session)) = (&source.message, &source.source_session) else {
-        return Err(Failure::not_yet_available(
-            "tool source has no message identity",
+        return Err(Error::internal(
+            "a stored tool call has no message identity",
         ));
     };
     check(reader)?;
@@ -56,12 +56,12 @@ fn segments(
     reader: &Reader<'_>,
     record: &ReadRecord,
     layout: &Layout<'_>,
-) -> Result<Vec<Segment>, Failure> {
+) -> Result<Vec<Segment>, Error> {
     // These parts contain only the current source record's own fields.
     // Remote counterpart bodies are never collected here.
     let base = if let Some(record) = record.record() {
         polylogue_render::layout_record(record, layout.options, layout.facts)
-            .map_err(output::read_error)?
+            .map_err(Error::from)?
     } else {
         record.parts().to_vec()
     };
@@ -98,14 +98,16 @@ fn segments(
                 {
                     let (data, attachments) = reader
                         .message_tool_pair_result_shape(message, ordinal)?
-                        .ok_or_else(|| Failure::stale_cursor("paired result geometry changed"))?;
+                        .ok_or_else(|| {
+                            Error::stale_cursor(
+                                "a tool result in this session changed since this page was issued",
+                            )
+                        })?;
                     count = count
                         .checked_add(u64::from(data))
                         .and_then(|value| value.checked_add(attachments))
                         .ok_or_else(|| {
-                            Failure::not_yet_available(
-                                "tool layout position exceeds its ordinal range",
-                            )
+                            Error::internal("a tool call has more than 2^64 layout items")
                         })?;
                 }
             }
@@ -115,9 +117,9 @@ fn segments(
                 .entry(item.source.reference.clone())
                 .or_default();
             let current = *index;
-            *index = index.checked_add(1).ok_or_else(|| {
-                Failure::not_yet_available("attachment index exceeds its ordinal range")
-            })?;
+            *index = index
+                .checked_add(1)
+                .ok_or_else(|| Error::internal("a record has more than 2^64 attachments"))?;
             Some(current)
         } else {
             None
@@ -129,9 +131,9 @@ fn segments(
             count,
             attachment_index,
         });
-        offset = offset.checked_add(count).ok_or_else(|| {
-            Failure::not_yet_available("read layout position exceeds its ordinal range")
-        })?;
+        offset = offset
+            .checked_add(count)
+            .ok_or_else(|| Error::internal("a record has more than 2^64 layout items"))?;
     }
     Ok(segments)
 }
@@ -139,8 +141,8 @@ fn pair_parts(
     reader: &Reader<'_>,
     segment: &Segment,
     layout: &Layout<'_>,
-    mut visit: impl FnMut(ReadItem, Option<u64>) -> Result<bool, Failure>,
-) -> Result<bool, Failure> {
+    mut visit: impl FnMut(ReadItem, Option<u64>) -> Result<bool, Error>,
+) -> Result<bool, Error> {
     let Some((message, ordinal)) = &segment.pair else {
         return visit(segment.item.clone(), segment.attachment_index);
     };
@@ -150,8 +152,9 @@ fn pair_parts(
     } else {
         reader.message_tool_pair_header(message, *ordinal)
     }?;
-    let mut pair =
-        pair.ok_or_else(|| Failure::stale_cursor("indexed tool relationship changed"))?;
+    let mut pair = pair.ok_or_else(|| {
+        Error::stale_cursor("a tool call or its result changed since this page was issued")
+    })?;
     if layout.options.view == View::Context
         && let Some(result) = &pair.result
         && !(layout.selected)(&result.source)?
@@ -169,13 +172,17 @@ fn pair_parts(
             .as_ref()
             .filter(|result| result.source.reference == segment.item.source.reference)
             .cloned()
-            .ok_or_else(|| Failure::stale_cursor("paired result source changed"))?
+            .ok_or_else(|| {
+                Error::stale_cursor(
+                    "the result attached to a tool call changed since this page was issued",
+                )
+            })?
     };
     pair.emit_at = source.source.reference.clone();
     let original = source
         .source
         .block
-        .ok_or_else(|| Failure::not_yet_available("tool source has no original block ordinal"))?;
+        .ok_or_else(|| Error::internal("a stored tool call has no original block number"))?;
     let mut detail = layout.facts.clone();
     detail.tool_pairs.clear();
     detail.tool_pairs.insert(original, pair);
@@ -210,7 +217,7 @@ fn pair_parts(
             }
         }
     })
-    .map_err(output::read_error)?;
+    .map_err(Error::from)?;
     if let Some(error) = failure {
         return Err(error);
     }
@@ -220,8 +227,8 @@ pub(super) fn visit_parts(
     reader: &Reader<'_>,
     record: &ReadRecord,
     layout: &Layout<'_>,
-    mut visit: impl FnMut(ReadItem, u64) -> Result<bool, Failure>,
-) -> Result<bool, Failure> {
+    mut visit: impl FnMut(ReadItem, u64) -> Result<bool, Error>,
+) -> Result<bool, Error> {
     check(reader)?;
     let segments = segments(reader, record, layout)?;
     if layout.backwards {
@@ -237,7 +244,9 @@ pub(super) fn visit_parts(
                 Ok(true)
             })?;
             if parts.len() as u64 != segment.count {
-                return Err(Failure::stale_cursor("tool layout geometry changed"));
+                return Err(Error::stale_cursor(
+                    "a tool call on this page is laid out differently since its result was re-read",
+                ));
             }
             for (index, (item, attachment_index)) in parts.into_iter().enumerate().rev() {
                 let ordinal = segment.start + index as u64;
@@ -272,7 +281,9 @@ pub(super) fn visit_parts(
                 return Ok(false);
             }
             if offset != segment.count {
-                return Err(Failure::stale_cursor("tool layout geometry changed"));
+                return Err(Error::stale_cursor(
+                    "a tool call on this page is laid out differently since its result was re-read",
+                ));
             }
         }
     }
@@ -284,7 +295,7 @@ fn attachment_item(
     item: ReadItem,
     index: Option<u64>,
     layout: &Layout<'_>,
-) -> Result<ReadItem, Failure> {
+) -> Result<ReadItem, Error> {
     if let Some(index) = index {
         super::attachment_facts::prepare(reader, item, index, layout.ready_attachment)
     } else {

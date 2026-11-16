@@ -16,7 +16,7 @@ fn request(
         resume.arguments["page_tokens"] = serde_json::json!(budget);
         return crate::test_daemon::Call::from_request(&resume);
     }
-    crate::test_daemon::read(crate::daemon::service::read::ReadRequest {
+    crate::test_daemon::read(polylogue_reading::ReadRequest {
         target: target.into(),
         options: ReadOptions {
             view,

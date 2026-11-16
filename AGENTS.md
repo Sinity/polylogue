@@ -87,6 +87,7 @@ copy.
 | `crates/store` | every SQLite connection and all SQL: inputs, chains, versioned rows, row codecs, plan execution, migrations |
 | `crates/query` | the catalog and units, compilation to a `Plan`. No SQL |
 | `crates/render` | text, markdown and HTML over typed replies |
+| `crates/reading` | reading stored sessions and records as pages and streams: composition, paging both ways, the links walk, layout facts, the invocation context. No SQL |
 | `crates/engine` | discovery, the overlapped ingest pipeline, tool-database capture, recognition, derivations |
 | `crates/sinex` | primary mode: Sinex's producer client wiring, the confirmed-stream consumer, Polylogue's kind declarations (behind the `sinex` feature) |
 | `crates/polylogue` | daemon, CLI, MCP, web, browser host and brief builder |

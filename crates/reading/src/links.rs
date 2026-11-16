@@ -10,8 +10,8 @@
 //! more than one link reaches. That is everything the walk needs to go on
 //! or to go back, so a page reads the links of its own nodes and of the
 //! nodes above them, never of the nodes before it.
-use super::super::{Daemon, Failure};
 use super::ReadRequest;
+use crate::{Error, ReadServices};
 use polylogue_model::{SessionId, read::*};
 use polylogue_store::{Reader, lineage::SessionLink};
 use std::collections::{BTreeMap, HashSet};
@@ -50,7 +50,7 @@ struct Walk<'r, 'a> {
 fn links_of(
     reader: &Reader<'_>,
     session: &str,
-) -> Result<(Vec<SessionLink>, Vec<SessionLink>), Failure> {
+) -> Result<(Vec<SessionLink>, Vec<SessionLink>), Error> {
     let Ok(id) = SessionId::parse(session) else {
         return Ok((Vec::new(), Vec::new()));
     };
@@ -67,7 +67,7 @@ fn links_of(
 }
 
 /// Recorded structural parents, including alternative coordinates.
-fn structural_parents(reader: &Reader<'_>, session: &str) -> Result<Vec<SessionLink>, Failure> {
+fn structural_parents(reader: &Reader<'_>, session: &str) -> Result<Vec<SessionLink>, Error> {
     Ok(match SessionId::parse(session) {
         Ok(id) => reader
             .parent_links(&id)?
@@ -112,8 +112,8 @@ impl<'r, 'a> Walk<'r, 'a> {
         reader: &'r Reader<'a>,
         starts: Vec<String>,
         place: &LinksPlace,
-    ) -> Result<Self, Failure> {
-        let stale = || Failure::stale_cursor("the links changed since the cursor was issued");
+    ) -> Result<Self, Error> {
+        let stale = || Error::stale_cursor("the session links changed since this page was issued");
         let mut walk = Self::start(reader, starts);
         let mut frames = place.frames.iter();
         let top = frames
@@ -184,7 +184,7 @@ impl<'r, 'a> Walk<'r, 'a> {
     }
 
     /// The next step, or `None` at the end of the walk.
-    fn forward(&mut self) -> Result<Option<Step>, Failure> {
+    fn forward(&mut self) -> Result<Option<Step>, Error> {
         loop {
             let Some(top) = self.frames.last_mut() else {
                 return Ok(None);
@@ -230,7 +230,7 @@ impl<'r, 'a> Walk<'r, 'a> {
     }
 
     /// The step before the place, or `None` at the start of the walk.
-    fn backward(&mut self) -> Result<Option<Step>, Failure> {
+    fn backward(&mut self) -> Result<Option<Step>, Error> {
         loop {
             let depth = self.frames.len();
             let top = self.frames.last_mut().expect("the walk's top");
@@ -284,7 +284,7 @@ impl<'r, 'a> Walk<'r, 'a> {
 }
 
 /// The items of one step.
-fn items(reader: &Reader<'_>, seed: &SessionId, step: &Step) -> Result<Vec<ReadItem>, Failure> {
+fn items(reader: &Reader<'_>, seed: &SessionId, step: &Step) -> Result<Vec<ReadItem>, Error> {
     let edge = |link: &SessionLink, cross| ReadItem {
         source: Source::record(format!("session:{}", link.parent)),
         kind: ItemKind::Card {
@@ -382,11 +382,11 @@ fn encoded_size(items: &[ReadItem]) -> (usize, u64) {
 
 pub(super) fn page(
     reader: &Reader<'_>,
-    d: &Daemon,
+    d: &impl ReadServices,
     request: &ReadRequest,
-    operation: &Arc<polylogue_reading::operation::Context>,
+    operation: &Arc<crate::operation::Context>,
     scope: super::session::Scope,
-) -> Result<ReadPage, Failure> {
+) -> Result<ReadPage, Error> {
     let ReadRequest {
         target,
         options,
@@ -395,12 +395,11 @@ pub(super) fn page(
         cursor,
         ..
     } = request;
-    let format =
-        Format::parse(format).ok_or_else(|| Failure::bad_request("unknown read format"))?;
+    let format = Format::parse(format).ok_or_else(|| Error::bad_request("unknown read format"))?;
     let mut limits = PageBudget::default();
     if let Some(tokens) = budget {
         limits.tokens = std::num::NonZeroU64::new(*tokens as u64)
-            .ok_or_else(|| Failure::bad_request("read budget must be positive"))?;
+            .ok_or_else(|| Error::bad_request("read budget must be positive"))?;
     }
     let digest = options_digest(&(options, format));
     let key = super::cursor_seal(reader)?;
@@ -419,17 +418,17 @@ pub(super) fn page(
                 .check(target, &digest)
                 .map_err(super::cursor_failure)?;
             if opened.rewritten(&graph_version) {
-                return Err(Failure::stale_cursor(
-                    "the relationships changed since the cursor was issued",
+                return Err(Error::stale_cursor(
+                    "the session links changed since this page was issued",
                 ));
             }
             let PagePosition::Links { place } = &opened.position else {
-                return Err(Failure::invalid_query(
+                return Err(Error::invalid_query(
                     "the cursor names no place in a links walk",
                 ));
             };
             if opened.direction == ReadDirection::Past {
-                return Err(Failure::invalid_query(
+                return Err(Error::invalid_query(
                     "a links reading continues forward or backward only",
                 ));
             }
@@ -478,7 +477,7 @@ pub(super) fn page(
         _ => (page_start, reached, ended),
     };
     let items: Vec<ReadItem> = steps.into_iter().flatten().collect();
-    let call = |place: &LinksPlace, direction: ReadDirection| -> Result<ReadyCall, Failure> {
+    let call = |place: &LinksPlace, direction: ReadDirection| -> Result<ReadyCall, Error> {
         let next = PageCursor {
             target: target.clone(),
             options: digest.clone(),
@@ -528,6 +527,3 @@ pub(super) fn page(
         },
     })
 }
-
-#[cfg(test)]
-mod tests;

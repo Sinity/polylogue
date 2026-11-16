@@ -1,6 +1,6 @@
 //! Page presentation seeks original document blocks without making a partial
 //! stored Document. Full record transfer keeps the strict record adapter.
-use super::{Emit, Failure, attachment_facts, layout_facts, output};
+use super::{Emit, Error, attachment_facts, layout_facts, output};
 use polylogue_model::{
     Block, DocumentId,
     read::{
@@ -11,11 +11,11 @@ use polylogue_model::{
 use polylogue_store::Reader;
 use std::ops::ControlFlow;
 
-fn stale() -> Failure {
-    Failure::stale_cursor("the continued document block is no longer selected")
+fn stale() -> Error {
+    Error::stale_cursor("the block this page continues from is no longer in this document")
 }
 
-fn check(reader: &Reader<'_>) -> Result<(), Failure> {
+fn check(reader: &Reader<'_>) -> Result<(), Error> {
     reader.check()?;
     if let Some(limit) = polylogue_store::read::limit::ReadLimit::current() {
         limit.check()?;
@@ -41,7 +41,7 @@ fn emit_items(
     start: Option<ItemPlace>,
     layout: &layout_facts::Layout<'_>,
     emit: &mut Emit<'_>,
-) -> Result<bool, Failure> {
+) -> Result<bool, Error> {
     let at = position(row, ordinal);
     let page_start = start.filter(|start| start.selection == at);
     if page_start.is_some_and(|start| {
@@ -86,7 +86,7 @@ fn block_items(
     ordinal: u64,
     block: Block,
     layout: &layout_facts::Layout<'_>,
-) -> Result<Vec<ReadItem>, Failure> {
+) -> Result<Vec<ReadItem>, Error> {
     check(reader)?;
     let source = Source {
         block: Some(ordinal),
@@ -102,7 +102,7 @@ fn block_items(
             true
         },
     )
-    .map_err(output::read_error)?;
+    .map_err(Error::from)?;
     let mut attachment = 0u64;
     for item in &mut items {
         if matches!(
@@ -128,14 +128,14 @@ pub(super) fn visit(
     start: Option<ItemPlace>,
     layout: &layout_facts::Layout<'_>,
     emit: &mut Emit<'_>,
-) -> Result<bool, Failure> {
+) -> Result<bool, Error> {
     check(reader)?;
     let selected = reader
         .select_document(id)?
-        .ok_or_else(|| Failure::not_found(format!("no document {id}")))?;
+        .ok_or_else(|| Error::not_found(format!("no document {id}")))?;
     let reference = format!("document:{id}");
     if reader.document_commit(id)?.is_none() {
-        return Err(Failure::not_yet_available(format!(
+        return Err(Error::not_yet_available(format!(
             "{reference} has no stored commit position for its source"
         )));
     }
@@ -160,13 +160,13 @@ pub(super) fn visit(
             Ok(true)
         };
     }
-    let root = || -> Result<Vec<ReadItem>, Failure> {
+    let root = || -> Result<Vec<ReadItem>, Error> {
         let mut items = Vec::new();
         polylogue_render::visit_document_root(&reference, layout.options, layout.facts, |item| {
             items.push(item);
             true
         })
-        .map_err(output::read_error)?;
+        .map_err(Error::from)?;
         Ok(items)
     };
     if layout.options.view == View::Raw {

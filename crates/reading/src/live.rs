@@ -1,7 +1,7 @@
 //! The live view of a session (`read --view live`): its state, what it
 //! waits on, its open call, task and peers, and its process tree, the
 //! harness first with each child's command, age and tool call.
-use super::super::Failure;
+use crate::Error;
 use polylogue_model::read::{Card, Process, ValueState};
 use polylogue_store::{LiveDetail, ProcessRow, Reader};
 
@@ -9,11 +9,11 @@ use polylogue_store::{LiveDetail, ProcessRow, Reader};
 mod tests;
 
 /// The live card of `session` at `now`.
-pub(super) fn card(reader: &Reader<'_>, session: &str, now: i64) -> Result<Card, Failure> {
+pub(super) fn card(reader: &Reader<'_>, session: &str, now: i64) -> Result<Card, Error> {
     let detail = reader
         .live_detail(session, now)
-        .map_err(Failure::from)?
-        .ok_or_else(|| Failure::not_found(format!("no session {session}")))?;
+        .map_err(Error::from)?
+        .ok_or_else(|| Error::not_found(format!("no session {session}")))?;
     Ok(render(&detail, now))
 }
 
@@ -33,7 +33,7 @@ pub(crate) fn render(detail: &LiveDetail, now: i64) -> Card {
     if let Some(since) = view.since {
         state.push_str(&format!(
             " for {}",
-            crate::protocol::status::short_duration(now - since)
+            polylogue_render::short_duration(now - since)
         ));
     }
     if view.process_alive == Some(false) {
@@ -52,7 +52,7 @@ pub(crate) fn render(detail: &LiveDetail, now: i64) -> Card {
             format!(
                 "{} for {}",
                 c.tool,
-                crate::protocol::status::short_duration(now - c.at)
+                polylogue_render::short_duration(now - c.at)
             )
         }),
         "no tool call open",
@@ -77,11 +77,11 @@ fn process(p: &ProcessRow, now: i64) -> Process {
     let mut state = match (p.started_at, p.ended_at) {
         (_, Some(ended)) => format!(
             "ended {} ago",
-            crate::protocol::status::short_duration(now - ended)
+            polylogue_render::short_duration(now - ended)
         ),
         (Some(started), None) => format!(
             "running for {}",
-            crate::protocol::status::short_duration(now - started)
+            polylogue_render::short_duration(now - started)
         ),
         (None, None) => "running".to_owned(),
     };

@@ -7,6 +7,12 @@ use polylogue_model::{
     bundle::Record,
     user::UserWrite,
 };
+use polylogue_model::{
+    Reference,
+    query_objects::{RunBinding, RunOutcome},
+    read::*,
+};
+use std::io::Write;
 
 fn actor() -> Authorship {
     Authorship {
@@ -75,16 +81,15 @@ fn streamed_request(
     d: &Daemon,
     request: &crate::test_daemon::Call,
 ) -> (ReadBegin, ReadRecord, ReadComplete) {
-    let request = &super::ReadRequest::from_arguments(
+    let request = &crate::daemon::service::read::request_of(
         serde_json::from_value(request.arguments.clone()).unwrap(),
         None,
     )
     .unwrap();
     let operation = d.operation_context(&actor()).unwrap();
     let mut bytes = Vec::new();
-    super::super::produce(request, d, &operation, &mut bytes)
-        .unwrap()
-        .unwrap();
+    let reader = d.reads.reader().unwrap();
+    polylogue_reading::stream(&reader, d, request, &operation, &mut bytes).unwrap();
     let frames = frames(&bytes);
     assert_eq!(
         frames
@@ -204,17 +209,18 @@ fn object_stream_stops_on_scope_reset_and_cancellation_before_record_body() {
             })),
         };
         let response = limit.scope(|| {
-            super::super::produce(
-                &crate::daemon::service::read::ReadRequest::from_arguments(
+            let reader = d.daemon.reads.reader()?;
+            polylogue_reading::stream(
+                &reader,
+                d.daemon.as_ref(),
+                &crate::daemon::service::read::request_of(
                     serde_json::from_value(read("interrupted-object").arguments.clone()).unwrap(),
                     None,
                 )
                 .unwrap(),
-                &d.daemon,
                 &operation,
                 &mut output,
             )
-            .unwrap()
         });
         let expected = if scope_reset {
             "scope_changed"
@@ -233,4 +239,111 @@ fn object_stream_stops_on_scope_reset_and_cancellation_before_record_body() {
             ["begin"]
         );
     }
+}
+
+#[test]
+fn object_read_pages_past_its_budget() {
+    let mut daemon = test_daemon::start("synthetic object pages");
+    daemon.pause_signals();
+    let request = daemon.daemon.invocation(&actor()).request(
+        "large-object".into(),
+        UserWrite::Assert {
+            assertions: vec![NewAssertion {
+                kind: AssertionKind::Note,
+                key: None,
+                value: Some(serde_json::json!("SYNTHETIC λ🙂 ".repeat(64))),
+                valid_until: None,
+                links: vec![],
+            }],
+        },
+    );
+    daemon
+        .daemon
+        .writes
+        .as_ref()
+        .unwrap()
+        .user(request.clone())
+        .unwrap();
+    let reference = Reference::Request(request.id.clone());
+    let expected = {
+        let reader = daemon.daemon.reads.reader().unwrap();
+        let Some(polylogue_store::read::authored_read::AuthoredRead::Local { record, .. }) =
+            reader.authored_record(&reference).unwrap()
+        else {
+            panic!("stored request")
+        };
+        assert_eq!(record.prepared.request, request);
+        ReadItem {
+            source: Source::record(reference.to_string()),
+            kind: ItemKind::Other {
+                type_name: "authored".into(),
+                data: serde_json::json!({"record": record, "selection": AuthoredSelection {
+                    selected: reference, coverage: AuthoredCoverage::WholeRequest,
+                }}),
+            },
+        }
+    };
+    let mut call = test_daemon::Call::new(
+        "read",
+        serde_json::json!({"target":"request:large-object", "page_tokens":64}),
+    );
+    let mut pending = String::new();
+    let mut items = Vec::new();
+    let mut first = None;
+    let mut pages = 0;
+    loop {
+        let answer = call.answer(&daemon.daemon);
+        let page: ReadPage =
+            serde_json::from_value(answer.value().expect("object page").clone()).unwrap();
+        if pages == 1 {
+            let previous = page
+                .document
+                .footer
+                .previous
+                .as_ref()
+                .expect("previous object page");
+            let answer = test_daemon::Call::from_request(&previous.request).answer(&daemon.daemon);
+            let before: ReadPage =
+                serde_json::from_value(answer.value().expect("backward object page").clone())
+                    .unwrap();
+            assert_eq!(before.document.items, first.clone().unwrap());
+        }
+        if pages == 0 {
+            first = Some(page.document.items.clone());
+        }
+        for item in &page.document.items {
+            match &item.kind {
+                ItemKind::Fragment {
+                    text,
+                    position,
+                    until,
+                    total,
+                } => {
+                    assert_eq!(position.character, pending.chars().count() as u64);
+                    pending.push_str(text);
+                    assert_eq!(*until, pending.chars().count() as u64);
+                    if until == total {
+                        assert_eq!(
+                            position.item_hash,
+                            polylogue_model::BlobHash::of(pending.as_bytes())
+                        );
+                        items.push(serde_json::from_str::<ReadItem>(&pending).unwrap());
+                        pending.clear();
+                    }
+                }
+                _ => {
+                    assert!(pending.is_empty());
+                    items.push(item.clone());
+                }
+            }
+        }
+        pages += 1;
+        let Some(next) = page.document.footer.next else {
+            break;
+        };
+        call = test_daemon::Call::from_request(&next.request);
+    }
+    assert!(pages > 1);
+    assert!(pending.is_empty());
+    assert_eq!(items, [expected]);
 }

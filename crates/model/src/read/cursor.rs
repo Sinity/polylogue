@@ -143,9 +143,9 @@ pub enum CursorError {
     Invalid,
     #[error("the read cursor belongs to another reading: {0}")]
     OtherReading(&'static str),
-    /// Issued by an earlier index generation: refused as stale, never
+    /// Issued before the index was rebuilt: refused as stale, never
     /// restarted and never confused with a broken cursor.
-    #[error("the read cursor was issued by an earlier index generation; read again")]
+    #[error("the index was rebuilt since this cursor was issued")]
     Stale,
 }
 
