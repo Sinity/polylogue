@@ -209,11 +209,11 @@ fn retried_line_writes_once() {
     let d = test_daemon::start("first prompt");
     let rows = json!({
         "selection": "session:claude-code:s1",
-        "steps": [{"verb": "tag", "name": "later"}],
+        "steps": [{"verb": "note", "text": "flaky because the clock is real"}],
     });
     let first = steps(&d, "again", rows.clone());
     let second = steps(&d, "again", rows);
     assert_eq!(first[0]["outcome"]["reply"]["reply"]["repeat"], false);
     assert_eq!(second[0]["outcome"]["reply"]["reply"]["repeat"], true);
-    assert_eq!(count(&d, "assertions where kind:tag"), 1);
+    assert_eq!(count(&d, "assertions where kind:note"), 1);
 }
