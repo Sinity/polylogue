@@ -33,8 +33,6 @@ fn send(archive: &Archive, writer: &Writer, mut b: Batch) {
         file.into_iter().collect()
     };
     let mut stored = writer
-        .sender()
-        .unwrap()
         .store_group(
             vec![crate::staging::PreparedBatch { batch: b, files }],
             std::sync::Arc::new(archive.blobs().unwrap()),

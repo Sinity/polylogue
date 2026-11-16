@@ -70,7 +70,7 @@ fn stopping_stored_byte_replay_rolls_back_the_index() {
         } else {
             None
         };
-        let sender = w.writer.sender().unwrap();
+        let sender = w.writer.sender();
         let store = Arc::new(w.archive.blobs().unwrap());
         let stop = w.archive.stop().clone();
         crate::fault::arm("write.replay_rows", "", crate::fault::Action::Hold, 0, 1);
@@ -83,7 +83,7 @@ fn stopping_stored_byte_replay_rolls_back_the_index() {
                         let (reply, report) = sync_channel(1);
                         sender.0.send(Msg::Flush(reply, false)).unwrap();
                         {
-                            let report = report.recv().unwrap();
+                            let report = report.recv().unwrap().unwrap();
                             report.batches == 0 && report.errors.is_empty()
                         }
                     }
@@ -290,7 +290,7 @@ fn a_diagnosed_member_does_not_keep_other_replays_running_during_stop() {
             Some(release)
         };
         crate::fault::arm("write.replay_rows", "", crate::fault::Action::Hold, 0, 1);
-        let sender = w.writer.sender().unwrap();
+        let sender = w.writer.sender();
         let store = Arc::new(w.archive.blobs().unwrap());
         let (done, finished) = sync_channel(1);
         let worker = std::thread::spawn(move || {
@@ -318,7 +318,7 @@ fn a_diagnosed_member_does_not_keep_other_replays_running_during_stop() {
                 let (reply, report) = sync_channel(1);
                 sender.0.send(Msg::Flush(reply, false)).unwrap();
                 gate.unwrap().send(()).unwrap();
-                report.recv().unwrap().errors.is_empty()
+                report.recv().unwrap().unwrap().errors.is_empty()
             };
             done.send(clean).unwrap();
         });
@@ -352,4 +352,18 @@ fn a_diagnosed_member_does_not_keep_other_replays_running_during_stop() {
         assert_eq!(r.query("SELECT p.status,p.reason,p.parsed_upto FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id='diagnosis'", &[]).unwrap(), vec![serde_json::json!({"status":"refused","reason":"diagnosis survives stop","parsed_upto":0})]);
         assert_eq!(r.query("SELECT p.records,p.parsed_upto,p.reading_version FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id='normal'", &[]).unwrap(), vec![serde_json::json!({"records":1,"parsed_upto":100,"reading_version":"synthetic=1"})]);
     }
+}
+
+#[test]
+fn stopped_writer_derefs_to_a_closed_sender() {
+    let mut archive = test_archive();
+    let sender: &WriterSender = &archive.writer;
+    assert!(sender.flush_rows().unwrap().errors.is_empty());
+    archive.writer.stop();
+    let sender: &WriterSender = &archive.writer;
+    assert!(matches!(sender.flush_rows(), Err(StoreError::WriterGone)));
+    assert!(matches!(
+        archive.writer.flush_rows(),
+        Err(StoreError::WriterGone)
+    ));
 }

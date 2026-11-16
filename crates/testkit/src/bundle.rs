@@ -6,7 +6,10 @@ use polylogue_model::{
         SourceClaim,
     },
 };
-use polylogue_store::{Reader, Result, StoreError, read::VisitStart};
+use polylogue_store::{
+    Reader, Result, StoreError,
+    read::{MessageSource, VisitStart},
+};
 use std::ops::ControlFlow;
 
 /// Compare complete sessions, messages, events and links in reading order.
@@ -25,22 +28,25 @@ pub fn session_bundle(reader: &Reader<'_>, id: &SessionId) -> Result<Vec<Record>
     let selected = reader.select_messages(id, false)?;
     selected.require_complete()?;
     let mut order = 0;
-    selected.visit_from_with_record_arrival(VisitStart::default(), |message, blocks, _, _| {
-        records.push(Record::Message(Box::new(MessageRecord {
-            reference: format!("message:{}", message.id),
-            commit: 0,
-            order,
-            source_version: blocks.source_version,
-            block_count: blocks.block_count,
-            block_ordinals: blocks.block_ordinals,
-            injections: Vec::new(),
-            bindings: Vec::new(),
-            copied_for: Vec::new(),
-            message,
-        })));
-        order += 1;
-        ControlFlow::Continue(())
-    })?;
+    selected.visit_with_sources(
+        VisitStart::default(),
+        |message, MessageSource { blocks, .. }| {
+            records.push(Record::Message(Box::new(MessageRecord {
+                reference: format!("message:{}", message.id),
+                commit: 0,
+                order,
+                source_version: blocks.source_version,
+                block_count: blocks.block_count,
+                block_ordinals: blocks.block_ordinals,
+                injections: Vec::new(),
+                bindings: Vec::new(),
+                copied_for: Vec::new(),
+                message,
+            })));
+            order += 1;
+            ControlFlow::Continue(())
+        },
+    )?;
     for (ordinal, event) in reader.events(id)?.into_iter().enumerate() {
         let identity = format!("fixture:{id}:{ordinal}");
         records.push(Record::Event(InputEventRecord {

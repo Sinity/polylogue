@@ -173,7 +173,6 @@ impl Engine {
                     release: Default::default(),
                 };
                 self.writer
-                    .sender()?
                     .store_group(
                         vec![polylogue_store::staging::PreparedBatch {
                             batch,
@@ -255,7 +254,6 @@ impl Engine {
         // Equal content may have another observed source path.
         if exists {
             self.writer
-                .sender()?
                 .store_group(
                     vec![polylogue_store::staging::PreparedBatch {
                         batch,

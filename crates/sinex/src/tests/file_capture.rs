@@ -619,8 +619,6 @@ fn byte_only_file_does_not_hold_back_another_file() {
     );
     a.batch.required_outcome = Some(CaptureOutcome::UnresolvedBasisConflict);
     let results = writer
-        .sender()
-        .unwrap()
         .store_group(vec![a, b], Arc::new(archive.blobs().unwrap()))
         .unwrap();
     assert_eq!(results.len(), 2);
@@ -683,8 +681,6 @@ fn explicit_package_spools_its_members_together() {
     );
     a.batch.required_outcome = Some(CaptureOutcome::UnresolvedBasisConflict);
     let results = writer
-        .sender()
-        .unwrap()
         .store_group(vec![a, b], Arc::new(archive.blobs().unwrap()))
         .unwrap();
     assert_eq!(results.len(), 2);
@@ -908,7 +904,6 @@ fn idle_continuation_reports_errors_and_keeps_spool() {
     // does not exist. No parse work is needed to observe the resulting report.
     engine
         .writer()
-        .unwrap()
         .send(polylogue_store::Batch {
             required_outcome: None,
             input: polylogue_store::InputKey {
@@ -931,7 +926,7 @@ fn idle_continuation_reports_errors_and_keeps_spool() {
     // Derivation waits for earlier queued batches without consuming their
     // write report. Observe the intended identity refusal before invalidating
     // the access scope, which would otherwise race it with another refusal.
-    engine.writer().unwrap().derive().unwrap();
+    engine.writer().derive().unwrap();
     archive.advance_generation_for_test().unwrap();
     let continued = engine.run_pass().unwrap();
     assert!(

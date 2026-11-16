@@ -421,7 +421,7 @@ impl Engine {
         if pending.files.is_empty() {
             self.writer.send(batch)?;
         } else {
-            for result in self.writer.sender()?.store_group(
+            for result in self.writer.store_group(
                 vec![polylogue_store::staging::PreparedBatch {
                     batch,
                     files: pending.files,

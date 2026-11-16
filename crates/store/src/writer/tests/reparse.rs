@@ -325,8 +325,6 @@ fn replacing_each_chain_equals_a_fresh_build_and_plan_order_does_not_matter() {
         reading.push(&mut b.parse[0]).unwrap();
         reparsed
             .writer
-            .sender()
-            .unwrap()
             .replace_chain(b.input, 1, b.length, reading)
             .unwrap();
     }
@@ -382,8 +380,6 @@ fn retracting_the_winner_restores_complete_structured_payloads_without_parsing_s
         ))
         .unwrap();
     w.writer
-        .sender()
-        .unwrap()
         .replace_chain(
             InputKey {
                 id: "a".into(),
@@ -511,8 +507,6 @@ fn a_later_reading_failure_rolls_back_retraction_and_prior_steps() {
     reading.push(&mut later).unwrap();
     assert!(
         w.writer
-            .sender()
-            .unwrap()
             .replace_chain(b.input, 1, b.length, reading)
             .is_err()
     );
@@ -545,8 +539,6 @@ fn a_chain_reading_preserves_deep_structured_values() {
     let mut reading = ChainReading::new().unwrap();
     reading.push(&mut b.parse[0]).unwrap();
     w.writer
-        .sender()
-        .unwrap()
         .replace_chain(b.input, 1, b.length, reading)
         .unwrap();
     let reads = ReadPool::open(&w.archive).unwrap();
@@ -665,8 +657,6 @@ fn a_session_stated_later_in_a_reading_is_not_removed_mid_transaction() {
     let mut replacement = original;
     reading.push(&mut replacement.parse[0]).unwrap();
     w.writer
-        .sender()
-        .unwrap()
         .replace_chain(replacement.input, 1, replacement.length, reading)
         .unwrap();
     w.writer.derive().unwrap();
@@ -723,8 +713,6 @@ fn changing_a_shared_event_marks_the_old_and_restored_sessions() {
         ))
         .unwrap();
     w.writer
-        .sender()
-        .unwrap()
         .replace_chain(winner.input, 1, winner.length, reading)
         .unwrap();
     w.writer.derive().unwrap();
@@ -901,8 +889,6 @@ fn events_follow_late_moved_and_removed_messages_without_changing_their_own_posi
     reading.push(&mut messages.parse[0]).unwrap();
     let before = changed();
     w.writer
-        .sender()
-        .unwrap()
         .replace_chain(messages.input.clone(), 1, 100, reading)
         .unwrap();
     w.writer.derive().unwrap();
@@ -925,8 +911,6 @@ fn events_follow_late_moved_and_removed_messages_without_changing_their_own_posi
         .unwrap();
     let before = changed();
     w.writer
-        .sender()
-        .unwrap()
         .replace_chain(messages.input, 1, 100, reading)
         .unwrap();
     w.writer.derive().unwrap();
@@ -1039,8 +1023,6 @@ fn status_totals_equal_a_recount_across_imports_reparses_and_retractions() {
         let mut reading = ChainReading::new().unwrap();
         reading.push(&mut b.parse[0]).unwrap();
         w.writer
-            .sender()
-            .unwrap()
             .replace_chain(b.input, 1, b.length, reading)
             .unwrap();
         assert_totals_equal_a_recount(&w);
@@ -1105,8 +1087,6 @@ fn no_unreferenced_versions_after_each_operation() {
         let mut reading = ChainReading::new().unwrap();
         reading.push(&mut b.parse[0]).unwrap();
         w.writer
-            .sender()
-            .unwrap()
             .replace_chain(b.input, 1, b.length, reading)
             .unwrap();
         assert_eq!(unreferenced(&w), none);

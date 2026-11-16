@@ -132,24 +132,15 @@ impl Reader<'_> {
     ///.
     pub fn links(&self, id: &SessionId) -> Result<Vec<Link>> {
         let mut links = Vec::new();
-        self.visit_links(id, |link| {
+        self.visit_links(id, 0, |link| {
             links.push(link);
             std::ops::ControlFlow::Continue(())
         })?;
         Ok(links)
     }
 
-    /// Visit links in content order, stopping before later payloads are decoded.
-    pub fn visit_links(
-        &self,
-        id: &SessionId,
-        visit: impl FnMut(Link) -> std::ops::ControlFlow<()>,
-    ) -> Result<()> {
-        self.visit_links_from_ordinal(id, 0, visit)
-    }
-
     /// Seek within the physical session's stored link order before decoding.
-    pub fn visit_links_from_ordinal(
+    pub fn visit_links(
         &self,
         id: &SessionId,
         ordinal: u64,

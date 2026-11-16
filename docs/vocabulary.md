@@ -116,6 +116,10 @@ generated page of the thing they belong to, or on the area page that owns them.
   version** is the current one in a total order.
 - **re-parse**: reading a chain's stored bytes again with a newer reading
   version; it is not deletion.
+- **chain task**: a pool task that parses a stored chain's ranges in order
+  and commits its replacement reading once.
+- **user submission**: a user request together with its optional pinned read,
+  trusted catalog context, and caller deadline and cancellation.
 
 ## Sessions
 
@@ -156,6 +160,10 @@ generated page of the thing they belong to, or on the area page that owns them.
   `failed` or `unavailable_at_source`.
 - **byte match**: a saved check that an export member's stored bytes hash to
   an attachment's stated hash.
+- **visit start**: the position where a streaming read starts, including
+  whether it walks forward or backward.
+- **message source**: the selected blocks, commit position and ordinal
+  returned beside a message by a sourced visit.
 
 ## References and queries
 

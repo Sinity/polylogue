@@ -3,52 +3,9 @@
 use super::*;
 
 impl Reader<'_> {
-    /// Visit rows from the row at `from` (inclusive) in selection order, or
-    /// from the first row when `from` is `None`.
-    pub fn visit_selection_from_row<E>(
-        &self,
-        selection: &PreparedSelection<'_>,
-        from: Option<&OrderPosition>,
-        near: Option<&NearFn<'_>>,
-        mut visit: impl FnMut(SelectionRow) -> Result<ControlFlow<()>, E>,
-    ) -> Result<(), E>
-    where
-        E: From<SelectionError>,
-    {
-        self.in_selection_context(selection, near, || {
-            // A direct reference selects one row; its continuation starts there.
-            let after = match from {
-                Some(at) if selection.direct.is_none() => {
-                    self.row_before(selection, at).map_err(E::from)?
-                }
-                _ => None,
-            };
-            self.visit_selection_scoped(selection, after.as_ref(), &mut visit)
-        })
-    }
-
-    /// Visit rows strictly before the row at `before`, in reverse order.
-    pub fn visit_selection_before_row<E>(
-        &self,
-        selection: &PreparedSelection<'_>,
-        before: &OrderPosition,
-        near: Option<&NearFn<'_>>,
-        mut visit: impl FnMut(SelectionRow) -> Result<ControlFlow<()>, E>,
-    ) -> Result<(), E>
-    where
-        E: From<SelectionError>,
-    {
-        if selection.direct.is_some() {
-            return Ok(());
-        }
-        self.in_selection_context(selection, near, || {
-            self.visit_selection_scoped_in_direction(selection, Some(before), true, &mut visit)
-        })
-    }
-
     /// The order values of the row just before `at`; only order metadata is
     /// read, never an earlier body.
-    fn row_before(
+    pub(super) fn row_before(
         &self,
         selection: &PreparedSelection<'_>,
         at: &OrderPosition,

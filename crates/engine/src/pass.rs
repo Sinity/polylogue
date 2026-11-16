@@ -588,7 +588,6 @@ impl Engine {
                         // sending a source to Sinex; stored-reading writes cannot send it.
                         let result = self
                             .writer
-                            .sender()?
                             .store_group(
                                 vec![polylogue_store::staging::PreparedBatch {
                                     batch,
@@ -900,7 +899,6 @@ impl Engine {
         if self.archive.is_primary() {
             let result = self
                 .writer
-                .sender()?
                 .store_group(
                     vec![polylogue_store::staging::PreparedBatch {
                         batch,
@@ -1182,8 +1180,8 @@ impl Engine {
     /// them, or once that chain is read ([`crate::prefix_copies`]).
     /// `selected` limits it to some inputs.
     ///
-    /// The chains run on the parse pool together, in rounds that hold one
-    /// chain per path, since the pool runs one plan per path at a time.
+    /// Replacements commit each chain once. Continuing readings run in
+    /// rounds with one range plan per path, preserving each path's order.
     pub(crate) fn reparse_behind(
         &mut self,
         selected: Option<&[String]>,
@@ -1355,7 +1353,7 @@ impl Engine {
             }
             parse.push(plan);
         }
-        self.replace_readings(replacements, pass)?;
+        self.execute_pool(Vec::new(), replacements, pass)?;
         if self.yielding() {
             return Ok(());
         }
@@ -1428,7 +1426,7 @@ impl Engine {
             // A copy that would differ, or failed, is parsed instead,
             // which gives the same reading. Transaction and stop errors
             // propagate rather than becoming another parse attempt.
-            let answer = self.writer.sender()?.copy_reading(copy)?;
+            let answer = self.writer.copy_reading(copy)?;
             if matches!(answer, Ok(true)) {
                 pass.readings_copied += 1;
                 pass.bytes_copied += upto;
@@ -1666,24 +1664,26 @@ impl Engine {
                 && plan.parse_pos == 0
                 && plan.stored_upto > 0
                 && !matches!(plan.change, Change::First | Change::Rewritten);
-            if plan.replace || store_first {
-                self.execute_pool(std::mem::take(&mut pooled), pass)?;
+            if store_first {
+                self.execute_pool(std::mem::take(&mut pooled), Vec::new(), pass)?;
                 if self.yielding() {
                     return Ok(());
                 }
-                if store_first && let Err(error) = self.store_plan(&mut plan, pass) {
+                if let Err(error) = self.store_plan(&mut plan, pass) {
                     plan.failed = true;
                     self.finish_plan(plan);
                     pass.errors.push(format!("store before re-parse: {error}"));
                     continue;
                 }
+            }
+            if plan.replace || store_first {
                 replacements.push(plan);
                 continue;
             }
             if let Some(polylogue_sources::parse::Parse::Export(mut parser)) =
                 (plan.origin.open)(&plan.path)
             {
-                self.execute_pool(std::mem::take(&mut pooled), pass)?;
+                self.execute_pool(std::mem::take(&mut pooled), Vec::new(), pass)?;
                 if self.yielding() {
                     return Ok(());
                 }
@@ -1710,276 +1710,499 @@ impl Engine {
                 pooled.push(plan);
             }
         }
-        self.execute_pool(pooled, pass)?;
-        if self.yielding() {
-            return Ok(());
-        }
-        self.replace_readings(replacements, pass)?;
+        self.execute_pool(pooled, replacements, pass)?;
         if self.archive.stop().is_cancelled() {
             return Err(EngineError::Stopped);
         }
         Ok(())
     }
 
-    fn execute_pool(&mut self, plans: Vec<Plan>, pass: &mut Pass) -> Result<(), EngineError> {
-        if plans.is_empty() {
+    pub(crate) fn execute_pool(
+        &mut self,
+        plans: Vec<Plan>,
+        chains: Vec<Plan>,
+        pass: &mut Pass,
+    ) -> Result<(), EngineError> {
+        if plans.is_empty() && chains.is_empty() {
             return Ok(());
         }
-        let (done_tx, done_rx) = channel();
-        let pool = Pool::start(
-            self.config.workers,
-            self.config.bytes_in_flight,
-            self.writer.sender()?,
-            Arc::clone(&self.blobs),
-            self.archive.clone(),
-            done_tx,
-        );
-        // Plans wait here and enter the pool a few at a time, so live inputs
-        // that arrive meanwhile can go ahead of what is still waiting.
-        let mut waiting: std::collections::VecDeque<Plan> = plans.into();
-        let mut running: HashMap<PathBuf, Plan> = HashMap::new();
-        // Inputs whose first job this run queued. An input holds its parser
-        // state between jobs until its last finishes, so a new input starts
-        // only when its first range can be queued at once; otherwise the
-        // loop would wait inside `submit` with a new input while finished
-        // ranges of started ones wait in `done_rx`, and every large input of
-        // a pass would end up started, each holding its state.
-        let mut started: HashSet<PathBuf> = HashSet::new();
-        // Plans whose range the writer refused for its content; their
-        // failures are recorded once the pool's writes are flushed.
-        let mut refused: Vec<(Plan, String)> = Vec::new();
-        let mut outstanding = 0usize;
-        let mut checked = Instant::now();
-        let room = self.config.workers.max(1) * IN_POOL_PER_WORKER;
-        let every = self.config.live_every;
-        let mut stopping = false;
-        let mut yielding = false;
-        'work: loop {
-            if !yielding && self.poll_request() {
-                yielding = true;
-                waiting.clear();
-                // No worker read these jobs. The next turn revalidates them;
-                // chunks already in hand keep their normal commit and ACK.
-                outstanding -= pool.cancel_queued();
-            }
-            if !stopping && self.archive.stop().is_cancelled() {
-                // What workers are parsing commits; nothing else starts.
-                stopping = true;
-                waiting.clear();
-                outstanding -= pool.cancel_queued();
-            }
-            if !stopping && !yielding && checked.elapsed() >= every {
-                checked = Instant::now();
-                let live = {
-                    // A continuation owns its path while queued, too. Finish
-                    // its planned bytes before observing later source changes.
-                    let busy = running
-                        .keys()
-                        .map(PathBuf::as_path)
-                        .chain(waiting.iter().map(|plan| plan.path.as_path()))
-                        .collect();
-                    self.live_plans(&busy, pass)
-                };
-                match live {
-                    Ok(live) => {
-                        for plan in live.into_iter().rev() {
+        if chains
+            .iter()
+            .any(|plan| !matches!(plan.change, Change::Reparse { .. }))
+        {
+            return Err(std::io::Error::other("a replacement needs a stored chain").into());
+        }
+        let mut active_chains = HashMap::<u64, (PathBuf, i64)>::new();
+        let result = (|| {
+            let (done_tx, done_rx) = channel();
+            let pool = Pool::start(
+                self.config.workers,
+                self.config.bytes_in_flight,
+                self.writer.sender(),
+                Arc::clone(&self.blobs),
+                self.archive.clone(),
+                done_tx,
+                pool::ChainSettings {
+                    stopped_attempt: self.stopped_attempt,
+                    read_memory: self.config.reader_memory_per_connection()?,
+                    yielding: self.requests.as_ref().map_or_else(
+                        || Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                        |requests| Arc::clone(&requests.yielding),
+                    ),
+                },
+            );
+            // Plans wait here and enter the pool a few at a time, so live inputs
+            // that arrive meanwhile can go ahead of what is still waiting.
+            let mut waiting: std::collections::VecDeque<Plan> = plans.into();
+            let mut chains = chains;
+            chains.sort_by_key(|plan| plan.priority == Priority::Bulk);
+            let mut chains: std::collections::VecDeque<Plan> = chains.into();
+            let mut next_chain_id = 0u64;
+            let mut running: HashMap<PathBuf, Plan> = HashMap::new();
+            // Inputs whose first job this run queued. An input holds its parser
+            // state between jobs until its last finishes, so a new input starts
+            // only when its first range can be queued at once; otherwise the
+            // loop would wait inside `submit` with a new input while finished
+            // ranges of started ones wait in `done_rx`, and every large input of
+            // a pass would end up started, each holding its state.
+            let mut started: HashSet<PathBuf> = HashSet::new();
+            // Plans whose range the writer refused for its content; their
+            // failures are recorded once the pool's writes are flushed.
+            let mut refused: Vec<(Plan, String)> = Vec::new();
+            let mut outstanding = 0usize;
+            let mut checked = Instant::now();
+            let room = self.config.workers.max(1) * IN_POOL_PER_WORKER;
+            let every = self.config.live_every;
+            let mut stopping = false;
+            let mut yielding = false;
+            'work: loop {
+                if !yielding && self.poll_request() {
+                    yielding = true;
+                    waiting.clear();
+                    chains.clear();
+                    // No worker read these jobs. The next turn revalidates them;
+                    // chunks already in hand keep their normal commit and ACK.
+                    let cancelled = pool.cancel_queued();
+                    outstanding -= cancelled.ranges + cancelled.chains.len();
+                    for plan in cancelled.chains {
+                        let Change::Reparse { chain } = plan.change else {
+                            unreachable!()
+                        };
+                        if let Some(id) =
+                            active_chains
+                                .iter()
+                                .find_map(|(&id, (path, queued_chain))| {
+                                    (path == &plan.path && *queued_chain == chain).then_some(id)
+                                })
+                        {
+                            active_chains.remove(&id);
+                        }
+                        self.finish_chain_path(&plan.path);
+                    }
+                }
+                if !stopping && self.archive.stop().is_cancelled() {
+                    // What workers are parsing commits; nothing else starts.
+                    stopping = true;
+                    waiting.clear();
+                    chains.clear();
+                    let cancelled = pool.cancel_queued();
+                    outstanding -= cancelled.ranges + cancelled.chains.len();
+                    for plan in cancelled.chains {
+                        let Change::Reparse { chain } = plan.change else {
+                            unreachable!()
+                        };
+                        if let Some(id) =
+                            active_chains
+                                .iter()
+                                .find_map(|(&id, (path, queued_chain))| {
+                                    (path == &plan.path && *queued_chain == chain).then_some(id)
+                                })
+                        {
+                            active_chains.remove(&id);
+                        }
+                        self.finish_chain_path(&plan.path);
+                    }
+                }
+                if !stopping && !yielding && checked.elapsed() >= every {
+                    checked = Instant::now();
+                    let live = {
+                        // A continuation owns its path while queued, too. Finish
+                        // its planned bytes before observing later source changes.
+                        let reparsing: Vec<_> = self.reparsing.keys().cloned().collect();
+                        let busy = running
+                            .keys()
+                            .map(PathBuf::as_path)
+                            .chain(waiting.iter().map(|plan| plan.path.as_path()))
+                            .chain(chains.iter().map(|plan| plan.path.as_path()))
+                            .chain(reparsing.iter().map(PathBuf::as_path))
+                            .collect();
+                        self.live_plans(&busy, pass)
+                    };
+                    match live {
+                        Ok(live) => {
+                            for plan in live.into_iter().rev() {
+                                if plan.replace {
+                                    chains.push_front(plan);
+                                } else {
+                                    waiting.push_front(plan);
+                                }
+                            }
+                        }
+                        Err(e) => pass.errors.push(format!("live inputs: {e}")),
+                    }
+                }
+                while !stopping
+                    && !yielding
+                    && outstanding < room
+                    && let Some(mut plan) = waiting.pop_front()
+                {
+                    if self.poll_request() {
+                        waiting.push_front(plan);
+                        continue 'work;
+                    }
+                    if plan.finished() {
+                        self.make_due_copies(&mut plan, pass)?;
+                        pass.capture_pending |= plan.pending.is_some();
+                        self.finish_plan(plan);
+                        continue;
+                    }
+                    let first = !started.contains(&plan.path);
+                    if first {
+                        let (start, end) = plan.next_range();
+                        if outstanding > 0 && !pool.has_room(end - start) {
                             waiting.push_front(plan);
+                            break;
+                        }
+                        started.insert(plan.path.clone());
+                    }
+                    // Stored bytes are loaded as their plan starts, so a pass
+                    // over every stored input holds only the running plans'.
+                    if !self.load_stored(&mut plan)? {
+                        continue;
+                    }
+                    if first {
+                        self.plan_prefix_copies(&mut plan)?;
+                    }
+                    // Copies whose stop the parse has reached take the reading
+                    // before the next range changes it.
+                    self.make_due_copies(&mut plan, pass)?;
+                    if plan.finished() {
+                        pass.capture_pending |= plan.pending.is_some();
+                        self.finish_plan(plan);
+                        continue;
+                    }
+                    let mut job = plan.next_job(&self.stopped_attempt);
+                    if matches!(job.source, pool::Bytes::File) {
+                        let mut context = if plan.byte_read.is_none()
+                            && !plan.storing_started
+                            && plan.basis.is_some()
+                        {
+                            let mut context = self.source_read_context(
+                                &job.path,
+                                &job.input.format,
+                                polylogue_store::primary::AcquisitionRoute::NativeCapture,
+                            );
+                            context.basis = plan.basis.clone();
+                            context
+                        } else {
+                            self.sampling_context(&job.path, &job.input.format)?
+                        };
+                        context.facts = plan.facts;
+                        if let Some(byte_read) = &plan.byte_read {
+                            job.observation = Some(self.observation(&plan.path, plan.facts));
+                            if let Some(cursor) = &byte_read.cursor {
+                                if job.store_from == Some(cursor.range().end) {
+                                    context.previous_body = Some(cursor.last_body().into());
+                                }
+                                if cursor.outcome()
+                                    != Some(polylogue_store::primary::CaptureOutcome::Prepared)
+                                {
+                                    context.required_outcome = Some(polylogue_store::primary::CaptureOutcome::UnresolvedBasisConflict);
+                                }
+                            }
+                        }
+                        job.source_read = Some(context);
+                    }
+                    let bytes = job.end - job.start;
+                    if !pool.submit(job) {
+                        // Stopped while waiting for room; the loop's next turn
+                        // takes back what is queued.
+                        break;
+                    }
+                    pass.bytes_read += bytes;
+                    outstanding += 1;
+                    running.insert(plan.path.clone(), plan);
+                }
+                while !stopping && !yielding && outstanding < room {
+                    let Some(index) = chains.iter().position(|chain| {
+                        !running.contains_key(&chain.path)
+                            && !waiting.iter().any(|range| range.path == chain.path)
+                    }) else {
+                        break;
+                    };
+                    let plan = &chains[index];
+                    if outstanding > 0 && !pool.has_room(plan.size - plan.parse_pos) {
+                        break;
+                    }
+                    let plan = chains.remove(index).expect("waiting chain");
+                    let path = plan.path.clone();
+                    let Change::Reparse { chain } = plan.change else {
+                        unreachable!()
+                    };
+                    let id = next_chain_id;
+                    next_chain_id += 1;
+                    if !pool.submit_chain(id, plan) {
+                        break;
+                    }
+                    *self.reparsing.entry(path.clone()).or_default() += 1;
+                    active_chains.insert(id, (path, chain));
+                    outstanding += 1;
+                }
+                if outstanding == 0 {
+                    break;
+                }
+                let d = match done_rx.recv_timeout(every.max(Duration::from_millis(10))) {
+                    Ok(d) => d,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                };
+                outstanding -= 1;
+                let d = match d {
+                    pool::Finished::Range(done) => *done,
+                    pool::Finished::Chain(done) => {
+                        active_chains.remove(&done.id);
+                        pass.bytes_read += done.bytes_read;
+                        self.chain_committed(done.plan, done.written, pass);
+                        continue;
+                    }
+                };
+                let Some(mut plan) = running.remove(&d.path) else {
+                    continue;
+                };
+                if d.cancelled {
+                    pass.bytes_stored += d.stored;
+                    pass.errors.extend(d.error);
+                    continue;
+                }
+                if d.spooled_group.is_some()
+                    || plan.byte_read.is_some()
+                    || d.pending.is_some()
+                        && d.source_read.is_some()
+                        && plan.tracked
+                        && matches!(plan.source, pool::Bytes::File)
+                {
+                    if let Some(error) = &d.error {
+                        pass.errors.push(error.clone());
+                    }
+                    self.apply_byte_read_result(&mut plan, &d)?;
+                    if plan.finished() {
+                        self.record_byte_read_status(&plan, d.source_read.as_ref(), pass)?;
+                        self.finish_plan(plan);
+                    } else {
+                        waiting.push_front(plan);
+                    }
+                    continue;
+                }
+                if d.write_failed && d.content_refused {
+                    // Reading this range again is refused again: the chain stops
+                    // at its cursor, failed with the writer's reason, until the
+                    // bytes or the reading change.
+                    if let Some(chain) = d.chain {
+                        plan.parser_chain = Some(chain);
+                        if d.end > plan.stored_upto {
+                            plan.stored_upto = d.end;
+                            plan.storing_started = true;
                         }
                     }
-                    Err(e) => pass.errors.push(format!("live inputs: {e}")),
+                    refused.push((plan, d.error.unwrap_or_default()));
+                    continue;
                 }
-            }
-            while !stopping
-                && !yielding
-                && outstanding < room
-                && let Some(mut plan) = waiting.pop_front()
-            {
-                if self.poll_request() {
-                    waiting.push_front(plan);
-                    continue 'work;
+                if d.write_failed {
+                    if let Some(error) = d.error {
+                        pass.errors.push(error);
+                    }
+                    if plan.tracked {
+                        self.refresh_confirmed_input(&plan.path)?;
+                    }
+                    continue;
                 }
+                pass.bytes_stored += d.stored;
+                if d.continuation_missing && !plan.parser_deferred {
+                    pass.errors.push(format!(
+                        "parser continuation unavailable at {}:{}; captured bytes kept",
+                        plan.input.id, plan.parse_pos
+                    ));
+                }
+                if let Some(e) = &d.error {
+                    pass.errors.push(e.clone());
+                }
+                let parsed = has_reading(plan.origin);
+                plan.apply(d, parsed);
                 if plan.finished() {
+                    // A read failure before producing any reading has no external
+                    // work to await. Earlier prepared steps still need confirmation.
+                    if self.archive.is_primary()
+                        && matches!(plan.change, Change::Reparse { .. })
+                        && (!plan.failed || plan.failure_recorded || plan.checkpoint.is_some())
+                    {
+                        if self.confirmed_reading(&plan)? {
+                            if plan.tracked {
+                                self.refresh_confirmed_input(&plan.path)?;
+                            }
+                        } else {
+                            pass.capture_pending = true;
+                        }
+                        continue;
+                    }
                     self.make_due_copies(&mut plan, pass)?;
                     pass.capture_pending |= plan.pending.is_some();
                     self.finish_plan(plan);
-                    continue;
-                }
-                let first = !started.contains(&plan.path);
-                if first {
-                    let (start, end) = plan.next_range();
-                    if outstanding > 0 && !pool.has_room(end - start) {
-                        waiting.push_front(plan);
-                        break;
-                    }
-                    started.insert(plan.path.clone());
-                }
-                // Stored bytes are loaded as their plan starts, so a pass
-                // over every stored input holds only the running plans'.
-                if !self.load_stored(&mut plan)? {
-                    continue;
-                }
-                if first {
-                    self.plan_prefix_copies(&mut plan)?;
-                }
-                // Copies whose stop the parse has reached take the reading
-                // before the next range changes it.
-                self.make_due_copies(&mut plan, pass)?;
-                if plan.finished() {
-                    pass.capture_pending |= plan.pending.is_some();
-                    self.finish_plan(plan);
-                    continue;
-                }
-                let mut job = plan.next_job(&self.stopped_attempt);
-                if matches!(job.source, pool::Bytes::File) {
-                    let mut context = if plan.byte_read.is_none()
-                        && !plan.storing_started
-                        && plan.basis.is_some()
-                    {
-                        let mut context = self.source_read_context(
-                            &job.path,
-                            &job.input.format,
-                            polylogue_store::primary::AcquisitionRoute::NativeCapture,
-                        );
-                        context.basis = plan.basis.clone();
-                        context
-                    } else {
-                        self.sampling_context(&job.path, &job.input.format)?
-                    };
-                    context.facts = plan.facts;
-                    if let Some(byte_read) = &plan.byte_read {
-                        job.observation = Some(self.observation(&plan.path, plan.facts));
-                        if let Some(cursor) = &byte_read.cursor {
-                            if job.store_from == Some(cursor.range().end) {
-                                context.previous_body = Some(cursor.last_body().into());
-                            }
-                            if cursor.outcome()
-                                != Some(polylogue_store::primary::CaptureOutcome::Prepared)
-                            {
-                                context.required_outcome = Some(polylogue_store::primary::CaptureOutcome::UnresolvedBasisConflict);
-                            }
-                        }
-                    }
-                    job.source_read = Some(context);
-                }
-                let bytes = job.end - job.start;
-                if !pool.submit(job) {
-                    // Stopped while waiting for room; the loop's next turn
-                    // takes back what is queued.
-                    break;
-                }
-                pass.bytes_read += bytes;
-                outstanding += 1;
-                running.insert(plan.path.clone(), plan);
-            }
-            if outstanding == 0 {
-                break;
-            }
-            let d = match done_rx.recv_timeout(every.max(Duration::from_millis(10))) {
-                Ok(d) => d,
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-            };
-            outstanding -= 1;
-            let Some(mut plan) = running.remove(&d.path) else {
-                continue;
-            };
-            if d.cancelled {
-                pass.bytes_stored += d.stored;
-                pass.errors.extend(d.error);
-                continue;
-            }
-            if d.spooled_group.is_some()
-                || plan.byte_read.is_some()
-                || d.pending.is_some()
-                    && d.source_read.is_some()
-                    && plan.tracked
-                    && matches!(plan.source, pool::Bytes::File)
-            {
-                if let Some(error) = &d.error {
-                    pass.errors.push(error.clone());
-                }
-                self.apply_byte_read_result(&mut plan, &d)?;
-                if plan.finished() {
-                    self.record_byte_read_status(&plan, d.source_read.as_ref(), pass)?;
-                    self.finish_plan(plan);
                 } else {
+                    // The next part of the same input keeps its place.
                     waiting.push_front(plan);
                 }
-                continue;
             }
-            if d.write_failed && d.content_refused {
-                // Reading this range again is refused again: the chain stops
-                // at its cursor, failed with the writer's reason, until the
-                // bytes or the reading change.
-                if let Some(chain) = d.chain {
-                    plan.parser_chain = Some(chain);
-                    if d.end > plan.stored_upto {
-                        plan.stored_upto = d.end;
-                        plan.storing_started = true;
-                    }
-                }
-                refused.push((plan, d.error.unwrap_or_default()));
-                continue;
-            }
-            if d.write_failed {
-                if let Some(error) = d.error {
-                    pass.errors.push(error);
-                }
-                if plan.tracked {
-                    self.refresh_confirmed_input(&plan.path)?;
-                }
-                continue;
-            }
-            pass.bytes_stored += d.stored;
-            if d.continuation_missing && !plan.parser_deferred {
-                pass.errors.push(format!(
-                    "parser continuation unavailable at {}:{}; captured bytes kept",
-                    plan.input.id, plan.parse_pos
-                ));
-            }
-            if let Some(e) = &d.error {
-                pass.errors.push(e.clone());
-            }
-            let parsed = has_reading(plan.origin);
-            plan.apply(d, parsed);
-            if plan.finished() {
-                // A read failure before producing any reading has no external
-                // work to await. Earlier prepared steps still need confirmation.
-                if self.archive.is_primary()
-                    && matches!(plan.change, Change::Reparse { .. })
-                    && (!plan.failed || plan.failure_recorded || plan.checkpoint.is_some())
-                {
-                    if self.confirmed_reading(&plan)? {
-                        if plan.tracked {
-                            self.refresh_confirmed_input(&plan.path)?;
-                        }
-                    } else {
-                        pass.capture_pending = true;
-                    }
-                    continue;
-                }
-                self.make_due_copies(&mut plan, pass)?;
-                pass.capture_pending |= plan.pending.is_some();
+            drop(pool);
+            let report: WriteReport = self.flush_writes()?;
+            pass.messages_written += report.messages;
+            pass.segment_syncs += report.segment_syncs;
+            pass.segment_bytes_written += report.segment_bytes_written;
+            pass.blobs_appended += report.blobs_appended;
+            pass.blobs_deduplicated += report.blobs_deduplicated;
+            pass.errors.extend(report.errors);
+            for (mut plan, error) in refused {
+                let error = format!("the writer refused {}: {error}", plan.path.display());
+                self.record_failure(&mut plan, error, pass);
                 self.finish_plan(plan);
-            } else {
-                // The next part of the same input keeps its place.
-                waiting.push_front(plan);
             }
+            Ok(())
+        })();
+        for (path, _) in active_chains.into_values() {
+            self.finish_chain_path(&path);
         }
-        drop(pool);
-        let report: WriteReport = self.flush_writes()?;
-        pass.messages_written += report.messages;
-        pass.segment_syncs += report.segment_syncs;
-        pass.segment_bytes_written += report.segment_bytes_written;
-        pass.blobs_appended += report.blobs_appended;
-        pass.blobs_deduplicated += report.blobs_deduplicated;
-        pass.errors.extend(report.errors);
-        for (mut plan, error) in refused {
-            let error = format!("the writer refused {}: {error}", plan.path.display());
-            self.record_failure(&mut plan, error, pass);
-            self.finish_plan(plan);
+        result
+    }
+
+    /// A rejected spool cursor cannot become progress. An existing committed
+    /// stop at this same cursor can keep its error and bind the retry.
+    fn record_retried_stop(&mut self, plan: &mut Plan, pass: &mut Pass) -> Result<(), EngineError> {
+        let Change::Reparse { chain } = plan.change else {
+            return Ok(());
+        };
+        let version = plan.origin.reading_version();
+        let stored = self
+            .reads
+            .reader()?
+            .parser_checkpoint(&plan.input.id, chain, &version)?;
+        let Some(stored) = stored.filter(|stored| {
+            stored.reading_version == version
+                && stored.parsed_upto == plan.parse_pos
+                && stored.progress.at_length() == Some(plan.size)
+        }) else {
+            return Ok(());
+        };
+        let progress = match stored.progress {
+            polylogue_model::batch::ParseProgress::Failed { error, .. } => {
+                polylogue_model::batch::StepProgress::Failed { error }
+            }
+            polylogue_model::batch::ParseProgress::Refused { reason, .. } => {
+                polylogue_model::batch::StepProgress::Refused { reason }
+            }
+            _ => return Ok(()),
+        };
+        self.record_stop(plan, progress, pass);
+        if self.archive.is_primary() && plan.failure_recorded {
+            match self.confirmed_reading(plan) {
+                Ok(confirmed) => pass.capture_pending |= !confirmed,
+                Err(error) => {
+                    pass.capture_pending = true;
+                    return Err(error);
+                }
+            }
         }
         Ok(())
+    }
+
+    /// Saving a prepared write does not advance a cached parser cursor. Both
+    /// pooled stored parsing and replacement readings wait for confirmation.
+    pub(crate) fn confirmed_reading(&self, plan: &Plan) -> Result<bool, EngineError> {
+        let Change::Reparse { chain } = plan.change else {
+            return Err(polylogue_store::StoreError::invalid(
+                "a stored reading needs its confirmed source chain",
+            )
+            .into());
+        };
+        let version = plan.origin.reading_version();
+        let cursor = self
+            .reads
+            .reader()?
+            .parser_checkpoint(&plan.input.id, chain, &version)?;
+        Ok(cursor.is_some_and(|cursor| {
+            if cursor.reading_version != version {
+                return false;
+            }
+            if let Some(length) = cursor.progress.at_length() {
+                return length == plan.size
+                    && if cursor.progress.stopped() {
+                        cursor.stopped_attempt == Some(self.stopped_attempt)
+                    } else {
+                        cursor.parsed_upto >= plan.parse_pos
+                    };
+            }
+            cursor.parsed_upto >= plan.parse_pos
+                && (!(plan.waiting || plan.failure_recorded) || cursor.parsed_upto >= plan.size)
+        }))
+    }
+
+    fn chain_committed(
+        &mut self,
+        mut plan: Plan,
+        written: Result<Option<u64>, EngineError>,
+        pass: &mut Pass,
+    ) {
+        self.finish_chain_path(&plan.path);
+        match written {
+            Ok(Some(written)) => {
+                if self.archive.is_primary() {
+                    match self.confirmed_reading(&plan) {
+                        Ok(true) => {
+                            pass.messages_written += written;
+                            if plan.tracked
+                                && let Err(error) = self.refresh_confirmed_input(&plan.path)
+                            {
+                                pass.errors.push(format!("confirmed reading: {error}"));
+                            }
+                        }
+                        Ok(false) => pass.capture_pending = true,
+                        Err(error) => pass.errors.push(format!("confirmed reading: {error}")),
+                    }
+                } else {
+                    pass.messages_written += written;
+                    self.finish_plan(plan);
+                }
+            }
+            Ok(None) | Err(EngineError::Stopped) => {}
+            Err(EngineError::Store(polylogue_store::StoreError::PrimaryPending { .. })) => {
+                pass.capture_pending = true;
+            }
+            Err(error) => {
+                pass.errors
+                    .push(format!("re-parse {}: {error}", plan.path.display()));
+                if matches!(error, EngineError::Parse(_))
+                    && let Err(error) = self.record_retried_stop(&mut plan, pass)
+                {
+                    pass.errors.push(format!("record retried stop: {error}"));
+                }
+            }
+        }
+    }
+
+    fn finish_chain_path(&mut self, path: &Path) {
+        let count = self.reparsing.get_mut(path).expect("running chain path");
+        *count -= 1;
+        if *count == 0 {
+            self.reparsing.remove(path);
+        }
     }
 
     /// Records what a finished plan leaves for the next pass. Parser state

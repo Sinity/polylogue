@@ -128,8 +128,6 @@ fn unauthenticated_hook_field_stays_unknown() {
     let mut reading = crate::writer::ChainReading::new().unwrap();
     reading.push(&mut step).unwrap();
     w.writer
-        .sender()
-        .unwrap()
         .replace_chain(input, chain, length, reading)
         .unwrap();
     assert_eq!(

@@ -11,8 +11,6 @@ fn a_zip_group_commits_all_member_links_or_retries_after_an_uncommitted_tail() {
         let store = Arc::new(archive.blobs().unwrap());
         fault::arm(point, "", Action::Fail, 0, 1);
         let outcomes = writer
-            .sender()
-            .unwrap()
             .store_group(linked(&archive, "interrupted", false), Arc::clone(&store))
             .unwrap();
         assert!(outcomes.iter().all(Result::is_err), "{point}: {outcomes:?}");
@@ -34,8 +32,6 @@ fn a_zip_group_commits_all_member_links_or_retries_after_an_uncommitted_tail() {
         drop(writer);
         let writer = Writer::start(&archive).unwrap();
         let results = writer
-            .sender()
-            .unwrap()
             .store_group(linked(&archive, "exact-retry", false), Arc::clone(&store))
             .unwrap();
         assert!(results.iter().all(Result::is_ok), "{results:?}");
@@ -56,8 +52,6 @@ fn a_zip_group_commits_all_member_links_or_retries_after_an_uncommitted_tail() {
             .unwrap()
             .len();
         let results = writer
-            .sender()
-            .unwrap()
             .store_group(linked(&archive, "duplicate", false), store)
             .unwrap();
         assert!(results.iter().all(Result::is_ok));

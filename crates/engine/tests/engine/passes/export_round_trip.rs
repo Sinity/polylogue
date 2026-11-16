@@ -161,7 +161,7 @@ fn export_file(w: &ClaudeHome, sessions: &[&str]) -> std::path::PathBuf {
             counts.messages += 1;
         }
         reader
-            .visit_event_records_from_ordinal(&id, 0, |event| {
+            .visit_event_records(&id, 0, |event| {
                 records.push(Record::Event(event));
                 counts.events += 1;
                 std::ops::ControlFlow::Continue(())
@@ -249,7 +249,7 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
     );
     let (mut e, _lock) = w.engine(64 << 20);
     assert!(e.run_pass().unwrap().errors.is_empty());
-    let writes = e.writer().unwrap();
+    let writes = e.writer();
     let agent = Author::Agent(Some(SessionId::parse("claude-code:s1").unwrap()));
     let n = std::cell::Cell::new(0);
     let write_as = |w: UserWrite, author: Author| {
@@ -455,7 +455,7 @@ fn copied_subset_survives_whole_parent_bundle_and_later_parent_import() {
         selection.require_complete().unwrap();
         let mut texts = Vec::new();
         selection
-            .visit(|message| {
+            .visit(polylogue_store::read::VisitStart::default(), |message| {
                 texts.push(message.text());
                 std::ops::ControlFlow::Continue(())
             })
@@ -542,7 +542,7 @@ fn copied_file_subset_survives_export_with_parent() {
         selected.require_complete().unwrap();
         let mut texts = Vec::new();
         selected
-            .visit(|m| {
+            .visit(polylogue_store::read::VisitStart::default(), |m| {
                 texts.push(m.text());
                 std::ops::ControlFlow::Continue(())
             })
@@ -569,7 +569,7 @@ fn later_copy_annotations_preserve_declared_parent_without_expanding_earlier_bun
             .unwrap();
         let mut texts = Vec::new();
         selected
-            .visit(|m| {
+            .visit(polylogue_store::read::VisitStart::default(), |m| {
                 texts.push(m.text());
                 std::ops::ControlFlow::Continue(())
             })

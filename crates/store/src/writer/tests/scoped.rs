@@ -19,11 +19,12 @@ fn queued_read_action_rejects_an_obsolete_generation_without_committing() {
     archive.archive.read_scope.begin_reset().unwrap();
     archive.archive.read_scope.finish_reset();
     assert!(matches!(
-        archive
-            .writer
-            .sender()
-            .unwrap()
-            .user_from_read(setting("stale"), token),
+        archive.writer.user(crate::writer::UserSubmission {
+            request: setting("stale"),
+            scope: Some(token),
+            preparation: None,
+            parent: None
+        }),
         Err(StoreError::ScopeChanged)
     ));
     let source = Connection::open(archive.archive.archive_db()).unwrap();
@@ -37,7 +38,12 @@ fn queued_read_action_rejects_an_obsolete_generation_without_committing() {
     assert_eq!(count, 0);
     archive
         .writer
-        .user_from_read(setting("current"), archive.archive.scope_token().unwrap())
+        .user(crate::writer::UserSubmission {
+            request: setting("current"),
+            scope: Some(archive.archive.scope_token().unwrap()),
+            preparation: None,
+            parent: None,
+        })
         .unwrap();
     let count: i64 = source
         .query_row(
@@ -54,9 +60,12 @@ fn a_current_token_from_another_archive_cannot_authorize_an_action() {
     let target = test_archive();
     let other = test_archive();
     assert!(matches!(
-        target
-            .writer
-            .user_from_read(setting("foreign"), other.archive.scope_token().unwrap()),
+        target.writer.user(crate::writer::UserSubmission {
+            request: setting("foreign"),
+            scope: Some(other.archive.scope_token().unwrap()),
+            preparation: None,
+            parent: None
+        }),
         Err(StoreError::ScopeChanged)
     ));
     let source = Connection::open(target.archive.archive_db()).unwrap();
@@ -64,4 +73,51 @@ fn a_current_token_from_another_archive_cannot_authorize_an_action() {
         .query_row("SELECT count(*) FROM client_request", [], |row| row.get(0))
         .unwrap();
     assert_eq!(count, 0);
+}
+
+#[test]
+fn a_full_user_queue_returns_the_entire_submission() {
+    let archive = test_archive();
+    let sender = archive.writer.sender();
+    let pause = sender.pause_user_dispatch_for_test("hold-full-queue", DispatchPhase::Owned);
+    let held = sender.clone();
+    let holding = std::thread::spawn(move || held.user(setting("hold-full-queue")));
+    pause.wait().unwrap();
+    let mut queued = Vec::new();
+    for index in 0..USER_QUEUE {
+        match sender
+            .try_enqueue_user(setting(&format!("queued-{index}")))
+            .unwrap()
+        {
+            Queued::Committing(result) => queued.push(result),
+            Queued::Full(_) => panic!("queue filled before its capacity"),
+        }
+    }
+    let scope = archive.archive.scope_token().unwrap();
+    let parent = ParentLifetime::capture(None, crate::cancellation::Cancellation::default());
+    let request = setting("returned-submission");
+    let submission = UserSubmission {
+        request: request.clone(),
+        scope: Some(scope.clone()),
+        preparation: Some(crate::user_writes::PreparationContext::new(vec![
+            "codex".into(),
+        ])),
+        parent: Some(Arc::clone(&parent)),
+    };
+    let Queued::Full(returned) = sender.try_enqueue_user(submission).unwrap() else {
+        panic!("a full queue accepted another submission");
+    };
+    assert_eq!(returned.request, request);
+    assert!(returned.scope.as_ref().unwrap().same(&scope));
+    assert_eq!(
+        returned.preparation.as_ref().unwrap().bindings().origins,
+        ["codex"]
+    );
+    assert!(Arc::ptr_eq(returned.parent.as_ref().unwrap(), &parent));
+    pause.release();
+    holding.join().unwrap().unwrap();
+    for result in queued {
+        result.recv().unwrap().unwrap();
+    }
+    sender.user(*returned).unwrap();
 }

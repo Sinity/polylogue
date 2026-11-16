@@ -191,7 +191,7 @@ fn writer_deltas_send_source_values_and_first_prompt() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("catalog");
     let mut archive = WriterArchive::new();
-    let subscription = archive.writer.sender().unwrap().completion_commits();
+    let subscription = archive.writer.completion_commits();
     let reads = polylogue_store::ReadPool::open(&archive.archive).unwrap();
     let mut state = publisher::State::new(false, request_metadata());
     state

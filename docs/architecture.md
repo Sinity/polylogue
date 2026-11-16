@@ -207,7 +207,14 @@ Building the archive overlaps every stage:
   worker; a new input starts only when its first range can be queued at
   once, so the inputs a pass has started finish before it starts more, and
   the parser state kept between an input's ranges leaves out the keyed
-  context's changes, which the next range reads from the index;
+  context's changes, which the next range reads from the index. The same
+  pool replaces stored chains' readings: one task parses a chain's ranges
+  in order into a staged reading and hands it to the writer for one commit.
+  Its unparsed bytes count against the pool's memory budget until that
+  commit answers; a task larger than the budget runs alone. With more than
+  one worker, at most all but one parse replacement chains at once, leaving
+  a worker for live ranges. A chain starts after any queued or running
+  range plan of its path; readings of the same path may run together;
 - one writer that resolves text hashes to row identities, appends and commits;
   one map the writer holds keeps text identities for the writer's lifetime,
   including after the first build and while an unreferenced text has no row.
@@ -258,7 +265,9 @@ an export's delivery cursor), so readers never see part of a record and an
 interrupted parse resumes after the last committed batch. An export holds
 at most two batches in memory: one committing while the next is parsed. A whole-chain
 replacement is the exception: it commits once, because readers must see
-either the old reading or the new one. Between transactions the writer starts
+either the old reading or the new one. Live ranges go ahead of queued bulk chain
+tasks through the pool's live queue, including while replacements run.
+Between transactions the writer starts
 a write-ahead log over once it passes its checkpoint size (about 1 GB),
 waiting briefly for readers still reading it, so the log stays bounded while
 readers follow every commit. The pipeline's database connections do not checkpoint on close.

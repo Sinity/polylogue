@@ -25,8 +25,6 @@ fn store_message(archive: &Archive, writer: &Writer, input: &str, text: &str) {
     let mut reading = one_message(input, &format!("{input}-m"), text);
     reading.new_blob = Some(blob);
     let stored = writer
-        .sender()
-        .unwrap()
         .store_group(
             vec![crate::staging::PreparedBatch {
                 batch: reading,
@@ -345,7 +343,7 @@ fn pipeline_readers_open_the_ready_build_and_refuse_it_after_install() {
         0,
         1,
     );
-    let sender = writer.sender().unwrap();
+    let sender = writer.sender();
     let installer = std::thread::spawn(move || sender.derive());
     while !crate::fault::held() && !installer.is_finished() {
         std::thread::yield_now();
@@ -386,7 +384,7 @@ fn a_started_ready_build_reader_keeps_its_snapshot_after_installed_writes() {
         0,
         1,
     );
-    let sender = writer.sender().unwrap();
+    let sender = writer.sender();
     let installer = std::thread::spawn(move || sender.derive());
     while !crate::fault::held() && !installer.is_finished() {
         std::thread::yield_now();

@@ -39,8 +39,6 @@ impl Fixture {
         batch.new_blob = Some(blob);
         let mut stored = self
             .writer
-            .sender()
-            .unwrap()
             .store_group(
                 vec![PreparedBatch {
                     batch,

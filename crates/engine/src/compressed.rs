@@ -323,10 +323,7 @@ impl Engine {
                 },
             ),
         ));
-        let outcomes = self
-            .writer
-            .sender()?
-            .store_group(group, Arc::clone(&self.blobs))?;
+        let outcomes = self.writer.store_group(group, Arc::clone(&self.blobs))?;
         let mut pending = false;
         for outcome in outcomes {
             match outcome {

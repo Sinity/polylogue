@@ -82,14 +82,6 @@ fn pre_io_boundary_excludes_later_commits() {
                 .observation,
             "first"
         );
-        let mut points = Vec::new();
-        reader
-            .visit_revisions_at_length_before(&boundary, "native", 4, |point| {
-                points.push(point);
-                Ok(false)
-            })
-            .unwrap();
-        assert_eq!(points.len(), 1);
     }
     append(&conn, "native", "later", 3, 4, 8);
     {
@@ -102,14 +94,6 @@ fn pre_io_boundary_excludes_later_commits() {
                 .observation,
             "first"
         );
-        let mut points = Vec::new();
-        reader
-            .visit_revisions_at_length_before(&boundary, "native", 8, |point| {
-                points.push(point);
-                Ok(false)
-            })
-            .unwrap();
-        assert!(points.is_empty());
     }
     archive.advance_generation_for_test().unwrap();
     assert!(matches!(

@@ -158,7 +158,7 @@ enum Msg {
     /// A user write is waiting in its own queue.
     Wake,
     Batch(Box<Batch>),
-    Flush(SyncSender<WriteReport>, bool),
+    Flush(SyncSender<Result<WriteReport>>, bool),
     /// Run the derive step over sessions whose derived rows are stale;
     /// answered with the number of sessions derived.
     Derive(SyncSender<Result<u64>>),
@@ -170,7 +170,7 @@ enum Msg {
 /// Handle to the writer thread. Dropping it stops the thread after the
 /// batches already sent are written.
 pub struct Writer {
-    tx: Option<WriterQueue>,
+    sender: WriterSender,
     /// The archive's stop request ([`Archive::stop`]). It ends the writer's
     /// long work early: a derive pass after the transaction in progress, a
     /// first build's ending (its deferred indexes) at its next step, replay
@@ -180,9 +180,6 @@ pub struct Writer {
     /// affected.
     stop: crate::cancellation::Cancellation,
     handle: Option<JoinHandle<()>>,
-    /// The index was empty when the writer started: its first pass is a
-    /// first build.
-    started_empty: bool,
     /// In primary mode, the thread that reads the confirmed stream.
     follower: Option<follow::Follower>,
 }
@@ -211,12 +208,31 @@ struct WriterQueue {
     dispatch: dispatch::DispatchPauses,
 }
 
+/// A user request and what the writer checks before committing it.
+pub struct UserSubmission {
+    pub request: polylogue_model::user::UserRequest,
+    /// The pinned read that selected the request.
+    pub scope: Option<crate::ReadScopeToken>,
+    /// Trusted catalog context.
+    pub preparation: Option<crate::user_writes::PreparationContext>,
+    /// The caller's deadline and cancellation.
+    pub parent: Option<Arc<ParentLifetime>>,
+}
+
+impl From<polylogue_model::user::UserRequest> for UserSubmission {
+    fn from(request: polylogue_model::user::UserRequest) -> Self {
+        Self {
+            request,
+            scope: None,
+            preparation: None,
+            parent: None,
+        }
+    }
+}
+
 enum UserMsg {
     Request(
-        Box<polylogue_model::user::UserRequest>,
-        Option<crate::ReadScopeToken>,
-        Option<Box<crate::user_writes::PreparationContext>>,
-        Option<Arc<ParentLifetime>>,
+        Box<UserSubmission>,
         SyncSender<Result<polylogue_model::user::UserOutcome>>,
     ),
     QueryObject(
@@ -280,6 +296,13 @@ impl WriterQueue {
             crate::timing::queue(crate::timing::Queue::Writer, -1);
         }
         result
+    }
+
+    fn ask<T>(&self, message: impl FnOnce(SyncSender<Result<T>>) -> Msg) -> Result<T> {
+        let (reply, wait) = sync_channel(1);
+        self.send(message(reply))
+            .map_err(|_| StoreError::WriterGone)?;
+        wait.recv().map_err(|_| StoreError::WriterGone)?
     }
 
     fn send_user(&self, message: UserMsg) -> std::result::Result<(), ()> {
@@ -455,7 +478,6 @@ impl Writer {
         let building = !archive.is_primary() && archive.index_build.building();
         let index = open_index_writer(archive, building)?;
         let installed = archive.root.join("index.db");
-        let empty: bool = index.scalar("SELECT NOT EXISTS (SELECT 1 FROM parse_state)", [])?;
         // A first build inserts rows without maintaining the indexes only
         // reads use, or the unique indexes on natural keys; each is built
         // once from a sorted scan when the build ends. The writer's other
@@ -547,22 +569,14 @@ impl Writer {
 
         let handle = polylogue_model::spawn_named("polylogue-writer", move || inner.run(&rx))?;
         let follower = stream_source
-            .map(|sinex| follow::Follower::start(sinex, queue.clone(), archive))
+            .map(|sinex| follow::Follower::start(sinex, WriterSender(queue.clone()), archive))
             .transpose()?;
         Ok(Self {
-            tx: Some(queue),
+            sender: WriterSender(queue),
             stop,
             handle: Some(handle),
-            started_empty: empty,
             follower,
         })
-    }
-
-    pub fn apply_confirmed(&self, events: Vec<crate::primary::Confirmed>) -> Result<i64> {
-        self.tx
-            .as_ref()
-            .ok_or(StoreError::WriterGone)?
-            .apply_confirmed(events)
     }
 
     pub fn synchronize_primary(&self) -> Result<i64> {
@@ -573,243 +587,21 @@ impl Writer {
         follower.synchronize()?;
         // Acknowledged material can now produce input/reading events. Wait
         // outside the writer thread while the follower reads the next page.
-        let (reply, wait) = sync_channel(1);
-        self.tx
-            .as_ref()
-            .ok_or(StoreError::WriterGone)?
-            .send(Msg::DrainPrimaryCaptures(reply))
-            .map_err(|_| StoreError::WriterGone)?;
-        wait.recv().map_err(|_| StoreError::WriterGone)??;
+        self.sender.0.ask(Msg::DrainPrimaryCaptures)?;
         follower.synchronize()
     }
 
-    /// Whether the index was empty when the writer started.
-    pub fn started_empty(&self) -> bool {
-        self.started_empty
-    }
-
-    /// Queues one batch. Blocks while the writer is busy and its queue is
-    /// full, which is what holds the parse pool back.
-    pub fn send(&self, batch: Batch) -> Result<()> {
-        self.sender()?.send(batch)
-    }
-
     /// A cheap handle the parse pool's threads send through.
-    pub fn sender(&self) -> Result<WriterSender> {
-        Ok(WriterSender(self.tx.clone().ok_or(StoreError::WriterGone)?))
+    pub fn sender(&self) -> WriterSender {
+        self.sender.clone()
     }
+}
 
-    /// Restores a request a bundle carried without resolving its intent again.
-    pub fn restore_authored(
-        &self,
-        prepared: polylogue_model::authored::PreparedRequest,
-    ) -> Result<polylogue_model::user::UserOutcome> {
-        authored::restore_via(
-            self.tx.as_ref().ok_or(StoreError::WriterGone)?,
-            authored::Restoration { prepared },
-        )
-    }
+impl std::ops::Deref for Writer {
+    type Target = WriterSender;
 
-    /// Restores an assertion a bundle carried, unchanged; it creates no
-    /// request of its own.
-    pub fn restore_assertion(
-        &self,
-        fact: polylogue_model::assertion::AssertionFact,
-    ) -> Result<polylogue_model::user::UserOutcome> {
-        assertions::restore_via(
-            self.tx.as_ref().ok_or(StoreError::WriterGone)?,
-            assertions::Restoration { fact, import: None },
-        )
-    }
-
-    /// Restore an assertion together with its separately observed import.
-    pub fn restore_assertion_from(
-        &self,
-        fact: polylogue_model::assertion::AssertionFact,
-        import: polylogue_model::authored::ImportAttribution,
-    ) -> Result<polylogue_model::user::UserOutcome> {
-        assertions::restore_via(
-            self.tx.as_ref().ok_or(StoreError::WriterGone)?,
-            assertions::Restoration {
-                fact,
-                import: Some(import),
-            },
-        )
-    }
-
-    /// Writes one user request and waits for its source commit.
-    /// It goes ahead of batches still queued.
-    pub fn user(
-        &self,
-        request: polylogue_model::user::UserRequest,
-    ) -> Result<polylogue_model::user::UserOutcome> {
-        user_via(
-            self.tx.as_ref().ok_or(StoreError::WriterGone)?,
-            request,
-            None,
-            None,
-            None,
-        )
-    }
-
-    /// Writes an action selected by a pinned read. The writer checks that
-    /// read's archive and generation again before committing its effect.
-    pub fn user_from_read(
-        &self,
-        request: polylogue_model::user::UserRequest,
-        scope: crate::ReadScopeToken,
-    ) -> Result<polylogue_model::user::UserOutcome> {
-        user_via(
-            self.tx.as_ref().ok_or(StoreError::WriterGone)?,
-            request,
-            Some(scope),
-            None,
-            None,
-        )
-    }
-
-    /// Accepts trusted product catalog context outside the immutable request.
-    /// A read-derived action carries its original scope token through the queue.
-    pub fn user_preparing(
-        &self,
-        request: polylogue_model::user::UserRequest,
-        preparation: crate::user_writes::PreparationContext,
-        scope: Option<crate::ReadScopeToken>,
-    ) -> Result<polylogue_model::user::UserOutcome> {
-        user_via(
-            self.tx.as_ref().ok_or(StoreError::WriterGone)?,
-            request,
-            scope,
-            Some(preparation),
-            None,
-        )
-    }
-
-    /// Derives the products of sessions changed since they were last
-    /// derived, after the batches already queued.
-    pub fn derive(&self) -> Result<u64> {
-        derive_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?)
-    }
-
-    /// Stores one import's bytes ([`Inner::store_bytes`]). The batch
-    /// carries the observation, never parsed rows.
-    pub fn store_bytes(
-        &self,
-        prepared: crate::staging::PreparedBytes,
-        batch: Batch,
-    ) -> Result<crate::staging::StoredInput> {
-        let (reply, wait) = sync_channel(1);
-        self.tx
-            .as_ref()
-            .ok_or(StoreError::WriterGone)?
-            .send(Msg::StoreBytes(Box::new(prepared), Box::new(batch), reply))
-            .map_err(|_| StoreError::WriterGone)?;
-        wait.recv().map_err(|_| StoreError::WriterGone)?
-    }
-
-    /// Stores a group of an older archive's inputs with their rows as that
-    /// archive held them ([`Inner::restore_older`]).
-    pub fn restore_older(&self, group: OlderGroup) -> Result<GroupOutcome> {
-        older_archive::restore_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, group)
-    }
-
-    /// Stores bytes no input holds as one blob ([`Inner::store_blob`]);
-    /// `file` is the private file [`crate::Archive::prepare_decoded`] wrote
-    /// for a new blob too large to keep inline.
-    pub fn store_blob(
-        &self,
-        new_blob: crate::NewBlob,
-        file: Option<crate::staging::PreparedBytes>,
-    ) -> Result<BlobHash> {
-        let (reply, wait) = sync_channel(1);
-        self.tx
-            .as_ref()
-            .ok_or(StoreError::WriterGone)?
-            .send(Msg::StoreBlob(Box::new((new_blob, file)), reply))
-            .map_err(|_| StoreError::WriterGone)?;
-        wait.recv().map_err(|_| StoreError::WriterGone)?
-    }
-
-    /// Accepts one completed discovery walk. Primary visibility follows its
-    /// confirmed product; standalone visibility follows the index transaction.
-    pub fn coverage(&self, coverage: polylogue_model::capture::Coverage) -> Result<()> {
-        coverage_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, coverage)
-    }
-
-    /// Loads one capture read from the spool with its complete metadata.
-    pub fn capture(&self, identity: String) -> Result<crate::primary::Capture> {
-        capture_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, identity)
-    }
-
-    /// Pins one pending source body held in the spool, without network I/O.
-    pub fn capture_body(&self, identity: String) -> Result<Vec<crate::primary::PreparedBody>> {
-        capture_body_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, identity)
-    }
-
-    /// Reads a spool byte cursor for one observed provider state.
-    pub fn byte_cursor(
-        &self,
-        query: crate::primary::ByteCursorQuery,
-    ) -> Result<Option<crate::primary::ByteCursor>> {
-        byte_cursor_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, query)
-    }
-
-    /// Pages original group membership without loading parsed events.
-    pub fn pending_group_headers(
-        &self,
-        group: String,
-        after_ordinal: Option<u64>,
-        limit: usize,
-    ) -> Result<crate::primary::PendingGroupPage> {
-        pending_group_headers_via(
-            self.tx.as_ref().ok_or(StoreError::WriterGone)?,
-            group,
-            after_ordinal,
-            limit,
-        )
-    }
-
-    /// Reads the confirmed identity and the pending source held in the spool,
-    /// in writer order.
-    pub fn source_snapshot(
-        &self,
-        source: crate::primary::SourceSelector,
-    ) -> Result<crate::primary::SourceSnapshot> {
-        source_snapshot_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, source)
-    }
-
-    /// Installs export associations derived from committed source observations.
-    pub fn import_assets(&self, staged: crate::export_items::ExportItems) -> Result<()> {
-        let (reply, wait) = sync_channel(1);
-        self.tx
-            .as_ref()
-            .ok_or(StoreError::WriterGone)?
-            .send(Msg::Assets(Box::new(staged), reply))
-            .map_err(|_| StoreError::WriterGone)?;
-        wait.recv().map_err(|_| StoreError::WriterGone)?
-    }
-
-    /// Waits until earlier batches are committed and their memory charges
-    /// are released, then returns what was written since the previous flush.
-    /// Outside a first build what it reports is also derived and searchable;
-    /// a first build derives and indexes once, when it ends.
-    pub fn flush(&self) -> Result<WriteReport> {
-        self.flush_with_derivation(true)
-    }
-
-    /// Commits queued rows; the engine derives once its round is complete.
-    pub fn flush_rows(&self) -> Result<WriteReport> {
-        self.flush_with_derivation(false)
-    }
-
-    fn flush_with_derivation(&self, derive: bool) -> Result<WriteReport> {
-        let (reply, wait) = sync_channel(1);
-        self.tx
-            .as_ref()
-            .ok_or(StoreError::WriterGone)?
-            .send(Msg::Flush(reply, derive))
-            .map_err(|_| StoreError::WriterGone)?;
-        wait.recv().map_err(|_| StoreError::WriterGone)
+    fn deref(&self) -> &Self::Target {
+        &self.sender
     }
 }
 
@@ -831,9 +623,7 @@ impl Writer {
         if let Some(mut follower) = self.follower.take() {
             follower.stop();
         }
-        if let Some(queue) = self.tx.take() {
-            queue.stop();
-        }
+        self.sender.0.stop();
         if let Some(h) = self.handle.take() {
             let _ = h.join();
         }
@@ -850,11 +640,8 @@ impl Writer {
 pub enum Queued {
     /// In the queue; the receiver gets its outcome once committed.
     Committing(Receiver<Result<polylogue_model::user::UserOutcome>>),
-    /// The queue was full: the request and its read scope, handed back.
-    Full(
-        Box<polylogue_model::user::UserRequest>,
-        Option<crate::ReadScopeToken>,
-    ),
+    /// The queue was full: the complete submission, handed back.
+    Full(Box<UserSubmission>),
 }
 
 /// A clonable sender into the writer, for worker threads.
@@ -862,23 +649,6 @@ pub enum Queued {
 pub struct WriterSender(WriterQueue);
 
 impl WriterSender {
-    /// A parent is checked by the writer at dispatch, after bounded queue waits.
-    pub fn user_with_parent(
-        &self,
-        request: polylogue_model::user::UserRequest,
-        parent: Arc<ParentLifetime>,
-    ) -> Result<polylogue_model::user::UserOutcome> {
-        user_via(&self.0, request, None, None, Some(parent))
-    }
-    /// Also preserves the pinned selection's independent generation guard.
-    pub fn user_from_read_with_parent(
-        &self,
-        request: polylogue_model::user::UserRequest,
-        scope: crate::ReadScopeToken,
-        parent: Arc<ParentLifetime>,
-    ) -> Result<polylogue_model::user::UserOutcome> {
-        user_via(&self.0, request, Some(scope), None, Some(parent))
-    }
     pub fn completion_commits(&self) -> crate::completion::CommitSubscription {
         self.0.commits.subscribe()
     }
@@ -980,7 +750,6 @@ impl WriterSender {
         }
         reading.resolve(&self.0.resolver, &input, chain, length)?;
         let (reply, wait) = sync_channel(1);
-        crate::timing::reading_commit_queue(1);
         if self
             .0
             .send(Msg::ReplaceChain(
@@ -992,127 +761,63 @@ impl WriterSender {
             ))
             .is_err()
         {
-            crate::timing::reading_commit_queue(-1);
             return Err(StoreError::WriterGone);
         }
         Ok(wait)
     }
 
-    /// As [`Writer::restore_authored`].
-    pub fn restore_authored(
-        &self,
-        prepared: polylogue_model::authored::PreparedRequest,
-    ) -> Result<polylogue_model::user::UserOutcome> {
-        authored::restore_via(&self.0, authored::Restoration { prepared })
-    }
-
-    /// As [`Writer::restore_assertion`].
-    pub fn restore_assertion(
-        &self,
-        fact: polylogue_model::assertion::AssertionFact,
-    ) -> Result<polylogue_model::user::UserOutcome> {
-        assertions::restore_via(&self.0, assertions::Restoration { fact, import: None })
-    }
-
-    /// Restore an assertion together with its separately observed import.
-    pub fn restore_assertion_from(
-        &self,
-        fact: polylogue_model::assertion::AssertionFact,
-        import: polylogue_model::authored::ImportAttribution,
-    ) -> Result<polylogue_model::user::UserOutcome> {
-        assertions::restore_via(
-            &self.0,
-            assertions::Restoration {
-                fact,
-                import: Some(import),
-            },
-        )
-    }
-
-    /// As [`Writer::user`].
+    /// Writes one user request and waits for its source commit.
+    /// It goes ahead of batches still queued.
     pub fn user(
         &self,
-        request: polylogue_model::user::UserRequest,
+        submission: impl Into<UserSubmission>,
     ) -> Result<polylogue_model::user::UserOutcome> {
-        user_via(&self.0, request, None, None, None)
-    }
-
-    /// As [`Writer::user_from_read`].
-    pub fn user_from_read(
-        &self,
-        request: polylogue_model::user::UserRequest,
-        scope: crate::ReadScopeToken,
-    ) -> Result<polylogue_model::user::UserOutcome> {
-        user_via(&self.0, request, Some(scope), None, None)
-    }
-
-    /// Queues a user request without waiting for its commit or for room in
-    /// the queue. The writer applies queued requests in order, so a later
-    /// request (a delivery's outcome after the delivery) finds an earlier one.
-    /// [`Queued::Committing`] receives the outcome once committed; when
-    /// nobody waits for it, a failure is kept in the writer's report. A full
-    /// queue hands the request back as [`Queued::Full`].
-    pub fn try_enqueue_user(
-        &self,
-        request: polylogue_model::user::UserRequest,
-        scope: Option<crate::ReadScopeToken>,
-    ) -> Result<Queued> {
         let (reply, wait) = sync_channel(1);
-        match self.0.try_send_user(UserMsg::Request(
-            Box::new(request),
-            scope,
-            None,
-            None,
-            reply,
-        )) {
+        self.0
+            .send_user(UserMsg::Request(Box::new(submission.into()), reply))
+            .map_err(|_| StoreError::WriterGone)?;
+        wait.recv().map_err(|_| StoreError::WriterGone)?
+    }
+
+    /// Queues a user request without waiting for its commit or for room.
+    /// A full queue hands the complete submission back as [`Queued::Full`].
+    pub fn try_enqueue_user(&self, submission: impl Into<UserSubmission>) -> Result<Queued> {
+        let (reply, wait) = sync_channel(1);
+        match self
+            .0
+            .try_send_user(UserMsg::Request(Box::new(submission.into()), reply))
+        {
             Ok(()) => Ok(Queued::Committing(wait)),
-            Err(Some(UserMsg::Request(request, scope, ..))) => Ok(Queued::Full(request, scope)),
+            Err(Some(UserMsg::Request(submission, _))) => Ok(Queued::Full(submission)),
             Err(_) => Err(StoreError::WriterGone),
         }
     }
 
-    /// As [`Writer::user_preparing`].
-    pub fn user_preparing(
+    /// Stores one import's bytes. The batch carries the observation, never parsed rows.
+    pub fn store_bytes(
         &self,
-        request: polylogue_model::user::UserRequest,
-        preparation: crate::user_writes::PreparationContext,
-        scope: Option<crate::ReadScopeToken>,
-    ) -> Result<polylogue_model::user::UserOutcome> {
-        user_via(&self.0, request, scope, Some(preparation), None)
+        prepared: crate::staging::PreparedBytes,
+        batch: Batch,
+    ) -> Result<crate::staging::StoredInput> {
+        self.0
+            .ask(|reply| Msg::StoreBytes(Box::new(prepared), Box::new(batch), reply))
     }
 
-    /// Carries trusted preparation, pinned scope and the producing parent together.
-    pub fn user_preparing_with_parent(
-        &self,
-        request: polylogue_model::user::UserRequest,
-        preparation: crate::user_writes::PreparationContext,
-        scope: Option<crate::ReadScopeToken>,
-        parent: Arc<ParentLifetime>,
-    ) -> Result<polylogue_model::user::UserOutcome> {
-        user_via(&self.0, request, scope, Some(preparation), Some(parent))
-    }
-
-    /// As [`Writer::restore_older`].
-    pub fn restore_older(&self, group: OlderGroup) -> Result<GroupOutcome> {
-        older_archive::restore_via(&self.0, group)
-    }
-
-    /// As [`Writer::store_blob`].
+    /// Stores bytes no input holds as one blob; `file` is the private file
+    /// [`crate::Archive::prepare_decoded`] wrote for a blob too large to keep inline.
     pub fn store_blob(
         &self,
         new_blob: crate::NewBlob,
         file: Option<crate::staging::PreparedBytes>,
     ) -> Result<BlobHash> {
-        let (reply, wait) = sync_channel(1);
         self.0
-            .send(Msg::StoreBlob(Box::new((new_blob, file)), reply))
-            .map_err(|_| StoreError::WriterGone)?;
-        wait.recv().map_err(|_| StoreError::WriterGone)?
+            .ask(|reply| Msg::StoreBlob(Box::new((new_blob, file)), reply))
     }
 
-    /// As [`Writer::coverage`].
+    /// Accepts one completed discovery walk. Primary visibility follows its
+    /// confirmed product; standalone visibility follows the index transaction.
     pub fn coverage(&self, coverage: polylogue_model::capture::Coverage) -> Result<()> {
-        coverage_via(&self.0, coverage)
+        self.0.ask(|reply| Msg::Coverage(Box::new(coverage), reply))
     }
 
     /// Records one older chain's complete reading from its newer chain of
@@ -1124,145 +829,41 @@ impl WriterSender {
     /// interrupts only this reconstructible copy as `Stopped`;
     /// copies already committed remain recorded.
     pub fn copy_reading(&self, copy: crate::ReadingCopy) -> Result<Result<bool>> {
-        let (reply, wait) = sync_channel(1);
-        self.0
-            .send(Msg::CopyReading(copy, reply))
-            .map_err(|_| StoreError::WriterGone)?;
-        wait.recv().map_err(|_| StoreError::WriterGone)?
+        self.0.ask(|reply| Msg::CopyReading(copy, reply))
     }
 
-    /// Puts sessions whose live state changed with the clock alone on the
-    /// change feed ([`crate::live`]).
+    /// Puts sessions whose live state changed with the clock alone on the change feed.
     pub fn live_clock(&self, sessions: Vec<String>) -> Result<()> {
-        let (reply, wait) = sync_channel(1);
-        self.0
-            .send(Msg::LiveClock(sessions, reply))
-            .map_err(|_| StoreError::WriterGone)?;
-        wait.recv().map_err(|_| StoreError::WriterGone)?
+        self.0.ask(|reply| Msg::LiveClock(sessions, reply))
     }
 
-    /// As [`Writer::capture`].
-    pub fn capture(&self, identity: String) -> Result<crate::primary::Capture> {
-        capture_via(&self.0, identity)
-    }
-
-    /// As [`Writer::capture_body`].
-    pub fn capture_body(&self, identity: String) -> Result<Vec<crate::primary::PreparedBody>> {
-        capture_body_via(&self.0, identity)
-    }
-
-    /// As [`Writer::byte_cursor`].
-    pub fn byte_cursor(
-        &self,
-        query: crate::primary::ByteCursorQuery,
-    ) -> Result<Option<crate::primary::ByteCursor>> {
-        byte_cursor_via(&self.0, query)
-    }
-
-    /// As [`Writer::pending_group_headers`].
-    pub fn pending_group_headers(
-        &self,
-        group: String,
-        after_ordinal: Option<u64>,
-        limit: usize,
-    ) -> Result<crate::primary::PendingGroupPage> {
-        pending_group_headers_via(&self.0, group, after_ordinal, limit)
-    }
-
-    /// As [`Writer::source_snapshot`].
-    pub fn source_snapshot(
-        &self,
-        source: crate::primary::SourceSelector,
-    ) -> Result<crate::primary::SourceSnapshot> {
-        source_snapshot_via(&self.0, source)
-    }
-
-    /// As [`Writer::derive`].
+    /// Derives the products of sessions changed since they were last derived,
+    /// after the batches already queued.
     pub fn derive(&self) -> Result<u64> {
-        derive_via(&self.0)
+        self.0.ask(Msg::Derive)
     }
-}
 
-fn capture_via(tx: &WriterQueue, identity: String) -> Result<crate::primary::Capture> {
-    let (reply, wait) = sync_channel(1);
-    tx.send(Msg::Capture(identity, reply))
-        .map_err(|_| StoreError::WriterGone)?;
-    wait.recv().map_err(|_| StoreError::WriterGone)?
-}
+    /// Installs export associations derived from committed source observations.
+    pub fn import_assets(&self, staged: crate::export_items::ExportItems) -> Result<()> {
+        self.0.ask(|reply| Msg::Assets(Box::new(staged), reply))
+    }
 
-fn capture_body_via(
-    tx: &WriterQueue,
-    identity: String,
-) -> Result<Vec<crate::primary::PreparedBody>> {
-    let (reply, wait) = sync_channel(1);
-    tx.send(Msg::CaptureBody(identity, reply))
-        .map_err(|_| StoreError::WriterGone)?;
-    wait.recv().map_err(|_| StoreError::WriterGone)?
-}
+    /// Waits until earlier batches are committed and their memory charges
+    /// are released, then returns what was written since the previous flush.
+    /// Outside a first build what it reports is also derived and searchable;
+    /// a first build derives and indexes once, when it ends.
+    pub fn flush(&self) -> Result<WriteReport> {
+        self.flush_with_derivation(true)
+    }
 
-fn byte_cursor_via(
-    tx: &WriterQueue,
-    query: crate::primary::ByteCursorQuery,
-) -> Result<Option<crate::primary::ByteCursor>> {
-    let (reply, wait) = sync_channel(1);
-    tx.send(Msg::ByteCursor(Box::new(query), reply))
-        .map_err(|_| StoreError::WriterGone)?;
-    wait.recv().map_err(|_| StoreError::WriterGone)?
-}
+    /// Commits queued rows; the engine derives once its round is complete.
+    pub fn flush_rows(&self) -> Result<WriteReport> {
+        self.flush_with_derivation(false)
+    }
 
-fn pending_group_headers_via(
-    tx: &WriterQueue,
-    group: String,
-    after_ordinal: Option<u64>,
-    limit: usize,
-) -> Result<crate::primary::PendingGroupPage> {
-    let (reply, wait) = sync_channel(1);
-    tx.send(Msg::PendingGroupHeaders(group, after_ordinal, limit, reply))
-        .map_err(|_| StoreError::WriterGone)?;
-    wait.recv().map_err(|_| StoreError::WriterGone)?
-}
-
-fn source_snapshot_via(
-    tx: &WriterQueue,
-    source: crate::primary::SourceSelector,
-) -> Result<crate::primary::SourceSnapshot> {
-    let (reply, wait) = sync_channel(1);
-    tx.send(Msg::SourceSnapshot(source, reply))
-        .map_err(|_| StoreError::WriterGone)?;
-    wait.recv().map_err(|_| StoreError::WriterGone)?
-}
-
-fn coverage_via(tx: &WriterQueue, coverage: polylogue_model::capture::Coverage) -> Result<()> {
-    let (reply, wait) = sync_channel(1);
-    tx.send(Msg::Coverage(Box::new(coverage), reply))
-        .map_err(|_| StoreError::WriterGone)?;
-    wait.recv().map_err(|_| StoreError::WriterGone)?
-}
-
-fn derive_via(tx: &WriterQueue) -> Result<u64> {
-    let (reply, wait) = sync_channel(1);
-    tx.send(Msg::Derive(reply))
-        .map_err(|_| StoreError::WriterGone)?;
-    wait.recv().map_err(|_| StoreError::WriterGone)?
-}
-
-fn user_via(
-    tx: &WriterQueue,
-    request: polylogue_model::user::UserRequest,
-    scope: Option<crate::ReadScopeToken>,
-    preparation: Option<crate::user_writes::PreparationContext>,
-    parent: Option<Arc<ParentLifetime>>,
-) -> Result<polylogue_model::user::UserOutcome> {
-    let (reply, wait) = sync_channel(1);
-    tx.send_user(UserMsg::Request(
-        Box::new(request),
-        scope,
-        preparation.map(Box::new),
-        parent,
-        reply,
-    ))
-    .map_err(|_| StoreError::WriterGone)?;
-    wait.recv().map_err(|_| StoreError::WriterGone)?
+    fn flush_with_derivation(&self, derive: bool) -> Result<WriteReport> {
+        self.0.ask(|reply| Msg::Flush(reply, derive))
+    }
 }
 
 struct Inner {
@@ -1312,11 +913,17 @@ impl Inner {
                 break;
             };
             match message {
-                UserMsg::Request(request, scope, preparation, parent, reply) => {
+                UserMsg::Request(submission, reply) => {
+                    let UserSubmission {
+                        request,
+                        scope,
+                        preparation,
+                        parent,
+                    } = *submission;
                     let result = self
                         .check_user_parent(&request.id, parent.as_deref())
                         .and_then(|()| {
-                            self.write_user(&request, scope.as_ref(), preparation.as_deref())
+                            self.write_user(&request, scope.as_ref(), preparation.as_ref())
                         });
                     // A queued request nobody waits for still reports its failure.
                     if let Err(std::sync::mpsc::SendError(Err(error))) = reply.send(result) {
@@ -1595,7 +1202,6 @@ impl Inner {
                 let _ = reply.send(crate::timing::time(crate::timing::Stage::Rows, || {
                     self.replace_chain(input, chain, length, reading)
                 }));
-                crate::timing::reading_commit_queue(-1);
                 self.serve_users();
             }
             for (blob, reply) in blobs.drain(..) {
@@ -1714,7 +1320,7 @@ impl Inner {
                 if derive && self.first_build.is_none() {
                     self.request_derive(derive_thread::Waiting::Flush(reply, Box::new(report)));
                 } else {
-                    let _ = reply.send(report);
+                    let _ = reply.send(Ok(report));
                 }
             }
             self.restart_full_logs();
@@ -1910,7 +1516,7 @@ impl Inner {
             }
             (Err(e), derive_thread::Waiting::Flush(reply, mut report)) => {
                 report.errors.push(format!("derive: {e}"));
-                let _ = reply.send(*report);
+                let _ = reply.send(Ok(*report));
             }
             (Err(e), derive_thread::Waiting::Nobody) => {
                 self.report.errors.push(format!("derive: {e}"));

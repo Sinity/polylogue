@@ -66,7 +66,7 @@ fn prepared_selection_streams_total_answer_and_stops_at_callback() {
     let mut refs = vec![];
     let mut after = None;
     reader
-        .visit_selection::<SelectionError>(&prepared, None, None, |row| {
+        .visit_selection::<SelectionError>(&prepared, crate::read::VisitFrom::First, None, |row| {
             refs.push(row.target.unwrap().to_string());
             after = Some(row.position);
             Ok(ControlFlow::Break(()))
@@ -74,10 +74,17 @@ fn prepared_selection_streams_total_answer_and_stops_at_callback() {
         .unwrap();
     assert_eq!(refs, ["session:test:three"]);
     reader
-        .visit_selection::<SelectionError>(&prepared, after.as_ref(), None, |row| {
-            refs.push(row.target.unwrap().to_string());
-            Ok(ControlFlow::Continue(()))
-        })
+        .visit_selection::<SelectionError>(
+            &prepared,
+            after
+                .as_ref()
+                .map_or(crate::read::VisitFrom::First, crate::read::VisitFrom::After),
+            None,
+            |row| {
+                refs.push(row.target.unwrap().to_string());
+                Ok(ControlFlow::Continue(()))
+            },
+        )
         .unwrap();
     assert_eq!(
         refs,
@@ -88,7 +95,7 @@ fn targets(reader: &crate::Reader<'_>, text: &str, options: &Options) -> Vec<Str
     let prepared = reader.prepare_selection(text, options).unwrap();
     let mut refs = vec![];
     reader
-        .visit_selection::<SelectionError>(&prepared, None, None, |row| {
+        .visit_selection::<SelectionError>(&prepared, crate::read::VisitFrom::First, None, |row| {
             refs.push(row.target.unwrap().to_string());
             Ok(ControlFlow::Continue(()))
         })
@@ -158,7 +165,7 @@ fn prepared_selection_keeps_block_reference() {
     let prepared = reader.prepare_selection(target, &options()).unwrap();
     let mut refs = vec![];
     reader
-        .visit_selection::<SelectionError>(&prepared, None, None, |row| {
+        .visit_selection::<SelectionError>(&prepared, crate::read::VisitFrom::First, None, |row| {
             refs.push(row.target.unwrap().to_string());
             Ok(ControlFlow::Continue(()))
         })
@@ -178,7 +185,7 @@ fn selected_reference_survives_and_membership_keeps_offset() {
         .unwrap();
     let mut rows = vec![];
     reader
-        .visit_selection::<SelectionError>(&prepared, None, None, |row| {
+        .visit_selection::<SelectionError>(&prepared, crate::read::VisitFrom::First, None, |row| {
             rows.push(row);
             Ok(ControlFlow::Continue(()))
         })
@@ -217,7 +224,7 @@ fn group_identity_excludes_counts_and_unknown_observation_stays_unknown() {
         .unwrap();
     let mut rows = vec![];
     reader
-        .visit_selection::<SelectionError>(&prepared, None, None, |row| {
+        .visit_selection::<SelectionError>(&prepared, crate::read::VisitFrom::First, None, |row| {
             rows.push(row);
             Ok(ControlFlow::Continue(()))
         })
@@ -283,7 +290,7 @@ fn no_hook_or_activity_events_means_unknown_live_state() {
     let selected = reader.prepare_selection("sessions", &options).unwrap();
     let mut rows = vec![];
     reader
-        .visit_selection::<SelectionError>(&selected, None, None, |row| {
+        .visit_selection::<SelectionError>(&selected, crate::read::VisitFrom::First, None, |row| {
             rows.push(row);
             Ok(ControlFlow::Continue(()))
         })
@@ -363,10 +370,15 @@ fn model_authored_user_task_does_not_answer_a_turn() {
         let mut rows = vec![];
         let selection = reader.prepare_selection("turns", &options).unwrap();
         reader
-            .visit_selection::<SelectionError>(&selection, None, None, |row| {
-                rows.push(row.values);
-                Ok(ControlFlow::Continue(()))
-            })
+            .visit_selection::<SelectionError>(
+                &selection,
+                crate::read::VisitFrom::First,
+                None,
+                |row| {
+                    rows.push(row.values);
+                    Ok(ControlFlow::Continue(()))
+                },
+            )
             .unwrap();
         rows
     };
@@ -428,7 +440,7 @@ fn assertion_reference_keeps_its_family_and_revision() {
         .unwrap();
     let mut rows = vec![];
     reader
-        .visit_selection::<SelectionError>(&selected, None, None, |row| {
+        .visit_selection::<SelectionError>(&selected, crate::read::VisitFrom::First, None, |row| {
             rows.push((row.target.unwrap().to_string(), row.values));
             Ok(ControlFlow::Continue(()))
         })
@@ -451,7 +463,7 @@ fn assertion_reference_keeps_its_family_and_revision() {
         .unwrap();
     let mut exact_values = vec![];
     reader
-        .visit_selection::<SelectionError>(&exact, None, None, |row| {
+        .visit_selection::<SelectionError>(&exact, crate::read::VisitFrom::First, None, |row| {
             exact_values.push(row.values);
             Ok(ControlFlow::Continue(()))
         })
@@ -474,7 +486,7 @@ fn assertion_reference_keeps_its_family_and_revision() {
     assert!(family.direct_target().is_none());
     let mut count = 0;
     reader
-        .visit_selection::<SelectionError>(&family, None, None, |_| {
+        .visit_selection::<SelectionError>(&family, crate::read::VisitFrom::First, None, |_| {
             count += 1;
             Ok(ControlFlow::Continue(()))
         })
@@ -558,11 +570,16 @@ fn direct_reads_keep_opaque_ids_and_ranges_whole() {
     for selection in [&opaque, &quoted, &explicit] {
         let mut found = Vec::new();
         reader
-            .visit_selection::<SelectionError>(selection, None, None, |row| {
-                assert_eq!(row.values["id"], opaque_id);
-                found.push(row.target.unwrap().reference());
-                Ok(ControlFlow::Continue(()))
-            })
+            .visit_selection::<SelectionError>(
+                selection,
+                crate::read::VisitFrom::First,
+                None,
+                |row| {
+                    assert_eq!(row.values["id"], opaque_id);
+                    found.push(row.target.unwrap().reference());
+                    Ok(ControlFlow::Continue(()))
+                },
+            )
             .unwrap();
         assert_eq!(found.as_slice(), std::slice::from_ref(&reference));
     }
@@ -586,7 +603,7 @@ fn direct_reads_keep_opaque_ids_and_ranges_whole() {
     assert!(saved.direct_target().is_none());
     let mut saved_ids = Vec::new();
     reader
-        .visit_selection::<SelectionError>(&saved, None, None, |row| {
+        .visit_selection::<SelectionError>(&saved, crate::read::VisitFrom::First, None, |row| {
             saved_ids.push(row.target.unwrap().to_string());
             Ok(ControlFlow::Continue(()))
         })
@@ -613,7 +630,7 @@ fn direct_reads_keep_opaque_ids_and_ranges_whole() {
     assert!(sorted.direct_target().is_none());
     let mut selected = vec![];
     reader
-        .visit_selection::<SelectionError>(&sorted, None, None, |row| {
+        .visit_selection::<SelectionError>(&sorted, crate::read::VisitFrom::First, None, |row| {
             selected.push(row.target.unwrap().to_string());
             Ok(ControlFlow::Continue(()))
         })
@@ -625,7 +642,7 @@ fn direct_reads_keep_opaque_ids_and_ranges_whole() {
     assert!(query_rows.direct_target().is_none());
     let mut query_count = 0;
     reader
-        .visit_selection::<SelectionError>(&query_rows, None, None, |_| {
+        .visit_selection::<SelectionError>(&query_rows, crate::read::VisitFrom::First, None, |_| {
             query_count += 1;
             Ok(ControlFlow::Continue(()))
         })
@@ -655,7 +672,7 @@ fn direct_authored_reference_uses_family_revision_membership() {
     let prepared = reader.prepare_selection(&reference, &options()).unwrap();
     let mut selected = Vec::new();
     reader
-        .visit_selection::<SelectionError>(&prepared, None, None, |row| {
+        .visit_selection::<SelectionError>(&prepared, crate::read::VisitFrom::First, None, |row| {
             selected.push(row.target.unwrap().to_string());
             Ok(ControlFlow::Continue(()))
         })
@@ -670,10 +687,15 @@ fn direct_authored_reference_uses_family_revision_membership() {
         .unwrap();
     let mut count = 0;
     reader
-        .visit_selection::<SelectionError>(&wrong_family, None, None, |_| {
-            count += 1;
-            Ok(ControlFlow::Continue(()))
-        })
+        .visit_selection::<SelectionError>(
+            &wrong_family,
+            crate::read::VisitFrom::First,
+            None,
+            |_| {
+                count += 1;
+                Ok(ControlFlow::Continue(()))
+            },
+        )
         .unwrap();
     assert_eq!(count, 0);
 }
@@ -711,10 +733,15 @@ fn event_read_target_uses_event_grain() {
         .unwrap();
     let mut references = vec![];
     reader
-        .visit_selection::<SelectionError>(&query_rows, None, None, |row| {
-            references.push(row.target.unwrap());
-            Ok(ControlFlow::Continue(()))
-        })
+        .visit_selection::<SelectionError>(
+            &query_rows,
+            crate::read::VisitFrom::First,
+            None,
+            |row| {
+                references.push(row.target.unwrap());
+                Ok(ControlFlow::Continue(()))
+            },
+        )
         .unwrap();
     assert_eq!(references.len(), 1);
     assert!(matches!(references[0], ReadTarget::Event(_)));
@@ -724,7 +751,7 @@ fn event_read_target_uses_event_grain() {
     assert_eq!(direct.direct_target(), Some(&references[0]));
     let mut selected = vec![];
     reader
-        .visit_selection::<SelectionError>(&direct, None, None, |row| {
+        .visit_selection::<SelectionError>(&direct, crate::read::VisitFrom::First, None, |row| {
             selected.push(row.target.unwrap());
             Ok(ControlFlow::Continue(()))
         })
@@ -752,7 +779,7 @@ fn assertion_values_are_decoded_once_and_predicates_match_recorded_text() {
         .unwrap();
     let mut values = vec![];
     reader
-        .visit_selection::<SelectionError>(&selected, None, None, |row| {
+        .visit_selection::<SelectionError>(&selected, crate::read::VisitFrom::First, None, |row| {
             values.push(row.values["value"].clone());
             Ok(ControlFlow::Continue(()))
         })
@@ -769,7 +796,7 @@ fn assertion_values_are_decoded_once_and_predicates_match_recorded_text() {
         .unwrap();
     let mut values = vec![];
     reader
-        .visit_selection::<SelectionError>(&selected, None, None, |row| {
+        .visit_selection::<SelectionError>(&selected, crate::read::VisitFrom::First, None, |row| {
             values.push(row.values["value"].clone());
             Ok(ControlFlow::Continue(()))
         })
@@ -790,10 +817,15 @@ fn selection_and_listing_agree_when_every_row_is_committed() {
         let prepared = reader.prepare_query_selection(text, &options).unwrap();
         let mut targets = vec![];
         reader
-            .visit_selection::<SelectionError>(&prepared, None, None, |row| {
-                targets.push(row.target.unwrap().to_string());
-                Ok(ControlFlow::Continue(()))
-            })
+            .visit_selection::<SelectionError>(
+                &prepared,
+                crate::read::VisitFrom::First,
+                None,
+                |row| {
+                    targets.push(row.target.unwrap().to_string());
+                    Ok(ControlFlow::Continue(()))
+                },
+            )
             .unwrap();
         targets
     };
@@ -925,10 +957,15 @@ fn cwd_searches_recorded_directories_and_never_scans_sessions() {
         let selected = reader.prepare_selection(text, &options).unwrap();
         let mut ids = Vec::new();
         reader
-            .visit_selection::<SelectionError>(&selected, None, None, |row| {
-                ids.push(row.values["id"].as_str().unwrap().to_owned());
-                Ok(ControlFlow::Continue(()))
-            })
+            .visit_selection::<SelectionError>(
+                &selected,
+                crate::read::VisitFrom::First,
+                None,
+                |row| {
+                    ids.push(row.values["id"].as_str().unwrap().to_owned());
+                    Ok(ControlFlow::Continue(()))
+                },
+            )
             .unwrap();
         ids.sort();
         ids
@@ -956,10 +993,15 @@ fn unseeded_random_windows_keep_rows_and_their_order() {
             .unwrap();
         let mut rows = Vec::new();
         reader
-            .visit_selection::<SelectionError>(&selection, None, None, |row| {
-                rows.push(row);
-                Ok(ControlFlow::Continue(()))
-            })
+            .visit_selection::<SelectionError>(
+                &selection,
+                crate::read::VisitFrom::First,
+                None,
+                |row| {
+                    rows.push(row);
+                    Ok(ControlFlow::Continue(()))
+                },
+            )
             .unwrap();
         assert_eq!(rows.len(), count);
         let targets = rows
@@ -989,10 +1031,15 @@ fn matches_evaluate_selected_parents_once_and_keep_their_order() {
             ).unwrap();
             let mut rows = Vec::new();
             reader
-                .visit_selection::<SelectionError>(&selection, None, None, |row| {
-                    rows.push(row);
-                    Ok(ControlFlow::Continue(()))
-                })
+                .visit_selection::<SelectionError>(
+                    &selection,
+                    crate::read::VisitFrom::First,
+                    None,
+                    |row| {
+                        rows.push(row);
+                        Ok(ControlFlow::Continue(()))
+                    },
+                )
                 .unwrap();
             assert_eq!(rows.len(), 2, "{order}");
             let parents = rows

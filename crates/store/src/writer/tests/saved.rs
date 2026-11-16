@@ -72,7 +72,12 @@ fn saved_acceptance_keeps_objects_and_dependencies() {
     );
     archive
         .writer
-        .user_preparing(batch.clone(), context(), None)
+        .user(crate::writer::UserSubmission {
+            request: batch.clone(),
+            scope: None,
+            preparation: Some(context()),
+            parent: None,
+        })
         .unwrap();
     let reads = ReadPool::open(&archive.archive).unwrap();
     for expected in [&alpha, &beta] {
@@ -101,7 +106,12 @@ fn saved_acceptance_keeps_objects_and_dependencies() {
     };
     archive
         .writer
-        .user_preparing(save("changed-alpha", "alpha", "messages"), context(), None)
+        .user(crate::writer::UserSubmission {
+            request: save("changed-alpha", "alpha", "messages"),
+            scope: None,
+            preparation: Some(context()),
+            parent: None,
+        })
         .unwrap();
     let reader = reads.reader().unwrap();
     let saved_plan = crate::selection::prepare_query_plan_on(
@@ -130,16 +140,17 @@ fn invalid_saved_batch_acks_no_objects_and_sends_no_assertions() {
     assert!(
         archive
             .writer
-            .user_preparing(
-                request(
+            .user(crate::writer::UserSubmission {
+                request: request(
                     "invalid-batch",
                     UserWrite::Assert {
                         assertions: vec![definition("alpha", "sessions", &alpha), wrong],
                     },
                 ),
-                context(),
-                None,
-            )
+                scope: None,
+                preparation: Some(context()),
+                parent: None
+            })
             .is_err()
     );
     let reads = ReadPool::open(&archive.archive).unwrap();
@@ -169,7 +180,12 @@ fn missing_preparation_context_refuses_new_writes_only() {
     ));
     archive
         .writer
-        .user_preparing(original.clone(), context(), None)
+        .user(crate::writer::UserSubmission {
+            request: original.clone(),
+            scope: None,
+            preparation: Some(context()),
+            parent: None,
+        })
         .unwrap();
     assert!(archive.writer.user(original).unwrap().repeat);
     archive
@@ -192,15 +208,20 @@ fn saved_figure_keeps_its_denominator_as_a_separate_question() {
     let population = plan("sessions", &bindings());
     let missing = save("figure", "total", "sessions | count");
     assert!(matches!(
-        archive.writer.user_preparing(missing, context(), None),
+        archive.writer.user(crate::writer::UserSubmission {
+            request: missing,
+            scope: None,
+            preparation: Some(context()),
+            parent: None
+        }),
         Err(StoreError::Query(
             polylogue_query::QueryError::Invalid { .. }
         ))
     ));
     archive
         .writer
-        .user_preparing(
-            request(
+        .user(crate::writer::UserSubmission {
+            request: request(
                 "figure",
                 UserWrite::SaveQuery {
                     name: "total".into(),
@@ -208,9 +229,10 @@ fn saved_figure_keeps_its_denominator_as_a_separate_question() {
                     denominator: Some("sessions".into()),
                 },
             ),
-            context(),
-            None,
-        )
+            scope: None,
+            preparation: Some(context()),
+            parent: None,
+        })
         .unwrap();
     let reads = ReadPool::open(&archive.archive).unwrap();
     let reader = reads.reader().unwrap();

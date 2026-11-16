@@ -143,12 +143,12 @@ impl Engine {
 
         let rows = db.assertions()?;
         let machine = self.config.machine.clone();
-        let writer = self.writer.sender()?;
+        let writer = self.writer.sender();
         let pass_id = format!("predecessor-user-db:{rows_id}");
         let pass = polylogue_model::RevisionReference::exact(pass_id.clone(), pass_id.clone());
         if !rows.is_empty() {
             let outcome = match user_db::pass(&pass_id, &rows, &machine) {
-                Ok(fact) => match writer.restore_assertion(fact) {
+                Ok(fact) => match writer.restore_assertion(fact, None) {
                     Ok(outcome) => restored(&outcome),
                     Err(error) => refusal(error)?,
                 },
@@ -164,7 +164,7 @@ impl Engine {
         }
         for (id, mapped) in user_db::facts(&rows, &machine, &pass, &db.result_set_members()?) {
             let outcome = match mapped {
-                Ok(fact) => match writer.restore_assertion(fact) {
+                Ok(fact) => match writer.restore_assertion(fact, None) {
                     Ok(outcome) => restored(&outcome),
                     Err(error) => refusal(error)?,
                 },
@@ -193,7 +193,7 @@ impl Engine {
         for schema in db.schemas()? {
             let row = format!("{}@{}", schema.id, schema.version);
             let outcome = match user_db::rubric(&schema, &machine) {
-                Ok(fact) => match writer.restore_assertion_from(fact, ingress.clone()) {
+                Ok(fact) => match writer.restore_assertion(fact, Some(ingress.clone())) {
                     Ok(outcome) => restored(&outcome),
                     Err(error) => refusal(error)?,
                 },

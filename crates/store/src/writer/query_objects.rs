@@ -30,38 +30,6 @@ impl PreparedObjects {
     }
 }
 
-fn object_via(
-    queue: &WriterQueue,
-    object: QueryObject,
-    parent: Option<Arc<ParentLifetime>>,
-) -> Result<()> {
-    let (reply, wait) = sync_channel(1);
-    queue
-        .send_user(UserMsg::QueryObject(Box::new(object), parent, reply))
-        .map_err(|_| StoreError::WriterGone)?;
-    wait.recv().map_err(|_| StoreError::WriterGone)?
-}
-
-fn begin_via(
-    queue: &WriterQueue,
-    run: QueryRun,
-    parent: Option<Arc<ParentLifetime>>,
-) -> Result<()> {
-    let (reply, wait) = sync_channel(1);
-    queue
-        .send_user(UserMsg::QueryRun(Box::new(run), parent, reply))
-        .map_err(|_| StoreError::WriterGone)?;
-    wait.recv().map_err(|_| StoreError::WriterGone)?
-}
-
-fn finish_via(queue: &WriterQueue, outcome: QueryRunOutcome) -> Result<Receiver<Result<()>>> {
-    let (reply, wait) = sync_channel(1);
-    queue
-        .send_user(UserMsg::QueryRunOutcome(Box::new(outcome), reply))
-        .map_err(|_| StoreError::WriterGone)?;
-    Ok(wait)
-}
-
 /// Space reserved before a read, consumed by its completed execution record.
 /// Dropping it returns capacity without creating a run.
 pub struct HistorySlot {
@@ -93,27 +61,6 @@ impl HistorySlot {
     }
 }
 
-impl Writer {
-    /// Stores the question before a response exposes its reference.
-    pub fn query_object(&self, object: QueryObject) -> Result<()> {
-        object_via(
-            self.tx.as_ref().ok_or(StoreError::WriterGone)?,
-            object,
-            None,
-        )
-    }
-
-    /// Acknowledges immutable inputs before a continuation exposes its run reference.
-    pub fn begin_query_run(&self, run: QueryRun) -> Result<()> {
-        begin_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, run, None)
-    }
-
-    /// Dropping the completion answer never cancels accepted history work.
-    pub fn finish_query_run(&self, outcome: QueryRunOutcome) -> Result<Receiver<Result<()>>> {
-        finish_via(self.tx.as_ref().ok_or(StoreError::WriterGone)?, outcome)
-    }
-}
-
 impl WriterSender {
     /// Reserve bounded writer capacity before preparing a read. The request's
     /// existing deadline and cancellation cover this reservation.
@@ -127,29 +74,39 @@ impl WriterSender {
         })
     }
 
-    pub fn query_object_with_parent(
+    /// Stores the question before a response exposes its reference.
+    pub fn query_object(
         &self,
         object: QueryObject,
-        parent: Arc<ParentLifetime>,
+        parent: Option<Arc<ParentLifetime>>,
     ) -> Result<()> {
-        object_via(&self.0, object, Some(parent))
-    }
-    pub fn begin_query_run_with_parent(
-        &self,
-        run: QueryRun,
-        parent: Arc<ParentLifetime>,
-    ) -> Result<()> {
-        begin_via(&self.0, run, Some(parent))
-    }
-    pub fn query_object(&self, object: QueryObject) -> Result<()> {
-        object_via(&self.0, object, None)
+        let (reply, wait) = sync_channel(1);
+        self.0
+            .send_user(UserMsg::QueryObject(Box::new(object), parent, reply))
+            .map_err(|_| StoreError::WriterGone)?;
+        wait.recv().map_err(|_| StoreError::WriterGone)?
     }
 
-    pub fn begin_query_run(&self, run: QueryRun) -> Result<()> {
-        begin_via(&self.0, run, None)
+    /// Acknowledges immutable inputs before a continuation exposes its run reference.
+    pub fn begin_query_run(
+        &self,
+        run: QueryRun,
+        parent: Option<Arc<ParentLifetime>>,
+    ) -> Result<()> {
+        let (reply, wait) = sync_channel(1);
+        self.0
+            .send_user(UserMsg::QueryRun(Box::new(run), parent, reply))
+            .map_err(|_| StoreError::WriterGone)?;
+        wait.recv().map_err(|_| StoreError::WriterGone)?
     }
+
+    /// Dropping the completion answer never cancels accepted history work.
     pub fn finish_query_run(&self, outcome: QueryRunOutcome) -> Result<Receiver<Result<()>>> {
-        finish_via(&self.0, outcome)
+        let (reply, wait) = sync_channel(1);
+        self.0
+            .send_user(UserMsg::QueryRunOutcome(Box::new(outcome), reply))
+            .map_err(|_| StoreError::WriterGone)?;
+        Ok(wait)
     }
 }
 

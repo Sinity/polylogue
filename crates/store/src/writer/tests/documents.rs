@@ -45,7 +45,7 @@ fn document_block_visitors_seek_original_ordinals_and_stop_before_corrupt_bodies
     let selected = reader.select_document(&original.id).unwrap().unwrap();
     let mut first = Vec::new();
     selected
-        .visit_blocks_from(0, |ordinal, block| {
+        .visit_blocks(crate::read::VisitFrom::At(0), |ordinal, block| {
             first.push((ordinal, block));
             ControlFlow::Break(())
         })
@@ -53,10 +53,13 @@ fn document_block_visitors_seek_original_ordinals_and_stop_before_corrupt_bodies
     assert_eq!(first, vec![(0, original.blocks[0].clone())]);
     let mut previous = Vec::new();
     selected
-        .visit_blocks_before_with_ordinals(Some(2), |ordinal, block| {
-            previous.push((ordinal, block));
-            ControlFlow::Continue(())
-        })
+        .visit_blocks(
+            Some(2).map_or(crate::read::VisitFrom::Last, crate::read::VisitFrom::Before),
+            |ordinal, block| {
+                previous.push((ordinal, block));
+                ControlFlow::Continue(())
+            },
+        )
         .unwrap();
     assert_eq!(
         previous,
@@ -74,7 +77,7 @@ fn document_block_visitors_seek_original_ordinals_and_stop_before_corrupt_bodies
     let selected = reader.select_document(&original.id).unwrap().unwrap();
     let mut middle = Vec::new();
     selected
-        .visit_blocks_from(1, |ordinal, block| {
+        .visit_blocks(crate::read::VisitFrom::At(1), |ordinal, block| {
             middle.push((ordinal, block));
             ControlFlow::Break(())
         })
@@ -82,10 +85,13 @@ fn document_block_visitors_seek_original_ordinals_and_stop_before_corrupt_bodies
     assert_eq!(middle, vec![(1, original.blocks[1].clone())]);
     let mut reverse = Vec::new();
     selected
-        .visit_blocks_before_with_ordinals(Some(2), |ordinal, block| {
-            reverse.push((ordinal, block));
-            ControlFlow::Break(())
-        })
+        .visit_blocks(
+            Some(2).map_or(crate::read::VisitFrom::Last, crate::read::VisitFrom::Before),
+            |ordinal, block| {
+                reverse.push((ordinal, block));
+                ControlFlow::Break(())
+            },
+        )
         .unwrap();
     assert_eq!(reverse, middle);
 }
@@ -243,7 +249,7 @@ fn a_started_document_read_keeps_one_generation_after_rewrite_and_pool_close() {
     pool.close();
     let mut blocks = Vec::new();
     selected
-        .visit_blocks(|block| {
+        .visit_blocks(crate::read::VisitFrom::First, |_, block| {
             blocks.push(block);
             if blocks.len() == 1 {
                 let mut changed = original.clone();

@@ -248,7 +248,7 @@ fn build_on_sinex(example: &Morrow, home: &Path, sinex: &Arc<Sinex>, running: &R
         polylogue_testkit::stopped_attempt(),
     )
     .unwrap();
-    let commits = engine.writer().unwrap().completion_commits();
+    let commits = engine.writer().completion_commits();
     let started = Instant::now();
     confirm_capture(
         &mut engine,
@@ -678,7 +678,7 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
             polylogue_testkit::stopped_attempt(),
         )
         .unwrap();
-        let commits = engine.writer().unwrap().completion_commits();
+        let commits = engine.writer().completion_commits();
         let ready = Instant::now();
         loop {
             match ReadPool::open(&archive)
@@ -726,7 +726,7 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
                 )
             },
         );
-        engine.writer().unwrap().derive().unwrap();
+        engine.writer().derive().unwrap();
         drop(engine);
         drop(lock);
         archive
@@ -984,7 +984,7 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
             polylogue_testkit::stopped_attempt(),
         )
         .unwrap();
-        let commits = engine.writer().unwrap().completion_commits();
+        let commits = engine.writer().completion_commits();
         let before_import = answer_difference(&expected, &answers(&archive).0);
         let imported = example.import_exports(&mut engine).unwrap();
         assert!(
@@ -1032,7 +1032,6 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
         );
         engine
             .writer()
-            .unwrap()
             .user(polylogue_store::fixture::authored::operator_request(
                 "0199d8a0-0000-7000-8000-00000000a001".into(),
                 UserWrite::Assert {

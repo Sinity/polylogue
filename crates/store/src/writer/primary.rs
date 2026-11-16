@@ -333,25 +333,59 @@ pub(super) fn validate_primary_reading(index: &Connection, batch: &Batch) -> Res
     Ok(chain)
 }
 
-impl WriterQueue {
-    pub(super) fn apply_confirmed(&self, events: Vec<crate::primary::Confirmed>) -> Result<i64> {
+impl WriterSender {
+    /// Loads one capture read from the spool with its complete metadata.
+    pub fn capture(&self, identity: String) -> Result<crate::primary::Capture> {
+        self.0.ask(|reply| Msg::Capture(identity, reply))
+    }
+
+    /// Pins one pending source body held in the spool, without network I/O.
+    pub fn capture_body(&self, identity: String) -> Result<Vec<crate::primary::PreparedBody>> {
+        self.0.ask(|reply| Msg::CaptureBody(identity, reply))
+    }
+
+    /// Reads a spool byte cursor for one observed provider state.
+    pub fn byte_cursor(
+        &self,
+        query: crate::primary::ByteCursorQuery,
+    ) -> Result<Option<crate::primary::ByteCursor>> {
+        self.0.ask(|reply| Msg::ByteCursor(Box::new(query), reply))
+    }
+
+    /// Pages original group membership without loading parsed events.
+    pub fn pending_group_headers(
+        &self,
+        group: String,
+        after_ordinal: Option<u64>,
+        limit: usize,
+    ) -> Result<crate::primary::PendingGroupPage> {
+        self.0
+            .ask(|reply| Msg::PendingGroupHeaders(group, after_ordinal, limit, reply))
+    }
+
+    /// Reads the confirmed identity and the pending source held in the spool,
+    /// in writer order.
+    pub fn source_snapshot(
+        &self,
+        source: crate::primary::SourceSelector,
+    ) -> Result<crate::primary::SourceSnapshot> {
+        self.0.ask(|reply| Msg::SourceSnapshot(source, reply))
+    }
+
+    pub fn apply_confirmed(&self, events: Vec<crate::primary::Confirmed>) -> Result<i64> {
         let result: Result<i64> = (|| {
             let kinds = confirmed_kinds(&events);
-            let (reply, wait) = sync_channel(1);
-            self.send(Msg::StageConfirmed(events, reply))
-                .map_err(|_| StoreError::WriterGone)?;
-            let mut step = wait.recv().map_err(|_| StoreError::WriterGone)??;
+            let mut step = self.0.ask(|reply| Msg::StageConfirmed(events, reply))?;
             loop {
                 match step {
                     crate::primary::confirmed::Step::Complete(position) => return Ok(position),
                     crate::primary::confirmed::Step::Prepare(mut prepared) => {
                         // Queued groups can hold these key locks. Waiting here
                         // leaves the serial writer free to commit or reject them.
-                        prepare_source_retractions(&self.resolver, &mut prepared.retractions)?;
-                        let (reply, wait) = sync_channel(1);
-                        self.send(Msg::ApplyConfirmed(prepared, kinds, reply))
-                            .map_err(|_| StoreError::WriterGone)?;
-                        step = wait.recv().map_err(|_| StoreError::WriterGone)??;
+                        prepare_source_retractions(&self.0.resolver, &mut prepared.retractions)?;
+                        step = self
+                            .0
+                            .ask(|reply| Msg::ApplyConfirmed(prepared, kinds, reply))?;
                     }
                 }
             }
@@ -359,7 +393,7 @@ impl WriterQueue {
         if let Err(error) = &result {
             // Staging or off-writer resolution can also fail after a preceding
             // position committed. Report it through the same serialized stream error.
-            let _ = self.send(Msg::StreamFollowed(Some(error.to_string())));
+            let _ = self.0.send(Msg::StreamFollowed(Some(error.to_string())));
         }
         result
     }

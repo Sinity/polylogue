@@ -298,8 +298,6 @@ fn equal_length_context_boundary_changes_refresh_typed_event_items() {
         let mut reading = ChainReading::new().unwrap();
         reading.push(&mut input.parse[0]).unwrap();
         w.writer
-            .sender()
-            .unwrap()
             .replace_chain(input.input.clone(), 1, 100, reading)
             .unwrap();
         w.writer.derive().unwrap();
@@ -435,8 +433,6 @@ fn selected_event_changes_keep_their_payload_fields_and_placement() {
         let mut reading = ChainReading::new().unwrap();
         reading.push(&mut input.parse[0]).unwrap();
         w.writer
-            .sender()
-            .unwrap()
             .replace_chain(input.input, 1, 100, reading)
             .unwrap();
         w.writer.derive().unwrap();
@@ -597,11 +593,7 @@ fn unchanged_shown_message_still_moves_events_to_its_new_source_sequence() {
     main.parse[0].order_from = Some(1);
     let mut reading = ChainReading::new().unwrap();
     reading.push(&mut main.parse[0]).unwrap();
-    w.writer
-        .sender()
-        .unwrap()
-        .replace_chain(main.input, 1, 100, reading)
-        .unwrap();
+    w.writer.replace_chain(main.input, 1, 100, reading).unwrap();
     w.writer.derive().unwrap();
     assert_eq!(shown(), before);
     assert_eq!(

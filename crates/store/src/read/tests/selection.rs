@@ -236,7 +236,7 @@ fn reads_answer_promptly_while_the_writer_works_through_a_backlog() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(&dir.path().join("archive")).unwrap();
     let writer = crate::Writer::start(&archive).unwrap();
-    let sender = writer.sender().unwrap();
+    let sender = writer.sender();
     let stop = Arc::new(AtomicBool::new(false));
     let feeding = {
         let stop = Arc::clone(&stop);

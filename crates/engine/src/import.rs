@@ -308,10 +308,7 @@ impl Engine {
         if group.is_empty() {
             return Ok(executed);
         }
-        let outcomes = self
-            .writer
-            .sender()?
-            .store_group(group, Arc::clone(&self.blobs))?;
+        let outcomes = self.writer.store_group(group, Arc::clone(&self.blobs))?;
         for ((at, origin, facts, input), outcome) in metadata.into_iter().zip(outcomes) {
             let stored = match outcome {
                 Ok(stored) => stored,

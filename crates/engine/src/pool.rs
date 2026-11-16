@@ -4,11 +4,13 @@
 //! writer one batch. Live appends go before bulk work. One input has at
 //! most one job in flight, so its parser state passes from job to job.
 
-use crate::read;
+use crate::{EngineError, plan::Plan, read};
 use polylogue_model::{Json, LockExt, spawn_named};
 use polylogue_sources::OriginSpec;
 use polylogue_store::staging::PreparedBatch;
+use polylogue_store::writer::ChainReading;
 use polylogue_store::writer::WriterSender;
+use polylogue_store::{Archive, ReadPool};
 use polylogue_store::{Batch, Change, InFlight, InputKey, Observation, ParseStep};
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -116,9 +118,54 @@ pub struct Done {
     pub source_read: Option<polylogue_store::primary::AcquisitionReceipt>,
 }
 
+pub(crate) enum Task {
+    Range(Box<Job>),
+    Chain { id: u64, plan: Box<Plan> },
+}
+
+pub(crate) enum Finished {
+    Range(Box<Done>),
+    Chain(Box<ChainDone>),
+}
+
+pub(crate) struct ChainDone {
+    pub id: u64,
+    pub plan: Plan,
+    pub written: Result<Option<u64>, crate::EngineError>,
+    pub bytes_read: u64,
+}
+
+pub(crate) struct ChainSettings {
+    pub stopped_attempt: polylogue_model::batch::StoppedAttempt,
+    pub read_memory: u64,
+    pub yielding: Arc<std::sync::atomic::AtomicBool>,
+}
+
+pub(crate) struct Cancelled {
+    pub ranges: usize,
+    pub chains: Vec<Plan>,
+}
+
+impl Task {
+    fn bytes(&self) -> u64 {
+        match self {
+            Self::Range(job) => job.bytes(),
+            Self::Chain { plan, .. } => plan.size - plan.parse_pos,
+        }
+    }
+
+    fn priority(&self) -> Priority {
+        match self {
+            Self::Range(job) => job.priority,
+            Self::Chain { plan, .. } => plan.priority,
+        }
+    }
+}
+
 struct Queue {
-    live: VecDeque<Job>,
-    bulk: VecDeque<Job>,
+    live: VecDeque<Task>,
+    bulk: VecDeque<Task>,
+    chains_running: usize,
     in_flight: u64,
     closed: bool,
     /// Workers waiting for a job or handing their last group to the
@@ -136,6 +183,7 @@ pub(crate) struct Shared {
     wake: Vec<Condvar>,
     room: Condvar,
     limit: u64,
+    chains_running_limit: usize,
     /// The archive's stop request: once made, workers start no further job.
     stop: polylogue_store::cancellation::Cancellation,
 }
@@ -149,13 +197,14 @@ pub struct Pool {
 }
 
 impl Pool {
-    pub fn start(
+    pub(crate) fn start(
         workers: usize,
         bytes_in_flight: u64,
         writer: WriterSender,
         blobs: Arc<polylogue_store::blobs::Blobs>,
         archive: polylogue_store::Archive,
-        done: Sender<Done>,
+        done: Sender<Finished>,
+        chains: ChainSettings,
     ) -> Self {
         let workers = workers.max(1);
         let shared = Arc::new(Shared {
@@ -163,12 +212,14 @@ impl Pool {
                 live: VecDeque::new(),
                 bulk: VecDeque::new(),
                 in_flight: 0,
+                chains_running: 0,
                 closed: false,
                 idle: Vec::with_capacity(workers),
             }),
             wake: (0..workers).map(|_| Condvar::new()).collect(),
             room: Condvar::new(),
             limit: bytes_in_flight.max(1),
+            chains_running_limit: workers.saturating_sub(1).max(1),
             stop: archive.stop().clone(),
         });
         let stop_wake = {
@@ -185,6 +236,7 @@ impl Pool {
             acknowledge_groups(pending, acknowledged)
         })
         .expect("spawn acknowledgment reader");
+        let chains = Arc::new(chains);
         let workers = (0..workers)
             .map(|i| {
                 let shared = Arc::clone(&shared);
@@ -192,9 +244,10 @@ impl Pool {
                 let blobs = Arc::clone(&blobs);
                 let archive = archive.clone();
                 let acknowledge = acknowledge.clone();
+                let chains = Arc::clone(&chains);
                 spawn_named(format!("polylogue-parse-{i}"), move || {
                     polylogue_store::cancellation::under(archive.stop(), || {
-                        work(i, &shared, &writer, &blobs, &archive, &acknowledge);
+                        work(i, &shared, &writer, &blobs, &archive, &acknowledge, &chains);
                     });
                 })
                 .expect("spawn a parse worker")
@@ -223,21 +276,34 @@ impl Pool {
     /// would never end.
     #[must_use]
     pub fn submit(&self, job: Job) -> bool {
+        self.submit_task(Task::Range(Box::new(job)))
+    }
+
+    #[must_use]
+    pub(crate) fn submit_chain(&self, id: u64, plan: Plan) -> bool {
+        self.submit_task(Task::Chain {
+            id,
+            plan: Box::new(plan),
+        })
+    }
+
+    fn submit_task(&self, task: Task) -> bool {
+        let bytes = task.bytes();
         let mut q = self.shared.queue.locked();
         loop {
             if self.shared.stop.is_cancelled() {
                 return false;
             }
-            if q.in_flight == 0 || q.in_flight + job.bytes() <= self.shared.limit {
+            if q.in_flight == 0 || q.in_flight.saturating_add(bytes) <= self.shared.limit {
                 break;
             }
             q = self.shared.room.wait(q).expect("pool lock");
         }
         polylogue_store::timing::queue(polylogue_store::timing::Queue::Parse, 1);
-        q.in_flight += job.bytes();
-        match job.priority {
-            Priority::Live => q.live.push_back(job),
-            Priority::Bulk => q.bulk.push_back(job),
+        q.in_flight += bytes;
+        match task.priority() {
+            Priority::Live => q.live.push_back(task),
+            Priority::Bulk => q.bulk.push_back(task),
         }
         if let Some(worker) = q.idle.pop() {
             self.shared.wake[worker].notify_one();
@@ -245,17 +311,29 @@ impl Pool {
         true
     }
 
-    /// Takes back the jobs no worker has started and returns how many: they
-    /// never report. Jobs being parsed finish and commit as usual.
-    pub fn cancel_queued(&self) -> usize {
+    /// Takes back tasks no worker has started. Started tasks finish normally.
+    pub(crate) fn cancel_queued(&self) -> Cancelled {
         let mut guard = self.shared.queue.locked();
         let q = &mut *guard;
-        let jobs: Vec<Job> = q.live.drain(..).chain(q.bulk.drain(..)).collect();
-        q.in_flight -= jobs.iter().map(Job::bytes).sum::<u64>();
+        let tasks: Vec<Task> = q.live.drain(..).chain(q.bulk.drain(..)).collect();
+        q.in_flight -= tasks.iter().map(Task::bytes).sum::<u64>();
         drop(guard);
         self.shared.room.notify_all();
-        polylogue_store::timing::queue(polylogue_store::timing::Queue::Parse, -(jobs.len() as i64));
-        jobs.len()
+        polylogue_store::timing::queue(
+            polylogue_store::timing::Queue::Parse,
+            -(tasks.len() as i64),
+        );
+        let mut cancelled = Cancelled {
+            ranges: 0,
+            chains: Vec::new(),
+        };
+        for task in tasks {
+            match task {
+                Task::Range(_) => cancelled.ranges += 1,
+                Task::Chain { plan, .. } => cancelled.chains.push(*plan),
+            }
+        }
+        cancelled
     }
 }
 
@@ -309,7 +387,8 @@ fn work(
     writer: &WriterSender,
     store: &Arc<polylogue_store::blobs::Blobs>,
     archive: &polylogue_store::Archive,
-    acknowledge: &Sender<PendingGroup>,
+    acknowledge: &Sender<Pending>,
+    chains: &ChainSettings,
 ) {
     let _worker = polylogue_store::timing::worker();
     let mut group = Group {
@@ -317,16 +396,16 @@ fn work(
         bytes: 0,
     };
     loop {
-        let job = {
+        let task = {
             let mut q = shared.queue.locked();
             let mut woken = false;
             loop {
                 // After a stop request the queue is left for `cancel_queued`.
                 if !shared.stop.is_cancelled()
-                    && let Some(j) = q.live.pop_front().or_else(|| q.bulk.pop_front())
+                    && let Some(task) = q.take(shared.chains_running_limit)
                 {
                     polylogue_store::timing::queue(polylogue_store::timing::Queue::Parse, -1);
-                    break Some(j);
+                    break Some(task);
                 }
                 if !group.waiting.is_empty() {
                     // Nothing waiting: commit the group and hand it on
@@ -354,23 +433,127 @@ fn work(
                 woken = true;
             }
         };
-        let Some(job) = job else {
+        let Some(task) = task else {
             if !flush(&mut group, shared, writer, store, acknowledge) {
                 return;
             }
             continue;
         };
-        let size = job.bytes();
-        let live = job.priority == Priority::Live;
-        let (batch, result) = run(job, archive, store, true);
-        group.waiting.push((batch, result, size));
-        group.bytes += size;
-        if (live || group.bytes >= GROUP_BYTES)
-            && !flush(&mut group, shared, writer, store, acknowledge)
-        {
-            return;
+        match task {
+            Task::Range(job) => {
+                let size = job.bytes();
+                let live = job.priority == Priority::Live;
+                let (batch, result) = run(*job, archive, store, true);
+                group.waiting.push((batch, result, size));
+                group.bytes += size;
+                if (live || group.bytes >= GROUP_BYTES)
+                    && !flush(&mut group, shared, writer, store, acknowledge)
+                {
+                    return;
+                }
+            }
+            Task::Chain { id, mut plan } => {
+                let bytes = plan.size - plan.parse_pos;
+                let charge = {
+                    let shared = Arc::clone(shared);
+                    InFlight::new(move || release(&shared, bytes))
+                };
+                // Earlier ranges leave this worker before its whole-chain write.
+                if !flush(&mut group, shared, writer, store, acknowledge) {
+                    return;
+                }
+                let mut bytes_read = 0;
+                let reading = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run_chain(&mut plan, archive, store, chains, &mut bytes_read)
+                }))
+                .unwrap_or_else(|_| {
+                    Err(EngineError::Parse("the replacement parser panicked".into()))
+                })
+                .and_then(|reading| {
+                    if chains.yielding.load(std::sync::atomic::Ordering::Acquire) {
+                        return Ok(None);
+                    }
+                    reading
+                        .map(|mut reading| {
+                            polylogue_store::timing::time(
+                                polylogue_store::timing::Stage::Store,
+                                || reading.finish(),
+                            )?;
+                            Ok(reading)
+                        })
+                        .transpose()
+                });
+                plan.source = Bytes::File;
+                if !plan.tracked {
+                    plan.parser_state = None;
+                    plan.tail = None;
+                }
+                let reply = reading.and_then(|reading| {
+                    if chains.yielding.load(std::sync::atomic::Ordering::Acquire) {
+                        return Ok(None);
+                    }
+                    let Some(reading) = reading else {
+                        return Ok(None);
+                    };
+                    let polylogue_store::Change::Reparse { chain } = plan.change else {
+                        return Err(
+                            std::io::Error::other("a replacement needs a stored chain").into()
+                        );
+                    };
+                    writer
+                        .queue_chain(plan.input.clone(), chain, plan.size, reading)
+                        .map(Some)
+                        .map_err(EngineError::from)
+                });
+                let sent = acknowledge
+                    .send(Pending::Chain {
+                        id,
+                        plan,
+                        reply,
+                        bytes_read,
+                        charge,
+                    })
+                    .is_ok();
+                shared.queue.locked().chains_running -= 1;
+                for wake in &shared.wake {
+                    wake.notify_one();
+                }
+                if !sent {
+                    return;
+                }
+            }
         }
     }
+}
+
+impl Queue {
+    fn take(&mut self, chain_limit: usize) -> Option<Task> {
+        let chains_allowed = self.chains_running < chain_limit;
+        let eligible = |task: &Task| matches!(task, Task::Range(_)) || chains_allowed;
+        let task = if let Some(index) = self.live.iter().position(eligible) {
+            self.live.remove(index)
+        } else {
+            self.bulk
+                .iter()
+                .position(eligible)
+                .and_then(|index| self.bulk.remove(index))
+        }?;
+        if matches!(task, Task::Chain { .. }) {
+            self.chains_running += 1;
+        }
+        Some(task)
+    }
+}
+
+enum Pending {
+    Group(PendingGroup),
+    Chain {
+        id: u64,
+        plan: Box<Plan>,
+        reply: Result<Option<Receiver<polylogue_store::Result<u64>>>, EngineError>,
+        bytes_read: u64,
+        charge: InFlight,
+    },
 }
 
 struct PendingGroup {
@@ -381,8 +564,42 @@ struct PendingGroup {
     queued: Vec<bool>,
 }
 
-fn acknowledge_groups(pending: Receiver<PendingGroup>, done: Sender<Done>) {
-    for mut group in pending {
+fn acknowledge_groups(pending: Receiver<Pending>, done: Sender<Finished>) {
+    for pending in pending {
+        let mut group = match pending {
+            Pending::Group(group) => group,
+            Pending::Chain {
+                id,
+                plan,
+                reply,
+                bytes_read,
+                charge,
+            } => {
+                let written = reply.and_then(|reply| {
+                    reply
+                        .map(|reply| {
+                            reply
+                                .recv()
+                                .map_err(|_| polylogue_store::StoreError::WriterGone)?
+                                .map_err(EngineError::from)
+                        })
+                        .transpose()
+                });
+                drop(charge);
+                if done
+                    .send(Finished::Chain(Box::new(ChainDone {
+                        id,
+                        plan: *plan,
+                        written,
+                        bytes_read,
+                    })))
+                    .is_err()
+                {
+                    return;
+                }
+                continue;
+            }
+        };
         let results = group.results.and_then(|rx| {
             rx.recv()
                 .map_err(|_| polylogue_store::StoreError::WriterGone)
@@ -441,7 +658,7 @@ fn acknowledge_groups(pending: Receiver<PendingGroup>, done: Sender<Done>) {
             }
         }
         for result in group.waiting {
-            if done.send(result).is_err() {
+            if done.send(Finished::Range(Box::new(result))).is_err() {
                 return;
             }
         }
@@ -454,8 +671,11 @@ fn flush(
     shared: &Arc<Shared>,
     writer: &WriterSender,
     store: &Arc<polylogue_store::blobs::Blobs>,
-    acknowledge: &Sender<PendingGroup>,
+    acknowledge: &Sender<Pending>,
 ) -> bool {
+    if group.waiting.is_empty() {
+        return true;
+    }
     let mut waiting = std::mem::take(&mut group.waiting);
     let queued: Vec<bool> = waiting
         .iter()
@@ -476,12 +696,170 @@ fn flush(
     group.bytes = 0;
     let waiting = waiting.into_iter().map(|(_, result, _)| result).collect();
     acknowledge
-        .send(PendingGroup {
+        .send(Pending::Group(PendingGroup {
             results,
             waiting,
             queued,
-        })
+        }))
         .is_ok()
+}
+
+fn run_chain(
+    plan: &mut Plan,
+    archive: &Archive,
+    blobs: &Arc<polylogue_store::blobs::Blobs>,
+    settings: &ChainSettings,
+    bytes_read: &mut u64,
+) -> Result<Option<ChainReading>, EngineError> {
+    let stop = archive.stop();
+    let yielding = &settings.yielding;
+    let stopped_attempt = &settings.stopped_attempt;
+    if yielding.load(std::sync::atomic::Ordering::Acquire) {
+        return Ok(None);
+    }
+    if let Bytes::Unloaded {
+        chain,
+        length,
+        decoded,
+    } = plan.source
+    {
+        let reads = ReadPool::with_budget(archive, 1, settings.read_memory)?;
+        let stored = reads
+            .reader()?
+            .stored_chain(&plan.input.id, chain, length)?;
+        plan.source = if decoded {
+            Bytes::Import(Arc::new(Mutex::new(read::Imported::from_chain(
+                stored,
+                Arc::clone(blobs),
+            ))))
+        } else {
+            Bytes::Stored(Arc::new(stored))
+        };
+    }
+    polylogue_store::fault::check("reparse.prepare", &plan.input.id)?;
+    let mut reading = ChainReading::new()?;
+    if let Some(polylogue_sources::Parse::Export(mut parser)) = (plan.origin.open)(&plan.path) {
+        let read = crate::import::exports::parse_export(plan, &mut *parser, blobs, |mut item| {
+            // A reading commits whole, so a yield drops what was
+            // prepared; the export's own loop observes the stop.
+            if yielding.load(std::sync::atomic::Ordering::Acquire) {
+                return Err(EngineError::Stopped);
+            }
+            let mut decoded = Vec::new();
+            let mut files = Vec::new();
+            for blob in std::mem::take(&mut item.output.blobs) {
+                let (new, file) = archive.prepare_decoded(&blob.bytes)?;
+                if new.hash != blob.hash || new.size != blob.size {
+                    return Err(std::io::Error::other(
+                        "decoded bytes differ from their declared hash or length",
+                    )
+                    .into());
+                }
+                decoded.push(new);
+                files.extend(file);
+            }
+            let (mut step, cursor) = item.into_parse(plan, blobs, stopped_attempt)?;
+            polylogue_store::timing::time(polylogue_store::timing::Stage::Store, || {
+                reading.push(&mut step)
+            })?;
+            keep_decoded(&mut reading, plan, decoded, files);
+            Ok(cursor)
+        });
+        let read = match read {
+            Err(EngineError::Stopped)
+                if !stop.is_cancelled() && yielding.load(std::sync::atomic::Ordering::Acquire) =>
+            {
+                return Ok(None);
+            }
+            result => result?,
+        };
+        *bytes_read += read.bytes_read;
+        if read.complete {
+            plan.parse_pos = plan.size;
+        } else {
+            plan.failed = true;
+            plan.failure_recorded = true;
+        }
+    } else {
+        let context = if plan.origin.name == "claude-code" {
+            Some(polylogue_store::parser_context::Overlay::open(
+                archive,
+                &plan.input.id,
+                plan.parser_chain,
+                &plan.origin.reading_version(),
+                plan.parse_pos,
+            )?)
+        } else {
+            None
+        };
+        while !plan.finished() {
+            if yielding.load(std::sync::atomic::Ordering::Acquire) {
+                return Ok(None);
+            }
+            stop.check()?;
+            let mut job = plan.next_job(stopped_attempt);
+            job.parser_context = context.clone();
+            let bytes = job.end - job.start;
+            *bytes_read += bytes;
+            let (batch, done) = run(job, archive, blobs, false);
+            if done.cancelled {
+                return Err(EngineError::Stopped);
+            }
+            if done.continuation_missing {
+                return Err(EngineError::Parse(done.error.unwrap_or_else(|| {
+                    "parser continuation is unavailable at the committed cursor".into()
+                })));
+            }
+            if let Some(error) = &done.error {
+                return Err(if error.starts_with("parse ") {
+                    EngineError::Parse(error.clone())
+                } else {
+                    std::io::Error::other(error.clone()).into()
+                });
+            }
+            let Some(mut batch) = batch else {
+                return Err(std::io::Error::other("a replacement returned no rows").into());
+            };
+            for step in &mut batch.batch.parse {
+                polylogue_store::timing::time(polylogue_store::timing::Stage::Store, || {
+                    reading.push(step)
+                })?;
+            }
+            batch.batch.parse.clear();
+            if !batch.batch.blobs.is_empty() {
+                reading.decoded(batch);
+            }
+            plan.apply(done, true);
+        }
+    }
+    Ok(Some(reading))
+}
+
+fn keep_decoded(
+    reading: &mut ChainReading,
+    plan: &Plan,
+    blobs: Vec<polylogue_store::NewBlob>,
+    files: Vec<polylogue_store::staging::PreparedBytes>,
+) {
+    if !blobs.is_empty() {
+        reading.decoded(polylogue_store::staging::PreparedBatch {
+            batch: polylogue_store::Batch {
+                required_outcome: None,
+                input: plan.input.clone(),
+                change: plan.change.clone(),
+                observation: None,
+                continues: false,
+                new_blob: None,
+                blobs,
+                length: plan.size,
+                parse: Vec::new(),
+                acquisition: None,
+                basis: None,
+                release: Default::default(),
+            },
+            files,
+        });
+    }
 }
 
 /// The record of a parse that failed: no rows, and the chain's cursor stays

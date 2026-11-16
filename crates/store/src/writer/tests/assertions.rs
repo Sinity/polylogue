@@ -29,7 +29,7 @@ fn fact(root: &str, id: &str, kind: AssertionKind, links: &[(LinkRole, &str)]) -
 }
 
 fn restore(archive: &TestArchive, fact: AssertionFact) {
-    archive.writer.restore_assertion(fact).unwrap();
+    archive.writer.restore_assertion(fact, None).unwrap();
 }
 
 fn selected(reader: &crate::Reader<'_>, text: &str) -> Vec<String> {
@@ -216,21 +216,21 @@ fn unknown_authored_time_keeps_current_revision_queries() {
     assert!(
         !archive
             .writer
-            .restore_assertion_from(undated.clone(), ingress("input-one", 50))
+            .restore_assertion(undated.clone(), Some(ingress("input-one", 50)))
             .unwrap()
             .repeat
     );
     assert!(
         archive
             .writer
-            .restore_assertion_from(undated.clone(), ingress("input-two", 60))
+            .restore_assertion(undated.clone(), Some(ingress("input-two", 60)))
             .unwrap()
             .repeat
     );
     assert!(
         archive
             .writer
-            .restore_assertion_from(undated.clone(), ingress("input-one", 70))
+            .restore_assertion(undated.clone(), Some(ingress("input-one", 70)))
             .unwrap()
             .repeat
     );
@@ -238,10 +238,13 @@ fn unknown_authored_time_keeps_current_revision_queries() {
     dated.id = "dated".into();
     dated.root = "dated".into();
     dated.created_at = Timestamp::from_unix_ms(5);
-    archive.writer.restore_assertion(dated.clone()).unwrap();
+    archive
+        .writer
+        .restore_assertion(dated.clone(), None)
+        .unwrap();
     let mut conflicting = dated.clone();
     conflicting.created_at = None;
-    assert!(archive.writer.restore_assertion(conflicting).is_err());
+    assert!(archive.writer.restore_assertion(conflicting, None).is_err());
     let reads = ReadPool::open(&archive.archive).unwrap();
     let reader = reads.reader().unwrap();
     assert_eq!(selected(&reader, "assertions"), ["dated", "undated"]);

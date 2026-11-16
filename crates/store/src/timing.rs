@@ -52,7 +52,6 @@ const STAGES: [Stage; 12] = [
 ];
 
 static NANOS: [AtomicU64; 12] = [const { AtomicU64::new(0) }; 12];
-static WRITERS_BUSY: AtomicU64 = AtomicU64::new(0);
 
 impl Stage {
     pub fn name(self) -> &'static str {
@@ -108,10 +107,6 @@ pub fn stage_seconds() -> Vec<(Stage, f64)> {
 
 #[cfg(any(test, feature = "fixture"))]
 pub fn reset() {
-    READING_WAITING.store(0, Ordering::Relaxed);
-    READING_PREPARED.store(0, Ordering::Relaxed);
-    READING_COMMITS.store(0, Ordering::Relaxed);
-    READING_WORKERS.lock().expect("reading times").clear();
     if let Ok(mut times) = WORKER_TIMES.lock() {
         times.clear();
     }
@@ -120,83 +115,16 @@ pub fn reset() {
     }
 }
 
-static READING_WAITING: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
-static READING_PREPARED: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
-static READING_COMMITS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
-static READING_WORKERS: std::sync::Mutex<std::collections::BTreeMap<usize, (u64, u64)>> =
-    std::sync::Mutex::new(std::collections::BTreeMap::new());
-
-pub fn reading_queue(waiting: i64, prepared: i64) {
-    READING_WAITING.fetch_add(waiting, Ordering::Relaxed);
-    READING_PREPARED.fetch_add(prepared, Ordering::Relaxed);
-}
-
-pub fn reading_commit_queue(delta: i64) {
-    READING_COMMITS.fetch_add(delta, Ordering::Relaxed);
-}
-
-/// One parser worker's busy wall time and CPU ticks, accumulated by worker number.
-pub struct ReadingWorker {
-    worker: usize,
-    started: Instant,
-    cpu: u64,
-}
-
-fn cpu_ticks() -> u64 {
-    std::fs::read_to_string("/proc/thread-self/stat")
-        .ok()
-        .and_then(|s| {
-            let (_, fields) = s.rsplit_once(") ")?;
-            let fields: Vec<_> = fields.split_whitespace().collect();
-            Some(fields.get(11)?.parse::<u64>().ok()? + fields.get(12)?.parse::<u64>().ok()?)
-        })
-        .unwrap_or(0)
-}
-
-pub fn reading_worker(worker: usize) -> ReadingWorker {
-    ReadingWorker {
-        worker,
-        started: Instant::now(),
-        cpu: cpu_ticks(),
-    }
-}
-
-impl Drop for ReadingWorker {
-    fn drop(&mut self) {
-        let mut workers = READING_WORKERS.lock().expect("reading times");
-        let totals = workers.entry(self.worker).or_default();
-        totals.0 += self.started.elapsed().as_nanos() as u64;
-        totals.1 += cpu_ticks().saturating_sub(self.cpu);
-    }
-}
-
 pub(crate) struct WriterTime(Instant);
 
 pub(crate) fn writer_started() -> WriterTime {
-    WRITERS_BUSY.fetch_add(1, Ordering::Relaxed);
     WriterTime(Instant::now())
 }
 
 impl Drop for WriterTime {
     fn drop(&mut self) {
         add(Stage::Writer, self.0.elapsed());
-        WRITERS_BUSY.fetch_sub(1, Ordering::Relaxed);
     }
-}
-
-/// Queue depths and completed worker time for a benchmark's time series.
-#[cfg(any(test, feature = "fixture"))]
-pub fn reading_pipeline() -> serde_json::Value {
-    let workers = READING_WORKERS.lock().expect("reading times");
-    serde_json::json!({
-        "writers_busy": WRITERS_BUSY.load(Ordering::Relaxed),
-        "waiting": READING_WAITING.load(Ordering::Relaxed),
-        "prepared": READING_PREPARED.load(Ordering::Relaxed),
-        "commits": READING_COMMITS.load(Ordering::Relaxed),
-        "workers": workers.iter().map(|(worker,(nanos,cpu))| serde_json::json!({
-            "worker":worker,"busy_seconds":*nanos as f64 / 1e9,"cpu_ticks":cpu,
-        })).collect::<Vec<_>>()
-    })
 }
 
 /// A stage whose time includes its final operation, including early returns.

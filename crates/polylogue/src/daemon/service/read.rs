@@ -423,9 +423,12 @@ fn visit(
     let mixed = selection.direct_target().is_none();
     let mut pending = start.map(|p| p.selection);
     let mut row_number = 0u64;
-    reader.visit_selection_from_row::<Failure>(
+    reader.visit_selection::<Failure>(
         selection,
-        from.map(|(row, _)| row),
+        from.map(|(row, _)| row).map_or(
+            polylogue_store::read::VisitFrom::First,
+            polylogue_store::read::VisitFrom::At,
+        ),
         near,
         |row| {
             let row_number = {

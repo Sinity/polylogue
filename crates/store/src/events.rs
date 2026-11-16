@@ -100,7 +100,7 @@ impl Reader<'_> {
     }
 
     /// Seek within the physical session's stored event order before decoding.
-    pub fn visit_event_records_from_ordinal(
+    pub fn visit_event_records(
         &self,
         session: &SessionId,
         ordinal: u64,

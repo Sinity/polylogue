@@ -328,11 +328,21 @@ fn resolved_saved_revisions_repeat_but_explicit_revisions_conflict() {
         )
     };
     writer
-        .user_preparing(save("first", "sessions"), context(), None)
+        .user(crate::writer::UserSubmission {
+            request: save("first", "sessions"),
+            scope: None,
+            preparation: Some(context()),
+            parent: None,
+        })
         .unwrap();
     let resolved = save("resolved", "messages");
     writer
-        .user_preparing(resolved.clone(), context(), None)
+        .user(crate::writer::UserSubmission {
+            request: resolved.clone(),
+            scope: None,
+            preparation: Some(context()),
+            parent: None,
+        })
         .unwrap();
     let plan = polylogue_query::plan::prepare(
         "events",
@@ -364,7 +374,12 @@ fn resolved_saved_revisions_repeat_but_explicit_revisions_conflict() {
         },
     );
     writer
-        .user_preparing(explicit.clone(), context(), None)
+        .user(crate::writer::UserSubmission {
+            request: explicit.clone(),
+            scope: None,
+            preparation: Some(context()),
+            parent: None,
+        })
         .unwrap();
     // A recorded retry remains available without a new preparation context.
     assert!(writer.user(resolved.clone()).unwrap().repeat);

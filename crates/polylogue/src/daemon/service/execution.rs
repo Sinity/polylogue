@@ -24,10 +24,7 @@ pub(super) fn record<T>(
     completed_at: impl FnOnce() -> Timestamp,
     execute: impl FnOnce() -> Result<Completed<T>, Failure>,
 ) -> Result<T, Failure> {
-    match parent {
-        Some(parent) => writer.begin_query_run_with_parent(run.clone(), parent),
-        None => writer.begin_query_run(run.clone()),
-    }?;
+    writer.begin_query_run(run.clone(), parent)?;
     let result = execute();
     let outcome = QueryRunOutcome {
         run: run.id.clone(),

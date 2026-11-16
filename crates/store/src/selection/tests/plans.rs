@@ -39,7 +39,7 @@ fn ids(f: &Fixture, text: &str, field: &str) -> Vec<String> {
     let selected = reader.prepare_selection(text, &options).unwrap();
     let mut ids = Vec::new();
     reader
-        .visit_selection::<SelectionError>(&selected, None, None, |row| {
+        .visit_selection::<SelectionError>(&selected, crate::read::VisitFrom::First, None, |row| {
             ids.push(row.values[field].as_str().unwrap_or_default().to_owned());
             Ok(ControlFlow::Continue(()))
         })
@@ -206,7 +206,7 @@ fn pending_outcome_matches_open_live_call() {
         .prepare_selection("tool_calls where message:test:open", &options)
         .unwrap();
     reader
-        .visit_selection::<SelectionError>(&selected, None, None, |row| {
+        .visit_selection::<SelectionError>(&selected, crate::read::VisitFrom::First, None, |row| {
             assert_eq!(row.values["outcome"], "pending");
             Ok(ControlFlow::Continue(()))
         })

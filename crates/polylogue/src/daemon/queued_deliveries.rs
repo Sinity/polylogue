@@ -211,7 +211,12 @@ fn submit(
 fn hand_over(state: &mut State, writes: &WriterSender) -> Result<(), StoreError> {
     while let Some(next) = state.waiting.pop_front() {
         let id = next.request.id.clone();
-        match writes.try_enqueue_user(next.request, next.scope)? {
+        match writes.try_enqueue_user(polylogue_store::writer::UserSubmission {
+            request: next.request,
+            scope: next.scope,
+            preparation: None,
+            parent: None,
+        })? {
             Queued::Committing(committed) => {
                 if let Some(advice) = state.advice.get_mut(&id) {
                     advice.committed = Some(committed);
@@ -223,10 +228,10 @@ fn hand_over(state: &mut State, writes: &WriterSender) -> Result<(), StoreError>
                     latest.committed = Some(committed);
                 }
             }
-            Queued::Full(request, scope) => {
+            Queued::Full(submission) => {
                 state.waiting.push_front(Waiting {
-                    request: *request,
-                    scope,
+                    request: submission.request,
+                    scope: submission.scope,
                     recipient: next.recipient,
                 });
                 break;

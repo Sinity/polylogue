@@ -120,8 +120,6 @@ fn missing_same_version_state_defers_parse_while_every_raw_suffix_chunk_commits(
         batch.batch.parse.last_mut().unwrap().checkpoint = None;
         let result = engine
             .writer
-            .sender()
-            .unwrap()
             .store_group(vec![batch], std::sync::Arc::clone(&engine.blobs))
             .unwrap();
         assert!(result.into_iter().all(|r| r.is_ok()));

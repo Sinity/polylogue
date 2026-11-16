@@ -14,7 +14,7 @@ fn segmented_asset_ranges_and_hashes_match_and_old_selections_refuse_rewrites() 
         format: "export-file".into(),
         route: polylogue_model::Route::Live,
     };
-    let sender = writer.sender().unwrap();
+    let sender = writer.sender();
     let store = Arc::new(archive.blobs().unwrap());
     let observation = Observation {
         machine: "synthetic".into(),

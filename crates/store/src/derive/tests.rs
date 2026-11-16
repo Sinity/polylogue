@@ -883,7 +883,7 @@ fn user_write_served_between_derive_commits() {
             .query_row("SELECT count(*) FROM derive_due", [], |r| r.get(0))
             .unwrap()
     };
-    let sender = w.writer.sender().unwrap();
+    let sender = w.writer.sender();
     let object = polylogue_query::plan::prepare(
         "sessions where title:between",
         &polylogue_query::Bindings::default(),
@@ -903,7 +903,7 @@ fn user_write_served_between_derive_commits() {
         while due() == i64::try_from(sessions).unwrap() {
             std::thread::yield_now();
         }
-        let writing = scope.spawn(|| sender.query_object(object.clone()).unwrap());
+        let writing = scope.spawn(|| sender.query_object(object.clone(), None).unwrap());
         pause.wait().unwrap();
         let remaining = due();
         assert!(
@@ -987,7 +987,7 @@ fn within_a_minute<T>(done: &std::sync::mpsc::Receiver<T>, what: &str) -> T {
 fn a_held_derivation_does_not_hold_parse_commits() {
     let mut w = WriterArchive::new();
     w.write_underived("a", prose("a", 1, 1_000, "the first session"));
-    let sender = w.writer.sender().unwrap();
+    let sender = w.writer.sender();
     // The derive thread stops after computing its first wave, as a slow
     // derivation would, before the writer is sent anything.
     let pause = sender.pause_derive_for_test();
@@ -1049,7 +1049,7 @@ fn a_held_derivation_does_not_hold_parse_commits() {
 fn a_value_computed_from_rows_that_changed_is_not_stored() {
     let mut w = WriterArchive::new();
     w.write_underived("a", prose("a", 1, 1_000, "the first prompt"));
-    let sender = w.writer.sender().unwrap();
+    let sender = w.writer.sender();
     let pause = sender.pause_derive_for_test();
     // The pass's first derive installs the index built so far; this test
     // reads it once the pass has run.
@@ -1094,7 +1094,7 @@ fn a_value_computed_from_rows_that_changed_is_not_stored() {
 fn a_stop_reaches_the_derive_worker_before_writer_teardown() {
     let mut w = WriterArchive::new();
     w.write_underived("a", prose("a", 1, 1_000, "the first session"));
-    let sender = w.writer.sender().unwrap();
+    let sender = w.writer.sender();
     let stop = w.archive.stop().clone();
     let pause = sender.pause_derive_for_test();
     std::thread::scope(|scope| {

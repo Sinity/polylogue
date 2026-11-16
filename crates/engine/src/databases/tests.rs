@@ -42,12 +42,7 @@ fn completed_records_wake_the_loop_and_unchanged_sources_need_no_archive_read() 
     let mut databases = Databases::default();
     let (wake, changes) = channel();
     databases
-        .start(
-            vec![source()],
-            archive.clone(),
-            writer.sender().unwrap(),
-            Some(wake),
-        )
+        .start(vec![source()], archive.clone(), writer.sender(), Some(wake))
         .unwrap();
     assert!(matches!(changes.recv().unwrap(), LoopMsg::Changed));
     let done = databases.completed(true);
@@ -78,7 +73,7 @@ fn completed_records_wake_the_loop_and_unchanged_sources_need_no_archive_read() 
         .start(
             vec![source()],
             Archive::at(&dir.path().join("absent")),
-            writer.sender().unwrap(),
+            writer.sender(),
             None,
         )
         .unwrap();

@@ -57,10 +57,12 @@ fn apply(
     let writes = writer(d)?;
     invocation.check_parent_lifetime()?;
     let request = invocation.request(user_writes::new_request_id(), write);
-    let result = match invocation.parent_lifetime() {
-        Some(parent) => writes.user_with_parent(request, parent),
-        None => writes.user(request),
-    };
+    let result = writes.user(polylogue_store::writer::UserSubmission {
+        request,
+        scope: None,
+        preparation: None,
+        parent: invocation.parent_lifetime(),
+    });
     match result {
         Ok(outcome) => Ok(Some(outcome)),
         Err(StoreError::NotFound(_)) => Ok(None),

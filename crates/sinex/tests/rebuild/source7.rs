@@ -308,7 +308,7 @@ fn adoption(partial: bool) {
         polylogue_testkit::stopped_attempt(),
     )
     .unwrap();
-    let commits = engine.writer().unwrap().completion_commits();
+    let commits = engine.writer().completion_commits();
     confirm_capture(
         &mut engine,
         &commits,
@@ -401,7 +401,7 @@ fn refused_reparse_keeps_events_past_its_parsed_end() {
         polylogue_testkit::stopped_attempt(),
     )
     .unwrap();
-    let commits = engine.writer().unwrap().completion_commits();
+    let commits = engine.writer().completion_commits();
     let started = Instant::now();
     loop {
         let ready =
@@ -438,7 +438,6 @@ fn refused_reparse_keeps_events_past_its_parsed_end() {
     reading.push(&mut step).unwrap();
     let error = engine
         .writer()
-        .unwrap()
         .replace_chain(input.clone(), 1, length, reading)
         .unwrap_err();
     assert!(

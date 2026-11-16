@@ -80,8 +80,6 @@ fn an_unreferenced_private_stage_is_refused_before_any_group_installation() {
     let mut batch = batch(&source_hash.to_string(), source.len());
     batch.new_blob = Some(NewBlob::whole(source_hash, source.len()));
     let result = writer
-        .sender()
-        .unwrap()
         .store_group(
             vec![crate::staging::PreparedBatch {
                 batch,
@@ -256,8 +254,6 @@ fn late_encoding_refusal_spools_no_group_and_reopen_retries() {
         let late = group[1].files[0].body().unwrap().path.unwrap();
         std::fs::write(late, b"synthetic damaged encoding").unwrap();
         let result = writer
-            .sender()
-            .unwrap()
             .store_group(group, Arc::new(archive.blobs().unwrap()))
             .unwrap();
         assert_eq!(result.len(), 2);
@@ -285,8 +281,6 @@ fn late_encoding_refusal_spools_no_group_and_reopen_retries() {
         });
     }
     let results = writer
-        .sender()
-        .unwrap()
         .store_group(group, Arc::new(archive.blobs().unwrap()))
         .unwrap();
     assert!(results.iter().all(Result::is_ok));
@@ -318,8 +312,6 @@ fn an_equal_length_change_to_a_staged_file_is_refused_at_append() {
     encoded[0] ^= 1;
     std::fs::write(&path, &encoded).unwrap();
     let results = writer
-        .sender()
-        .unwrap()
         .store_group(
             vec![crate::staging::PreparedBatch {
                 batch: item,

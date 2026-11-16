@@ -94,7 +94,7 @@ fn physical_family_counts_match_membership_without_reading_payload_columns() {
     );
     assert!(
         reader
-            .visit_links_from_ordinal(&SessionId::parse("test:target").unwrap(), 0, |_| {
+            .visit_links(&SessionId::parse("test:target").unwrap(), 0, |_| {
                 std::ops::ControlFlow::Break(())
             })
             .is_err()

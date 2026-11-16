@@ -220,10 +220,15 @@ fn stored_chain_pool_releases_consumed_chunks_before_done_is_drained() {
     let pool = Pool::start(
         3,
         budget as u64,
-        engine.writer.sender().unwrap(),
+        engine.writer.sender(),
         Arc::clone(&engine.blobs),
         engine.archive.clone(),
         done,
+        crate::pool::ChainSettings {
+            stopped_attempt: engine.stopped_attempt,
+            read_memory: engine.config.reader_memory_per_connection().unwrap(),
+            yielding: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        },
     );
     // Match the scheduler's read-ahead: kept plans are not advanced while
     // their completed jobs release the byte budget and later inputs enter.
@@ -244,7 +249,13 @@ fn stored_chain_pool_releases_consumed_chunks_before_done_is_drained() {
             source.pending.capacity()
         })
         .sum();
-    let completed: Vec<_> = received.into_iter().collect();
+    let completed: Vec<_> = received
+        .into_iter()
+        .map(|finished| match finished {
+            crate::pool::Finished::Range(done) => *done,
+            crate::pool::Finished::Chain(_) => panic!("expected a range"),
+        })
+        .collect();
     assert_eq!(completed.len(), INPUTS);
     for result in completed {
         assert!(result.error.is_none(), "{:?}", result.error);
@@ -265,10 +276,15 @@ fn stored_chain_pool_releases_consumed_chunks_before_done_is_drained() {
     let pool = Pool::start(
         3,
         budget as u64,
-        engine.writer.sender().unwrap(),
+        engine.writer.sender(),
         Arc::clone(&engine.blobs),
         engine.archive.clone(),
         done,
+        crate::pool::ChainSettings {
+            stopped_attempt: engine.stopped_attempt,
+            read_memory: engine.config.reader_memory_per_connection().unwrap(),
+            yielding: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        },
     );
     for plan in &mut plans {
         assert!(pool.submit(plan.next_job(&polylogue_testkit::stopped_attempt())));
@@ -276,6 +292,10 @@ fn stored_chain_pool_releases_consumed_chunks_before_done_is_drained() {
     drop(pool);
     engine.writer.flush().unwrap();
     for result in received {
+        let crate::pool::Finished::Range(result) = result else {
+            panic!("expected a range");
+        };
+        let result = *result;
         assert!(result.error.is_none(), "{:?}", result.error);
         let plan = plans.iter_mut().find(|p| p.path == result.path).unwrap();
         let Change::Reparse { chain } = plan.change else {
@@ -377,10 +397,15 @@ fn a_submit_waiting_for_room_returns_when_a_stop_is_requested() {
     let pool = Arc::new(Pool::start(
         1,
         2 * CHUNK as u64,
-        engine.writer.sender().unwrap(),
+        engine.writer.sender(),
         Arc::clone(&engine.blobs),
         engine.archive.clone(),
         done,
+        crate::pool::ChainSettings {
+            stopped_attempt: engine.stopped_attempt,
+            read_memory: engine.config.reader_memory_per_connection().unwrap(),
+            yielding: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        },
     ));
     fault::clear();
     fault::arm("parse", "room-0", Action::Hold, 0, 1);
@@ -402,12 +427,22 @@ fn a_submit_waiting_for_room_returns_when_a_stop_is_requested() {
         .expect("a submit waiting for room returns once a stop is requested");
     submitter.join().unwrap();
     assert!(!queued, "a job submitted after the stop is not queued");
-    assert_eq!(pool.cancel_queued(), 1, "the queued job is taken back");
+    assert_eq!(
+        pool.cancel_queued().ranges,
+        1,
+        "the queued job is taken back"
+    );
     drop(Arc::into_inner(pool).expect("the submitter has ended"));
     // Only now has the held worker certainly passed its point.
     fault::clear();
     engine.writer.flush().unwrap();
-    let completed: Vec<_> = received.into_iter().collect();
+    let completed: Vec<_> = received
+        .into_iter()
+        .map(|finished| match finished {
+            crate::pool::Finished::Range(done) => *done,
+            crate::pool::Finished::Chain(_) => panic!("expected a range"),
+        })
+        .collect();
     assert_eq!(completed.len(), 1, "only the started parse reports");
     assert!(completed[0].error.is_none(), "{:?}", completed[0].error);
     assert_eq!(completed[0].path, paths[0]);
@@ -514,8 +549,6 @@ fn new_empty_file_has_body_and_eof_without_progress() {
     );
     let results = engine
         .writer
-        .sender()
-        .unwrap()
         .store_group(vec![prepared], std::sync::Arc::clone(&engine.blobs))
         .unwrap();
     assert!(results.into_iter().all(|result| result.is_ok()));

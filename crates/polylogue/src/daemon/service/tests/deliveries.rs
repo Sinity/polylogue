@@ -299,7 +299,15 @@ fn a_brief_answers_while_the_writer_queue_is_full_and_its_delivery_commits_once_
                 read_at: "{}".into(),
             },
         );
-        match writes.try_enqueue_user(keep, None).unwrap() {
+        match writes
+            .try_enqueue_user(polylogue_store::writer::UserSubmission {
+                request: keep,
+                scope: None,
+                preparation: None,
+                parent: None,
+            })
+            .unwrap()
+        {
             Queued::Committing(committed) => filling.push(committed),
             Queued::Full(..) => break,
         }

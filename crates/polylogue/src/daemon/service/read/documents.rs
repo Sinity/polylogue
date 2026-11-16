@@ -215,10 +215,18 @@ pub(super) fn visit(
         }
     };
     let result = if layout.backwards {
-        selected.visit_blocks_before_with_ordinals(from, &mut block)
+        selected.visit_blocks(
+            from.map_or(
+                polylogue_store::read::VisitFrom::Last,
+                polylogue_store::read::VisitFrom::Before,
+            ),
+            &mut block,
+        )
     } else {
-        selected.visit_blocks_from(
-            from.map_or(0, |ordinal| ordinal.saturating_sub(1)),
+        selected.visit_blocks(
+            polylogue_store::read::VisitFrom::At(
+                from.map_or(0, |ordinal| ordinal.saturating_sub(1)),
+            ),
             &mut block,
         )
     };

@@ -15,10 +15,18 @@ pub(super) fn visit(
 ) -> Result<(), Failure> {
     let near = rendering.near;
     let mut current = None;
-    reader.visit_selection_from_row::<Failure>(selection, start_row, near, |row| {
-        current = Some(row);
-        Ok(ControlFlow::Break(()))
-    })?;
+    reader.visit_selection::<Failure>(
+        selection,
+        start_row.map_or(
+            polylogue_store::read::VisitFrom::First,
+            polylogue_store::read::VisitFrom::At,
+        ),
+        near,
+        |row| {
+            current = Some(row);
+            Ok(ControlFlow::Break(()))
+        },
+    )?;
     let current =
         current.ok_or_else(|| Failure::stale_cursor("the backward row is no longer selected"))?;
     if start_row.is_some_and(|page_start| page_start.values != current.position.values) {
@@ -40,17 +48,22 @@ pub(super) fn visit(
         return Ok(());
     }
     let mut ordinal = page_start.selection.row;
-    reader.visit_selection_before_row::<Failure>(selection, &start_row_position, near, |row| {
-        ordinal = ordinal
-            .checked_sub(1)
-            .ok_or_else(|| Failure::stale_cursor("the backward row number underflowed"))?;
-        rows.keys.insert(ordinal, row.position.clone());
-        Ok(if walk.row(ordinal, row, None, near)? {
-            ControlFlow::Continue(())
-        } else {
-            ControlFlow::Break(())
-        })
-    })?;
+    reader.visit_selection::<Failure>(
+        selection,
+        polylogue_store::read::VisitFrom::Before(&start_row_position),
+        near,
+        |row| {
+            ordinal = ordinal
+                .checked_sub(1)
+                .ok_or_else(|| Failure::stale_cursor("the backward row number underflowed"))?;
+            rows.keys.insert(ordinal, row.position.clone());
+            Ok(if walk.row(ordinal, row, None, near)? {
+                ControlFlow::Continue(())
+            } else {
+                ControlFlow::Break(())
+            })
+        },
+    )?;
     Ok(())
 }
 

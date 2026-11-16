@@ -39,7 +39,7 @@ fn overlapping_workers_read_after_the_preceding_commit() {
     let blocked = lock
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .unwrap();
-    let sender = w.writer.sender().unwrap();
+    let sender = w.writer.sender();
     sender.send(first).unwrap();
     let (waiting, observed) = channel();
     sender.0.resolver.observe_wait(waiting);
@@ -100,7 +100,7 @@ fn disjoint_workers_reserve_unique_rows_before_either_commits() {
     let (sent, queued) = channel();
     let mut threads = Vec::new();
     for reading in readings {
-        let sender = w.writer.sender().unwrap();
+        let sender = w.writer.sender();
         let start = Arc::clone(&start);
         let sent = sent.clone();
         threads.push(std::thread::spawn(move || {
@@ -165,7 +165,7 @@ fn disjoint_workers_share_text_identity_without_waiting_for_a_commit() {
     let (sent, queued) = channel();
     let mut threads = Vec::new();
     for reading in readings {
-        let sender = w.writer.sender().unwrap();
+        let sender = w.writer.sender();
         let start = Arc::clone(&start);
         let sent = sent.clone();
         threads.push(std::thread::spawn(move || {
@@ -214,7 +214,7 @@ fn disjoint_workers_share_text_identity_without_waiting_for_a_commit() {
 #[test]
 fn refused_commit_releases_reservations_for_a_retry() {
     let w = test_archive();
-    let sender = w.writer.sender().unwrap();
+    let sender = w.writer.sender();
     let blobs = Arc::new(w.archive.blobs().unwrap());
     let make = || {
         batch(
@@ -300,7 +300,7 @@ fn collection_without_a_parser_commits_its_explicit_status() {
 #[test]
 fn value_identity_survives_a_commit_newer_than_the_workers_snapshot() {
     let w = installed_archive();
-    let sender = w.writer.sender().unwrap();
+    let sender = w.writer.sender();
     let captured = w
         .commit_source(
             batch("value-route", Route::Live, 0, Vec::new(), &[]),
@@ -446,8 +446,6 @@ fn a_metadata_only_observation_keeps_the_following_rewrite_chain_number() {
     rewritten.new_blob = Some(blob);
     let results = w
         .writer
-        .sender()
-        .unwrap()
         .store_group(
             vec![
                 crate::staging::PreparedBatch {
@@ -987,8 +985,6 @@ fn commit_event_bytes(w: &TestArchive, mut input: Batch, bytes: &[u8]) -> Batch 
     let mut retry = input.clone();
     let stored = w
         .writer
-        .sender()
-        .unwrap()
         .store_group(
             vec![crate::staging::PreparedBatch {
                 batch: input,
@@ -1439,7 +1435,7 @@ fn record_visitors_stop_before_decoding_later_session_payloads() {
     let reader = reads.reader().unwrap();
     let mut events = 0;
     reader
-        .visit_event_records_from_ordinal(&sid("visitor-session"), 0, |_| {
+        .visit_event_records(&sid("visitor-session"), 0, |_| {
             events += 1;
             ControlFlow::Break(())
         })
@@ -1447,16 +1443,12 @@ fn record_visitors_stop_before_decoding_later_session_payloads() {
     assert_eq!(events, 1);
     assert!(
         reader
-            .visit_event_records_from_ordinal(
-                &sid("visitor-session"),
-                0,
-                |_| ControlFlow::Continue(())
-            )
+            .visit_event_records(&sid("visitor-session"), 0, |_| ControlFlow::Continue(()))
             .is_err()
     );
     let mut links = 0;
     reader
-        .visit_links(&sid("visitor-session"), |_| {
+        .visit_links(&sid("visitor-session"), 0, |_| {
             links += 1;
             ControlFlow::Break(())
         })
@@ -1480,7 +1472,7 @@ fn record_visitors_stop_before_decoding_later_session_payloads() {
     let reader = reads.reader().unwrap();
     let mut events = 0;
     reader
-        .visit_event_records_from_ordinal(&sid("visitor-session"), 1, |_| {
+        .visit_event_records(&sid("visitor-session"), 1, |_| {
             events += 1;
             ControlFlow::Break(())
         })
@@ -1488,7 +1480,7 @@ fn record_visitors_stop_before_decoding_later_session_payloads() {
     assert_eq!(events, 1);
     let mut links = 0;
     reader
-        .visit_links_from_ordinal(&sid("visitor-session"), 1, |_| {
+        .visit_links(&sid("visitor-session"), 1, |_| {
             links += 1;
             ControlFlow::Break(())
         })
@@ -1496,12 +1488,12 @@ fn record_visitors_stop_before_decoding_later_session_payloads() {
     assert_eq!(links, 1);
     for ordinal in [2, u64::MAX] {
         reader
-            .visit_event_records_from_ordinal(&sid("visitor-session"), ordinal, |_| {
+            .visit_event_records(&sid("visitor-session"), ordinal, |_| {
                 panic!("past event end")
             })
             .unwrap();
         reader
-            .visit_links_from_ordinal(&sid("visitor-session"), ordinal, |_| {
+            .visit_links(&sid("visitor-session"), ordinal, |_| {
                 panic!("past link end")
             })
             .unwrap();
@@ -1646,7 +1638,7 @@ fn inputs_that_only_name_a_session_share_it_without_waiting_for_a_commit() {
     let (sent, queued) = channel();
     let mut threads = Vec::new();
     for reading in readings {
-        let sender = w.writer.sender().unwrap();
+        let sender = w.writer.sender();
         let start = Arc::clone(&start);
         let sent = sent.clone();
         threads.push(std::thread::spawn(move || {
@@ -1760,7 +1752,7 @@ fn copied_prefix_observations_enrich_only_an_explicit_relation_and_retract() {
         let selected = reader.select_messages(&sid("child"), true).unwrap();
         let mut bodies = Vec::new();
         selected
-            .visit(|message| {
+            .visit(Default::default(), |message| {
                 bodies.push(message.text());
                 std::ops::ControlFlow::Continue(())
             })
@@ -1920,7 +1912,7 @@ fn explicit_copied_members_preserve_large_coordinates_and_retract_without_expand
         selection.require_complete().unwrap();
         let mut texts = Vec::new();
         selection
-            .visit(|m| {
+            .visit(Default::default(), |m| {
                 texts.push(m.text());
                 std::ops::ControlFlow::Continue(())
             })
@@ -1963,7 +1955,7 @@ fn explicit_copied_members_preserve_large_coordinates_and_retract_without_expand
         ));
         let mut texts = Vec::new();
         selection
-            .visit(|message| {
+            .visit(Default::default(), |message| {
                 texts.push(message.text());
                 std::ops::ControlFlow::Continue(())
             })
@@ -1984,7 +1976,7 @@ fn explicit_copied_members_preserve_large_coordinates_and_retract_without_expand
     reader
         .select_messages(&sid("child"), true)
         .unwrap()
-        .visit(|m| {
+        .visit(Default::default(), |m| {
             texts.push(m.text());
             std::ops::ControlFlow::Continue(())
         })

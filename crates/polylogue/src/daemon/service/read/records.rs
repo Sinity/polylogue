@@ -283,30 +283,38 @@ fn session(
         let mut result = Ok(true);
         ReadLimit::set_stage("read records: messages");
         selected
-            .visit_from_with_record_arrival(from, |message, block_selection, commit, order| {
-                ReadLimit::set_stage("read records: messages");
-                let reference = format!("message:{}", message.id);
-                let next = required_commit(commit, &reference).and_then(|commit| {
-                    let facts = LayoutFacts {
-                        inherited: message.session != *id,
-                        ..Default::default()
-                    };
-                    let current = locator(Message, ordinal);
-                    ordinal = ordinal.checked_add(1).ok_or_else(stale_record)?;
-                    visit(
-                        message_record(reader, message, block_selection, commit, order)?.into(),
-                        facts,
-                        current,
-                    )
-                });
-                match next {
-                    Ok(true) => ControlFlow::Continue(()),
-                    other => {
-                        result = other;
-                        ControlFlow::Break(())
+            .visit_with_sources(
+                from,
+                |message,
+                 polylogue_store::read::MessageSource {
+                     blocks: block_selection,
+                     committed: commit,
+                     ordinal: order,
+                 }| {
+                    ReadLimit::set_stage("read records: messages");
+                    let reference = format!("message:{}", message.id);
+                    let next = required_commit(commit, &reference).and_then(|commit| {
+                        let facts = LayoutFacts {
+                            inherited: message.session != *id,
+                            ..Default::default()
+                        };
+                        let current = locator(Message, ordinal);
+                        ordinal = ordinal.checked_add(1).ok_or_else(stale_record)?;
+                        visit(
+                            message_record(reader, message, block_selection, commit, order)?.into(),
+                            facts,
+                            current,
+                        )
+                    });
+                    match next {
+                        Ok(true) => ControlFlow::Continue(()),
+                        other => {
+                            result = other;
+                            ControlFlow::Break(())
+                        }
                     }
-                }
-            })
+                },
+            )
             .map_err(Failure::from)?;
         if !result? {
             return Ok(false);
@@ -320,7 +328,7 @@ fn session(
         let mut result = Ok(true);
         ReadLimit::set_stage("read records: events");
         reader
-            .visit_event_records_from_ordinal(id, ordinal, |event| {
+            .visit_event_records(id, ordinal, |event| {
                 ReadLimit::set_stage("read records: events");
                 seen = true;
                 let current = locator(Event, ordinal);
@@ -354,7 +362,7 @@ fn session(
     let mut result = Ok(true);
     ReadLimit::set_stage("read records: links");
     reader
-        .visit_links_from_ordinal(id, ordinal, |link| {
+        .visit_links(id, ordinal, |link| {
             seen = true;
             ReadLimit::set_stage("read records: link commit");
             let reference = LinkRecord::reference(&link);

@@ -12,7 +12,7 @@ fn completed_history_returns_before_the_writer_and_commits_as_one_record() {
         pool.reader().unwrap().change_position().unwrap(),
     );
     let completed = outcome(&expected, 3);
-    let sender = archive.writer.sender().unwrap();
+    let sender = archive.writer.sender();
     let pause = sender.pause_user_dispatch_for_test(
         expected.id.as_str(),
         crate::writer::DispatchPhase::BeforeParentCheck,
@@ -84,8 +84,6 @@ fn conflicting_history_rolls_back_its_question_and_run() {
         .unwrap();
     archive
         .writer
-        .sender()
-        .unwrap()
         .reserve_history()
         .unwrap()
         .record(object.clone(), expected.clone(), completed)
