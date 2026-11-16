@@ -72,18 +72,7 @@ pub(super) fn open(
                 })
         },
     )
-    .map_err(|error| {
-        let failure = Failure::from(error);
-        if failure.code() == "stale_cursor"
-            && !failure
-                .message
-                .ends_with("; run the query again without its cursor")
-        {
-            stale(&failure.message)
-        } else {
-            failure
-        }
-    })
+    .map_err(Failure::from)
 }
 
 fn context_digest(domain: &str, value: &impl Serialize) -> Result<String, Failure> {

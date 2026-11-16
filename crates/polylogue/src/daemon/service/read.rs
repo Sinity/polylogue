@@ -264,6 +264,7 @@ fn failure(error: Error, request: &ReadRequest) -> Failure {
     let stale = error.code() == "stale_cursor";
     let mut failure = Failure::from(error);
     if stale {
+        failure.error.hint = None;
         if let Some(changed) = failure
             .error
             .message

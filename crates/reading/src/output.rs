@@ -114,7 +114,7 @@ fn view_error(
                 })],
             }))
         }
-        error => Err(read_error(error)),
+        error => Err(Error::from(error)),
     }
 }
 

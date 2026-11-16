@@ -118,9 +118,6 @@ fn cursor_failure(error: CursorError) -> Error {
         }
     }
 }
-fn page_error(error: PageError) -> Error {
-    Error::from(error)
-}
 
 /// The order values of each row a page visited, by the row's number on
 /// that page, so a cursor names its row by key.
@@ -616,7 +613,7 @@ fn rows_page(
     } else {
         PageBuilder::new(header, budget, page_start, framing)
     }
-    .map_err(page_error)?;
+    .map_err(Error::from)?;
     let mut keys = RowKeys::default();
     let mut emit = |record: &ReadRecord, at: SelectionLocator, ordinal: Option<u64>| {
         let Some(ordinal) = ordinal else {
@@ -629,7 +626,7 @@ fn rows_page(
         };
         Ok(pager
             .push_at(at, ordinal, item.clone())
-            .map_err(page_error)?
+            .map_err(Error::from)?
             != Push::Full)
     };
     let start = rows::RowStart {
@@ -692,7 +689,7 @@ fn rows_page(
             }
             Ok(footer)
         })
-        .map_err(page_error)?;
+        .map_err(Error::from)?;
     if let Some(first_row) = first_row {
         for item in &mut document.items {
             if let ItemKind::Fragment { position, .. } = &mut item.kind {

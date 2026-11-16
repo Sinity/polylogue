@@ -1,6 +1,6 @@
 //! Page presentation seeks original document blocks without making a partial
 //! stored Document. Full record transfer keeps the strict record adapter.
-use super::{Emit, Error, attachment_facts, layout_facts, output};
+use super::{Emit, Error, attachment_facts, layout_facts};
 use polylogue_model::{
     Block, DocumentId,
     read::{

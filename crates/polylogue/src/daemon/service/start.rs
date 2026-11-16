@@ -14,8 +14,8 @@ pub struct Runtime {
     pub daemon: Arc<Daemon>,
     pub operations: Arc<command_surface::OperationTable>,
     /// Ends the signal worker: a child of the archive's stop request.
-    signals_stop: Option<polylogue_store::cancellation::Cancellation>,
-    signals: Option<JoinHandle<std::io::Result<()>>>,
+    pub(super) signals_stop: Option<polylogue_store::cancellation::Cancellation>,
+    pub(super) signals: Option<JoinHandle<std::io::Result<()>>>,
     live_events_stop: Option<Sender<()>>,
     live_events: Option<JoinHandle<()>>,
     /// Records hosted-connection outcomes and runs resumes.
@@ -23,15 +23,15 @@ pub struct Runtime {
     completion: Option<crate::completion_catalog::publisher::Publisher>,
     scope: Option<crate::daemon::scope::ScopeWorker>,
     completion_scope: Option<polylogue_store::ScopeInvalidation>,
-    engine: Option<JoinHandle<std::io::Result<()>>>,
+    pub(super) engine: Option<JoinHandle<std::io::Result<()>>>,
     lock: Option<polylogue_store::ArchiveLock>,
-    worker_events: tokio::sync::watch::Sender<Option<&'static str>>,
+    pub(super) worker_events: tokio::sync::watch::Sender<Option<&'static str>>,
     /// Set once by a loop run until idle, when it ends.
     idle: Arc<tokio::sync::watch::Sender<Option<RunSummary>>>,
 }
 
 impl Runtime {
-    fn start_signals(&mut self) -> std::io::Result<()> {
+    pub(super) fn start_signals(&mut self) -> std::io::Result<()> {
         let stop = self.daemon.archive.stop().child();
         let stopped = stop.clone();
         let daemon = Arc::clone(&self.daemon);

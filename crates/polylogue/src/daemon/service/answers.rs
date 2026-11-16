@@ -1,5 +1,7 @@
 //! Typed answers and the authored writes they perform.
-use super::{Daemon, ModeState};
+use super::Daemon;
+#[cfg(feature = "sinex")]
+use super::ModeState;
 use crate::briefing::{self, Ask};
 use crate::daemon::Failure;
 use command_surface::Answer;
@@ -10,6 +12,7 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::Instant;
 
 /// A query's answer over a snapshot of the given freshness: degraded, with a
 /// note, when the index is not current or a part is incomplete; empty when

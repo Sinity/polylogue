@@ -1,6 +1,6 @@
 //! Indexed tool relationships enrich layout one pair at a time. Stored
 //! records remain unchanged; offsets describe the existing emitted item order.
-use super::{Error, output};
+use super::Error;
 use polylogue_model::{MessageId, PromptKind, Role, read::*};
 use polylogue_store::Reader;
 use std::ops::ControlFlow;
