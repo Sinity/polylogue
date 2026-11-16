@@ -226,6 +226,24 @@ A **member** is an alias for a session: a `member` annotation whose key is the a
 
 `polylogue @reviewer send 'fold the findings into the overview' --page flaky-ci --section Overview` records, on the delivery, the page and heading where a reply belongs. An annotation that replies to that delivery (`--replies-to delivery:<id>`, or `replies_to=` in a marker) and names no page of its own is placed in that section by the same request, authored by the reply's author. A marker's explicit `page=` wins. One reply is placed once: the slot's ID derives from the reply's ID, so re-parsing writes nothing new.
 
+## Speed
+
+Budgets on a warm daemon, at the 95th percentile ([latency.md](latency.md)):
+
+| Operation | Budget | How |
+|---|---|---|
+| contents view of a 300-slot page | 50 ms | one range read of the page's `slot_of` links, the in-memory map of current revisions, one batched title read per kind |
+| page open to first paint, 300 slots, 60 citations | 150 ms | the same, plus batched text reads of the cited and excerpted messages, from which citation states are computed; live cells stream in after |
+| a live cell | its query's latency class | concurrent, under its own deadline, `pending` until it answers; cached by query hash and position |
+| a paragraph write with five references | 30 ms to commit; within 1 s in every open view | the text is parsed and its link rows written in the write's transaction; the change feed reaches the views |
+| cite by quote within one session | 100 ms | the session's text index narrows to candidate messages, then an exact match over their text |
+| check-in of a 300-slot working copy with 20 changed elements | 500 ms | parse, compare with `base` by slot ID, one request with numbered writes |
+| `changed-sources` over all citations | the search class | each message stores the hash of its text when written and each citation the hash of its container's text, so changed containers are found by comparison and only those are read |
+| `--at` and the page diff | 300 ms, plus 100 ms per 1,000 changes | revisions current at a position, from the revision graph |
+| a marker with `page=` during ingest | 1 ms | the page's heading map in memory |
+
+Nothing is hashed on a read except the cited spans themselves, and no citation state is stored.
+
 ## Laws
 
 Each law is a property with a test on the Morrow archive through the real daemon.
