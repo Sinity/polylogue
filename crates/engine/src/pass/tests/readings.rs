@@ -358,7 +358,7 @@ impl StepParser for PausedChain {
             let pause = pause.as_ref().unwrap();
             (pause.started.clone(), Arc::clone(&pause.resume))
         };
-        started.send(()).unwrap();
+        let _ = started.send(());
         let (resumed, changed) = &*resume;
         let mut resumed = resumed.lock().unwrap();
         while !*resumed {
