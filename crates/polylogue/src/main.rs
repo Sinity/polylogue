@@ -7,6 +7,7 @@ mod advisory;
 mod briefing;
 mod browser;
 mod cli;
+pub use cli::picker;
 mod client;
 mod commands;
 mod completion_catalog;

@@ -8,6 +8,7 @@ pub mod changes;
 pub(crate) mod completion;
 pub(crate) mod follow;
 pub mod local;
+pub mod picker;
 pub mod print;
 pub(crate) mod schema;
 pub(crate) mod staged_file;

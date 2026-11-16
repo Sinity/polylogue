@@ -52,14 +52,14 @@ It opens only when standard input and output are terminals and no machine format
  Enter tag reviewed · Tab mark · ^r read · ^o browser · ^y copy · ^p print · ^e query · ^/ preview · Esc
 ```
 
-- **Filtering.** The prompt filters fuzzily over titles, first prompts and repositories, from the session index the CLI reads from the catalog. `Ctrl-e` switches it to query mode: the text is a query, the list runs again as it changes, stale replies are dropped and the count updates. Candidates stream page by page as the user scrolls.
+- **Filtering.** The prompt filters fuzzily over titles, first prompts and repositories, ignoring letter case, from the session index the CLI reads from the catalog. `Ctrl-e` switches it to query mode: the text is a query, the list runs again as it changes, stale replies are dropped and the count updates. Candidates stream page by page as the user scrolls.
 - **The footer always shows the keys**, generated from one key table. Enter runs the line's next verb with its words, shown in the footer (`Enter tag reviewed`; `Enter read` for `polylogue read`). When nothing follows `pick`, Enter prints the chosen references, one per line, which is what Alt-p inserts. `Ctrl-r` reads the highlighted row in the pager and returns to the picker.
 - **The preview** shows the highlighted row as `read --view overview` would, at the pane's width; a reply for a row no longer highlighted is never drawn. Archived text is shown with control characters escaped.
 - **Off a terminal or with `--json`**, a line that needs the picker is refused `ambiguous` with the candidates (short ID, time, title) and ready lines (`polylogue SESSION resume`, `polylogue @N read` on a terminal); it never dumps every candidate into a pipe. With `--json` the shared error reply carries kind `ambiguous`, the candidates and the ready lines.
 
 ### Keys
 
-The picker and the web use the same letter for the same act wherever both offer it; the shared key table is the common [`web-shell`](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/web-shell/README.md)'s, and Polylogue's web bindings are in [web.md](web.md#keys). The picker uses Ctrl forms for letters that would otherwise type into its prompt.
+The picker and the web use the same letter for the same act wherever both offer it. Movement and copying take their letters from the common [`web-shell`](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/web-shell/README.md)'s key table; the picker's own table adds its reading, printing, mode and preview keys and drives both dispatch and the footer. Polylogue's web bindings are in [web.md](web.md#keys). The picker uses Ctrl forms for letters that would otherwise type into its prompt.
 
 | Act | Key |
 |---|---|
