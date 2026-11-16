@@ -62,6 +62,10 @@ fn until_date_uses_logical_day_end_and_until_instant_stays_exclusive() {
         ),
         (
             "messages where until:2026-10-24T12:00:00Z | sort by at",
+            vec!["before", "start", "inside"],
+        ),
+        (
+            "messages where until:2026-10-24T12:00:00.000Z | sort by at",
             vec!["before", "start"],
         ),
         (

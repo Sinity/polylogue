@@ -167,3 +167,52 @@ fn fractional_compiled_since_until_and_comparisons_keep_index_boundaries_exclusi
         );
     }
 }
+
+#[test]
+fn started_minute_matches_minute() {
+    use crate::fixture::{Fixture, SessionFacts};
+    let temp = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(temp.path()).unwrap();
+    for (id, started) in [
+        ("test:first", "2026-10-07T10:00:30Z"),
+        ("test:second", "2026-10-07T10:01:05Z"),
+    ] {
+        fixture
+            .session(SessionFacts {
+                id,
+                started: Some(ms(started)),
+                ..Default::default()
+            })
+            .unwrap();
+    }
+    let options = polylogue_query::Options {
+        clock: Clock::new(
+            "2026-10-07T12:00:00Z".parse().unwrap(),
+            query_language::time::DaySetting::new(
+                jiff::tz::TimeZone::UTC,
+                jiff::civil::Time::midnight(),
+            )
+            .unwrap(),
+        ),
+        origins: vec!["test".into()],
+        page_size: None,
+        random_seed: Some(1),
+        embeddings: false,
+        self_session: None,
+        saved: Default::default(),
+        kept: Default::default(),
+        fields: vec!["id".into()],
+        provider_catalog: None,
+    };
+    let program =
+        crate::query::compile("sessions where started:2026-10-07T10:00", &options).unwrap();
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let rows = reader.query_rows(&program).unwrap();
+    assert_eq!(
+        rows.iter()
+            .map(|row| row["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["test:first"]
+    );
+}

@@ -28,16 +28,9 @@ The read-class `internal advisory` operation has a stricter preparation cap of 2
 
 Pure writes, including imports, await their committed result without a read deadline. Mixed operations keep deadlines for their read preparation and end that phase when they hand the mutation to the writer: a preparation that has run out refuses the handoff, and a handed-over write replies with its committed result however long the commit takes, never a timeout. Classification follows the accepted arguments, so showing a setting stays bounded while writing it keeps its result. In a chain each step has its own class and deadline.
 
-**Deadlines are interactive defaults.** A read whose row declares no latency class, called with the default deadline, stops after 30 seconds; `--deadline none` lifts it. The CLI's socket timeout is the deadline plus 50 ms, so a hung daemon never hangs a shell. Any caller lifts a deadline (`--deadline MS`, `--deadline none`; `deadline: null` over MCP and HTTP); cancellation is in [query.md](query.md#deadlines). A timed-out aggregate prints the narrower query the planner can serve and the same line with the deadline lifted:
+**Deadlines are interactive defaults.** A read whose row declares no latency class, called with the default deadline, stops after 30 seconds; `--deadline none` lifts it. The CLI's socket timeout is the deadline plus 50 ms, so a hung daemon never hangs a shell. Any caller lifts a deadline (`--deadline MS`, `--deadline none`; `deadline: null` over MCP and HTTP); cancellation is in [query.md](query.md#deadlines).
 
-```console
-$ polylogue 'tool_calls where outcome:error | group by tool | count'
-polylogue: timeout after 400 ms in transform "group by" (1.2 M rows scanned)
-narrower:  polylogue 'tool_calls where outcome:error since:30d | group by tool | count'
-complete:  polylogue 'tool_calls where outcome:error | group by tool | count' --deadline none
-```
-
-Over MCP the timeout reply carries both as `next` calls.
+A stopped read names the stage that ran out. A page or similarity stage suggests a shorter query only when the query has no top-level time bound on its unit's main time field. Other stages, and queries already bounded in time, say "rerun with `--deadline none`, or narrow to one session". Recall and briefs give that same hint without a query-shaped suggestion, including when an inner page or similarity stage stopped.
 
 ## The daemon's states
 
