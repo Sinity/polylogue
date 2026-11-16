@@ -1962,7 +1962,7 @@ impl Engine {
                 };
                 outstanding -= 1;
                 let d = match d {
-                    pool::Finished::Range(done) => done,
+                    pool::Finished::Range(done) => *done,
                     pool::Finished::Chain(done) => {
                         active_chains.remove(&done.id);
                         pass.bytes_read += done.bytes_read;

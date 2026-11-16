@@ -252,7 +252,7 @@ fn stored_chain_pool_releases_consumed_chunks_before_done_is_drained() {
     let completed: Vec<_> = received
         .into_iter()
         .map(|finished| match finished {
-            crate::pool::Finished::Range(done) => done,
+            crate::pool::Finished::Range(done) => *done,
             crate::pool::Finished::Chain(_) => panic!("expected a range"),
         })
         .collect();
@@ -295,6 +295,7 @@ fn stored_chain_pool_releases_consumed_chunks_before_done_is_drained() {
         let crate::pool::Finished::Range(result) = result else {
             panic!("expected a range");
         };
+        let result = *result;
         assert!(result.error.is_none(), "{:?}", result.error);
         let plan = plans.iter_mut().find(|p| p.path == result.path).unwrap();
         let Change::Reparse { chain } = plan.change else {
@@ -438,7 +439,7 @@ fn a_submit_waiting_for_room_returns_when_a_stop_is_requested() {
     let completed: Vec<_> = received
         .into_iter()
         .map(|finished| match finished {
-            crate::pool::Finished::Range(done) => done,
+            crate::pool::Finished::Range(done) => *done,
             crate::pool::Finished::Chain(_) => panic!("expected a range"),
         })
         .collect();

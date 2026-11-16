@@ -265,7 +265,7 @@ an export's delivery cursor), so readers never see part of a record and an
 interrupted parse resumes after the last committed batch. An export holds
 at most two batches in memory: one committing while the next is parsed. A whole-chain
 replacement is the exception: it commits once, because readers must see
-either the old reading or the new one. Live ranges go ahead of queued chain
+either the old reading or the new one. Live ranges go ahead of queued bulk chain
 tasks through the pool's live queue, including while replacements run.
 Between transactions the writer starts
 a write-ahead log over once it passes its checkpoint size (about 1 GB),

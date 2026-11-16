@@ -119,13 +119,13 @@ pub struct Done {
 }
 
 pub(crate) enum Task {
-    Range(Job),
-    Chain { id: u64, plan: Plan },
+    Range(Box<Job>),
+    Chain { id: u64, plan: Box<Plan> },
 }
 
 pub(crate) enum Finished {
-    Range(Done),
-    Chain(ChainDone),
+    Range(Box<Done>),
+    Chain(Box<ChainDone>),
 }
 
 pub(crate) struct ChainDone {
@@ -276,12 +276,15 @@ impl Pool {
     /// would never end.
     #[must_use]
     pub fn submit(&self, job: Job) -> bool {
-        self.submit_task(Task::Range(job))
+        self.submit_task(Task::Range(Box::new(job)))
     }
 
     #[must_use]
     pub(crate) fn submit_chain(&self, id: u64, plan: Plan) -> bool {
-        self.submit_task(Task::Chain { id, plan })
+        self.submit_task(Task::Chain {
+            id,
+            plan: Box::new(plan),
+        })
     }
 
     fn submit_task(&self, task: Task) -> bool {
@@ -327,7 +330,7 @@ impl Pool {
         for task in tasks {
             match task {
                 Task::Range(_) => cancelled.ranges += 1,
-                Task::Chain { plan, .. } => cancelled.chains.push(plan),
+                Task::Chain { plan, .. } => cancelled.chains.push(*plan),
             }
         }
         cancelled
@@ -440,7 +443,7 @@ fn work(
             Task::Range(job) => {
                 let size = job.bytes();
                 let live = job.priority == Priority::Live;
-                let (batch, result) = run(job, archive, store, true);
+                let (batch, result) = run(*job, archive, store, true);
                 group.waiting.push((batch, result, size));
                 group.bytes += size;
                 if (live || group.bytes >= GROUP_BYTES)
@@ -505,7 +508,7 @@ fn work(
                 let sent = acknowledge
                     .send(Pending::Chain {
                         id,
-                        plan: Box::new(plan),
+                        plan,
                         reply,
                         bytes_read,
                         charge,
@@ -584,12 +587,12 @@ fn acknowledge_groups(pending: Receiver<Pending>, done: Sender<Finished>) {
                 });
                 drop(charge);
                 if done
-                    .send(Finished::Chain(ChainDone {
+                    .send(Finished::Chain(Box::new(ChainDone {
                         id,
                         plan: *plan,
                         written,
                         bytes_read,
-                    }))
+                    })))
                     .is_err()
                 {
                     return;
@@ -655,7 +658,7 @@ fn acknowledge_groups(pending: Receiver<Pending>, done: Sender<Finished>) {
             }
         }
         for result in group.waiting {
-            if done.send(Finished::Range(result)).is_err() {
+            if done.send(Finished::Range(Box::new(result))).is_err() {
                 return;
             }
         }
