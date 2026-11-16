@@ -57,18 +57,18 @@ How the author of a record affects rendering: operator annotations are quoted as
 - **Each tool holds everything the one before it holds**, so an agent uses the smallest tool that holds all its verbs. The split exists for the clients' access hints, which clients filter on; the server has no read-only mode. No tool is destructive, because Polylogue deletes nothing.
 - **Access belongs to the request**, from its typed arguments: `set` without a value and `import` of paths are not acts. A call's access is its highest step's; a tool refuses a step above its access and names the tool that takes it.
 - **On every call:** `explain: true` says how the call is read and what it would do, running nothing; `dry_run: true` resolves the selection and reports what each step would do, writing and reaching nothing ([interfaces.md#chains](interfaces.md#chains)).
-- **Not over MCP:** `pick` (it needs a person), `read` with `follow` (a stream; the refusal gives the `read` call with `from` that continues), row numbers, `--to`, `status --verify`, `web`, `install`, `demo`, `daemon`, `mcp`, `dev feed` and `dev move-to-sinex`. Every write is a step or operation of `polylogue_write` or `polylogue_act` ([authorship.md#mcp-completeness](authorship.md#mcp-completeness)).
+- **Not over MCP:** `pick` (it needs a person), `edit` without `text` (it opens an editor; the refusal gives the `read --to` and `import` lines of the [working copy](page-working-copy.md#editing-in-your-editor)), `read` with `follow` (a stream; the refusal gives the `read` call with `from` that continues), row numbers, `--to`, `status --verify`, `web`, `install`, `demo`, `daemon`, `mcp`, `dev feed` and `dev move-to-sinex`. Every write is a step or operation of `polylogue_write` or `polylogue_act` ([authorship.md#mcp-completeness](authorship.md#mcp-completeness)).
 
 ### Call shape
 
 The shared request envelope: `{operation?, arguments, request_id?, deadline?, budget_tokens?, cursor?}`. `operation` defaults to `rows`; `request_id` is optional ([Retries never write twice](#retries-never-write-twice)); `deadline` is milliseconds or `null` for none. For `rows`, `arguments` holds:
 
 - `selection`: one query or reference, the text that would be inside the quotes on the command line, so no shell quoting. It may be left out only when the one step is `brief` (the brief for the directory `cwd`).
-- `steps`: an array of `{verb, …}` objects, run in order on the same rows ([interfaces.md#chains](interfaces.md#chains)). Each step's other keys are the CLI's option and word names with `_` for `-`: `text`, `as`, `name`, `verdict`, `value`, `in`, `on`, `seed`, `view`, `show`, `around`, `stop_source`, ….
+- `steps`: an array of `{verb, …}` objects, run in order on the same rows ([interfaces.md#chains](interfaces.md#chains)). Each step's other keys are the CLI's option and word names with `_` for `-`: `text`, `as`, `name`, `verdict`, `value`, `in`, `on`, `seed`, `view`, `show`, `around`, `format`, `section`, `brief`, `stop_source`, ….
 - `all`: the `--all` that a write or act over several query rows needs.
 - `dry_run` and `explain`.
 
-```json
+```
 polylogue_read  {"arguments": {"selection": "repo:polylogue since:7d"}}
 polylogue_read  {"arguments": {"selection": "rate limit", "steps": [{"verb": "read", "view": "dialogue"}]}}
 polylogue_read  {"arguments": {"selection": "retry after rate limit", "steps": [{"verb": "brief"}]}}
@@ -101,7 +101,7 @@ Each tool's description is exactly as below. The input schemas are generated fro
 ```
 Read the archive. A call is {operation, arguments}; operation defaults to rows.
 rows(selection, steps?, explain?, dry_run?): selection is one query or reference: "repo:polylogue since:7d", "rate limit", "tool_calls where outcome:error | group by tool | count", session:codex:019d..., page:NAME, a chat URL, latest, self, query:NAME, result:ID. No steps lists the rows; each step acts on the same rows, in order:
-  read(view?, show?, hide?, from?, until?, first?, last?, around?, at?, alternate?, blind?, seed?) view: transcript|dialogue|overview|context|tree|changes|live|raw|compare|contents (a page's table of contents)|trace (where it came from)
+  read(view?, show?, hide?, from?, until?, first?, last?, around?, at?, alternate?, blind?, seed?, format?) format: citation gives footnote lines to cite; view: transcript|dialogue|overview|context|tree|changes|live|raw|compare|contents (a page's table of contents)|trace (where it came from)
   brief(cwd?, for?) packaged context: of a session, to take it over; of search words, what is already known; of a page, the page; with no selection, for the directory cwd
 explain: true says how a call is read and what it would do, running nothing.
 status() | help(topic?) query, fields, views, kinds, a verb | set(key?) lists settings or shows one | dev sql(statement) | dev schema(...)
@@ -120,9 +120,10 @@ Everything polylogue_read does, plus annotations: notes, tags, judgments and sav
   tag(name) NAME or NAME:VALUE
   edit(text) | withdraw(reason?) on annotation rows
   judge(verdict, on?, seed?, reason?) accept|reject|defer on annotations; or the better of several rows (a reference, or blind label A, B) on a dimension
-  save(name?, watch?) names the question as query:NAME and keeps the rows as result:ID; name page:NAME puts the rows on that page (section?, after?, fixed?, live?)
-  note(..., page?, section?) also places the note on a page; as: page creates one (template?), as: heading adds a section
-set(key, value) | import(paths)
+  save(name?, watch?) names the question as query:NAME and keeps the rows as result:ID; name page:NAME puts the rows on that page (section?, after?, fixed?, live?, kept?, as? card|excerpt|text|full|table|list|count|value|chart|compare)
+  note(..., page?, section?) also places the note on a page; as: page creates one (template?, brief? off|contents|full), as: heading adds a section
+Cite in note text with footnotes: [^1]: "exact quote" <REF>; read format: citation gives them.
+set(key, value) | import(paths) also checks in a page's Markdown file
 A query matching several rows needs all: true. Each write returns the call that undoes it.
 Example: {"arguments":{"selection":"self","steps":[{"verb":"note","text":"Catalog stays SQLite","as":"decision"}]}}
 ```
@@ -157,7 +158,7 @@ Resources cost no tool-list tokens: a client lists them once and reads one when 
 | `polylogue://manual` | the full reference, as `help --all` prints it |
 | `polylogue://session/<id>` | a session read as `read` reads it for a model, paged with the same continuation |
 | `polylogue://annotation/<id>` | an annotation with its links, judgments and current revision |
-| `polylogue://page/<root>/contents` | a page's table of contents, as `read --view contents` ([pages.md](pages.md#reading)) |
+| `polylogue://page/<root>/contents` | a page's table of contents with its open items, as `read --view contents` ([pages.md](pages.md#reading)): an agent's starting point on any page, from which it reads the sections it needs |
 | `polylogue://result/<id>` | a kept result's rows |
 
 A resource read is a read like any other: the caller identity, trust rendering and budgets are the same as for the `rows` call that reads the same thing.
@@ -166,7 +167,7 @@ A resource read is a read like any other: the caller identity, trust rendering a
 
 `"wait": "30m"` in `arguments` is the line option `--wait` ([interfaces.md](interfaces.md#chains)): a listing returns when rows match or the time passes, and `import` of a provider returns when its job finishes. One MCP call waits at most 50 seconds, so it never outlives a client's tool timeout; a call that runs out of its 50 seconds replies `empty` with the same call, its `wait` less the elapsed time, as its `next`, and an agent that runs that call keeps waiting.
 
-```json
+```
 polylogue_read  {"arguments": {"selection": "session:codex:019d0f2a live:idle", "wait": "30m"}}
 polylogue_act   {"operation": "import", "arguments": {"provider": "chatgpt", "wait": "10m"}}
 ```
@@ -197,12 +198,26 @@ Pushed context is what agents use; context they would have to ask for is rarely 
 
 An agent's first minute is then the server instructions and tool list (about 1.6k tokens), the hook's brief, and a `brief` of a search or a `rows` call; a wrong call is refused with the corrected call in `next`:
 
-```json
+```
 polylogue_read  {"arguments": {"selection": "flaky attachment test", "steps": [{"verb": "brief"}]}}
 polylogue_read  {"arguments": {"selection": "tool_calls where outcome:error since:1d", "steps": [{"verb": "read", "around": 2}]}}
 polylogue_write {"arguments": {"selection": "self", "steps": [{"verb": "note", "text": "flaky because the clock is real", "as": "finding", "evidence": "tool:codex:019d0f2a#call_7"}]}}
 ```
 
 Agents with a shell may use the CLI, which is the same grammar with equally instructive refusals: `polylogue 'flaky attachment test' brief`, `polylogue self resume --in codex`. Agents write findings with evidence, decisions with scope and claims with a check ([annotations.md#checked-claims](annotations.md#checked-claims)); bring in a batch of annotations through `import` of annotation lines ([annotations.md#annotation-lines](annotations.md#annotation-lines)); message peers with `send`; and hand work to another harness with `resume --in`.
+
+### Reading and writing pages
+
+An agent uses a page when the page is in its scope or named to it; how pages reach briefs is [agent-context.md](agent-context.md#pages-here), and the page model is [pages.md](pages.md).
+
+- **Reading.** `page:NAME read` over MCP pages at 4,000 tokens with `next`, like any reading. `view: "contents"` (or the resource `polylogue://page/<root>/contents`) is the cheap first read; `view: "changes"` with `from: "seen"` is the re-entry read.
+- **Writing with citations.** The flow the tool descriptions teach: `brief` of the topic, read the hits, `read` with `format: "citation"` on what the text will rest on, write prose whose every statement carries a footnote, then write it: `note` steps with `section` on the page, or a working copy written with the agent's file tools and checked in with `import` ([page-working-copy.md](page-working-copy.md#check-in)). A footnote may give a session and a quotation instead of a span; the write finds the exact span ([page-text.md](page-text.md#cite-by-quote)). The reply lists the citations pinned, the quotes refused (`this text is not in codex:01a20000-0005`) and the paragraphs left uncited ([page-text.md](page-text.md#grounding)). Nothing is blocked for lack of citations; the page shows each paragraph's grounding to the operator.
+- **Proposed until judged.** Text an agent writes on a page shows as proposed until the operator judges it, and an agent's revision of accepted text shows as a tracked change ([pages.md](pages.md#authorship-and-proposals)). The agent sees this in `read` and in its next brief: `your 6 paragraphs on page:flaky-ci: 4 accepted, 1 rejected, 1 proposed`.
+
+```
+polylogue_read  {"arguments": {"selection": "messages where \"next friday\" repo:morrow", "steps": [{"verb": "read", "format": "citation"}]}}
+polylogue_write {"arguments": {"selection": "page:flaky-ci", "steps": [{"verb": "note", "text": "weekday_offset() compared with >= where it should use >.[^1]\n\n[^1]: \"uses >= where it should use >\" <codex:01a20000-0005>", "as": "finding", "section": "Findings"}]}}
+polylogue_write {"operation": "import", "arguments": {"paths": [".page/flaky-ci.md"]}}
+```
 
 Live state, peers, tasks and the control channel each act takes are [live-sessions.md](live-sessions.md).

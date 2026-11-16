@@ -28,7 +28,7 @@ Shipped pages and templates are built into the binary and resolved by name, with
 
 | Page | What it is |
 |---|---|
-| `page:home` | the orientation screen: bare `polylogue` is this page rendered for a terminal ([terminal.md](terminal.md#the-orientation-screen)); sections Waiting, Running, Recent here, Pages changed since you looked (`edits since:seen`), Open items (`open`) |
+| `page:home` | the orientation screen: bare `polylogue` is this page rendered for a terminal ([terminal.md](terminal.md#the-orientation-screen)); sections Waiting, Running, Recent here, Pages changed since you looked (`edits` with `since:seen`), Open items (`open`) |
 | `page:index` | every page grouped by name prefix and tag, with recent edits and wanted pages |
 | `page:pinned` | what `save page:pinned` collects; pinning a row is saving it here |
 | `page:cost` | the Cost view as a page ([web-views.md](web-views.md#cost)) |

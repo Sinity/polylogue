@@ -1,6 +1,6 @@
 # References
 
-A reference names one thing in the archive, or one thing outside it, in a form every surface accepts: the CLI, MCP, HTTP, hooks, markup in transcripts, the web reader and the import of user state. One grammar and one parser serve all of them. A reference is one form of a line's selection ([query.md](query.md#selections)); how references appear inside query text is [query.md](query.md#references-inside-queries); row numbers (`@3`, `@3.2`, `@2-5`, `@1,4`, `@all`) are the command line's own and are [terminal.md](terminal.md#row-numbers).
+A reference names one thing in the archive, or one thing outside it, in a form every surface accepts: the CLI, MCP, HTTP, hooks, markup in transcripts, the web reader and the import of user state. One grammar and one parser serve all of them. A reference is one form of a line's selection ([query.md](query.md#selections)); how references appear inside query text is [query.md](query.md#references-inside-queries); row numbers (`@3`, `@3.2`, `@2-5`, `@1,4`, `@all`) are the command line's own and are [terminal.md](terminal.md#row-numbers). The command line resolves `@N.M` to the `span:` of hit M of row N as printed, so a search hit can be placed or cited exactly.
 
 ## Forms
 
@@ -12,7 +12,7 @@ A reference names one thing in the archive, or one thing outside it, in a form e
 | `message:<id>..<id>` | a range of messages in one session, both ends included, in reading order |
 | `block:<message>#<n>` | the n-th stored block of a message |
 | `tool:<session>#<call id>` | a tool call, by the harness's call ID |
-| `span:<container>#<unit>=<a>-<b>` | a span of text. The container is a message, a document, a block, `annotation:<root>@<rev>` or `alternate:<root>@<rev>#<n>`; the unit is `b` (UTF-8 bytes), `c` (code points) or `u16` (UTF-16 code units, as browser selections report them) |
+| `span:<container>#<unit>=<a>-<b>` | a span of text. The container is a message, a document, a block, a tool call (`tool:<session>#<call id>`, a span of its output), `annotation:<root>@<rev>` or `alternate:<root>@<rev>#<n>`; the unit is `b` (UTF-8 bytes), `c` (code points) or `u16` (UTF-16 code units, as browser selections report them) |
 | `document:<id>` | an imported document, such as a captured harness memory file |
 | `event:<id>` | a Polylogue event |
 | `attachment:<id>` | an attachment; `polylogue attachment:<id> read --to FILE` writes its bytes |
@@ -24,16 +24,20 @@ A reference names one thing in the archive, or one thing outside it, in a form e
 | `result:<id>`, `result:<id>#<row>`, `result:<id>.matches` | a kept result, one of its rows, or its match rows |
 | `result:<name>` | the newest kept result saved under that name ([saved-queries.md](saved-queries.md#save)) |
 | `run:<id>` | one run of a query, by the lowercase UUID the daemon gave it ([saved-queries.md](saved-queries.md#runs)) |
-| `page:<name>`, `page:<root>[@<rev>]`, `page:<name>@builtin` | a page by name (resolved to its root), by root, one revision of its page record, or the shipped page of that name ([pages.md](pages.md#the-model)); `page:template/<name>` is a template |
+| `page:<name>`, `page:<root>[@<rev>]`, `page:<name>@builtin` | a page by name (resolved to its root), by root, one revision of its page record, or the shipped page of that name ([pages.md](pages.md#the-model)); `page:template/<name>` is a template. A name the page carried before a rename still resolves to it ([pages.md](pages.md#names-and-renames)) |
+| `page:<name>#<anchor>` | a section or slot of a page. The anchor is a heading's slug (`page:flaky-ci#open-questions`) or a slot's short ID (`page:flaky-ci#7q2m`). It is stored as `page:<root>#<slot root>` when written and printed with the heading's current slug, so renaming the page or the heading breaks no reference |
 | `@<alias>` | the session a member alias resolves to when the line runs ([pages.md](pages.md#members)); `@` and a name starting with a letter, `all` excepted |
 | `delivery:<id>` | one delivery of a brief, message or notice to a session ([agent-context.md](agent-context.md#deliveries)) |
 | `file:<path>@<commit>` | a file at a commit, read through git |
+| `file:<path>@<commit>#L<a>-L<b>`, `file:<path>@<commit>#L<a>` | lines a to b, or line a, of a file at a commit, both ends included (`file:src/parse.rs@4e1d2c9#L40-L58`) |
 | `file:<path>#L<n>` | line n of a file as the archive's captured edits left it; a relative path is under `here`. `read --view trace` names the tool call that last wrote it ([reading.md](reading.md#views)) |
 | `repo:<name>`, `cwd:<path>` | a repository, a working directory; used as scopes |
 | `url:<absolute URL>` | an outside page, stored as text; reading the reference never fetches it |
 | `sx:<sinex reference>` | a Sinex object. Sinex owns the grammar of the string ([Sinex query](https://github.com/Sinity/sinex/blob/master/docs/query.md)); Polylogue resolves it through Sinex's API when Sinex is reachable and shows it `unavailable` otherwise |
 
 Surfaces also accept shorter forms that resolve to one of the above before anything is stored or sent: the reserved words below, a bare native ID or a unique prefix of at least eight hexadecimal characters and dashes, and a pasted provider URL. Replies print the shortest unique prefix on a terminal and over MCP, and full references in `--json` and bundles; writes always store full references.
+
+Where text cites, a source may be given as a container and a quotation instead of a span (`[^1]: "returns the same day" <codex:01a20000-0005>`); the write finds the quotation and stores the exact span ([page-text.md](page-text.md#cite-by-quote)).
 
 The shared language's `answer:<id>` form is refused with `try: polylogue run:<id> read`; a typed `assertion:<id>` is refused with the `annotation:<id>` line. Row numbers that reach the daemon are refused with "row numbers are resolved by the command line".
 
@@ -51,7 +55,7 @@ Query and read preparation match provider conversation URLs through the shared `
 
 ## Text coordinates
 
-Span offsets count in the original stored text, before view filtering or alternates. A message's or document's text is its text bodies (recorded text, thinking and textual tool results) in stored order, joined by two line feeds; a block names only its own body, and an exact annotation revision or alternate part names its own text (an annotation's string value or `text` member; `instructions` for rubrics and roles; `reason` for judgments). Bounds are half-open, `[a,b)`. A byte or UTF-16 bound that splits a character is refused, as is an out-of-range bound. Empty text is text; a missing or unavailable source is not, and never hashes as the empty string. Text hashes are BLAKE3 of the UTF-8 text, separate from a message's source hash.
+Span offsets count in the original stored text, before view filtering or alternates. A message's or document's text is its text bodies (recorded text, thinking and textual tool results) in stored order, joined by two line feeds; a block names only its own body, a tool call names its output text, and an exact annotation revision or alternate part names its own text (an annotation's string value or `text` member; `instructions` for rubrics and roles; `reason` for judgments). Bounds are half-open, `[a,b)`. A byte or UTF-16 bound that splits a character is refused, as is an out-of-range bound. Empty text is text; a missing or unavailable source is not, and never hashes as the empty string. Text hashes are BLAKE3 of the UTF-8 text, separate from a message's source hash.
 
 ## Rules
 

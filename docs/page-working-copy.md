@@ -92,7 +92,7 @@ The last paragraph has no marker: someone just wrote it, and check-in makes it a
 - **Embed or inclusion.** A paragraph holding only `![caption](REF "form")`.
 - **Query.** A fenced block whose info string is `query [FORM] [kept result:ID]`; its content is the question.
 - **Generated regions.** `<!-- generated: … -->` … `<!-- /generated -->` after an embed, query or section inclusion: rows, cards and included sections, written for reading and never checked in.
-- **Conflicts.** [Conflicts](#conflicts) have their own block form.
+- **Conflicts.** [Conflicts](#conflicts) have their own region form.
 
 ## Check-in
 
@@ -107,7 +107,7 @@ The last paragraph has no marker: someone just wrote it, and check-in makes it a
 | a marker in a new place | a slot move: new parent and position from its neighbours |
 | a marker gone | nothing; the reply lists `2 slots missing, not withdrawn`; `--withdraw-missing` withdraws those slots, and what they showed survives |
 | `fixed` ↔ `current` changed | a slot revision of its mode |
-| an excerpt's quote trimmed | the excerpt narrows to the trimmed text's span (contiguous, or with `…` gaps in order); text that is not in the source is refused: `captured text is evidence: these words are not in the source` |
+| an excerpt's quote trimmed | the excerpt narrows to the trimmed text's span (contiguous, or with `…` gaps in order); text that is not in the source is refused: `captured text is quoted exactly: these words are not in the source` |
 | a new quotation with a source line | cite by quote ([page-text.md](page-text.md#cite-by-quote)): a new excerpt slot |
 | a footnote's quote edited, or a footnote giving a container and a quote | resolved by quote within that container |
 | a citation marker removed from text | committed; the reply lists `slot 7q2m: removed citation [^1] (codex:01a20000-0005)`, and the paragraph's grounding is computed again |
@@ -115,7 +115,7 @@ The last paragraph has no marker: someone just wrote it, and check-in makes it a
 | a query's text changed; `kept result:ID` removed; `kept` added | a new question; back to live; a new kept result now |
 | a value's alt text | ignored: it is the rendered value |
 | a generated region edited | ignored; the reply says so and names where to edit (the source page) |
-| a conflict block left with one text | one revision revising both heads |
+| a conflict region left with one text | one revision revising both heads |
 | the header edited | a revision of the page record (a changed `page` renames it) |
 
 The reply lists what was written and what was not:
@@ -133,7 +133,7 @@ Reading a page out and checking it in unchanged writes nothing. Per-element refu
 
 ## Conflicts
 
-Two current revisions of one annotation (written on two machines from one base, [annotations.md](annotations.md#current-revisions)) are written into the working copy as a conflict block:
+Two current revisions of one annotation (written on two machines from one base, [annotations.md](annotations.md#current-revisions)) are written into the working copy as a conflict region:
 
 ```markdown
 <!-- slot 7q2m conflict: keep one text -->
@@ -144,7 +144,7 @@ weekday_offset() compared with `>=` where it should use `>`.
 <!-- /conflict -->
 ```
 
-Leaving one text (edited or not) and checking in writes one revision that revises both heads. A conflict block left with both texts is refused for that slot.
+Leaving one text (edited or not) and checking in writes one revision that revises both heads. A conflict region left with both texts is refused for that slot.
 
 ## Importing Markdown
 

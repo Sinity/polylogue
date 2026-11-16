@@ -14,6 +14,15 @@ body   = rest of the line, then lines indented by at least 2 spaces ;
 
 Named arguments carry the same names as the `note` options, with `_` for `-`: `about=` (by default the session for `title` and `outcome`, otherwise the containing message), every relation role (`replies_to=`, `challenges=`, `supports=`, …), `evidence=`, `scope=`, `key=`, `span=` for `::highlight`, and `rubric=` and `pass=` for `::rubric_value`. `page=` and `section=` are accepted on any marker ([Pages](#pages)). Any other argument makes the marker "not applied".
 
+**The body is Markdown with references** ([page-text.md](page-text.md#markdown-with-references)), as `note` text is: links, citations and embeds in it become link rows of the annotation it writes. A citation's footnote definitions are indented continuation lines of the body, so they stay with the marker:
+
+```markdown
+::finding(page=flaky-ci, section=Findings): weekday_offset() compared with `>=` where it should use `>`.[^1]
+  [^1]: "uses >= where it should use >" <codex:01a20000-0005>
+```
+
+A footnote that gives a container and a quotation is pinned to the exact span when the marker is extracted; a quotation that is not in the source, or occurs more than once, makes the marker one of the counted failures, listed with its reason (`this text is not in codex:01a20000-0005`) ([page-text.md](page-text.md#cite-by-quote)).
+
 **Where markers count.** At the start of a line, after at most three spaces; only in text written by a person or a model. Never inside fenced or indented code, on a quoted line, after `\::`, in thinking, tool calls, tool results, attachments, inherited copies, harness-written text or known pasted spans. Text inside a code fence or a stored prompt is data.
 
 **Extraction and identity.**

@@ -126,7 +126,7 @@ generated page of the thing they belong to, or on the area page that owns them.
   resume tree; the default unit in listings, counts and measures. Its members
   are **physical sessions**.
 - **session link**: an explicit relationship between sessions (`spawn`,
-  `fork`, `continuation`, `resume`, `reference`).
+  `fork`, `continuation`, `resume`, `reference`); the unit `session_links`.
 - **known parents**: the parent sessions known for a session whose ancestry
   reaches no root yet.
 - **compaction boundary**: where a harness replaced earlier context with a
@@ -252,7 +252,8 @@ generated page of the thing they belong to, or on the area page that owns them.
 - **note**: text written about something, of a kind (`note TEXT --as KIND`).
 - **tag**: a label, optionally with a value (`rate-limits`, `priority:high`).
 - **link role**: how an annotation points at a reference (`about`, `evidence`,
-  `scope`, `origin`, or a relation such as `replies_to` or `revises`).
+  `scope`, `origin`, a relation such as `replies_to` or `revises`, or, for
+  references in its text, `mentions`, `cites` and `embeds`).
 - **stack**: annotations about annotations, joined by typed relations.
 - **current revision**: a revision no unwithdrawn `revises` points at; two
   current revisions of one record are a **conflict**. A write names its
@@ -288,21 +289,68 @@ generated page of the thing they belong to, or on the area page that owns them.
 
 ## Pages
 
-- **page**: a named, ordered arrangement of sessions, notes, live queries,
-  kept results and other pages (`page:NAME`); its **subject** is what it is
-  about, and its **layout** is `linear`, `board` or `table`.
-- **slot**: one item placed on a page: a reference, a live or kept query, or
-  a heading.
-- **section**: a heading slot and what sits under it.
-- **red link**: a page name not yet created, shown waiting until the page
-  appears.
+- **page**: a named, ordered arrangement of the archive: sections and slots
+  (`page:NAME`); its **subject** is what it is about, and its **layout** is
+  `linear`, `board` or `table` ([pages.md](pages.md#page)).
+- **slot**: one placed item on a page: text, a heading, an excerpt, an embed,
+  a query cell or included text. Never called a block, which is a part of a
+  message ([pages.md](pages.md#slot)).
+- **section**: a heading slot and what sits under it (`page:NAME#ANCHOR`)
+  ([pages.md](pages.md#sections-and-order)).
+- **form**: how a slot shows what it holds: `card`, `excerpt`, `text`,
+  `full`, `table`, `list`, `count`, `value`, `chart`, `compare`
+  (`save page:NAME --as FORM`) ([pages.md](pages.md#forms)).
+- **link**: a reference in text that goes there (`[text](REF)`)
+  ([page-text.md](page-text.md#links)).
+- **citation**: a footnote saying a sentence rests on an exact source passage, carrying
+  the quoted words, source and hash (`[^1]`) ([page-text.md](page-text.md#citations)).
+- **excerpt**: captured text quoted exactly on a page, with its source line
+  ([page-text.md](page-text.md#citations)).
+- **embed**: a thing shown on a page, rendered from the archive at read
+  (`![caption](REF "form")`) ([page-text.md](page-text.md#embeds)).
+- **inclusion**: another annotation's or page section's text shown as part of
+  this page, in step with its source ([page-text.md](page-text.md#inclusions)).
+- **live cell**: a query on a page, run when the page is read
+  ([pages.md](pages.md#queries-on-pages)).
+- **kept answer**: a query cell fixed to a kept result
+  ([pages.md](pages.md#queries-on-pages)).
+- **value**: a number from a query or figure inside a sentence, fixed when
+  written unless written `live value` ([page-text.md](page-text.md#values-in-sentences)).
+- **cite by quote**: giving a source and a quotation; Polylogue finds and
+  stores the exact span ([page-text.md](page-text.md#cite-by-quote)).
+- **quote check**: `✓` or `≠`, whether a quoted phrase occurs in the source it
+  cites ([page-text.md](page-text.md#the-quote-check)).
+- **source changed**: a citation's or excerpt's source text differs from what
+  was cited ([page-text.md](page-text.md#when-a-source-changes)).
+- **re-anchored**: the cited words were found again after a re-parse moved
+  them ([page-text.md](page-text.md#when-a-source-changes)).
+- **grounding**: whether a paragraph's statements are cited: `cited`,
+  `changed`, `uncited`, `none` ([page-text.md](page-text.md#grounding)).
+- **citation needed**: the mark on agent prose with no citation
+  ([page-text.md](page-text.md#grounding)).
+- **proposed**: text by anyone but the operator that he has not judged, shown
+  with accept and reject ([pages.md](pages.md#authorship-and-proposals)).
+- **tracked change**: a proposed revision shown as a word diff over the
+  accepted text ([pages.md](pages.md#authorship-and-proposals)).
+- **backlinks**: everything that places, links, cites or includes an object,
+  shown as **Cited and linked** on its reading and as the web's Backlinks
+  panel ([page-text.md](page-text.md#backlinks)).
+- **active page**: the page a workbench tab is collecting into with `+`
+  ([web-pages.md](web-pages.md#citing-while-reading)).
+- **working copy**: a page as one Markdown file (`read --to`, or what `edit`
+  opens), checked in with `import` ([page-working-copy.md](page-working-copy.md)).
+- **generated region**: rows or included text written into a working copy
+  for reading, never checked in ([page-working-copy.md](page-working-copy.md#the-format)).
+- **red link**: a link to a page that does not exist yet; it attaches when the
+  page is created ([pages.md](pages.md#finding-pages)).
+- **checkpoint**: a page kept as it stands (`page:NAME save`, giving
+  `result:<id>`); its permanent link ([pages.md](pages.md#time-and-checkpoints)).
+- **discussion**: notes about a page or its parts that are not placed on it
+  ([pages.md](pages.md#discussion)).
 - **template**: a page others are made from (`page:template/investigation`),
   with **parameters** bound by `--param`; a **shipped page** (`page:home`,
-  `page:pinned`, `page:cost`) comes with Polylogue.
-- **checkpoint**: a page kept as it stands now (`page:NAME save`, giving
-  `result:<id>`).
-- **working copy**: a page written as one Markdown file (`read --to FILE.md`)
-  and checked in with `import`.
+  `page:index`, `page:pinned`, `page:cost`) comes with Polylogue
+  ([pages.md](pages.md#templates-and-shipped-pages)).
 - **member**: an alias (`@reviewer`) for a session, optionally on a page and
   with a role. An export's **member** (below, under stored inputs) is a file
   inside it; the context always says which.
@@ -494,7 +542,7 @@ another line does are in [set-aside.md](set-aside.md#words-another-line-does).
 | `timeline`, `cost`, `measure NAME` (commands) | queries with `\| measure` |
 | `trace` (as a verb) | `read --view trace` |
 | `toc` | `read --view contents` |
-| `checkout`, `checkin` | `read --to DIR` and `import DIR/NAME.md` |
+| `checkout`, `checkin` | `page:NAME edit` in an editor; `read --to DIR` and `import DIR/NAME.md` |
 | `add`, `move` (on a page) | `save page:NAME [--section S] [--after SLOT]` |
 | `pin` | `save page:pinned` |
 | `analyze` (experiments) | `\| measure experiment` |
@@ -502,7 +550,8 @@ another line does are in [set-aside.md](set-aside.md#words-another-line-does).
 | variant | alternate: `note --as translation:LANG`, `read --alternate`, the unit `alternates` |
 | stage (in a query) | transform |
 | fold | `--show` and `--hide` |
-| `summary`, `links` (views) | the views `overview` and `tree` |
+| `summary`, `links` (views) | the views `overview` and `tree` (`links` is the unit of link rows) |
+| `links` (the unit of links between sessions) | `session_links`; `links` is the unit of link rows |
 | answer (for a query run) | run: `run:<id>`, the unit `runs` |
 | `answers` (link role) | `--replies-to` |
 | `annotation` (rubric kind) | `rubric_value` |

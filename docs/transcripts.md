@@ -24,7 +24,7 @@ A reference keeps its whole ID, whitespace, pipes and quotes included. To run qu
 **The reading document** is the one typed structure every encoder, the pager and the web fragment consume, so pairing, indicators and value states are written once:
 
 ```text
-ReadDocument = Header(SessionHeader | LogicalHeader | DocumentHeader | EventHeader | RecordHeader), Item*, Footer
+ReadDocument = Header(SessionHeader | LogicalHeader | DocumentHeader | EventHeader | RecordHeader | PageHeader), Item*, Footer
 Item = MessageHeader{time, author, model?, annotations[], alternate?, id, inherited?, branch?}
      | Text{source text}
      | Thinking{words, encrypted | redacted | text}
@@ -34,7 +34,12 @@ Item = MessageHeader{time, author, model?, annotations[], alternate?, id, inheri
      | Indicator{kind, text, expand: ReadyCall}
      | Omission{count, unit, why, more: ReadyCall}
      | Card(link node, changes row, live process, physical session, …)
-Footer = ReferencedBy[], More(ReadyCall)?
+     | Slot{ref, form, mode, author, grounding, proposed?, item: Item}
+     | Excerpt{quote, source, state}
+     | Inclusion{origin, mode, Item*}
+     | Footnote{label, quote, source, state, count}
+     | Cell{query, form, run?, rows | pending}
+Footer = CitedAndLinked[], More(ReadyCall)?
 ```
 
 - A `Call` holds its result. Pairing happens once, in layout, by the stored call and result relation, never by serialization order; a result whose call is on another page is paired by reading the call's row by key.
@@ -42,6 +47,8 @@ Footer = ReferencedBy[], More(ReadyCall)?
 - Every item carries its source reference (message and block), so the pager can cut between items and start again there. Pages carry no other state. A message header's reference is its `message:` reference; the containing-message and block fields are set only on block items.
 - A `ReadyCall` stores one complete typed request: operation, arguments, request ID, deadline, token budget, cursor, freshness and format. Each `next`, `previous` or other action carries it once. Clients send it directly; the operation table derives CLI lines, MCP calls and HTTP links only where those forms are shown. Every reading ends with ready calls.
 - Indicator kinds are a closed set: `continues`, `branches`, `compacted`, `microcompacted`, `rate_limited`, `model_switch`, `away_summary`, `harness`, `turn`, `link_issue`, `stale`, `alternate`.
+- **Pages** lay out as a `PageHeader` (title, template, counts of citations, changed sources, uncited paragraphs and proposals) followed by one `Slot` per placed item in section order, each wrapping the item its [form](pages.md#forms) shows. A text slot's footnotes follow it, numbered page-wide, a source cited several times being one footnote with its count ([page-text.md](page-text.md#how-a-citation-shows)); a live query cell is `pending` until it answers and never holds the page back. The `markdown` encoder writes a page as its [working copy](page-working-copy.md#the-format); the terminal and HTML encoders draw each relation as [page-text.md](page-text.md#the-four-relations) describes.
+- **The footer** of every reading is the **Cited and linked** block: the pages that place the object, the notes and pages that link to it, citations of it or inside it, and inclusions of it, exact rows first, then rows inside it rolled up ([page-text.md](page-text.md#backlinks)).
 
 ## Composed transcripts
 

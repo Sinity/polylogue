@@ -7,7 +7,7 @@ The workbench is the web interface the daemon serves: reading, searching, measur
 - **A full designed interface, built from the designs.** Every view is specified to the fidelity its board draws; the [visual baselines](web-design.md#visual-baselines) are built faithfully, and views without a board are drawn before they are built.
 - **A shell over the same operations.** Every view is a line or a command, and every action is a verb or command reachable from the CLI and MCP; there is no web-only endpoint. Every view shows the CLI line and the MCP call that reproduce it ([footer line](#frame)).
 - **Where the operator works with agents.** Live sessions are read as they happen (`read --follow`), answered (`answer`), sent to (`send`), interrupted (`interrupt`) and resumed (`resume`, `resume --in`) from the web ([Running and Waiting](web-views.md#running-and-waiting-running-waiting), [live-session control](web-reader.md#live-session-control-panel)).
-- **Pages are where work is arranged, and optional.** The model is [pages.md](pages.md); the views are [Pages](web-views.md#pages). Every other view works the same with no page in the archive.
+- **Pages are where work is arranged, and optional.** The model is [pages.md](pages.md); the page view, citing while reading and editing in the browser are [web-pages.md](web-pages.md). Every other view works the same with no page in the archive.
 - **Live, never polling.** Views update from the daemon's committed changes ([live behaviour](#live-behaviour)).
 - **Every visible fact shows its source.** A chip, figure or line opens where it came from ([inspector](#inspector-and-source)).
 - **State that must last lives in the archive.** The browser holds only view state in progress ([what the browser holds](#what-the-browser-holds)).
@@ -32,7 +32,7 @@ Each view is HTML rendered by the daemon with `maud` from the same typed reply t
 └──────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Header:** wordmark; navigation Home · Running · Search · Notes · Pages · Review · Saved · Cost · Status (Review links to [Judging passes](web-views.md#judging-passes-judge)); the persistent query field with completion on every view. The Running item carries `running · waiting` counts, so "waiting on you" is visible from every page.
+- **Header:** wordmark; navigation Home · Running · Search · Notes · Pages · Review · Saved · Cost · Status (Review links to [Judging passes](web-views.md#judging-passes-judge)); the persistent query field with completion on every view. The Running item carries `running · waiting` counts, so "waiting on you" is visible from every page. While the tab has an [active page](web-pages.md#citing-while-reading), the header ends with `Collecting to page:flaky-ci › Evidence ✕`: the page and section that `+` places into, and the control that stops collecting.
 - **Status strip:** daemon state and uptime; **live lag per source** (time from the newest byte a live source wrote to its commit in the archive, per origin; `—` when the source is idle; a figure state when not measured); the extension's connection (from the host's last contact); index work pending; in primary mode, the Sinex position lag. Each item links to its Status section. The strip is the daemon state indicator: `live`, `catching up · N inputs waiting`, `disconnected · retrying`, `stopped (start: <service command>)`.
 - **Main column** up to 1,200 px; transcript text 75–90 characters per line.
 - **Inspector** (right rail, 280–320 px): the view's own facts by default, switching to the focused target with a "back to session" link.
@@ -77,7 +77,7 @@ Navigation, selection, the palette, help and the copy menu keys come from the sh
 | Key | Action | Line it runs | Scope |
 |---|---|---|---|
 | `g h` `g r` `g s` `g n` `g p` `g v` `g k` `g c` `g t` | go to Home, Running, Search, Notes, Pages, Review, Saved, Cost, Status | — | everywhere |
-| `+` | add the focused target or the marked rows to a page: a picker of page (or a new one from a template), section and mode | `REF save page:NAME --section S` (`--fixed`, `--live`) | everywhere |
+| `+` | place the focused target or the marked rows on the active page's current section (a message as an excerpt, a text selection as a span excerpt, a tool call as its card, a result row as the row); with no active page, or with `Shift-+`, a picker of page (or a new one from a template), section, form and **cite in a paragraph…** ([web-pages.md](web-pages.md#citing-while-reading)) | `REF save page:NAME --section S` (`--as FORM`, `--fixed`, `--live`) | everywhere |
 | `P` | pin the focused target | `REF save page:pinned` | reader, lists |
 | `e` | focus the query field | — | everywhere |
 | `r`, `Enter` | read the focused row | `REF read` | lists |
@@ -91,6 +91,8 @@ Navigation, selection, the palette, help and the copy menu keys come from the sh
 | `m` `w` `p` | inspector tab Outline / Raw / Source | — | reader |
 | `v` then a letter | read view: `t` transcript (linear on a page), `d` dialogue, `o` overview, `c` context, `e` tree, `g` changes, `l` live, `w` raw, `x` trace, `n` contents; `f` opens the flow panel | `REF read --view VIEW` | reader, page |
 | `v b` `v a` `v h` | page layout board / table, and the page's history | `page:NAME read`, `--at POSITION` | page |
+| `i` | edit the focused slot in place: its Markdown source with a live preview, saved with `Ctrl-Enter` ([web-pages.md](web-pages.md#editing)) | `REF edit TEXT` | page |
+| `m` | move the focused slot: arrows, then `Enter` ([web-pages.md](web-pages.md#moving-and-layouts)) | `SLOT save page:NAME --after SLOT` | page |
 | `Alt-↑` `Alt-↓` | move the focused slot before its previous or after its next sibling; on the board, the arrow keys move the focused card | `SLOT save page:NAME --after SLOT` | page |
 | `z` then a letter | show or hide: `t` tools in full, `k` thinking in full, `h` harness messages, `i` inherited, `b` branches, `s` spawns, `a` annotations, `u` turns, `c` the context meter | `REF read --show WORD` | reader |
 | `c` | compare: with one target opens the chooser, with two or more opens Compare | `'QUERY' read --view compare` | lists, reader |
@@ -98,7 +100,7 @@ Navigation, selection, the palette, help and the copy menu keys come from the sh
 | `i` | focus the live-session composer | `REF send TEXT` | reader, Running |
 | `1` `2` `3` | outcome `solved` / `partial` / `abandoned` | `REF note solved --as outcome` | reader, review |
 
-Inside a review card, `a`, `r` and `d` mean accept, reject and defer (`REF judge accept`), and the card shows them on its buttons. No other key changes meaning by view. The show/hide letters name the closed word table of [reading.md](reading.md#show-and-hide); `z` with Shift hides the word instead of showing it.
+Inside a review card, `a`, `r` and `d` mean accept, reject and defer (`REF judge accept`), and the card shows them on its buttons. On a page, `i` edits the focused slot and `m` moves it, since a page has no live-session composer and no Outline tab; the page's other keys are [web-pages.md](web-pages.md#keys). No other key changes meaning by view. The show/hide letters name the closed word table of [reading.md](reading.md#show-and-hide); `z` with Shift hides the word instead of showing it.
 
 **Palette** (`:` or `Ctrl-K`): every action available for the current selection, generated from the operation table's verbs and commands plus the view's navigation. Each entry shows its key, its CLI line and, when disabled, the reason from the operation's availability answer. It never holds an action the operation table lacks.
 
@@ -115,6 +117,8 @@ Inside a review card, `a`, `r` and `d` mean accept, reject and defer (`REF judge
 | result row | its reference | the row as TSV |
 | selection | Markdown | **as context**: the selection's `brief` in Markdown |
 
+Copied text in the reader also carries its span reference, so pasting it into a page paragraph offers to cite it ([web-pages.md](web-pages.md#copy-and-paste)).
+
 When the browser cannot carry the bytes (exact bytes, non-text types), the menu offers **Put on the desktop clipboard**, which the daemon writes through the desktop's clipboard service.
 
 ## Inspector and source
@@ -124,7 +128,7 @@ The inspector shows, for the view or the focused target:
 - **Lineage:** the compact tree of linked sessions (the `tree` view).
 - **Notes:** every annotation on the target, newest first, each with author, `via`, judgments and check state; **Write a note**.
 - **Views:** links to the read views, the report and share.
-- **Referenced by:** pages that place this target (`pages where shows:REF`), kept results and annotations that point here (`annotations where links_to:REF`).
+- **Backlinks:** the pages that place this target, the notes and pages that link to it, citations of it or inside it, and inclusions of it, exact rows first and rows inside it rolled up (`links where target:REF`; [page-text.md](page-text.md#backlinks)).
 - **Tabs Outline · Raw · Source:**
   - *Outline:* the session outline (the `turns` of the session).
   - *Raw:* the stored input records behind the focused messages, as inert text, with each record's outcome (used, skipped with reason, unreadable); the line is `REF read --view raw`.
@@ -167,7 +171,7 @@ In primary mode every view adds the Sinex state: `Sinex blocked` (writes waiting
 
 ## What the browser holds
 
-Only view state in progress: focus, open disclosures within a view, live reading on or off, marked rows, and unsent editor text (in page memory, kept across live updates). Everything a person expects to persist (density, show/hide defaults, rail and panel state per view, the key switch, theme) is a setting in the archive, written with `set`, authored and with history ([Settings](web-views.md#status-and-settings-status-settings)). Browser storage is not used for product state.
+Only view state in progress: focus, open disclosures within a view, live reading on or off, marked rows, the tab's active page and section, and unsent editor text (in page memory, kept across live updates). Everything a person expects to persist (density, show/hide defaults, rail and panel state per view, the key switch, theme) is a setting in the archive, written with `set`, authored and with history ([Settings](web-views.md#status-and-settings-status-settings)). Browser storage is not used for product state.
 
 ## Access
 

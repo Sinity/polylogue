@@ -1,22 +1,22 @@
 # Page text
 
-The text of a page is Markdown with references. Inside a paragraph a sentence can do four things with an address: link to it, cite it as the exact evidence the sentence rests on, embed it to show it in place, or include its text as part of the page. This page owns that text grammar, the four relations, citations and their checks, embeds and values, inclusions, backlinks on every object, what each relation does when its source changes, and grounding. The page model is [pages.md](pages.md); the file form of a page is [page-working-copy.md](page-working-copy.md); reference forms are [references.md](references.md).
+The text of a page is Markdown with references. Inside a paragraph a sentence can do four things with an address: link to it, cite it as the exact source passage the sentence rests on, embed it to show it in place, or include its text as part of the page. This page owns that text grammar, the four relations, citations and their checks, embeds and values, inclusions, backlinks on every object, what each relation does when its source changes, and grounding. The page model is [pages.md](pages.md); the file form of a page is [page-working-copy.md](page-working-copy.md); reference forms are [references.md](references.md).
 
 ## Markdown with references
 
 A note's text, and so a text slot's, is CommonMark with footnotes, in which four existing Markdown forms carry the meanings below, plus the product's markup prefix for kinds (`::decision: …`, [markup.md](markup.md)). The same text is accepted by `note TEXT`, `edit TEXT`, the MCP `note` and `edit` steps, marker bodies, the working copy and the web editor, and it is what `read --format markdown` prints. One grammar and one parser serve every writer and renderer.
 
 - **References in text become link rows** in the same write: role `mentions` for a link, `cites` for a citation (with its quote and hash), `embeds` for an inline value or an inclusion ([annotations.md](annotations.md#links)). The text stays the source of truth and the rows are written with it, as markers in messages become annotations. A reference that does not resolve yet is a waiting link (for a page, a red link); an ambiguous one refuses that paragraph with the candidates.
-- **Citations travel with their text.** A note's footnote definitions are part of its stored text, so the note carries its evidence wherever it is shown or included. Stored labels are local to the note (`[^1]`); a page rendering or working copy numbers them page-wide and maps them back on check-in.
+- **Citations travel with their text.** A note's footnote definitions are part of its stored text, so the note carries its sources wherever it is shown or included. Stored labels are local to the note (`[^1]`); a page rendering or working copy numbers them page-wide and maps them back on check-in.
 - **Any reference form** can appear: a session, message, span, block, tool call, kept result or row, annotation, page or section, `file:`, `url:`, `sx:` ([references.md](references.md#forms)).
 
 ## The four relations
 
 | | Link | Citation | Embed | Inclusion |
 |---|---|---|---|---|
-| **Means** | go there | this sentence rests on that evidence | show that thing here, rendered at read | include that text here, in step with its source |
-| **Holds** | any reference | an exact place in evidence: a span, message, block, tool call, result row, file lines, an annotation revision, a document, `url:`, `sx:` | captured things, queries, kept results, figures, cards of anything | authored text: an annotation, a page section, a whole page |
-| **Markdown** | `[text](REF)` or `<REF>` | `[^1]` in the sentence, `[^1]: "quote" <REF>` below it | `![caption](REF "form")`; a value in a sentence `![…](REF "value")`; a question as a ```` ```query ```` block | `![](REF "text")` on its own line, REF an annotation or `page:X[#anchor]` |
+| **Means** | go there | this sentence rests on that passage | show that thing here, rendered at read | include that text here, in step with its source |
+| **Holds** | any reference | an exact place in a source: a span, message, block, tool call, result row, file lines, an annotation revision, a document, `url:`, `sx:` | captured things, queries, kept results, figures, cards of anything | authored text: an annotation, a page section, a whole page |
+| **Markdown** | `[text](REF)` or `<REF>` | `[^1]` in the sentence, `[^1]: "quote" <REF>` below it | `![caption](REF "form")`; a value in a sentence `![…](REF "value")`; a question as a ```` ```query ```` cell | `![](REF "text")` on its own line, REF an annotation or `page:X[#anchor]` |
 | **Stored** | link row `mentions` | link row `cites` with quote, context and hash | a slot (`about` or `query`, a form); inside text, link row `embeds` | a slot whose `about` is the annotation or page, form `text` |
 | **Terminal** | the text underlined, its short reference dimmed after it, a terminal hyperlink to the workbench | `¹` in the text; the slot's footnotes under it: quote, source line, state mark | a boxed card, table or value with its reference line | the text flowing with a `┃` bar and a dimmed `— from page:morrow/architecture#parser` |
 | **Web** | underlined, an icon per kind of target, a nested hover popup; a wanted page in red | superscript; a sidenote in the right margin, or at the section's end on narrow screens; quote and source on hover; a click opens the reader at the highlighted span | a framed card, table or chart, its footer with the reference, run and position | text in the column with a tinted margin bar; origin and "also on 2 pages" on hover; a pin glyph when fixed |
@@ -39,7 +39,7 @@ weekday_offset() compared with >= instead of >.[^1] Errors fell to ![34 of 1,210
 
 ## Citations
 
-A citation says a sentence rests on exact evidence: `[^1]` in the sentence and a footnote definition below the paragraph giving the quoted words and the source. One link row is stored per cited place: role `cites`, the reference as written (normally a `span:`), the quoted text with up to 32 characters of context either side, the BLAKE3 hash of the cited text when written, and the reading version of the container at that time. The quote and context are what let a citation be found again after a re-parse moves offsets.
+A citation says a sentence rests on an exact source passage: `[^1]` in the sentence and a footnote definition below the paragraph giving the quoted words and the source. One link row is stored per cited place: role `cites`, the reference as written (normally a `span:`), the quoted text with up to 32 characters of context either side, the BLAKE3 hash of the cited text when written, and the reading version of the container at that time. The quote and context are what let a citation be found again after a re-parse moves offsets.
 
 ### Cite by quote
 
@@ -82,7 +82,7 @@ A citation of captured text proves what it quoted three ways: the hash of the ci
 `read --format citation` prints, for any selection, footnote definitions ready to paste: one line per item, and a query of messages one line per hit.
 
 ```text
-[^1]: "next friday evaluated on a Friday returns the same day" — model, codex:01a20000-0005, 5 Oct 2026 16:25 CEST <span:message:codex:01a20000-0005:msg_01a20000a11#c=12-66> b3:4be1c07d
+[^1]: "next friday evaluated on a Friday returns the same day" — model, codex:01a20000-0005, 5 Oct 2026 16:25 CEST <span:message:codex:01a20000-0005:msg_01a20000a11#c=12-66> b3:71c3e0a8
 ```
 
 `polylogue @2-4 read --format citation --to clipboard` puts three on the clipboard; `polylogue 'messages where "zone" repo:morrow' read --format citation` gives one per hit, which is how an agent gathers what it will cite ([reading.md](reading.md#formats-and-destinations)).
@@ -91,7 +91,7 @@ A citation of captured text proves what it quoted three ways: the hash of the ci
 
 An embed shows a thing in place, rendered from the archive at read.
 
-- **A block embed is a slot.** A paragraph holding only `![caption](REF "form")` is a slot with `about` REF and that form; the caption is shown above it. A question written out in full is a query block, the page's live cell:
+- **An embed on its own line is a slot.** A paragraph holding only `![caption](REF "form")` is a slot with `about` REF and that form; the caption is shown above it. A question written out in full is a query cell, live by default:
 
   ````markdown
   ```query table
@@ -157,7 +157,7 @@ A page cannot judge whether text is true; it shows which text is grounded.
 - **Queries**: `polylogue uncited` (agent text on pages with no citation) and `polylogue changed-sources` (citations whose source changed, went missing or was withdrawn, grouped by page) are shipped ([saved-queries.md](saved-queries.md#shipped-saved-queries)).
 - **Never a gate.** Uncited text is written, shown and briefed, marked. Removing a citation is allowed and the reply reports it ([page-working-copy.md](page-working-copy.md#check-in)).
 
-An agent drafting a page works so that its grounding is visible: `brief` of the topic, read the hits, `read --format citation` on what it relies on, write prose whose every claim carries a footnote, check in. The reply lists the citations pinned, the quotations refused (`not in the source`) and the paragraphs left uncited ([agents.md](agents.md)).
+An agent drafting a page works so that its grounding is visible: `brief` of the topic, read the hits, `read --format citation` on what it relies on, write prose whose every statement carries a footnote, check in. The reply lists the citations pinned, the quotations refused (`not in the source`) and the paragraphs left uncited ([agents.md](agents.md)).
 
 ## Laws
 

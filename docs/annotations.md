@@ -34,7 +34,7 @@ CREATE TABLE link (
   role        TEXT NOT NULL,     -- see Links
   ref         TEXT NOT NULL,     -- a reference in its stored form
   seen_hash   BLOB,              -- BLAKE3 of the referenced text when written; filled on arrival for a waiting target
-  quote       TEXT,              -- links to a span: the exact text with up to 32 characters before and after
+  quote       TEXT,              -- JSON, links to a span and citations: the exact text with up to 32 characters before and after, and the container's reading version when written
   PRIMARY KEY (record, role, ref)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX link_ref ON link(ref, role, record);
@@ -86,15 +86,15 @@ Kinds are one closed declaration in the `model` crate. Each states the key's mea
 | `method` | name | `{inputs, conditions: [{name, check}], steps, expected, stop}` | one per name | — (optional scope) | `import` | — |
 | `seen` | the target's reference | `{position}` | one per (key, author) | — | reads shown to their reader ([reading.md](reading.md#ranges)) | — |
 | `role` | name | `{instructions, harness}` ([session-control.md](session-control.md#roles)) | one per name | — | `import` | — |
-| `page` | page name | `{title, layout, template?, params?}` ([pages.md](pages.md#the-model)) | one per name | its subject (optional) | `note --as page`, `save page:NAME` | — |
-| `slot` | — | `{parent?, pos, mode, heading?, query?, caption?, x?, y?, w?, h?}` | many (`slot_of` one page) | what it shows | `save page:NAME`, `note --section`, `note --as heading` | `page=`, `section=`, `::heading`, `::slot` |
+| `page` | page name | `{title, layout: linear\|board\|table, template?, params?, brief: off\|contents\|full}` ([pages.md](pages.md#page)) | one per name | its subject (optional) | `note --as page`, `save page:NAME`, `edit` and `import` of its working copy | — |
+| `slot` | — | `{parent?, pos, mode: current\|fixed, form?, heading?, query?, caption?, x?, y?, w?, h?}` ([pages.md](pages.md#slot)) | many (`slot_of` one page) | what it shows (absent for headings and live queries) | `save page:NAME`, `note --section`, `note --as heading`, `edit` and `import` of the page's working copy | `page=`, `section=`, `::heading`, `::slot` |
 | `member` | alias | — | one per (key, page) | a session | `note ALIAS --as member` | — |
 | `saved_query` | name | `{text, hash, denominator?}` | one per name | — | `save` | — |
 | `signal` | name | a signal rule ([operations.md](operations.md#notices)) | one per name | — | `save --watch`, `note --as signal` | — |
 | `withdrawal` | — | optional reason | many | — (`withdraws` links) | `withdraw` | — |
 | `setting` | setting name | `{machine, value}` ([operations.md](installing.md#configuration)) | one per (name, host) for a host-scoped key, one per name for an archive-scoped key | — | `set` | — |
 
-- **Kinds keyed by name** (`rubric`, `method`, `role`, `pass`) have a name as their identity and come in through `import` of annotation lines ([Annotation lines](#annotation-lines)); names are keys, never selections. Pages are written by verbs: the page's name comes from its `page:NAME` reference and a member's alias is the note's text, so names stay keys there too ([pages.md](pages.md#writing)).
+- **Kinds keyed by name** (`rubric`, `method`, `role`, `pass`) have a name as their identity and come in through `import` of annotation lines ([Annotation lines](#annotation-lines)); names are keys, never selections. Pages are written by verbs (`note`, `save`, `edit`) and by `import` of a working copy: the page's name comes from its `page:NAME` reference or the working copy's header, and a member's alias is the note's text, so names stay keys there too ([pages.md](pages.md#writing)).
 - **Settings.** A setting's `machine` is its target host for a host-scoped key and null for an archive-scoped key; `value` has the catalog's type for that key. The machine that wrote the setting stays the annotation's own `machine`. Two current revisions for one key and host are a conflict, shown with both references; the default does not resolve it.
 - **Marks.** Starring and other marks are tags: starring is `tag star`.
 - **`hidden`** takes a session and its rows out of default listings, search results, briefs and the `unfinished` list; `hidden:true` or `hidden:*` brings them back. Measures and population counts still include hidden sessions and say how many ("includes 3 hidden sessions"), because a display preference never changes a measured population. It is written with `note 'why' --as hidden` and taken back with `withdraw`.
@@ -112,6 +112,11 @@ Kinds are one closed declaration in the `model` crate. Each states the key's mea
 | `withdraws` | it withdraws the named revision, root, alternate or withdrawal | written by `withdraw` |
 | `replies_to`, `challenges`, `supports`, `qualifies`, `corrects`, `derived_from`, `blocks` | typed relations between annotations; `replies_to` may also name the `delivery:` of a sent message | `--replies-to`, `--challenges`, `--supports`, `--qualifies`, `--corrects`, `--derived-from`, `--blocks` |
 | `slot_of`, `member_of`, `role_of` | a slot's page; a member's page and role ([pages.md](pages.md#the-model)) | `save page:NAME`, `--page`, `--role` |
+| `mentions` | the annotation's text links to the reference (`[text](REF)`, `<REF>`) | written from the text |
+| `cites` | a sentence of the text rests on that exact place (a footnote `[^1]: "quote" <REF>`); `quote` holds the cited words with their context and `seen_hash` their hash | written from the text |
+| `embeds` | the text shows a value or includes other text from the reference (`![caption](REF "form")`) | written from the text |
+
+**References in text become link rows.** A note's text is Markdown with references ([page-text.md](page-text.md)). The write that stores the text parses it and writes one `mentions`, `cites` or `embeds` row per reference in the same transaction, so the link rows always equal what the text says; the text stays the source of truth. A reference that does not resolve yet is a waiting link; an ambiguous one refuses that write. `evidence` says what supports the annotation as a whole; `cites` says which sentence rests on which words.
 
 **Stacks.** An annotation may be about another annotation at an exact revision, through one typed relation, so a claim, a question about it and a reply that challenges it form a stack. What links to a note is a query: `polylogue 'annotations where links_to:annotation:01JB7Q2M'` lists everything that links to any revision of it, each with author, revision, whether it is current, and relation.
 
@@ -138,14 +143,22 @@ Kinds are one closed declaration in the `model` crate. Each states the key's mea
 - **Key/value reads.** `kv(about, kind, key)` is the set of current, non-withdrawn values; a single-valued kind gives one value or `conflict`. In the query language: `tag:<name>`, `title:`, `kv:<kind>.<key>=<value>` on any unit, matched through `about` links at that unit's grain or through a span inside it, and the `annotations` unit ([query.md](query.md#units-and-fields)).
 - **Grain is strict.** An annotation about a session does not match its messages or tool calls; one about a block matches its message only through `kv:` at message grain with `within:`. A session-level `correction` marks no tool call corrected.
 - **History and links are queries.** A note's history is `polylogue 'annotations where root:annotation:01JB7Q2M withdrawn:*'`: revisions, withdrawals, judgments and conflicts in the order of the `revises` graph, ties shown by `(created_at, id)`. What one request wrote is `annotations where request:<id>`.
-- **Backlinks.** Reading any reference lists what links to it: annotations by role, kept results, deliveries and alternates (`referenced_by:` in queries).
+- **Backlinks.** Reading any reference lists what links to it: annotations by role, pages that place, link, cite or include it, kept results, deliveries and alternates (`referenced_by:` and `cited_by` in queries, the `links` unit; [page-text.md](page-text.md#backlinks)).
 - **As-of.** `seen_by:T` reads each annotation at the revision current among records with `created_at ≤ T`. `created_at` is the writer's clock, so as-of reads across machines are approximate and say so.
 
-**Target state.** Each `about` and `evidence` link is shown in one of four states:
-- **current**: the target exists and its text hash equals `seen_hash`;
-- **changed since**: the hash differs (a better version merged, a re-parse produced different text), shown as "the text has changed since this was written";
+**Target state.** Each link to a target (`about`, `evidence`, `mentions`, `cites`, `embeds`) is shown in one of six states, computed when read and never stored:
+- **current**: the target exists and its text hash equals `seen_hash`. When a re-parse moved the cited text's offsets, the stored quote and its context are found again in the new reading and the link reads `current, re-anchored`; the stored reference stays as written;
+- **changed**: the hash differs and the quote is not found again (a better version merged, a re-parse produced different text), shown as "the text has changed since this was written" with the text as cited and the text now;
 - **waiting**: well formed, not stored yet, its session live or incomplete; it attaches on arrival with no rewrite and fills `seen_hash` then;
-- **missing**: the session is complete and the ID never appeared; `status` counts these.
+- **missing**: the session is complete and the ID never appeared; `status` counts these;
+- **withdrawn**: the target is a withdrawn annotation; the quote stays shown;
+- **outside**: a `url:` or other target outside the archive, which is never fetched and so never checked.
+
+How each state shows on a page, per relation, is [page-text.md](page-text.md#when-a-source-changes).
+
+**Grounding** (field `grounding` on annotations and on text slots: `cited`, `changed`, `uncited` or `none`) says whether text rests on citations. It is computed from the `cites` and `evidence` links and their target states when read, and marks text without gating any write ([page-text.md](page-text.md#grounding)).
+
+**Proposals and tracked changes** are readings of judgments, never a state of the record or a gate. Text whose current revision is by anyone but the operator and has no judgment by the counted judges shows as proposed; an unjudged revision of text whose earlier revision was accepted shows as a tracked change over the accepted text. The current revision is still the newest one for every query and view ([pages.md](pages.md#authorship-and-proposals)).
 
 **Work-item state** is computed from links, never from text:
 
@@ -175,7 +188,7 @@ Undo is the safety for named rows; a query matching several rows also needs `--a
 
 ### note
 
-`note TEXT [--as KIND]` writes text about each selected row; `--as` names the kind (default `note`). `TEXT` is one shell argument, or `-` for standard input.
+`note TEXT [--as KIND]` writes text about each selected row; `--as` names the kind (default `note`). `TEXT` is one shell argument, or `-` for standard input. It is Markdown with references: links, footnote citations, embeds and values, whose references become link rows in the same write ([page-text.md](page-text.md#markdown-with-references)).
 
 | Kinds | Rows | `TEXT` | Example |
 |---|---|---|---|
@@ -184,16 +197,16 @@ Undo is the safety for named rows; a query matching several rows also needs `--a
 | `outcome` | a session | `solved`, `partial` or `abandoned` | `polylogue latest note solved --as outcome` |
 | `hidden` | a session | why it is hidden | `polylogue @4 note 'test run' --as hidden` |
 | `highlight` | a `span:` reference | the colour | `polylogue span:message:01JB7Q2M#c=10-80 note yellow --as highlight` |
-| `translation:LANG`, `transliteration:LANG`, `simplification`, `summary` | a message, or a session with `--parts FILE\|-` (one part per message, as lines) | the text, or `''` with `--parts` | `polylogue @3 note '' --as translation:pl --parts parts.jsonl` |
+| `translation:LANG`, `transliteration:LANG`, `simplification`, `summary` | a message, or a session or page with `--parts FILE\|-` (one part per message or per annotation the page shows, as lines) | the text, or `''` with `--parts` | `polylogue @3 note '' --as translation:pl --parts parts.jsonl` |
 | `signal` | the selection's question, not its rows (one rule; no `--all`) | the rule as JSON, any shape the shared signals schema accepts | `polylogue query:waiting note '{"for":"20m","notify":true}' --as signal` |
-| `page` | a `page:NAME` reference | the title; `--template`, `--param`, `--layout`, `--about` set the rest | `polylogue page:flaky-ci note 'Why is CI flaky on Fridays?' --as page --template investigation` |
+| `page` | a `page:NAME` reference | the title; `--template`, `--param`, `--layout`, `--about`, `--scope`, `--brief` set the rest | `polylogue page:flaky-ci note 'Why is CI flaky on Fridays?' --as page --template investigation` |
 | `heading` (a heading slot) | a page | the section's title; `--level N`, `--section S` | `polylogue page:flaky-ci note 'Risks' --as heading` |
 | `member` | a session | the alias; `--page P`, `--role R` | `polylogue codex:019d0f2a note reviewer --as member --page flaky-ci --role reviewer` |
 | `forecast`, `memory` (the row is the scope), `rubric_value` | as declared | JSON | — |
 
 - Relation options take references: `--evidence`, `--replies-to`, `--supports`, `--challenges`, `--qualifies`, `--corrects`, `--derived-from`, `--blocks`, `--scope`; `--valid-until TIME`; `--check QUERY --expect E` for a checked claim; `--key KEY` for kinds keyed by name.
 - The four alternate kinds write an alternate record, not an annotation ([alternates.md](alternates.md)).
-- **On a page.** `note` on a `page:` selection places the note on that page; on any other selection `--page NAME --section S` writes the note about its rows and places it too. The note and its slot are one request ([pages.md](pages.md#writing)).
+- **On a page.** `note` on a `page:` selection writes discussion about the page, placing nothing, unless `--section S` places the note on the page or it is `--as heading` or `--as page`; on `page:NAME#ANCHOR` it writes about that section or slot (`polylogue page:flaky-ci#7q2m note 'which test?' --as question`). On any other selection `--page NAME --section S` writes the note about its rows and places it too. A placed note and its slot are one request ([pages.md](pages.md#discussion)).
 - **Renaming a web chat.** `polylogue chatgpt:6a2e91c0 note 'New title' --as title --rename` writes the title and asks the browser extension to rename the conversation in the provider, an act recorded like every act ([extension.md](extension.md#chat-actions)); without `--rename` the title is Polylogue's alone.
 
 ### tag
@@ -202,7 +215,9 @@ Undo is the safety for named rows; a query matching several rows also needs `--a
 
 ### edit
 
-`edit TEXT` writes a new revision of each selected annotation with the new text, keeping kind, key and links unless `--key` changes the key. A stale base is refused for that row, naming the current revision; the other rows commit. The reply says `revision 3; earlier revisions kept`.
+`edit TEXT` writes a new revision of each selected annotation with the new text, keeping kind, key and links unless `--key` changes the key; the link rows its text implies are rewritten with it. A stale base is refused for that row, naming the current revision; the other rows commit. The reply says `revision 3; earlier revisions kept`.
+
+`edit` with no text, on a terminal, opens the selection in your editor: one note as its text, several notes as one file with a marker each, a page as its working copy, a page name that does not exist as a new working copy. What you save is checked in when the editor exits ([page-working-copy.md](page-working-copy.md#editing-in-your-editor)). Off a terminal and over MCP, `edit` without text is refused with the `read --to` and `import` lines.
 
 ### withdraw
 

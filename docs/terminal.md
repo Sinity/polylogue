@@ -1,6 +1,6 @@
 # Terminal interface
 
-What a person sees in a terminal: the orientation screen, the picker, row numbers, footers and next lines, refusals, output, the cheatsheet and help topics, `--explain`, and the defaults a person would guess. The grammar these present is [interfaces.md](interfaces.md); completion is [completion.md](completion.md).
+What a person sees in a terminal: the orientation screen, the picker, the editor, row numbers, footers and next lines, refusals, output, the cheatsheet and help topics, `--explain`, and the defaults a person would guess. The grammar these present is [interfaces.md](interfaces.md); completion is [completion.md](completion.md).
 
 Nothing here needs a manual. Every mechanism teaches the same grammar in the same words and shows a runnable line, never a description of one; every line any of them prints is parsed by the real line parser in a test.
 
@@ -84,6 +84,10 @@ Over annotations, three more keys make the one-key judging loop: each records a 
 
 Every other write is typed on the line: `polylogue review pick judge accept` judges the chosen annotations.
 
+## The editor
+
+`edit` with no text on a terminal opens the selected annotations, or a page as its Markdown working copy, in `$VISUAL` or `$EDITOR`, and checks in what you save when the editor exits (`polylogue page:flaky-ci edit`); the format, the check-in and refused paragraphs reopening with their reasons are [page-working-copy.md](page-working-copy.md#editing-in-your-editor). Off a terminal `edit` needs its text, and the refusal names the `read --to` and `import` lines that work there.
+
 ## Row numbers
 
 Row numbers name rows of the last list printed on this terminal. The other reference forms are [references.md](references.md#forms)'s.
@@ -91,7 +95,7 @@ Row numbers name rows of the last list printed on this terminal. The other refer
 | Form | Means |
 |---|---|
 | `@3` | row 3 of the last list printed on this terminal |
-| `@3.2` | hit 2 of row 3 of the last search printed on this terminal |
+| `@3.2` | hit 2 of row 3 of the last search printed on this terminal: the `span:` of that hit ([references.md](references.md#forms)) |
 | `@2-5`, `@1,4` | rows 2 to 5; rows 1 and 4 |
 | `@all` | every row shown |
 
@@ -135,6 +139,7 @@ One printer for every failure: what is wrong, a caret under it when there is a p
 | a write over 214 query rows without `--all` | `214 sessions match; to tag all: polylogue 'repo:x' tag later --all`, the first rows, and `pick` as the way to choose |
 | a one-row verb over several rows, off a terminal | the candidates (short ID, time, title) and `polylogue SESSION resume` lines |
 | `@3` off a terminal | `row numbers work on a terminal; use the references printed above` |
+| `polylogue page:flaky-ci edit` off a terminal | `edit needs its text off a terminal` · `try: polylogue page:flaky-ci read --to .page/` · then `polylogue import .page/flaky-ci.md` |
 | `--blind` on a selection that is not a kept result | `blind judging needs kept rows: polylogue '@1,2' save` |
 | a timeout (exit 7) | `narrower:` and `complete: … --deadline none`, both runnable ([interfaces.md](latency.md#writes-and-deadlines)) |
 | a stale cursor or a re-parsed session | what changed and the line to run again |
@@ -171,11 +176,11 @@ polylogue REF [VERB …]       one thing: @3  latest  self  here  7f3a2c10  a ch
 polylogue read · resume      pick from recent sessions, or from sessions that ended open
 polylogue brief              what to know here; SESSION brief: take it over; 'words' brief: recall
 look      read [--view V] [--follow]   pick   brief
-annotate  note 'TEXT' --as KIND   tag NAME   edit 'TEXT'   withdraw   judge accept|reject|defer   save [NAME] --watch
+annotate  note 'TEXT' --as KIND   tag NAME   edit ['TEXT']   withdraw   judge accept|reject|defer   save [NAME] --watch
 act       send 'TEXT'   answer allow|deny|'TEXT'   interrupt   resume [--in HARNESS]
 queries   'rate limit'   'repo:sinex since:7d'   'tool_calls where outcome:error | group by tool | count'
 saved     waiting · running · recent · unfinished · review · notices · yours: failing …
-pages     page:NAME read [--view contents]   ROWS save page:NAME --section S   page:NAME note 'TEXT' --section S
+pages     page:NAME read [--view contents]   page:NAME edit (your editor)   ROWS save page:NAME --section S [--as FORM]
 commands  status · start 'TEXT' · import PATH|chatgpt · set [KEY VALUE] · web · embed · install · demo · dev
 rows      @3  @2-5  @1,4  @all   (this terminal)     a plain word searches; Tab completes everything
 any line  --explain (how it is read, runs nothing) · --dry-run (what it would do) · --all (every matched row)
@@ -204,6 +209,7 @@ step 1:     would tag each matched session needs-tests; needs --all if more than
 ```
 
 - It names the rule that read the first word ([interfaces.md](interfaces.md#the-first-word)), reads the selection back in words, lists the defaults it applied and how to lift each, names the unit and the verbs valid on it, and says per step what it would do with its words.
+- For the two optional words it says which reading the line got: `polylogue page:flaky-ci edit read --explain` prints `step 1: edit with no text: opens page:flaky-ci in your editor` and `step 2: read`, and `polylogue annotation:01JB7Q2M edit 'read.' --explain` prints `step 1: edit with the text "read."`.
 - On a command it says what the command would do with its arguments: `polylogue import chatgpt --explain` prints `would ask the browser extension to fetch chatgpt conversations the archive lacks`.
 - A line that does not parse is explained up to where it fails, with the refusal's `try:` line.
 - The grammar part needs no daemon; reading the selection back in words asks the daemon's compiler without running the query.
