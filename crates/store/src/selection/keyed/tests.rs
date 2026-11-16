@@ -8,10 +8,15 @@ fn kinds_from(
 ) -> Vec<String> {
     let mut out = vec![];
     reader
-        .visit_selection_from_row::<SelectionError>(selection, from, None, |row| {
-            out.push(row.values["kind"].as_str().unwrap().to_owned());
-            Ok(ControlFlow::Continue(()))
-        })
+        .visit_selection::<SelectionError>(
+            selection,
+            from.map_or(crate::read::VisitFrom::First, crate::read::VisitFrom::At),
+            None,
+            |row| {
+                out.push(row.values["kind"].as_str().unwrap().to_owned());
+                Ok(ControlFlow::Continue(()))
+            },
+        )
         .unwrap();
     out
 }
@@ -19,7 +24,7 @@ fn kinds_from(
 fn positions(reader: &Reader<'_>, selection: &PreparedSelection<'_>) -> Vec<OrderPosition> {
     let mut out = vec![];
     reader
-        .visit_selection::<SelectionError>(selection, None, None, |row| {
+        .visit_selection::<SelectionError>(selection, crate::read::VisitFrom::First, None, |row| {
             out.push(row.position);
             Ok(ControlFlow::Continue(()))
         })
@@ -132,10 +137,15 @@ fn reverse_selection_mirrors_nulls_ties_and_selection_stages() {
         for (end, key) in keys.iter().enumerate() {
             let mut reverse = vec![];
             reader
-                .visit_selection_before_row::<SelectionError>(&selection, key, None, |row| {
-                    reverse.push(row.values["kind"].as_str().unwrap().to_owned());
-                    Ok(ControlFlow::Continue(()))
-                })
+                .visit_selection::<SelectionError>(
+                    &selection,
+                    crate::read::VisitFrom::Before(key),
+                    None,
+                    |row| {
+                        reverse.push(row.values["kind"].as_str().unwrap().to_owned());
+                        Ok(ControlFlow::Continue(()))
+                    },
+                )
                 .unwrap();
             let expected: Vec<String> = expected[..end]
                 .iter()
@@ -201,18 +211,79 @@ fn reverse_callback_stops_before_poisoned_earlier_body() {
         let selection = reader.prepare_selection(&query, &options()).unwrap();
         let mut found = vec![];
         reader
-            .visit_selection_before_row::<SelectionError>(&selection, &start, None, |row| {
-                found.push(row.values["kind"].clone());
-                Ok(ControlFlow::Break(()))
-            })
+            .visit_selection::<SelectionError>(
+                &selection,
+                crate::read::VisitFrom::Before(&start),
+                None,
+                |row| {
+                    found.push(row.values["kind"].clone());
+                    Ok(ControlFlow::Break(()))
+                },
+            )
             .unwrap();
         assert_eq!(found, vec![Value::String("previous".into())]);
         assert!(
             reader
-                .visit_selection_before_row::<SelectionError>(&selection, &start, None, |_| Ok(
-                    ControlFlow::Continue(())
-                ))
+                .visit_selection::<SelectionError>(
+                    &selection,
+                    crate::read::VisitFrom::Before(&start),
+                    None,
+                    |_| Ok(ControlFlow::Continue(()))
+                )
                 .is_err()
+        );
+    }
+}
+
+#[test]
+fn last_selection_visit_reverses_the_complete_forward_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(dir.path()).unwrap();
+    let session = fixture
+        .session(SessionFacts {
+            id: "test:reverse",
+            ..Default::default()
+        })
+        .unwrap();
+    for (kind, at) in [
+        ("unknown", None),
+        ("early", Some(1000)),
+        ("late-a", Some(2000)),
+        ("late-b", Some(2000)),
+    ] {
+        fixture.event(session, kind, at).unwrap();
+    }
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    for (query, expected) in [
+        (
+            "events | sort by at desc, id asc",
+            vec!["late-a", "late-b", "early", "unknown"],
+        ),
+        (
+            "events | sort by at desc, id asc | offset 1 | limit 2",
+            vec!["late-b", "early"],
+        ),
+    ] {
+        let selection = reader.prepare_selection(query, &options()).unwrap();
+        let forward = kinds_from(&reader, &selection, None);
+        assert_eq!(forward, expected, "{query}");
+        let mut reverse = Vec::new();
+        reader
+            .visit_selection::<SelectionError>(
+                &selection,
+                crate::read::VisitFrom::Last,
+                None,
+                |row| {
+                    reverse.push(row.values["kind"].as_str().unwrap().to_owned());
+                    Ok(ControlFlow::Continue(()))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            reverse,
+            forward.into_iter().rev().collect::<Vec<_>>(),
+            "{query}"
         );
     }
 }

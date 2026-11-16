@@ -9,10 +9,10 @@ use std::sync::mpsc::{Sender, channel};
 
 /// Who waits for a derive pass.
 pub(super) enum Waiting {
-    /// [`Writer::derive`]: the pairs derived.
+    /// [`WriterSender::derive`]: the pairs derived.
     Derive(SyncSender<Result<u64>>),
     /// A flush that also derives: its report, sent once the pass is done.
-    Flush(SyncSender<WriteReport>, Box<WriteReport>),
+    Flush(SyncSender<Result<WriteReport>>, Box<WriteReport>),
     /// Nobody: a pass after a page of the confirmed stream.
     Nobody,
 }
@@ -64,7 +64,7 @@ impl DeriveThread {
                 let _ = reply.send(Err(StoreError::WriterGone));
             }
             Some(Waiting::Flush(reply, report)) => {
-                let _ = reply.send(*report);
+                let _ = reply.send(Ok(*report));
             }
             Some(Waiting::Nobody) | None => {}
         }
@@ -124,7 +124,7 @@ impl Worker {
                         if let Err(e) = &result {
                             report.errors.push(format!("derive: {e}"));
                         }
-                        let _ = reply.send(*report);
+                        let _ = reply.send(Ok(*report));
                     }
                     Waiting::Nobody => {
                         if let Err(e) = &result {
@@ -157,11 +157,7 @@ impl Worker {
                 queue
                     .dispatch
                     .reach(DERIVE_COMPUTED, DispatchPhase::Owned)?;
-                let (reply, wait) = sync_channel(1);
-                queue
-                    .send(Msg::DeriveWrite(Box::new(write), reply))
-                    .map_err(|_| StoreError::WriterGone)?;
-                wait.recv().map_err(|_| StoreError::WriterGone)?
+                queue.ask(|reply| Msg::DeriveWrite(Box::new(write), reply))
             },
             &|| stopping.is_cancelled(),
         );

@@ -102,7 +102,7 @@ fn source_cancellation_stops_before_unavailable_next_body() {
     let mut visits = 0;
     assert_eq!(
         reader
-            .visit_reference_text_while(&reference("message:claude-code:s-stop"), |_| {
+            .visit_reference_text(&reference("message:claude-code:s-stop"), |_| {
                 visits += 1;
                 Ok(ControlFlow::Break(()))
             })

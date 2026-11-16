@@ -504,7 +504,7 @@ impl Engine {
             self.captures.start(
                 databases,
                 self.archive.clone(),
-                self.writer.sender()?,
+                self.writer.sender(),
                 self.wake.clone(),
             )?;
             if starting {

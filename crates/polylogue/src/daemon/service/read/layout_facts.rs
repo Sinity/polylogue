@@ -41,7 +41,7 @@ fn visible(reader: &Reader<'_>, source: &Source, options: &ReadOptions) -> Resul
         return Ok(false);
     };
     let mut shown = false;
-    selected.visit_from(from, |message| {
+    selected.visit(from, |message| {
         let harness =
             message.role == Role::System || message.prompt_kind == Some(PromptKind::Harness);
         shown = options

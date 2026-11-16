@@ -395,7 +395,7 @@ fn primary_restore_stays_pending_and_blocks_live_retry() {
     {
         let (archive, _lock) = Archive::open_primary(&root, &bytes).unwrap();
         let writer = Writer::start_on_sinex(&archive, producer.clone()).unwrap();
-        let commits = writer.sender().unwrap().completion_commits();
+        let commits = writer.completion_commits();
         assert!(writer.restore_authored(original.clone()).unwrap().pending);
         assert!(writer.restore_authored(original.clone()).unwrap().pending);
         assert!(writer.user(original.request.clone()).unwrap().pending);
@@ -416,7 +416,7 @@ fn primary_restore_stays_pending_and_blocks_live_retry() {
     producer.online.store(true, Ordering::SeqCst);
     let (archive, _lock) = Archive::open_primary(&root, &bytes).unwrap();
     let writer = Writer::start_on_sinex(&archive, producer.clone()).unwrap();
-    let commits = writer.sender().unwrap().completion_commits();
+    let commits = writer.completion_commits();
     assert_eq!(writer.synchronize_primary().unwrap(), 1);
     commits.try_recv().unwrap();
     let pool = crate::ReadPool::open(&archive).unwrap();
@@ -449,7 +449,7 @@ fn primary_restore_stays_pending_and_blocks_live_retry() {
 #[test]
 fn commit_subscribers_wake_for_new_commits_and_skip_retries() {
     let archive = crate::fixture::writer::WriterArchive::new();
-    let commits = archive.writer.sender().unwrap().completion_commits();
+    let commits = archive.writer.completion_commits();
     let request = UserRequest {
         authorship: polylogue_model::authorship::Authorship {
             author: polylogue_model::Author::Operator,
@@ -600,7 +600,7 @@ fn a_failed_later_position_reports_earlier_commits_without_inventing_progress() 
             material: None,
         })),
     };
-    let commits = writer.sender().unwrap().completion_commits();
+    let commits = writer.completion_commits();
     let error = writer
         .apply_confirmed(vec![
             input(1, "first"),
@@ -777,7 +777,7 @@ fn a_failed_sync_refuses_a_repeated_import_and_every_later_writer() {
     let blobs = || Arc::new(archive.blobs().unwrap());
     let bytes = b"exported conversation bytes\n";
     let writer = Writer::start(&archive).unwrap();
-    let sender = writer.sender().unwrap();
+    let sender = writer.sender();
     fail_next_sync();
     let first = sender.store_group(vec![imported(&archive, bytes)], blobs());
     assert!(matches!(first, Err(StoreError::WriterGone)), "{first:?}");

@@ -8,12 +8,16 @@ pub(super) struct Restoration {
     pub import: Option<polylogue_model::authored::ImportAttribution>,
 }
 
-pub(super) fn restore_via(queue: &WriterQueue, restoration: Restoration) -> Result<UserOutcome> {
-    let (reply, wait) = sync_channel(1);
-    queue
-        .send(Msg::RestoreAssertion(Box::new(restoration), reply))
-        .map_err(|_| StoreError::WriterGone)?;
-    wait.recv().map_err(|_| StoreError::WriterGone)?
+impl WriterSender {
+    /// Restores an assertion and its separately observed import unchanged.
+    pub fn restore_assertion(
+        &self,
+        fact: AssertionFact,
+        import: Option<polylogue_model::authored::ImportAttribution>,
+    ) -> Result<UserOutcome> {
+        self.0
+            .ask(|reply| Msg::RestoreAssertion(Box::new(Restoration { fact, import }), reply))
+    }
 }
 
 /// Whether the assertion is already stored; a different assertion under its ID is a

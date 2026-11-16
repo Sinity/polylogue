@@ -21,7 +21,7 @@ enum Request {
 impl Follower {
     pub(super) fn start(
         sinex: Arc<dyn crate::primary::Sinex>,
-        queue: WriterQueue,
+        queue: WriterSender,
         archive: &Archive,
     ) -> Result<Self> {
         let index = crate::archive::open_read(&archive.index_db())?;
@@ -59,7 +59,7 @@ impl Drop for Follower {
 
 fn run(
     sinex: &dyn crate::primary::Sinex,
-    queue: &WriterQueue,
+    queue: &WriterSender,
     index: &Connection,
     requests: &Receiver<Request>,
 ) {
@@ -77,7 +77,7 @@ fn run(
             Err(_) => (wait.max(STREAM_POLL) * 2).min(STREAM_POLL_LONGEST),
         };
         let error = outcome.as_ref().err().map(ToString::to_string);
-        if queue.send(Msg::StreamFollowed(error)).is_err() {
+        if queue.0.send(Msg::StreamFollowed(error)).is_err() {
             return;
         }
         if let Some(reply) = reply {
@@ -95,7 +95,7 @@ struct Followed {
 /// between applications even while draining a backlog.
 fn follow_once(
     sinex: &dyn crate::primary::Sinex,
-    queue: &WriterQueue,
+    queue: &WriterSender,
     index: &Connection,
 ) -> Result<Followed> {
     let state = crate::primary::confirmed::replay_state(index)?;

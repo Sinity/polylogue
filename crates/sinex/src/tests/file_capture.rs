@@ -619,8 +619,6 @@ fn byte_only_file_does_not_hold_back_another_file() {
     );
     a.batch.required_outcome = Some(CaptureOutcome::UnresolvedBasisConflict);
     let results = writer
-        .sender()
-        .unwrap()
         .store_group(vec![a, b], Arc::new(archive.blobs().unwrap()))
         .unwrap();
     assert_eq!(results.len(), 2);
@@ -683,8 +681,6 @@ fn explicit_package_spools_its_members_together() {
     );
     a.batch.required_outcome = Some(CaptureOutcome::UnresolvedBasisConflict);
     let results = writer
-        .sender()
-        .unwrap()
         .store_group(vec![a, b], Arc::new(archive.blobs().unwrap()))
         .unwrap();
     assert_eq!(results.len(), 2);

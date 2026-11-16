@@ -16,7 +16,7 @@ fn copy(parent: &str) -> Link {
 fn available_texts(selected: &crate::read::MessageSelection<'_, '_>) -> Vec<String> {
     let mut texts = Vec::new();
     selected
-        .visit(|message| {
+        .visit(Default::default(), |message| {
             texts.push(message.text());
             std::ops::ControlFlow::Continue(())
         })
@@ -195,7 +195,7 @@ fn tied_historical_child_coordinates_never_gain_order_from_link_or_message_keys(
         ));
         let mut visible = Vec::new();
         selected
-            .visit(|message| {
+            .visit(Default::default(), |message| {
                 visible.push(message.text());
                 std::ops::ControlFlow::Continue(())
             })

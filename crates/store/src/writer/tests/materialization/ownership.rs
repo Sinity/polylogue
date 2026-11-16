@@ -235,8 +235,6 @@ fn complete_staged_reading_reopens_its_selected_version_without_payload_duplicat
     let mut staged = ChainReading::new().unwrap();
     staged.push(&mut b.parse[0]).unwrap();
     w.writer
-        .sender()
-        .unwrap()
         .replace_chain(b.input, 1, b.length, staged)
         .unwrap();
     w.writer.derive().unwrap();

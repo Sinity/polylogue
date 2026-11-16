@@ -105,7 +105,7 @@ fn copied_source(
 fn texts(selected: &MessageSelection<'_, '_>) -> Vec<String> {
     let mut out = Vec::new();
     selected
-        .visit(|m| {
+        .visit(Default::default(), |m| {
             out.push(m.text());
             ControlFlow::Continue(())
         })
@@ -291,12 +291,14 @@ fn source_checkpoint_skips_prefix_hydration_in_physical_and_logical_order() {
             .select_messages(&SessionId::parse(id).unwrap(), with_parents)
             .unwrap();
         assert!(
-            selected.visit(|_| ControlFlow::Continue(())).is_err(),
+            selected
+                .visit(Default::default(), |_| ControlFlow::Continue(()))
+                .is_err(),
             "the reference case must try the corrupt prefix body"
         );
         let mut actual = Vec::new();
         selected
-            .visit_from(
+            .visit(
                 VisitStart {
                     message: from,
                     key: None,
@@ -343,7 +345,7 @@ fn previous_indices_include_hidden_messages_in_own_and_parent_selections() {
         let mut found = Vec::new();
         selected
             .for_blocks(&[polylogue_model::BlockKind::Text], true)
-            .visit_from(previous, |m| {
+            .visit(previous, |m| {
                 found.push(m.text());
                 ControlFlow::Continue(())
             })

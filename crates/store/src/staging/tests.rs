@@ -48,8 +48,6 @@ fn writer_never_decodes_staged_input() {
         release: Default::default(),
     };
     let results = writer
-        .sender()
-        .unwrap()
         .store_group(
             vec![PreparedBatch {
                 batch,

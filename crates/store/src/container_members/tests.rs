@@ -99,8 +99,6 @@ fn linked_duplicate_bytes_keep_every_observation_and_member_index() {
     let store = Arc::new(archive.blobs().unwrap());
     for import_id in ["one", "two"] {
         let outcomes = writer
-            .sender()
-            .unwrap()
             .store_group(linked(&archive, import_id, true), Arc::clone(&store))
             .unwrap();
         assert!(outcomes.iter().all(Result::is_ok), "{outcomes:?}");
@@ -176,7 +174,7 @@ fn a_container_in_one_import_can_be_a_real_member_in_another() {
             }),
         ),
     ];
-    let results = writer.sender().unwrap().store_group(group, store).unwrap();
+    let results = writer.store_group(group, store).unwrap();
     assert!(results.iter().all(Result::is_ok), "{results:?}");
     let pool = crate::ReadPool::open(&archive).unwrap();
     let (members, _) = pool.reader().unwrap().unindexed_import_members().unwrap();
@@ -195,8 +193,6 @@ fn historical_observation_requires_the_stored_revision_point_and_has_no_new_byte
     let writer = Writer::start(&archive).unwrap();
     let blobs = Arc::new(archive.blobs().unwrap());
     let result = writer
-        .sender()
-        .unwrap()
         .store_group(
             vec![stage(&archive, ORIGINAL, "one", "source", None)],
             Arc::clone(&blobs),
@@ -211,8 +207,6 @@ fn historical_observation_requires_the_stored_revision_point_and_has_no_new_byte
     observed.batch.new_blob = None;
     observed.files.clear();
     let result = writer
-        .sender()
-        .unwrap()
         .store_group(vec![observed], Arc::clone(&blobs))
         .unwrap();
     assert!(result[0].as_ref().unwrap().already_stored);
@@ -223,11 +217,7 @@ fn historical_observation_requires_the_stored_revision_point_and_has_no_new_byte
     };
     wrong.batch.new_blob = None;
     wrong.files.clear();
-    let result = writer
-        .sender()
-        .unwrap()
-        .store_group(vec![wrong], blobs)
-        .unwrap();
+    let result = writer.store_group(vec![wrong], blobs).unwrap();
     assert!(result[0].is_err());
     let db = crate::archive::open_read(&archive.archive_db()).unwrap();
     assert_eq!(

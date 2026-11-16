@@ -23,8 +23,8 @@ fn a_rebuilt_index_refuses_old_change_cursors_before_query_composition() {
     engine
         .writer()
         .unwrap()
-        .user_preparing(
-            UserRequest {
+        .user(polylogue_store::writer::UserSubmission {
+            request: UserRequest {
                 authorship: polylogue_model::authorship::Authorship {
                     author: polylogue_model::Author::Operator,
                     via: polylogue_model::authorship::Channel::Cli,
@@ -38,9 +38,12 @@ fn a_rebuilt_index_refuses_old_change_cursors_before_query_composition() {
                     denominator: None,
                 },
             },
-            polylogue_store::user_writes::PreparationContext::new(vec!["claude-code".into()]),
-            None,
-        )
+            scope: None,
+            preparation: Some(polylogue_store::user_writes::PreparationContext::new(vec![
+                "claude-code".into(),
+            ])),
+            parent: None,
+        })
         .unwrap();
     drop(engine);
     drop(lock);

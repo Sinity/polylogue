@@ -7,7 +7,7 @@ fn answer(f: &Fixture, text: &str) -> Vec<Value> {
     let prepared = reader.prepare_selection(text, &options()).unwrap();
     let mut values = vec![];
     reader
-        .visit_selection::<SelectionError>(&prepared, None, None, |row| {
+        .visit_selection::<SelectionError>(&prepared, crate::read::VisitFrom::First, None, |row| {
             values.push(row.values);
             Ok(ControlFlow::Continue(()))
         })
@@ -100,7 +100,7 @@ fn kept_stages_use_captured_values_after_rows_change() {
         .prepare_selection("result:snapshot", &options())
         .unwrap();
     reader
-        .visit_selection::<SelectionError>(&prepared, None, None, |row| {
+        .visit_selection::<SelectionError>(&prepared, crate::read::VisitFrom::First, None, |row| {
             assert!(matches!(row.identity, Some(RowIdentity::Entity { .. })));
             assert!(row.target.is_some());
             Ok(ControlFlow::Continue(()))
@@ -129,7 +129,7 @@ fn duplicate_kept_items_get_distinct_stable_cursors() {
     let mut identities = vec![];
     let mut after = None;
     reader
-        .visit_selection::<SelectionError>(&prepared, None, None, |row| {
+        .visit_selection::<SelectionError>(&prepared, crate::read::VisitFrom::First, None, |row| {
             assert_eq!(row.values, json!({"label":"same"}));
             assert!(row.target.is_none());
             assert!(matches!(row.identity, Some(RowIdentity::Distinct { .. })));
@@ -139,18 +139,25 @@ fn duplicate_kept_items_get_distinct_stable_cursors() {
         })
         .unwrap();
     reader
-        .visit_selection::<SelectionError>(&prepared, after.as_ref(), None, |row| {
-            assert_eq!(row.values, json!({"label":"same"}));
-            assert!(row.target.is_none());
-            identities.push(row.identity);
-            Ok(ControlFlow::Continue(()))
-        })
+        .visit_selection::<SelectionError>(
+            &prepared,
+            after
+                .as_ref()
+                .map_or(crate::read::VisitFrom::First, crate::read::VisitFrom::After),
+            None,
+            |row| {
+                assert_eq!(row.values, json!({"label":"same"}));
+                assert!(row.target.is_none());
+                identities.push(row.identity);
+                Ok(ControlFlow::Continue(()))
+            },
+        )
         .unwrap();
     assert_eq!(identities.len(), 2);
     assert_ne!(identities[0], identities[1]);
     let mut repeated = vec![];
     reader
-        .visit_selection::<SelectionError>(&prepared, None, None, |row| {
+        .visit_selection::<SelectionError>(&prepared, crate::read::VisitFrom::First, None, |row| {
             repeated.push(row.identity);
             Ok(ControlFlow::Continue(()))
         })

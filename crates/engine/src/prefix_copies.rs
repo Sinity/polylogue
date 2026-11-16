@@ -330,17 +330,14 @@ impl Engine {
             if plan.failed || plan.parse_pos == 0 {
                 continue;
             }
-            let answer = self
-                .writer
-                .sender()?
-                .copy_reading(polylogue_store::ReadingCopy {
-                    input: plan.input.id.clone(),
-                    from,
-                    to: copy.chain,
-                    reading_version: plan.origin.reading_version(),
-                    upto: plan.parse_pos,
-                    reaches_end: copy.reaches_end,
-                })?;
+            let answer = self.writer.copy_reading(polylogue_store::ReadingCopy {
+                input: plan.input.id.clone(),
+                from,
+                to: copy.chain,
+                reading_version: plan.origin.reading_version(),
+                upto: plan.parse_pos,
+                reaches_end: copy.reaches_end,
+            })?;
             if matches!(answer, Ok(true)) {
                 pass.readings_copied += 1;
                 pass.bytes_copied += plan.parse_pos;

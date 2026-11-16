@@ -75,7 +75,7 @@ fn engine(w: &ClaudeHome) -> (Engine, polylogue_store::ArchiveLock) {
         clock: polylogue_model::WallClock::fixed("2026-10-07T10:00:00Z".parse().unwrap()),
         home: w.home.clone(),
         tool_dirs: Default::default(),
-        workers: 2,
+        workers: 3,
         reader_memory_bytes: 128 << 20,
         bytes_in_flight: 1 << 20,
         machine: "test-machine".into(),
@@ -162,7 +162,7 @@ fn chains_parse_together_and_continue_while_the_writer_is_blocked() {
         });
         ready.recv().unwrap();
         let mut pass = Pass::default();
-        engine.replace_readings(plans, &mut pass).unwrap();
+        engine.execute_pool(Vec::new(), plans, &mut pass).unwrap();
         assert!(pass.errors.is_empty(), "{pass:?}");
         assert_eq!(STARTED.load(Ordering::SeqCst), 3);
         assert_eq!(
@@ -320,7 +320,7 @@ fn a_committed_live_path_can_append_while_another_chain_is_still_parsing() {
             appended
         });
         let mut pass = Pass::default();
-        let result = engine.replace_readings(plans, &mut pass);
+        let result = engine.execute_pool(Vec::new(), plans, &mut pass);
         (result, pass, append.join().unwrap())
     });
     assert!(result.is_ok(), "replacement result: {result:?}; {pass:?}");
@@ -333,4 +333,150 @@ fn a_committed_live_path_can_append_while_another_chain_is_still_parsing() {
     *LIVE_APPEND.lock().unwrap() = None;
     assert_eq!(w.texts("a"), ["first", "later text"]);
     assert_eq!(w.texts("b"), ["first"]);
+}
+
+struct PausedChain(Box<dyn StepParser>);
+
+struct ChainPause {
+    started: Sender<()>,
+    resume: Arc<(Mutex<bool>, std::sync::Condvar)>,
+}
+
+static CHAIN_PAUSE: Mutex<Option<ChainPause>> = Mutex::new(None);
+
+impl StepParser for PausedChain {
+    fn step(
+        &self,
+        state: Option<&polylogue_model::Json>,
+        bytes: &[u8],
+        base: u64,
+        finished: bool,
+        context: &polylogue_model::parser_context::Handle,
+    ) -> Result<(Step, polylogue_model::Json), ParseError> {
+        let (started, resume) = {
+            let pause = CHAIN_PAUSE.lock().unwrap();
+            let pause = pause.as_ref().unwrap();
+            (pause.started.clone(), Arc::clone(&pause.resume))
+        };
+        started.send(()).unwrap();
+        let (resumed, changed) = &*resume;
+        let mut resumed = resumed.lock().unwrap();
+        while !*resumed {
+            resumed = changed.wait(resumed).unwrap();
+        }
+        self.0.step(state, bytes, base, finished, context)
+    }
+}
+
+static PAUSED_ORIGIN: OriginSpec =
+    origin(|path| Some(Parse::Lines(Box::new(PausedChain(lines(path)?)))));
+
+#[test]
+fn live_append_commits_before_waiting_chain_replacements() {
+    let w = ClaudeHome::new();
+    for name in ["chain-a", "chain-b", "live"] {
+        w.append(&format!("{name}.jsonl"), &claude_user(name, name, "first"));
+    }
+    let (mut engine, _lock) = engine(&w);
+    assert!(engine.run_pass().unwrap().errors.is_empty());
+    engine.config.workers = 2;
+    engine.config.live_every = Duration::ZERO;
+    let behind = engine
+        .reads
+        .reader()
+        .unwrap()
+        .chains_behind_index(
+            &[("claude-code".into(), "before".into())],
+            polylogue_store::StoppedChains::Finished,
+            polylogue_store::RevisionChains::All,
+            None,
+        )
+        .unwrap();
+    let watched: HashMap<_, _> = engine
+        .inputs
+        .iter_mut()
+        .filter(|(path, _)| *path != &w.file("live.jsonl"))
+        .map(|(path, state)| {
+            state.origin = &PAUSED_ORIGIN;
+            (state.input_id.clone(), (path.clone(), state.facts))
+        })
+        .collect();
+    let chains = behind
+        .into_iter()
+        .filter_map(|chain| {
+            let (path, facts) = watched.get(&chain.input)?;
+            Some(Plan::stored(
+                path.clone(),
+                &PAUSED_ORIGIN,
+                InputKey {
+                    id: chain.input,
+                    format: "claude-code".into(),
+                    route: polylogue_model::Route::Live,
+                },
+                Change::Reparse {
+                    chain: chain.progress.chain,
+                },
+                *facts,
+                chain.progress.length,
+                0,
+                pool::Bytes::Unloaded {
+                    chain: chain.progress.chain,
+                    length: chain.progress.length,
+                    decoded: true,
+                },
+                64 << 20,
+                true,
+            ))
+        })
+        .collect();
+    let (started, entered) = channel();
+    let resume = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+    *CHAIN_PAUSE.lock().unwrap() = Some(ChainPause {
+        started,
+        resume: Arc::clone(&resume),
+    });
+    let commits = engine.writer.completion_commits();
+    let archive = engine.archive.clone();
+    let live_input = engine.location_id(&w.file("live.jsonl"));
+    let (result, pass, live_committed) = std::thread::scope(|scope| {
+        let w = &w;
+        let observed = scope.spawn(move || {
+            let committed = (|| {
+                entered.recv_timeout(Duration::from_secs(10)).ok()?;
+                w.append("live.jsonl", &claude_user("later", "live", "live append"));
+                let length = std::fs::metadata(w.file("live.jsonl")).unwrap().len();
+                let reads = ReadPool::open(&archive).unwrap();
+                loop {
+                    commits.recv_timeout(Duration::from_secs(10)).ok()?;
+                    if reads
+                        .reader()
+                        .unwrap()
+                        .input_progress(&live_input)
+                        .unwrap()
+                        .is_some_and(|progress| progress.parsed_upto == length)
+                    {
+                        return Some(());
+                    }
+                }
+            })()
+            .is_some();
+            let (resumed, changed) = &*resume;
+            *resumed.lock().unwrap() = true;
+            changed.notify_all();
+            committed
+        });
+        let mut pass = Pass::default();
+        let result = engine.execute_pool(Vec::new(), chains, &mut pass);
+        (result, pass, observed.join().unwrap())
+    });
+    *CHAIN_PAUSE.lock().unwrap() = None;
+    assert!(result.is_ok(), "replacement result: {result:?}; {pass:?}");
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    assert!(
+        live_committed,
+        "the live append commits while both replacement parsers are held"
+    );
+    assert_eq!(w.texts("live"), ["first", "live append"]);
+    assert_eq!(w.texts("chain-a"), ["first"]);
+    assert_eq!(w.texts("chain-b"), ["first"]);
 }

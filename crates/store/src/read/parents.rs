@@ -450,20 +450,23 @@ impl MessageSelection<'_, '_> {
         }
     }
 
-    pub fn visit(&self, visit: impl FnMut(Message) -> ControlFlow<()>) -> Result<()> {
-        self.visit_from(VisitStart::default(), visit).map(drop)
-    }
-
-    pub fn visit_from_with_record_arrival(
+    pub fn visit_with_sources(
         &self,
         start: VisitStart,
-        mut visit: impl FnMut(Message, MessageProjection, Option<u64>, u64) -> ControlFlow<()>,
+        mut visit: impl FnMut(Message, MessageSource) -> ControlFlow<()>,
     ) -> Result<Option<i64>> {
         let mut error = None;
         let last =
             self.visit_from_selected_blocks(start, true, |message, block_selection, arrival| {
                 match self.reader.conn().and_then(|conn| arrival.record(conn)) {
-                    Ok((committed, order)) => visit(message, block_selection, committed, order),
+                    Ok((committed, ordinal)) => visit(
+                        message,
+                        MessageSource {
+                            blocks: block_selection,
+                            committed,
+                            ordinal,
+                        },
+                    ),
                     Err(err) => {
                         error = Some(err);
                         ControlFlow::Break(())
@@ -479,7 +482,7 @@ impl MessageSelection<'_, '_> {
     /// Skip source messages before hydrating their blocks. With the start
     /// message's key, a session's own messages before it are not read
     /// at all. Returns the key of the last message visited.
-    pub fn visit_from(
+    pub fn visit(
         &self,
         start: VisitStart,
         mut visit: impl FnMut(Message) -> ControlFlow<()>,

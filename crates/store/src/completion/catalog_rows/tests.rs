@@ -26,8 +26,6 @@ fn remove_reading(archive: &WriterArchive, input: &str) {
     reading.push(&mut step).unwrap();
     archive
         .writer
-        .sender()
-        .unwrap()
         .replace_chain(
             InputKey {
                 id: input.into(),
@@ -180,11 +178,14 @@ fn authored_deltas_follow_only_affected_families_and_setting_keys() {
     let write = |id: &str, value| {
         archive
             .writer
-            .user_preparing(
-                crate::fixture::authored::operator_request(id.into(), value),
-                crate::user_writes::PreparationContext::new(vec!["codex".into()]),
-                None,
-            )
+            .user(crate::writer::UserSubmission {
+                request: crate::fixture::authored::operator_request(id.into(), value),
+                scope: None,
+                preparation: Some(crate::user_writes::PreparationContext::new(vec![
+                    "codex".into(),
+                ])),
+                parent: None,
+            })
             .unwrap()
     };
     for (id, name) in [("saved-a", "alpha"), ("saved-b", "beta")] {

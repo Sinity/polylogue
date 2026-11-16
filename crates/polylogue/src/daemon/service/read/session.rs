@@ -1644,9 +1644,14 @@ fn lay_out(
         let wanted_messages: HashSet<&MessageId> = messages.iter().collect();
         let last_message = messages.last().expect("one message").clone();
         let mut result = Ok(());
-        selection.visit_from_with_record_arrival(
+        selection.visit_with_sources(
             start,
-            |message, block_selection, commit, order| {
+            |message,
+             polylogue_store::read::MessageSource {
+                 blocks: block_selection,
+                 committed: commit,
+                 ordinal: order,
+             }| {
                 let id = message.id.clone();
                 if wanted_messages.contains(&id) {
                     let step = (|| {

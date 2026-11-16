@@ -39,8 +39,6 @@ fn chain_replacement_keeps_the_relationship_revision_but_retraction_changes_it()
     let mut reading = ChainReading::new().unwrap();
     reading.push(&mut replacement.parse[0]).unwrap();
     w.writer
-        .sender()
-        .unwrap()
         .replace_chain(replacement.input, stored.chain, replacement.length, reading)
         .unwrap();
     assert!(w.writer.flush().unwrap().errors.is_empty());
@@ -54,8 +52,6 @@ fn chain_replacement_keeps_the_relationship_revision_but_retraction_changes_it()
     let mut reading = ChainReading::new().unwrap();
     reading.push(&mut removed.parse[0]).unwrap();
     w.writer
-        .sender()
-        .unwrap()
         .replace_chain(removed.input, stored.chain, removed.length, reading)
         .unwrap();
     assert!(w.writer.flush().unwrap().errors.is_empty());
@@ -163,8 +159,6 @@ fn changing_only_relation_order_invalidates_the_cursor() {
     let mut reading = ChainReading::new().unwrap();
     reading.push(&mut partial.parse[0]).unwrap();
     w.writer
-        .sender()
-        .unwrap()
         .replace_chain(partial.input, stored.chain, partial.length, reading)
         .unwrap();
     assert!(w.writer.flush().unwrap().errors.is_empty());

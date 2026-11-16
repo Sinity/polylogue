@@ -47,33 +47,10 @@ fn span_error(error: SpanError) -> StoreError {
 }
 
 impl Reader<'_> {
-    /// `Some(0)` is accessible empty text; `None` is an absent target. A target
-    /// whose text is unavailable returns a typed error and never an empty hash.
-    pub fn visit_reference_text(
-        &self,
-        reference: &Reference,
-        mut visit: impl FnMut(&str) -> Result<()>,
-    ) -> Result<Option<u64>> {
-        let mut bytes = 0u64;
-        let found = ReferenceText::new(self.conn()?, self.conn()?).reference_text(
-            reference,
-            true,
-            &mut |text| {
-                self.check()?;
-                visit(text)?;
-                bytes = bytes.checked_add(text.len() as u64).ok_or_else(|| {
-                    StoreError::Invalid("reference text length exceeds its address space".into())
-                })?;
-                Ok(ControlFlow::Continue(()))
-            },
-        )?;
-        self.check()?;
-        Ok(found.then_some(bytes))
-    }
     /// Stop before loading another text body. Continue carries the complete
     /// byte length; Break carries bytes visited before successful cancellation.
     /// Completeness checks for full reference identities remain in force.
-    pub fn visit_reference_text_while(
+    pub fn visit_reference_text(
         &self,
         reference: &Reference,
         mut visit: impl FnMut(&str) -> Result<ControlFlow<()>>,
@@ -105,7 +82,7 @@ impl Reader<'_> {
         Ok(self
             .visit_reference_text(reference, |text| {
                 hash.update(text.as_bytes());
-                Ok(())
+                Ok(ControlFlow::Continue(()))
             })?
             .map(|_| BlobHash(*hash.finalize().as_bytes())))
     }

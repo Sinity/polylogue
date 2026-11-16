@@ -103,10 +103,18 @@ fn sparse_original_positions_survive_reopen_and_streaming_reads() {
     reader
         .select_messages(&sid("s"), false)
         .unwrap()
-        .visit_from_with_record_arrival(Default::default(), |message, block_selection, _, _| {
-            streamed.push((message, block_selection));
-            std::ops::ControlFlow::Continue(())
-        })
+        .visit_with_sources(
+            Default::default(),
+            |message,
+             crate::read::MessageSource {
+                 blocks: block_selection,
+                 committed: _,
+                 ordinal: _,
+             }| {
+                streamed.push((message, block_selection));
+                std::ops::ControlFlow::Continue(())
+            },
+        )
         .unwrap();
     assert_eq!(streamed, vec![expected]);
     assert_eq!(
@@ -319,9 +327,14 @@ fn primary_readings_preserve_every_known_block() {
     reader
         .select_messages(&sid("s"), false)
         .unwrap()
-        .visit_from_with_record_arrival(
+        .visit_with_sources(
             Default::default(),
-            |value, block_selection, committed, _| {
+            |value,
+             crate::read::MessageSource {
+                 blocks: block_selection,
+                 committed,
+                 ordinal: _,
+             }| {
                 streamed.push((value, block_selection, committed));
                 std::ops::ControlFlow::Continue(())
             },

@@ -36,7 +36,6 @@ fn append(archive: &Archive, writer: &Writer, input: &str, bytes: &[u8]) -> Resu
         release: Default::default(),
     };
     writer
-        .sender()?
         .store_group(
             vec![PreparedBatch {
                 batch,
@@ -68,8 +67,6 @@ fn group_commits_one_sync_and_one_extent_for_equal_bytes() {
         });
     }
     let results = writer
-        .sender()
-        .unwrap()
         .store_group(group, Arc::new(archive.blobs().unwrap()))
         .unwrap();
     assert!(results.iter().all(Result::is_ok));

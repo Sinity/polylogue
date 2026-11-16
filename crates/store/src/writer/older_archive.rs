@@ -38,12 +38,12 @@ pub enum Restored {
     Refused(String),
 }
 
-pub(super) fn restore_via(queue: &WriterQueue, group: OlderGroup) -> Result<GroupOutcome> {
-    let (reply, wait) = sync_channel(1);
-    queue
-        .send(Msg::RestoreOlder(Box::new(group), reply))
-        .map_err(|_| StoreError::WriterGone)?;
-    wait.recv().map_err(|_| StoreError::WriterGone)?
+impl WriterSender {
+    /// Stores a group of an older archive's inputs with the rows it held.
+    pub fn restore_older(&self, group: OlderGroup) -> Result<GroupOutcome> {
+        self.0
+            .ask(|reply| Msg::RestoreOlder(Box::new(group), reply))
+    }
 }
 
 /// An observation's recorded facts, compared field by field.

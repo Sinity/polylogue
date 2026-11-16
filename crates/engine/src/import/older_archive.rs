@@ -750,7 +750,7 @@ impl Engine {
         } else {
             let inputs = std::mem::take(&mut group.inputs);
             let machines = group.machines.clone();
-            let outcome = self.writer.sender()?.restore_older(OlderGroup {
+            let outcome = self.writer.restore_older(OlderGroup {
                 files: group.files,
                 machines,
                 inputs: inputs.clone(),
@@ -783,13 +783,13 @@ impl Engine {
         current: Option<&polylogue_model::authored::ImportAttribution>,
         report: &mut OlderArchiveReport,
     ) -> Result<(), EngineError> {
-        let writer = self.writer.sender()?;
+        let writer = self.writer.sender();
         let restore_fact =
             |fact: polylogue_model::assertion::AssertionFact| -> Result<Restored, EngineError> {
                 let Some(_) = current else {
                     return Ok(Restored::Stored);
                 };
-                Ok(match writer.restore_assertion(fact) {
+                Ok(match writer.restore_assertion(fact, None) {
                     Ok(outcome) => restored(&outcome),
                     Err(error) => refusal(error)?,
                 })

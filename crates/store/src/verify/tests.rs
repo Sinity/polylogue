@@ -59,8 +59,6 @@ impl Stored {
             release: InFlight::default(),
         };
         self.writer
-            .sender()
-            .unwrap()
             .store_group(
                 vec![PreparedBatch {
                     batch,

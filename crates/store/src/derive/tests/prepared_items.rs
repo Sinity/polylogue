@@ -102,8 +102,6 @@ fn stale_reveal_cannot_restore_an_old_version_or_retracted_message() {
                 .unwrap();
             world
                 .writer
-                .sender()
-                .unwrap()
                 .replace_chain(
                     InputKey {
                         id: "input-session".into(),

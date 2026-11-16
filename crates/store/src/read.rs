@@ -1043,7 +1043,7 @@ impl Reader<'_> {
     ) -> Result<()> {
         let selected = self.select_messages(id, with_parents)?;
         selected.require_complete()?;
-        selected.visit(&mut visit)
+        selected.visit(Default::default(), &mut visit).map(drop)
     }
 
     /// The keys of the messages a session shows with its parents, each once.

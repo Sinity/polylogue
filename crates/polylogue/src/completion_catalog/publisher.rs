@@ -464,7 +464,7 @@ impl State {
                 let object = match &value.body {
                     polylogue_query::SavedQueryBody::Available { object, .. } => object.clone(),
                     polylogue_query::SavedQueryBody::Unavailable { .. } => {
-                        match reader.query_object(&value.hash.to_string(), None) {
+                        match reader.query_object(&value.hash.to_string()) {
                             Ok(found) => found.map(std::sync::Arc::new),
                             Err(
                                 polylogue_store::StoreError::NotFound(_)

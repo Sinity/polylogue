@@ -36,8 +36,6 @@ fn completed_history_keeps_lookup_and_one_run_group() {
             matches!(&offline, StoreError::Sinex(message) if message == "synthetic offline producer")
         );
         writer
-            .sender()
-            .unwrap()
             .reserve_history()
             .unwrap()
             .record(object.clone(), expected.clone(), completed.clone())
@@ -261,10 +259,10 @@ fn completed_run_keeps_its_original_scope_in_the_spool_during_cache_reset() {
         conn.execute("INSERT INTO meta(key,value) VALUES ('confirmed_scope_pending','replacement-scope') ON CONFLICT(key) DO UPDATE SET value=excluded.value", []).unwrap();
         let writer = crate::Writer::start_on_sinex(&archive, producer.clone()).unwrap();
         assert!(matches!(
-            writer.query_object(object.clone()),
+            writer.query_object(object.clone(), None),
             Err(StoreError::ScopeChanged)
         ));
-        writer.begin_query_run(expected.clone()).unwrap();
+        writer.begin_query_run(expected.clone(), None).unwrap();
         let kept = producer.writes().unwrap();
         let writes = kept.get(&format!("query-run:{}", expected.id)).unwrap();
         let [write] = writes.as_slice() else {
@@ -301,7 +299,7 @@ fn queued_begin_and_outcome_remain_distinct_and_lookup_survives_restart() {
             crate::Archive::open_primary(&dir.path().join("cache"), &dir.path().join("bytes"))
                 .unwrap();
         let writer = crate::Writer::start_on_sinex(&archive, producer.clone()).unwrap();
-        writer.begin_query_run(expected.clone()).unwrap();
+        writer.begin_query_run(expected.clone(), None).unwrap();
         let pool = crate::ReadPool::open(&archive).unwrap();
         assert_eq!(
             pool.reader()
@@ -367,7 +365,7 @@ fn confirmed_run_phases_need_no_new_spool_write() {
     tx.commit().unwrap();
     drop(conn);
     let writer = crate::Writer::start_on_sinex(&archive, producer.clone()).unwrap();
-    writer.begin_query_run(expected).unwrap();
+    writer.begin_query_run(expected, None).unwrap();
     writer
         .finish_query_run(completed)
         .unwrap()
@@ -401,10 +399,10 @@ fn confirmed_outcome_first_rejects_another_begin_intent_before_primary_spooling(
     let mut changed = original.clone();
     changed.machine = "another-accepting-machine".into();
     assert!(matches!(
-        writer.begin_query_run(changed),
+        writer.begin_query_run(changed, None),
         Err(StoreError::Conflict(_))
     ));
     assert!(producer.writes().unwrap().is_empty());
-    writer.begin_query_run(original).unwrap();
+    writer.begin_query_run(original, None).unwrap();
     assert_eq!(producer.writes().unwrap().len(), 1);
 }

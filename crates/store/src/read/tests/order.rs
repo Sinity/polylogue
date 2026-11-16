@@ -57,7 +57,7 @@ fn tied_source_positions_use_ids_in_physical_logical_prompt_and_fingerprint_read
             let selected = r.select_messages(&id, with_parents).unwrap();
             let mut visited = Vec::new();
             selected
-                .visit(|message| {
+                .visit(Default::default(), |message| {
                     visited.push(message.id.to_string());
                     ControlFlow::Continue(())
                 })

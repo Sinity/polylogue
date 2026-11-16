@@ -13,7 +13,7 @@ fn text(reader: &Reader<'_>, reference: &str) -> Option<String> {
     reader
         .visit_reference_text(&r(reference), |chunk| {
             text.push_str(chunk);
-            Ok(())
+            Ok(ControlFlow::Continue(()))
         })
         .unwrap()
         .map(|_| text)
@@ -112,7 +112,7 @@ fn spans_use_source_offsets_and_refuse_half_characters_before_emitting() {
         assert!(matches!(
             reader.visit_reference_text(&r(reference), |_| {
                 emitted = true;
-                Ok(())
+                Ok(ControlFlow::Continue(()))
             }),
             Err(StoreError::Invalid(_))
         ));
@@ -318,7 +318,7 @@ fn document_spans_share_original_body_offsets_without_loading_structured_results
     assert!(matches!(
         reader.visit_reference_text(&r("span:document:claude-ai:document#u16=2-3"), |_| {
             emitted = true;
-            Ok(())
+            Ok(ControlFlow::Continue(()))
         }),
         Err(StoreError::Invalid(_))
     ));
@@ -443,7 +443,7 @@ fn structured_assertions_remain_readable_with_unavailable_text_and_not_applicabl
         assert!(matches!(
             reader.visit_reference_text(&r("span:assertion:structured@structured#b=0-0"), |_| {
                 emitted = true;
-                Ok(())
+                Ok(ControlFlow::Continue(()))
             }),
             Err(StoreError::ReferenceUnavailable { .. })
         ));

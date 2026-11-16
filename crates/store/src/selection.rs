@@ -382,7 +382,7 @@ impl Reader<'_> {
     pub fn visit_selection<E>(
         &self,
         selection: &PreparedSelection<'_>,
-        after: Option<&OrderPosition>,
+        from: crate::read::VisitFrom<&OrderPosition>,
         near: Option<&NearFn<'_>>,
         mut visit: impl FnMut(SelectionRow) -> Result<ControlFlow<()>, E>,
     ) -> Result<(), E>
@@ -390,20 +390,20 @@ impl Reader<'_> {
         E: From<SelectionError>,
     {
         self.in_selection_context(selection, near, || {
-            self.visit_selection_scoped(selection, after, &mut visit)
+            use crate::read::VisitFrom;
+            let (after, reverse) = match from {
+                VisitFrom::First => (None, false),
+                VisitFrom::At(at) if selection.direct.is_none() => {
+                    (self.row_before(selection, at).map_err(E::from)?, false)
+                }
+                VisitFrom::At(_) => (None, false),
+                VisitFrom::After(after) => (Some(after.clone()), false),
+                VisitFrom::Before(_) if selection.direct.is_some() => return Ok(()),
+                VisitFrom::Before(before) => (Some(before.clone()), true),
+                VisitFrom::Last => (None, true),
+            };
+            self.visit_selection_scoped_in_direction(selection, after.as_ref(), reverse, &mut visit)
         })
-    }
-
-    fn visit_selection_scoped<E>(
-        &self,
-        selection: &PreparedSelection<'_>,
-        after: Option<&OrderPosition>,
-        visit: &mut impl FnMut(SelectionRow) -> Result<ControlFlow<()>, E>,
-    ) -> Result<(), E>
-    where
-        E: From<SelectionError>,
-    {
-        self.visit_selection_scoped_in_direction(selection, after, false, visit)
     }
 
     fn visit_selection_scoped_in_direction<E>(

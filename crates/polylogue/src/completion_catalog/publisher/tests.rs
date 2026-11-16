@@ -188,7 +188,7 @@ fn saved_metadata_follows_committed_families_and_late_query_bodies() {
         id:"historical-definition".into(),root:"historical-definition".into(),kind:AssertionKind::SavedQuery,
         key:Some("historical".into()),value:Some(serde_json::json!({"text":parent.text(),"hash":object.id.to_string(),"denominator":null})),
         author:Author::Operator,via:Channel::Import,machine:"synthetic-machine".into(),created_at: Some(Timestamp::from_unix_ms(1).unwrap()),valid_until:None,links:vec![],
-    }).unwrap();
+    }, None).unwrap();
     state
         .refresh(&reads.reader().unwrap(), &path, "synthetic")
         .unwrap();
@@ -197,7 +197,7 @@ fn saved_metadata_follows_committed_families_and_late_query_bodies() {
         .unwrap();
     assert!(cached.saved("historical").unwrap()[0].schema.is_none());
     drop(cached);
-    archive.writer.query_object(object.clone()).unwrap();
+    archive.writer.query_object(object.clone(), None).unwrap();
     state
         .refresh(&reads.reader().unwrap(), &path, "synthetic")
         .unwrap();
@@ -212,7 +212,7 @@ fn saved_metadata_follows_committed_families_and_late_query_bodies() {
         "the parent keeps its own immutable dependencies"
     );
     let before = state.position.clone().unwrap();
-    archive.writer.query_object(child.clone()).unwrap();
+    archive.writer.query_object(child.clone(), None).unwrap();
     let reader = reads.reader().unwrap();
     let changed = reader.completion_changed_queries(before.archive).unwrap();
     assert!(changed.contains(&child.id.to_string()) && changed.contains(&object.id.to_string()));
@@ -236,7 +236,7 @@ fn saved_metadata_follows_committed_families_and_late_query_bodies() {
         id: "colliding-definition".into(), root: "colliding-definition".into(), kind: AssertionKind::SavedQuery,
         key: Some("historical".into()), value: Some(serde_json::json!({"text":parent.text(),"hash":object.id.to_string(),"denominator":null})),
         author: Author::Operator, via: Channel::Import, machine: "synthetic-machine".into(), created_at: Some(Timestamp::from_unix_ms(2).unwrap()), valid_until: None, links: vec![],
-    }).unwrap();
+    }, None).unwrap();
     state
         .refresh(&reads.reader().unwrap(), &path, "synthetic")
         .unwrap();
@@ -309,8 +309,8 @@ fn failed_catalog_transaction_retries_the_same_committed_definition_delta() {
     let save = |id: &str, name: &str| {
         archive
             .writer
-            .user_preparing(
-                polylogue_store::fixture::authored::operator_request(
+            .user(polylogue_store::writer::UserSubmission {
+                request: polylogue_store::fixture::authored::operator_request(
                     id.into(),
                     UserWrite::SaveQuery {
                         name: name.into(),
@@ -318,9 +318,10 @@ fn failed_catalog_transaction_retries_the_same_committed_definition_delta() {
                         denominator: Some("sessions".into()),
                     },
                 ),
-                crate::daemon::service::authored_preparation(),
-                None,
-            )
+                scope: None,
+                preparation: Some(crate::daemon::service::authored_preparation()),
+                parent: None,
+            })
             .unwrap()
     };
     save("definition-a", "alpha");
@@ -380,7 +381,12 @@ fn late_kept_result_refreshes_inline_dependency() {
     };
     donor
         .writer
-        .user_preparing(keep(), crate::daemon::service::authored_preparation(), None)
+        .user(polylogue_store::writer::UserSubmission {
+            request: keep(),
+            scope: None,
+            preparation: Some(crate::daemon::service::authored_preparation()),
+            parent: None,
+        })
         .unwrap();
     let donor_reads = polylogue_store::ReadPool::open(&donor.archive).unwrap();
     let mut bindings = polylogue_query::Bindings {
@@ -416,7 +422,7 @@ fn late_kept_result_refreshes_inline_dependency() {
     let mut archive =
         polylogue_store::fixture::Fixture::new(&directory.path().join("archive")).unwrap();
     let writer = polylogue_store::Writer::start(&archive.archive).unwrap();
-    let error = writer.query_object(object).unwrap_err();
+    let error = writer.query_object(object, None).unwrap_err();
     assert!(
         matches!(&error, polylogue_store::StoreError::NotFound(what) if what == "stored result schema result:late-kept"),
         "{error:?}"
@@ -426,8 +432,8 @@ fn late_kept_result_refreshes_inline_dependency() {
     archive.saved_query("dependent", &parent).unwrap();
     // Account for the fixture's seeded source record before measuring deltas.
     writer
-        .user_preparing(
-            polylogue_store::fixture::authored::operator_request(
+        .user(polylogue_store::writer::UserSubmission {
+            request: polylogue_store::fixture::authored::operator_request(
                 "seed-position".into(),
                 UserWrite::SetSetting {
                     key: "browser.actions".into(),
@@ -435,16 +441,17 @@ fn late_kept_result_refreshes_inline_dependency() {
                     machine: None,
                 },
             ),
-            crate::daemon::service::authored_preparation(),
-            None,
-        )
+            scope: None,
+            preparation: Some(crate::daemon::service::authored_preparation()),
+            parent: None,
+        })
         .unwrap();
     let reads = polylogue_store::ReadPool::open(&archive.archive).unwrap();
     assert!(
         reads
             .reader()
             .unwrap()
-            .query_object(&child_id.to_string(), None)
+            .query_object(&child_id.to_string())
             .unwrap()
             .is_none()
     );
@@ -464,7 +471,12 @@ fn late_kept_result_refreshes_inline_dependency() {
     );
     let before = state.position.clone().unwrap();
     writer
-        .user_preparing(keep(), crate::daemon::service::authored_preparation(), None)
+        .user(polylogue_store::writer::UserSubmission {
+            request: keep(),
+            scope: None,
+            preparation: Some(crate::daemon::service::authored_preparation()),
+            parent: None,
+        })
         .unwrap();
     assert!(
         reads

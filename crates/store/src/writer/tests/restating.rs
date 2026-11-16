@@ -46,8 +46,6 @@ fn replace_observations(w: &TestArchive, observations: &std::collections::BTreeM
         reading.push(&mut b.parse[0]).unwrap();
     }
     w.writer
-        .sender()
-        .unwrap()
         .replace_chain(
             InputKey {
                 id: "a".into(),

@@ -602,12 +602,12 @@ fn submit<T: serde::Serialize>(
     };
     let request = invocation.request(request_id, w);
     let preparation = authored_preparation();
-    let result = match invocation.parent_lifetime() {
-        Some(parent) => {
-            writes.user_preparing_with_parent(request, preparation, selected_scope, parent)
-        }
-        None => writes.user_preparing(request, preparation, selected_scope),
-    };
+    let result = writes.user(polylogue_store::writer::UserSubmission {
+        request,
+        scope: selected_scope,
+        preparation: Some(preparation),
+        parent: invocation.parent_lifetime(),
+    });
     match result {
         Ok(outcome) => {
             let pending = outcome.pending;
@@ -786,10 +786,7 @@ fn query_targets_in(
             let hash = run.binding_hash().map_err(Failure::internal)?;
             let writes = writer(d)?;
             operation.check_parent_lifetime()?;
-            match operation.parent_lifetime() {
-                Some(parent) => writes.query_object_with_parent(object, parent),
-                None => writes.query_object(object),
-            }?;
+            writes.query_object(object, operation.parent_lifetime())?;
             self::execution::record(
                 writes,
                 operation.parent_lifetime(),
@@ -805,24 +802,29 @@ fn query_targets_in(
                     let mut row_count = 0_u64;
                     let mut targets = Vec::new();
                     let mut seen = HashSet::new();
-                    reader.visit_selection::<Failure>(&selection, None, Some(near), |row| {
-                        row_count = row_count
-                            .checked_add(1)
-                            .ok_or_else(|| Failure::internal("selected row count exceeds u64"))?;
-                        let reference = row
-                            .target
-                            .as_ref()
-                            .map(polylogue_model::read::ReadTarget::reference)
-                            .ok_or_else(|| {
-                                Failure::not_yet_available(
-                                    "the selected row has no source reference",
-                                )
+                    reader.visit_selection::<Failure>(
+                        &selection,
+                        polylogue_store::read::VisitFrom::First,
+                        Some(near),
+                        |row| {
+                            row_count = row_count.checked_add(1).ok_or_else(|| {
+                                Failure::internal("selected row count exceeds u64")
                             })?;
-                        if seen.insert(reference.clone()) {
-                            targets.push(reference);
-                        }
-                        Ok(std::ops::ControlFlow::Continue(()))
-                    })?;
+                            let reference = row
+                                .target
+                                .as_ref()
+                                .map(polylogue_model::read::ReadTarget::reference)
+                                .ok_or_else(|| {
+                                    Failure::not_yet_available(
+                                        "the selected row has no source reference",
+                                    )
+                                })?;
+                            if seen.insert(reference.clone()) {
+                                targets.push(reference);
+                            }
+                            Ok(std::ops::ControlFlow::Continue(()))
+                        },
+                    )?;
                     if let Some(polylogue_model::Reference::Session(expected)) = container {
                         let Some(polylogue_model::Reference::Message(message)) = targets.first()
                         else {

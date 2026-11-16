@@ -255,40 +255,39 @@ impl DocumentRead<'_, '_> {
     }
     pub fn document(&self) -> Result<Document> {
         let mut document = self.fields.clone();
-        self.visit_blocks(|block| {
+        self.visit_blocks(crate::read::VisitFrom::First, |_, block| {
             document.blocks.push(block);
             ControlFlow::Continue(())
         })?;
         Ok(document)
     }
-    pub fn visit_blocks(&self, visit: impl FnMut(Block) -> ControlFlow<()>) -> Result<()> {
-        self.visit_blocks_until(None, visit)
-    }
-
-    /// Original source ordinals are kept while a caller stops after one
-    /// block or resumes without decoding earlier bodies.
-    pub fn visit_blocks_from(
-        &self,
-        from: u64,
-        visit: impl FnMut(u64, Block) -> ControlFlow<()>,
-    ) -> Result<()> {
-        self.visit_blocks_selected_from(from, None, false, visit)
-    }
-
-    /// Descend from an exclusive original ordinal, or from the last block.
+    /// Original source ordinals stay attached to blocks in either direction.
     /// Returning Break prevents the next body from being decoded.
-    pub fn visit_blocks_before_with_ordinals(
+    pub fn visit_blocks(
         &self,
-        before: Option<u64>,
+        from: crate::read::VisitFrom<u64>,
         visit: impl FnMut(u64, Block) -> ControlFlow<()>,
     ) -> Result<()> {
+        use crate::read::VisitFrom;
+        let (start, end, backwards) = match from {
+            VisitFrom::First => (0, None, false),
+            VisitFrom::At(at) => (at, None, false),
+            VisitFrom::After(after) => {
+                let Some(start) = after.checked_add(1) else {
+                    return Ok(());
+                };
+                (start, None, false)
+            }
+            VisitFrom::Before(before) => (0, usize::try_from(before).ok(), true),
+            VisitFrom::Last => (0, None, true),
+        };
         visit_blocks_selected_from(
             (self.reader.conn()?, Some(self.reader)),
             self.pk,
-            0,
-            before.and_then(|before| usize::try_from(before).ok()),
+            start,
+            end,
             false,
-            true,
+            backwards,
             visit,
         )
     }
@@ -300,41 +299,6 @@ impl DocumentRead<'_, '_> {
         self.reader.conn()?.exists(
             "SELECT EXISTS(SELECT 1 FROM document_block WHERE document_pk=?1 AND idx=?2)",
             params![self.pk, ordinal],
-        )
-    }
-
-    fn visit_blocks_until(
-        &self,
-        end: Option<usize>,
-        visit: impl FnMut(Block) -> ControlFlow<()>,
-    ) -> Result<()> {
-        self.visit_blocks_selected(end, false, visit)
-    }
-
-    fn visit_blocks_selected(
-        &self,
-        end: Option<usize>,
-        text_only: bool,
-        mut visit: impl FnMut(Block) -> ControlFlow<()>,
-    ) -> Result<()> {
-        self.visit_blocks_selected_from(0, end, text_only, |_, block| visit(block))
-    }
-
-    fn visit_blocks_selected_from(
-        &self,
-        from: u64,
-        end: Option<usize>,
-        text_only: bool,
-        visit: impl FnMut(u64, Block) -> ControlFlow<()>,
-    ) -> Result<()> {
-        visit_blocks_selected_from(
-            (self.reader.conn()?, Some(self.reader)),
-            self.pk,
-            from,
-            end,
-            text_only,
-            false,
-            visit,
         )
     }
 

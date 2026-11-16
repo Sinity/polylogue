@@ -187,8 +187,6 @@ fn shorter_prefix_has_a_commit_and_keeps_progress() {
     let writer = Writer::start(&archive).unwrap();
     let (blob, prepared) = archive.prepare_blob(b"abcdefgh").unwrap();
     let results = writer
-        .sender()
-        .unwrap()
         .store_group(
             vec![crate::staging::PreparedBatch {
                 batch: Batch {

@@ -559,8 +559,6 @@ fn offline_writer_keeps_original_source_before_release() {
         let prepared = archive.prepare_bytes(bytes.as_slice()).unwrap();
         input.files.push(prepared);
         let mut results = writer
-            .sender()
-            .unwrap()
             .store_group(vec![input], Arc::new(archive.blobs().unwrap()))
             .unwrap();
         assert!(
@@ -808,8 +806,6 @@ fn unknown_empty_capture_is_sent_after_stream_completion() {
     let mut capture = source("offline", b"");
     capture.batch.new_blob = None;
     let outcome = writer
-        .sender()
-        .unwrap()
         .store_group(vec![capture], Arc::new(archive.blobs().unwrap()))
         .unwrap();
     assert!(matches!(
@@ -1067,8 +1063,6 @@ fn original_source_base_survives_progress_and_keeps_conflicts() {
             .files
             .push(archive.prepare_bytes(bytes.as_slice()).unwrap());
         let mut outcomes = writer
-            .sender()
-            .unwrap()
             .store_group(vec![capture], Arc::new(archive.blobs().unwrap()))
             .unwrap();
         let outcome = outcomes.remove(0);
@@ -1205,8 +1199,6 @@ fn stored_readings_use_confirmed_chain_not_latest_path_state() {
     let store = Arc::new(archive.blobs().unwrap());
     for _ in 0..2 {
         let results = writer
-            .sender()
-            .unwrap()
             .store_group(
                 vec![PreparedBatch {
                     batch: reading.batch.clone(),
@@ -1263,8 +1255,6 @@ fn stored_readings_use_confirmed_chain_not_latest_path_state() {
             _ => batch.length = 5,
         }
         let error = writer
-            .sender()
-            .unwrap()
             .store_group(
                 vec![PreparedBatch {
                     batch,
@@ -1292,8 +1282,6 @@ fn stored_readings_use_confirmed_chain_not_latest_path_state() {
         .files
         .push(archive.prepare_bytes(b"new source".as_slice()).unwrap());
     let mixed = writer
-        .sender()
-        .unwrap()
         .store_group(
             vec![
                 fresh,
@@ -1328,7 +1316,7 @@ fn a_failed_scope_reset_reports_its_original_error_before_reply_without_a_commit
         root: directory.path().join("producer"),
     });
     let writer = Writer::start_on_sinex(&archive, producer).unwrap();
-    let commits = writer.sender().unwrap().completion_commits();
+    let commits = writer.completion_commits();
     let reset = |scope: &str| {
         vec![Confirmed {
             sinex_context: None,
@@ -1439,7 +1427,7 @@ fn lifecycle_wait_lets_a_key_lock_holder_finish() {
         }),
     )
     .unwrap();
-    let queue = writer.tx.as_ref().unwrap().clone();
+    let queue = writer.sender();
     let mut reparse_batch = source("queued-input", b"").batch;
     reparse_batch.change = Change::Reparse { chain: 1 };
     reparse_batch.observation = None;
@@ -1448,7 +1436,8 @@ fn lifecycle_wait_lets_a_key_lock_holder_finish() {
     step.reading_version = "codex=1".into();
     step.source_prefix_missing = true;
     reparse_batch.parse.push(step);
-    prepare_source_retractions(&queue.resolver, std::slice::from_mut(&mut reparse_batch)).unwrap();
+    prepare_source_retractions(&queue.0.resolver, std::slice::from_mut(&mut reparse_batch))
+        .unwrap();
     // Keep only a failure-cleanup handle: the queued batch still owns normal
     // release, after the writer accepts or rejects it.
     let held = Arc::new(Mutex::new(Some(std::mem::take(&mut reparse_batch.release))));
@@ -1457,7 +1446,7 @@ fn lifecycle_wait_lets_a_key_lock_holder_finish() {
         release.lock().unwrap().take();
     });
     let (waiting, observed) = std::sync::mpsc::channel();
-    queue.resolver.observe_wait(waiting);
+    queue.0.resolver.observe_wait(waiting);
     let (reply, complete) = std::sync::mpsc::channel();
     let following = queue.clone();
     let follower = std::thread::spawn(move || {
@@ -1505,7 +1494,7 @@ fn lifecycle_wait_lets_a_key_lock_holder_finish() {
     );
     // The confirmation is already waiting. Its overlapping worker queues
     // afterwards and must be rejected without being blocked behind that wait.
-    queue.send(Msg::Batch(Box::new(reparse_batch))).unwrap();
+    queue.0.send(Msg::Batch(Box::new(reparse_batch))).unwrap();
     let result = complete.recv_timeout(Duration::from_secs(5));
     held.lock().unwrap().take();
     follower.join().unwrap();

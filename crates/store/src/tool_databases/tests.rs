@@ -97,7 +97,7 @@ impl Test {
                     basis: None,
                     release: Default::default(),
                 };
-                for done in writer.sender()?.store_group(
+                for done in writer.store_group(
                     vec![PreparedBatch { batch, files }],
                     std::sync::Arc::clone(&blobs),
                 )? {

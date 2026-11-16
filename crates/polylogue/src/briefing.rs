@@ -1432,7 +1432,7 @@ fn takeover(
     let prompts = reader.prompts(&id)?;
     let selected = reader.select_messages(session, true)?;
     let mut messages = Vec::new();
-    selected.visit(|message| {
+    selected.visit(Default::default(), |message| {
         messages.push(message);
         std::ops::ControlFlow::Continue(())
     })?;

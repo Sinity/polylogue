@@ -783,7 +783,7 @@ fn complete_chain_replacement_rebuilds_chunk_counts_and_rolls_back_overlaps() {
         reading.push(&mut tail).unwrap();
         reading
     };
-    let sender = archive.writer.sender().unwrap();
+    let sender = archive.writer.sender();
     sender
         .replace_chain(batch.input.clone(), stored.chain, 4, replacement(2, true))
         .unwrap();

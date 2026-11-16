@@ -15,12 +15,17 @@ fn records(
     reader
         .select_messages(&sid(session), parents)
         .unwrap()
-        .visit_from_with_record_arrival(
+        .visit_with_sources(
             VisitStart {
                 message: start,
                 key: None,
             },
-            |message, _, _, order| {
+            |message,
+             crate::read::MessageSource {
+                 blocks: _,
+                 committed: _,
+                 ordinal: order,
+             }| {
                 out.push((message.id.to_string(), order));
                 std::ops::ControlFlow::Continue(())
             },

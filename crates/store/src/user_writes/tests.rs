@@ -31,11 +31,12 @@ fn search_requests_with_resolved_content_hashes_conflict_without_changing_data()
     );
     for request in [&kept, &saved] {
         w.writer
-            .user_preparing(
-                request.clone(),
-                PreparationContext::new(vec!["codex".into()]),
-                None,
-            )
+            .user(crate::writer::UserSubmission {
+                request: request.clone(),
+                scope: None,
+                preparation: Some(PreparationContext::new(vec!["codex".into()])),
+                parent: None,
+            })
             .unwrap();
         let hash = blake3::hash(&serde_json::to_vec(&request.write).unwrap());
         crate::archive::open_archive_writer(&w.archive)
@@ -135,7 +136,12 @@ fn a_kept_body_later_preparations_cannot_decode_is_refused_without_recording_a_r
         },
     );
     w.writer
-        .user_preparing(saved, PreparationContext::new(vec!["codex".into()]), None)
+        .user(crate::writer::UserSubmission {
+            request: saved,
+            scope: None,
+            preparation: Some(PreparationContext::new(vec!["codex".into()])),
+            parent: None,
+        })
         .unwrap();
 }
 

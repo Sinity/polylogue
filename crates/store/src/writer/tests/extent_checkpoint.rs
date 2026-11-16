@@ -16,8 +16,6 @@ fn bytes(archive: &Archive, from: u64, body: &[u8]) -> PreparedBatch {
 }
 fn store(w: &TestArchive, bytes: PreparedBatch) -> Result<crate::staging::StoredInput> {
     w.writer
-        .sender()
-        .unwrap()
         .store_group(vec![bytes], Arc::new(w.archive.blobs().unwrap()))
         .unwrap()
         .pop()

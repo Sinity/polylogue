@@ -95,7 +95,6 @@ impl TestArchive {
             Vec::new()
         };
         self.writer
-            .sender()?
             .store_group(
                 vec![crate::staging::PreparedBatch { batch, files }],
                 std::sync::Arc::new(self.archive.blobs()?),
@@ -707,8 +706,6 @@ fn revisions_extents_and_parse_state_follow_appends() {
     b2.parse.first_mut().unwrap().progress = polylogue_model::batch::StepProgress::Partway;
     let results = w
         .writer
-        .sender()
-        .unwrap()
         .store_group(
             vec![
                 crate::staging::PreparedBatch {
@@ -772,8 +769,6 @@ fn waiting_at_eof_does_not_hide_a_stored_append_without_parse_progress() {
     parse.progress = polylogue_model::batch::StepProgress::AtEnd;
     let results = w
         .writer
-        .sender()
-        .unwrap()
         .store_group(
             vec![crate::staging::PreparedBatch {
                 batch: first,
@@ -794,8 +789,6 @@ fn waiting_at_eof_does_not_hide_a_stored_append_without_parse_progress() {
     append.parse.clear();
     let results = w
         .writer
-        .sender()
-        .unwrap()
         .store_group(
             vec![crate::staging::PreparedBatch {
                 batch: append,
@@ -1048,23 +1041,25 @@ fn dropping_the_writer_drains_accepted_work_with_sender_clones_alive() {
         _lock,
         writer,
     } = w;
-    let sender = writer.sender().unwrap();
+    let sender = writer.sender();
     sender.send(queued).unwrap();
     let (reply, received) = sync_channel(1);
     sender
         .0
         .send_user(UserMsg::Request(
-            Box::new(crate::fixture::authored::operator_request(
-                crate::user_writes::new_request_id(),
-                polylogue_model::user::UserWrite::SetSetting {
-                    key: "browser.actions".into(),
-                    value: "on".into(),
-                    machine: None,
-                },
-            )),
-            None,
-            None,
-            None,
+            Box::new(crate::writer::UserSubmission {
+                request: crate::fixture::authored::operator_request(
+                    crate::user_writes::new_request_id(),
+                    polylogue_model::user::UserWrite::SetSetting {
+                        key: "browser.actions".into(),
+                        value: "on".into(),
+                        machine: None,
+                    },
+                ),
+                scope: None,
+                preparation: None,
+                parent: None,
+            }),
             reply,
         ))
         .unwrap();
@@ -1191,7 +1186,7 @@ mod identical_chains;
 #[test]
 fn a_user_write_goes_ahead_of_queued_batches() {
     let w = test_archive();
-    let sender = w.writer.sender().unwrap();
+    let sender = w.writer.sender();
     // The writer stops inside batch `a` (its release runs after `a`
     // commits) until the gate opens.
     let (entered, inside) = sync_channel(1);
@@ -1510,8 +1505,6 @@ fn a_refused_reading_in_a_group_of_independent_inputs_costs_only_itself() {
     );
     let results = w
         .writer
-        .sender()
-        .unwrap()
         .store_group(group, std::sync::Arc::new(w.archive.blobs().unwrap()))
         .unwrap();
     assert_eq!(results.len(), 2);
@@ -1529,7 +1522,7 @@ fn a_refused_reading_in_a_group_of_independent_inputs_costs_only_itself() {
 #[test]
 fn a_user_write_wakes_an_idle_writer_while_the_bulk_queue_lock_is_held() {
     let w = test_archive();
-    let sender = w.writer.sender().unwrap();
+    let sender = w.writer.sender();
     // A bulk sender holding the queue's lock (as one waiting for room does)
     // must not stop a user write from waking the idle writer.
     let held = sender.0.bulk.lock().unwrap();
@@ -1581,7 +1574,7 @@ fn a_stop_during_deferred_indexes_keeps_committed_rows_for_restart() {
     .unwrap();
     w.writer.flush().unwrap();
     let stop = w.archive.stop().clone();
-    let sender = w.writer.sender().unwrap();
+    let sender = w.writer.sender();
     crate::fault::arm(
         "index.deferred",
         &w.archive.root.to_string_lossy(),

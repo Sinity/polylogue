@@ -13,7 +13,7 @@ impl Carried {
     ) -> polylogue_store::Result<polylogue_model::user::UserOutcome> {
         match self {
             Self::Request(record) => writer.restore_authored(record.prepared),
-            Self::Assertion(record) => writer.restore_assertion(record.assertion),
+            Self::Assertion(record) => writer.restore_assertion(record.assertion, None),
         }
     }
 }

@@ -5,17 +5,17 @@ use std::time::Duration;
 fn message() -> UserMsg {
     let (reply, _) = std::sync::mpsc::sync_channel(1);
     UserMsg::Request(
-        Box::new(crate::fixture::authored::operator_request(
-            crate::user_writes::new_request_id(),
-            polylogue_model::user::UserWrite::SetSetting {
-                key: "browser.actions".into(),
-                value: "on".into(),
-                machine: None,
-            },
-        )),
-        None,
-        None,
-        None,
+        Box::new(
+            crate::fixture::authored::operator_request(
+                crate::user_writes::new_request_id(),
+                polylogue_model::user::UserWrite::SetSetting {
+                    key: "browser.actions".into(),
+                    value: "on".into(),
+                    machine: None,
+                },
+            )
+            .into(),
+        ),
         reply,
     )
 }

@@ -165,8 +165,6 @@ fn a_copied_document_source_equals_its_parse_and_is_not_shown() {
         assert!(
             copied
                 .writer
-                .sender()
-                .unwrap()
                 .copy_reading(crate::ReadingCopy {
                     input: "doc".into(),
                     from,
@@ -237,8 +235,6 @@ fn reading_copies_keep_portable_members_and_reparse_chain_members() {
         let before = index_rows(&w, true);
         let result = w
             .writer
-            .sender()
-            .unwrap()
             .copy_reading(crate::ReadingCopy {
                 input: "doc".into(),
                 from: 2,
@@ -305,7 +301,7 @@ fn stopping_a_later_copy_keeps_the_completed_chain_and_rolls_back_its_own_readin
          SELECT (SELECT pk FROM input_ref WHERE id='doc'),4,'parent','child','message:'||value,'original',7,'original=1','1','2' FROM n"
     ).unwrap();
     drop(conn);
-    let sender = w.writer.sender().unwrap();
+    let sender = w.writer.sender();
     assert!(sender.copy_reading(copies[0].clone()).unwrap().unwrap());
     let completed = index_rows(&w, true);
     let reads = ReadPool::open(&w.archive).unwrap();
@@ -385,13 +381,14 @@ fn stopping_a_later_copy_keeps_the_completed_chain_and_rolls_back_its_own_readin
     let (reply, accepted) = sync_channel(1);
     w.writer
         .sender()
-        .unwrap()
         .0
         .send_user(UserMsg::Request(
-            Box::new(request.clone()),
-            None,
-            None,
-            None,
+            Box::new(crate::writer::UserSubmission {
+                request: request.clone(),
+                scope: None,
+                preparation: None,
+                parent: None,
+            }),
             reply,
         ))
         .unwrap();
@@ -449,27 +446,13 @@ fn stopping_a_later_copy_keeps_the_completed_chain_and_rolls_back_its_own_readin
         vec![3]
     );
     drop(reader);
-    assert!(
-        writer
-            .sender()
-            .unwrap()
-            .copy_reading(copies[1].clone())
-            .unwrap()
-            .unwrap()
-    );
+    assert!(writer.copy_reading(copies[1].clone()).unwrap().unwrap());
     let reader = reads.reader().unwrap();
     let committed = reader
         .query("SELECT value FROM meta WHERE key='write_counter'", &[])
         .unwrap();
     drop(reader);
-    assert!(
-        !writer
-            .sender()
-            .unwrap()
-            .copy_reading(copies[1].clone())
-            .unwrap()
-            .unwrap()
-    );
+    assert!(!writer.copy_reading(copies[1].clone()).unwrap().unwrap());
     let reader = reads.reader().unwrap();
     assert_eq!(
         reader
@@ -534,8 +517,6 @@ fn copy_failure_keeps_its_cause_and_rolls_back_its_transaction() {
     );
     let answer = w
         .writer
-        .sender()
-        .unwrap()
         .copy_reading(crate::ReadingCopy {
             input: "doc".into(),
             from: 2,
