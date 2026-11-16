@@ -1,4 +1,4 @@
-//! A scope-driven alternative to the selected full-text leg.
+//! Search plans chosen by bounded samples of hits and scope blocks.
 //! The bound filter keeps every other predicate and its original defaults.
 use super::*;
 use polylogue_query::filter::Filter;
@@ -34,7 +34,6 @@ pub(super) struct ScopeBuild {
     pub cte: usize,
     pub name: String,
     pub expression: String,
-    pub mode: usize,
     pub spans: Vec<Span>,
 }
 
@@ -78,10 +77,13 @@ impl Compiler<'_> {
             .filter(|_| selection.unit == scope.unit)
             .and_then(|filter| without_terms(filter, &build.spans));
         if filter.is_none() && recent_order.is_none() {
-            // With only the unit's defaults there is no narrower scope to
-            // drive this search. Keep the ranked index-prefix path.
+            // With only the unit's defaults there is no narrower scope.
             self.ctes.push(format!(
-                "{}_scope_candidates AS (SELECT NULL AS block WHERE 0)",
+                "{}_plan AS (SELECT 'ranked_prefix' AS plan)",
+                build.name
+            ));
+            self.ctes.push(format!(
+                "{}_scope_sample AS (SELECT NULL AS block,NULL AS text_id WHERE 0)",
                 build.name
             ));
             return Ok(());
@@ -90,37 +92,32 @@ impl Compiler<'_> {
         if let Some(filter) = filter {
             conditions.push(self.lower(&filter, scope, false)?);
         }
+        let hit_budget = self.params.len() + 1;
+        let hits = self.bind(Param::Int(crate::search::HIT_BUDGET));
+        let scope_budget = self.params.len() + 1;
+        let scope_limit = self.bind(Param::Int(crate::search::SCOPE_BUDGET));
         let recent_batch = recent_order.map(|_| {
             let parameter = self.params.len() + 1;
             self.bind(Param::Text("[]".into()));
             parameter
         });
         let search = self.text_search.as_ref().expect("selected search");
-        let (table, index) = match search.index {
-            polylogue_query::search::SnippetIndex::Prose => ("text_fts", Index::Prose),
-            polylogue_query::search::SnippetIndex::Output => ("output_fts", Index::Output),
-        };
+        let index = search.index;
+        let limit = search.limit;
+        let (table, kinds, writer) = crate::search::index_parts(index);
         let name = &build.name;
-        let mode = format!("?{}", build.mode);
+        let batch_parameter = recent_batch.map(|parameter| format!("?{parameter}"));
+        let batch = batch_parameter.as_deref().unwrap_or("'[]'");
         let scope_rows = format!("{name}_scope_rows");
-        let blocks = format!("{name}_scope_blocks");
-        let candidates = format!("{name}_scope_candidates");
-        let hits = units::Hits {
-            cte: name,
-            index,
-            source: false,
-            scope: None,
-        };
-        let kind = hits.block_kind("b");
-        let writer = hits.writer("m");
+        let scope_blocks = format!("{name}_scope_blocks");
         let pk = scope.a.expand(units::spec(scope.unit).key);
         let from = self.from(scope)?;
         let condition = and_all(&conditions);
         let scope_row_sql = match recent_batch {
             Some(parameter) => format!(
-                "SELECT {pk} AS pk FROM {from} WHERE {mode}<>2 AND {condition} UNION ALL \
+                "SELECT {pk} AS pk FROM {from} WHERE ?{parameter}='[]' AND {condition} UNION ALL \
                  SELECT {pk} FROM json_each(?{parameter}) chosen CROSS JOIN {from} \
-                 WHERE {mode}=2 AND {pk}=chosen.value AND {condition}"
+                 WHERE ?{parameter}<>'[]' AND {pk}=chosen.value AND {condition}"
             ),
             None => format!("SELECT {pk} AS pk FROM {from} WHERE {condition}"),
         };
@@ -130,64 +127,74 @@ impl Compiler<'_> {
         let eligible = match scope.unit {
             Unit::Sessions => format!(
                 "WITH RECURSIVE tree(pk) AS (\
-                 SELECT pk FROM {scope_rows} WHERE {mode}<>0 UNION \
-                 SELECT min(pk) FROM {scope_rows} WHERE {mode}=0 UNION \
+                 SELECT pk FROM {scope_rows} WHERE {batch}<>'[]' UNION \
+                 SELECT min(pk) FROM {scope_rows} WHERE {batch}='[]' UNION \
                  SELECT l.child_pk FROM tree t CROSS JOIN session p ON p.pk=t.pk \
                  CROSS JOIN session_link l ON l.parent_id=p.id AND l.kind='spawn' \
                  WHERE l.child_pk IS NOT NULL UNION \
                  SELECT (SELECT min(pk) FROM {scope_rows} WHERE pk>t.pk) \
-                 FROM tree t WHERE {mode}=0 AND t.pk IS NOT NULL) \
+                 FROM tree t WHERE {batch}='[]' AND t.pk IS NOT NULL) \
                  SELECT b.pk AS block,b.text_id FROM tree t \
                  CROSS JOIN message m ON m.session_pk=t.pk \
                  CROSS JOIN block b ON b.message_pk=m.pk \
-                 WHERE b.text_id IS NOT NULL AND {kind}{writer} AND {}",
+                 WHERE b.text_id IS NOT NULL AND b.kind IN ({kinds}){writer} AND {}",
                 fields::own_messages("m", None)
             ),
             Unit::Messages => format!(
                 "SELECT b.pk AS block,b.text_id FROM {scope_rows} o \
                  CROSS JOIN message m ON m.pk=o.pk \
                  CROSS JOIN block b ON b.message_pk=m.pk \
-                 WHERE b.text_id IS NOT NULL AND {kind}{writer}"
+                 WHERE b.text_id IS NOT NULL AND b.kind IN ({kinds}){writer}"
             ),
             _ => unreachable!("scope-driven source units"),
         };
-        // The recursive probe adds scope rows one at a time: seeding every
-        // row would read the full scope before its first block. Execution
-        // seeds all rows directly. Only execution stores the blocks, and it
-        // shares them with text probes and row selection.
+        // Outside a recency batch, scope rows enter the tree one at a time
+        // so the sample can stop before reading the whole scope.
         self.ctes
-            .push(format!("{blocks} AS NOT MATERIALIZED ({eligible})"));
-        self.ctes.push(format!(
-            "{candidates} AS MATERIALIZED (SELECT * FROM {blocks} WHERE {mode}<>0)"
+            .push(format!("{scope_blocks} AS NOT MATERIALIZED ({eligible})"));
+        self.ctes.extend(crate::search::plan_ctes(
+            name,
+            index,
+            &build.expression,
+            &scope_blocks,
+            crate::search::Budgets {
+                hits: &hits,
+                scope: &scope_limit,
+            },
+            batch_parameter.as_deref(),
         ));
         self.ctes[build.cte] = format!(
             "{name} AS MATERIALIZED (WITH index_prefix AS MATERIALIZED (\
                SELECT rowid AS text_id,bm25({table}) AS rank FROM {table} \
-               WHERE {mode}=0 AND {table} MATCH {expression} \
+               WHERE (SELECT plan FROM {name}_plan)<>'scope' AND {table} MATCH {expression} \
                ORDER BY {table}.rank LIMIT ?{limit}), \
-             scoped_texts AS MATERIALIZED (SELECT DISTINCT text_id FROM {candidates}) \
+             scoped_texts AS MATERIALIZED (SELECT DISTINCT text_id FROM {name}_scope_sample \
+               WHERE (SELECT plan FROM {name}_plan)='scope') \
              SELECT text_id,rank FROM index_prefix UNION ALL \
              SELECT t.text_id,bm25({table}) AS rank FROM scoped_texts t \
              CROSS JOIN {table} ON {table}.rowid=t.text_id \
-             WHERE {mode}<>0 AND {table} MATCH {expression})",
+             WHERE {table} MATCH {expression})",
             expression = build.expression,
-            limit = search.limit,
         );
-        let blocks = format!("WITH {} SELECT block FROM {blocks}", self.ctes.join(", "));
+        let choice = format!(
+            "WITH RECURSIVE {} SELECT plan FROM {name}_plan",
+            self.ctes.join(", ")
+        );
         let recent = recent_order.zip(recent_batch).map(|(order, batch)| {
             let (hidden, _) = hidden_order(order, "_o");
             RecentSearch {
                 keys: format!(
-                    "WITH {} SELECT {pk} AS _pk,{} FROM {from} WHERE {condition}",
+                    "WITH RECURSIVE {} SELECT {pk} AS _pk,{} FROM {from} WHERE {condition}",
                     self.ctes.join(", "),
                     hidden.join(", ")
                 ),
                 batch,
             }
         });
-        self.text_search.as_mut().expect("selected search").scope = Some(ScopedSearch {
-            blocks,
-            mode: build.mode,
+        self.text_search.as_mut().expect("selected search").plan = Some(SearchPlan {
+            choice,
+            hit_budget,
+            scope_budget,
             recent,
         });
         Ok(())

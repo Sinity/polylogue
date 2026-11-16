@@ -1,5 +1,5 @@
 use super::*;
-use crate::fixture::{Fixture, MessageFacts, SessionFacts};
+use crate::fixture::{CallFacts, Fixture, MessageFacts, SessionFacts};
 
 mod lineage;
 mod search;
@@ -24,6 +24,108 @@ fn options() -> crate::query::Options {
         kept: Default::default(),
         provider_catalog: None,
     }
+}
+
+fn group_rows(reader: &crate::Reader<'_>, query: &str) -> Vec<Value> {
+    let mut options = options();
+    options.fields.clear();
+    options.page_size = Some(20);
+    options.origins.push("codex".into());
+    let program = crate::query::compile(query, &options).unwrap();
+    let mut page = reader.query_page(&program, None).unwrap();
+    assert!(!page.more);
+    let columns: std::collections::BTreeSet<_> = program
+        .columns
+        .iter()
+        .map(|column| column.name.as_str())
+        .collect();
+    for row in &mut page.rows {
+        present(&program, row).unwrap();
+        let keys: std::collections::BTreeSet<_> = row
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(keys, columns, "{query}");
+    }
+    page.rows
+}
+
+#[test]
+fn group_rows_carry_only_declared_columns() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(dir.path()).unwrap();
+    for id in ["test:first", "test:second", "codex:third"] {
+        fixture
+            .session(SessionFacts {
+                id,
+                ..Default::default()
+            })
+            .unwrap();
+    }
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    assert_eq!(
+        group_rows(&reader, "sessions | group by origin"),
+        [
+            serde_json::json!({"origin": "test", "count": 2}),
+            serde_json::json!({"origin": "codex", "count": 1}),
+        ]
+    );
+}
+
+#[test]
+fn sort_by_count_after_group() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(dir.path()).unwrap();
+    let session = fixture
+        .session(SessionFacts {
+            id: "test:paths",
+            ..Default::default()
+        })
+        .unwrap();
+    let message = fixture
+        .message(
+            session,
+            MessageFacts {
+                id: "test:reads",
+                role: "assistant",
+                written_by: "model",
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    for path in [
+        "src/a.rs", "src/b.rs", "src/c.rs", "src/b.rs", "src/c.rs", "src/b.rs",
+    ] {
+        fixture
+            .tool_call(
+                session,
+                message,
+                CallFacts {
+                    tool: "Read",
+                    action: "read",
+                    command: None,
+                    path: Some(path),
+                    outcome: "ok",
+                    exit_code: None,
+                    at: None,
+                    output: Some("synthetic contents"),
+                },
+            )
+            .unwrap();
+    }
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    assert_eq!(
+        group_rows(&reader, "tool_calls | group by path | sort by count desc"),
+        [
+            serde_json::json!({"path": "src/b.rs", "count": 3}),
+            serde_json::json!({"path": "src/c.rs", "count": 2}),
+            serde_json::json!({"path": "src/a.rs", "count": 1}),
+        ]
+    );
 }
 #[test]
 fn stored_pages_keep_total_count_and_format_only_declared_values() {

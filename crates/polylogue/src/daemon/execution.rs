@@ -30,23 +30,29 @@ pub fn limit(deadline_ms: Option<i64>, cancellation: Cancellation) -> ReadLimit 
     ReadLimit::new(remaining(deadline_ms), cancellation)
 }
 
-/// A read stopped by its deadline or a cancellation names the stage it
-/// reached and, for a query, a narrower query that can finish in time.
+/// A stopped read names its stage and any shorter query suited to the caller.
 pub fn refusal<T>(
     error: &polylogue_store::StoreError,
     stage: &str,
     text: Option<&str>,
     limit: &ReadLimit,
 ) -> Answer<T> {
-    let mut failure = crate::protocol::store_failure(error);
-    if let Some(query) = text.and_then(narrower) {
-        failure = failure.with_suggestion(command_surface::Suggestion::Query(query));
-    }
-    failure.hint = Some("restrict the query to a shorter time range or one session".into());
-    failure.retryable = true;
+    let context = stage == "context";
     let stage = limit
         .stage()
         .map_or_else(|| stage.to_owned(), str::to_owned);
+    let mut failure = crate::protocol::store_failure(error);
+    let query = (!context && matches!(stage.as_str(), "page" | "similarity"))
+        .then(|| text.and_then(narrower))
+        .flatten();
+    let hint = if let Some(query) = query {
+        failure = failure.with_suggestion(command_surface::Suggestion::Query(query));
+        "restrict the query to a shorter time range or one session"
+    } else {
+        "rerun with `--deadline none`, or narrow to one session"
+    };
+    failure.hint = Some(hint.into());
+    failure.retryable = true;
     let steps = limit.sqlite_steps();
     let mut notes = vec![format!(
         "stopped during {stage} after {steps} SQLite steps; rows scanned are unknown"
@@ -68,8 +74,31 @@ pub fn refusal<T>(
 }
 
 pub(crate) fn narrower(query: &str) -> Option<String> {
-    use polylogue_query::ast::Source;
+    use polylogue_query::ast::{ConditionKind, Expression, Source, Unit};
     let parsed = polylogue_query::parse(query).ok()?;
+    if let Source::Unit {
+        unit,
+        condition: Some(condition),
+        ..
+    } = &parsed.source
+    {
+        let time =
+            Unit::from_name(unit).and_then(|unit| polylogue_query::units::spec(unit).main_time);
+        let is_time = |expression: &Expression| matches!(expression, Expression::Field { name } if time.is_some_and(|time| name.eq_ignore_ascii_case(time)));
+        if polylogue_query::selection::top_level(condition)
+            .iter()
+            .any(|condition| match &condition.kind {
+                ConditionKind::Since { .. } | ConditionKind::Until { .. } => true,
+                ConditionKind::Compare { left, right, .. } => is_time(left) || is_time(right),
+                ConditionKind::Between { left, .. } | ConditionKind::TimeRange { left, .. } => {
+                    is_time(left)
+                }
+                _ => false,
+            })
+        {
+            return None;
+        }
+    }
     let suggestion = match parsed.source {
         Source::Unit {
             condition: Some(cond),

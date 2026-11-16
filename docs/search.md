@@ -30,19 +30,17 @@ Command, verb and unit names and saved query names are not searched as plain wor
 
 ## The search leg
 
-The compiler emits the non-text conditions as a filter plan plus a **search leg** (index, match expression, whether rank and order are needed). A word matching at most 256 eligible block occurrences uses the index directly. For larger index legs, the store chooses among three plans:
+The compiler emits the non-text conditions as a filter plan plus a **search leg** (index, match expression, whether rank and order are needed). Each statement chooses how to read its hits:
 
-- **scope drives** when the non-text scope has at most 256 text blocks, or 64 times its block count is below the word's document frequency;
-- **the index drives** otherwise: rank inside the index, filter by scope in rank order, and fetch rank batches of doubling size until the page is full, reading ties through;
-- **recency drives** for a recency order with a frequent word: walk the newest sessions' blocks newest first, checking each text.
+1. Read the word's eligible block occurrences, up to 257. If they end within the 256-hit budget, read every hit (`every_hit`).
+2. Otherwise, read the narrower scope's text blocks, up to 16,385. If they end within the 16,384-block budget, match the scope's texts by row ID (`scope`). The sample is the scope plan's candidate set.
+3. Otherwise, read the index in rank order by a growing prefix (`ranked_prefix`). With a newest-first order, Rust walks recency batches instead, and each batch is a scope.
 
-All three return the same rows in the same order. Rows are joined to blocks, messages and sessions only for the page and what fills it. The index prefix is combined into each parent row's best score before the cursor applies, so weaker later hits cannot reintroduce an earlier row. Prefix aggregation uses bounded temporary storage; cursors carry only order values.
+With only the unit’s defaults and no newest-first order, search uses the ranked prefix. These budgets bound the samples, never the answer. A rare word does not read the scope sample: the SQL choice reads it only after the hit budget is exceeded. Eligible block occurrences include every block sharing an indexed text. The full-text vocabulary counts distinct texts, so a body repeated across thousands of messages does not describe the work of expanding those references.
 
-For this cost decision, the word's frequency counts eligible block occurrences before the non-text scope, including every block that shares an indexed text. The full-text vocabulary counts distinct stored texts; it can make a body repeated across thousands of messages look rare and underestimate expansion work. The store first checks for a rare index leg, so deciding a cheap search does not require walking a large scope with few eligible blocks. Otherwise it probes scope blocks and matching block occurrences together, stopping as soon as the 256-block or 64-to-one comparison is decided. The probe stores no prefix and changes only the physical plan.
+All plans return the same rows in the same order. Rows, counts and snippets use the same SQL choice. Rows are joined to blocks, messages and sessions only for the page and what fills it. The index prefix is combined into each parent row's best score before the cursor applies, so weaker later hits cannot reintroduce an earlier row. Prefix aggregation uses bounded temporary storage; cursors carry only order values. Rank batches double until the page is full, reading ties through.
 
-When scope drives a batch of snippets, eligible block identities are computed and stored once for the text probes and source selection. The planning probe streams those identities so deciding the plan does not first read the whole scope.
-
-For a frequent word in a direct newest-first session or message sort, candidate parent rows stream in the requested time order. Bounded current batches use the same scoped best-source selection. Reading continues until the page fills or the candidates end; a batch size never limits the reply. Shared descendants cannot return a parent row outside the current batch or repeat one from an earlier batch. Only the returned order values enter the continuation.
+A scope's sampled blocks are stored once for its text probes and source selection. When a ranked prefix is chosen for a direct newest-first session or message sort, candidate parent rows stream in the requested time order. Current recency batches are read whole as scopes, without sampling. Reading continues until the page fills or the candidates end; a batch size never limits the reply. Shared descendants cannot return a parent row outside the current batch or repeat one from an earlier batch. Only the returned order values enter the continuation.
 
 ## Counts
 

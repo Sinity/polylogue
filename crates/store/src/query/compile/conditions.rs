@@ -299,20 +299,13 @@ impl<'a> Compiler<'a> {
             && self.text_search.is_none()
             && self.input_rows.is_none()
             && matches!(scope.unit, Unit::Sessions | Unit::Messages);
-        let mode = scoped.then(|| {
-            let sql = self.bind(Param::Int(0));
-            (sql, self.params.len())
-        });
-        let blocks = format!("{cte}_scope_candidates");
         let Some(hits) = rows(
             a,
             &units::Hits {
                 cte: &cte,
                 index,
                 source,
-                scope: mode
-                    .as_ref()
-                    .map(|(sql, _)| (sql.as_str(), blocks.as_str())),
+                scoped,
             },
         ) else {
             self.params.truncate(parameter_start);
@@ -337,12 +330,11 @@ impl<'a> Compiler<'a> {
                     index: rank_index,
                     expression: match_text,
                     limit,
-                    scope: None,
-                    scope_build: mode.as_ref().map(|(_, mode)| super::search::ScopeBuild {
+                    plan: None,
+                    scope_build: scoped.then(|| super::search::ScopeBuild {
                         cte: self.ctes.len(),
                         name: cte.clone(),
                         expression: param.clone(),
-                        mode: *mode,
                         spans: words.iter().map(|word| word.2).collect(),
                     }),
                 });

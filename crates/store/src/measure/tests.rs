@@ -552,6 +552,91 @@ fn failing_holds_commands_whose_latest_run_failed() {
     );
 }
 
+fn failing_runs(runs: &[(&str, i64)]) -> Vec<tool_calls::FailingCommand> {
+    let dir = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(dir.path()).unwrap();
+    let session = in_dir(&mut fixture, "test:commands", "/work/morrow");
+    let message = fixture
+        .message(
+            session,
+            MessageFacts {
+                id: "test:calls",
+                role: "assistant",
+                written_by: "model",
+                at: Some(T0),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    for (index, &(command, exit_code)) in runs.iter().enumerate() {
+        fixture
+            .tool_call(
+                session,
+                message,
+                CallFacts {
+                    tool: "Bash",
+                    action: "shell",
+                    command: Some(command),
+                    path: None,
+                    outcome: if exit_code == 0 { "ok" } else { "error" },
+                    exit_code: Some(exit_code),
+                    at: Some(T0 + index as i64),
+                    output: Some("synthetic output"),
+                },
+            )
+            .unwrap();
+    }
+    fixture.derive().unwrap();
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    tool_calls::failing_commands(&reader, &Selection::default()).unwrap()
+}
+
+#[test]
+fn failing_ignores_inline_function_names() {
+    let failures = failing_runs(&[("R=x; g(){ cd a; git -C b status; }; g", 1)]);
+    assert_eq!(failures.len(), 1);
+    assert_eq!(failures[0].command, "git status");
+    assert_eq!(failures[0].exit_code, Some(1));
+    assert_eq!(failures[0].failures_since_ok, 1);
+}
+
+#[test]
+fn failing_ignores_grep_no_match() {
+    assert_eq!(
+        failing_runs(&[
+            ("grep missing file", 1),
+            ("egrep missing file", 1),
+            ("fgrep missing file", 1),
+            ("rg missing", 1),
+            ("ag missing", 1),
+            ("which missing", 1),
+            ("test -e missing", 1),
+            ("[ -e missing ]", 1),
+            ("git -C repo grep missing", 1),
+        ]),
+        []
+    );
+    let failures = failing_runs(&[
+        ("/usr/bin/grep pattern unreadable", 2),
+        ("grep missing file", 1),
+    ]);
+    assert_eq!(failures.len(), 1);
+    assert_eq!(failures[0].command, "grep");
+    assert_eq!(failures[0].exit_code, Some(2));
+    assert_eq!(failures[0].failures_since_ok, 1);
+    assert_eq!(failures[0].last_ok_at, None);
+}
+
+#[test]
+fn failing_reports_cargo_test_101() {
+    let failures = failing_runs(&[("cargo test -p parser", 101)]);
+    assert_eq!(failures.len(), 1);
+    assert_eq!(failures[0].command, "cargo test");
+    assert_eq!(failures[0].exit_code, Some(101));
+    assert_eq!(failures[0].failures_since_ok, 1);
+}
+
 /// Ending on an unanswered prompt: an event only once the session has been
 /// quiet for the quiet period; answered and recent sessions are censored;
 /// sessions no human prompted are not in the cohort.

@@ -1,11 +1,18 @@
 //! Executing the one compiled query and shaping declared public values.
 use super::compile::PageColumns;
 use super::{ColKind, Program};
-use crate::ResultExt as _;
-use crate::search::{SearchDriver, SnippetIndex, SnippetQuery, Within};
+use crate::search::{SnippetIndex, SnippetQuery, Within};
 use crate::selection::{sql_value, values};
+use crate::{OptionExt as _, ResultExt as _};
 use crate::{Reader, SqlValue, selection::SelectionError};
 use serde_json::Value;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HitPlan {
+    EveryHit,
+    Scope,
+    RankedPrefix,
+}
 
 /// One transfer page, prepared independently of its population count.
 pub struct QueryPage {
@@ -236,37 +243,25 @@ impl Reader<'_> {
                     super::compile::Statements::Keyed(rows) => rows.search.as_ref(),
                     _ => None,
                 };
-                let driver = if limit != 0
-                    && let Some(search) = search
-                    && let Some(scope) = &search.scope
-                {
-                    self.search_driver(
-                        &scope.blocks,
-                        &params,
-                        search.index,
-                        &search.expression,
-                        scope.recent.is_some() && !reverse && limit > 0,
-                    )
-                    .map_err(SelectionError::from)
-                    .map_err(E::from)?
-                } else {
-                    SearchDriver::Index
-                };
-                if driver == SearchDriver::Scope {
-                    params[search.unwrap().scope.as_ref().unwrap().mode - 1] = SqlValue::Int(1);
-                }
+                let plan = search
+                    .and_then(|search| search.plan.as_ref())
+                    .filter(|_| limit != 0)
+                    .map(|plan| self.hit_plan(&plan.choice, &params))
+                    .transpose()
+                    .map_err(E::from)?;
                 let selected = search.filter(|search| {
-                    driver == SearchDriver::Recency
-                        || (driver == SearchDriver::Index
-                            && !reverse
-                            && limit >= 0
-                            && search
-                                .scope
+                    !reverse
+                        && limit > 0
+                        && plan != Some(HitPlan::Scope)
+                        && (plan == Some(HitPlan::RankedPrefix)
+                            || search
+                                .plan
                                 .as_ref()
-                                .is_none_or(|scope| scope.recent.is_none()))
+                                .is_none_or(|plan| plan.recent.is_none()))
                 });
                 if let Some(search) = selected {
-                    let keys = if driver == SearchDriver::Recency {
+                    let recent = search.plan.as_ref().and_then(|plan| plan.recent.as_ref());
+                    let keys = if plan == Some(HitPlan::RankedPrefix) && recent.is_some() {
                         self.recent_keys(program, &page, params, search, after, limit)
                     } else {
                         self.ranked_keys(&page, params, search, limit)
@@ -326,6 +321,33 @@ impl Reader<'_> {
         }
     }
 
+    fn hit_plan(&self, choice: &str, params: &[SqlValue]) -> Result<HitPlan, SelectionError> {
+        let conn = self.conn()?;
+        let mut statement = conn
+            .prepare_cached(choice)
+            .map_err(crate::StoreError::from)?;
+        for (index, value) in params.iter().take(statement.parameter_count()).enumerate() {
+            statement
+                .raw_bind_parameter(index + 1, value)
+                .map_err(crate::StoreError::from)?;
+        }
+        let mut rows = statement.raw_query();
+        let row = rows
+            .next()
+            .map_err(crate::StoreError::from)?
+            .or_invalid("search plan is unavailable")?;
+        match row
+            .get::<_, String>(0)
+            .map_err(crate::StoreError::from)?
+            .as_str()
+        {
+            "every_hit" => Ok(HitPlan::EveryHit),
+            "scope" => Ok(HitPlan::Scope),
+            "ranked_prefix" => Ok(HitPlan::RankedPrefix),
+            plan => Err(crate::StoreError::Invalid(format!("unknown search plan {plan:?}")).into()),
+        }
+    }
+
     /// One candidate cursor stays open while bounded batches of row keys are tested.
     /// Only the requested page and the current batch live in Rust memory.
     fn recent_keys(
@@ -338,8 +360,11 @@ impl Reader<'_> {
         limit: i64,
     ) -> Result<Vec<Value>, SelectionError> {
         use super::compile::{DerivedRows, Statements};
-        let scope = search.scope.as_ref().expect("recency scope");
-        let recent = scope.recent.as_ref().expect("recency candidate keys");
+        let recent = search
+            .plan
+            .as_ref()
+            .and_then(|plan| plan.recent.as_ref())
+            .expect("recency candidate keys");
         let candidates = Statements::Derived(DerivedRows {
             rows: recent.keys.clone(),
             count: None,
@@ -383,7 +408,6 @@ impl Reader<'_> {
             if batch.is_empty() {
                 break;
             }
-            params[scope.mode - 1] = SqlValue::Int(2);
             params[recent.batch - 1] =
                 SqlValue::Text(serde_json::to_string(&batch).expect("row keys serialize"));
             let remaining = limit - rows.len() as i64;

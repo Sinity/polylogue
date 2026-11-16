@@ -31,7 +31,7 @@ mod statements;
 use conditions::unknown_field;
 use polylogue_query::filter::{alternatives, bind_unit, value_text};
 pub use statements::{
-    DerivedRows, KeyedRows, PageColumns, RecentSearch, ScopedSearch, Statements, TextSearch,
+    DerivedRows, KeyedRows, PageColumns, RecentSearch, SearchPlan, Statements, TextSearch,
 };
 
 /// Reciprocal rank fusion gives a row `1 / (RANK_FUSION_OFFSET + place)` in

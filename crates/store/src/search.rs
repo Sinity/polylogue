@@ -19,13 +19,6 @@ use polylogue_model::text::{key, tokens};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SearchDriver {
-    Index,
-    Scope,
-    Recency,
-}
-
 // The maximum number of hit occurrences sampled before considering the scope.
 pub(crate) const HIT_BUDGET: i64 = 256;
 // The maximum number of scope blocks sampled before reading a ranked prefix.

@@ -84,7 +84,7 @@ pub struct Hits<'a> {
     pub cte: &'a str,
     pub index: Index,
     pub source: bool,
-    pub scope: Option<(&'a str, &'a str)>,
+    pub scoped: bool,
 }
 
 impl Hits<'_> {
@@ -101,7 +101,7 @@ impl Hits<'_> {
     /// Scope execution starts from in-scope block keys, rather than expanding
     /// every global reference to a shared matching text and filtering later.
     fn blocks(&self) -> (Vec<String>, String) {
-        let Some((mode, scope)) = self.scope else {
+        if !self.scoped {
             return (
                 vec![],
                 format!(
@@ -109,15 +109,18 @@ impl Hits<'_> {
                     self.cte
                 ),
             );
-        };
+        }
         let blocks = format!("{}_blocks", self.cte);
         let cte = format!(
             "{blocks} AS NOT MATERIALIZED (\
-             SELECT b.pk AS block,h.rank FROM {} h \
-             CROSS JOIN block b ON b.text_id=h.text_id WHERE {mode}=0 UNION ALL \
-             SELECT b.pk,h.rank FROM {scope} e CROSS JOIN block b ON b.pk=e.block \
-             CROSS JOIN {} h ON h.text_id=b.text_id WHERE {mode}<>0)",
-            self.cte, self.cte
+             SELECT b.pk AS block,h.rank FROM {name} h \
+             CROSS JOIN block b ON b.text_id=h.text_id \
+             WHERE (SELECT plan FROM {name}_plan)<>'scope' UNION ALL \
+             SELECT b.pk,h.rank FROM {name}_scope_sample e \
+             CROSS JOIN block b ON b.pk=e.block \
+             CROSS JOIN {name} h ON h.text_id=b.text_id \
+             WHERE (SELECT plan FROM {name}_plan)='scope')",
+            name = self.cte
         );
         (
             vec![cte],

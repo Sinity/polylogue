@@ -391,14 +391,14 @@ impl<'a> Compiler<'a> {
         self.fuse_text_and_near(scope, where_sql)?;
         self.search_scope(selection, scope, defaults_only, explicit_order.as_deref())?;
         if let Some(search) = &self.text_search
-            && let Some(scoped) = &search.scope
-            && let Some(recent) = &scoped.recent
+            && let Some(plan) = &search.plan
+            && let Some(recent) = &plan.recent
         {
             // A shared descendant can make other rows match. A recency
             // batch must still return only its own candidate rows.
             where_sql.push(format!(
-                "(?{}<>2 OR {} IN (SELECT value FROM json_each(?{})))",
-                scoped.mode,
+                "(?{}='[]' OR {} IN (SELECT value FROM json_each(?{})))",
+                recent.batch,
                 scope.a.expand(units::spec(scope.unit).key),
                 recent.batch
             ));

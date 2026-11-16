@@ -126,6 +126,23 @@ fn options_for_search() -> crate::query::Options {
     options
 }
 
+fn forced(mut program: Program, plan: HitPlan) -> Program {
+    use crate::query::compile::{Param, Statements};
+    if let Statements::Keyed(rows) = &program.statements
+        && let Some(search) = &rows.search
+        && let Some(choice) = &search.plan
+    {
+        let (hits, scope) = match plan {
+            HitPlan::EveryHit => (1 << 40, 0),
+            HitPlan::Scope => (0, 1 << 40),
+            HitPlan::RankedPrefix => (0, 0),
+        };
+        program.params[choice.hit_budget - 1] = Param::Int(hits);
+        program.params[choice.scope_budget - 1] = Param::Int(scope);
+    }
+    program
+}
+
 fn result(rows: &[Value]) -> Vec<(String, f64)> {
     rows.iter()
         .map(|row| {
@@ -237,7 +254,7 @@ fn rare_ranked_pages_skip_a_catalog_sized_scope_probe() {
         assert!(matches!(
             &program.statements,
             crate::query::compile::Statements::Keyed(rows)
-                if rows.search.as_ref().unwrap().scope.is_some()
+                if rows.search.as_ref().unwrap().plan.is_some()
         ));
         for analyzed in [false, true] {
             if analyzed {
@@ -449,7 +466,7 @@ fn search_message(
 
 #[test]
 fn recency_scope_and_index_agree_across_batches_shared_children_and_unknown_times() {
-    use crate::query::compile::{Param, Statements};
+    use crate::query::compile::Statements;
     for output in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         let mut fixture = Fixture::new(dir.path()).unwrap();
@@ -547,23 +564,19 @@ fn recency_scope_and_index_agree_across_batches_shared_children_and_unknown_time
             let mut program = crate::query::compile(&query, &options_for_search()).unwrap();
             program.page_size = page_size;
             let scope = match &program.statements {
-                Statements::Keyed(rows) => rows
-                    .search
-                    .as_ref()
-                    .unwrap()
-                    .scope
-                    .as_ref()
-                    .unwrap()
-                    .clone(),
+                Statements::Keyed(rows) => {
+                    rows.search.as_ref().unwrap().plan.as_ref().unwrap().clone()
+                }
                 _ => panic!("direct recency sort stays keyed"),
             };
             assert!(scope.recent.is_some());
-            let mut indexed = program.clone();
+            let mut indexed = forced(program.clone(), HitPlan::RankedPrefix);
             if let Statements::Keyed(rows) = &mut indexed.statements {
                 rows.search = None;
             }
-            let mut scoped = indexed.clone();
-            scoped.params[scope.mode - 1] = Param::Int(1);
+            let scoped = forced(program.clone(), HitPlan::Scope);
+            let every_hit = forced(program.clone(), HitPlan::EveryHit);
+            program = forced(program, HitPlan::RankedPrefix);
             for analyzed in [false, true] {
                 if analyzed {
                     crate::archive::open_write(&fixture.archive.index_db(), 1024)
@@ -575,19 +588,9 @@ fn recency_scope_and_index_agree_across_batches_shared_children_and_unknown_time
                 let reader = pool.reader().unwrap();
                 assert_eq!(
                     reader
-                        .search_driver(
-                            &scope.blocks,
-                            &crate::selection::values(&program.params),
-                            if output {
-                                SnippetIndex::Output
-                            } else {
-                                SnippetIndex::Prose
-                            },
-                            "needle",
-                            true
-                        )
+                        .hit_plan(&scope.choice, &crate::selection::values(&program.params))
                         .unwrap(),
-                    SearchDriver::Recency
+                    HitPlan::RankedPrefix
                 );
                 let expected = reader.query_rows(&indexed).unwrap();
                 assert_eq!(
@@ -597,7 +600,7 @@ fn recency_scope_and_index_agree_across_batches_shared_children_and_unknown_time
                         .collect::<Vec<_>>(),
                     expected_ids
                 );
-                for candidate in [&program, &scoped] {
+                for candidate in [&program, &scoped, &every_hit] {
                     let mut actual = pages(&reader, candidate);
                     assert_eq!(result(&actual), result(&expected));
                     assert_eq!(
@@ -661,7 +664,8 @@ fn recent_page_skips_older_matching_sessions() {
             )
             .unwrap();
             program.page_size = 1;
-            let mut indexed = program.clone();
+            program = forced(program, HitPlan::RankedPrefix);
+            let mut indexed = forced(program.clone(), HitPlan::RankedPrefix);
             if let Statements::Keyed(rows) = &mut indexed.statements {
                 rows.search = None;
             }
@@ -736,23 +740,14 @@ fn scope_and_index_plans_agree_on_rows_sources_counts_and_continuations() {
             ] {
                 let mut program = crate::query::compile(&query, &options_for_search()).unwrap();
                 program.page_size = 1;
-                let mode = match &program.statements {
-                    crate::query::compile::Statements::Keyed(rows) => {
-                        rows.search.as_ref().unwrap().scope.as_ref().unwrap().mode
-                    }
-                    _ => panic!("scoped search has keyed rows"),
-                };
-                let mut scoped = program.clone();
-                scoped.params[mode - 1] = crate::query::compile::Param::Int(1);
-                if let crate::query::compile::Statements::Keyed(rows) = &mut scoped.statements {
-                    rows.search = None;
-                }
-                let mut indexed = program.clone();
+                let scoped = forced(program.clone(), HitPlan::Scope);
+                let every_hit = forced(program.clone(), HitPlan::EveryHit);
+                let mut indexed = forced(program.clone(), HitPlan::RankedPrefix);
                 if let crate::query::compile::Statements::Keyed(rows) = &mut indexed.statements {
                     rows.search = None;
                 }
                 let expected = reader.query_rows(&indexed).unwrap();
-                for candidate in [&program, &scoped] {
+                for candidate in [&program, &scoped, &every_hit] {
                     assert_eq!(
                         result(&reader.query_rows(candidate).unwrap()),
                         result(&expected),
@@ -788,7 +783,7 @@ fn a_narrow_search_scope_does_not_expand_shared_bodies_outside_it() {
         let (_dir, mut fixture) = many_hits(32, false);
         shared_body_outside_scope(&mut fixture, "test:hit-000032", outside);
         let program = crate::query::compile("id:test:new needle", &options_for_search()).unwrap();
-        let mut unlimited = program.clone();
+        let mut unlimited = forced(program.clone(), HitPlan::RankedPrefix);
         if let crate::query::compile::Statements::Keyed(rows) = &mut unlimited.statements {
             rows.search = None;
         }
@@ -947,7 +942,7 @@ fn first_ranked_page_skips_worse_shared_body_sessions() {
         program.page_size = 1;
         // The same logical selection without the prefix driver is the old
         // full-index page, not an unpaged answer with extra hydration work.
-        let mut unlimited = program.clone();
+        let mut unlimited = forced(program.clone(), HitPlan::RankedPrefix);
         match &mut unlimited.statements {
             crate::query::compile::Statements::Keyed(rows) => rows.search = None,
             _ => panic!("search has keyed rows"),

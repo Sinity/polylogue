@@ -20,7 +20,7 @@ pub(super) const COMMAND_NORM: Derivation = Derivation {
     name: "command_norm",
     class: Class::Row,
     products: &[],
-    version: Version::Rules(1),
+    version: Version::Rules(2),
     after: &[],
     dirtied_by: &[],
     compute: |conn, pk, _| normalize(conn, pk).map(Output::CommandNorm),

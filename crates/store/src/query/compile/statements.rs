@@ -41,20 +41,9 @@ pub struct TextSearch {
     pub limit: usize,
     /// A non-text scope whose blocks can drive the same ranked selection.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub scope: Option<ScopedSearch>,
+    pub plan: Option<SearchPlan>,
     #[serde(skip)]
     pub(super) scope_build: Option<super::search::ScopeBuild>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct ScopedSearch {
-    /// Streams in-scope block occurrences for the bounded planning probe.
-    pub blocks: String,
-    /// One-based parameter: zero reads the index, one reads the full scope,
-    /// two reads the current recency batch.
-    pub mode: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub recent: Option<RecentSearch>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

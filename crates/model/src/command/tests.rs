@@ -53,6 +53,26 @@ fn scripts_and_lone_cd() {
 }
 
 #[test]
+fn inline_functions_keep_body_commands() {
+    for (line, expected) in [
+        ("R=x; g(){ cd a; git -C b status; }; g", "git status"),
+        ("R=x; g() { cd a; git -C b status; }; g", "git status"),
+        ("R=x; g(){ cd a; git -C b status; }; $G", "git status"),
+        ("g(){ git -C b status; }; g", "git status"),
+        ("g(){ git status; }; h(){ cargo test; }; g; h", "cargo test"),
+    ] {
+        assert_eq!(n(line), expected, "{line}");
+    }
+    let Line::Stages(stages) = parse("R=x; g(){ cd a; git -C b status; }; g") else {
+        panic!()
+    };
+    assert_eq!(
+        stages.iter().map(Stage::normalized).collect::<Vec<_>>(),
+        ["cd", "git status"]
+    );
+}
+
+#[test]
 fn runners_expose_the_command_they_run() {
     let progs = |line: &str| -> Vec<String> {
         effective_stages(line)
