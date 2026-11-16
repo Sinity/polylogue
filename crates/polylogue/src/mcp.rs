@@ -283,10 +283,12 @@ fn call_with_limit(
     let Some(tool) = Tool::ALL.into_iter().find(|tool| tool.name() == name) else {
         return Err(bad_request(&format!("unknown MCP tool {name}")));
     };
-    let operation = arguments
-        .get("operation")
-        .and_then(Value::as_str)
-        .unwrap_or("rows");
+    let operation = match arguments.get("operation") {
+        None => "rows",
+        Some(value) => value
+            .as_str()
+            .ok_or_else(|| bad_request("operation must be text"))?,
+    };
     let Some(command) =
         crate::commands::command(operation).filter(|command| command.tool.is_some())
     else {

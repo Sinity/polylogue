@@ -657,7 +657,7 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "dev sql",
-        examples: &["polylogue dev sql 'SELECT session_id FROM v1_sessions'"],
+        examples: &["polylogue dev sql 'SELECT id FROM v1_sessions'"],
         help: "Read-only SQL. Programs read the views v1_sessions, v1_messages, v1_tool_calls, v1_links and v1_assertions, whose names and columns stay; the tables change with the index format",
         reason: "Run expert read-only queries over the stable archive views",
         latency: command_surface::LatencyClass::Aggregate,

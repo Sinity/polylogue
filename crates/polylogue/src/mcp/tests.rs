@@ -456,6 +456,10 @@ fn a_tool_call_names_one_of_its_operations() {
             },
         )
     };
+    assert!(
+        run("polylogue_read", json!({"operation":7,"arguments":{}}))
+            .contains("operation must be text")
+    );
     let wrong_tool = run(
         "polylogue_read",
         json!({"arguments": {"selection":"session:claude-code:s1","steps":[{"verb":"note","text":"a decision"}]}, "request_id": "wrong-tool"}),
