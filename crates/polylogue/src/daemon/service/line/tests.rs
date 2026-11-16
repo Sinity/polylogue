@@ -350,3 +350,24 @@ fn mcp_wait_returns_empty_with_same_call_after_cap() {
     assert_eq!(answer.envelope.next.len(), 1);
     assert_eq!(answer.envelope.next[0].request, request);
 }
+
+#[test]
+fn listing_wait_answers_before_request_deadline() {
+    let d = test_daemon::start("first prompt");
+    let answer = Call::new(
+        "rows",
+        json!({"selection": "sessions where tag:later", "wait": "1h"}),
+    )
+    .limit(polylogue_store::read::limit::ReadLimit::new(
+        std::time::Duration::from_secs(5),
+        Default::default(),
+    ))
+    .answer(&d.daemon);
+    let empty = crate::test_answers::empty(answer.clone());
+    assert_eq!(empty["reply"]["rows"], json!([]));
+    assert_eq!(answer.envelope.next.len(), 1);
+    assert_eq!(
+        answer.envelope.next[0].request.arguments,
+        json!({"selection": "sessions where tag:later", "wait": "1h"})
+    );
+}

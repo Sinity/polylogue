@@ -63,7 +63,7 @@ fn send_many_reaches_running_only() {
             "line": format!("polylogue claude-code:s2 send {}", polylogue_render::shell_quote("read the 'clock' file")),
         }])
     );
-    let listed = crate::test_answers::ok(
+    let listed = crate::test_answers::empty(
         Call::new(
             "rows",
             json!({"selection": "deliveries where recipient:claude-code:s2"}),
@@ -102,7 +102,7 @@ fn acts_dry_run_reports_channels_and_permissions() {
             .unwrap()
             .starts_with("would interrupt claude-code:s1: refused: session_not_live:")
     );
-    let deliveries = crate::test_answers::ok(
+    let deliveries = crate::test_answers::empty(
         Call::new("rows", json!({"selection": "deliveries"})).answer(&d.daemon),
     );
     assert_eq!(deliveries["reply"]["count"], Value::from(0));

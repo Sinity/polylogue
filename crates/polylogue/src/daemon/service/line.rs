@@ -525,8 +525,11 @@ fn listing(rows: Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnswe
     if call.caller.surface == Surface::Mcp {
         duration = duration.min(Duration::from_secs(50));
     }
-    let until = Instant::now() + duration;
     let limit = ReadLimit::current();
+    if let Some(left) = limit.as_ref().and_then(ReadLimit::remaining) {
+        duration = duration.min(left.saturating_sub(super::follow::REPLY_MARGIN));
+    }
+    let until = Instant::now() + duration;
     let commits = call
         .daemon
         .writes

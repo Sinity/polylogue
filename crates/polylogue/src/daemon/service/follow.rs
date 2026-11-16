@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// Time kept before the deadline to send the marks.
-const MARKS_MARGIN: Duration = Duration::from_millis(500);
+pub(super) const REPLY_MARGIN: Duration = Duration::from_millis(500);
 
 /// Lines for a session or a sessions query as its live state changes and
 /// its rows arrive, until the deadline.
@@ -102,7 +102,7 @@ fn run(
         let left = limit
             .as_ref()
             .and_then(polylogue_store::read::limit::ReadLimit::remaining)
-            .map(|left| left.saturating_sub(MARKS_MARGIN));
+            .map(|left| left.saturating_sub(REPLY_MARGIN));
         if left.is_some_and(|left| left.is_zero()) {
             return crate::protocol::stream::event(output, "record", &Line::Marks { marks })
                 .map_err(Failure::io);

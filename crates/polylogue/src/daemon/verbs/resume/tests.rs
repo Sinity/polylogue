@@ -61,7 +61,7 @@ fn resume_in_hands_off() {
     );
     drop(reader);
     assert_eq!(d.daemon.acts.hosted_sessions().len(), 0);
-    let deliveries = crate::test_answers::ok(
+    let deliveries = crate::test_answers::empty(
         Call::new("rows", json!({"selection": "deliveries"})).answer(&d.daemon),
     );
     assert_eq!(deliveries["reply"]["count"], 0);
