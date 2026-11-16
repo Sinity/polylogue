@@ -536,7 +536,6 @@ fn a_delivery_its_own_request_could_not_store_but_an_event_request_did_counts_as
     // reported the delivery's event carries the whole delivery and stores it.
     w.engine
         .writer()
-        .unwrap()
         .user(polylogue_model::user::UserRequest {
             id: "d1".into(),
             machine: "test-machine".into(),

@@ -1448,7 +1448,7 @@ fn record_visitors_stop_before_decoding_later_session_payloads() {
     );
     let mut links = 0;
     reader
-        .visit_links(&sid("visitor-session"), |_| {
+        .visit_links(&sid("visitor-session"), 0, |_| {
             links += 1;
             ControlFlow::Break(())
         })

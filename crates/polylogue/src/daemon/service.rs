@@ -1224,11 +1224,7 @@ pub fn start(
         }
     };
     let mut engine = engine;
-    let writes = engine
-        .as_ref()
-        .map(Engine::writer)
-        .transpose()
-        .map_err(|e| to_io(&e))?;
+    let writes = engine.as_ref().map(Engine::writer);
     let per_reader = settings
         .reader_memory_per_connection()
         .map_err(|e| to_io(&e))?;

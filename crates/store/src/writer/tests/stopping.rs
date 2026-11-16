@@ -83,7 +83,7 @@ fn stopping_stored_byte_replay_rolls_back_the_index() {
                         let (reply, report) = sync_channel(1);
                         sender.0.send(Msg::Flush(reply, false)).unwrap();
                         {
-                            let report = report.recv().unwrap();
+                            let report = report.recv().unwrap().unwrap();
                             report.batches == 0 && report.errors.is_empty()
                         }
                     }
@@ -318,7 +318,7 @@ fn a_diagnosed_member_does_not_keep_other_replays_running_during_stop() {
                 let (reply, report) = sync_channel(1);
                 sender.0.send(Msg::Flush(reply, false)).unwrap();
                 gate.unwrap().send(()).unwrap();
-                report.recv().unwrap().errors.is_empty()
+                report.recv().unwrap().unwrap().errors.is_empty()
             };
             done.send(clean).unwrap();
         });

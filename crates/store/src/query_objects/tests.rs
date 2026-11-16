@@ -391,10 +391,15 @@ fn executed_selection_records_its_clock_resolution_and_read_context() {
         archive.writer.query_object(object.clone(), None).unwrap();
         let mut count = 0;
         reader
-            .visit_selection::<crate::selection::SelectionError>(&selection, None, None, |_| {
-                count += 1;
-                Ok(std::ops::ControlFlow::Continue(()))
-            })
+            .visit_selection::<crate::selection::SelectionError>(
+                &selection,
+                crate::read::VisitFrom::First,
+                None,
+                |_| {
+                    count += 1;
+                    Ok(std::ops::ControlFlow::Continue(()))
+                },
+            )
             .unwrap();
         assert_eq!(count, 0);
         let context = selection.cursor_context();

@@ -1822,12 +1822,13 @@ impl Engine {
                     let live = {
                         // A continuation owns its path while queued, too. Finish
                         // its planned bytes before observing later source changes.
+                        let reparsing: Vec<_> = self.reparsing.keys().cloned().collect();
                         let busy = running
                             .keys()
                             .map(PathBuf::as_path)
                             .chain(waiting.iter().map(|plan| plan.path.as_path()))
                             .chain(chains.iter().map(|plan| plan.path.as_path()))
-                            .chain(self.reparsing.keys().map(PathBuf::as_path))
+                            .chain(reparsing.iter().map(PathBuf::as_path))
                             .collect();
                         self.live_plans(&busy, pass)
                     };

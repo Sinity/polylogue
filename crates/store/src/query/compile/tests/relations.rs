@@ -621,18 +621,23 @@ fn grouped_references_keep_metadata_not_row_targets() {
         );
         let mut seen = 0;
         reader
-            .visit_selection::<SelectionError>(&prepared, None, None, |row| {
-                assert!(row.target.is_none(), "{text}");
-                assert!(
-                    matches!(
-                        row.identity,
-                        Some(RowIdentity::Group { .. } | RowIdentity::Summary)
-                    ),
-                    "{text}"
-                );
-                seen += 1;
-                Ok(ControlFlow::Continue(()))
-            })
+            .visit_selection::<SelectionError>(
+                &prepared,
+                crate::read::VisitFrom::First,
+                None,
+                |row| {
+                    assert!(row.target.is_none(), "{text}");
+                    assert!(
+                        matches!(
+                            row.identity,
+                            Some(RowIdentity::Group { .. } | RowIdentity::Summary)
+                        ),
+                        "{text}"
+                    );
+                    seen += 1;
+                    Ok(ControlFlow::Continue(()))
+                },
+            )
             .unwrap();
         assert!(seen > 0);
     }

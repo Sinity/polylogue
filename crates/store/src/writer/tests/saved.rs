@@ -84,7 +84,7 @@ fn saved_acceptance_keeps_objects_and_dependencies() {
         let kept = reads
             .reader()
             .unwrap()
-            .query_object(&expected.question_id().to_string())
+            .query_object(&expected.question_id().to_string(), None)
             .unwrap()
             .unwrap();
         assert_eq!(kept, expected.query_object().unwrap());
@@ -158,7 +158,7 @@ fn invalid_saved_batch_acks_no_objects_and_sends_no_assertions() {
     assert!(reader.user_request("invalid-batch").unwrap().is_none());
     assert!(
         reader
-            .query_object(&alpha.question_id().to_string())
+            .query_object(&alpha.question_id().to_string(), None)
             .unwrap()
             .is_none()
     );
@@ -252,7 +252,7 @@ fn saved_figure_keeps_its_denominator_as_a_separate_question() {
     for expected in [figure, population] {
         assert!(
             reader
-                .query_object(&expected.question_id().to_string())
+                .query_object(&expected.question_id().to_string(), None)
                 .unwrap()
                 .is_some()
         );

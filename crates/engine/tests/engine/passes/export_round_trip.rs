@@ -249,7 +249,7 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
     );
     let (mut e, _lock) = w.engine(64 << 20);
     assert!(e.run_pass().unwrap().errors.is_empty());
-    let writes = e.writer().unwrap();
+    let writes = e.writer();
     let agent = Author::Agent(Some(SessionId::parse("claude-code:s1").unwrap()));
     let n = std::cell::Cell::new(0);
     let write_as = |w: UserWrite, author: Author| {

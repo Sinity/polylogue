@@ -451,7 +451,7 @@ fn late_kept_result_refreshes_inline_dependency() {
         reads
             .reader()
             .unwrap()
-            .query_object(&child_id.to_string())
+            .query_object(&child_id.to_string(), None)
             .unwrap()
             .is_none()
     );

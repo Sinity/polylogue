@@ -5,7 +5,7 @@ use super::*;
 impl Reader<'_> {
     /// The order values of the row just before `at`; only order metadata is
     /// read, never an earlier body.
-    fn row_before(
+    pub(super) fn row_before(
         &self,
         selection: &PreparedSelection<'_>,
         at: &OrderPosition,

@@ -484,8 +484,8 @@ pub struct Engine {
 impl Engine {
     /// A handle for user writes (notes, deliveries, settings), which go
     /// through the same writer as the loop's batches.
-    pub fn writer(&self) -> Result<polylogue_store::WriterSender, EngineError> {
-        Ok(self.writer.sender())
+    pub fn writer(&self) -> polylogue_store::WriterSender {
+        self.writer.sender()
     }
 
     /// Starts the writer on an archive the caller has locked.
