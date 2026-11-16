@@ -75,7 +75,10 @@ pub(crate) fn visit_rows(
         let mut current = None;
         reader.visit_selection::<Error>(
             selection,
-            start.row.as_ref().map_or(polylogue_store::read::VisitFrom::First, polylogue_store::read::VisitFrom::At),
+            start.row.as_ref().map_or(
+                polylogue_store::read::VisitFrom::First,
+                polylogue_store::read::VisitFrom::At,
+            ),
             rendering.near,
             |row| {
                 current = Some(row);
@@ -116,7 +119,10 @@ pub(crate) fn visit_rows(
     } else {
         reader.visit_selection::<Error>(
             selection,
-            start.row.as_ref().map_or(polylogue_store::read::VisitFrom::First, polylogue_store::read::VisitFrom::At),
+            start.row.as_ref().map_or(
+                polylogue_store::read::VisitFrom::First,
+                polylogue_store::read::VisitFrom::At,
+            ),
             rendering.near,
             |row| {
                 if first

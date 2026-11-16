@@ -272,32 +272,40 @@ fn session(
         let mut result = Ok(true);
         ReadLimit::set_stage("read records: messages");
         selected
-            .visit_with_sources(from, |message, polylogue_store::read::MessageSource { blocks: block_selection, committed: commit, ordinal: order }| {
-                ReadLimit::set_stage("read records: messages");
-                let reference = format!("message:{}", message.id);
-                let next = required_commit(commit, &reference).and_then(|commit| {
-                    let facts = LayoutFacts {
-                        inherited: message.session != *id,
-                        ..Default::default()
-                    };
-                    let current = locator(Message, ordinal);
-                    ordinal = ordinal.checked_add(1).ok_or_else(|| {
-                        Error::internal("a reading counted more than 2^64 records")
-                    })?;
-                    visit(
-                        message_record(reader, message, block_selection, commit, order)?.into(),
-                        facts,
-                        current,
-                    )
-                });
-                match next {
-                    Ok(true) => ControlFlow::Continue(()),
-                    other => {
-                        result = other;
-                        ControlFlow::Break(())
+            .visit_with_sources(
+                from,
+                |message,
+                 polylogue_store::read::MessageSource {
+                     blocks: block_selection,
+                     committed: commit,
+                     ordinal: order,
+                 }| {
+                    ReadLimit::set_stage("read records: messages");
+                    let reference = format!("message:{}", message.id);
+                    let next = required_commit(commit, &reference).and_then(|commit| {
+                        let facts = LayoutFacts {
+                            inherited: message.session != *id,
+                            ..Default::default()
+                        };
+                        let current = locator(Message, ordinal);
+                        ordinal = ordinal.checked_add(1).ok_or_else(|| {
+                            Error::internal("a reading counted more than 2^64 records")
+                        })?;
+                        visit(
+                            message_record(reader, message, block_selection, commit, order)?.into(),
+                            facts,
+                            current,
+                        )
+                    });
+                    match next {
+                        Ok(true) => ControlFlow::Continue(()),
+                        other => {
+                            result = other;
+                            ControlFlow::Break(())
+                        }
                     }
-                }
-            })
+                },
+            )
             .map_err(Error::from)?;
         if !result? {
             return Ok(false);
