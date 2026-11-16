@@ -409,7 +409,11 @@ fn open_index_writer(archive: &Archive, building: bool) -> Result<Connection> {
     } else {
         open_runtime_writer(&archive.index_db(), crate::archive::cache::INDEX_WRITER)?
     };
-    if !archive.is_primary() {
+    if archive.is_primary() {
+        // Changing temporary storage drops TEMP objects, so set it before triggers.
+        index.pragma_update(None, "temp_store", "file")?;
+        index.pragma_update(Some("temp"), "cache_size", -8192)?;
+    } else {
         let uri = format!("file:{}?mode=ro", archive.archive_db().display());
         index.execute("ATTACH DATABASE ?1 AS a", [uri])?;
         crate::source::views(&index)?;
