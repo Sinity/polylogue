@@ -12,6 +12,7 @@ pub trait StoredName: Copy + 'static {
     fn from_name(name: &str) -> Option<Self>;
 }
 
+#[macro_export]
 macro_rules! stored_names {
     ($ty:ident { $($variant:ident => $name:literal),+ $(,)? }) => {
         impl $crate::StoredName for $ty {

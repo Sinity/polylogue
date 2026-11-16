@@ -5,6 +5,11 @@
 mod stored_names;
 pub use stored_names::StoredName;
 
+mod helpers;
+pub use helpers::{JsonExt, LockExt, WriteLockExt, hex, spawn_named};
+pub mod failure;
+pub use failure::Code;
+
 pub mod assertion;
 pub mod atomic_write;
 pub mod attachment_binding;

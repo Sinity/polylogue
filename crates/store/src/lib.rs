@@ -7,6 +7,9 @@
 //! - `embeddings.db`: purchased vectors, never destroyed by a reindex;
 //! - `segments/`: every input blob, in append-only shared frame segments.
 
+mod helpers;
+pub use helpers::{ConnExt, OptionExt, ResultExt, meta_get, meta_set, to_i64, to_u64};
+
 pub mod archive;
 pub mod assertions;
 pub mod assets;
@@ -229,6 +232,10 @@ pub enum StoreError {
 }
 
 impl StoreError {
+    pub fn invalid(message: impl ToString) -> Self {
+        Self::Invalid(message.to_string())
+    }
+
     /// Whether retrying a write can get past a transient storage condition.
     /// A content, permission or format failure needs its cause corrected first.
     pub fn retryable_write(&self) -> bool {

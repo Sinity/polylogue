@@ -127,6 +127,15 @@ stored_names!(ToolAction {
 });
 
 impl Block {
+    /// Attachments carried directly or returned by a tool, in source order.
+    pub fn attachments(&self) -> &[Attachment] {
+        match self {
+            Self::Image(attachment) | Self::File(attachment) => std::slice::from_ref(attachment),
+            Self::ToolResult { attachments, .. } => attachments,
+            _ => &[],
+        }
+    }
+
     pub fn kind(&self) -> BlockKind {
         match self {
             Block::Text { .. } => BlockKind::Text,

@@ -245,6 +245,14 @@ impl LastBrief {
     }
 }
 
+pub struct BriefContext<'a, 'reader> {
+    pub reader: &'a Reader<'reader>,
+    pub delivery_id: &'a str,
+    pub context: &'a std::sync::Arc<crate::operation::Context>,
+    pub ranking_identity: Option<&'a str>,
+    pub near: Option<&'a NearFn<'a>>,
+}
+
 /// Prepares the context `ask` wants. `delivery_id` goes in the text, so a
 /// reader of the transcript can find the delivery record. `scope` is the
 /// daemon's scope index; `queued` is the latest delivered brief to the

@@ -5,12 +5,26 @@
 //! ([`crate::user_writes`]), so two extension instances never claim the
 //! same action.
 
+/// The report fields recorded for one chat action event.
+pub(crate) struct ChatEvent<'a> {
+    pub request: &'a str,
+    pub id: &'a str,
+    pub at: i64,
+    pub kind: &'a str,
+    pub phase: &'a str,
+    pub detail: Option<&'a str>,
+    pub by: Option<&'a str>,
+    pub receipt: Option<&'a serde_json::Value>,
+    pub seq: i64,
+}
+
 use crate::{Reader, Result, StoreError};
 use polylogue_model::BlobHash;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use polylogue_model::user::{
-    ChatAction, ChatAttachment, ChatEvent, ChatStatus, NewChatAction, chat_outcome,
+    ChatAction, ChatAttachment, ChatEvent as StoredChatEvent, ChatStatus, NewChatAction,
+    chat_outcome,
 };
 
 impl Reader<'_> {
@@ -129,7 +143,7 @@ pub(crate) fn read(conn: &Connection, schema: &str, id: &str) -> Result<Option<C
         })?
         .map(|row| {
             let (at, kind, phase, detail, by, receipt, request) = row?;
-            Ok(ChatEvent {
+            Ok(StoredChatEvent {
                 request,
                 at,
                 kind,
