@@ -183,6 +183,11 @@ pub struct FailingCommand {
 /// Every repository's unresolved commands in the selection, most recent first.
 pub fn failing_commands(reader: &Reader<'_>, selection: &Selection) -> Result<Vec<FailingCommand>> {
     let (cond, params) = selection.condition();
+    let no_match_programs = polylogue_model::command::NO_MATCH_PROGRAMS
+        .iter()
+        .map(|program| format!("'{program}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
     let sql = format!(
         "WITH runs AS (
            SELECT coalesce(s.repo_root, 'cwd:' || s.cwd) AS repository, s.repo AS repo,
@@ -191,6 +196,9 @@ pub fn failing_commands(reader: &Reader<'_>, selection: &Selection) -> Result<Ve
            FROM tool_call t JOIN block b ON b.pk = t.call_block_pk
            JOIN message m ON m.pk = b.message_pk JOIN session s ON s.pk = t.session_pk
            WHERE t.command_norm IS NOT NULL AND t.outcome IN ('ok', 'error')
+             AND NOT (t.exit_code IS 1 AND (
+                 substr(t.command_norm, 1, instr(t.command_norm || ' ', ' ') - 1)
+                   IN ({no_match_programs}) OR t.command_norm = 'git grep'))
              AND coalesce(s.repo_root, s.cwd) IS NOT NULL AND {cond}),
          ranked AS (
            SELECT *, row_number() OVER (PARTITION BY repository, command

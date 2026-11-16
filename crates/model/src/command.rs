@@ -3,7 +3,11 @@
 //! Nothing here reads meaning from a command's text; it only finds its shape.
 
 /// Version of command normalization used while parsing.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
+
+/// Programs whose exit code 1 means that no match was found.
+pub const NO_MATCH_PROGRAMS: &[&str] =
+    &["grep", "egrep", "fgrep", "rg", "ag", "which", "test", "["];
 
 /// One pipeline or list element: the program run and its arguments, with
 /// leading `NAME=value` assignments and wrapper programs removed.
@@ -214,10 +218,18 @@ pub fn parse(line: &str) -> Line {
     if !words.is_empty() {
         stages.push(words);
     }
+    let defined: Vec<String> = stages
+        .iter()
+        .filter_map(|words| words.first().and_then(|word| function_name(word)))
+        .map(str::to_owned)
+        .collect();
     let mut out = Vec::new();
     for words in stages {
         match stage(words) {
-            Some(Ok(s)) => out.push(s),
+            Some(Ok(s)) if !s.program.starts_with('$') && !defined.contains(&s.program) => {
+                out.push(s);
+            }
+            Some(Ok(_)) => {}
             Some(Err(Script)) => return Line::Script,
             None => {}
         }
@@ -243,6 +255,15 @@ fn stage(words: Vec<String>) -> Option<Result<Stage, Script>> {
     let mut rest = without_redirections(words).into_iter().peekable();
     loop {
         let first = rest.next()?;
+        if first == "}" {
+            continue;
+        }
+        if function_name(&first).is_some() {
+            if rest.peek().is_some_and(|word| word == "{") {
+                rest.next();
+            }
+            continue;
+        }
         if SCRIPT_WORDS.contains(&first.as_str()) {
             return Some(Err(Script));
         }
@@ -277,6 +298,18 @@ fn stage(words: Vec<String>) -> Option<Result<Stage, Script>> {
             args: rest.collect(),
         }));
     }
+}
+
+fn function_name(word: &str) -> Option<&str> {
+    let name = word
+        .strip_suffix("(){")
+        .or_else(|| word.strip_suffix("()"))?;
+    (name
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+    .then_some(name)
 }
 
 /// A word that redirects (`2>/dev/null`, `>out`, `2>&1`, `<in`), with

@@ -251,3 +251,105 @@ fn a_read_phase_that_has_run_out_refuses_the_handoff() {
         assert!(crate::daemon::handler::finish_read_phase("write").is_err());
     });
 }
+
+#[test]
+fn deadline_hint_not_repeating_existing_bound() {
+    let limit = ReadLimit::new(Duration::ZERO, Default::default());
+    for query in [
+        "sessions where since:7d",
+        "sessions where until:today",
+        "sessions where (since:7d repo:morrow)",
+        "sessions where last_active >= 2026-10-07",
+        "messages where at < 2026-10-07",
+        "sessions where last_active between 2026-10-01 and 2026-10-07",
+        "messages where at in last week",
+    ] {
+        polylogue_query::parse(query).unwrap();
+        assert_eq!(narrower(query), None, "{query}");
+        let command_surface::Answer {
+            outcome: command_surface::Outcome::Error(error),
+            ..
+        } = refusal::<()>(
+            &polylogue_store::StoreError::ReadDeadlineExceeded,
+            "page",
+            Some(query),
+            &limit,
+        )
+        else {
+            panic!("expected a deadline refusal");
+        };
+        assert_eq!(error.suggestion(), None, "{query}");
+        assert_eq!(
+            error.hint.as_deref(),
+            Some("rerun with `--deadline none`, or narrow to one session"),
+            "{query}"
+        );
+    }
+}
+
+#[test]
+fn deadline_hint_uses_stopped_stage() {
+    for stage in ["page", "similarity", "sql", "group"] {
+        let limit = ReadLimit::new(Duration::ZERO, Default::default());
+        limit.scope(|| ReadLimit::set_stage(stage));
+        let command_surface::Answer {
+            outcome: command_surface::Outcome::Error(error),
+            envelope: command_surface::Envelope { notes, .. },
+        } = refusal::<()>(
+            &polylogue_store::StoreError::ReadDeadlineExceeded,
+            "query",
+            Some("sessions"),
+            &limit,
+        )
+        else {
+            panic!("expected a deadline refusal");
+        };
+        assert_eq!(
+            notes[0],
+            format!("stopped during {stage} after 0 SQLite steps; rows scanned are unknown")
+        );
+        let (suggestion, hint) = if matches!(stage, "page" | "similarity") {
+            (
+                Some(command_surface::Suggestion::Query(
+                    "sessions where since:1d".into(),
+                )),
+                "restrict the query to a shorter time range or one session",
+            )
+        } else {
+            (
+                None,
+                "rerun with `--deadline none`, or narrow to one session",
+            )
+        };
+        assert_eq!(error.suggestion(), suggestion.as_ref(), "{stage}");
+        assert_eq!(error.hint.as_deref(), Some(hint), "{stage}");
+    }
+}
+
+#[test]
+fn recall_deadline_hint_is_recall_form() {
+    for stage in [None, Some("page"), Some("similarity")] {
+        let limit = ReadLimit::new(Duration::ZERO, Default::default());
+        if let Some(stage) = stage {
+            limit.scope(|| ReadLimit::set_stage(stage));
+        }
+        let command_surface::Answer {
+            outcome: command_surface::Outcome::Error(error),
+            ..
+        } = refusal::<()>(
+            &polylogue_store::StoreError::ReadDeadlineExceeded,
+            "context",
+            Some("sessions where synthetic"),
+            &limit,
+        )
+        else {
+            panic!("expected a deadline refusal");
+        };
+        assert_eq!(error.suggestion(), None, "{stage:?}");
+        assert_eq!(
+            error.hint.as_deref(),
+            Some("rerun with `--deadline none`, or narrow to one session"),
+            "{stage:?}"
+        );
+    }
+}

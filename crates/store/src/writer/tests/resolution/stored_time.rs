@@ -202,7 +202,8 @@ fn source_time_spans_keep_unknown_and_nanoseconds() {
         ("kind:bounded since:2026-10-29T10:30:00Z", vec!["bounded"]),
         ("kind:bounded until:2026-10-29T10:30:00Z", vec!["bounded"]),
         ("kind:bounded since:2026-10-29T11:00:00Z", vec![]),
-        ("kind:bounded until:2026-10-29T10:00:00Z", vec![]),
+        ("kind:bounded until:2026-10-29T10:00:00Z", vec!["bounded"]),
+        ("kind:bounded until:2026-10-29T10:00:00.000Z", vec![]),
         (
             "since:2026-10-29T10:30:00.000000001Z until:2026-10-29T10:30:00.000000002Z",
             vec!["bounded", "calendar", "minute", "nano-one", "second"],
