@@ -390,7 +390,7 @@ fn message_redirects_quote_literal_ids_without_resolving_source_rows() {
         assert_eq!(
             headers[header::LOCATION],
             format!(
-                "/api/v1/rows?steps=read&selection={}",
+                "/api/v1/rows?selection={}&steps=read",
                 polylogue_render::html::encode_path_segment(&format!("message:{id}"))
             )
         );

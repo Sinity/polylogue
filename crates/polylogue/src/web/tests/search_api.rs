@@ -130,16 +130,13 @@ fn filtered_semantic_and_mixed_results_keep_lower_ranked_matches() {
             .as_object()
             .unwrap()
             .clone();
-        let mcp: Value = serde_json::from_str(
-            &crate::mcp::tests::call(
-                &polylogue_store::Archive::at(&r.web.daemon.archive.root),
-                "rows",
-                args,
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(api["rows"], mcp["reply"]["rows"]);
+        let mcp = crate::mcp::tests::structured_call_as(
+            &polylogue_store::Archive::at(&r.web.daemon.archive.root),
+            "rows",
+            args,
+            "web-semantic-parity",
+        );
+        assert_eq!(api["rows"], mcp.value().unwrap()["reply"]["rows"]);
         let (status, _, raw) = http.block_on(send(
             &r,
             own_origin(authed(post("/api/v1/keep")))
@@ -198,14 +195,13 @@ fn filtered_search_has_the_same_rows_on_every_surface() {
                     .as_object()
                     .unwrap()
                     .clone();
-                let mcp = crate::mcp::tests::call(
+                let mcp = crate::mcp::tests::structured_call_as(
                     &polylogue_store::Archive::at(&r.web.daemon.archive.root),
                     "rows",
                     args,
-                )
-                .unwrap();
-                let mcp: Value = serde_json::from_str(&mcp).unwrap();
-                assert_eq!(api["rows"], mcp["reply"]["rows"]);
+                    "web-search-parity",
+                );
+                assert_eq!(api["rows"], mcp.value().unwrap()["reply"]["rows"]);
             }
             Err(failure) => {
                 assert_ne!(status, StatusCode::OK, "{raw}");

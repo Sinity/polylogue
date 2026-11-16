@@ -155,13 +155,7 @@ fn query_request(
         if fields.spec.argument(name).is_some()
             || matches!(
                 name.as_str(),
-                "request_id"
-                    | "deadline"
-                    | "budget_tokens"
-                    | "cursor"
-                    | "fresh"
-                    | "operation"
-                    | "arguments"
+                "request_id" | "deadline" | "budget_tokens" | "fresh" | "operation" | "arguments"
             )
         {
             line_pairs.push((name.clone(), value.clone()));
@@ -172,7 +166,13 @@ fn query_request(
     let step = step_query_declarations()
         .parse_http_query(verb, &step_pairs, "http-step")
         .map_err(|failure| failure.message)?;
+    let cursor = step.cursor;
     let mut step = step.arguments;
+    if let Some(cursor) = cursor {
+        step.as_object_mut()
+            .expect("step arguments")
+            .insert("cursor".into(), cursor.into());
+    }
     step.as_object_mut()
         .expect("step arguments")
         .insert("verb".into(), (*verb).into());
@@ -217,6 +217,13 @@ fn step_query_declarations() -> &'static command_surface::OperationDeclarations 
                 };
                 let mut spec = crate::commands::specification::<A>(&row);
                 spec.kind = command_surface::OperationKind::Request { tool: None };
+                // These declarations only decode HTTP query values; step fields
+                // do not consume the command line's budget or cursor options.
+                for argument in &mut spec.arguments {
+                    if matches!(argument.name.as_str(), "budget" | "cursor") {
+                        argument.form = command_surface::ArgumentForm::Positional;
+                    }
+                }
                 builder
                     .declare::<A, serde_json::Value>(
                         spec,

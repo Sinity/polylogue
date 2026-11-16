@@ -1,47 +1,4 @@
-use crate::commands::ToolAccess;
 use serde_json::json;
-
-#[test]
-fn set_listing_is_read_access() {
-    let row = crate::commands::command("set").unwrap();
-    let registration = row.registration().unwrap();
-    assert_eq!(
-        registration.tool_access(&json!({}), row).unwrap(),
-        ToolAccess::Read
-    );
-    assert_eq!(
-        registration
-            .tool_access(&json!({"key":"browser.actions"}), row)
-            .unwrap(),
-        ToolAccess::Read
-    );
-    assert_eq!(
-        registration
-            .tool_access(&json!({"key":"browser.actions","value":"on"}), row)
-            .unwrap(),
-        ToolAccess::Write
-    );
-}
-
-#[test]
-fn import_provider_is_act_access() {
-    let row = crate::commands::command("import").unwrap();
-    let registration = row.registration().unwrap();
-    for provider in ["chatgpt", "claude-ai", "grok"] {
-        assert_eq!(
-            registration
-                .tool_access(&json!({"paths":[provider]}), row)
-                .unwrap(),
-            ToolAccess::Act
-        );
-        assert_eq!(
-            registration
-                .tool_access(&json!({"paths":[format!("./{provider}")]}), row)
-                .unwrap(),
-            ToolAccess::Write
-        );
-    }
-}
 
 #[test]
 fn embed_without_yes_previews() {

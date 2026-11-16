@@ -22,7 +22,7 @@ fn deployment_flags_preserve_daemon_signal_policy_and_native_host_selection() {
         &super::daemon::service::ArchiveMode::Standalone
     ));
     let tour = super::cli::command()
-        .try_get_matches_from(["polylogue", "demo", "tour", "/synthetic/tour"])
+        .try_get_matches_from(["polylogue", "demo", "/synthetic/tour"])
         .unwrap();
     assert!(super::cli::needs_engine(
         &tour,

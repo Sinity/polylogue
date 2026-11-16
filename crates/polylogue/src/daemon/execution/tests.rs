@@ -52,7 +52,7 @@ fn slow_read_returns_a_typed_deadline_with_unknown_count() {
         panic!("one note names the stage: {notes:?}")
     };
     let steps: u64 = note
-        .strip_prefix("stopped during sql after ")
+        .strip_prefix("stopped during dev sql after ")
         .and_then(|rest| rest.split_once(' '))
         .and_then(|(steps, _)| steps.parse().ok())
         .unwrap_or_else(|| panic!("{note}"));
@@ -129,7 +129,7 @@ fn write_requests_do_not_enter_a_read_scope_even_with_an_expired_cancelled_limit
     for request in [
         crate::test_daemon::Call::new("keep", serde_json::json!({"query": "sessions"}))
             .id("synthetic-keep"),
-        crate::test_daemon::Call::new("embed", serde_json::json!({})),
+        crate::test_daemon::Call::new("embed", serde_json::json!({"yes":true})),
     ] {
         let policy = policy(&request);
         assert!(!policy.read_phase, "{}", request.operation);

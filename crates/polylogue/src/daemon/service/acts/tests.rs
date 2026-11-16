@@ -319,7 +319,7 @@ fn role_addresses_and_role_starts() {
     assert_eq!(restarted["deliveries"][0]["session"], "codex:t2");
     assert!(turns(fixture.path())[2].contains("one more"));
     // A role's harness and an explicit other harness conflict.
-    let conflict = serde_json::to_value(crate::test_daemon::Call::new("start", serde_json::json!({"harness": Some("hermes"), "role": Some("reviewer"), "cwd": work.path(), "text": "x"})).answer_with(&d.daemon, &invocation(&d)))
+    let conflict = serde_json::to_value(crate::test_daemon::Call::new("start", serde_json::json!({"in": Some("hermes"), "role": Some("reviewer"), "cwd": work.path(), "text": "x"})).answer_with(&d.daemon, &invocation(&d)))
     .unwrap();
     assert_eq!(conflict["error"]["kind"], "bad_value");
 }

@@ -381,7 +381,7 @@ fn a_client_can_close_its_write_half_and_still_receive_the_answer() {
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
-    stream.write_all(b"{\"caller\":{\"controlling_terminal\":false},\"operation\":\"sql\",\"request_id\":\"half-close\",\"arguments\":{\"statement\":\"WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<100000) SELECT count(*) AS n FROM n\"}}\n").unwrap();
+    stream.write_all(b"{\"caller\":{\"controlling_terminal\":false},\"operation\":\"dev sql\",\"request_id\":\"half-close\",\"arguments\":{\"statement\":\"WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<100000) SELECT count(*) AS n FROM n\"}}\n").unwrap();
     stream.shutdown(std::net::Shutdown::Write).unwrap();
     let mut line = String::new();
     BufReader::new(stream).read_line(&mut line).unwrap();

@@ -15,7 +15,7 @@ fn demo_steps_run_through_rows() {
         &temp.path().join("config"),
     )
     .command()
-    .args(["--json", "demo", "tour"])
+    .args(["--json", "demo"])
     .arg(&directory)
     .output()
     .unwrap();
@@ -214,7 +214,7 @@ fn demo_steps_run_through_rows() {
     let marker = directory.join("keep.txt");
     std::fs::write(&marker, "keep this file").unwrap();
     let retry = crate::command(temp.path())
-        .args(["demo", "tour"])
+        .args(["demo"])
         .arg(&directory)
         .output()
         .unwrap();

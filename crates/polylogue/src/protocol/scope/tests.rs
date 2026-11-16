@@ -119,7 +119,7 @@ async fn each_request_answers_only_in_its_own_scope() {
         command_surface::OperationDeclarations::builder("polylogue", Default::default());
     declarations
         .declare_tool(command_surface::ToolFamily {
-            name: "note".into(),
+            name: "write".into(),
             description: "Settings".into(),
             open_world: false,
             idempotent: true,

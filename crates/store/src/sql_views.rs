@@ -1,4 +1,4 @@
-//! The views `polylogue sql` offers outside programs. The tables are
+//! The views `polylogue dev sql` offers outside programs. The tables are
 //! internal and change with the owning index format; these views keep their names
 //! and columns. A change that would alter a view's columns adds the next
 //! version beside it (`v2_sessions`), so a program written against one

@@ -101,7 +101,95 @@ fn http_failed_step_sets_status_and_keeps_prior_results() {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{answer:?}");
         let steps = &answer.value().unwrap()["reply"]["steps"];
         assert_eq!(steps[0]["outcome"]["status"], "done");
-        assert_eq!(steps[0]["outcome"]["reply"]["kind"], "wrote");
+        assert_eq!(steps[0]["outcome"]["reply"]["kind"], "wrote_each");
         assert_eq!(steps[1]["outcome"]["status"], "failed");
+    });
+}
+
+#[test]
+fn http_get_cursor_continues_read() {
+    use polylogue_model::{
+        BlobHash,
+        read::{ItemKind, ReadItem, SelectionLocator},
+    };
+    let text = "Flat HTTP λ🙂 cursor. ".repeat(300);
+    let daemon = crate::test_daemon::start(&text);
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let base = "/api/v1/rows?selection=session%3Aclaude-code%3As1&steps=read&budget=128";
+        let mut uri = base.to_owned();
+        let mut partial =
+            std::collections::BTreeMap::<(SelectionLocator, u64, BlobHash), (String, u64)>::new();
+        let mut items = Vec::<ReadItem>::new();
+        let mut cursors = std::collections::BTreeSet::new();
+        loop {
+            let (status, answer) =
+                response(&daemon, axum::http::Method::GET, &uri, Value::Null).await;
+            assert_eq!(status, StatusCode::OK, "{answer:?}");
+            let crate::protocol::line::LineAnswer::Steps(mut steps) =
+                serde_json::from_value(answer.value().unwrap().clone()).unwrap()
+            else {
+                panic!("read must return step replies")
+            };
+            let crate::protocol::line::StepOutcome::Done {
+                reply: crate::protocol::line::StepAnswer::Read(page),
+                ..
+            } = steps.steps.remove(0).outcome
+            else {
+                panic!("read step must finish")
+            };
+            assert!(!page.document.items.is_empty(), "a page must progress");
+            for item in page.document.items {
+                if let ItemKind::Fragment {
+                    text,
+                    position,
+                    until,
+                    total,
+                } = &item.kind
+                {
+                    let key = (position.selection, position.item, position.item_hash);
+                    let (encoded, characters) = partial.entry(key).or_default();
+                    assert_eq!(
+                        position.character, *characters,
+                        "fragment gap or duplicate prefix"
+                    );
+                    assert!(*until > *characters && *until <= *total);
+                    assert_eq!(*until - *characters, text.chars().count() as u64);
+                    encoded.push_str(text);
+                    *characters = *until;
+                    if until == total {
+                        let (encoded, _) = partial.remove(&key).unwrap();
+                        assert_eq!(BlobHash::of(encoded.as_bytes()), position.item_hash);
+                        let restored: ReadItem = serde_json::from_str(&encoded).unwrap();
+                        assert!(!items.contains(&restored), "duplicate reconstructed item");
+                        items.push(restored);
+                    }
+                } else {
+                    assert!(!items.contains(&item), "duplicate item");
+                    items.push(item);
+                }
+            }
+            let Some(next) = page.document.footer.next else {
+                break;
+            };
+            assert_eq!(next.request.operation, "rows");
+            let cursor = next.request.arguments["steps"][0]["cursor"]
+                .as_str()
+                .expect("read continuation carries its step cursor");
+            assert!(cursors.insert(cursor.to_owned()), "repeated continuation");
+            uri = format!(
+                "{base}&cursor={}",
+                polylogue_render::html::encode_path_segment(cursor)
+            );
+        }
+        assert!(!cursors.is_empty(), "the read must span pages");
+        assert!(partial.is_empty(), "the read ended within an item");
+        let actual: Vec<_> = items
+            .into_iter()
+            .filter_map(|item| match item.kind {
+                ItemKind::Text { text } => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(actual, vec![text]);
     });
 }

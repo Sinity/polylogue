@@ -178,3 +178,79 @@ fn mcp_follow_returns_paged_call() {
     assert_eq!(next.arguments["steps"][0]["delivery"], "page");
     assert_eq!(next.arguments["steps"][0]["from"], "message:m1");
 }
+
+#[test]
+fn set_listing_is_read_access() {
+    let daemon = test_daemon::start("a prompt for setting access");
+    let (_, catalog, failed) = invoke(
+        &daemon.daemon.archive,
+        Tool::Read,
+        json!({"operation":"set","arguments":{}}),
+    );
+    assert!(!failed, "{catalog:?}");
+    let catalog = catalog.value().unwrap().as_array().unwrap();
+    let listed = catalog
+        .iter()
+        .find(|setting| setting["key"] == "browser.actions")
+        .unwrap();
+    assert_eq!(listed["value"], json!({"type":"boolean","value":false}));
+
+    let show = json!({"operation":"set","arguments":{"key":"browser.actions"}});
+    let (_, current, failed) = invoke(&daemon.daemon.archive, Tool::Read, show.clone());
+    assert!(!failed, "{current:?}");
+    let current = current.value().unwrap().clone();
+    assert_eq!(current["key"], "browser.actions");
+    assert_eq!(current["value"], json!({"type":"boolean","value":false}));
+
+    let call = json!({"operation":"set","arguments":{"key":"browser.actions","value":"on"}});
+    let (text, refused, failed) = invoke(&daemon.daemon.archive, Tool::Read, call.clone());
+    assert!(failed, "{text}");
+    assert_eq!(
+        refused.failure().unwrap().message,
+        "set with these arguments needs polylogue_write"
+    );
+    let next = &refused.envelope.next[0];
+    assert_eq!(next.request.operation, "set");
+    assert_eq!(next.request.arguments, call["arguments"]);
+    assert!(next.label.starts_with("polylogue_write "), "{}", next.label);
+    let (_, unchanged, failed) = invoke(&daemon.daemon.archive, Tool::Read, show);
+    assert!(!failed, "{unchanged:?}");
+    assert_eq!(unchanged.value().unwrap(), &current);
+}
+
+#[test]
+fn import_provider_is_act_access() {
+    let directory = tempfile::tempdir().unwrap();
+    let archive = Archive::at(directory.path());
+    for provider in ["chatgpt", "claude-ai", "grok"] {
+        let call = json!({"operation":"import","arguments":{"paths":[provider]}});
+        let (text, refused, failed) = invoke(&archive, Tool::Write, call.clone());
+        assert!(failed, "{provider}: {text}");
+        assert_eq!(
+            refused.failure().unwrap().message,
+            "import with these arguments needs polylogue_act",
+            "{provider}"
+        );
+        let next = &refused.envelope.next[0];
+        assert_eq!(next.request.operation, "import");
+        assert_eq!(next.request.arguments, call["arguments"]);
+        let corrected: Value =
+            serde_json::from_str(next.label.strip_prefix("polylogue_act ").unwrap()).unwrap();
+        assert_eq!(corrected["operation"], "import");
+        assert_eq!(corrected["arguments"], call["arguments"]);
+        let (_, accepted, failed) = invoke(&archive, Tool::Act, corrected);
+        assert!(failed);
+        assert_eq!(
+            accepted.failure().unwrap().code.as_deref(),
+            Some("not_running")
+        );
+
+        let (text, path, failed) = invoke(
+            &archive,
+            Tool::Write,
+            json!({"operation":"import","arguments":{"paths":[format!("./{provider}")]}}),
+        );
+        assert!(failed, "{provider}: {text}");
+        assert_eq!(path.failure().unwrap().code.as_deref(), Some("not_running"));
+    }
+}
