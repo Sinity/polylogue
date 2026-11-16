@@ -274,7 +274,7 @@ fn a_range_the_writer_refuses_fails_its_chain_and_the_first_build_ends() {
     let pass = held_pass(engine, lock);
     let cursor = chains(&w, "big.jsonl")[0]["parsed_upto"].as_u64().unwrap();
     assert!(cursor > 0, "the first ranges are committed");
-    let index = rusqlite::Connection::open(w.root.join("index.db")).unwrap();
+    let index = rusqlite::Connection::open(w.index_db()).unwrap();
     index
         .busy_timeout(std::time::Duration::from_secs(30))
         .unwrap();

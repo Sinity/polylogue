@@ -37,6 +37,11 @@ fn process_cpu_counts_survive_comm_parentheses_and_missing_fields_stay_unknown()
 fn completed_build_measurement_pays_its_wal_and_refuses_a_live_reader() {
     let directory = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(directory.path()).unwrap();
+    // A pass ends its first build by installing the built file as `index.db`.
+    polylogue_store::Writer::start(&archive)
+        .unwrap()
+        .derive()
+        .unwrap();
     let writer = polylogue_store::archive::open_write(
         &archive.index_db(),
         polylogue_store::archive::cache::SETUP,

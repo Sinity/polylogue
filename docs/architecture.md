@@ -182,7 +182,10 @@ completes the rename. Only the build pipeline opens the private file: the
 writer, its resolver and parser-context reads, the engine's planning reads
 and tool-database catalog reads. Serving readers, the search thread and the
 derive thread open `index.db` once it is installed, so no reader can hold up
-the switch to WAL or a stop. While the build runs, reads are answered from
+the switch to WAL or a stop. With a rollback journal a held read blocks
+the writer, so the pipeline's reads of the build file are short: a resumed
+parse looks up its admitted context one statement at a time, and a
+tool-database comparison copies its recorded rows out in one read. While the build runs, reads are answered from
 the previous index when it has this build's schema identity, and otherwise
 answer `index_building` with the build's progress
 ([operations.md](operations.md#replacing-an-index-from-another-schema)).

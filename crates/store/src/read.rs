@@ -513,8 +513,13 @@ impl ReadPool {
                 let conn = match &reader.limit {
                     Some(limit) => limit.scope(|| connect(&before.0)),
                     None => connect(&before.0),
-                }?;
+                };
                 let after = self.index_identity()?;
+                // An open that raced a build's install fails on the moved file.
+                let conn = match conn {
+                    Err(_) if before != after => return Err(StoreError::ReadIndexReplaced),
+                    conn => conn?,
+                };
                 if before != after {
                     return Err(StoreError::ReadIndexReplaced);
                 }
@@ -809,11 +814,21 @@ impl Reader<'_> {
                 // One statement starts the read on `index.db` (`main`), then on
                 // the register (`a`). The shared lock keeps register commits
                 // out of the gap between the two, so they see a committed pair.
-                conn.query_row(
+                let started = conn.query_row(
                     "SELECT (SELECT count(*) FROM main.meta), (SELECT count(*) FROM source_meta)",
                     [],
                     |_| Ok(()),
-                )?;
+                );
+                // A build file installed between the check and this start
+                // (`crate::archive::index_build`) has left its directory; once
+                // the read has started, the install waits for it to end.
+                if let Err(error) = started {
+                    if Some(self.pool.index_identity()?) != self.index_identity {
+                        self.state.set(ReadState::IndexReplaced);
+                        return Err(StoreError::ReadIndexReplaced);
+                    }
+                    return Err(error.into());
+                }
                 self.state.set(ReadState::Ready);
             }
         }

@@ -225,6 +225,9 @@ fn variant_restoration_is_exact_idempotent_and_refuses_changed_facts() {
 #[test]
 fn live_variant_reads_use_one_source_snapshot_and_search_the_committed_text() {
     let archive = crate::fixture::writer::WriterArchive::new();
+    // A reader keeps its snapshot across a write in the installed index's
+    // WAL (docs/architecture.md, Durability).
+    archive.writer.derive().unwrap();
     let pool = crate::ReadPool::open(&archive.archive).unwrap();
     let before = pool.reader().unwrap();
     assert!(!before.has_variant_source("message:codex:source").unwrap());

@@ -114,7 +114,11 @@ pub(crate) fn state(root: &Path) -> Arc<State> {
     if let Some(state) = archives.get(&key).and_then(Weak::upgrade) {
         return state;
     }
+    // A handle on an archive no other handle in this process has open, such
+    // as one taken without the archive lock, finds a build in progress on
+    // disk; the archive's open sets the state from what it prepares.
     let state = Arc::new(State::default());
+    state.set(Paths::of(root).build.exists(), false);
     archives.insert(key, Arc::downgrade(&state));
     state
 }

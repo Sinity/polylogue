@@ -5,6 +5,9 @@ use crate::archive::{cache, open_read, open_write, restart_full_log};
 fn fresh_context_leaves_checkpoint_free_while_resumed_context_keeps_its_snapshot() {
     let directory = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(directory.path()).unwrap();
+    // A resumed context's snapshot and the checkpoints it holds back are
+    // those of the installed index's WAL (docs/architecture.md, Durability).
+    crate::Writer::start(&archive).unwrap().derive().unwrap();
     let path = archive.index_db();
     let writer = open_write(&path, cache::SETUP).unwrap();
     writer.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
