@@ -390,11 +390,7 @@ fn run(
                     for step in steps {
                         if step["verb"] == "read" {
                             step["follow"] = json!(false);
-                            step["until_idle"] = json!(false);
                             step["delivery"] = json!("page");
-                            if step.get("from").is_none() {
-                                step["from"] = json!("seen");
-                            }
                         }
                     }
                 }
@@ -405,7 +401,7 @@ fn run(
             let mut result = refusal(
                 crate::protocol::failure(
                     polylogue_model::Code::BadRequest,
-                    "MCP reads return pages; read --follow is a stream",
+                    "a model cannot hold a stream; read again to continue",
                 ),
                 Some(command_surface::Next {
                     label: correction.clone(),

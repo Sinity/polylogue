@@ -394,10 +394,19 @@ fn larger_tools_offer_smaller_operations() {
         .filter(|command| command.http && command.registration().is_some())
     {
         if command.name.starts_with("internal ") {
-            assert_eq!(command.cli, crate::commands::Cli::Hidden, "{}", command.name);
+            assert_eq!(
+                command.cli,
+                crate::commands::Cli::Hidden,
+                "{}",
+                command.name
+            );
             assert_eq!(command.tool, None, "{}", command.name);
         } else {
-            assert!(command.tool.is_some(), "{} is not reachable over MCP", command.name);
+            assert!(
+                command.tool.is_some(),
+                "{} is not reachable over MCP",
+                command.name
+            );
         }
     }
 }

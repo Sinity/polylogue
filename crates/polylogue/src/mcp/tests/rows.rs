@@ -161,22 +161,35 @@ fn mcp_read_step_renders_archive_text() {
 
 #[test]
 fn mcp_follow_returns_paged_call() {
-    let directory = tempfile::tempdir().unwrap();
+    let daemon = test_daemon::start("a prompt in the finite read after follow");
     let (_, answer, failed) = invoke(
-        &Archive::at(directory.path()),
+        &daemon.daemon.archive,
         Tool::Read,
-        json!({"arguments":{"selection":"session:claude-code:s1","steps":[{"verb":"read","follow":true,"from":"message:m1"}]}}),
+        json!({"arguments":{"selection":"session:claude-code:s1","steps":[{"verb":"read","follow":true,"view":"dialogue","budget":128}]}}),
     );
     assert!(failed);
     assert_eq!(
         answer.failure().unwrap().message,
-        "MCP reads return pages; read --follow is a stream"
+        "a model cannot hold a stream; read again to continue"
     );
     let next = &answer.envelope.next[0].request;
-    assert_eq!(next.arguments["selection"], "session:claude-code:s1");
-    assert_eq!(next.arguments["steps"][0]["follow"], false);
-    assert_eq!(next.arguments["steps"][0]["delivery"], "page");
-    assert_eq!(next.arguments["steps"][0]["from"], "message:m1");
+    assert_eq!(
+        next.arguments,
+        json!({
+            "selection":"session:claude-code:s1",
+            "steps":[{"verb":"read","follow":false,"delivery":"page","view":"dialogue","budget":128}]
+        })
+    );
+    let (text, read, failed) = invoke(&daemon.daemon.archive, Tool::Read, arguments_for(next));
+    assert!(!failed, "{read:?}");
+    assert_eq!(
+        read.value().unwrap()["reply"]["steps"][0]["outcome"]["reply"]["kind"],
+        "read"
+    );
+    assert!(
+        text.contains("a prompt in the finite read after follow"),
+        "{text}"
+    );
 }
 
 #[test]
