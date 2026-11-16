@@ -178,12 +178,7 @@ fn run(directory: &Path, startup: &crate::config::Startup) -> Result<Tour, Strin
             let text = if command == "rows" {
                 let answer = crate::protocol::line::LineAnswer::deserialize(&result)
                     .map_err(|error| format!("{command}: {error}"))?;
-                match &answer {
-                    crate::protocol::line::LineAnswer::Listing(listing) => {
-                        crate::cli::print::query_plain(listing)
-                    }
-                    _ => crate::cli::print::line(&answer, command_surface::TextStyle::Plain),
-                }
+                line_text(&answer)?
             } else {
                 commands::declarations()
                     .render_text(
@@ -286,6 +281,63 @@ fn run(directory: &Path, startup: &crate::config::Startup) -> Result<Tour, Strin
         steps,
         transcript,
     })
+}
+
+fn line_text(answer: &crate::protocol::line::LineAnswer) -> Result<String, String> {
+    use crate::protocol::line::{LineAnswer, StepAnswer, StepOutcome};
+    let reports = match answer {
+        LineAnswer::Listing(listing) => return Ok(crate::cli::print::query_plain(listing)),
+        LineAnswer::Steps(reports) => &reports.steps,
+        LineAnswer::Explained(_) => return Err("the tour expected completed steps".into()),
+    };
+    let mut text = String::new();
+    let mut undo = Vec::new();
+    for report in reports {
+        let StepOutcome::Done { reply, undo: lines } = &report.outcome else {
+            return Err(match &report.outcome {
+                StepOutcome::Failed { error } => {
+                    format!("{} failed: {}", report.verb, error.message)
+                }
+                _ => format!("{} did not run", report.verb),
+            });
+        };
+        match reply {
+            StepAnswer::Read(page) => {
+                let mut bytes = Vec::new();
+                polylogue_render::encode_document(
+                    &page.document,
+                    polylogue_render::Format::Markdown,
+                    polylogue_render::EncodeOptions {
+                        commands: Some(commands::declarations()),
+                        via: command_surface::Via::Cli,
+                        model_facing: false,
+                        ..Default::default()
+                    },
+                    &mut bytes,
+                )
+                .map_err(|error| error.to_string())?;
+                text.push_str(&String::from_utf8(bytes).map_err(|error| error.to_string())?);
+            }
+            StepAnswer::Brief(prepared) => text.push_str(&crate::cli::print::context(
+                prepared,
+                command_surface::TextStyle::Plain,
+            )),
+            StepAnswer::Resume(found) => text.push_str(&crate::cli::print::resume(
+                found,
+                command_surface::TextStyle::Plain,
+            )),
+            other => text.push_str(&crate::cli::print::json(
+                other,
+                command_surface::TextStyle::Plain,
+            )),
+        }
+        undo.extend(lines);
+    }
+    for line in undo {
+        use std::fmt::Write;
+        writeln!(text, "undo: {line}").map_err(|error| error.to_string())?;
+    }
+    Ok(text)
 }
 
 fn command_line(command: &Command, arguments: &Value) -> String {

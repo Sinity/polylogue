@@ -32,6 +32,14 @@ fn demo_steps_run_through_rows() {
         if index != 6 {
             assert_eq!(step["command"], "rows", "step {index}");
             assert!(step["arguments"]["selection"].is_string(), "step {index}");
+            if let Some(reports) = step["result"]["reply"]["steps"].as_array() {
+                for report in reports {
+                    assert_eq!(
+                        report["outcome"]["status"], "done",
+                        "step {index}: {report}"
+                    );
+                }
+            }
         }
     }
     assert_eq!(
