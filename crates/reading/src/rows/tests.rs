@@ -74,7 +74,7 @@ fn previous_coordinates_invert_the_existing_session_family_order() {
             at_until: None,
             after: None,
             range: Some((offset, offset + 1)),
-            data: serde_json::Value::Null,
+            data: serde_json::json!({"notice": offset - 1}),
         })
         .collect();
     fixture.write_output(

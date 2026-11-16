@@ -241,6 +241,28 @@ fn object_stream_stops_on_scope_reset_and_cancellation_before_record_body() {
     }
 }
 
+fn assert_object_page_run(daemon: &Daemon, page: &ReadPage) {
+    assert_eq!(page.document.header.target, page.snapshot.query);
+    let Reference::Run(id) = Reference::parse(&page.snapshot.query).unwrap() else {
+        panic!("an object page names its committed run")
+    };
+    let reader = daemon.reads.reader().unwrap();
+    let run = reader.query_run(&id, None).unwrap().unwrap();
+    assert!(
+        matches!(run.binding, RunBinding::OriginalObject { execution }
+        if execution.reference == Reference::Request("large-object".into()))
+    );
+    let outcome = reader.query_run_outcome(&id, None).unwrap().unwrap();
+    assert_eq!(outcome.outcome, RunOutcome::Ok);
+    assert_eq!(outcome.count, Some(1));
+    assert!(outcome.exact);
+    for item in &page.document.items {
+        if matches!(item.kind, ItemKind::Fragment { .. }) {
+            assert_eq!(item.source, Source::record(page.snapshot.query.clone()));
+        }
+    }
+}
+
 #[test]
 fn object_read_pages_past_its_budget() {
     let mut daemon = test_daemon::start("synthetic object pages");
@@ -292,12 +314,13 @@ fn object_read_pages_past_its_budget() {
     );
     let mut pending = String::new();
     let mut items = Vec::new();
-    let mut first = None;
+    let mut first: Option<Vec<ReadItem>> = None;
     let mut pages = 0;
     loop {
         let answer = call.answer(&daemon.daemon);
         let page: ReadPage =
             serde_json::from_value(answer.value().expect("object page").clone()).unwrap();
+        assert_object_page_run(&daemon.daemon, &page);
         if pages == 1 {
             let previous = page
                 .document
@@ -309,7 +332,14 @@ fn object_read_pages_past_its_budget() {
             let before: ReadPage =
                 serde_json::from_value(answer.value().expect("backward object page").clone())
                     .unwrap();
-            assert_eq!(before.document.items, first.clone().unwrap());
+            assert_object_page_run(&daemon.daemon, &before);
+            let mut expected = first.clone().unwrap();
+            for item in &mut expected {
+                if matches!(item.kind, ItemKind::Fragment { .. }) {
+                    item.source = Source::record(before.snapshot.query.clone());
+                }
+            }
+            assert_eq!(before.document.items, expected);
         }
         if pages == 0 {
             first = Some(page.document.items.clone());
