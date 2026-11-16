@@ -133,12 +133,22 @@ fn explicit_target_selection_is_preserved_without_adding_the_default_tests() {
 fn selections_share_features_and_targets_in_the_runner() {
     let fixture = tempfile::tempdir().unwrap();
     let root = fixture.path();
-    fs::write(root.join("Cargo.toml"), "[workspace]\nmembers=['polylogue-store','polylogue-engine','polylogue-sinex','polylogue','helper']\nresolver='3'\n").unwrap();
+    fs::write(root.join("Cargo.toml"), "[workspace]\nmembers=['polylogue-model','polylogue-query','polylogue-store','polylogue-engine','polylogue-sinex','polylogue','helper']\nresolver='3'\n").unwrap();
     for (name, manifest, source) in [
         (
+            "polylogue-model",
+            "[features]\nfixture=[]\n",
+            "pub fn assert_fixture() { assert!(cfg!(feature=\"fixture\")); }\n",
+        ),
+        (
+            "polylogue-query",
+            "[features]\nfixture=[]\n",
+            "pub fn assert_fixture() { assert!(cfg!(feature=\"fixture\")); }\n",
+        ),
+        (
             "polylogue-store",
-            "[features]\nfaults=[]\nfixture=[]\n[dependencies]\nhelper={path='../helper'}\n",
-            "#[test] fn selected_read() { assert!(cfg!(feature=\"faults\")); assert_eq!(helper::value(),42); }\n#[test] fn selected_write() { assert!(cfg!(feature=\"fixture\")); }\n#[test] #[ignore] fn selected_ignored() {}\n",
+            "[features]\nfaults=[]\nfixture=[]\n[dependencies]\nhelper={path='../helper'}\npolylogue-model={path='../polylogue-model'}\npolylogue-query={path='../polylogue-query'}\n",
+            "#[test] fn selected_read() { assert!(cfg!(feature=\"faults\")); assert_eq!(helper::value(),42); }\n#[test] fn selected_write() { assert!(cfg!(feature=\"fixture\")); polylogue_model::assert_fixture(); polylogue_query::assert_fixture(); }\n#[test] #[ignore] fn selected_ignored() {}\n",
         ),
         (
             "polylogue-engine",
@@ -147,8 +157,8 @@ fn selections_share_features_and_targets_in_the_runner() {
         ),
         (
             "polylogue-sinex",
-            "[dependencies]\npolylogue-store={path='../polylogue-store'}\npolylogue-engine={path='../polylogue-engine'}\n",
-            "#[test] fn primary_mode_selected() {}\n",
+            "[features]\nfixture=[]\n[dependencies]\npolylogue-store={path='../polylogue-store'}\npolylogue-engine={path='../polylogue-engine'}\n",
+            "#[test] fn primary_mode_selected() { assert!(cfg!(feature=\"fixture\")); }\n",
         ),
         (
             "polylogue",

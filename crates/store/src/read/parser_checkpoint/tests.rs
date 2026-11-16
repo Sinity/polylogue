@@ -263,16 +263,21 @@ fn rejected_context_and_stopped_attempt_roll_back_with_the_reading_cursor() {
     index
         .execute("UPDATE parser_context_state SET through=-1", [])
         .unwrap();
+    let error = crate::parser_context::Overlay::open(
+        &archive,
+        "context-rollback",
+        Some(stored.chain),
+        "synthetic=1",
+        cursor,
+    )
+    .err()
+    .expect("negative stored cursor is refused");
     assert!(matches!(
-        crate::parser_context::Overlay::open(
-            &archive,
-            "context-rollback",
-            Some(stored.chain),
-            "synthetic=1",
-            cursor,
-        ),
-        Err(crate::StoreError::Invalid(_))
+        &error,
+        crate::StoreError::StoredValue { column: 0, reason }
+            if reason == "parser context cursor is negative"
     ));
+    assert_eq!(error.code(), polylogue_model::Code::Store);
     let sql_cursor = i64::try_from(cursor).unwrap();
     index
         .execute("UPDATE parser_context_state SET through=?1", [sql_cursor])
