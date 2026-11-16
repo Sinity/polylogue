@@ -57,7 +57,10 @@ impl Screen {
         // viewport rather than moving above the current terminal height.
         self.lines = self.lines.min(height.saturating_sub(1));
         self.clear().map_err(Failure::io)?;
-        for line in lines.iter().take(height.saturating_sub(1) as usize) {
+        let start = lines
+            .len()
+            .saturating_sub(height.saturating_sub(1) as usize);
+        for line in &lines[start..] {
             queue!(
                 self.output,
                 cursor::MoveToColumn(0),
@@ -89,7 +92,11 @@ impl Screen {
     pub fn print(&mut self, references: &[String]) -> Result<()> {
         self.clear().map_err(Failure::io)?;
         for reference in references {
-            write!(self.output, "{}\r\n", safe_line(reference)).map_err(Failure::io)?;
+            if self.active {
+                write!(self.output, "{}\r\n", safe_line(reference)).map_err(Failure::io)?;
+            } else {
+                writeln!(self.output, "{}", safe_line(reference)).map_err(Failure::io)?;
+            }
         }
         self.output.flush().map_err(Failure::io)
     }

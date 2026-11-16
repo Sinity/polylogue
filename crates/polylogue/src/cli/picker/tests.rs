@@ -25,6 +25,7 @@ struct Fixture {
     case: String,
     events: Arc<Mutex<UnixStream>>,
     release: Arc<tokio::sync::Semaphore>,
+    started: Instant,
 }
 impl Fixture {
     fn emit(&self, event: Value) {
@@ -88,6 +89,9 @@ impl Source for Fixture {
         if request.selection == "invalid" {
             return Err(Failure::invalid_query("invalid query text"));
         }
+        if self.case == "query" && request.selection == "sessions" {
+            std::future::pending::<()>().await;
+        }
         Ok(Page {
             count: Some(self.rows().len() as u64),
             rows: self.rows(),
@@ -118,16 +122,15 @@ impl Source for Fixture {
         Ok(())
     }
     fn shown(&self, question: &str, rows: &[Candidate]) -> Result<()> {
-        self.emit(json!({"shown":rows.iter().map(|row| &row.reference).collect::<Vec<_>>(),"question":question}));
+        self.emit(json!({"shown":rows.iter().map(|row| &row.reference).collect::<Vec<_>>(),"question":question,"since_open_us":self.started.elapsed().as_micros()}));
         Ok(())
     }
 }
 
 #[test]
+#[ignore = "runs inside the PTY created by its parent test"]
 fn terminal_child() {
-    let Ok(case) = std::env::var("POLYLOGUE_PICKER_CASE") else {
-        return;
-    };
+    let case = std::env::var("POLYLOGUE_PICKER_CASE").unwrap();
     let events = Arc::new(Mutex::new(
         UnixStream::connect(std::env::var_os("POLYLOGUE_PICKER_EVENTS").unwrap()).unwrap(),
     ));
@@ -135,6 +138,7 @@ fn terminal_child() {
         case: case.clone(),
         events: events.clone(),
         release: Arc::new(tokio::sync::Semaphore::new(0)),
+        started: Instant::now(),
     });
     let selection = if case == "ambiguous" {
         Selection::Ambiguous {
@@ -206,6 +210,7 @@ impl Terminal {
                 "--exact",
                 "cli::picker::tests::terminal_child",
                 "--nocapture",
+                "--ignored",
             ])
             .env("POLYLOGUE_PICKER_CASE", case)
             .env("POLYLOGUE_PICKER_EVENTS", &events)
@@ -366,6 +371,13 @@ fn picker_footer_shows_keys_and_enter_action() {
             json!({"action":"Enter","references":["session:codex:Alpha"],"raw":false}),
         ]
     );
+    let mut terminal = Terminal::new("normal", true, true);
+    terminal.until("Esc cancel");
+    terminal.send(b"\x1b[B\t\x1b[A\t\r");
+    assert_eq!(
+        terminal.finish().0,
+        json!({"choice":["session:codex:Beta","session:codex:Alpha"]})
+    );
 }
 
 #[test]
@@ -385,7 +397,7 @@ fn picker_query_mode_reruns_and_drops_stale() {
         .iter()
         .filter(|event| event.get("shown").is_some())
         .map(|event| event["shown"].clone())
-        .filter(|rows| rows.as_array().unwrap().len() > 0)
+        .filter(|rows| !rows.as_array().unwrap().is_empty())
         .collect();
     assert_eq!(
         shown,
@@ -423,6 +435,10 @@ fn picker_preview_drops_stale_reply() {
             json!({"preview":"session:codex:Beta","width":99,"deadline":100})
         ]
     );
+    let mut terminal = Terminal::new("preview", true, true);
+    terminal.until("overview exceeded its 100 ms deadline");
+    terminal.send(b"\x1b");
+    assert_eq!(terminal.finish().0, json!({"cancelled":true}));
 }
 
 #[test]
@@ -503,10 +519,12 @@ fn fuzzy_candidates_continue_across_pages() {
     );
     let mut terminal = Terminal::new("pages", true, true);
     terminal.until("Esc cancel");
+    terminal.event(|event| event["shown"] == json!(["session:codex:Alpha", "session:codex:Beta"]));
     terminal.send(b"\x1b[B\t");
     terminal.until("Gamma title");
+    terminal.event(|event| event["shown"] == json!(["session:codex:Gamma", "session:codex:Delta"]));
     terminal.send(b"\x1b[A");
-    terminal.until("Beta title");
+    terminal.event(|event| event["shown"] == json!(["session:codex:Alpha", "session:codex:Beta"]));
     terminal.send(b"\r");
     let (result, _, events) = terminal.finish();
     assert_eq!(result, json!({"choice":["session:codex:Beta"]}));
@@ -534,7 +552,25 @@ fn ambiguity_filtering_printing_and_cancellation() {
     terminal.send(b"\r");
     let (result, output, _) = terminal.finish();
     assert_eq!(result, json!({"choice":["session:codex:Alpha"]}));
-    assert!(output.contains("\r\nsession:codex:Alpha\r"));
+    let mut plain = String::new();
+    let mut characters = output.chars();
+    while let Some(character) = characters.next() {
+        if character == '\x1b' {
+            assert_eq!(characters.next(), Some('['));
+            for character in characters.by_ref() {
+                if ('@'..='~').contains(&character) {
+                    break;
+                }
+            }
+        } else if character != '\r' {
+            plain.push(character);
+        }
+    }
+    let printed: Vec<_> = plain
+        .lines()
+        .filter(|line| line.starts_with("session:"))
+        .collect();
+    assert_eq!(printed, ["session:codex:Alpha"]);
     let mut terminal = Terminal::new("normal", true, true);
     terminal.until("Esc cancel");
     terminal.send(b"\x1b");
@@ -561,21 +597,40 @@ fn picker_latency_samples() {
         let first = Instant::now();
         let mut terminal = Terminal::new("normal", true, true);
         terminal.until("Esc cancel");
-        let first = first.elapsed();
-        let key = Instant::now();
+        let process = first.elapsed();
+        let first = terminal.event(|event| event.get("shown").is_some())["since_open_us"].clone();
+        let pressed = Instant::now();
         terminal.paste("Beta");
         terminal.until("→ 1 rows");
-        let key = key.elapsed();
-        let preview = Instant::now();
+        let key = pressed.elapsed();
         terminal.until("overview: Beta");
-        let preview = preview.elapsed();
+        let preview = pressed.elapsed();
         terminal.send(b"\r");
         let result = terminal.finish().0;
         assert_eq!(result, json!({"choice":["session:codex:Beta"]}));
-        samples.push(json!({"first_candidates_us":first.as_micros(),"keystroke_us":key.as_micros(),"preview_us":preview.as_micros()}));
+        samples.push(json!({"first_candidates_us":first,"fixture_process_us":process.as_micros(),"keystroke_us":key.as_micros(),"preview_us":preview.as_micros()}));
     }
     eprintln!(
         "picker latency, real PTY, fresh process per sample: {}",
         json!(samples)
     );
+    for text in ["", "retry"] {
+        let started = Instant::now();
+        let page = fuzzy_page(
+            (0..10_000).map(|number| row(&format!("Retry {number}"))),
+            &PageRequest {
+                selection: "sessions".into(),
+                fuzzy: Some(text.into()),
+                cursor: None,
+            },
+            64,
+        )
+        .unwrap();
+        assert_eq!(page.count, Some(10_000));
+        assert_eq!(page.rows.len(), 64);
+        eprintln!(
+            "picker catalog scan: {}",
+            json!({"rows":10000,"filter":text,"elapsed_us":started.elapsed().as_micros()})
+        );
+    }
 }

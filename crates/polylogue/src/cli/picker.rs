@@ -9,7 +9,7 @@ mod screen;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 pub use matching::fuzzy_page;
 use screen::Screen;
-use std::{collections::BTreeMap, sync::mpsc};
+use std::sync::mpsc;
 
 pub type Result<T> = std::result::Result<T, Failure>;
 
@@ -106,7 +106,7 @@ pub fn open<S: Source>(source: Arc<S>, options: Options) -> Result<Choice> {
 }
 
 const PREVIEW_DEADLINE: Duration = Duration::from_millis(100);
-const FRAME: Duration = Duration::from_millis(16);
+const FRAME: Duration = Duration::from_millis(8);
 
 #[derive(Clone, Copy)]
 enum Command {
@@ -275,7 +275,7 @@ struct State {
     cursors: Vec<Option<String>>,
     page_number: usize,
     select_last: bool,
-    marked: BTreeMap<String, Candidate>,
+    marked: Vec<String>,
     preview: bool,
     overview: String,
     preview_key: Option<(String, u16)>,
@@ -303,7 +303,7 @@ impl State {
             cursors: vec![None],
             page_number: 0,
             select_last: false,
-            marked: BTreeMap::new(),
+            marked: Vec::new(),
             preview: true,
             overview: String::new(),
             preview_key: None,
@@ -342,7 +342,7 @@ impl State {
                 .map(|row| vec![row.reference.clone()])
                 .unwrap_or_default()
         } else {
-            self.marked.keys().cloned().collect()
+            self.marked.clone()
         }
     }
     fn reset(&mut self) {
@@ -596,11 +596,17 @@ fn interact<S: Source>(
             }
             Some(Command::Mark) => {
                 if let Some(row) = state.highlighted().cloned() {
-                    if state.marked.remove(&row.reference).is_none() {
+                    if let Some(index) = state
+                        .marked
+                        .iter()
+                        .position(|reference| reference == &row.reference)
+                    {
+                        state.marked.remove(index);
+                    } else {
                         if !options.multiple {
                             state.marked.clear();
                         }
-                        state.marked.insert(row.reference.clone(), row);
+                        state.marked.push(row.reference);
                     }
                     if state.move_row(true) {
                         page = Some(state.start_page(source.clone(), runtime));
@@ -639,7 +645,7 @@ fn interact<S: Source>(
             }
             Some(Command::Print) => {
                 if let Some(row) = state.highlighted() {
-                    screen.print(&[row.reference.clone()])?;
+                    screen.print(std::slice::from_ref(&row.reference))?;
                 }
             }
             None if edit(state.text_mut(), key) => {
@@ -755,7 +761,7 @@ fn draw(
             } else {
                 " "
             },
-            if state.marked.contains_key(&row.reference) {
+            if state.marked.contains(&row.reference) {
                 "*"
             } else {
                 " "

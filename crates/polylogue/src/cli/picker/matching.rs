@@ -57,6 +57,7 @@ pub fn fuzzy_page(
         .map(serde_json::from_str)
         .transpose()
         .map_err(Failure::bad_request)?;
+    let text = text.to_lowercase();
     let matcher = SkimMatcherV2::default().ignore_case();
     let mut best: BinaryHeap<Reverse<Ranked>> = BinaryHeap::new();
     let mut count = 0;
@@ -66,7 +67,7 @@ pub fn fuzzy_page(
         } else {
             [&row.title, &row.first_prompt, &row.repository]
                 .into_iter()
-                .filter_map(|field| matcher.fuzzy_match(field, text))
+                .filter_map(|field| matcher.fuzzy_match(&field.to_lowercase(), &text))
                 .max()
         };
         let Some(score) = score else { continue };
@@ -86,7 +87,7 @@ pub fn fuzzy_page(
         }
     }
     let mut best: Vec<_> = best.into_iter().map(|row| row.0).collect();
-    best.sort_unstable_by(|a, b| b.rank.cmp(&a.rank));
+    best.sort_unstable_by_key(|row| Reverse(row.rank));
     let more = best.len() > page_size;
     best.truncate(page_size);
     let next = if more {
