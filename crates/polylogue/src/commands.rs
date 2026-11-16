@@ -339,7 +339,11 @@ fn measure_command(m: &'static Measure) -> Command {
         name: format!("measure {}", m.name).leak(),
         reason: "A named measurement over the sessions a query selects",
         help: m.help,
-        run: Run::Daemon(daemon::<H::Measure>()),
+        run: Run::Daemon(if m.whole_archive {
+            daemon::<H::MeasureArchive>()
+        } else {
+            daemon::<H::Measure>()
+        }),
         ..CLI
     }
 }

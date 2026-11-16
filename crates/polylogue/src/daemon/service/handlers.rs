@@ -236,6 +236,21 @@ impl Handler for Measure {
     }
 }
 
+/// `measure NAME` for a whole-archive measure: `sessions | measure NAME`.
+pub(crate) struct MeasureArchive;
+impl Handler for MeasureArchive {
+    type Arguments = protocol::query_aliases::MeasureArchive;
+    type Answer = protocol::query::Answer;
+    const PAGES: bool = true;
+    const PRINT: fn(&Self::Answer, TextStyle) -> String = print::query;
+    fn ranking_query(arguments: &Self::Arguments, row: &Command) -> Option<String> {
+        Some(measure_query(row.name, &arguments.clone().into()))
+    }
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
+        Measure::run(arguments.into(), call)
+    }
+}
+
 /// `measure NAME` with its options as the query `QUERY | measure NAME:OPTION`.
 pub(crate) fn measure_query(row: &str, arguments: &protocol::query_aliases::Measure) -> String {
     let name = row.trim_start_matches("measure ");

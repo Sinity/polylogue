@@ -75,3 +75,32 @@ pub struct Measure {
     #[serde(default)]
     pub fields: Vec<String>,
 }
+
+/// `measure NAME` for a measure of the whole archive, which takes no query.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MeasureArchive {
+    /// The series, for a measure with several
+    pub metric: Option<String>,
+    /// The measure's own option
+    pub option: Option<String>,
+    /// Explain an empty result: how many rows each condition keeps
+    #[serde(default)]
+    pub why: bool,
+    /// The columns to show instead of the unit's defaults, comma-separated (`--fields id,cost,repo`)
+    #[serde(default)]
+    pub fields: Vec<String>,
+}
+
+impl From<MeasureArchive> for Measure {
+    fn from(archive: MeasureArchive) -> Self {
+        Self {
+            query: None,
+            metric: archive.metric,
+            option: archive.option,
+            limit: None,
+            why: archive.why,
+            fields: archive.fields,
+        }
+    }
+}
