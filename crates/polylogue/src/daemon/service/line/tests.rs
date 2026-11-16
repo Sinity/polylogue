@@ -324,7 +324,7 @@ fn mcp_wait_returns_empty_with_same_call_after_cap() {
     let d = test_daemon::start("first prompt");
     let request = command_surface::RunnableRequest {
         operation: "rows".into(),
-        arguments: json!({"selection": "sessions where tag:later", "wait": "1h"}),
+        arguments: json!({"selection": "sessions where tag:later", "wait": "1h", "fields": [], "all": false}),
         request_id: "wait-cap".into(),
         deadline: command_surface::Deadline::None,
         budget_tokens: Default::default(),

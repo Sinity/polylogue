@@ -258,6 +258,12 @@ fn repeated(rows: &Rows, call: &Call<'_>) -> Result<command_surface::RunnableReq
                 fresh: false,
                 format: Default::default(),
             });
+    if request.operation == "rows"
+        && serde_json::from_value::<Rows>(request.arguments.clone())
+            .is_ok_and(|original| original == *rows)
+    {
+        return Ok(request);
+    }
     request.arguments = serde_json::to_value(rows).map_err(Failure::internal)?;
     Ok(request)
 }
