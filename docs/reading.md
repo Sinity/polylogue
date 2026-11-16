@@ -59,10 +59,10 @@ Footer = ReferencedBy[], Continue(ReadyCall)?
 ## Read targets
 
 - `read` renders a session; a logical session; a message, message range or block; a document (`document:<id>`); an event (`event:<id>`); an authored record, page, kept result or delivery; or the rows of a query. One command-table entry serves CLI `polylogue [QUERY|REF] read [options]`, MCP `read` and HTTP `GET /api/v1/read`. A span (`span:`) addresses text inside a record and is not a read target; it is refused with `invalid_query` before the read is prepared, as is a reference kind that has no selected-row reading.
-- Reference forms are the ones [references.md](references.md#forms) defines; the CLI adds `@N` and `@N.M` rows from the last list in this terminal ([interfaces.md](interfaces.md#addressing)), `self` (the calling agent's own session) and `last`.
+- Reference forms are the ones [references.md](references.md#forms) defines; the CLI adds `@N` and `@N.M` rows from the last list in this terminal ([terminal.md#addressing](terminal.md#addressing)), `self` (the calling agent's own session) and `last`.
 - **Physical and logical.** A session reference reads that physical session exactly; forks and spawned children appear as cards at their branch point or spawning call. A row of a logical listing (`@N` from a default listing, or `root:REF`) names a [logical session](sessions.md#logical-sessions): its read shows the logical header (root, the physical sessions it joins, own and inherited messages), then the root's transcript with each `continuation` and `resume` child following in link order after a `continues` indicator; `fork` and `spawn` children appear as cards at their branch point or spawning call, each a `ReadyCall` that reads the child. `--physical` with `root:REF` reads only the named physical session, with its session header. References in output always name physical sessions and messages.
 - **A query that selects messages** renders them in their sessions' context: consecutive messages share one session header, and gaps are `Omission` items.
-- **Several matching sessions:** on an interactive terminal the [picker](interfaces.md#picker) opens; `--all-matches` renders every match in order; a caller without a terminal is refused with the match count and the ready `--all-matches` call. An arbitrary first match is never rendered.
+- **Several matching sessions:** on an interactive terminal the [picker](terminal.md#picker) opens; `--all-matches` renders every match in order; a caller without a terminal is refused with the match count and the ready `--all-matches` call. An arbitrary first match is never rendered.
 - **Documents** show their purpose and authorship, then their blocks, with no chat roles; parent options are refused. Asked for the `dialogue` view, a document answers that the view does not apply, offering `transcript` and `raw`; in a mixed selection it is an omission with the same offer. **Events** show their payload, their session and the stored input they were read from. **Authored records, pages, kept results and deliveries** show the item, then the references it points at as quotations from the archive.
 - A message off the active path renders its branch with the indicator "on an abandoned branch". A missing reference is `not_found`.
 
@@ -71,7 +71,7 @@ Footer = ReferencedBy[], Continue(ReadyCall)?
 [Session links](sessions.md#session-links) and their `copies_prefix` flag are defined with the parsed model. A child whose link copies a prefix (a fork, a resume, a copied spawn) is stored thin, holding only its own messages.
 
 - **Default:** one indicator stands for the inherited messages: `↳ continues claude-code:7f3a2c10-0002 (18 earlier messages; --show inherited to show)`. The same default applies to CLI, MCP and web.
-- **`--show inherited`** shows the parent's composed prefix up to the branch point first, each message marked inherited (a dim `↳` gutter in the terminal, a collapsed section in HTML). A `--from` or `--around` position inside an inherited message implies `--show inherited` for that range.
+- **`--show inherited`** shows the parent's composed prefix up to the branch point first, each message marked inherited (a dim `↳` gutter in the terminal, a collapsed section in HTML). A `--from` position inside an inherited message, or a message target there with `--around N`, implies `--show inherited` for that range.
 - **Composition rules:**
   - `fork`, `resume` and copied `spawn`: the parent's composed prefix through the branch point;
   - `continuation`: the parent's messages are history before the context boundary, not the model's context (the [context view](#the-context-view) shows what the model had);
@@ -114,7 +114,7 @@ The compaction summary is a message (`written_by: harness`, `prompt_kind: compac
   | `unknown` | `unknown author` | the same |
 
   A delegated task prompt (`prompt_kind: model`) is therefore labelled as model-written.
-- **Assertions on a message** (notes, tags, highlights, judgments; [assertions.md](assertions.md)) appear right-aligned as `◆ kind: text` (`+N` for more), each with its author; `--show assertions` lists them under the message with their judgments. Unjudged agent assertions are shown with their author in reads; what a brief injects is [agents.md](agents.md#brief)'s rule.
+- **Assertions on a message** (notes, tags, highlights, judgments; [assertions.md](assertions.md)) appear right-aligned as `◆ kind: text` (`+N` for more), each with its author; `--show assertions` lists them under the message with their judgments. Unjudged agent assertions are shown with their author in reads; what a brief injects is [agent-context.md#brief](agent-context.md#brief)'s rule.
 - **Human text authorship:** typed text has a plain left rule; a paste span is shaded with one line saying where it came from (`pasted · <source of the span>`); unknown authorship is hatched. In the terminal these are a left bar, a `▒` gutter mark and `?`.
 - `--show turns` adds a dim line before each prompt with the turn's number and its call count.
 - **Display title:** the recorded title, or the derived [display title](measures.md#session-structure) dimmed and cut at 60 characters, with the repository beside it.
@@ -229,7 +229,7 @@ A view chooses content. A view exists only where its output is not a list of row
   | neighbouring sessions | the query term `related:REF` ([measures.md](measures.md#sessions-work-and-comparison)) |
   | subagent orchestration | the `summary` view's subagent section, plus `tool_calls where action:subagent` |
   | hook and harness events | `events where session:REF read`; events also appear in place |
-  | packed context for an agent | packs over a query ([agents.md](agents.md#packs)) |
+  | packed context for an agent | packs over a query ([agent-context.md#packs](agent-context.md#packs)) |
 
 ### The context view
 
@@ -257,7 +257,7 @@ The context view reconstructs the context at a message from the captured harness
 
 ## Budgets
 
-**Ranges:** `--from` and `--until` (a message, a time within the session, or an absolute time; `--until` also takes `compaction[:N]`; exclusive); `--first N` and `--last N` (together a head-and-tail window with an omission line carrying exact counts); `--around [MESSAGE]` (10 before and after); `--at MESSAGE` for the context view. Positions are message IDs underneath, so a range is stable when messages are appended.
+**Ranges:** `--from` and `--until` (a message, a time within the session, or an absolute time; `--until` also takes `compaction[:N]`; exclusive); `--first N` and `--last N` (together a head-and-tail window with an omission line carrying exact counts); `--around N` (N messages before and after a message target); `--at MESSAGE` for the context view. Positions are message IDs underneath, so a range is stable when messages are appended.
 
 **Defaults by caller:**
 
@@ -267,7 +267,7 @@ The context view reconstructs the context at a message from the captured harness
 
 **Budget rules:**
 
-- Four bounds stay separate: the selection (ranges), the page size (`page_size`), the presentation budget (`budget_tokens`, `--output-lines`) and the deadline class ([query.md](query.md#deadlines)).
+- Four bounds stay separate: the selection (ranges), the page size (`page_size`), the presentation budget (`budget_tokens`) and the deadline class ([query.md](query.md#deadlines)).
 - A budget cuts between layout items. An entry too large for a page alone is sent as fragments of its items' JSON encodings (`Fragment{text, position, until, total}`); the page's `next` continues inside the entry at the next character, and concatenating every fragment gives back each item's encoding.
 - A page keeps its format. The envelope (`position`, `next`, `previous`, `count`) is never encoded in the content: JSON carries it as fields, the CLI prints the continuation on stderr, MCP puts `next` in the result object. For a session reading, `position` is the shown entries before the page and `count` the shown entries of the whole reading, both exact.
 - `previous` is issued by the daemon. A **page cursor** is sealed with the index generation's key and holds the target, a digest of the reading options (view, expansion options, parents mode, variants and format; the page budget may change for one page), a fixed-size digest of the rewrite versions and attachment receiving namespaces of every session the reading composes, the place where the page starts (a session entry by its key, or for row readings the order values of the row) and the direction. A continuation repeats the same arguments with `cursor`; other arguments are refused with `invalid_query`, as a query cursor from another question is. An append to a session never stales a cursor, so a live session pages without restarting; a rewrite of anything already indexed (a re-parse, a branch change, a newly stored parent link) gives `stale_cursor` naming the session, never a shifted page. A change to a receiving namespace that determines attachment presentation also stales the cursor, including a new ambiguous match. Decorations such as assertions on headers render current on every page.
@@ -283,11 +283,11 @@ The context view reconstructs the context at a message from the captured harness
 Polylogue returns, and `next` continues what that page leaves out. A harness's
 inline output cap and its handling of tool results are separate from that page
 budget. What a hand-over establishes is defined with
-[deliveries](agents.md#deliveries).
+[deliveries](agent-context.md#deliveries).
 
 **Streaming:** an unbudgeted read to the pager, a file or a directory is produced item by item from the selection. No whole session or selection is built in memory.
 
-**Options:** CLI `--view`, `--show` and `--hide`, `--output-lines`, `--variant`, `--at`, `--diff`, `--around`, `--latest`, `--physical`, `--page-tokens`, `--cursor`, `--format`, `--to`, `--for-others`. MCP and HTTP take the same names as typed fields, without `to`.
+**Options:** CLI `--view`, `--show` and `--hide`, `--output-lines` (tool output head and tail lines; zero keeps all lines), `--variant`, `--at`, `--diff`, `--around`, `--latest`, `--physical`, `--page-tokens`, `--cursor`, `--format`, `--to`, `--for-others`. MCP and HTTP take the same names as typed fields, without `to`.
 
 **Show and hide words** are one table of item kinds, used by `--show`/`--hide`, MCP `show`/`hide` and the web's show and hide keys: `tools[:line|full]`, `thinking[:line|full]`, `harness[:line|full]`, `inherited`, `branches`, `spawns[:card|N|full]` (delegation cards at spawning calls, shown by default; `full` reads each spawned session inline after its card, and a number `N` does so for N levels of nested spawns, deeper ones staying cards; a session already in the reading stays a card; an inline session keeps its own turn numbers and context meter, and the context view refuses inline spawns), `assertions` (shown by default), `turns` (a divider before each prompt with the turn's call count) and `context` (the context meter on model message headers: the provider-reported input, `≈` an estimate since the last boundary, or unknown). A kind given without a level uses its fullest. The command help is generated from the same table. `--hide inherited` writes a bundle without inherited prefixes.
 
@@ -295,7 +295,7 @@ budget. What a hand-over establishes is defined with
 
 ## Text as stored
 
-Reads serve archived text exactly as stored, on every surface (CLI, MCP, socket, HTTP, web, bundles, briefs). Nothing is detected as a secret, masked or held back for a reveal, so pages and cursors carry no masking state. (ruling 2026-06-18, codex:019ed83d-c034-7070-84de-2b87c55affa1@2026-06-18T10:02:02Z).
+Reads serve archived text exactly as stored, on every surface (CLI, MCP, socket, HTTP, web, bundles, briefs). Nothing is detected as a secret, masked or held back for a reveal, so pages and cursors carry no masking state.
 
 - Agents get the same text and bytes as the operator; nothing is refused because a harness variable is set.
 - A secret in history that matters is edited out of its source by the operator, or by an agent asked to; both revisions stay in the archive ([archive.md](archive.md#stored-inputs)).
@@ -304,7 +304,7 @@ Reads serve archived text exactly as stored, on every surface (CLI, MCP, socket,
 
 ## Formats
 
-A format encodes a `ReadDocument` (transcripts) or a row table (query results). It never selects content, and it escapes archived text so that it stays data. The formats are terminal, Markdown, HTML, JSON and JSONL, plus the one-line citation. (ruling 2026-10-18, cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:bf0795f9-2369-4e04-8644-0c527af609bc).
+A format encodes a `ReadDocument` (transcripts) or a row table (query results). It never selects content, and it escapes archived text so that it stays data. The formats are terminal, Markdown, HTML, JSON and JSONL, plus the one-line citation.
 
 - **`terminal`**, the default on a terminal: colour only when stdout is a terminal and `NO_COLOR` is unset, using the 16 ANSI colours so the terminal's palette applies; width from the terminal; control characters in archived text (C0 and C1 except tab and newline) shown escaped (`\x1b`). Piped output has no escape codes; there is no separate plain format.
 - **`markdown`**: `## HH:MM author` headings; tool lines as list items; output in fences longer than any fence run inside it; thinking in `<details>`; in archived text, heading markers at line start (`#`, and setext `=`/`-` underlines) are escaped with a backslash and `<`, `>`, `&` are written as entities so raw HTML stays text; all other punctuation is written as stored; a table cell also escapes `|` and keeps to one line.
@@ -325,7 +325,7 @@ A format encodes a `ReadDocument` (transcripts) or a row table (query results). 
 
 ## Writing out
 
-Writing out a selection is reading it to a directory; there is no separate export command. (ruling 2026-06-27, cc:7d2fd2f4-795f-4f2d-aeb2-9da411fae326:6f43de88-a007-47db-9a7d-389f036f38c2).
+Writing out a selection is reading it to a directory; there is no separate export command.
 
 `polylogue QUERY read --to DIR [--format json|jsonl|markdown|html] [--view …] [--with-blobs] [--hide inherited,assertions]` writes a bundle; `read --to FILE` writes one document. Authored state is written out the same way (`polylogue 'assertions' read --to DIR`).
 
@@ -346,7 +346,6 @@ Writing out a selection is reading it to a directory; there is no separate expor
 - Copied-prefix membership names its observed parent, child, original source reading and order beside the message. A conflicting current session of the message leaves that originally stated parent intact.
 - Sessions are written one at a time to a temporary directory that is renamed over the previous bundle only when complete; memory is bounded by the largest item, not the selection. Progress goes to stderr.
 - **Round trip:** importing a bundle into a fresh archive ([capture.md](capture.md#import)) gives the same session, message, document and event IDs and the same authored records and variants; importing it again changes nothing except recording the input. Raw provider bytes are not carried: a bundle is a reading. A whole-archive selection is a plain query.
-- OpenTelemetry GenAI traces are another writer of the same selection (`--format otel`), with paths replaced unless `--keep-paths` is given and message text only with `--with-text`.
 - MCP and HTTP do not write bundles, since they cannot write files on the caller's host.
 
 ## Rendering for models

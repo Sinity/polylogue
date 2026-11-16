@@ -28,7 +28,7 @@ The flake also provides a Home Manager module (the package and one user
 service per named archive) and a NixOS module (the system service). Hooks, MCP
 registration and the browser extension's host are not installed by the module
 yet; register them by hand as [agents](docs/agents.md) and
-[extension](docs/extension.md) describe. See see
+[extension](docs/extension.md) describe. See
 [development](docs/development.md#deployment-modules) for their use and
 [operations](docs/operations.md#deployment) for the deployment contract.
 
@@ -68,9 +68,9 @@ polylogue find chrono read                # search for a word and read the match
 polylogue @1 read --to browser            # open the first row of the last list in the workbench
 ```
 
-A query comes first and verbs act on its rows; `polylogue explain` describes
-the language, and `polylogue --help` lists commands. Every command exists over
-MCP and HTTP too.
+A query comes first and verbs act on its rows; `polylogue explain syntax` describes
+the language, and `polylogue --help` lists commands. The command table declares
+which operations MCP and HTTP expose; local process commands run through the CLI.
 
 ## Where to read next
 

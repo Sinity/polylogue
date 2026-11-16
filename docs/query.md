@@ -6,7 +6,7 @@ The grammar, its spelling, the AST's three-valued semantics, time expressions, t
 
 ## Principles
 
-- **One expressive language instead of small features.** No surface re-implements filtering, totals or paging; a new need is met by the language or a stage, not by a command. (ruling 2026-06-17, chatgpt:6a2ea930-87a8-83eb-adb7-4cf38ccaa6a3:3f4ec96c-1c94-48aa-9ae6-ceeaaed5eddc). (ruling 2026-07-02, cc-queued:3437c3ea-5b13-45b4-9b88-8786223f0fa7@2026-07-02T18:20).
+- **One expressive language instead of small features.** No surface re-implements filtering, totals or paging; a new need is met by the language or a stage, not by a command.
 - **Unknown is not zero; scopes are strict.** An unknown value matches neither a condition nor its `NOT`. A query never widens itself, and never falls back to searching its own text.
 - **No arbitrary limits.** Page sizes are defaults, deadlines can be lifted by any caller, and nothing truncates a valid answer.
 - **Discoverable without shrinking the language.** `explain`, `read_as`, completion and runnable corrections teach the language; every string an agent might pass returns rows, a refusal with a correction, or a typed error.
@@ -36,7 +36,7 @@ Every query error carries `kind`, `message`, `position` (byte offset, shown with
 
 ### References inside queries
 
-A reference names exactly one thing and drops the reachability defaults (subagent, hidden, duplicate, active path) for that match. The reference forms and their resolution are in [references.md](references.md#forms); the command line's own forms (`@N`, `@last`) are in [interfaces.md](interfaces.md#addressing). A query that is only an exact assertion revision (`assertion:R@X`) reads the `assertions` unit, since the revision is one row; every other lone reference is a condition on the default unit. An ID-shaped word or unique prefix resolves to exactly one session or message, or is `not_found` or `ambiguous` naming the matches; it never silently becomes search text. `self` is the calling session; `last` and `latest` are the most recently active main session that also meets the query's other session conditions (`repo:x last` is the newest session in `x`), never the calling session; they are resolved inside the query when it runs, so a saved query using them follows new sessions.
+A reference names exactly one thing and drops the reachability defaults (subagent, hidden, duplicate, active path) for that match. The reference forms and their resolution are in [references.md](references.md#forms); the command line's own forms (`@N`, `@last`) are in [terminal.md#addressing](terminal.md#addressing). A query that is only an exact assertion revision (`assertion:R@X`) reads the `assertions` unit, since the revision is one row; every other lone reference is a condition on the default unit. An ID-shaped word or unique prefix resolves to exactly one session or message, or is `not_found` or `ambiguous` naming the matches; it never silently becomes search text. `self` is the calling session; `last` and `latest` are the most recently active main session that also meets the query's other session conditions (`repo:x last` is the newest session in `x`), never the calling session; they are resolved inside the query when it runs, so a saved query using them follows new sessions.
 
 ## Units and fields
 
@@ -46,12 +46,12 @@ Each unit declares, once, its rows, key and identity, default filters, default o
 
 | Unit | Rows |
 |---|---|
-| `sessions` | logical sessions by default ([sessions.md](sessions.md#logical-sessions)); `--physical` or `physical:true` lists physical sessions |
+| `sessions` | logical sessions by default ([sessions.md](sessions.md#logical-sessions)); `physical:true` lists physical sessions |
 | `messages`, `blocks`, `tool_calls`, `documents`, `attachments`, `events`, `links`, `turns`, `files` | as parsed ([sessions.md](sessions.md)) |
 | `pastes` | paste spans: content hash, source of the span, state, message and session; `group by hash` gives repeats |
 | `assertions` | assertions ([assertions.md](assertions.md)) |
 | `variants` | variants and their parts ([assertions.md](assertions.md#variants)) |
-| `deliveries` | deliveries ([agents.md](agents.md#deliveries)) |
+| `deliveries` | deliveries ([agent-context.md#deliveries](agent-context.md#deliveries)) |
 | `changes` | the change feed as rows |
 | `queries`, `runs`, `results` | query objects, query runs and kept results ([below](#query-objects)) |
 | `processes`, `commits` | harness processes; commit and pull-request links (`not_built` until their producers exist) |
@@ -132,7 +132,7 @@ Stages apply in the order written:
 
 ## Query objects
 
-Queries, their runs, kept results, figures and findings are stored objects with identities, so a question and its answer can be cited, reused and compared over time. (ruling 2026-07-09, cc-queued:3b0038ec-234c-44b8-bb88-fe222b44fe0f@2026-07-09T20:06).
+Queries, their runs, kept results, figures and findings are stored objects with identities, so a question and its answer can be cited, reused and compared over time.
 
 ### Identity
 
@@ -164,7 +164,7 @@ Queries, their runs, kept results, figures and findings are stored objects with 
 
 ### Kept results
 
-`QUERY keep [--name N]` (and `keep` over MCP and HTTP, `--keep` on recall) stores the answer as it is now under `result:<uuidv7>`. It records:
+`QUERY keep [--name N]` (and `keep` over MCP and HTTP) stores the answer as it is now under `result:<uuidv7>`. It records:
 
 - `query:<hash>`, the run and the definitions;
 - the resolved bounds (`now`, zone, day start, resolved times) and `read_at`;
@@ -204,8 +204,8 @@ A run or kept result is **pre-registered** when a `saved_query` assertion naming
 
 ## Explain
 
-- `explain QUERY` compiles without reading rows and returns the parsed query with spans; the defaults applied and which conditions dropped them; units; definitions; resolved times; the ranking in effect (none, relevance, similarity, fused, and which lists); `query:<hash>`; and `read_as`, the query read back in plain language from each field's, operator's and stage's declared phrase. With `--detail full` it adds the compiled plan.
-- `explain` alone describes the language; `explain units|fields [UNIT]|stages|operators|capabilities` pages the declarations.
+- `explain query --expression QUERY` compiles without reading rows and returns the parsed query with spans; the defaults applied and which conditions dropped them; units; definitions; resolved times; the ranking in effect (none, relevance, similarity, fused, and which lists); `query:<hash>`; and `read_as`, the query read back in plain language from each field's, operator's and stage's declared phrase. With `--detail full` it adds the compiled plan.
+- `explain syntax` describes the language and its stages; `explain units|fields|operators|capabilities|derived` pages the declarations. `explain fields --unit UNIT` selects one unit; `--page-size N` and `--cursor C` page the declarations.
 - `--why`, on any query, also counts within the aggregate deadline: first each default the unit applied, as `{clause, matches, of}` where `clause` names the conditions that lift it and `matches of of` is the rows it keeps of the rows without it; then per condition `{clause, group, matches, of, hint}`, nested by OR, NOT and parenthesis group, with no limit on entries; for a ranked answer, each shown row's rank in each list and its contribution. For an empty answer it adds the nearest relaxation: the time bound that would admit rows, the closed-set values present, the closest field values.
 - Every answer carries `read_as`.
 - Explain and completion never write, build, embed or call a model.
@@ -232,7 +232,9 @@ A run or kept result is **pre-registered** when a `saved_query` assertion naming
 
 ## Answers
 
-Every surface returns one answer shape, rendered from types:
+Every surface returns the shared typed answer: `outcome`, a `value` on success
+or `error` on failure, and the request and continuation fields. The query
+document inside `value` has this shape:
 
 ```json
 {
@@ -250,7 +252,7 @@ Every surface returns one answer shape, rendered from types:
 }
 ```
 
-- The document carries no outcome of its own: the answer's outcome ([interfaces.md](interfaces.md#output)) says `ok`, `empty` or `degraded`, and a measurement is the document with `measure` and `data` in place of the row fields. Errors are `{"error": {…}}`. `positions` is filled only for cross-system answers ([primary-mode.md](primary-mode.md#cross-system-queries)).
+- The document carries no outcome of its own: the answer's outcome ([terminal.md#output](terminal.md#output)) says `ok`, `empty` or `degraded`, and a measurement is the document with `measure` and `data` in place of the row fields. Errors are `{"outcome":"error","error":{…}}`. `positions` is filled only for cross-system answers ([primary-mode.md](primary-mode.md#cross-system-queries)).
 - `empty` comes only from a read that succeeded and matched nothing; a failure never produces `empty`.
 - An answer assembled from parts (the two sides of a hybrid search, recall lists, cross-system parts) is `incomplete` if any part failed, naming each.
 - `up_to_date` is false while files have unparsed growth, inputs wait, derived products are behind, or the index is held; `notes` say which.
@@ -269,7 +271,7 @@ A watch is a signal rule over a query ([operations.md](operations.md#notices)); 
 - A reading taken while the index catches up, or an incomplete answer, is held as incomplete, never reported as a change.
 - Occurrences are keyed by logical session, so a re-parse never fires a watch again and one logical session fires once.
 - A watch over assertions compares by kind, target, key and value.
-- The rule is stored as a `signal` assertion. A watch only notifies; it never starts or resumes an agent ([agents.md](agents.md#pings)).
+- The rule is stored as a `signal` assertion. A watch only notifies; it never starts or resumes an agent ([session-control.md#pings](session-control.md#pings)).
 
 ## Acting on rows
 

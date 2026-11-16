@@ -12,7 +12,7 @@ The parsed model every other area reads: sessions, messages and blocks, message 
 
 ## Messages
 
-- **A message is stored once, in the session that originated it.** A child that the provider wrote with a copy of its parent's prefix stores only its own messages. Copied-prefix observations keep the copied messages and their source order independently of provider relationships ([Session links](#session-links)); copies are recognized from the child's own records. (ruling 2026-06-27, cc:269c34a5-a94b-4ae3-b9ea-a2afea3b4241:527568f9-4b9b-4f57-9346-b097772bbda6).
+- **A message is stored once, in the session that originated it.** A child that the provider wrote with a copy of its parent's prefix stores only its own messages. Copied-prefix observations keep the copied messages and their source order independently of provider relationships ([Session links](#session-links)); copies are recognized from the child's own records.
 - **Order.** A session's messages read in source-time order across routes and in source position within one input. Each input's reading of a message has an *order time*: the latest source time of that message and of the messages before it in the same input chain and session, so the order within one input never changes and a message without a time stays right after the message before it. When a step reads an earlier message of a chain again with another time, the order times of the readings after it in that chain and session are computed again from each reading's own time, as reading the chain in one step gives them. A reading that restates whole conversations (a capture frame, an export item that repeats its conversation) starts again from its own first message. A message is placed by the earliest (order time, input ID, position in that input) among each input's latest readings that have an order time, so it stays before what follows it in each of its inputs, and a reading without one never pulls it to the start; a message with no time in or before it in any of its readings comes at the session's start, in its input's order. Messages of different inputs at the same order time keep input ID order, which can put a turn before the turn that precedes it in another input only when their times are equal. The message ID breaks a remaining tie. Placement depends only on the readings, never on arrival order.
 - **Branches.** Messages carry their parent message, which gives the branch tree; the active path comes from the provider's marked leaf. An unknown path is NULL and is never collapsed into "off the path".
 - **Blocks.** A message is a sequence of blocks: text, thinking, tool calls and results, attachments, and the special output parts providers produce (artifacts, canvas, projects, citations), which are parsed as blocks and documents of their message rather than left as kept attributes.
@@ -29,8 +29,8 @@ Who wrote a message is separate from its role, in two closed sets and no third f
 | `prompt_kind` (user-role rows) | `prose`, `command` (a typed slash command), `injected_context` (hook output, skill text, a delivered brief), `compaction_summary`, `harness` (other prompts the harness wrote), `model` (a prompt a model wrote, such as a delegated task) |
 
 - The user role is not the human: harnesses and models write user-role rows too, and the two columns say which. A human prompt and a typed command are counted apart.
-- An `injected_context` row carries the delivery reference when its text matches a recorded delivery ([agents.md](agents.md#deliveries)).
-- There is no third authorship field; the two columns above are the whole model. (ruling 2026-06-29, cc:51696878-0e44-4543-ab23-92abe9fe5c19:9c8d7182-aaac-4e0b-9606-1b3afa2e2c83).
+- An `injected_context` row carries the delivery reference when its text matches a recorded delivery ([agent-context.md#deliveries](agent-context.md#deliveries)).
+- There is no third authorship field; the two columns above are the whole model.
 
 ## Times
 
@@ -63,7 +63,7 @@ Links between sessions come only from explicit markers in the sources, in one cl
 
 ## Compaction boundaries
 
-A compaction is a discontinuity in the model's context, not a special kind of content. (ruling 2026-06-27, cc:269c34a5-a94b-4ae3-b9ea-a2afea3b4241:4eefdb12-1487-43b4-a0cc-5fc4786372b0).
+A compaction is a discontinuity in the model's context, not a special kind of content.
 
 - **The summary is a message** at the boundary, with `written_by: harness` and `prompt_kind: compaction_summary`. It is searchable, embedded like other prose, and counted once.
 - **The boundary is an event linked to that message.** It records the tokens before and after (as reported), the trigger (`manual`, `auto`, or the harness's own value), the range of messages it evicted and what it kept. Codex `replacement_history` stays in this event and is not turned into messages.
@@ -85,7 +85,7 @@ An attachment is a stored entity, not a flag on a block:
 | `source_ref` | the provider's file ID, Drive ID, path or URL |
 
 - **"Preserved" means stored bytes whose hash matches.** Anything else states its availability.
-- Who supplied a file matters: an upload and a file the model generated for download are different things. (ruling 2026-08-31, cc-queued:62b956ba-3ea3-4693-8d71-9a36321c37a9@2026-08-31T05:20:13.932Z).
+- Who supplied a file matters: an upload and a file the model generated for download are different things.
 - **Every route delivers the bytes** when the source has them:
 
   | Origin | Source of the bytes |
@@ -109,12 +109,12 @@ An attachment is a stored entity, not a flag on a block:
 
 ## Sidecars and linked materials
 
-- **A sidecar is read into its session, never as a session:** `.meta.json` files, tool-result overflow files, Gemini tool outputs, Grok terminal logs, workflow journals, compaction replays. (ruling 2026-09-07, cc-queued:73b121c4-d81f-45f0-a42b-883effbfd80a@2026-09-07T01:23:23.574Z).
+- **A sidecar is read into its session, never as a session:** `.meta.json` files, tool-result overflow files, Gemini tool outputs, Grok terminal logs, workflow journals, compaction replays.
 - **Linked materials.** Every URL a conversation cites or an agent produces is recorded as a material observation of its message. Provider-hosted files (download links, sandbox outputs, file previews) are fetched at capture as attachments. Web pages a conversation cites are fetched too, because cited pages disappear; a setting turns this off. Every fetch goes through a guard that refuses private and loopback addresses and unsafe redirects.
 
 ## One conversation through several routes
 
-A conversation can arrive as a live file, a browser capture, an export, a Drive revision, a Takeout and an imported old copy. This redundancy is deliberate. All routes arrive as `<origin>:<native id>` and are one session; every route's reading is stored, and the shown message is composed field by field. (ruling 2026-07-31, cc:38baa1de-9715-48fa-8175-f2a29d92800e:a36102a7-666b-480b-8f62-f282494b1932).
+A conversation can arrive as a live file, a browser capture, an export, a Drive revision, a Takeout and an imported old copy. This redundancy is deliberate. All routes arrive as `<origin>:<native id>` and are one session; every route's reading is stored, and the shown message is composed field by field.
 
 A route is one of `live` (the tool's own file or database), `capture` (the provider's data for one conversation, fetched as it is shown: the extension's capture of the page's data, a Drive revision), `recorded` (Polylogue's own hook, process and collector records), `export` (a provider export), `copy` (an imported tool file, a bundle, an older archive) and `page_text` (text read from the page). Each origin declares the route of its inputs; an input brought in with `polylogue import` is an `export` when the origin is an export and a `copy` otherwise. The shown message is a pure function of each input's latest reading of it, composed in **field groups** taken together from one reading: content (role, prompt kind, blocks and the provider fields indexed by block), time, model, usage (tokens, reported cost and duration), stop reason, parent and production.
 
@@ -132,7 +132,7 @@ A route is one of `live` (the tool's own file or database), `capture` (the provi
 
 ## Logical sessions
 
-The **logical session** is the default unit of work: the root of a tree of `spawn`, `fork`, `continuation` and `resume` links, so one piece of work spread over subagents, forks, compactions and resumes reads as one thing. `reference` links never join it. (ruling 2026-10-28, cc-queued:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f@2026-10-27T23:54:48.743Z).
+The **logical session** is the default unit of work: the root of a tree of `spawn`, `fork`, `continuation` and `resume` links, so one piece of work spread over subagents, forks, compactions and resumes reads as one thing. `reference` links never join it.
 
 - Listings, counts and measures show logical sessions, each expandable into its physical sessions; `--physical` lists sessions one by one ([query.md](query.md#units-and-fields)).
 - References always name physical sessions exactly.

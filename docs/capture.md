@@ -4,11 +4,11 @@ Where Polylogue's inputs come from: the location model and every live origin, ho
 
 ## Principles
 
-- **Every relevant origin, at full fidelity.** Every AI tool whose sessions the user has is captured, with every side file that carries conversation content, context or harness-side state, even before a parser for it exists, because harnesses prune their own files and a pruned file is lost. A degraded form (a flattened transcript, a page scrape where the provider's data is available) is never the stored record. (ruling 2026-02-15, cc-queued:7ebe20ed-a8bf-4392-98ab-bce1ea619c70@2026-02-15T02:42:31.922Z).
-- **Nothing disappears silently.** Every file under a declared root is collected, ignored with a recorded reason, or reported unrecognized. (ruling 2026-07-31, cc:38baa1de-9715-48fa-8175-f2a29d92800e:bc4b84cc-1c23-46df-bd01-dbb4219d5d47).
-- **Fixed locations, strict recognition, fail closed.** Polylogue reads data where each tool writes it; there are no path settings and no custom roots. Input that does not match its declared shape is refused, never reinterpreted. (ruling 2026-09-27, cc:62be45f2-6c40-49ce-a88e-bc566948628c:75bf98d6-b1e7-461a-bd53-501ec33de178).
+- **Every relevant origin, at full fidelity.** Every AI tool whose sessions the user has is captured, with every side file that carries conversation content, context or harness-side state, even before a parser for it exists, because harnesses prune their own files and a pruned file is lost. A degraded form (a flattened transcript, a page scrape where the provider's data is available) is never the stored record.
+- **Nothing disappears silently.** Every file under a declared root is collected, ignored with a recorded reason, or reported unrecognized.
+- **Fixed locations, strict recognition, fail closed.** Polylogue reads data where each tool writes it; there are no path settings and no custom roots. Input that does not match its declared shape is refused, never reinterpreted.
 - **Live is the normal case.** A growing file is tailed; a live origin needs no import step.
-- **Exports arrive by hand.** Provider exports are brought in with `polylogue import`; nothing is picked up from a download or inbox directory. (ruling 2026-07-06, cc-queued:f7680f9c-32e4-4f2f-9180-b9977e1f4702@2026-07-06T17:12:07.017Z).
+- **Exports arrive by hand.** Provider exports are brought in with `polylogue import`; nothing is picked up from a download or inbox directory.
 - **Databases are captured as rows, not images** ([Tool databases](#tool-databases)).
 - **No size limit on valid input.** Payloads, attachments and export members of any size stream through.
 
@@ -93,7 +93,7 @@ Ignored: `logs_2.sqlite` (diagnostic log); `thread_history_*.sqlite` (a derived 
 
 ## Hooks
 
-Hooks are a capture channel: every event each harness emits is recorded whole. Hook-only facts (permission answers, pre-compaction context, paste bodies as typed, process identity) exist nowhere else. Which events are declared and how they are installed is in [operations.md](operations.md#installing-into-harnesses); what context hooks bring to a session is in [agents.md](agents.md#brief).
+Hooks are a capture channel: every event each harness emits is recorded whole. Hook-only facts (permission answers, pre-compaction context, paste bodies as typed, process identity) exist nowhere else. Which events are declared and how they are installed is in [operations.md](operations.md#installing-into-harnesses); what context hooks bring to a session is in [agent-context.md#brief](agent-context.md#brief).
 
 - **Every event is installed and spooled.** Claude Code's full set (including `Notification`, `PermissionRequest`, `PermissionDenied`, `PostToolUseFailure`, `SubagentStart`, `SubagentStop`, `PreCompact`, `PostCompact`, `Elicitation`, `ElicitationResult`, `CwdChanged`, `FileChanged`, `WorktreeCreate`, `Setup`, `SessionEnd`), Codex's full set including `PermissionRequest`, Gemini CLI's (`SessionStart`, `BeforeAgent`, `BeforeTool`, `AfterTool`, `AfterAgent`, `Notification`, `PreCompress`, `SessionEnd`), Hermes's lifecycle events, and Grok CLI's if it offers any. The set is taken from each installed harness version by probe.
 - **Recording.** `polylogue hook EVENT --harness NAME` appends the payload, whole and with no size cap, as one line of the per-process spool file under `$XDG_STATE_HOME/polylogue/hooks/`, and syncs it (`fdatasync`) before returning. Recording opens no database and contacts nothing. A harness treats a non-zero hook exit as a refusal (Claude Code blocks the tool call on exit 2), so the hook always exits 0: an unwritable spool, an unreadable configuration file, a deleted working directory or an unknown `--harness` writes nothing to stdout and one line to stderr. A recording entry takes under 5 ms typically and 15 ms at p95 when the state directory is on a disk that is not saturated by bulk writes; a sync behind heavy writeback can take hundreds of milliseconds, so deployments keep the state directory off bulk storage.
@@ -110,7 +110,7 @@ Hooks are a capture channel: every event each harness emits is recorded whole. H
   - At session start the line carries `git_identity` (`common_dir`, `root_commits`, `head`, `branch`) and `repository`, read by common's `git-identity` within a 50 ms budget: the roots are every root reachable from `HEAD`, sorted, shallow-clone boundaries left out (the set Polylogue's repository lookup and Sinex's shell-session capture also record), and `repository` is the `origin` URL with any user and password removed. A shallow clone whose history reaches no root, or a missed budget, records the reason in `native_unavailable` instead.
   - Hermes's `conversation_history` is left out of the line, because its transcript is read from `state.db`.
 - **A hook event belongs to its session and never creates one.** The daemon reads spool files like any growing file; a hook line keeps its identity across re-storage.
-- **Hooks complete transcripts** where the transcript is incomplete: `PreCompact` gives the pre-compaction context, `PostToolUse` restores a truncated tool result (the order is inline, then sidecar, then hook), `UserPromptSubmit` gives paste bodies as typed.
+- **Hooks complete transcripts** where the transcript is incomplete: `PreCompact` gives the pre-compaction context and `UserPromptSubmit` gives paste bodies as typed. `PostToolUse` records the reported tool event.
 
 ## Tool databases
 

@@ -27,7 +27,7 @@ what the current delivery must finish: unrelated future capabilities and
 other design gaps do not become its scope or release blockers. It does not
 license leaving a wrong design or a known defect in the code the delivery
 changes. `docs/README.md` indexes
-the pages and defines how the operator's rulings are cited. Start with `docs/architecture.md` (purpose, principles, modes, stores,
+the pages. Start with `docs/architecture.md` (purpose, principles, modes, stores,
 durability, pipeline, configuration and clocks), then read the page that owns
 the area you are changing. CLI help, MCP tool schemas and module
 documentation describe the current build.
@@ -89,8 +89,7 @@ copy.
 | `nix/` | the NixOS and Home Manager modules and their shared settings library |
 
 Authored records live in `crates/store` and `crates/polylogue`.
-`cargo xtask boundaries` enforces which crates may depend on which; only the
-store touches SQLite.
+Only the store touches SQLite.
 
 The shared crates (`hashed-blobs`, `devkit`, `query-language`,
 `command-surface`, `web-shell`, `authored`, `signals`, `signal-delivery`) follow polylogue-sinex-common's `master`
@@ -140,7 +139,7 @@ complete features, built on the architecture's abstractions, with the earlier
 Python Polylogue's behaviour and test cases ported.
 
 **Edit in bulk; type-check as you go.** Change whole modules, crates and call
-sites in one pass. Run `cargo xtask check --changed` (formatting, boundaries,
+sites in one pass. Run `cargo xtask check --changed` (formatting,
 clippy and the tests the change can affect) after each layer you write; it
 reports every type error at once. Run the wider tests once the change is
 coherent.
@@ -153,9 +152,7 @@ caller not converted, a limit that refuses valid input, a test that cannot
 fail, a name that does not say what the thing is, a case the design covers
 and the code does not. Fix the whole list, then read only what the fixes
 changed. Then verify. The author makes the work good; a separate reviewer is not the mechanism for
-that. "Review should not look for a single wrong thing, it should strive to
-list everything wrong. so that there is no forever loop of fixing and finding
-new issue" (operator, 2026-09-29, `cc:9ec284a7-6a6a-486b-949f-d8bbdb22ae1e:16cb3a25-318f-455b-82b5-bf0f6f732e30`).
+that.
 
 **Verify scoped to the change.** Commit first, so a result belongs to a
 commit. While editing, `cargo xtask check --changed` runs formatting, clippy
@@ -189,7 +186,7 @@ and structure and reapplying your change. Once `check` passes on the head you te
 it with `gh pr merge <n> --squash --match-head-commit <sha>` (waiting with
 `gh pr checks <n> --required --watch`); GitHub auto-merge is not used, since
 armed on a clean, green head it sometimes never fires. Development speed
-comes before a perfectly green master (operator, 2026-11-09): when two
+comes before a perfectly green master: when two
 separately green changes combine into a failing master, whoever's change
 caused it fixes it next. Hooks stay enabled.
 
@@ -200,9 +197,7 @@ related.
 
 **Decide technical details yourself.** Low-level design choices are yours,
 made from the principles here and the pages in `docs/`, and recorded on the
-Bead and in the PR. "IDK how these are for me, I do not know ~anything about
-these details" (operator, 2026-09-29,
-`cc:9ec284a7-6a6a-486b-949f-d8bbdb22ae1e:b6a95d83-9b7f-4478-a74e-a0a3d3b46683`).
+Bead and in the PR.
 The operator decides product scope and intent, privacy, money (paid APIs,
 purchased vectors) and anything published outward. Deploying, activating,
 restarting, rebuilding an archive and the release cutover are yours: original
@@ -221,8 +216,7 @@ explain, report and recommend; change only what was asked for.
 ## Engineering values
 
 These are the operator's standing positions, explained so they can be applied
-to cases they do not name. References in the form `cc:<session>:<message>`
-locate the operator's words in his session history.
+to cases they do not name.
 
 **Invariants instead of repair.** Code does not produce broken state, so
 there is nothing to repair. There are no repair, reconcile, reindex or
@@ -231,10 +225,7 @@ the open path treats as normal: an uncommitted segment tail, a
 derived store behind its saved position, a source position behind its
 committed rows. When something is found broken, fix the code that produced
 it; often the cause is code that no longer exists and no new invariant is
-needed. "We want to engineer things well, to maintain appropiate invariants,
-which make "break glass" solutions redundant because the only way these would
-be necessary is a striaght-up bug, which if it happens we could just fix"
-(2026-07-19, `cc:af12164b-a2fc-42cb-a548-22277c0875a2:60fc6414-24ab-4628-81dc-66aae9282d5d`).
+needed.
 
 **One mechanism per concept; a replacement removes its predecessor.** When
 something is replaced, the old version, its callers, docs, tests and
@@ -242,17 +233,11 @@ everything that only served it go in the same change. There are no
 compatibility shims, aliases, fallbacks or old-format readers for Polylogue's
 own formats; a breaking change fixes every caller. Outside formats are
 different: provider exports from any year are user data and stay supported.
-"No compatibility shims means things should be done right, not that there
-shoudl be no compatiblity and things coudl break" (2026-09-28,
-`cc:9ec284a7-6a6a-486b-949f-d8bbdb22ae1e:e645e5ee-d29a-402e-bd4a-a58c32ad0c88`).
 
 **Full features, built on a whole architecture.** Build the complete feature
 the design describes, on abstractions that make the next features cheap,
 rather than a bare-bones version to be replaced later. Polylogue is meant to
-do more than the earlier Python Polylogue did, without its machinery. "Why
-build some sort of bare-bones features which will need to be replaced by
-actual full-fledged ones anyway?" (2026-10-27,
-`cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:3c3dd59f-4560-4fee-95d4-5c43b6c94ca5`).
+do more than the earlier Python Polylogue did, without its machinery.
 When an area you are changing works but its design is wrong, redesign it as
 part of the task; an area you are not changing gets a Bead.
 
@@ -260,11 +245,7 @@ part of the task; an area you are not changing gets a Bead.
 had a working core under layers of repair and bookkeeping. Port
 its format knowledge, parsers' cases, capabilities and planned work; leave
 its repair passes, census and debt ledgers, revision authority and audit
-tiers behind. "Don't make the opposite mistake of mindlessly porting things
-over just becasue they were in the old codenbase either -- to not port over
-all these terrible mechanisms, corrections on top of corrections to broken
-code" (2026-10-27,
-`cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:3f159a64-8c63-4851-850b-0db265a6998f`).
+tiers behind.
 
 **Small codebase, plain names.** Bulk is the main enemy: the earlier
 Python Polylogue and the earlier Sinex grew past half a million lines each through kludges on kludges. Prefer one
@@ -273,24 +254,18 @@ interfaces, and no repeated logic. A name says what the thing is in ordinary
 words, everywhere: types, functions, local variables, SQL, JSON keys, CLI
 help, errors, comments, tests and docs. When an opaque term is found, replace
 it throughout the codebase in one pass, so that nobody copies it from what is
-already there. "The jargon is not supposed to be anywhere, period. including
-stuff like local variable names etc." (2026-10-24,
-`cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:e52f56c3-a9ec-45d8-b719-6b881ee22367`).
+already there.
 
 **Good design instead of guard machinery.** Quality comes from the
 architecture and from the author's own review, not from build-enforced bans,
 line budgets, word checks or required PR fields. A pattern that is absent
-from the codebase does not reappear by itself. "These sorts of checks dont'
-actually work." (2026-10-27,
-`cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:deed5fe0-c9a3-49e3-8f27-c35efdc08301`).
+from the codebase does not reappear by itself.
 
 **Valid input is never refused or truncated for size.** Page sizes are
 defaults, transfer units continue, and memory is bounded by streaming and
 read-ahead, not by caps on what the user may store or ask for. A query that
 runs past its deadline names a narrower query and the same command with the
-deadline lifted. "Such arbitrary limits are themselves straight-up bugs."
-(2026-09-27,
-`cc:62be45f2-6c40-49ce-a88e-bc566948628c:4cc20d7c-9e62-4b7a-9550-7dd97f9d48e9`).
+deadline lifted.
 
 **Tests that are better than the earlier Python Polylogue's.** Every specified behaviour
 in the pages in `docs/` has a test
@@ -303,10 +278,7 @@ gaps both suites had. A test that restates a helper, asserts a mock's value,
 checks what the type system already prevents, or matches SQL substrings where
 rows could be compared adds cost without coverage. A test asserts behaviour
 that exists, never that a name, variant or format stays absent: a removal is
-verified by the build and by tests of the replacement's behaviour. "We want to cover various
-aspects of the projects, but we don't want to have tests which are
-counterproductive or low-value just to have more tests." (2026-10-27,
-`cc:ee52794c-8a9e-43b6-9fbc-9749c7e78e8f:bbb105d6-16f1-418e-b04a-0c5f105832df`).
+verified by the build and by tests of the replacement's behaviour.
 
 **A fast development loop.** Code quality comes first; within it, optimise
 for speed: bulk edits, targeted test runs, short compile times, a small
@@ -348,8 +320,7 @@ archive, `/home/op` paths). Credentials, real captures, private reports and
 real databases stay out of Git, and so do paths into a particular machine.
 Reading the operator's real files on the development machine for development
 and measurement is fine; report figures, not contents.
-Public docs state design intent in neutral language and cite rulings by date
-and locator, never quoting the operator's private sessions; PR bodies, review
+Public docs state design intent in neutral language; PR bodies, review
 comments and commit messages carry no excerpts of captured data or private
 analyses.
 
